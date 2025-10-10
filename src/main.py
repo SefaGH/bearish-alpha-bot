@@ -18,8 +18,18 @@ from universe import build_universe, pick_execution_exchange
 
 load_dotenv()
 
-with open('config/config.yaml','r') as f:
-    CFG = yaml.safe_load(f)
+cfg_path = os.getenv('CONFIG_PATH', 'config/config.yaml')
+if not os.path.isfile(cfg_path):
+    alt = 'config/config.example.yaml'
+    if os.path.isfile(alt):
+        print(f"[config] {cfg_path} not found. Falling back to {alt}")
+        cfg_path = alt
+    else:
+        raise FileNotFoundError(f"Neither {cfg_path} nor {alt} found. Provide a config file.")
+
+with open(cfg_path, 'r') as f:
+    CFG = yaml.safe_load(f) or {}
+print(f"[config] Loaded: {cfg_path}")
 
 MODE = os.getenv('MODE','paper')
 TG = Telegram(os.getenv('TELEGRAM_BOT_TOKEN',''), os.getenv('TELEGRAM_CHAT_ID','')) if os.getenv('TELEGRAM_BOT_TOKEN') else None
