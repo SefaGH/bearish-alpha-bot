@@ -30,7 +30,7 @@ signals:
     enable: true
 risk:
   equity_usd: 10000
-  per_trade_risk_pct: 0.004
+  per_trade_risk_pct: 0.006
   daily_loss_limit_pct: 0.02
   max_concurrent_positions: 3
   cool_down_min: 30
