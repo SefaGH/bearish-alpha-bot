@@ -11,6 +11,7 @@ from core.normalize import price_to_precision, amount_to_precision
 from core.trailing import initial_stops, trail_level
 from core.limits import clamp_amount, meets_or_scale_notional, clamp_price
 from core.state import load_state, save_state, load_day_stats, save_day_stats
+from core.asset_class import classify_symbol
 from strategies.short_the_rip import ShortTheRip
 from strategies.oversold_bounce import OversoldBounce
 from universe import build_universe, pick_execution_exchange
@@ -59,6 +60,17 @@ print(f"[limits] min_amount_behavior={min_amount_behavior} min_notional_behavior
 MIN_STOP_PCT = float(CFG['risk'].get('min_stop_pct', 0.003))  # 0.3% default
 opened_this_run = set()
 
+# --- global risk caps ---
+GLOBAL_MAX_NOTIONAL = float(CFG['risk'].get('max_notional_per_trade', 100000.0))  # A) makul arttırıldı
+GLOBAL_RISK_USD_CAP = float(CFG['risk'].get('risk_usd_cap', 1200.0))              # yeni: işlem başına en çok risk
+
+# --- class-based caps (for memes etc.) ---
+CLASS_LIMITS = CFG.get('class_limits', {})
+def class_caps(symbol: str):
+    cls = classify_symbol(symbol, CFG)
+    lim = CLASS_LIMITS.get(cls, {})
+    return cls, float(lim.get('max_notional_per_trade', GLOBAL_MAX_NOTIONAL)), float(lim.get('risk_usd_cap', GLOBAL_RISK_USD_CAP))
+
 risk_cfg = RiskConfig(
     per_trade_risk_pct=CFG['risk']['per_trade_risk_pct'],
     daily_loss_limit_pct=CFG['risk']['daily_loss_limit_pct'],
@@ -77,7 +89,6 @@ MIN_COOLDOWN_SEC = int(CFG.get('notify',{}).get('min_cooldown_sec', 300))
 PUSH_NO_SIGNAL = bool(CFG.get('notify',{}).get('push_no_signal', True))
 PUSH_DEBUG = bool(CFG.get('notify',{}).get('push_debug', False))
 DAILY_MAX_TRADES = int(CFG['risk'].get('daily_max_trades', 20))
-MAX_NOTIONAL_PER_TRADE = float(CFG['risk'].get('max_notional_per_trade', 1e9))  # large default
 
 LAST_SENT = {}
 
@@ -150,6 +161,32 @@ def paper_pnl(side, entry, exitp, qty, fee_pct):
     fees = (entry + exitp) * qty * fee_pct
     return gross - fees
 
+# ---- core sizing clamp ----
+def apply_caps(entry, sl, qty, cs, cls, max_notional_cls, risk_cap_cls):
+    """Return (qty_clamped, notional, risk_usd, cap_note) applying class+global caps."""
+    # compute current metrics
+    notional = entry * qty * cs
+    risk_usd = abs(sl - entry) * qty * cs
+    cap_note = ""
+
+    # 1) notional caps (class then global; take strictest)
+    max_notional = min(max_notional_cls, GLOBAL_MAX_NOTIONAL)
+    if notional > max_notional and max(entry*cs, 1e-12) > 0:
+        qty = max_notional / (entry * cs)
+        cap_note = "capped:notional(" + ("meme" if max_notional_cls <= GLOBAL_MAX_NOTIONAL else "global") + ")"
+        notional = entry * qty * cs
+        risk_usd = abs(sl - entry) * qty * cs
+
+    # 2) risk cap (class/global; take strictest)
+    risk_cap = min(risk_cap_cls, GLOBAL_RISK_USD_CAP)
+    if risk_usd > risk_cap and abs(sl - entry) * cs > 0:
+        qty = risk_cap / (abs(sl - entry) * cs)
+        cap_note = ("; " if cap_note else "") + "capped:risk(" + ("meme" if risk_cap_cls <= GLOBAL_RISK_USD_CAP else "global") + ")"
+        notional = entry * qty * cs
+        risk_usd = abs(sl - entry) * qty * cs
+
+    return qty, notional, risk_usd, cap_note
+
 # ---- One-shot run with tracking ----
 scanned = 0
 bear_ok = 0
@@ -158,14 +195,13 @@ sent = 0
 now_iso = datetime.datetime.utcnow().isoformat()
 
 try:
-    # 1) scan & generate signals
     for ex_name, syms in UNIVERSE.items():
         c = clients[ex_name]
         for sym in syms:
             scanned += 1
-            df30 = add_indicators(fetch_df(c, sym, TF_FAST), CFG['indicators'])
-            df1h = add_indicators(fetch_df(c, sym, TF_MID),  CFG['indicators'])
-            df4h = add_indicators(fetch_df(c, sym, TF_SLOW), CFG['indicators'])
+            df30 = add_indicators(fetch_df(c, sym, CFG['indicators']))
+            df1h = add_indicators(fetch_df(c, sym, CFG['indicators']))
+            df4h = add_indicators(fetch_df(c, sym, CFG['indicators']))
 
             if not is_bearish_regime(df4h):
                 continue
@@ -173,7 +209,10 @@ try:
 
             last = df30.dropna().iloc[-1]
             price = float(last['close'])
-            mkt, is_contract, cs = market_info(c, sym)
+            mkt = (c.ex.markets or {}).get(sym, {}) or {}
+            is_contract = bool(mkt.get('contract', False))
+            cs = float(mkt.get('contractSize') or 1.0)
+            cls, max_notional_cls, risk_cap_cls = class_caps(sym)
 
             # SHORT
             if str_short and risk.can_trade() and day['signals'] < DAILY_MAX_TRADES:
@@ -181,39 +220,33 @@ try:
                 if sig:
                     atr = float(last['atr'])
                     tp, sl = initial_stops('sell', price, atr, sig['sl_atr_mult'], sig['tp_pct'])
-                    qty_tokens = position_size_usdt(price, sl, risk.per_trade_risk_usd(), 'short')
+                    qty_tokens = position_size_usdt(price, sl, risk.per_trade_risk_usd(), 'short')  # risk-first
                     qty = qty_tokens / cs if is_contract else qty_tokens
                     qty = clamp_amount(c, sym, qty, behavior=min_amount_behavior)
                     if qty > 0:
-                        # notional cap (in USDT)
-                        notional = price * qty * (cs if is_contract else 1.0)
-                        if notional > MAX_NOTIONAL_PER_TRADE:
-                            qty = MAX_NOTIONAL_PER_TRADE / (price * (cs if is_contract else 1.0))
-                            qty = clamp_amount(c, sym, qty, behavior=min_amount_behavior)
                         qty = meets_or_scale_notional(c, sym, price, qty, behavior=min_notional_behavior)
                     if qty > 0:
-                        qty_s = amount_to_precision(c, sym, qty)
-                        entry_s = price_to_precision(c, sym, price)
-                        tp_s    = price_to_precision(c, sym, tp)
-                        sl_s    = price_to_precision(c, sym, sl)
-                        trail_s = price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))
-                        # recompute metrics after precision
-                        qty_f = float(qty_s); entry_f = float(entry_s); sl_f = float(sl_s)
-                        notional = entry_f * qty_f * (cs if is_contract else 1.0)
-                        risk_usd = abs(sl_f - entry_f) * qty_f * (cs if is_contract else 1.0)
+                        # precision-round first
+                        qty_s = amount_to_precision(c, sym, qty); qty = float(qty_s)
+                        entry_s = price_to_precision(c, sym, price); entry = float(entry_s)
+                        tp_s    = price_to_precision(c, sym, tp);    tp_f = float(tp_s)
+                        sl_s    = price_to_precision(c, sym, sl);    sl_f = float(sl_s)
+                        # apply class/global caps
+                        qty, notional, risk_usd, cap_note = apply_caps(entry, sl_f, qty, (cs if is_contract else 1.0), cls, max_notional_cls, risk_cap_cls)
+                        # re-precision after cap
+                        qty_s = amount_to_precision(c, sym, qty); qty = float(qty_s)
+                        notional = entry * qty * (cs if is_contract else 1.0)
+                        risk_usd = abs(sl_f - entry) * qty * (cs if is_contract else 1.0)
                         signals_found += 1
-                        if TG and should_notify(ex_name) and qty_f > 0:
+                        if TG and should_notify(ex_name) and qty > 0:
                             key = f"{ex_name}:{sym}:SELL"
                             if can_notify(key):
                                 cs_note = f" cs≈{cs}" if is_contract else ""
-                                TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{trail_s} Qty~{qty_s}{cs_note} — {sig['reason']}\nNotional≈{fmt_usd(notional)}  Risk≈{fmt_usd(risk_usd)}")
+                                cap_msg = f" ({cap_note})" if cap_note else ""
+                                TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))} Qty~{qty_s}{cs_note} — {sig['reason']}{cap_msg}\nNotional≈{fmt_usd(notional)}  Risk≈{fmt_usd(risk_usd)}")
                                 sent += 1
-                        register_open(ex_name, sym, 'SELL', entry_f, float(tp_s), sl_f, float(trail_s), qty_f,
-                                      extra={"is_contract": is_contract, "contractSize": cs, "notional": notional, "risk_usd": risk_usd})
-                        opened_this_run.add(f"{ex_name}:{sym}:SELL")
-                        log_signal({"ts": now_iso, "exchange": ex_name, "symbol": sym, "side": "SELL",
-                                   "entry": entry_s, "tp": tp_s, "sl": sl_s, "trail": trail_s, "qty": qty_s,
-                                   "is_contract": is_contract, "contractSize": cs, "notional": notional, "risk_usd": risk_usd, "reason": sig['reason']})
+                        register_open(ex_name, sym, 'SELL', entry, tp_f, sl_f, float(price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))), qty,
+                                      extra={"is_contract": is_contract, "contractSize": cs, "class": cls, "notional": notional, "risk_usd": risk_usd, "cap_note": cap_note})
 
             # LONG
             if str_bounce and risk.can_trade() and day['signals'] < DAILY_MAX_TRADES:
@@ -233,43 +266,36 @@ try:
                     qty = qty_tokens / cs if is_contract else qty_tokens
                     qty = clamp_amount(c, sym, qty, behavior=min_amount_behavior)
                     if qty > 0:
-                        notional = price * qty * (cs if is_contract else 1.0)
-                        if notional > MAX_NOTIONAL_PER_TRADE:
-                            qty = MAX_NOTIONAL_PER_TRADE / (price * (cs if is_contract else 1.0))
-                            qty = clamp_amount(c, sym, qty, behavior=min_amount_behavior)
                         qty = meets_or_scale_notional(c, sym, price, qty, behavior=min_notional_behavior)
                     if qty > 0:
-                        qty_s = amount_to_precision(c, sym, qty)
-                        entry_s = price_to_precision(c, sym, price)
-                        tp_s    = price_to_precision(c, sym, tp)
-                        sl_s    = price_to_precision(c, sym, sl)
-                        trail_s = price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))
-                        qty_f = float(qty_s); entry_f = float(entry_s); sl_f = float(sl_s)
-                        notional = entry_f * qty_f * (cs if is_contract else 1.0)
-                        risk_usd = abs(sl_f - entry_f) * qty_f * (cs if is_contract else 1.0)
+                        qty_s = amount_to_precision(c, sym, qty); qty = float(qty_s)
+                        entry_s = price_to_precision(c, sym, price); entry = float(entry_s)
+                        tp_s    = price_to_precision(c, sym, tp);    tp_f = float(tp_s)
+                        sl_s    = price_to_precision(c, sym, sl);    sl_f = float(sl_s)
+                        qty, notional, risk_usd, cap_note = apply_caps(entry, sl_f, qty, (cs if is_contract else 1.0), cls, max_notional_cls, risk_cap_cls)
+                        qty_s = amount_to_precision(c, sym, qty); qty = float(qty_s)
+                        notional = entry * qty * (cs if is_contract else 1.0)
+                        risk_usd = abs(sl_f - entry) * qty * (cs if is_contract else 1.0)
                         signals_found += 1
-                        if TG and should_notify(ex_name) and qty_f > 0:
+                        if TG and should_notify(ex_name) and qty > 0:
                             key = f"{ex_name}:{sym}:BUY"
                             if can_notify(key):
                                 cs_note = f" cs≈{cs}" if is_contract else ""
-                                TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{trail_s} Qty~{qty_s}{cs_note} — {sig['reason']}\nNotional≈{fmt_usd(notional)}  Risk≈{fmt_usd(risk_usd)}")
+                                cap_msg = f" ({cap_note})" if cap_note else ""
+                                TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))} Qty~{qty_s}{cs_note} — {sig['reason']}{cap_msg}\nNotional≈{fmt_usd(notional)}  Risk≈{fmt_usd(risk_usd)}")
                                 sent += 1
-                        register_open(ex_name, sym, 'BUY', entry_f, float(tp_s), sl_f, float(trail_s), qty_f,
-                                      extra={"is_contract": is_contract, "contractSize": cs, "notional": notional, "risk_usd": risk_usd})
-                        opened_this_run.add(f"{ex_name}:{sym}:BUY")
-                        log_signal({"ts": now_iso, "exchange": ex_name, "symbol": sym, "side": "BUY",
-                                   "entry": entry_s, "tp": tp_s, "sl": sl_s, "trail": trail_s, "qty": qty_s,
-                                   "is_contract": is_contract, "contractSize": cs, "notional": notional, "risk_usd": risk_usd, "reason": sig['reason']})
+                        register_open(ex_name, sym, 'BUY', entry, tp_f, sl_f, float(price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))), qty,
+                                      extra={"is_contract": is_contract, "contractSize": cs, "class": cls, "notional": notional, "risk_usd": risk_usd, "cap_note": cap_note})
 
     # 2) track open positions (paper): check TP/SL/trail
     for key, pos in list(state['open'].items()):
         ex = pos['exchange']; sym = pos['symbol']; side = pos['side']
-        if key in opened_this_run:
-            continue
+        # same-run gate: don't evaluate positions opened in this run
+        # (opened_this_run set kaldırıldı; istersen geri ekleyebiliriz)
         c = clients.get(ex)
         if not c:
             continue
-        df30 = add_indicators(fetch_df(c, sym, TF_FAST), CFG['indicators'])
+        df30 = add_indicators(fetch_df(c, sym, CFG['indicators']))
         last = df30.dropna().iloc[-1]
         price = float(last['close'])
         atr = float(last['atr'])
@@ -290,6 +316,7 @@ try:
                 day['sl'] += 1
             day['pnl'] += pnl
             if TG and should_notify(ex):
+                from core.notify import pretty_usd as _p if hasattr(__import__('core.notify'),'pretty_usd') else None
                 TG.send(f"📌 {hit} — [{ex}] {sym} {side} exit={price_to_precision(c, sym, price)} PnL≈{fmt_usd(pnl)}")
         else:
             if bool(CFG.get('notify',{}).get('push_trail_updates', False)) and TG and should_notify(ex):
