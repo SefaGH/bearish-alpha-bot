@@ -55,10 +55,13 @@ jobs:
       - name: Run (one-shot)
         run: |
           python -u src/main.py
-      - name: Upload signals artifact
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: signals
-          path: data/signals.csv
+          name: bot-data
+          path: |
+            data/signals.csv
+            data/state.json
+            data/day_stats.json
           if-no-files-found: ignore
