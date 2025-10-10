@@ -1,7 +1,7 @@
 ccxt==4.3.88
 pandas==2.2.2
 numpy==1.26.4
-pandas-ta==0.3.14b0
+pandas-ta @ git+https://github.com/twopirllc/pandas-ta.git@development
 python-dotenv==1.0.1
 pyyaml==6.0.2
 requests==2.32.3
