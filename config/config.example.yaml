@@ -1,54 +1,50 @@
-# ==========================
-# Bearish Alpha Bot Config
-# ==========================
-
+timeframes:
+  fast: 30m
+  mid: 1h
+  slow: 4h
+indicators:
+  ema_fast: 20
+  ema_mid: 50
+  ema_slow: 200
+  rsi: 14
+  atr: 14
+  adx: 14
 universe:
-  exchanges: ["bingx", "bitget", "kucoinfutures", "ascendex"]
   top_n_per_exchange: 8
   min_quote_volume_usdt: 10000000
+  allow_list: []
+  deny_list: []
   only_linear: true
-  prefer_usdt_pairs: true
-
-timeframes:
-  fast: "30m"
-  mid: "1h"
-  slow: "4h"
-
-indicators:
-  ema_periods: [20, 50, 200]
-  rsi_period: 14
-  atr_period: 14
-  adx_period: 14
-
 signals:
   short_the_rip:
-    enable: true
     rsi_min: 65
-    rsi_max: 85
-    adx_min: 18
     tp_pct: 0.025
-    sl_atr_mult: 1.5
-    lookback_bars: 8
-  oversold_bounce:
+    sl_atr_mult: 1.6
+    trail_atr_mult: 1.0
     enable: true
-    rsi_max: 30
-    adx_min: 14
+  oversold_bounce:
+    rsi_max: 22
     tp_pct: 0.02
     sl_pct: 0.012
-
-execution:
-  fee_pct: 0.001
-  max_slippage_pct: 0.001
-
+    trail_atr_mult: 1.0
+    enable: true
 risk:
-  per_trade_risk_pct: 1.0
-  daily_loss_limit_pct: 4.0
-  cool_down_min: 15
-
+  per_trade_risk_pct: 0.004
+  daily_loss_limit_pct: 0.02
+  max_concurrent_positions: 3
+  cool_down_min: 30
+portfolio:
+  low_risk_pct: 0.40
+  mid_risk_pct: 0.45
+  high_risk_pct: 0.15
+execution:
+  isolated_margin: true
+  max_slippage_pct: 0.0008
+  fee_pct: 0.0006
 notify:
   push_signals: true
   push_fills: true
   push_daily: true
   min_cooldown_sec: 300
-  push_no_signal: true     # 0 sinyalde Telegram’a bilgi mesajı yollar
-  push_debug: false        # true yaparsan debug özetini yollar
+  push_no_signal: true
+  push_debug: false
