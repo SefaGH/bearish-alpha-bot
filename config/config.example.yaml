@@ -10,29 +10,32 @@ indicators:
   atr: 14
   adx: 14
 universe:
-  top_n_per_exchange: 6
-  min_quote_volume_usdt: 15000000
+  top_n_per_exchange: 8
+  min_quote_volume_usdt: 10000000
   allow_list: []
   deny_list: []
   only_linear: true
 signals:
   short_the_rip:
-    rsi_min: 67-70
+    rsi_min: 65
     tp_pct: 0.025
     sl_atr_mult: 1.6
     trail_atr_mult: 1.0
     enable: true
   oversold_bounce:
-    rsi_max: 20-22
+    rsi_max: 22
     tp_pct: 0.02
     sl_pct: 0.012
     trail_atr_mult: 1.0
     enable: true
 risk:
-  per_trade_risk_pct: 0.002
+  equity_usd: 10000
+  per_trade_risk_pct: 0.004
   daily_loss_limit_pct: 0.02
   max_concurrent_positions: 3
   cool_down_min: 30
+  daily_max_trades: 20
+  max_notional_per_trade: 100000.0
 portfolio:
   low_risk_pct: 0.40
   mid_risk_pct: 0.45
@@ -49,4 +52,4 @@ notify:
   push_no_signal: true
   push_debug: false
   send_all: true
-  min_cooldown_sec: 600
+  push_trail_updates: false
