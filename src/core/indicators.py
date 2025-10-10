@@ -27,7 +27,6 @@ def _atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.S
     return atr
 
 def _adx(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.Series:
-    # Based on Welles Wilder's DMI/ADX with EMA smoothing
     up_move = high.diff()
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
@@ -43,7 +42,6 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.S
     atr = tr.ewm(alpha=1/length, adjust=False).mean()
     plus_di = 100 * (pd.Series(plus_dm, index=close.index).ewm(alpha=1/length, adjust=False).mean() / (atr + 1e-12))
     minus_di = 100 * (pd.Series(minus_dm, index=close.index).ewm(alpha=1/length, adjust=False).mean() / (atr + 1e-12))
-
     dx = 100 * ( (plus_di - minus_di).abs() / ((plus_di + minus_di) + 1e-12) )
     adx = dx.ewm(alpha=1/length, adjust=False).mean()
     return adx
