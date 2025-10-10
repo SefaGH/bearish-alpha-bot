@@ -1,1 +1,45 @@
-
+timeframes:
+  fast: 30m
+  mid: 1h
+  slow: 4h
+indicators:
+  ema_fast: 20
+  ema_mid: 50
+  ema_slow: 200
+  rsi: 14
+  atr: 14
+  adx: 14
+universe:
+  top_n_per_exchange: 20
+  min_quote_volume_usdt: 5000000
+  allow_list: []
+  deny_list: []
+  only_linear: true
+signals:
+  short_the_rip:
+    rsi_min: 60
+    tp_pct: 0.025
+    sl_atr_mult: 1.5
+    enable: true
+  oversold_bounce:
+    rsi_max: 25
+    tp_pct: 0.02
+    sl_pct: 0.012
+    enable: true
+risk:
+  per_trade_risk_pct: 0.004
+  daily_loss_limit_pct: 0.02
+  max_concurrent_positions: 3
+  cool_down_min: 30
+portfolio:
+  low_risk_pct: 0.40
+  mid_risk_pct: 0.45
+  high_risk_pct: 0.15
+execution:
+  isolated_margin: true
+  max_slippage_pct: 0.0008
+  fee_pct: 0.0006
+notify:
+  push_signals: true
+  push_fills: true
+  push_daily: true
