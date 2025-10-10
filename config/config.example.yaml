@@ -47,5 +47,6 @@ notify:
   push_daily: true
   min_cooldown_sec: 300
   push_no_signal: true
-  push_debug: false
+  push_debug: true
   send_all: true
+  min_cooldown_sec: 600
