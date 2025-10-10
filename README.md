@@ -1,9 +1,9 @@
-# Bearish-Alpha-Bot v0.2
+# Bearish-Alpha-Bot v0.3
 
-- One-shot run (cron */5) — no infinite loop
-- Only EXECUTION_EXCHANGE sends Telegram
-- Debounce/cooldown (default 300s) to prevent spam
-- Proper price formatting via ccxt
-- Robust universe builder (skips failing exchanges)
-- Tightened universe defaults (top_n=8, min_quote_volume=10M)
-- No pandas-ta dependency (pure pandas/numpy indicators)
+What's new:
+- **Trailing stop önerileri** (ATR tabanlı)
+- **Tick/Lot normalizasyonu** (ccxt precision & limits)
+- **CSV sinyal logu** (`data/signals.csv`) + Actions artifact
+- v0.2'deki one-shot, cooldown, robust universe aynen
+
+Konfig: `config/config.example.yaml` içinde `trail_atr_mult` ve `notify` anahtarlarını görebilirsin.
