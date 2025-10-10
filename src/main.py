@@ -21,7 +21,7 @@ TG = Telegram(os.getenv('TELEGRAM_BOT_TOKEN',''), os.getenv('TELEGRAM_CHAT_ID','
 
 clients = build_clients_from_env()
 if not clients:
-    raise SystemExit('EXCHANGES boş. .env dosyasını doldurun.')
+    raise SystemExit('EXCHANGES boş. .env/.secrets ayarla.')
 
 sym_source = os.getenv('SYM_SOURCE','AUTO').upper()
 if sym_source == 'AUTO':
@@ -31,8 +31,7 @@ else:
     UNIVERSE = { pick_execution_exchange(): manual }
 
 exec_ex = pick_execution_exchange()
-exec_client = clients[exec_ex]
-
+exec_client = clients.get(exec_ex) or next(iter(clients.values()))
 exec_eng = ExecEngine(MODE, exec_client, CFG['execution']['fee_pct'], CFG['execution']['max_slippage_pct'], TG)
 
 risk = RiskGuard(equity_usd=10_000, cfg=RiskConfig(
@@ -48,45 +47,77 @@ TF_FAST = CFG['timeframes']['fast']
 TF_MID  = CFG['timeframes']['mid']
 TF_SLOW = CFG['timeframes']['slow']
 
+SEND_EX = os.getenv('EXECUTION_EXCHANGE', exec_ex)
+MIN_COOLDOWN_SEC = int(CFG.get('notify',{}).get('min_cooldown_sec', 300))
+LAST_SENT = {}
+
+def can_notify(key: str) -> bool:
+    now = time.time()
+    last = LAST_SENT.get(key, 0)
+    if now - last >= MIN_COOLDOWN_SEC:
+        LAST_SENT[key] = now
+        return True
+    return False
+
+def fmt_price(client, symbol, price: float) -> str:
+    try:
+        return client.ex.price_to_precision(symbol, price)
+    except Exception:
+        return f"{price:.6f}"
+
 def fetch_df(client, symbol, tf):
     o = client.ohlcv(symbol, tf, limit=400)
     df = pd.DataFrame(o, columns=['ts','open','high','low','close','vol'])
     df['ts'] = pd.to_datetime(df['ts'], unit='ms')
     return df
 
-while True:
-    try:
-        for ex_name, syms in UNIVERSE.items():
-            c = clients[ex_name]
-            for sym in syms:
-                df30 = add_indicators(fetch_df(c, sym, TF_FAST), CFG['indicators'])
-                df1h = add_indicators(fetch_df(c, sym, TF_MID),  CFG['indicators'])
-                df4h = add_indicators(fetch_df(c, sym, TF_SLOW), CFG['indicators'])
+# ---- One-shot run ----
+try:
+    for ex_name, syms in UNIVERSE.items():
+        c = clients[ex_name]
+        for sym in syms:
+            df30 = add_indicators(fetch_df(c, sym, TF_FAST), CFG['indicators'])
+            df1h = add_indicators(fetch_df(c, sym, TF_MID),  CFG['indicators'])
+            df4h = add_indicators(fetch_df(c, sym, TF_SLOW), CFG['indicators'])
 
-                if not is_bearish_regime(df4h):
-                    continue
+            if not is_bearish_regime(df4h):
+                continue
 
-                if str_short and risk.can_trade():
-                    sig = str_short.signal(df30, df1h)
-                    if sig:
-                        entry = float(df30.dropna().iloc[-1]['close'])
-                        atr = float(df30.dropna().iloc[-1]['atr'])
-                        sl = entry + sig['sl_atr_mult']*atr
-                        tp = entry * (1 - sig['tp_pct'])
-                        qty = position_size_usdt(entry, sl, risk.per_trade_risk_usd(), 'short')
-                        if TG: TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry:.4f}\nTP~{tp:.4f} SL~{sl:.4f} — {sig['reason']}")
-                        # if ex_name == exec_ex: exec_eng.market_order(sym, 'sell', qty)
+            # SHORT THE RIP
+            if str_short and risk.can_trade():
+                sig = str_short.signal(df30, df1h)
+                if sig:
+                    entry = float(df30.dropna().iloc[-1]['close'])
+                    atr = float(df30.dropna().iloc[-1]['atr'])
+                    sl = entry + sig['sl_atr_mult']*atr
+                    tp = entry * (1 - sig['tp_pct'])
+                    qty = position_size_usdt(entry, sl, risk.per_trade_risk_usd(), 'short')
+                    if ex_name == SEND_EX:
+                        key = f"{ex_name}:{sym}:SELL"
+                        if TG and can_notify(key):
+                            entry_s = fmt_price(c, sym, entry)
+                            tp_s    = fmt_price(c, sym, tp)
+                            sl_s    = fmt_price(c, sym, sl)
+                            TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} — {sig['reason']}")
+                    # Live emir (manuel aç)
+                    # if ex_name == exec_ex: exec_eng.market_order(sym, 'sell', qty)
 
-                if str_bounce and risk.can_trade():
-                    sig = str_bounce.signal(df30)
-                    if sig:
-                        entry = float(df30.dropna().iloc[-1]['close'])
-                        sl = entry * (1 - sig['sl_pct'])
-                        tp = entry * (1 + sig['tp_pct'])
-                        qty = position_size_usdt(entry, sl, risk.per_trade_risk_usd(), 'long')
-                        if TG: TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry:.4f}\nTP~{tp:.4f} SL~{sl:.4f} — {sig['reason']}")
-                        # if ex_name == exec_ex: exec_eng.market_order(sym, 'buy', qty)
-        time.sleep(60)
-    except Exception as e:
-        if TG: TG.send(f"⚠️ Loop error: {e}")
-        time.sleep(10)
+            # OVERSOLD BOUNCE
+            if str_bounce and risk.can_trade():
+                sig = str_bounce.signal(df30)
+                if sig:
+                    entry = float(df30.dropna().iloc[-1]['close'])
+                    sl = entry * (1 - sig['sl_pct'])
+                    tp = entry * (1 + sig['tp_pct'])
+                    qty = position_size_usdt(entry, sl, risk.per_trade_risk_usd(), 'long')
+                    if ex_name == SEND_EX:
+                        key = f"{ex_name}:{sym}:BUY"
+                        if TG and can_notify(key):
+                            entry_s = fmt_price(c, sym, entry)
+                            tp_s    = fmt_price(c, sym, tp)
+                            sl_s    = fmt_price(c, sym, sl)
+                            TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} — {sig['reason']}")
+                    # Live emir (manuel aç)
+                    # if ex_name == exec_ex: exec_eng.market_order(sym, 'buy', qty)
+except Exception as e:
+    if TG: TG.send(f"⚠️ Run error: {e}")

@@ -19,7 +19,6 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
     only_linear = cfg['universe'].get('only_linear', True)
 
     for name, client in exchanges.items():
-        # Load markets with robust error handling (skip blocked exchanges e.g., 451)
         try:
             mkts = client.markets()
         except Exception as e:
@@ -33,7 +32,6 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
                     continue
                 candidates.append(sym)
 
-        # Try to fetch tickers for volume-based ranking; degrade gracefully on failure
         try:
             tks = client.tickers()
         except Exception as e:
@@ -46,7 +44,6 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
 
         ranked = sorted(candidates, key=qv, reverse=True)
 
-        # allow_list to the front if present in markets
         for a in allow:
             if a not in ranked and a in mkts:
                 ranked.insert(0, a)
