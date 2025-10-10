@@ -43,8 +43,8 @@ risk:
   risk_usd_cap: 1200               # $1200
 class_limits:
   meme:                            # (B) sınıf bazlı katman
-    max_notional_per_trade: 30000  # $30k
-    risk_usd_cap: 400              # $400
+    max_notional_per_trade: 20000  # $20k
+    risk_usd_cap: 300              # $300
 classes:
   meme_bases: [PEPE, WIF, FLOKI, SHIB, DOGE, BONK]   # opsiyonel liste; boşsa default set kullanılır  
 portfolio:
