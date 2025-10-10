@@ -30,21 +30,18 @@ else:
     manual = [s.strip() for s in os.getenv('SYMBOLS','BTC/USDT').split(',') if s.strip()]
     UNIVERSE = { pick_execution_exchange(): manual }
 
-# --- Normalize execution exchange & sending exchange ---
 exec_ex_env = os.getenv('EXECUTION_EXCHANGE', pick_execution_exchange())
-exec_ex = (exec_ex_env or '').strip().lower()
-if not exec_ex:
-    # pick any from clients
-    exec_ex = next(iter(clients.keys()))
+exec_ex = (exec_ex_env or '').strip().lower() or next(iter(clients.keys()))
 exec_client = clients.get(exec_ex) or next(iter(clients.values()))
 exec_eng = ExecEngine(MODE, exec_client, CFG['execution']['fee_pct'], CFG['execution']['max_slippage_pct'], TG)
 
-# Send only from this exchange (normalized)
 SEND_EX = exec_ex
-
-# Debug info
 print(f"[info] universe exchanges: {list(UNIVERSE.keys())}")
 print(f"[info] SEND_EX: {SEND_EX}")
+if SEND_EX not in UNIVERSE:
+    fallback = next(iter(UNIVERSE.keys()))
+    print(f"[warn] SEND_EX '{SEND_EX}' not in universe; falling back to '{fallback}' for notifications.")
+    SEND_EX = fallback  # type: ignore
 
 risk = RiskGuard(equity_usd=10_000, cfg=RiskConfig(
     per_trade_risk_pct=CFG['risk']['per_trade_risk_pct'],
@@ -60,6 +57,9 @@ TF_MID  = CFG['timeframes']['mid']
 TF_SLOW = CFG['timeframes']['slow']
 
 MIN_COOLDOWN_SEC = int(CFG.get('notify',{}).get('min_cooldown_sec', 300))
+PUSH_NO_SIGNAL = bool(CFG.get('notify',{}).get('push_no_signal', True))
+PUSH_DEBUG = bool(CFG.get('notify',{}).get('push_debug', False))
+
 LAST_SENT = {}
 
 def can_notify(key: str) -> bool:
@@ -82,28 +82,30 @@ def fetch_df(client, symbol, tf):
     df['ts'] = pd.to_datetime(df['ts'], unit='ms')
     return df
 
-# ---- One-shot run ----
-try:
-    if SEND_EX not in UNIVERSE:
-        # fallback: pick first exchange for notifications
-        fallback = next(iter(UNIVERSE.keys()))
-        print(f"[warn] SEND_EX '{SEND_EX}' not in universe; falling back to '{fallback}' for notifications.")
-        SEND_EX = fallback  # type: ignore
+# ---- One-shot run with summary ----
+scanned = 0
+bear_ok = 0
+signals_found = 0
+sent = 0
 
+try:
     for ex_name, syms in UNIVERSE.items():
         c = clients[ex_name]
         for sym in syms:
+            scanned += 1
             df30 = add_indicators(fetch_df(c, sym, TF_FAST), CFG['indicators'])
             df1h = add_indicators(fetch_df(c, sym, TF_MID),  CFG['indicators'])
             df4h = add_indicators(fetch_df(c, sym, TF_SLOW), CFG['indicators'])
 
             if not is_bearish_regime(df4h):
                 continue
+            bear_ok += 1
 
             # SHORT THE RIP
             if str_short and risk.can_trade():
                 sig = str_short.signal(df30, df1h)
                 if sig:
+                    signals_found += 1
                     entry = float(df30.dropna().iloc[-1]['close'])
                     atr = float(df30.dropna().iloc[-1]['atr'])
                     sl = entry + sig['sl_atr_mult']*atr
@@ -116,11 +118,13 @@ try:
                             tp_s    = fmt_price(c, sym, tp)
                             sl_s    = fmt_price(c, sym, sl)
                             TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} — {sig['reason']}")
+                            sent += 1
 
             # OVERSOLD BOUNCE
             if str_bounce and risk.can_trade():
                 sig = str_bounce.signal(df30)
                 if sig:
+                    signals_found += 1
                     entry = float(df30.dropna().iloc[-1]['close'])
                     sl = entry * (1 - sig['sl_pct'])
                     tp = entry * (1 + sig['tp_pct'])
@@ -132,6 +136,13 @@ try:
                             tp_s    = fmt_price(c, sym, tp)
                             sl_s    = fmt_price(c, sym, sl)
                             TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} — {sig['reason']}")
+                            sent += 1
 except Exception as e:
     if TG: TG.send(f"⚠️ Run error: {e}")
     print(f"[error] {e}")
+finally:
+    print(f"[summary] scanned={scanned} bearish_ok={bear_ok} signals_found={signals_found} sent={sent}")
+    if TG and PUSH_NO_SIGNAL and sent == 0:
+        TG.send(f"ℹ️ No signals this run. scanned={scanned} bearish_ok={bear_ok} signals_found={signals_found} sent={sent}")
+    if TG and PUSH_DEBUG:
+        TG.send(f"🧪 Debug: scanned={scanned} bearish_ok={bear_ok} signals_found={signals_found} sent={sent} SEND_EX={SEND_EX}")
