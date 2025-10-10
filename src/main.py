@@ -20,6 +20,10 @@ load_dotenv()
 with open('config/config.yaml','r') as f:
     CFG = yaml.safe_load(f)
 
+# --- v0.3.2a sizing & limits behavior flags ---
+min_amount_behavior = str(CFG['risk'].get('min_amount_behavior', 'skip')).lower()   # 'skip' or 'scale'
+min_notional_behavior = str(CFG['risk'].get('min_notional_behavior', 'skip')).lower()
+
 MODE = os.getenv('MODE','paper')
 TG = Telegram(os.getenv('TELEGRAM_BOT_TOKEN',''), os.getenv('TELEGRAM_CHAT_ID','')) if os.getenv('TELEGRAM_BOT_TOKEN') else None
 
@@ -156,10 +160,12 @@ try:
                     # risk sizing
                     qty_raw = position_size_usdt(price, sl, risk.per_trade_risk_usd(), 'short')
                     # clamp by amount limits
-                    qty = clamp_amount(c, sym, qty_raw)
-                    # notional & cap
-                    if not meets_notional(c, sym, price, qty): 
-                        pass  # skip send; too small
+                    qty = clamp_amount(c, sym, qty_raw, behavior=min_amount_behavior)
+            if qty <= 0: 
+                continue
+                    qty = meets_or_scale_notional(c, sym, price, qty, behavior=min_notional_behavior)
+            if qty <= 0: 
+                continue
                     elif price * qty > MAX_NOTIONAL_PER_TRADE:
                         qty = MAX_NOTIONAL_PER_TRADE / price
                         qty = clamp_amount(c, sym, qty)
