@@ -48,3 +48,4 @@ notify:
   min_cooldown_sec: 300
   push_no_signal: true
   push_debug: false
+  send_all: true
