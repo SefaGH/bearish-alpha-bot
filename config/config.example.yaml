@@ -36,6 +36,8 @@ risk:
   cool_down_min: 30
   daily_max_trades: 20
   max_notional_per_trade: 100000.0
+  min_amount_behavior: skip        # 'skip' önerilir; 'scale' istersen eski davranış
+  min_notional_behavior: skip      # 'skip' önerilir; 'scale' gerekirse notional'a uyarlar
 portfolio:
   low_risk_pct: 0.40
   mid_risk_pct: 0.45
