@@ -26,6 +26,13 @@ signals:
     tp_pct: 0.02
     sl_pct: 0.012
     enable: true
+    notify:
+  push_signals: true
+  push_fills: true
+  push_daily: true
+  min_cooldown_sec: 300
+  push_no_signal: true     # 0 sinyalde Telegram'a "No signals this run" mesajı atar
+  push_debug: false        # true yaparsan debug özetini de yollar
 risk:
   per_trade_risk_pct: 0.004
   daily_loss_limit_pct: 0.02
