@@ -48,10 +48,17 @@ jobs:
           EOF
       - name: Prepare config
         run: |
-          mkdir -p config
+          mkdir -p config data
           if [ ! -f config/config.yaml ]; then
             cp config/config.example.yaml config/config.yaml
           fi
       - name: Run (one-shot)
         run: |
           python -u src/main.py
+      - name: Upload signals artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signals
+          path: data/signals.csv
+          if-no-files-found: ignore
