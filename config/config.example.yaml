@@ -30,7 +30,7 @@ signals:
     enable: true
 risk:
   equity_usd: 10000
-  per_trade_risk_pct: 0.006
+  per_trade_risk_pct: 0.004
   daily_loss_limit_pct: 0.02
   max_concurrent_positions: 3
   cool_down_min: 30
@@ -39,6 +39,14 @@ risk:
   min_amount_behavior: skip        # 'skip' önerilir; 'scale' istersen eski davranış
   min_notional_behavior: skip      # 'skip' önerilir; 'scale' gerekirse notional'a uyarlar
   min_stop_pct: 0.003   # min %0.3 stop mesafesi; istersen 0.005-0.01
+  max_notional_per_trade: 100000   # 100k
+  risk_usd_cap: 1200               # $1200
+class_limits:
+  meme:                            # (B) sınıf bazlı katman
+    max_notional_per_trade: 30000  # $30k
+    risk_usd_cap: 400              # $400
+classes:
+  meme_bases: [PEPE, WIF, FLOKI, SHIB, DOGE, BONK]   # opsiyonel liste; boşsa default set kullanılır  
 portfolio:
   low_risk_pct: 0.40
   mid_risk_pct: 0.45
