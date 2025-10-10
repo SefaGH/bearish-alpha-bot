@@ -51,11 +51,12 @@ def should_notify(ex_name: str) -> bool:
 exec_client = clients.get(SEND_EX) or next(iter(clients.values()))
 exec_eng = ExecEngine(MODE, exec_client, CFG['execution']['fee_pct'], CFG['execution']['max_slippage_pct'], TG)
 
-# --- v0.3.2a sizing & limits behavior flags ---
+# --- sizing & limits behavior flags ---
 min_amount_behavior = str(CFG['risk'].get('min_amount_behavior', 'skip')).lower()   # 'skip' or 'scale'
 min_notional_behavior = str(CFG['risk'].get('min_notional_behavior', 'skip')).lower()
+print(f"[limits] min_amount_behavior={min_amount_behavior} min_notional_behavior={min_notional_behavior}")
 
-# --- v0.3.2b: minimal stop distance for longs; same-run gate ---
+# --- minimal stop distance for longs; same-run gate ---
 MIN_STOP_PCT = float(CFG['risk'].get('min_stop_pct', 0.003))  # 0.3% default
 opened_this_run = set()
 
@@ -109,13 +110,13 @@ def log_signal(row: dict):
 state = load_state()
 day = load_day_stats()
 
-def register_open(ex_name, sym, side, entry, tp, sl, trail, qty):
+def register_open(ex_name, sym, side, entry, tp, sl, trail, qty, extra=None):
     key = f"{ex_name}:{sym}:{side}"
     state['open'][key] = {
         'ts': datetime.datetime.utcnow().isoformat(),
         'exchange': ex_name, 'symbol': sym, 'side': side,
         'entry': entry, 'tp': tp, 'sl': sl, 'trail': trail, 'qty': qty,
-        'status': 'open'
+        'status': 'open', **(extra or {})
     }
     day['signals'] += 1
 
@@ -129,10 +130,15 @@ def evaluate_tp_sl(current_price, side, tp, sl):
     return None
 
 def paper_pnl(side, entry, exitp, qty, fee_pct):
-    # rough estimate: (entry-exit) * qty minus fees on both sides
     gross = (entry - exitp) * qty if side == 'SELL' else (exitp - entry) * qty
     fees = (entry + exitp) * qty * fee_pct
     return gross - fees
+
+def market_info(client, symbol):
+    m = (client.ex.markets or {}).get(symbol, {}) or {}
+    is_contract = bool(m.get('contract', False))
+    cs = float(m.get('contractSize') or 1.0)
+    return m, is_contract, cs
 
 # ---- One-shot run with tracking ----
 scanned = 0
@@ -157,6 +163,7 @@ try:
 
             last = df30.dropna().iloc[-1]
             price = float(last['close'])
+            mkt, is_contract, cs = market_info(c, sym)
 
             # SHORT
             if str_short and risk.can_trade() and day['signals'] < DAILY_MAX_TRADES:
@@ -164,78 +171,80 @@ try:
                 if sig:
                     atr = float(last['atr'])
                     tp, sl = initial_stops('sell', price, atr, sig['sl_atr_mult'], sig['tp_pct'])
-                    qty_raw = position_size_usdt(price, sl, risk.per_trade_risk_usd(), 'short')
-                    qty = clamp_amount(c, sym, qty_raw, behavior=min_amount_behavior)
-                    if qty <= 0:
-                        pass
-                    else:
-                        if price * qty > MAX_NOTIONAL_PER_TRADE:
-                            qty = MAX_NOTIONAL_PER_TRADE / price
+                    qty_tokens = position_size_usdt(price, sl, risk.per_trade_risk_usd(), 'short')
+                    qty = qty_tokens / cs if is_contract else qty_tokens
+                    qty = clamp_amount(c, sym, qty, behavior=min_amount_behavior)
+                    if qty > 0:
+                        if price * qty * (cs if is_contract else 1.0) > MAX_NOTIONAL_PER_TRADE:
+                            qty = MAX_NOTIONAL_PER_TRADE / (price * (cs if is_contract else 1.0))
                             qty = clamp_amount(c, sym, qty, behavior=min_amount_behavior)
                         qty = meets_or_scale_notional(c, sym, price, qty, behavior=min_notional_behavior)
-                        if qty > 0:
-                            qty_s = amount_to_precision(c, sym, qty)
-                            entry_s = price_to_precision(c, sym, price)
-                            tp_s    = price_to_precision(c, sym, tp)
-                            sl_s    = price_to_precision(c, sym, sl)
-                            trail_s = price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))
-                            signals_found += 1
-                            if TG and should_notify(ex_name) and float(qty_s) > 0:
-                                key = f"{ex_name}:{sym}:SELL"
-                                if can_notify(key):
-                                    TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{trail_s} Qty~{qty_s} — {sig['reason']}")
-                                    sent += 1
-                            register_open(ex_name, sym, 'SELL', float(entry_s), float(tp_s), float(sl_s), float(trail_s), float(qty_s))
-                            opened_this_run.add(f"{ex_name}:{sym}:SELL")
-                            log_signal({"ts": now_iso, "exchange": ex_name, "symbol": sym, "side": "SELL",
-                                       "entry": entry_s, "tp": tp_s, "sl": sl_s, "trail": trail_s, "qty": qty_s, "reason": sig['reason']})
+                    if qty > 0:
+                        qty_s = amount_to_precision(c, sym, qty)
+                        entry_s = price_to_precision(c, sym, price)
+                        tp_s    = price_to_precision(c, sym, tp)
+                        sl_s    = price_to_precision(c, sym, sl)
+                        trail_s = price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))
+                        signals_found += 1
+                        note = f""
+                        if TG and should_notify(ex_name) and float(qty_s) > 0:
+                            key = f"{ex_name}:{sym}:SELL"
+                            if can_notify(key):
+                                cs_note = f" cs≈{cs}" if is_contract else ""
+                                TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{trail_s} Qty~{qty_s}{cs_note} — {sig['reason']}")
+                                sent += 1
+                        register_open(ex_name, sym, 'SELL', float(entry_s), float(tp_s), float(sl_s), float(trail_s), float(qty_s),
+                                      extra={"is_contract": is_contract, "contractSize": cs})
+                        opened_this_run.add(f"{ex_name}:{sym}:SELL")
+                        log_signal({"ts": now_iso, "exchange": ex_name, "symbol": sym, "side": "SELL",
+                                   "entry": entry_s, "tp": tp_s, "sl": sl_s, "trail": trail_s, "qty": qty_s,
+                                   "is_contract": is_contract, "contractSize": cs, "reason": sig['reason']})
 
             # LONG
             if str_bounce and risk.can_trade() and day['signals'] < DAILY_MAX_TRADES:
                 sig = str_bounce.signal(df30)
                 if sig:
                     atr = float(last['atr'])
-                    # v0.3.2b: SL uses sl_pct when provided; otherwise ATR-based
                     sl_pct_cfg = CFG['signals']['oversold_bounce'].get('sl_pct', None)
                     if sl_pct_cfg is not None:
                         sl = price * (1 - float(sl_pct_cfg))
                     else:
                         sl = price - CFG['signals']['oversold_bounce'].get('sl_atr_mult', 1.0) * atr
                     tp = price * (1 + sig['tp_pct'])
-                    # enforce minimal stop distance to avoid SL ~ Entry
                     if (price - sl) / max(price, 1e-12) < MIN_STOP_PCT:
                         sig = None
                 if sig:
-                    qty_raw = position_size_usdt(price, sl, risk.per_trade_risk_usd(), 'long')
-                    qty = clamp_amount(c, sym, qty_raw, behavior=min_amount_behavior)
-                    if qty <= 0:
-                        pass
-                    else:
-                        if price * qty > MAX_NOTIONAL_PER_TRADE:
-                            qty = MAX_NOTIONAL_PER_TRADE / price
+                    qty_tokens = position_size_usdt(price, sl, risk.per_trade_risk_usd(), 'long')
+                    qty = qty_tokens / cs if is_contract else qty_tokens
+                    qty = clamp_amount(c, sym, qty, behavior=min_amount_behavior)
+                    if qty > 0:
+                        if price * qty * (cs if is_contract else 1.0) > MAX_NOTIONAL_PER_TRADE:
+                            qty = MAX_NOTIONAL_PER_TRADE / (price * (cs if is_contract else 1.0))
                             qty = clamp_amount(c, sym, qty, behavior=min_amount_behavior)
                         qty = meets_or_scale_notional(c, sym, price, qty, behavior=min_notional_behavior)
-                        if qty > 0:
-                            qty_s = amount_to_precision(c, sym, qty)
-                            entry_s = price_to_precision(c, sym, price)
-                            tp_s    = price_to_precision(c, sym, tp)
-                            sl_s    = price_to_precision(c, sym, sl)
-                            trail_s = price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))
-                            signals_found += 1
-                            if TG and should_notify(ex_name) and float(qty_s) > 0:
-                                key = f"{ex_name}:{sym}:BUY"
-                                if can_notify(key):
-                                    TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{trail_s} Qty~{qty_s} — {sig['reason']}")
-                                    sent += 1
-                            register_open(ex_name, sym, 'BUY', float(entry_s), float(tp_s), float(sl_s), float(trail_s), float(qty_s))
-                            opened_this_run.add(f"{ex_name}:{sym}:BUY")
-                            log_signal({"ts": now_iso, "exchange": ex_name, "symbol": sym, "side": "BUY",
-                                       "entry": entry_s, "tp": tp_s, "sl": sl_s, "trail": trail_s, "qty": qty_s, "reason": sig['reason']})
+                    if qty > 0:
+                        qty_s = amount_to_precision(c, sym, qty)
+                        entry_s = price_to_precision(c, sym, price)
+                        tp_s    = price_to_precision(c, sym, tp)
+                        sl_s    = price_to_precision(c, sym, sl)
+                        trail_s = price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))
+                        signals_found += 1
+                        if TG and should_notify(ex_name) and float(qty_s) > 0:
+                            key = f"{ex_name}:{sym}:BUY"
+                            if can_notify(key):
+                                cs_note = f" cs≈{cs}" if is_contract else ""
+                                TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{trail_s} Qty~{qty_s}{cs_note} — {sig['reason']}")
+                                sent += 1
+                        register_open(ex_name, sym, 'BUY', float(entry_s), float(tp_s), float(sl_s), float(trail_s), float(qty_s),
+                                      extra={"is_contract": is_contract, "contractSize": cs})
+                        opened_this_run.add(f"{ex_name}:{sym}:BUY")
+                        log_signal({"ts": now_iso, "exchange": ex_name, "symbol": sym, "side": "BUY",
+                                   "entry": entry_s, "tp": tp_s, "sl": sl_s, "trail": trail_s, "qty": qty_s,
+                                   "is_contract": is_contract, "contractSize": cs, "reason": sig['reason']})
 
     # 2) track open positions (paper): check TP/SL/trail
     for key, pos in list(state['open'].items()):
         ex = pos['exchange']; sym = pos['symbol']; side = pos['side']
-        # same-run gate: don't evaluate positions opened in this run
         if key in opened_this_run:
             continue
         c = clients.get(ex)
