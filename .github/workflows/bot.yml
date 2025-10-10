@@ -24,22 +24,42 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run bot
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
-          BINANCE_SECRET_KEY: ${{ secrets.BINANCE_SECRET_KEY }}
-          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
-          BITGET_SECRET_KEY: ${{ secrets.BITGET_SECRET_KEY }}
-          BITGET_PASSWORD: ${{ secrets.BITGET_PASSWORD }}
-          BINGX_API_KEY: ${{ secrets.BINGX_API_KEY }}
-          BINGX_SECRET_KEY: ${{ secrets.BINGX_SECRET_KEY }}
-          KUCOIN_API_KEY: ${{ secrets.KUCOIN_API_KEY }}
-          KUCOIN_SECRET_KEY: ${{ secrets.KUCOIN_SECRET_KEY }}
-          ASCENDEX_API_KEY: ${{ secrets.ASCENDEX_API_KEY }}
-          ASCENDEX_SECRET_KEY: ${{ secrets.ASCENDEX_SECRET_KEY }}
-        run: |
-          python -u src/main.py
+  env:
+    # Telegram (kodun beklediği adlar!)
+    TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+    TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    # Hangi borsalar aktif?
+    EXCHANGES:          ${{ secrets.EXCHANGES }} # örn: bingx,bitget,kucoinfutures
+
+    # BINGX
+    BINGX_API_KEY:      ${{ secrets.BINGX_API_KEY }}
+    BINGX_SECRET_KEY:   ${{ secrets.BINGX_SECRET_KEY }}
+
+    # BITGET (passphrase = PASSWORD)
+    BITGET_API_KEY:     ${{ secrets.BITGET_API_KEY }}
+    BITGET_SECRET_KEY:  ${{ secrets.BITGET_SECRET_KEY }}
+    BITGET_PASSWORD:    ${{ secrets.BITGET_PASSWORD }}
+
+    # KUCOIN FUTURES (passphrase = PASSWORD)
+    KUCOIN_API_KEY:     ${{ secrets.KUCOIN_API_KEY }}
+    KUCOIN_SECRET_KEY:  ${{ secrets.KUCOIN_SECRET_KEY }}
+    KUCOIN_PASSWORD:    ${{ secrets.KUCOIN_PASSWORD }}
+
+    # BINANCE (opsiyonel)
+    BINANCE_API_KEY:    ${{ secrets.BINANCE_API_KEY }}
+    BINANCE_SECRET_KEY: ${{ secrets.BINANCE_SECRET_KEY }}
+
+    # AscendEX'i şimdilik pas geçiyoruz (öneri)
+    # ASCENDEX_API_KEY:   ${{ secrets.ASCENDEX_API_KEY }}
+    # ASCENDEX_SECRET_KEY:${{ secrets.ASCENDEX_SECRET_KEY }}
+
+    # Diğer opsiyonel kontroller:
+    # SYM_SOURCE: AUTO   # AUTO/manuel; AUTO bırakalım
+    # EXECUTION_EXCHANGE: bitget  # istersen bildirimi tek borsaya zorlayabilirsin
+  run: |
+    python -u src/main.py
+
 
       # ✅ Güvenli “touch” kontrolü
       - name: Ensure signals.csv exists
