@@ -55,6 +55,10 @@ exec_eng = ExecEngine(MODE, exec_client, CFG['execution']['fee_pct'], CFG['execu
 min_amount_behavior = str(CFG['risk'].get('min_amount_behavior', 'skip')).lower()   # 'skip' or 'scale'
 min_notional_behavior = str(CFG['risk'].get('min_notional_behavior', 'skip')).lower()
 
+# --- v0.3.2b: minimal stop distance for longs; same-run gate ---
+MIN_STOP_PCT = float(CFG['risk'].get('min_stop_pct', 0.003))  # 0.3% default
+opened_this_run = set()
+
 risk_cfg = RiskConfig(
     per_trade_risk_pct=CFG['risk']['per_trade_risk_pct'],
     daily_loss_limit_pct=CFG['risk']['daily_loss_limit_pct'],
@@ -182,6 +186,7 @@ try:
                                     TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{trail_s} Qty~{qty_s} — {sig['reason']}")
                                     sent += 1
                             register_open(ex_name, sym, 'SELL', float(entry_s), float(tp_s), float(sl_s), float(trail_s), float(qty_s))
+                            opened_this_run.add(f"{ex_name}:{sym}:SELL")
                             log_signal({"ts": now_iso, "exchange": ex_name, "symbol": sym, "side": "SELL",
                                        "entry": entry_s, "tp": tp_s, "sl": sl_s, "trail": trail_s, "qty": qty_s, "reason": sig['reason']})
 
@@ -190,7 +195,17 @@ try:
                 sig = str_bounce.signal(df30)
                 if sig:
                     atr = float(last['atr'])
-                    tp, sl = initial_stops('buy', price, atr, CFG['signals']['oversold_bounce'].get('sl_atr_mult', 0.0), sig['tp_pct'])
+                    # v0.3.2b: SL uses sl_pct when provided; otherwise ATR-based
+                    sl_pct_cfg = CFG['signals']['oversold_bounce'].get('sl_pct', None)
+                    if sl_pct_cfg is not None:
+                        sl = price * (1 - float(sl_pct_cfg))
+                    else:
+                        sl = price - CFG['signals']['oversold_bounce'].get('sl_atr_mult', 1.0) * atr
+                    tp = price * (1 + sig['tp_pct'])
+                    # enforce minimal stop distance to avoid SL ~ Entry
+                    if (price - sl) / max(price, 1e-12) < MIN_STOP_PCT:
+                        sig = None
+                if sig:
                     qty_raw = position_size_usdt(price, sl, risk.per_trade_risk_usd(), 'long')
                     qty = clamp_amount(c, sym, qty_raw, behavior=min_amount_behavior)
                     if qty <= 0:
@@ -213,12 +228,16 @@ try:
                                     TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{trail_s} Qty~{qty_s} — {sig['reason']}")
                                     sent += 1
                             register_open(ex_name, sym, 'BUY', float(entry_s), float(tp_s), float(sl_s), float(trail_s), float(qty_s))
+                            opened_this_run.add(f"{ex_name}:{sym}:BUY")
                             log_signal({"ts": now_iso, "exchange": ex_name, "symbol": sym, "side": "BUY",
                                        "entry": entry_s, "tp": tp_s, "sl": sl_s, "trail": trail_s, "qty": qty_s, "reason": sig['reason']})
 
     # 2) track open positions (paper): check TP/SL/trail
     for key, pos in list(state['open'].items()):
         ex = pos['exchange']; sym = pos['symbol']; side = pos['side']
+        # same-run gate: don't evaluate positions opened in this run
+        if key in opened_this_run:
+            continue
         c = clients.get(ex)
         if not c:
             continue
