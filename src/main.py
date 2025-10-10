@@ -32,22 +32,22 @@ else:
     manual = [s.strip() for s in os.getenv('SYMBOLS','BTC/USDT').split(',') if s.strip()]
     UNIVERSE = { pick_execution_exchange(): manual }
 
-exec_ex_env = os.getenv('EXECUTION_EXCHANGE', pick_execution_exchange())
-exec_ex = (exec_ex_env or '').strip().lower() or next(iter(clients.keys()))
-exec_client = clients.get(exec_ex) or next(iter(clients.values()))
-exec_eng = ExecEngine(MODE, exec_client, CFG['execution']['fee_pct'], CFG['execution']['max_slippage_pct'], TG)
-
-# Determine notification routing
-send_all = bool(CFG.get('notify', {}).get('send_all', True))  # default True
+# ---- Notification routing (send_all or single exchange) ----
+send_all = bool(CFG.get('notify', {}).get('send_all', True))  # DEFAULT: True
 exec_ex_env = os.getenv('EXECUTION_EXCHANGE', pick_execution_exchange())
 exec_ex = (exec_ex_env or '').strip().lower() or next(iter(clients.keys()))
 SEND_EX = exec_ex
 if SEND_EX not in UNIVERSE and UNIVERSE:
+    # fallback to first universe exchange to avoid "sent=0" if names differ
     SEND_EX = next(iter(UNIVERSE.keys()))
 print(f"[notify] send_all={send_all} SEND_EX={SEND_EX}")
+print(f"[info] universe exchanges: {list(UNIVERSE.keys())}")
 
 def should_notify(ex_name: str) -> bool:
     return send_all or (ex_name == SEND_EX)
+
+exec_client = clients.get(SEND_EX) or next(iter(clients.values()))
+exec_eng = ExecEngine(MODE, exec_client, CFG['execution']['fee_pct'], CFG['execution']['max_slippage_pct'], TG)
 
 risk = RiskGuard(equity_usd=10_000, cfg=RiskConfig(
     per_trade_risk_pct=CFG['risk']['per_trade_risk_pct'],
@@ -86,6 +86,7 @@ def log_signal(row: dict):
     os.makedirs('data', exist_ok=True)
     path = 'data/signals.csv'
     file_exists = os.path.isfile(path)
+    import csv
     with open(path, 'a', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=row.keys())
         if not file_exists:
@@ -120,16 +121,15 @@ try:
                     entry = float(df30.dropna().iloc[-1]['close'])
                     atr = float(df30.dropna().iloc[-1]['atr'])
                     tp, sl = initial_stops('sell', entry, atr, sig['sl_atr_mult'], sig['tp_pct'])
-                    # Sizing (paper) with normalization
                     qty = position_size_usdt(entry, sl, risk.per_trade_risk_usd(), 'short')
                     qty_s = amount_to_precision(c, sym, qty)
                     entry_s = price_to_precision(c, sym, entry)
                     tp_s    = price_to_precision(c, sym, tp)
                     sl_s    = price_to_precision(c, sym, sl)
                     trail_s = price_to_precision(c, sym, trail_level('sell', entry, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))
-                    if ex_name == SEND_EX:
+                    if TG and should_notify(ex_name):
                         key = f"{ex_name}:{sym}:SELL"
-                        if TG and can_notify(key):
+                        if can_notify(key):
                             TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{trail_s} Qty~{qty_s} — {sig['reason']}")
                             sent += 1
                     log_signal({
@@ -151,9 +151,9 @@ try:
                     tp_s    = price_to_precision(c, sym, tp)
                     sl_s    = price_to_precision(c, sym, sl)
                     trail_s = price_to_precision(c, sym, trail_level('buy', entry, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))
-                    if ex_name == SEND_EX:
+                    if TG and should_notify(ex_name):
                         key = f"{ex_name}:{sym}:BUY"
-                        if TG and can_notify(key):
+                        if can_notify(key):
                             TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{trail_s} Qty~{qty_s} — {sig['reason']}")
                             sent += 1
                     log_signal({
@@ -166,7 +166,7 @@ except Exception as e:
     print(f"[error] {e}")
 finally:
     print(f"[summary] scanned={scanned} bearish_ok={bear_ok} signals_found={signals_found} sent={sent}")
-    if TG and bool(CFG.get('notify',{}).get('push_no_signal', True)) and sent == 0:
+    if TG and PUSH_NO_SIGNAL and sent == 0:
         TG.send(f"ℹ️ No signals this run. scanned={scanned} bearish_ok={bear_ok} signals_found={signals_found} sent={sent}")
-    if TG and bool(CFG.get('notify',{}).get('push_debug', False)):
-        TG.send(f"🧪 Debug: scanned={scanned} bearish_ok={bear_ok} signals_found={signals_found} sent={sent} SEND_EX={SEND_EX}")
+    if TG and PUSH_DEBUG:
+        TG.send(f"🧪 Debug: scanned={scanned} bearish_ok={bear_ok} signals_found={signals_found} sent={sent} SEND_EX={SEND_EX} send_all={send_all}")
