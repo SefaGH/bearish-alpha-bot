@@ -10,19 +10,19 @@ indicators:
   atr: 14
   adx: 14
 universe:
-  top_n_per_exchange: 20
-  min_quote_volume_usdt: 5000000
+  top_n_per_exchange: 8
+  min_quote_volume_usdt: 10000000
   allow_list: []
   deny_list: []
   only_linear: true
 signals:
   short_the_rip:
-    rsi_min: 60
+    rsi_min: 65
     tp_pct: 0.025
-    sl_atr_mult: 1.5
+    sl_atr_mult: 1.6
     enable: true
   oversold_bounce:
-    rsi_max: 25
+    rsi_max: 22
     tp_pct: 0.02
     sl_pct: 0.012
     enable: true
@@ -43,3 +43,4 @@ notify:
   push_signals: true
   push_fills: true
   push_daily: true
+  min_cooldown_sec: 300
