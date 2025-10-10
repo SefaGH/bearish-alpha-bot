@@ -61,8 +61,8 @@ MIN_STOP_PCT = float(CFG['risk'].get('min_stop_pct', 0.003))  # 0.3% default
 opened_this_run = set()
 
 # --- global risk caps ---
-GLOBAL_MAX_NOTIONAL = float(CFG['risk'].get('max_notional_per_trade', 100000.0))  # A) makul arttırıldı
-GLOBAL_RISK_USD_CAP = float(CFG['risk'].get('risk_usd_cap', 1200.0))              # yeni: işlem başına en çok risk
+GLOBAL_MAX_NOTIONAL = float(CFG['risk'].get('max_notional_per_trade', 100000.0))  # default 100k
+GLOBAL_RISK_USD_CAP = float(CFG['risk'].get('risk_usd_cap', 1200.0))              # default $1200
 
 # --- class-based caps (for memes etc.) ---
 CLASS_LIMITS = CFG.get('class_limits', {})
@@ -164,7 +164,6 @@ def paper_pnl(side, entry, exitp, qty, fee_pct):
 # ---- core sizing clamp ----
 def apply_caps(entry, sl, qty, cs, cls, max_notional_cls, risk_cap_cls):
     """Return (qty_clamped, notional, risk_usd, cap_note) applying class+global caps."""
-    # compute current metrics
     notional = entry * qty * cs
     risk_usd = abs(sl - entry) * qty * cs
     cap_note = ""
@@ -199,9 +198,9 @@ try:
         c = clients[ex_name]
         for sym in syms:
             scanned += 1
-            df30 = add_indicators(fetch_df(c, sym, CFG['indicators']))
-            df1h = add_indicators(fetch_df(c, sym, CFG['indicators']))
-            df4h = add_indicators(fetch_df(c, sym, CFG['indicators']))
+            df30 = add_indicators(fetch_df(c, sym, TF_FAST), CFG['indicators'])
+            df1h = add_indicators(fetch_df(c, sym, TF_MID),  CFG['indicators'])
+            df4h = add_indicators(fetch_df(c, sym, TF_SLOW), CFG['indicators'])
 
             if not is_bearish_regime(df4h):
                 continue
@@ -226,14 +225,11 @@ try:
                     if qty > 0:
                         qty = meets_or_scale_notional(c, sym, price, qty, behavior=min_notional_behavior)
                     if qty > 0:
-                        # precision-round first
                         qty_s = amount_to_precision(c, sym, qty); qty = float(qty_s)
                         entry_s = price_to_precision(c, sym, price); entry = float(entry_s)
                         tp_s    = price_to_precision(c, sym, tp);    tp_f = float(tp_s)
                         sl_s    = price_to_precision(c, sym, sl);    sl_f = float(sl_s)
-                        # apply class/global caps
                         qty, notional, risk_usd, cap_note = apply_caps(entry, sl_f, qty, (cs if is_contract else 1.0), cls, max_notional_cls, risk_cap_cls)
-                        # re-precision after cap
                         qty_s = amount_to_precision(c, sym, qty); qty = float(qty_s)
                         notional = entry * qty * (cs if is_contract else 1.0)
                         risk_usd = abs(sl_f - entry) * qty * (cs if is_contract else 1.0)
@@ -290,12 +286,10 @@ try:
     # 2) track open positions (paper): check TP/SL/trail
     for key, pos in list(state['open'].items()):
         ex = pos['exchange']; sym = pos['symbol']; side = pos['side']
-        # same-run gate: don't evaluate positions opened in this run
-        # (opened_this_run set kaldırıldı; istersen geri ekleyebiliriz)
         c = clients.get(ex)
         if not c:
             continue
-        df30 = add_indicators(fetch_df(c, sym, CFG['indicators']))
+        df30 = add_indicators(fetch_df(c, sym, TF_FAST), CFG['indicators'])
         last = df30.dropna().iloc[-1]
         price = float(last['close'])
         atr = float(last['atr'])
@@ -316,7 +310,6 @@ try:
                 day['sl'] += 1
             day['pnl'] += pnl
             if TG and should_notify(ex):
-                from core.notify import pretty_usd as _p if hasattr(__import__('core.notify'),'pretty_usd') else None
                 TG.send(f"📌 {hit} — [{ex}] {sym} {side} exit={price_to_precision(c, sym, price)} PnL≈{fmt_usd(pnl)}")
         else:
             if bool(CFG.get('notify',{}).get('push_trail_updates', False)) and TG and should_notify(ex):
