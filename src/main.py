@@ -1,4 +1,4 @@
-import os, yaml, pandas as pd, time
+import os, yaml, pandas as pd, time, csv, datetime
 from dotenv import load_dotenv
 from core.multi_exchange import build_clients_from_env
 from core.indicators import add_indicators
@@ -7,6 +7,8 @@ from core.risk import RiskGuard, RiskConfig
 from core.sizing import position_size_usdt
 from core.exec_engine import ExecEngine
 from core.notify import Telegram
+from core.normalize import price_to_precision, amount_to_precision
+from core.trailing import initial_stops, trail_level
 from strategies.short_the_rip import ShortTheRip
 from strategies.oversold_bounce import OversoldBounce
 from universe import build_universe, pick_execution_exchange
@@ -36,12 +38,9 @@ exec_client = clients.get(exec_ex) or next(iter(clients.values()))
 exec_eng = ExecEngine(MODE, exec_client, CFG['execution']['fee_pct'], CFG['execution']['max_slippage_pct'], TG)
 
 SEND_EX = exec_ex
-print(f"[info] universe exchanges: {list(UNIVERSE.keys())}")
-print(f"[info] SEND_EX: {SEND_EX}")
 if SEND_EX not in UNIVERSE:
     fallback = next(iter(UNIVERSE.keys()))
-    print(f"[warn] SEND_EX '{SEND_EX}' not in universe; falling back to '{fallback}' for notifications.")
-    SEND_EX = fallback  # type: ignore
+    SEND_EX = fallback
 
 risk = RiskGuard(equity_usd=10_000, cfg=RiskConfig(
     per_trade_risk_pct=CFG['risk']['per_trade_risk_pct'],
@@ -70,23 +69,28 @@ def can_notify(key: str) -> bool:
         return True
     return False
 
-def fmt_price(client, symbol, price: float) -> str:
-    try:
-        return client.ex.price_to_precision(symbol, price)
-    except Exception:
-        return f"{price:.6f}"
-
 def fetch_df(client, symbol, tf):
     o = client.ohlcv(symbol, tf, limit=400)
     df = pd.DataFrame(o, columns=['ts','open','high','low','close','vol'])
     df['ts'] = pd.to_datetime(df['ts'], unit='ms')
     return df
 
-# ---- One-shot run with summary ----
+def log_signal(row: dict):
+    os.makedirs('data', exist_ok=True)
+    path = 'data/signals.csv'
+    file_exists = os.path.isfile(path)
+    with open(path, 'a', newline='', encoding='utf-8') as f:
+        w = csv.DictWriter(f, fieldnames=row.keys())
+        if not file_exists:
+            w.writeheader()
+        w.writerow(row)
+
+# ---- One-shot run with trailing suggestions ----
 scanned = 0
 bear_ok = 0
 signals_found = 0
 sent = 0
+now_iso = datetime.datetime.utcnow().isoformat()
 
 try:
     for ex_name, syms in UNIVERSE.items():
@@ -108,17 +112,23 @@ try:
                     signals_found += 1
                     entry = float(df30.dropna().iloc[-1]['close'])
                     atr = float(df30.dropna().iloc[-1]['atr'])
-                    sl = entry + sig['sl_atr_mult']*atr
-                    tp = entry * (1 - sig['tp_pct'])
+                    tp, sl = initial_stops('sell', entry, atr, sig['sl_atr_mult'], sig['tp_pct'])
+                    # Sizing (paper) with normalization
                     qty = position_size_usdt(entry, sl, risk.per_trade_risk_usd(), 'short')
+                    qty_s = amount_to_precision(c, sym, qty)
+                    entry_s = price_to_precision(c, sym, entry)
+                    tp_s    = price_to_precision(c, sym, tp)
+                    sl_s    = price_to_precision(c, sym, sl)
+                    trail_s = price_to_precision(c, sym, trail_level('sell', entry, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))
                     if ex_name == SEND_EX:
                         key = f"{ex_name}:{sym}:SELL"
                         if TG and can_notify(key):
-                            entry_s = fmt_price(c, sym, entry)
-                            tp_s    = fmt_price(c, sym, tp)
-                            sl_s    = fmt_price(c, sym, sl)
-                            TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} — {sig['reason']}")
+                            TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{trail_s} Qty~{qty_s} — {sig['reason']}")
                             sent += 1
+                    log_signal({
+                        "ts": now_iso, "exchange": ex_name, "symbol": sym, "side": "SELL",
+                        "entry": entry_s, "tp": tp_s, "sl": sl_s, "trail": trail_s, "qty": qty_s, "reason": sig['reason']
+                    })
 
             # OVERSOLD BOUNCE
             if str_bounce and risk.can_trade():
@@ -126,23 +136,30 @@ try:
                 if sig:
                     signals_found += 1
                     entry = float(df30.dropna().iloc[-1]['close'])
-                    sl = entry * (1 - sig['sl_pct'])
-                    tp = entry * (1 + sig['tp_pct'])
+                    atr = float(df30.dropna().iloc[-1]['atr'])
+                    tp, sl = initial_stops('buy', entry, atr, CFG['signals']['oversold_bounce'].get('sl_atr_mult', 0.0), sig['tp_pct'])
                     qty = position_size_usdt(entry, sl, risk.per_trade_risk_usd(), 'long')
+                    qty_s = amount_to_precision(c, sym, qty)
+                    entry_s = price_to_precision(c, sym, entry)
+                    tp_s    = price_to_precision(c, sym, tp)
+                    sl_s    = price_to_precision(c, sym, sl)
+                    trail_s = price_to_precision(c, sym, trail_level('buy', entry, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))
                     if ex_name == SEND_EX:
                         key = f"{ex_name}:{sym}:BUY"
                         if TG and can_notify(key):
-                            entry_s = fmt_price(c, sym, entry)
-                            tp_s    = fmt_price(c, sym, tp)
-                            sl_s    = fmt_price(c, sym, sl)
-                            TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} — {sig['reason']}")
+                            TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} Trail~{trail_s} Qty~{qty_s} — {sig['reason']}")
                             sent += 1
+                    log_signal({
+                        "ts": now_iso, "exchange": ex_name, "symbol": sym, "side": "BUY",
+                        "entry": entry_s, "tp": tp_s, "sl": sl_s, "trail": trail_s, "qty": qty_s, "reason": sig['reason']
+                    })
+
 except Exception as e:
     if TG: TG.send(f"⚠️ Run error: {e}")
     print(f"[error] {e}")
 finally:
     print(f"[summary] scanned={scanned} bearish_ok={bear_ok} signals_found={signals_found} sent={sent}")
-    if TG and PUSH_NO_SIGNAL and sent == 0:
+    if TG and bool(CFG.get('notify',{}).get('push_no_signal', True)) and sent == 0:
         TG.send(f"ℹ️ No signals this run. scanned={scanned} bearish_ok={bear_ok} signals_found={signals_found} sent={sent}")
-    if TG and PUSH_DEBUG:
+    if TG and bool(CFG.get('notify',{}).get('push_debug', False)):
         TG.send(f"🧪 Debug: scanned={scanned} bearish_ok={bear_ok} signals_found={signals_found} sent={sent} SEND_EX={SEND_EX}")
