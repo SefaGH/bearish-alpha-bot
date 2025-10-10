@@ -37,10 +37,17 @@ exec_ex = (exec_ex_env or '').strip().lower() or next(iter(clients.keys()))
 exec_client = clients.get(exec_ex) or next(iter(clients.values()))
 exec_eng = ExecEngine(MODE, exec_client, CFG['execution']['fee_pct'], CFG['execution']['max_slippage_pct'], TG)
 
+# Determine notification routing
+send_all = bool(CFG.get('notify', {}).get('send_all', True))  # default True
+exec_ex_env = os.getenv('EXECUTION_EXCHANGE', pick_execution_exchange())
+exec_ex = (exec_ex_env or '').strip().lower() or next(iter(clients.keys()))
 SEND_EX = exec_ex
-if SEND_EX not in UNIVERSE:
-    fallback = next(iter(UNIVERSE.keys()))
-    SEND_EX = fallback
+if SEND_EX not in UNIVERSE and UNIVERSE:
+    SEND_EX = next(iter(UNIVERSE.keys()))
+print(f"[notify] send_all={send_all} SEND_EX={SEND_EX}")
+
+def should_notify(ex_name: str) -> bool:
+    return send_all or (ex_name == SEND_EX)
 
 risk = RiskGuard(equity_usd=10_000, cfg=RiskConfig(
     per_trade_risk_pct=CFG['risk']['per_trade_risk_pct'],
