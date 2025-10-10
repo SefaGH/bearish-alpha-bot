@@ -38,6 +38,7 @@ risk:
   max_notional_per_trade: 100000.0
   min_amount_behavior: skip        # 'skip' önerilir; 'scale' istersen eski davranış
   min_notional_behavior: skip      # 'skip' önerilir; 'scale' gerekirse notional'a uyarlar
+  min_stop_pct: 0.003   # min %0.3 stop mesafesi; istersen 0.005-0.01
 portfolio:
   low_risk_pct: 0.40
   mid_risk_pct: 0.45
