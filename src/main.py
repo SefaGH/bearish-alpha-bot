@@ -30,9 +30,21 @@ else:
     manual = [s.strip() for s in os.getenv('SYMBOLS','BTC/USDT').split(',') if s.strip()]
     UNIVERSE = { pick_execution_exchange(): manual }
 
-exec_ex = pick_execution_exchange()
+# --- Normalize execution exchange & sending exchange ---
+exec_ex_env = os.getenv('EXECUTION_EXCHANGE', pick_execution_exchange())
+exec_ex = (exec_ex_env or '').strip().lower()
+if not exec_ex:
+    # pick any from clients
+    exec_ex = next(iter(clients.keys()))
 exec_client = clients.get(exec_ex) or next(iter(clients.values()))
 exec_eng = ExecEngine(MODE, exec_client, CFG['execution']['fee_pct'], CFG['execution']['max_slippage_pct'], TG)
+
+# Send only from this exchange (normalized)
+SEND_EX = exec_ex
+
+# Debug info
+print(f"[info] universe exchanges: {list(UNIVERSE.keys())}")
+print(f"[info] SEND_EX: {SEND_EX}")
 
 risk = RiskGuard(equity_usd=10_000, cfg=RiskConfig(
     per_trade_risk_pct=CFG['risk']['per_trade_risk_pct'],
@@ -47,7 +59,6 @@ TF_FAST = CFG['timeframes']['fast']
 TF_MID  = CFG['timeframes']['mid']
 TF_SLOW = CFG['timeframes']['slow']
 
-SEND_EX = os.getenv('EXECUTION_EXCHANGE', exec_ex)
 MIN_COOLDOWN_SEC = int(CFG.get('notify',{}).get('min_cooldown_sec', 300))
 LAST_SENT = {}
 
@@ -73,6 +84,12 @@ def fetch_df(client, symbol, tf):
 
 # ---- One-shot run ----
 try:
+    if SEND_EX not in UNIVERSE:
+        # fallback: pick first exchange for notifications
+        fallback = next(iter(UNIVERSE.keys()))
+        print(f"[warn] SEND_EX '{SEND_EX}' not in universe; falling back to '{fallback}' for notifications.")
+        SEND_EX = fallback  # type: ignore
+
     for ex_name, syms in UNIVERSE.items():
         c = clients[ex_name]
         for sym in syms:
@@ -99,8 +116,6 @@ try:
                             tp_s    = fmt_price(c, sym, tp)
                             sl_s    = fmt_price(c, sym, sl)
                             TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} — {sig['reason']}")
-                    # Live emir (manuel aç)
-                    # if ex_name == exec_ex: exec_eng.market_order(sym, 'sell', qty)
 
             # OVERSOLD BOUNCE
             if str_bounce and risk.can_trade():
@@ -117,7 +132,6 @@ try:
                             tp_s    = fmt_price(c, sym, tp)
                             sl_s    = fmt_price(c, sym, sl)
                             TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry_s}\nTP~{tp_s} SL~{sl_s} — {sig['reason']}")
-                    # Live emir (manuel aç)
-                    # if ex_name == exec_ex: exec_eng.market_order(sym, 'buy', qty)
 except Exception as e:
     if TG: TG.send(f"⚠️ Run error: {e}")
+    print(f"[error] {e}")
