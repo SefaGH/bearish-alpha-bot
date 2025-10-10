@@ -1,7 +1,7 @@
 name: Bearish Alpha Bot
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
 jobs:
@@ -52,6 +52,6 @@ jobs:
           if [ ! -f config/config.yaml ]; then
             cp config/config.example.yaml config/config.yaml
           fi
-      - name: Run (paper/live)
+      - name: Run (one-shot)
         run: |
           python -u src/main.py
