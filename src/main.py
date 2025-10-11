@@ -1,4 +1,4 @@
-# main.py (routing to EXECUTION_EXCHANGE + per-run base dedup + oversold ignore_regime)
+# main.py (routing to EXECUTION_EXCHANGE + per-run base dedup + oversold ignore_regime + ENV COOL_DOWN_MIN)
 import os, yaml, pandas as pd, time, csv, datetime, math, traceback, json
 from datetime import datetime as dt, timedelta, timezone
 from dotenv import load_dotenv
@@ -13,9 +13,7 @@ from core.normalize import price_to_precision, amount_to_precision
 from core.trailing import initial_stops, trail_level
 from core.limits import clamp_amount, meets_or_scale_notional, clamp_price
 from core.state import load_state, save_state, load_day_stats, save_day_stats
-from core.asset_class import classify_symbol
-# ⬇️ base bazlı dedup için
-from core.asset_class import base_from_symbol
+from core.asset_class import classify_symbol, base_from_symbol
 from strategies.short_the_rip import ShortTheRip
 from strategies.oversold_bounce import OversoldBounce
 from universe import build_universe, pick_execution_exchange
@@ -167,12 +165,13 @@ exec_client = clients.get(SEND_EX) or next(iter(clients.values()))
 exec_eng = ExecEngine(MODE, exec_client, FEE_PCT, MAX_SLIPPAGE_PCT, TG)
 
 # -------- Risk / params --------
-min_amount_behavior = str(CFG['risk'].get('min_amount_behavior', 'skip')).lower()
-min_notional_behavior = str(CFG['risk'].get('min_notional_behavior', 'skip')).lower()
-MIN_STOP_PCT = float(CFG['risk'].get('min_stop_pct', 0.003))
+risk_cfg_raw = CFG.get('risk', {}) or {}
+min_amount_behavior = str(risk_cfg_raw.get('min_amount_behavior', 'skip')).lower()
+min_notional_behavior = str(risk_cfg_raw.get('min_notional_behavior', 'skip')).lower()
+MIN_STOP_PCT = float(risk_cfg_raw.get('min_stop_pct', 0.003))
 
-GLOBAL_MAX_NOTIONAL = float(CFG['risk'].get('max_notional_per_trade', 100000.0))
-GLOBAL_RISK_USD_CAP = float(CFG['risk'].get('risk_usd_cap', 1200.0))
+GLOBAL_MAX_NOTIONAL = float(risk_cfg_raw.get('max_notional_per_trade', 100000.0))
+GLOBAL_RISK_USD_CAP = float(risk_cfg_raw.get('risk_usd_cap', 1200.0))
 
 CLASS_LIMITS = CFG.get('class_limits', {})
 def class_caps(symbol: str):
@@ -180,12 +179,25 @@ def class_caps(symbol: str):
     lim = CLASS_LIMITS.get(cls, {})
     return cls, float(lim.get('max_notional_per_trade', GLOBAL_MAX_NOTIONAL)), float(lim.get('risk_usd_cap', GLOBAL_RISK_USD_CAP))
 
+# --- ENV first, then config, then default
+cool_down_min_env = os.getenv('COOL_DOWN_MIN')
+if cool_down_min_env is not None and str(cool_down_min_env).strip() != "":
+    try:
+        COOL_DOWN_MIN = int(str(cool_down_min_env).strip())
+    except Exception:
+        COOL_DOWN_MIN = int(risk_cfg_raw.get('cool_down_min', 0))
+else:
+    COOL_DOWN_MIN = int(risk_cfg_raw.get('cool_down_min', 0))
+
 risk_cfg = RiskConfig(
-    per_trade_risk_pct=CFG['risk']['per_trade_risk_pct'],
-    daily_loss_limit_pct=CFG['risk']['daily_loss_limit_pct'],
-    cool_down_min=CFG['risk']['cool_down_min']
+    per_trade_risk_pct=float(risk_cfg_raw.get('per_trade_risk_pct', 0.005)),
+    daily_loss_limit_pct=float(risk_cfg_raw.get('daily_loss_limit_pct', 0.02)),
+    cool_down_min=COOL_DOWN_MIN
 )
-risk = RiskGuard(equity_usd=CFG['risk'].get('equity_usd', 10_000), cfg=risk_cfg)
+equity_usd = float(risk_cfg_raw.get('equity_usd', 10_000))
+risk = RiskGuard(equity_usd=equity_usd, cfg=risk_cfg)
+if os.getenv('COOL_DOWN_MIN') is not None and TG:
+    TG.send(f"ℹ️ Using ENV COOL_DOWN_MIN={COOL_DOWN_MIN}")
 
 str_short = ShortTheRip(CFG['signals']['short_the_rip']) if CFG['signals']['short_the_rip']['enable'] else None
 str_bounce = OversoldBounce(CFG['signals']['oversold_bounce']) if CFG['signals']['oversold_bounce']['enable'] else None
@@ -197,7 +209,7 @@ TF_MID  = CFG['timeframes']['mid']
 MIN_COOLDOWN_SEC = int(CFG.get('notify',{}).get('min_cooldown_sec', 300))
 PUSH_NO_SIGNAL = bool(CFG.get('notify',{}).get('push_no_signal', True))
 PUSH_DEBUG = bool(CFG.get('notify',{}).get('push_debug', False))
-DAILY_MAX_TRADES = int(CFG['risk'].get('daily_max_trades', 20))
+DAILY_MAX_TRADES = int(risk_cfg_raw.get('daily_max_trades', 20))
 MIN_SLOW_CANDLES = int(CFG.get('regime',{}).get('min_slow_candles', 120))
 
 LAST_SENT = {}
@@ -316,7 +328,7 @@ scanned = 0
 bear_ok = 0
 signals_found = 0
 sent = 0
-# ⬇️ per-run base dedup
+# per-run base dedup
 DEDUP_BASES = set()
 
 try:
@@ -328,7 +340,6 @@ try:
 
                 # Fetch raw 4h first
                 raw4h = fetch_df(c, sym, TF_SLOW)
-                # (opsiyonel) BingX ping
                 if ex_name.lower() == "bingx":
                     print(f"[ping] bingx:{sym} fetched {len(raw4h)} bars @ {TF_SLOW}")
                     if TG and bool(CFG.get('notify',{}).get('push_debug', False)):
@@ -340,7 +351,7 @@ try:
                     raise ValueError(f"short 4h history ({len(raw4h)} < {MIN_SLOW_CANDLES})")
                 df4h = add_indicators(raw4h, CFG['indicators'])
 
-                # ✅ Rejim durumunu değişkende tut (SHORT buna bağlı, LONG opsiyonel)
+                # Rejim (SHORT bağlı, LONG opsiyonel)
                 bearish = is_bearish_regime(df4h)
                 if bearish:
                     bear_ok += 1
@@ -362,7 +373,7 @@ try:
                 if bearish and str_short and risk.can_trade() and day['signals'] < DAILY_MAX_TRADES:
                     sig = str_short.signal(df30, df30)
                     if sig:
-                        base = base_from_symbol(sym)   # dedup key
+                        base = base_from_symbol(sym)
                         if base in DEDUP_BASES:
                             if TG and bool(CFG.get('notify',{}).get('push_debug', False)):
                                 TG.send(f"🟡 Dedup (base): {base} on {ex_name}:{sym}")
@@ -383,11 +394,10 @@ try:
                                 qty, notional, risk_usd, cap_note = apply_caps(entry, sl_f, qty, (cs_eff if is_contract else 1.0), cls, max_notional_cls, risk_cap_cls)
                                 signals_found += 1
 
-                                # LIVE EXEC — her zaman EXECUTION_EXCHANGE'te
                                 trailp_val = float(price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0))))
                                 live_res = maybe_execute_live(exec_eng, sym, 'SELL', qty, entry, tp_f, sl_f, trailp_val)
                                 order_note = f"\nOrderID={live_res['order_id']}" if (live_res and live_res.get('order_id')) else ""
-                                DEDUP_BASES.add(base)  # tek emir
+                                DEDUP_BASES.add(base)
 
                                 if TG and should_notify(ex_name) and qty > 0 and can_notify(f"{ex_name}:{sym}:SELL"):
                                     trailp = price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))
@@ -405,7 +415,7 @@ try:
                 if allow_long and str_bounce and risk.can_trade() and day['signals'] < DAILY_MAX_TRADES:
                     sig = str_bounce.signal(df30)
                     if sig:
-                        base = base_from_symbol(sym)   # dedup key
+                        base = base_from_symbol(sym)
                         if base in DEDUP_BASES:
                             if TG and bool(CFG.get('notify',{}).get('push_debug', False)):
                                 TG.send(f"🟡 Dedup (base): {base} on {ex_name}:{sym}")
@@ -431,11 +441,10 @@ try:
                             qty, notional, risk_usd, cap_note = apply_caps(entry, sl_f, qty, (cs_eff if is_contract else 1.0), cls, max_notional_cls, risk_cap_cls)
                             signals_found += 1
 
-                            # LIVE EXEC — her zaman EXECUTION_EXCHANGE'te
                             trailp_val = float(price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0))))
                             live_res = maybe_execute_live(exec_eng, sym, 'BUY', qty, entry, tp_f, sl_f, trailp_val)
                             order_note = f"\nOrderID={live_res['order_id']}" if (live_res and live_res.get('order_id')) else ""
-                            DEDUP_BASES.add(base_from_symbol(sym))  # tek emir
+                            DEDUP_BASES.add(base_from_symbol(sym))
 
                             if TG and should_notify(ex_name) and qty > 0 and can_notify(f"{ex_name}:{sym}:BUY"):
                                 trailp = price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))
