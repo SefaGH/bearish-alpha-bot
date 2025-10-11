@@ -1,4 +1,4 @@
-# main.py (quarantine + BingX ping + robust guards + Notional/Risk in TG)
+# main.py (quarantine + BingX ping + robust guards + Notional/Risk in TG + LIVE orders)
 import os, yaml, pandas as pd, time, csv, datetime, math, traceback, json
 from datetime import datetime as dt, timedelta, timezone
 from dotenv import load_dotenv
@@ -290,6 +290,43 @@ def apply_caps(entry, sl, qty, cs, cls, max_notional_cls, risk_cap_cls):
         risk_usd = abs(sl - entry) * qty * cs
     return qty, notional, risk_usd, cap_note
 
+# ---------- LIVE EXECUTION HOOK ----------
+def maybe_execute_live(c, exec_eng, ex_name, symbol, side, qty, entry, tp_f, sl_f, trailp, is_contract, cs_eff):
+    """
+    Canlı modda ve enable_live True ise emir açar.
+    Önce ExecEngine varsa onu kullanır; yoksa ccxt üzerinden market order dener.
+    Başarılı olursa {'order_id': '...'} benzeri bir dict döndürür, aksi halde None.
+    """
+    try:
+        live_mode = (os.getenv('MODE','paper').lower() == 'live')
+        if not (live_mode and CFG.get('execution',{}).get('enable_live', False)):
+            return None  # Emniyet pimi
+
+        # Leverage (opsiyonel)
+        lev_cfg = (CFG.get('execution',{}).get('leverage') or {})
+        lev = (lev_cfg.get('overrides', {}) or {}).get(symbol, lev_cfg.get('default', None))
+        try:
+            if lev and hasattr(exec_eng, 'set_leverage'):
+                exec_eng.set_leverage(symbol, lev)
+        except Exception:
+            pass  # kaldıraç set edilemese de devam
+
+        # 1) ExecEngine yolu (tercih edilen)
+        if hasattr(exec_eng, 'open_market'):
+            return exec_eng.open_market(side, symbol, qty, sl_f, tp_f, trailp)
+
+        # 2) Doğrudan ccxt (fallback) — market order
+        order_side = 'buy' if side == 'BUY' else 'sell'
+        params = {}
+        od = c.ex.create_order(symbol, 'market', order_side, qty, None, params)
+        return {'order_id': od.get('id', None), 'raw': od}
+    except Exception as e:
+        print(f"[execute] {ex_name}:{symbol} live order failed -> {e}")
+        if TG:
+            TG.send(f"⚠️ Live order failed {ex_name}:{symbol} — {e}")
+        return None
+# -----------------------------------------
+
 scanned = 0
 bear_ok = 0
 signals_found = 0
@@ -352,15 +389,20 @@ try:
                             cls, max_notional_cls, risk_cap_cls = class_caps(sym)
                             qty, notional, risk_usd, cap_note = apply_caps(entry, sl_f, qty, (cs_eff if is_contract else 1.0), cls, max_notional_cls, risk_cap_cls)
                             signals_found += 1
+
+                            # LIVE EXEC
+                            live_res = maybe_execute_live(c, exec_eng, ex_name, sym, 'SELL', qty, entry, tp_f, sl_f, float(price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))), is_contract, cs_eff)
+                            order_note = f"\nOrderID={live_res['order_id']}" if (live_res and live_res.get('order_id')) else ""
+
                             if TG and should_notify(ex_name) and qty > 0 and can_notify(f"{ex_name}:{sym}:SELL"):
                                 trailp = price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))
-                                # >>> Notional & Risk added
                                 TG.send(
                                     f"🔴 [{ex_name}] SHORT {sym} @ {entry}\n"
                                     f"TP~{tp_f} SL~{sl_f} Trail~{trailp} Qty~{qty}\n"
-                                    f"Notional≈{fmt_usd(notional)}  Risk≈{fmt_usd(risk_usd)}"
+                                    f"Notional≈{fmt_usd(notional)}  Risk≈{fmt_usd(risk_usd)}{order_note}"
                                 )
                                 sent += 1
+
                             register_open(ex_name, sym, 'SELL', entry, tp_f, sl_f, float(price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))), qty)
 
                 # LONG
@@ -387,15 +429,20 @@ try:
                             cls, max_notional_cls, risk_cap_cls = class_caps(sym)
                             qty, notional, risk_usd, cap_note = apply_caps(entry, sl_f, qty, (cs_eff if is_contract else 1.0), cls, max_notional_cls, risk_cap_cls)
                             signals_found += 1
+
+                            # LIVE EXEC
+                            live_res = maybe_execute_live(c, exec_eng, ex_name, sym, 'BUY', qty, entry, tp_f, sl_f, float(price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))), is_contract, cs_eff)
+                            order_note = f"\nOrderID={live_res['order_id']}" if (live_res and live_res.get('order_id')) else ""
+
                             if TG and should_notify(ex_name) and qty > 0 and can_notify(f"{ex_name}:{sym}:BUY"):
                                 trailp = price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))
-                                # >>> Notional & Risk added
                                 TG.send(
                                     f"🟢 [{ex_name}] LONG {sym} @ {entry}\n"
                                     f"TP~{tp_f} SL~{sl_f} Trail~{trailp} Qty~{qty}\n"
-                                    f"Notional≈{fmt_usd(notional)}  Risk≈{fmt_usd(risk_usd)}"
+                                    f"Notional≈{fmt_usd(notional)}  Risk≈{fmt_usd(risk_usd)}{order_note}"
                                 )
                                 sent += 1
+
                             register_open(ex_name, sym, 'BUY', entry, tp_f, sl_f, float(price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))), qty)
 
             except Exception as se:
