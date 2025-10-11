@@ -44,7 +44,8 @@ if sym_source == 'AUTO':
     UNIVERSE = build_universe(clients, CFG)
 else:
     manual = [s.strip() for s in os.getenv('SYMBOLS','BTC/USDT').split(',') if s.strip()]
-    UNIVERSE = { pick_execution_exchange(): manual }    
+    UNIVERSE = { pick_execution_exchange(): manual }   
+    
 # --- Universe breakdown (debug) ---
 total_syms = sum(len(v) for v in UNIVERSE.values())
 print("[universe] breakdown:")
@@ -52,6 +53,11 @@ for ex, syms in UNIVERSE.items():
     sample = ", ".join(syms[:8]) + ("..." if len(syms) > 8 else "")
     print(f"  - {ex}: {len(syms)} symbols (e.g., {sample})")
 print(f"[universe] total symbols: {total_syms}")    
+
+# --- optional: Telegram'a da özet bas ---
+if TG:
+    msg = "[universe] " + " | ".join([f"{ex}:{len(syms)}" for ex, syms in UNIVERSE.items()])
+    TG.send(msg)
 
 
 # ---- Notification routing (send_all or single exchange) ----
