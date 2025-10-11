@@ -56,6 +56,13 @@ if SEND_EX not in UNIVERSE and UNIVERSE:
 print(f"[notify] send_all={send_all} SEND_EX={SEND_EX}")
 print(f"[info] universe exchanges: {list(UNIVERSE.keys())}")
 
+# UNIVERSE oluşturduktan sonra:
+total_syms = sum(len(v) for v in UNIVERSE.values())
+print("[universe] breakdown:")
+for ex, syms in UNIVERSE.items():
+    print(f"  - {ex}: {len(syms)} symbols (e.g., {', '.join(syms[:6])}{'...' if len(syms)>6 else ''})")
+print(f"[universe] total symbols: {total_syms}")
+
 def should_notify(ex_name: str) -> bool:
     return send_all or (ex_name == SEND_EX)
 
