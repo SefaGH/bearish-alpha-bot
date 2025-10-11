@@ -3,7 +3,7 @@ name: Bearish Alpha Bot
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *" # every hour
+    - cron: "0 * * * *"   # her saat başı
 
 jobs:
   run-bot:
@@ -23,45 +23,58 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # config.yaml yoksa example'dan kopyala
+      - name: Prepare config.yaml (fallback to example)
+        run: |
+          mkdir -p config
+          if [ ! -f config/config.yaml ]; then
+            if [ -f config/config.example.yaml ]; then
+              cp config/config.example.yaml config/config.yaml
+              echo "[prepare] Using config/config.example.yaml as config/config.yaml"
+            else
+              echo "::error::Neither config/config.yaml nor config/config.example.yaml found."
+              exit 1
+            fi
+          fi
+
       - name: Run bot
-  env:
-    # Telegram (kodun beklediği adlar!)
-    TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-    TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        env:
+          # Telegram (kodun beklediği adlar)
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
 
-    # Hangi borsalar aktif?
-    EXCHANGES:          ${{ secrets.EXCHANGES }} # örn: bingx,bitget,kucoinfutures
+          # Hangi borsalar aktif? (ör: bingx,bitget,kucoinfutures)
+          EXCHANGES:          ${{ secrets.EXCHANGES }}
 
-    # BINGX
-    BINGX_API_KEY:      ${{ secrets.BINGX_API_KEY }}
-    BINGX_SECRET_KEY:   ${{ secrets.BINGX_SECRET_KEY }}
+          # BINGX
+          BINGX_API_KEY:      ${{ secrets.BINGX_API_KEY }}
+          BINGX_SECRET_KEY:   ${{ secrets.BINGX_SECRET_KEY }}
 
-    # BITGET (passphrase = PASSWORD)
-    BITGET_API_KEY:     ${{ secrets.BITGET_API_KEY }}
-    BITGET_SECRET_KEY:  ${{ secrets.BITGET_SECRET_KEY }}
-    BITGET_PASSWORD:    ${{ secrets.BITGET_PASSWORD }}
+          # BITGET (Passphrase = PASSWORD)
+          BITGET_API_KEY:     ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET_KEY:  ${{ secrets.BITGET_SECRET_KEY }}
+          BITGET_PASSWORD:    ${{ secrets.BITGET_PASSWORD }}
 
-    # KUCOIN FUTURES (passphrase = PASSWORD)
-    KUCOIN_API_KEY:     ${{ secrets.KUCOIN_API_KEY }}
-    KUCOIN_SECRET_KEY:  ${{ secrets.KUCOIN_SECRET_KEY }}
-    KUCOIN_PASSWORD:    ${{ secrets.KUCOIN_PASSWORD }}
+          # KUCOIN FUTURES (Passphrase = PASSWORD)
+          KUCOIN_API_KEY:     ${{ secrets.KUCOIN_API_KEY }}
+          KUCOIN_SECRET_KEY:  ${{ secrets.KUCOIN_SECRET_KEY }}
+          KUCOIN_PASSWORD:    ${{ secrets.KUCOIN_PASSWORD }}
 
-    # BINANCE (opsiyonel)
-    BINANCE_API_KEY:    ${{ secrets.BINANCE_API_KEY }}
-    BINANCE_SECRET_KEY: ${{ secrets.BINANCE_SECRET_KEY }}
+          # (opsiyonel) BINANCE
+          BINANCE_API_KEY:    ${{ secrets.BINANCE_API_KEY }}
+          BINANCE_SECRET_KEY: ${{ secrets.BINANCE_SECRET_KEY }}
 
-    # AscendEX'i şimdilik pas geçiyoruz (öneri)
-    # ASCENDEX_API_KEY:   ${{ secrets.ASCENDEX_API_KEY }}
-    # ASCENDEX_SECRET_KEY:${{ secrets.ASCENDEX_SECRET_KEY }}
+          # (opsiyonel) AscendEX şimdilik kapalı
+          # ASCENDEX_API_KEY:   ${{ secrets.ASCENDEX_API_KEY }}
+          # ASCENDEX_SECRET_KEY:${{ secrets.ASCENDEX_SECRET_KEY }}
 
-    # Diğer opsiyonel kontroller:
-    # SYM_SOURCE: AUTO   # AUTO/manuel; AUTO bırakalım
-    # EXECUTION_EXCHANGE: bitget  # istersen bildirimi tek borsaya zorlayabilirsin
-  run: |
-    python -u src/main.py
+          # Semboller otomatik; istersen EXECUTION_EXCHANGE ile tek borsaya bildirim
+          # SYM_SOURCE: AUTO
+          # EXECUTION_EXCHANGE: bitget
+        run: |
+          python -u src/main.py
 
-
-      # ✅ Güvenli “touch” kontrolü
+      # signals.csv ilk koşuda yoksa upload adımı fail etmesin
       - name: Ensure signals.csv exists
         run: |
           mkdir -p data
