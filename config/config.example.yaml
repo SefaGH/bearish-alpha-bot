@@ -71,12 +71,12 @@ signals:
 #      Universe Config
 # =========================
 universe:
-  min_quote_volume_usdt: 2_000_000 # 5M -> 2M (likit ama daha geniş havuz)
-  max_symbols_per_exchange: 20     # 12 -> 20 (daha çok sembol taransın)
+  min_quote_volume_usdt: 1_000_000   # 2M -> 1M
+  max_symbols_per_exchange: 40       # 20 -> 40
   exclude_stables: true
-  prefer_perps: true
-  include: []                      # opsiyonel: ["BTC/USDT","ETH/USDT"]
-  exclude: []                      # opsiyonel
+  prefer_perps: false                # <<< spot+perps izin ver
+  include: []                        # opsiyonel: ["BTC/USDT","ETH/USDT"]
+  exclude: []                        # opsiyonel
   blacklist: [USDT/USDT, USDC/USDT, FDUSD/USDT]
   # İstersen öncelikli base'leri genişletebilirsin:
   # priority_bases: [BTC, ETH, XRP, SOL, ADA, BNB, LINK, AVAX, DOGE, SUI, NEAR, SEI, APT, ARB, OP]
