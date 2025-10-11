@@ -1,82 +1,56 @@
-# =========================
-# Bearish-Alpha-Bot Config
-# =========================
-
 timeframes:
-  fast: "30m"
-  mid: "1h"
-  slow: "4h"
-
+  fast: 30m
+  mid: 1h
+  slow: 4h
 indicators:
-  rsi:
-    length: 14
-  ema:
-    fast: 21
-    mid: 50
-    slow: 200
-  atr:
-    length: 14
-    ma: "ema"
-
-execution:
-  fee_pct: 0.0008
-  max_slippage_pct: 0.0015
-
-risk:
-  equity_usd: 10000
-  per_trade_risk_pct: 0.004
-  daily_loss_limit_pct: 0.05
-  cool_down_min: 15
-  daily_max_trades: 25          # 20 -> 25 (sinyal artışına uyum)
-  min_amount_behavior: "skip"
-  min_notional_behavior: "skip"
-  min_stop_pct: 0.003
-  max_notional_per_trade: 100000
-  risk_usd_cap: 1200
-
-class_limits:
-  meme:
-    max_notional_per_trade: 20000   # sınıf tavanı (meme)
-    risk_usd_cap: 300               # sınıf risk tavanı ($)
-
-classes:
-  meme_bases: [PEPE, WIF, FLOKI, SHIB, DOGE, BONK]
-
+  rsi_period: 14
+  atr_period: 14
+  ema_fast: 21
+  ema_mid: 50
+  ema_slow: 200
 notify:
   send_all: true
-  min_cooldown_sec: 180            # 300 -> 180 (spam koruması devam)
+  min_cooldown_sec: 180
   push_no_signal: true
   push_debug: true
   push_trail_updates: false
-
 signals:
   short_the_rip:
     enable: true
-    rsi_min: 61                    # 62 -> 61
+    rsi_min: 61
     sl_atr_mult: 1.2
-    tp_pct: 0.012                  # 1.0% -> 1.2%
-    trail_atr_mult: 0.9            # 1.0 -> 0.9 (bir tık sıkı trailing)
-    touch_mid_ema: true
-    confirm_mid_trend: true
-
- oversold_bounce:
-   enable: true
--  rsi_min: 25
-+  rsi_max: 25
-   sl_atr_mult: 1.0
-   tp_pct: 0.016
-
-
-# =========================
-#      Universe Config
-# =========================
+    tp_pct: 0.012
+    trail_atr_mult: 0.9
+  oversold_bounce:
+    enable: true
+    rsi_max: 25
+    sl_atr_mult: 1.0
+    tp_pct: 0.016
+risk:
+  per_trade_risk_pct: 0.01
+  daily_loss_limit_pct: 0.05
+  cool_down_min: 15
+  daily_max_trades: 25
+  min_amount_behavior: skip
+  min_notional_behavior: skip
+  min_stop_pct: 0.003
+  max_notional_per_trade: 100000
+  risk_usd_cap: 1200
+  equity_usd: 10000
+class_limits:
+  meme:
+    max_notional_per_trade: 20000
+    risk_usd_cap: 300
+classes:
+  meme_bases:
+  - PEPE
+  - WIF
+  - FLOKI
+  - SHIB
+  - DOGE
+  - BONK
 universe:
-  min_quote_volume_usdt: 0           # GEÇİCİ: hacim filtresini kapat
-  max_symbols_per_exchange: 80       # 40 -> 80 (daha çok taransın)
-  exclude_stables: true
-  prefer_perps: false                # <<< spot+perps izin ver
-  include: []                        # opsiyonel: ["BTC/USDT","ETH/USDT"]
-  exclude: []                        # opsiyonel
-  blacklist: [USDT/USDT, USDC/USDT, FDUSD/USDT]
-  # İstersen öncelikli base'leri genişletebilirsin:
-  # priority_bases: [BTC, ETH, XRP, SOL, ADA, BNB, LINK, AVAX, DOGE, SUI, NEAR, SEI, APT, ARB, OP]
+  min_quote_volume_usdt: 0
+  max_symbols_per_exchange: 80
+  prefer_perps: false
+  include_spot: true
