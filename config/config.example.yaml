@@ -23,6 +23,7 @@ signals:
     trail_atr_mult: 0.9
   oversold_bounce:
     enable: true
+    ignore_regime: true
     rsi_max: 25
     sl_atr_mult: 1.0
     tp_pct: 0.016
