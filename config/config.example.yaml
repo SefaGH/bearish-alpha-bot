@@ -39,16 +39,14 @@ risk:
   equity_usd: 50
 class_limits:
   meme:
-    max_notional_per_trade: 20000
-    risk_usd_cap: 300
-classes:
-  meme_bases:
-  - PEPE
-  - WIF
-  - FLOKI
-  - SHIB
-  - DOGE
-  - BONK
+    max_notional_per_trade: 10
+    risk_usd_cap: 0.5
+  microcap:
+    max_notional_per_trade: 15
+    risk_usd_cap: 0.75
+  bluechip:
+    max_notional_per_trade: 25
+    risk_usd_cap: 1.0
 universe:
   min_quote_volume_usdt: 3000000
   max_symbols_per_exchange: 80
