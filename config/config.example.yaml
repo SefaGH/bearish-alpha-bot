@@ -1,66 +1,110 @@
+# =========================
+# Bearish-Alpha-Bot Config
+# =========================
+
+# ---- Timeframes (multiple timeframe analysis)
 timeframes:
-  fast: 30m
-  mid: 1h
-  slow: 4h
+  fast: "30m"   # intraday momentum
+  mid:  "1h"    # trend/momentum confirm
+  slow: "4h"    # regime filter (bearish?)
+
+# ---- Indicators (add_indicators bunları kullanıyor)
 indicators:
-  ema_fast: 20
-  ema_mid: 50
-  ema_slow: 200
-  rsi: 14
-  atr: 14
-  adx: 14
-universe:
-  top_n_per_exchange: 8
-  min_quote_volume_usdt: 10000000
-  allow_list: []
-  deny_list: []
-  only_linear: true
-signals:
-  short_the_rip:
-    rsi_min: 65
-    tp_pct: 0.025
-    sl_atr_mult: 1.6
-    trail_atr_mult: 1.0
-    enable: true
-  oversold_bounce:
-    rsi_max: 22
-    tp_pct: 0.02
-    sl_pct: 0.012
-    trail_atr_mult: 1.0
-    enable: true
-risk:
-  equity_usd: 10000
-  per_trade_risk_pct: 0.004
-  daily_loss_limit_pct: 0.02
-  max_concurrent_positions: 3
-  cool_down_min: 30
-  daily_max_trades: 20
-  max_notional_per_trade: 100000.0
-  min_amount_behavior: skip        # 'skip' önerilir; 'scale' istersen eski davranış
-  min_notional_behavior: skip      # 'skip' önerilir; 'scale' gerekirse notional'a uyarlar
-  min_stop_pct: 0.003   # min %0.3 stop mesafesi; istersen 0.005-0.01
-  max_notional_per_trade: 100000   # 100k
-  risk_usd_cap: 1200               # $1200
-class_limits:
-  meme:                            # (B) sınıf bazlı katman
-    max_notional_per_trade: 20000  # $20k
-    risk_usd_cap: 300              # $300
-classes:
-  meme_bases: [PEPE, WIF, FLOKI, SHIB, DOGE, BONK]   # opsiyonel liste; boşsa default set kullanılır  
-portfolio:
-  low_risk_pct: 0.40
-  mid_risk_pct: 0.45
-  high_risk_pct: 0.15
+  rsi:
+    length: 14
+  ema:
+    fast: 21
+    mid:  50
+    slow: 200
+  atr:
+    length: 14
+    ma: "ema"    # "sma" da olabilir
+
+# ---- Execution (fees & slippage)
 execution:
-  isolated_margin: true
-  max_slippage_pct: 0.0008
-  fee_pct: 0.0006
+  fee_pct: 0.0008          # %0.08 takas/komisyon varsayımı
+  max_slippage_pct: 0.0015 # %0.15 slippage emniyeti
+
+# ---- Risk Management (global)
+risk:
+  equity_usd: 10000            # paper hesap özsermayesi varsayımı
+  per_trade_risk_pct: 0.004    # %0.4 risk-first sizing hedefi
+  daily_loss_limit_pct: 0.05   # günlük -%5 durdur
+  cool_down_min: 15            # ardışık kayıp/limit sonrası bekleme (dk)
+  daily_max_trades: 20
+
+  # Minimum market kısıtlarıyla karşılaşınca davranış:
+  #   - "skip": sinyali atla
+  #   - "scale": miktarı piyasanın minimumlarına indir
+  min_amount_behavior: "skip"
+  min_notional_behavior: "skip"
+
+  # Long’lar için minimum stop mesafesi (çok yakın SL’leri ele)
+  min_stop_pct: 0.003          # %0.3
+
+  # Global emniyet tavanları (A yaklaşımı: risk-first + güvenlik)
+  max_notional_per_trade: 100000    # işlem başı global notional üst sınır
+  risk_usd_cap: 1200                # işlem başı global risk $ üst sınır
+
+# ---- Class-based limits (B yaklaşımı: meme katmanı)
+class_limits:
+  meme:
+    max_notional_per_trade: 20000   # ✅ meme notional tavanı
+    risk_usd_cap: 300               # ✅ meme risk tavanı ($)
+
+# ---- Asset classes
+classes:
+  meme_bases: [PEPE, WIF, FLOKI, SHIB, DOGE, BONK]
+
+# ---- Notifications
 notify:
-  push_signals: true
-  push_fills: true
-  push_daily: true
-  min_cooldown_sec: 300
-  push_no_signal: true
-  push_debug: false
-  send_all: true
+  send_all: true           # tüm borsalardan gelen sinyalleri gönder
+  min_cooldown_sec: 300    # aynı sembol/side için tekrar mesaj aralığı
+  push_no_signal: true     # sinyal yok özetini gönder
+  push_debug: true         # koşu sonunda debug özetini de gönder
   push_trail_updates: false
+
+# ==========================================
+#         Strategy Configurations
+# ==========================================
+
+signals:
+  # -----------------------------
+  # 1) SHORT THE RIP (bearish pullback short)
+  # -----------------------------
+  short_the_rip:
+    enable: true
+    # RSI eşiği: 1h (veya 30m konfigüne göre stratejide) aşırı alım yakınları
+    # Eskiden "rsi_hot" demiştim; bizde doğru isim "rsi_min".
+    # Mantık: RSI >= rsi_min + EMA band dokunuşu → short denemesi.
+    rsi_min: 64            # 66–70 agresif; 64 sinyal frekansını ılımlı artırır
+
+    # Stop/TP/Trail
+    sl_atr_mult: 1.2       # SL = entry + atr*mult (short yönü için stratejide kullanılıyor)
+    tp_pct: 0.010          # ~%1 hedef
+    trail_atr_mult: 1.0
+
+    # (opsiyonel) filtreler — strateji sınıfında varsa kullanır:
+    touch_mid_ema: true    # 1h EMA band dokunuşu aransın
+    confirm_mid_trend: true
+
+  # -----------------------------
+  # 2) OVERSOLD BOUNCE (intraday long)
+  # -----------------------------
+  oversold_bounce:
+    enable: true
+
+    # RSI alt eşiği (oversold)
+    rsi_min: 27            # 25 çok seçici; 27–28 sinyal sayısını artırır
+
+    # Stop/TP/Trail
+    # - Sabit yüzdelik SL istiyorsan sl_pct aç; yoksa ATR tabanlı SL kullanılır.
+    # sl_pct: 0.008        # ~%0.8 sabit SL (istersen aktifleştir)
+    sl_atr_mult: 1.0       # ATR tabanlı SL
+    tp_pct: 0.015          # ~%1.5 hedef
+    trail_atr_mult: 1.0
+
+    # (opsiyonel) tekrar girişleri frenlemek istersen:
+    cooldown_min: 5
+
+# (not: universe otomatik; EXCHANGES ve API’ler GitHub Secrets üzerinden geliyor)
