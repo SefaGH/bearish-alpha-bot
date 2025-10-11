@@ -60,7 +60,8 @@ print(f"[info] universe exchanges: {list(UNIVERSE.keys())}")
 total_syms = sum(len(v) for v in UNIVERSE.values())
 print("[universe] breakdown:")
 for ex, syms in UNIVERSE.items():
-    print(f"  - {ex}: {len(syms)} symbols (e.g., {', '.join(syms[:6])}{'...' if len(syms)>6 else ''})")
+    sample = ", ".join(syms[:6]) + ("..." if len(syms) > 6 else "")
+    print(f"  - {ex}: {len(syms)} symbols (e.g., {sample})")
 print(f"[universe] total symbols: {total_syms}")
 
 def should_notify(ex_name: str) -> bool:
