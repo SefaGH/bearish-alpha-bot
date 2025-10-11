@@ -1,4 +1,4 @@
-import os, yaml, pandas as pd, time, csv, datetime, math
+import os, yaml, pandas as pd, time, csv, datetime, math, traceback
 from dotenv import load_dotenv
 from core.multi_exchange import build_clients_from_env
 from core.indicators import add_indicators
@@ -359,8 +359,10 @@ try:
             if bool(CFG.get('notify',{}).get('push_trail_updates', False)) and TG and should_notify(ex):
                 TG.send(f"↘️ Trail upd — [{ex}] {sym} {side} new_stop≈{pos['trail']}")
 except Exception as e:
-    if TG: TG.send(f"⚠️ Run error: {e}")
-    print(f"[error] {e}")
+    tb = traceback.format_exc()
+    if TG:
+        TG.send(f"⚠️ Run error: {e}\n{tb[-900:]}")  # traceback son 900 karakter
+    print(f"[error] {e}\n{tb}")
 finally:
     save_state(state)
     save_day_stats(day)
