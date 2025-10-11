@@ -104,7 +104,7 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
         candidates = []
         for sym, m in mkts.items():
             try:
-                if _is_linear_usdt(m, only_linear):
+                if _is_usdt_candidate(m, only_linear):
                     if sym in deny_set:
                         continue
                     if exclude_stables and _is_stable_base(sym):
