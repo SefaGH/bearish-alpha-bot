@@ -1,14 +1,13 @@
-name: Bearish Alpha Bot
+name: Run Bearish Bot
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"   # her saat başı
+    - cron: "*/30 * * * *"  # Her 30 dakikada bir
 
 jobs:
-  run-bot:
+  run:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -31,7 +30,7 @@ jobs:
             if [ -f config/config.example.yaml ]; then
               cp config/config.example.yaml config/config.yaml
               echo "[prepare] Using config/config.example.yaml as config/config.yaml"
-            else
+            else:
               echo "::error::Neither config/config.yaml nor config/config.example.yaml found."
               exit 1
             fi
@@ -39,52 +38,28 @@ jobs:
 
       - name: Run bot
         env:
-          # Telegram (kodun beklediği adlar)
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-
-          # Hangi borsalar aktif? (ör: bingx,bitget,kucoinfutures)
-          EXCHANGES:          ${{ secrets.EXCHANGES }}
-
-          # BINGX
-          BINGX_API_KEY:      ${{ secrets.BINGX_API_KEY }}
-          BINGX_SECRET_KEY:   ${{ secrets.BINGX_SECRET_KEY }}
-
-          # BITGET (Passphrase = PASSWORD)
-          BITGET_API_KEY:     ${{ secrets.BITGET_API_KEY }}
-          BITGET_SECRET_KEY:  ${{ secrets.BITGET_SECRET_KEY }}
-          BITGET_PASSWORD:    ${{ secrets.BITGET_PASSWORD }}
-
-          # KUCOIN FUTURES (Passphrase = PASSWORD)
-          KUCOIN_API_KEY:     ${{ secrets.KUCOIN_API_KEY }}
-          KUCOIN_SECRET_KEY:  ${{ secrets.KUCOIN_SECRET_KEY }}
-          KUCOIN_PASSWORD:    ${{ secrets.KUCOIN_PASSWORD }}
-
-          # (opsiyonel) BINANCE
-          BINANCE_API_KEY:    ${{ secrets.BINANCE_API_KEY }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          EXCHANGES: ${{ secrets.EXCHANGES }}
+          EXECUTION_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE }}
+          BINGX_API_KEY: ${{ secrets.BINGX_API_KEY }}
+          BINGX_SECRET_KEY: ${{ secrets.BINGX_SECRET_KEY }}
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET_KEY: ${{ secrets.BITGET_SECRET_KEY }}
+          BITGET_PASSWORD: ${{ secrets.BITGET_PASSWORD }}
+          KUCOIN_API_KEY: ${{ secrets.KUCOIN_API_KEY }}
+          KUCOIN_SECRET_KEY: ${{ secrets.KUCOIN_SECRET_KEY }}
+          KUCOIN_PASSWORD: ${{ secrets.KUCOIN_PASSWORD }}
+          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
           BINANCE_SECRET_KEY: ${{ secrets.BINANCE_SECRET_KEY }}
-
-          # (opsiyonel) AscendEX şimdilik kapalı
-          # ASCENDEX_API_KEY:   ${{ secrets.ASCENDEX_API_KEY }}
-          # ASCENDEX_SECRET_KEY:${{ secrets.ASCENDEX_SECRET_KEY }}
-
-          # Semboller otomatik; istersen EXECUTION_EXCHANGE ile tek borsaya bildirim
-          # SYM_SOURCE: AUTO
-          # EXECUTION_EXCHANGE: bitget
         run: |
           python -u src/main.py
 
-      # signals.csv ilk koşuda yoksa upload adımı fail etmesin
-      - name: Ensure signals.csv exists
-        run: |
-          mkdir -p data
-          [ -f data/signals.csv ] || echo "ts,exchange,symbol,side,entry,tp,sl,trail,qty,is_contract,contractSize,notional,risk_usd,reason" > data/signals.csv
-
-      - name: Upload bot artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: bot-data
           path: |
-            data/signals.csv
+            data/
             state.json
             day_stats.json
