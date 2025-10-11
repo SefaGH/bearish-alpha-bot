@@ -52,7 +52,7 @@ notify:
 signals:
   short_the_rip:
     enable: true
-    rsi_min: 62                    # 64 -> 62 (ılımlı gevşetme)
+    rsi_min: 61                    # 62 -> 61
     sl_atr_mult: 1.2
     tp_pct: 0.012                  # 1.0% -> 1.2%
     trail_atr_mult: 0.9            # 1.0 -> 0.9 (bir tık sıkı trailing)
@@ -61,7 +61,7 @@ signals:
 
   oversold_bounce:
     enable: true
-    rsi_min: 26                    # 27 -> 26 (bir tık daha fazla setup)
+    rsi_min: 25                    # 26 -> 25
     sl_atr_mult: 1.0               # sabit SL istersen sl_pct: 0.008 ekleyebilirsin
     tp_pct: 0.016                  # 1.5% -> 1.6%
     trail_atr_mult: 1.0
