@@ -57,7 +57,7 @@ universe:
 regime:
   min_slow_candles: 120
 execution:
-  enable_live: false         # 🔒 emniyet pimi: canlıya almadan önce false kalsın
+  enable_live: true         # 🔒 emniyet pimi: canlıya almadan önce false kalsın
   order_type: market         # market/limit (başlangıçta market önerilir)
   time_in_force: IOC         # IOC/FOK/GTX (limitte anlamlı)
   fee_pct: 0.0006
