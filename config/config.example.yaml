@@ -10,7 +10,7 @@ indicators:
   ema_slow: 200
 notify:
   send_all: true
-  min_cooldown_sec: 180
+  min_cooldown_sec: 300
   push_no_signal: true
   push_debug: false
   push_trail_updates: false
@@ -27,16 +27,16 @@ signals:
     sl_atr_mult: 1.0
     tp_pct: 0.016
 risk:
-  per_trade_risk_pct: 0.01
-  daily_loss_limit_pct: 0.05
+  per_trade_risk_pct: 0.005
+  daily_loss_limit_pct: 0.02
   cool_down_min: 15
   daily_max_trades: 25
   min_amount_behavior: skip
   min_notional_behavior: skip
   min_stop_pct: 0.003
-  max_notional_per_trade: 100000
-  risk_usd_cap: 1200
-  equity_usd: 10000
+  max_notional_per_trade: 20
+  risk_usd_cap: 1.0
+  equity_usd: 50
 class_limits:
   meme:
     max_notional_per_trade: 20000
@@ -50,7 +50,7 @@ classes:
   - DOGE
   - BONK
 universe:
-  min_quote_volume_usdt: 3000000.0
+  min_quote_volume_usdt: 3000000
   max_symbols_per_exchange: 80
   prefer_perps: false
   include_spot: true
@@ -63,7 +63,7 @@ execution:
   fee_pct: 0.0006
   max_slippage_pct: 0.001    # %0.1
   leverage:
-    default: 3               # sembol bazında override yapabilirsin
+    default: 5               # sembol bazında override yapabilirsin
     overrides: {}            # ör: { "BTC/USDT:USDT": 2, "PEPE/USDT:USDT": 5 }
 quarantine:
   enable: true
