@@ -45,7 +45,7 @@ if sym_source == 'AUTO':
 else:
     manual = [s.strip() for s in os.getenv('SYMBOLS','BTC/USDT').split(',') if s.strip()]
     UNIVERSE = { pick_execution_exchange(): manual }   
-    
+
 # --- Universe breakdown (debug) ---
 total_syms = sum(len(v) for v in UNIVERSE.values())
 print("[universe] breakdown:")
@@ -59,7 +59,6 @@ if TG:
     msg = "[universe] " + " | ".join([f"{ex}:{len(syms)}" for ex, syms in UNIVERSE.items()])
     TG.send(msg)
 
-
 # ---- Notification routing (send_all or single exchange) ----
 send_all = bool(CFG.get('notify', {}).get('send_all', True))  # DEFAULT: True
 exec_ex_env = os.getenv('EXECUTION_EXCHANGE', pick_execution_exchange())
@@ -69,14 +68,6 @@ if SEND_EX not in UNIVERSE and UNIVERSE:
     SEND_EX = next(iter(UNIVERSE.keys()))
 print(f"[notify] send_all={send_all} SEND_EX={SEND_EX}")
 print(f"[info] universe exchanges: {list(UNIVERSE.keys())}")
-
-# UNIVERSE oluşturduktan sonra:
-total_syms = sum(len(v) for v in UNIVERSE.values())
-print("[universe] breakdown:")
-for ex, syms in UNIVERSE.items():
-    sample = ", ".join(syms[:6]) + ("..." if len(syms) > 6 else "")
-    print(f"  - {ex}: {len(syms)} symbols (e.g., {sample})")
-print(f"[universe] total symbols: {total_syms}")
 
 def should_notify(ex_name: str) -> bool:
     return send_all or (ex_name == SEND_EX)
@@ -253,16 +244,19 @@ try:
     for ex_name, syms in UNIVERSE.items():
         c = clients[ex_name]
         for sym in syms:
+            # -- symbol-level isolation: one bad symbol shouldn't kill the whole run
             try:
                 scanned += 1
                 df30 = add_indicators(fetch_df(c, sym, TF_FAST), CFG['indicators'])
                 df1h = add_indicators(fetch_df(c, sym, TF_MID),  CFG['indicators'])
                 df4h = add_indicators(fetch_df(c, sym, TF_SLOW), CFG['indicators'])
 
+                # Regime filter
                 if not is_bearish_regime(df4h):
                     continue
                 bear_ok += 1
 
+                # Last snapshot (avoid chained assignment)
                 last = df30.dropna().iloc[-1]
                 price = float(last['close'])
 
@@ -319,6 +313,7 @@ try:
                         else:
                             sl = price - CFG['signals']['oversold_bounce'].get('sl_atr_mult', 1.0) * atr
                         tp = price * (1 + sig['tp_pct'])
+                        # reject too-tight stops
                         if (price - sl) / max(price, 1e-12) < MIN_STOP_PCT:
                             sig = None
                     if sig:
@@ -350,6 +345,7 @@ try:
                                           qty,
                                           extra={"is_contract": is_contract, "contractSize": cs_eff, "class": cls, "notional": notional, "risk_usd": risk_usd, "cap_note": cap_note})
             except Exception as se:
+                # per-symbol failure: log and continue scanning the rest
                 warn = f"[warn] {ex_name}:{sym} error -> {se}"
                 print(warn)
                 if TG:
