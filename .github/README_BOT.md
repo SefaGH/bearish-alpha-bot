@@ -45,7 +45,7 @@
 - **Koşullar** (örnek konfig):
   - 4h bearish rejimi teyit
   - 30m **RSI ≤ rsi_min** (örn. 25–27 arası)
-- **Çıkış**: `tp_pct`, `sl_atr_mult`, trailing opsiyonu, `cooldown_min`
+- **Çıkış**: `tp_pct`, `sl_atr_mult`, trailing opsiyonu, `cool_down_min`
 
 > Değerler **konfigden** gelir; küçük oynamalar ile sinyal frekansı ayarlanır.
 
@@ -96,7 +96,7 @@ universe:
 
 signals:
   short_the_rip: { enable: true, rsi_min: 61, sl_atr_mult: 1.2, tp_pct: 0.012, trail_atr_mult: 0.9, touch_mid_ema: true, confirm_mid_trend: true }
-  oversold_bounce: { enable: true, rsi_min: 25, sl_atr_mult: 1.0, tp_pct: 0.016, trail_atr_mult: 1.0, cooldown_min: 5 }
+  oversold_bounce: { enable: true, rsi_min: 25, sl_atr_mult: 1.0, tp_pct: 0.016, trail_atr_mult: 1.0, cool_down_min: 5 }
 
 risk:
   equity_usd: 10000
