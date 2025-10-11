@@ -1,4 +1,4 @@
-# main.py (quarantine + BingX ping + robust guards)
+# main.py (quarantine + BingX ping + robust guards + Notional/Risk in TG)
 import os, yaml, pandas as pd, time, csv, datetime, math, traceback, json
 from datetime import datetime as dt, timedelta, timezone
 from dotenv import load_dotenv
@@ -354,7 +354,12 @@ try:
                             signals_found += 1
                             if TG and should_notify(ex_name) and qty > 0 and can_notify(f"{ex_name}:{sym}:SELL"):
                                 trailp = price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))
-                                TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry}\nTP~{tp_f} SL~{sl_f} Trail~{trailp} Qty~{qty}")
+                                # >>> Notional & Risk added
+                                TG.send(
+                                    f"🔴 [{ex_name}] SHORT {sym} @ {entry}\n"
+                                    f"TP~{tp_f} SL~{sl_f} Trail~{trailp} Qty~{qty}\n"
+                                    f"Notional≈{fmt_usd(notional)}  Risk≈{fmt_usd(risk_usd)}"
+                                )
                                 sent += 1
                             register_open(ex_name, sym, 'SELL', entry, tp_f, sl_f, float(price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))), qty)
 
@@ -384,7 +389,12 @@ try:
                             signals_found += 1
                             if TG and should_notify(ex_name) and qty > 0 and can_notify(f"{ex_name}:{sym}:BUY"):
                                 trailp = price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))
-                                TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry}\nTP~{tp_f} SL~{sl_f} Trail~{trailp} Qty~{qty}")
+                                # >>> Notional & Risk added
+                                TG.send(
+                                    f"🟢 [{ex_name}] LONG {sym} @ {entry}\n"
+                                    f"TP~{tp_f} SL~{sl_f} Trail~{trailp} Qty~{qty}\n"
+                                    f"Notional≈{fmt_usd(notional)}  Risk≈{fmt_usd(risk_usd)}"
+                                )
                                 sent += 1
                             register_open(ex_name, sym, 'BUY', entry, tp_f, sl_f, float(price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))), qty)
 
