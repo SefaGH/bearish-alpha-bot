@@ -45,7 +45,7 @@ _No signals_ koşularında:
 bearish-alpha-bot/
  ├─ README.md                 # Bu dosya (özet & hızlı kurulum)
  ├─ .github/
- │   ├─ README_BOT.md         # Detaylı manifesto/dökümantasyon
+ │   ├─ README_BOT.md         # Detaylı manifesto/dokümantasyon
  │   └─ workflows/
  │        └─ bot.yml          # CI/CD (cron + manual run)
  ├─ src/                      # Kodlar (main, universe, indicators, notify...)
