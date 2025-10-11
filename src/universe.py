@@ -1,8 +1,6 @@
 import os
 from typing import Dict, List, Set
 
-# ----- helpers -----
-
 def _is_usdt_candidate(market: dict, only_linear: bool = True) -> bool:
     """
     only_linear=True  -> sadece USDT-quoted linear swap (perps)
@@ -10,53 +8,37 @@ def _is_usdt_candidate(market: dict, only_linear: bool = True) -> bool:
     """
     if not market.get('active', True):
         return False
-
     if market.get('quote') != 'USDT':
         return False
 
     is_swap = bool(market.get('swap', False))
-    # ccxt bazı borsalarda 'linear' anahtarını hiç koymuyor; koymadıysa True varsayıyoruz
-    is_linear = (market.get('linear') is not False)
     is_spot = not is_swap and bool(market.get('spot', not is_swap))
+    is_linear = (market.get('linear') is not False)  # yoksa True varsay
 
     if only_linear:
-        # Sadece linear swap (perps)
         return is_swap and is_linear
     else:
-        # Linear swap veya spot
         return (is_swap and is_linear) or is_spot
-
 
 def _synced_lists(u: dict) -> (Set[str], Set[str]):
     include = set(u.get('include', []) or []).union(set(u.get('allow_list', []) or []))
     deny = set(u.get('exclude', []) or []).union(set(u.get('deny_list', []) or [])).union(set(u.get('blacklist', []) or []))
     return include, deny
 
-
 def _is_stable_base(symbol: str) -> bool:
     base = (symbol.split('/')[0] if '/' in symbol else symbol).upper()
     return base in {'USDT', 'USDC', 'FDUSD', 'TUSD', 'DAI'}
 
-
-# ----- main -----
-
 def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[str]]:
-    """
-    Borsalardan USDT-quoted evreni kurar.
-    - prefer_perps/only_linear True ise: linear perps
-    - False ise: linear perps + USDT spot
-    """
     u = cfg.get('universe', {}) or {}
 
-    min_qv = u.get('min_quote_volume_usdt', u.get('min_quote_vol_usd', u.get('min_quote_volume', 0)))
+    # thresholds
     try:
-        min_qv = float(min_qv or 0)
+        min_qv = float(u.get('min_quote_volume_usdt', u.get('min_quote_vol_usd', u.get('min_quote_volume', 0))) or 0)
     except Exception:
         min_qv = 0.0
-
-    top_n = u.get('top_n_per_exchange', u.get('max_symbols_per_exchange', 20))
     try:
-        top_n = int(top_n or 20)
+        top_n = int(u.get('top_n_per_exchange', u.get('max_symbols_per_exchange', 20)) or 20)
     except Exception:
         top_n = 20
 
@@ -87,7 +69,7 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
             except Exception:
                 continue
 
-        # 3) tickers ile hacim sırası
+        # 3) tickers & hacim
         try:
             tks = client.tickers()
         except Exception as e:
@@ -96,11 +78,12 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
 
         def qv(sym: str) -> float:
             t = tks.get(sym) or {}
+            # bazı borsalarda quoteVolume yok → baseVolume fallback
             return float(t.get('quoteVolume', 0) or t.get('baseVolume', 0) or 0)
 
         ranked = sorted(candidates, key=qv, reverse=True)
 
-        # include/allow önceliklendir
+        # include önceliklendirme
         for a in allow_set:
             if a not in ranked and a in mkts:
                 ranked.insert(0, a)
@@ -116,13 +99,9 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
         per_ex[name] = ranked[:top_n]
 
     if not per_ex:
-        raise SystemExit(
-            "Universe is empty. Consider lowering min_quote_volume_usdt, increasing max_symbols_per_exchange, "
-            "or setting prefer_perps: false to include spot."
-        )
-
+        raise SystemExit("Universe is empty. Lower min_quote_volume_usdt, increase max_symbols_per_exchange, "
+                         "or set prefer_perps: false to include spot.")
     return per_ex
-
 
 def pick_execution_exchange() -> str:
     return os.getenv('EXECUTION_EXCHANGE', 'bingx')
