@@ -1,6 +1,6 @@
-# main.py (adds temporary "quarantine list" for immature symbols)
+# main.py (quarantine + BingX ping + robust guards)
 import os, yaml, pandas as pd, time, csv, datetime, math, traceback, json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime as dt, timedelta, timezone
 from dotenv import load_dotenv
 from core.multi_exchange import build_clients_from_env
 from core.indicators import add_indicators
@@ -19,6 +19,9 @@ from strategies.oversold_bounce import OversoldBounce
 from universe import build_universe, pick_execution_exchange
 
 load_dotenv()
+
+def _utcnow():
+    return dt.now(timezone.utc)
 
 # -------- Config load --------
 cfg_path = os.getenv('CONFIG_PATH', 'config/config.yaml')
@@ -59,20 +62,16 @@ QUAR_ENABLE = bool(QUAR_CFG.get('enable', True))
 QUAR_DAYS = int(QUAR_CFG.get('days', 7))
 QUAR_FILE = QUAR_CFG.get('file', 'data/quarantine.json')
 
-def _utcnow():
-    return datetime.now(timezone.utc)
-
 def load_quarantine(path=QUAR_FILE):
     try:
         with open(path, 'r', encoding='utf-8') as f:
             q = json.load(f)
-            # normalize keys to str and parse expiry
             out = {}
             for k, v in q.items():
                 try:
-                    exp = datetime.fromisoformat(v['expiry'])
+                    exp = dt.fromisoformat(v['expiry'])
                 except Exception:
-                    exp = _utcnow()  # expire immediately if bad
+                    exp = _utcnow()
                 out[str(k)] = {'added': v.get('added'), 'reason': v.get('reason',''), 'expiry': exp.isoformat()}
             return out
     except FileNotFoundError:
@@ -83,15 +82,17 @@ def load_quarantine(path=QUAR_FILE):
 
 def save_quarantine(q, path=QUAR_FILE):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    # ensure ISO strings
     dump = {}
     for k, v in q.items():
-        dump[k] = {
-            'added': v.get('added', _utcnow().isoformat()),
-            'reason': v.get('reason',''),
-            'expiry': (v['expiry'] if isinstance(v['expiry'], str) else datetime.fromisoformat(v['expiry']).isoformat())
-                      if 'expiry' in v else (_utcnow() + timedelta(days=QUAR_DAYS)).isoformat()
-        }
+        exp = v.get('expiry')
+        if not isinstance(exp, str):
+            try:
+                exp = dt.fromisoformat(str(exp)).isoformat()
+            except Exception:
+                exp = (_utcnow() + timedelta(days=QUAR_DAYS)).isoformat()
+        dump[k] = {'added': v.get('added', _utcnow().isoformat()),
+                   'reason': v.get('reason',''),
+                   'expiry': exp}
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(dump, f, ensure_ascii=False, indent=2)
 
@@ -100,11 +101,10 @@ def is_quarantined(qmap, ex_name, sym):
     rec = qmap.get(key)
     if not rec: return False
     try:
-        expiry = datetime.fromisoformat(rec['expiry'])
+        expiry = dt.fromisoformat(rec['expiry'])
     except Exception:
         return False
     if _utcnow() >= expiry:
-        # expired -> not quarantined
         return False
     return True
 
@@ -117,7 +117,7 @@ def cleanup_quarantine(qmap):
     removed = []
     for k, v in list(qmap.items()):
         try:
-            expiry = datetime.fromisoformat(v['expiry'])
+            expiry = dt.fromisoformat(v['expiry'])
         except Exception:
             del qmap[k]; removed.append(k); continue
         if _utcnow() >= expiry:
@@ -304,6 +304,12 @@ try:
 
                 # Fetch raw 4h first
                 raw4h = fetch_df(c, sym, TF_SLOW)
+                # 🔹 Mini ping: only for BingX — visible in logs (and Telegram if PUSH_DEBUG)
+                if ex_name.lower() == "bingx":
+                    print(f"[ping] bingx:{sym} fetched {len(raw4h)} bars @ {TF_SLOW}")
+                    if TG and bool(CFG.get('notify',{}).get('push_debug', False)):
+                        TG.send(f"📡 BingX ping — {sym}: fetched {len(raw4h)} bars @ {TF_SLOW}")
+
                 if len(raw4h) < MIN_SLOW_CANDLES:
                     if QUAR_ENABLE:
                         add_quarantine(QUAR, ex_name, sym, reason=f"short 4h history ({len(raw4h)} < {MIN_SLOW_CANDLES})")
@@ -327,7 +333,7 @@ try:
                 is_contract = bool(mkt.get('contract', mkt.get('swap', False)))
                 cs_eff = _safe_contract_size(mkt) or 1.0
 
-                # SHORT (use 30m for both if 1h optional)
+                # SHORT (strategy optional 1h)
                 if str_short and risk.can_trade() and day['signals'] < DAILY_MAX_TRADES:
                     sig = str_short.signal(df30, df30)
                     if sig:
@@ -389,17 +395,13 @@ try:
                     TG.send(f"🟡 Skip {ex_name}:{sym} — {se}")
                 continue
 
-    # Track open positions (paper): TP/SL/trailing (unchanged for brevity)
-
 except Exception as e:
     tb = traceback.format_exc()
     if TG:
         TG.send(f"⚠️ Run error: {e}\n{tb[-900:]}")
     print(f"[error] {e}\n{tb}")
 finally:
-    # persist state/day + quarantine
-    save_state(state)
-    save_day_stats(day)
+    save_state(state); save_day_stats(day)
     if QUAR_ENABLE:
         save_quarantine(QUAR)
         print(f"[quarantine] saved {len(QUAR)} entries to {QUAR_FILE}")
