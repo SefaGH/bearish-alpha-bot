@@ -3,27 +3,26 @@ from typing import Dict, List, Set
 
 # ----- helpers -----
 
-def _is_linear_usdt(market: dict, only_linear: bool = True) -> bool:
+def _is_usdt_candidate(market: dict, only_linear: bool = True) -> bool:
     """
-    Piyasanın USDT-quoted, aktif ve (only_linear=True ise) linear swap olup olmadığını kontrol eder.
-    Spot/Inverse/Inactive olanları eler.
+    only_linear=True  -> sadece USDT-quoted linear swap (perps)
+    only_linear=False -> USDT-quoted linear swap **veya** USDT-quoted spot
     """
     if not market.get('active', True):
         return False
-
-    # Sadece USDT quoted piyasalar
     if market.get('quote') != 'USDT':
         return False
 
-    # Swap olmayanları ele (spot ise swap=False olur)
-    if not market.get('swap', False):
-        return False
+    is_swap = bool(market.get('swap', False))
+    is_linear = (market.get('linear') is not False)  # yoksa True varsay
+    is_spot = not is_swap and bool(market.get('spot', not is_swap))
 
-    # Sadece linear istiyorsak inverse/perpetual inverse'leri ele
-    if only_linear and market.get('linear') is False:
-        return False
-
-    return True
+    if only_linear:
+        # Sadece linear swap
+        return is_swap and is_linear
+    else:
+        # Linear swap veya spot
+        return (is_swap and is_linear) or is_spot
 
 
 def _synced_lists(u: dict) -> (Set[str], Set[str]):
