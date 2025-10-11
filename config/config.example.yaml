@@ -1,47 +1,24 @@
-timeframes:
-  fast: 30m
-  mid: 1h
-  slow: 4h
-indicators:
-  rsi_period: 14
-  atr_period: 14
-  ema_fast: 21
-  ema_mid: 50
-  ema_slow: 200
-notify:
-  send_all: true
-  min_cooldown_sec: 300
-  push_no_signal: true
-  push_debug: false
-  push_trail_updates: false
-signals:
-  short_the_rip:
-    enable: true
-    rsi_min: 61
-    sl_atr_mult: 1.2
-    tp_pct: 0.012
-    trail_atr_mult: 0.9
-  oversold_bounce:
-    enable: true
-    ignore_regime: true
-    rsi_max: 25
-    sl_atr_mult: 1.0
-    tp_pct: 0.016
+execution:
+  enable_live: false
+  order_type: market
+  time_in_force: IOC
+  fee_pct: 0.0006
+  max_slippage_pct: 0.001
+  leverage:
+    default: 5
+    overrides: {}
+
 risk:
+  equity_usd: 50
   per_trade_risk_pct: 0.005
   daily_loss_limit_pct: 0.02
-  cool_down_min: 15
-  daily_max_trades: 25
+  risk_usd_cap: 1.0
+  max_notional_per_trade: 20
+  min_stop_pct: 0.003
   min_amount_behavior: skip
   min_notional_behavior: skip
-  min_stop_pct: 0.003
-  max_notional_per_trade: 20
-  risk_usd_cap: 1.0
-  equity_usd: 50
-classes:
-  meme_bases: ['PEPE', 'DOGE', 'TRUMP']
-  microcap_bases: ['SUI', 'ARB', 'WLD']
-  bluechip_bases: ['BTC', 'ETH', 'SOL']
+  daily_max_trades: 5
+
 class_limits:
   meme:
     max_notional_per_trade: 10
@@ -52,22 +29,42 @@ class_limits:
   bluechip:
     max_notional_per_trade: 25
     risk_usd_cap: 1.0
-universe:
-  min_quote_volume_usdt: 3000000
-  max_symbols_per_exchange: 80
-  prefer_perps: false
-  include_spot: true
+
+notify:
+  send_all: true
+  push_no_signal: true
+  push_debug: false
+  min_cooldown_sec: 300
+  push_trail_updates: false
+
 regime:
   min_slow_candles: 120
-execution:
-  enable_live: true         # 🔒 emniyet pimi: canlıya almadan önce false kalsın
-  order_type: market         # market/limit (başlangıçta market önerilir)
-  time_in_force: IOC         # IOC/FOK/GTX (limitte anlamlı)
-  fee_pct: 0.0006
-  max_slippage_pct: 0.001    # %0.1
-  leverage:
-    default: 5               # sembol bazında override yapabilirsin
-    overrides: {}            # ör: { "BTC/USDT:USDT": 2, "PEPE/USDT:USDT": 5 }
+
+universe:
+  min_quote_volume_usdt: 3000000
+  prefer_perps: false
+  max_symbols_per_exchange: 80
+
+indicators:
+  rsi_period: 14
+  atr_period: 14
+  ema_fast: 21
+  ema_mid: 50
+  ema_slow: 200
+
+signals:
+  oversold_bounce:
+    enable: true
+    ignore_regime: true        # ✅ LONG sinyali bearish rejime bağlı değil
+    rsi_max: 25
+    tp_pct: 0.016
+    sl_atr_mult: 1.0
+  short_the_rip:
+    enable: true
+    rsi_min: 61
+    tp_pct: 0.012
+    sl_atr_mult: 1.2
+
 quarantine:
   enable: true
   days: 7
