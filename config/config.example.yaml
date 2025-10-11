@@ -27,7 +27,7 @@ risk:
   per_trade_risk_pct: 0.004
   daily_loss_limit_pct: 0.05
   cool_down_min: 15
-  daily_max_trades: 20
+  daily_max_trades: 25          # 20 -> 25 (sinyal artışına uyum)
   min_amount_behavior: "skip"
   min_notional_behavior: "skip"
   min_stop_pct: 0.003
@@ -36,15 +36,15 @@ risk:
 
 class_limits:
   meme:
-    max_notional_per_trade: 20000
-    risk_usd_cap: 300
+    max_notional_per_trade: 20000   # sınıf tavanı (meme)
+    risk_usd_cap: 300               # sınıf risk tavanı ($)
 
 classes:
   meme_bases: [PEPE, WIF, FLOKI, SHIB, DOGE, BONK]
 
 notify:
   send_all: true
-  min_cooldown_sec: 300
+  min_cooldown_sec: 180            # 300 -> 180 (spam koruması devam)
   push_no_signal: true
   push_debug: true
   push_trail_updates: false
@@ -52,18 +52,18 @@ notify:
 signals:
   short_the_rip:
     enable: true
-    rsi_min: 64
+    rsi_min: 62                    # 64 -> 62 (ılımlı gevşetme)
     sl_atr_mult: 1.2
-    tp_pct: 0.010
-    trail_atr_mult: 1.0
+    tp_pct: 0.012                  # 1.0% -> 1.2%
+    trail_atr_mult: 0.9            # 1.0 -> 0.9 (bir tık sıkı trailing)
     touch_mid_ema: true
     confirm_mid_trend: true
 
   oversold_bounce:
     enable: true
-    rsi_min: 27
-    sl_atr_mult: 1.0
-    tp_pct: 0.015
+    rsi_min: 26                    # 27 -> 26 (bir tık daha fazla setup)
+    sl_atr_mult: 1.0               # sabit SL istersen sl_pct: 0.008 ekleyebilirsin
+    tp_pct: 0.016                  # 1.5% -> 1.6%
     trail_atr_mult: 1.0
     cooldown_min: 5
 
@@ -71,10 +71,12 @@ signals:
 #      Universe Config
 # =========================
 universe:
-  min_quote_volume_usdt: 5000000   # 24h USDT hacim filtresi
-  max_symbols_per_exchange: 12     # taranacak sembol sayısı
-  exclude_stables: true            # USDT/USDT, USDC/USDT vs. hariç
-  prefer_perps: true               # perpetual (linear) swap tercih et
-  include: []                      # dahil listesi (opsiyonel)
-  exclude: []                      # hariç listesi (opsiyonel)
+  min_quote_volume_usdt: 2_000_000 # 5M -> 2M (likit ama daha geniş havuz)
+  max_symbols_per_exchange: 20     # 12 -> 20 (daha çok sembol taransın)
+  exclude_stables: true
+  prefer_perps: true
+  include: []                      # opsiyonel: ["BTC/USDT","ETH/USDT"]
+  exclude: []                      # opsiyonel
   blacklist: [USDT/USDT, USDC/USDT, FDUSD/USDT]
+  # İstersen öncelikli base'leri genişletebilirsin:
+  # priority_bases: [BTC, ETH, XRP, SOL, ADA, BNB, LINK, AVAX, DOGE, SUI, NEAR, SEI, APT, ARB, OP]
