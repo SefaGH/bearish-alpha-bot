@@ -31,6 +31,12 @@ if not os.path.isfile(cfg_path):
 with open(cfg_path, 'r') as f:
     CFG = yaml.safe_load(f) or {}
 print(f"[config] Loaded: {cfg_path}")
+# ---- safe defaults for execution (avoid KeyError if 'execution' missing) ----
+_exec = CFG.get('execution') or {}
+FEE_PCT = float(_exec.get('fee_pct', 0.0006))            # default 6 bps
+MAX_SLIPPAGE_PCT = float(_exec.get('max_slippage_pct', 0.001))  # default 10 bps
+print(f"[exec] fee_pct={FEE_PCT} max_slippage_pct={MAX_SLIPPAGE_PCT}")
+
 
 MODE = os.getenv('MODE','paper')
 TG = Telegram(os.getenv('TELEGRAM_BOT_TOKEN',''), os.getenv('TELEGRAM_CHAT_ID','')) if os.getenv('TELEGRAM_BOT_TOKEN') else None
@@ -73,7 +79,7 @@ def should_notify(ex_name: str) -> bool:
     return send_all or (ex_name == SEND_EX)
 
 exec_client = clients.get(SEND_EX) or next(iter(clients.values()))
-exec_eng = ExecEngine(MODE, exec_client, CFG['execution']['fee_pct'], CFG['execution']['max_slippage_pct'], TG)
+exec_eng = ExecEngine(MODE, exec_client, FEE_PCT, MAX_SLIPPAGE_PCT, TG)
 
 # --- sizing & limits behavior flags ---
 min_amount_behavior = str(CFG['risk'].get('min_amount_behavior', 'skip')).lower()   # 'skip' or 'scale'
@@ -367,7 +373,7 @@ try:
         pos['trail'] = float(price_to_precision(c, sym, new_trail))
         hit = evaluate_tp_sl(price, side, pos['tp'], pos['sl'])
         if hit in ('TP','SL'):
-            pnl = paper_pnl(side, pos['entry'], price, pos['qty'], CFG['execution']['fee_pct'])
+            pnl = paper_pnl(side, pos['entry'], price, pos['qty'], FEE_PCT)
             pos['exit'] = price
             pos['pnl'] = pnl
             pos['status'] = hit
