@@ -37,6 +37,10 @@ risk:
   max_notional_per_trade: 20
   risk_usd_cap: 1.0
   equity_usd: 50
+classes:
+  meme_bases: ['PEPE', 'DOGE', 'TRUMP']
+  microcap_bases: ['SUI', 'ARB', 'WLD']
+  bluechip_bases: ['BTC', 'ETH', 'SOL']
 class_limits:
   meme:
     max_notional_per_trade: 10
