@@ -57,8 +57,14 @@ universe:
 regime:
   min_slow_candles: 120
 execution:
+  enable_live: false         # 🔒 emniyet pimi: canlıya almadan önce false kalsın
+  order_type: market         # market/limit (başlangıçta market önerilir)
+  time_in_force: IOC         # IOC/FOK/GTX (limitte anlamlı)
   fee_pct: 0.0006
-  max_slippage_pct: 0.001
+  max_slippage_pct: 0.001    # %0.1
+  leverage:
+    default: 3               # sembol bazında override yapabilirsin
+    overrides: {}            # ör: { "BTC/USDT:USDT": 2, "PEPE/USDT:USDT": 5 }
 quarantine:
   enable: true
   days: 7
