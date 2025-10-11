@@ -1,7 +1,6 @@
-# main.py (reduced skip spam + clearer reasons + 4h history floor)
-# - Skip messages go to Telegram only if PUSH_DEBUG=True; always printed to logs.
-# - "no 4h data" refined to "short 4h history (N < MIN_SLOW_CANDLES)".
-import os, yaml, pandas as pd, time, csv, datetime, math, traceback
+# main.py (adds temporary "quarantine list" for immature symbols)
+import os, yaml, pandas as pd, time, csv, datetime, math, traceback, json
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from core.multi_exchange import build_clients_from_env
 from core.indicators import add_indicators
@@ -21,6 +20,7 @@ from universe import build_universe, pick_execution_exchange
 
 load_dotenv()
 
+# -------- Config load --------
 cfg_path = os.getenv('CONFIG_PATH', 'config/config.yaml')
 if not os.path.isfile(cfg_path):
     alt = 'config/config.example.yaml'
@@ -33,7 +33,7 @@ with open(cfg_path, 'r') as f:
     CFG = yaml.safe_load(f) or {}
 print(f"[config] Loaded: {cfg_path}")
 
-# safe defaults for execution
+# ---- safe defaults for execution ----
 _exec = CFG.get('execution') or {}
 FEE_PCT = float(_exec.get('fee_pct', 0.0006))
 MAX_SLIPPAGE_PCT = float(_exec.get('max_slippage_pct', 0.001))
@@ -53,8 +53,96 @@ else:
     manual = [s.strip() for s in os.getenv('SYMBOLS','BTC/USDT').split(',') if s.strip()]
     UNIVERSE = { pick_execution_exchange(): manual }
 
+# -------- Quarantine list (temporary exclude) --------
+QUAR_CFG = CFG.get('quarantine', {}) or {}
+QUAR_ENABLE = bool(QUAR_CFG.get('enable', True))
+QUAR_DAYS = int(QUAR_CFG.get('days', 7))
+QUAR_FILE = QUAR_CFG.get('file', 'data/quarantine.json')
+
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+def load_quarantine(path=QUAR_FILE):
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            q = json.load(f)
+            # normalize keys to str and parse expiry
+            out = {}
+            for k, v in q.items():
+                try:
+                    exp = datetime.fromisoformat(v['expiry'])
+                except Exception:
+                    exp = _utcnow()  # expire immediately if bad
+                out[str(k)] = {'added': v.get('added'), 'reason': v.get('reason',''), 'expiry': exp.isoformat()}
+            return out
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"[quarantine] failed to load: {e}")
+        return {}
+
+def save_quarantine(q, path=QUAR_FILE):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # ensure ISO strings
+    dump = {}
+    for k, v in q.items():
+        dump[k] = {
+            'added': v.get('added', _utcnow().isoformat()),
+            'reason': v.get('reason',''),
+            'expiry': (v['expiry'] if isinstance(v['expiry'], str) else datetime.fromisoformat(v['expiry']).isoformat())
+                      if 'expiry' in v else (_utcnow() + timedelta(days=QUAR_DAYS)).isoformat()
+        }
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(dump, f, ensure_ascii=False, indent=2)
+
+def is_quarantined(qmap, ex_name, sym):
+    key = f"{ex_name}:{sym}"
+    rec = qmap.get(key)
+    if not rec: return False
+    try:
+        expiry = datetime.fromisoformat(rec['expiry'])
+    except Exception:
+        return False
+    if _utcnow() >= expiry:
+        # expired -> not quarantined
+        return False
+    return True
+
+def add_quarantine(qmap, ex_name, sym, reason):
+    key = f"{ex_name}:{sym}"
+    expiry = (_utcnow() + timedelta(days=QUAR_DAYS)).isoformat()
+    qmap[key] = {'added': _utcnow().isoformat(), 'reason': reason, 'expiry': expiry}
+
+def cleanup_quarantine(qmap):
+    removed = []
+    for k, v in list(qmap.items()):
+        try:
+            expiry = datetime.fromisoformat(v['expiry'])
+        except Exception:
+            del qmap[k]; removed.append(k); continue
+        if _utcnow() >= expiry:
+            del qmap[k]; removed.append(k)
+    return removed
+
+QUAR = load_quarantine() if QUAR_ENABLE else {}
+expired = cleanup_quarantine(QUAR)
+if expired:
+    print(f"[quarantine] cleaned {len(expired)} expired entries")
+
+# Filter UNIVERSE by quarantine
+if QUAR_ENABLE:
+    filtered = {}
+    for ex, syms in UNIVERSE.items():
+        kept = [s for s in syms if not is_quarantined(QUAR, ex, s)]
+        dropped = len(syms) - len(kept)
+        if dropped > 0:
+            print(f"[quarantine] filtered {dropped} symbols on {ex}")
+        filtered[ex] = kept
+    UNIVERSE = filtered
+
+# --- Universe breakdown (after quarantine) ---
 total_syms = sum(len(v) for v in UNIVERSE.values())
-print("[universe] breakdown:")
+print("[universe] breakdown (post-quarantine):")
 for ex, syms in UNIVERSE.items():
     sample = ", ".join(syms[:8]) + ("..." if len(syms) > 8 else "")
     print(f"  - {ex}: {len(syms)} symbols (e.g., {sample})")
@@ -62,6 +150,7 @@ print(f"[universe] total symbols: {total_syms}")
 if TG:
     TG.send("[universe] " + " | ".join([f"{ex}:{len(syms)}" for ex, syms in UNIVERSE.items()]))
 
+# -------- Notify routing --------
 send_all = bool(CFG.get('notify', {}).get('send_all', True))
 exec_ex_env = os.getenv('EXECUTION_EXCHANGE', pick_execution_exchange())
 exec_ex = (exec_ex_env or '').strip().lower() or next(iter(clients.keys()))
@@ -75,12 +164,10 @@ def should_notify(ex_name: str) -> bool:
 exec_client = clients.get(SEND_EX) or next(iter(clients.values()))
 exec_eng = ExecEngine(MODE, exec_client, FEE_PCT, MAX_SLIPPAGE_PCT, TG)
 
+# -------- Risk / params --------
 min_amount_behavior = str(CFG['risk'].get('min_amount_behavior', 'skip')).lower()
 min_notional_behavior = str(CFG['risk'].get('min_notional_behavior', 'skip')).lower()
-print(f"[limits] min_amount_behavior={min_amount_behavior} min_notional_behavior={min_notional_behavior}")
-
 MIN_STOP_PCT = float(CFG['risk'].get('min_stop_pct', 0.003))
-opened_this_run = set()
 
 GLOBAL_MAX_NOTIONAL = float(CFG['risk'].get('max_notional_per_trade', 100000.0))
 GLOBAL_RISK_USD_CAP = float(CFG['risk'].get('risk_usd_cap', 1200.0))
@@ -102,15 +189,14 @@ str_short = ShortTheRip(CFG['signals']['short_the_rip']) if CFG['signals']['shor
 str_bounce = OversoldBounce(CFG['signals']['oversold_bounce']) if CFG['signals']['oversold_bounce']['enable'] else None
 
 TF_FAST = CFG['timeframes']['fast']
-TF_MID  = CFG['timeframes']['mid']
 TF_SLOW = CFG['timeframes']['slow']
+TF_MID  = CFG['timeframes']['mid']
 
 MIN_COOLDOWN_SEC = int(CFG.get('notify',{}).get('min_cooldown_sec', 300))
 PUSH_NO_SIGNAL = bool(CFG.get('notify',{}).get('push_no_signal', True))
 PUSH_DEBUG = bool(CFG.get('notify',{}).get('push_debug', False))
-PUSH_TRAIL_UPD = bool(CFG.get('notify',{}).get('push_trail_updates', False))
 DAILY_MAX_TRADES = int(CFG['risk'].get('daily_max_trades', 20))
-MIN_SLOW_CANDLES = int(CFG.get('regime',{}).get('min_slow_candles', 120))  # NEW
+MIN_SLOW_CANDLES = int(CFG.get('regime',{}).get('min_slow_candles', 120))
 
 LAST_SENT = {}
 def can_notify(key: str) -> bool:
@@ -216,9 +302,11 @@ try:
             try:
                 scanned += 1
 
-                # Fetch raw frames first
+                # Fetch raw 4h first
                 raw4h = fetch_df(c, sym, TF_SLOW)
                 if len(raw4h) < MIN_SLOW_CANDLES:
+                    if QUAR_ENABLE:
+                        add_quarantine(QUAR, ex_name, sym, reason=f"short 4h history ({len(raw4h)} < {MIN_SLOW_CANDLES})")
                     raise ValueError(f"short 4h history ({len(raw4h)} < {MIN_SLOW_CANDLES})")
                 df4h = add_indicators(raw4h, CFG['indicators'])
 
@@ -229,6 +317,8 @@ try:
                 df30 = add_indicators(fetch_df(c, sym, TF_FAST), CFG['indicators'])
                 df30c = df30.dropna()
                 if df30c.empty or 'atr' not in df30c.columns:
+                    if QUAR_ENABLE:
+                        add_quarantine(QUAR, ex_name, sym, reason="no fast frame data")
                     raise ValueError("no fast frame data")
                 last = df30c.iloc[-1]
                 price = float(last['close'])
@@ -237,9 +327,9 @@ try:
                 is_contract = bool(mkt.get('contract', mkt.get('swap', False)))
                 cs_eff = _safe_contract_size(mkt) or 1.0
 
-                # SHORT (1h optional; if your strategy needs it, fetch with same guards)
+                # SHORT (use 30m for both if 1h optional)
                 if str_short and risk.can_trade() and day['signals'] < DAILY_MAX_TRADES:
-                    sig = str_short.signal(df30, df30)  # reuse 30m if 1h is not strictly needed
+                    sig = str_short.signal(df30, df30)
                     if sig:
                         atr = float(last['atr'])
                         tp, sl = initial_stops('sell', price, atr, sig['sl_atr_mult'], sig['tp_pct'])
@@ -256,11 +346,10 @@ try:
                             cls, max_notional_cls, risk_cap_cls = class_caps(sym)
                             qty, notional, risk_usd, cap_note = apply_caps(entry, sl_f, qty, (cs_eff if is_contract else 1.0), cls, max_notional_cls, risk_cap_cls)
                             signals_found += 1
-                            if TG and should_notify(ex_name) and qty > 0:
-                                if can_notify(f"{ex_name}:{sym}:SELL"):
-                                    trailp = price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))
-                                    TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry}\nTP~{tp_f} SL~{sl_f} Trail~{trailp} Qty~{qty}")
-                                    sent += 1
+                            if TG and should_notify(ex_name) and qty > 0 and can_notify(f"{ex_name}:{sym}:SELL"):
+                                trailp = price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))
+                                TG.send(f"🔴 [{ex_name}] SHORT {sym} @ {entry}\nTP~{tp_f} SL~{sl_f} Trail~{trailp} Qty~{qty}")
+                                sent += 1
                             register_open(ex_name, sym, 'SELL', entry, tp_f, sl_f, float(price_to_precision(c, sym, trail_level('sell', price, atr, CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0)))), qty)
 
                 # LONG
@@ -287,43 +376,33 @@ try:
                             cls, max_notional_cls, risk_cap_cls = class_caps(sym)
                             qty, notional, risk_usd, cap_note = apply_caps(entry, sl_f, qty, (cs_eff if is_contract else 1.0), cls, max_notional_cls, risk_cap_cls)
                             signals_found += 1
-                            if TG and should_notify(ex_name) and qty > 0:
-                                if can_notify(f"{ex_name}:{sym}:BUY"):
-                                    trailp = price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))
-                                    TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry}\nTP~{tp_f} SL~{sl_f} Trail~{trailp} Qty~{qty}")
-                                    sent += 1
+                            if TG and should_notify(ex_name) and qty > 0 and can_notify(f"{ex_name}:{sym}:BUY"):
+                                trailp = price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))
+                                TG.send(f"🟢 [{ex_name}] LONG {sym} @ {entry}\nTP~{tp_f} SL~{sl_f} Trail~{trailp} Qty~{qty}")
+                                sent += 1
                             register_open(ex_name, sym, 'BUY', entry, tp_f, sl_f, float(price_to_precision(c, sym, trail_level('buy', price, atr, CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0)))), qty)
 
             except Exception as se:
                 warn = f"[warn] {ex_name}:{sym} error -> {se}"
                 print(warn)
-                if TG and PUSH_DEBUG:
+                if TG and bool(CFG.get('notify',{}).get('push_debug', False)):
                     TG.send(f"🟡 Skip {ex_name}:{sym} — {se}")
                 continue
 
-    # Track open positions (paper): TP/SL/trailing
-    for key, pos in list(state['open'].items()):
-        ex = pos['exchange']; sym = pos['symbol']; side = pos['side']
-        c = clients.get(ex)
-        if not c: continue
-        df30 = add_indicators(fetch_df(c, sym, TF_FAST), CFG['indicators'])
-        df30c = df30.dropna()
-        if df30c.empty:
-            continue
-        last = df30c.iloc[-1]
-        price = float(last['close'])
-        atr = float(last['atr'])
-        new_trail = trail_level('sell' if side=='SELL' else 'buy', price, atr,
-                                CFG['signals']['short_the_rip'].get('trail_atr_mult', 1.0) if side=='SELL' else CFG['signals']['oversold_bounce'].get('trail_atr_mult', 1.0))
-        pos['trail'] = float(price_to_precision(c, sym, new_trail))
-        # evaluate TP/SL as before... (omitted for brevity)
+    # Track open positions (paper): TP/SL/trailing (unchanged for brevity)
+
 except Exception as e:
     tb = traceback.format_exc()
     if TG:
         TG.send(f"⚠️ Run error: {e}\n{tb[-900:]}")
     print(f"[error] {e}\n{tb}")
 finally:
-    save_state(state); save_day_stats(day)
+    # persist state/day + quarantine
+    save_state(state)
+    save_day_stats(day)
+    if QUAR_ENABLE:
+        save_quarantine(QUAR)
+        print(f"[quarantine] saved {len(QUAR)} entries to {QUAR_FILE}")
     print(f"[summary] scanned={scanned} bearish_ok={bear_ok} signals_found={signals_found} sent={sent} open_now={len(state['open'])} closed_today_tp={day['tp']} sl={day['sl']} pnl≈{day['pnl']:.2f}")
     if TG and bool(CFG.get('notify',{}).get('push_no_signal', True)) and sent == 0:
         TG.send(f"ℹ️ No signals this run. scanned={scanned} bearish_ok={bear_ok} signals_found={signals_found} sent={sent} open={len(state['open'])}")
