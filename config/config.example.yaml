@@ -8,49 +8,43 @@ indicators:
   ema_fast: 21
   ema_mid: 50
   ema_slow: 200
-notify:
-  send_all: true
-  min_cooldown_sec: 180
-  push_no_signal: true
-  push_debug: true
-  push_trail_updates: false
 signals:
-  short_the_rip:
-    enable: true
-    rsi_min: 61
-    sl_atr_mult: 1.2
-    tp_pct: 0.012
-    trail_atr_mult: 0.9
   oversold_bounce:
     enable: true
-    rsi_max: 25
-    sl_atr_mult: 1.0
+    rsi_max: 25.0
     tp_pct: 0.016
+    sl_atr_mult: 1.0
+  short_the_rip:
+    enable: true
+    rsi_min: 61.0
+    tp_pct: 0.012
+    sl_atr_mult: 1.2
+    trail_atr_mult: 0.9
 risk:
+  equity_usd: 10000.0
   per_trade_risk_pct: 0.01
   daily_loss_limit_pct: 0.05
   cool_down_min: 15
   daily_max_trades: 25
   min_amount_behavior: skip
   min_notional_behavior: skip
+  max_notional_per_trade: 100000.0
+  risk_usd_cap: 1200.0
   min_stop_pct: 0.003
-  max_notional_per_trade: 100000
-  risk_usd_cap: 1200
-  equity_usd: 10000
 class_limits:
   meme:
     max_notional_per_trade: 20000
     risk_usd_cap: 300
-classes:
-  meme_bases:
-  - PEPE
-  - WIF
-  - FLOKI
-  - SHIB
-  - DOGE
-  - BONK
 universe:
-  min_quote_volume_usdt: 0
-  max_symbols_per_exchange: 80
   prefer_perps: false
-  include_spot: true
+  max_symbols_per_exchange: 80
+  min_quote_volume_usdt: 0.0
+notify:
+  send_all: true
+  push_no_signal: true
+  min_cooldown_sec: 180
+  push_debug: true
+  push_trail_updates: false
+execution:
+  fee_pct: 0.0006
+  max_slippage_pct: 0.001
