@@ -71,8 +71,8 @@ signals:
 #      Universe Config
 # =========================
 universe:
-  min_quote_volume_usdt: 1_000_000   # 2M -> 1M
-  max_symbols_per_exchange: 40       # 20 -> 40
+  min_quote_volume_usdt: 0           # GEÇİCİ: hacim filtresini kapat
+  max_symbols_per_exchange: 80       # 40 -> 80 (daha çok taransın)
   exclude_stables: true
   prefer_perps: false                # <<< spot+perps izin ver
   include: []                        # opsiyonel: ["BTC/USDT","ETH/USDT"]
