@@ -33,12 +33,12 @@ class_limits:
 notify:
   send_all: true
   push_no_signal: true
-  push_debug: false
+  push_debug: true         # 🧪 near-miss debug aktif
   min_cooldown_sec: 300
   push_trail_updates: false
 
 regime:
-  min_slow_candles: 120
+  min_slow_candles: 90     # daha az eleme
 
 universe:
   min_quote_volume_usdt: 3000000
@@ -55,14 +55,14 @@ indicators:
 signals:
   oversold_bounce:
     enable: true
-    ignore_regime: true        # ✅ LONG sinyali bearish rejime bağlı değil
-    rsi_max: 25
-    tp_pct: 0.016
+    ignore_regime: true
+    rsi_max: 27
+    tp_pct: 0.014
     sl_atr_mult: 1.0
   short_the_rip:
     enable: true
-    rsi_min: 61
-    tp_pct: 0.012
+    rsi_min: 59
+    tp_pct: 0.010
     sl_atr_mult: 1.2
 
 quarantine:
