@@ -32,7 +32,7 @@ def _is_stable_base(symbol: str) -> bool:
 def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[str]]:
     u = cfg.get('universe', {}) or {}
 
-    # thresholds
+    # thresholds (sağlam parse)
     try:
         min_qv = float(u.get('min_quote_volume_usdt', u.get('min_quote_vol_usd', u.get('min_quote_volume', 0))) or 0)
     except Exception:
@@ -69,7 +69,7 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
             except Exception:
                 continue
 
-        # 3) tickers & hacim
+        # 3) tickers & hacim (quoteVolume yoksa baseVolume fallback)
         try:
             tks = client.tickers()
         except Exception as e:
@@ -78,12 +78,11 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
 
         def qv(sym: str) -> float:
             t = tks.get(sym) or {}
-            # bazı borsalarda quoteVolume yok → baseVolume fallback
             return float(t.get('quoteVolume', 0) or t.get('baseVolume', 0) or 0)
 
         ranked = sorted(candidates, key=qv, reverse=True)
 
-        # include önceliklendirme
+        # include'ları en üste al
         for a in allow_set:
             if a not in ranked and a in mkts:
                 ranked.insert(0, a)
