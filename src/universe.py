@@ -10,15 +10,17 @@ def _is_usdt_candidate(market: dict, only_linear: bool = True) -> bool:
     """
     if not market.get('active', True):
         return False
+
     if market.get('quote') != 'USDT':
         return False
 
     is_swap = bool(market.get('swap', False))
-    is_linear = (market.get('linear') is not False)  # yoksa True varsay
+    # ccxt bazı borsalarda 'linear' anahtarını hiç koymuyor; koymadıysa True varsayıyoruz
+    is_linear = (market.get('linear') is not False)
     is_spot = not is_swap and bool(market.get('spot', not is_swap))
 
     if only_linear:
-        # Sadece linear swap
+        # Sadece linear swap (perps)
         return is_swap and is_linear
     else:
         # Linear swap veya spot
@@ -26,25 +28,12 @@ def _is_usdt_candidate(market: dict, only_linear: bool = True) -> bool:
 
 
 def _synced_lists(u: dict) -> (Set[str], Set[str]):
-    """
-    include/allow_list ve exclude/deny_list/blacklist alanlarını birleştirir.
-    Farklı isimlendirmeleri destekler.
-    """
-    include = set(u.get('include', []) or [])
-    allow = set(u.get('allow_list', []) or [])
-    merged_allow = include.union(allow)
-
-    exclude = set(u.get('exclude', []) or [])
-    deny = set(u.get('deny_list', []) or [])
-    blacklist = set(u.get('blacklist', []) or [])
-    merged_deny = exclude.union(deny).union(blacklist)
-    return merged_allow, merged_deny
+    include = set(u.get('include', []) or []).union(set(u.get('allow_list', []) or []))
+    deny = set(u.get('exclude', []) or []).union(set(u.get('deny_list', []) or [])).union(set(u.get('blacklist', []) or []))
+    return include, deny
 
 
 def _is_stable_base(symbol: str) -> bool:
-    """
-    Base tarafı stable olan çiftleri (USDT/..., USDC/..., FDUSD/...) elemek için basit kontrol.
-    """
     base = (symbol.split('/')[0] if '/' in symbol else symbol).upper()
     return base in {'USDT', 'USDC', 'FDUSD', 'TUSD', 'DAI'}
 
@@ -53,41 +42,26 @@ def _is_stable_base(symbol: str) -> bool:
 
 def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[str]]:
     """
-    Borsalardan linear USDT perps evrenini kurar.
-    Config'te universe bloğu olmasa bile güvenli default'larla çalışır.
-
-    Desteklenen universe alanları ve eşanlamlıları:
-      - min_quote_volume_usdt  | min_quote_vol_usd | min_quote_volume   (default: 0)
-      - top_n_per_exchange     | max_symbols_per_exchange                (default: 20)
-      - only_linear            | prefer_perps (bool; default: True → linear swap tercih)
-      - include / allow_list
-      - exclude / deny_list / blacklist
-      - exclude_stables (bool; default: True)
+    Borsalardan USDT-quoted evreni kurar.
+    - prefer_perps/only_linear True ise: linear perps
+    - False ise: linear perps + USDT spot
     """
     u = cfg.get('universe', {}) or {}
 
-    # Eşikler / parametreler (çok isimli desteği)
-    min_qv = u.get('min_quote_volume_usdt',
-              u.get('min_quote_vol_usd',
-              u.get('min_quote_volume', 0)))
+    min_qv = u.get('min_quote_volume_usdt', u.get('min_quote_vol_usd', u.get('min_quote_volume', 0)))
     try:
         min_qv = float(min_qv or 0)
     except Exception:
         min_qv = 0.0
 
-    top_n = u.get('top_n_per_exchange',
-             u.get('max_symbols_per_exchange', 20))
+    top_n = u.get('top_n_per_exchange', u.get('max_symbols_per_exchange', 20))
     try:
         top_n = int(top_n or 20)
     except Exception:
         top_n = 20
 
-    # prefer_perps=True → only_linear=True davranışıyla eşitlenir
-    only_linear = u.get('only_linear', u.get('prefer_perps', True))
-    only_linear = bool(only_linear)
-
+    only_linear = bool(u.get('only_linear', u.get('prefer_perps', True)))
     exclude_stables = bool(u.get('exclude_stables', True))
-
     allow_set, deny_set = _synced_lists(u)
 
     per_ex: Dict[str, List[str]] = {}
@@ -100,7 +74,7 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
             print(f"[universe] skip {name}: markets() failed: {e}")
             continue
 
-        # 2) adaylar: USDT linear perps ve deny listesinde olmayanlar
+        # 2) adaylar
         candidates = []
         for sym, m in mkts.items():
             try:
@@ -111,10 +85,9 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
                         continue
                     candidates.append(sym)
             except Exception:
-                # tekil markette alanlar eksikse sessiz geç
                 continue
 
-        # 3) tickers ile hacim sıralaması
+        # 3) tickers ile hacim sırası
         try:
             tks = client.tickers()
         except Exception as e:
@@ -123,17 +96,16 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
 
         def qv(sym: str) -> float:
             t = tks.get(sym) or {}
-            # ccxt çoğu borsada quoteVolume döndürür; yoksa baseVolume'a düş
             return float(t.get('quoteVolume', 0) or t.get('baseVolume', 0) or 0)
 
         ranked = sorted(candidates, key=qv, reverse=True)
 
-        # 4) allow/include önceliklendir (listede yoksa başa ekle)
+        # include/allow önceliklendir
         for a in allow_set:
             if a not in ranked and a in mkts:
                 ranked.insert(0, a)
 
-        # 5) min quote volume filtresi
+        # min qv filtresi
         if min_qv > 0:
             ranked = [s for s in ranked if qv(s) >= min_qv]
 
@@ -141,19 +113,16 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
             print(f"[universe] {name}: no eligible symbols after filtering; skipping.")
             continue
 
-        # 6) top-N kırp
         per_ex[name] = ranked[:top_n]
 
     if not per_ex:
         raise SystemExit(
-            "Universe is empty. All exchanges failed or no symbols passed filters. "
-            "Consider reducing filters (e.g., lower min_quote_volume), increasing top_n_per_exchange, "
-            "or removing geo-blocked exchanges from EXCHANGES."
+            "Universe is empty. Consider lowering min_quote_volume_usdt, increasing max_symbols_per_exchange, "
+            "or setting prefer_perps: false to include spot."
         )
 
     return per_ex
 
 
 def pick_execution_exchange() -> str:
-    # Bildirim/exec varsayılan borsa (ENV ile override edilebilir)
     return os.getenv('EXECUTION_EXCHANGE', 'bingx')
