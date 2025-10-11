@@ -59,13 +59,13 @@ signals:
     touch_mid_ema: true
     confirm_mid_trend: true
 
-  oversold_bounce:
-    enable: true
-    rsi_min: 25                    # 26 -> 25
-    sl_atr_mult: 1.0               # sabit SL istersen sl_pct: 0.008 ekleyebilirsin
-    tp_pct: 0.016                  # 1.5% -> 1.6%
-    trail_atr_mult: 1.0
-    cooldown_min: 5
+ oversold_bounce:
+   enable: true
+-  rsi_min: 25
++  rsi_max: 25
+   sl_atr_mult: 1.0
+   tp_pct: 0.016
+
 
 # =========================
 #      Universe Config
