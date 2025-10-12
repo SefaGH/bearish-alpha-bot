@@ -1,0 +1,67 @@
+name: Run Backtest (Param Sweep)
+
+on:
+  workflow_dispatch:
+    inputs:
+      BT_SYMBOL:
+        description: "Symbol (e.g. BTC/USDT)"
+        required: true
+        default: "BTC/USDT"
+      BT_EXCHANGE:
+        description: "Exchange key (must be in EXCHANGES env)"
+        required: true
+        default: "bingx"
+      BT_LIMIT:
+        description: "Bars to fetch (30m)"
+        required: true
+        default: "1000"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Run param sweep
+        env:
+          # ENV — buraları repo secrets ile doldurabilirsin (Settings ▸ Secrets and variables ▸ Actions)
+          EXCHANGES: ${{ secrets.EXCHANGES }}         # örn: bingx,bitget,binance,kucoinfutures
+          EXECUTION_EXCHANGE: ${{ github.event.inputs.BT_EXCHANGE }}
+          BINGX_KEY:   ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET:${{ secrets.BINGX_SECRET }}
+          BITGET_KEY:  ${{ secrets.BITGET_KEY }}
+          BITGET_SECRET:${{ secrets.BITGET_SECRET }}
+          BITGET_PASSWORD:${{ secrets.BITGET_PASSWORD }}
+          BINANCE_KEY: ${{ secrets.BINANCE_KEY }}
+          BINANCE_SECRET:${{ secrets.BINANCE_SECRET }}
+          KUCOIN_KEY:  ${{ secrets.KUCOIN_KEY }}
+          KUCOIN_SECRET:${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_PASSWORD:${{ secrets.KUCOIN_PASSWORD }}
+          ASCENDEX_KEY:${{ secrets.ASCENDEX_KEY }}
+          ASCENDEX_SECRET:${{ secrets.ASCENDEX_SECRET }}
+          ASCENDEX_PASSWORD:${{ secrets.ASCENDEX_PASSWORD }}
+          # optional:
+          CONFIG_PATH: config/config.example.yaml
+          BT_SYMBOL:   ${{ github.event.inputs.BT_SYMBOL }}
+          BT_EXCHANGE: ${{ github.event.inputs.BT_EXCHANGE }}
+          BT_LIMIT:    ${{ github.event.inputs.BT_LIMIT }}
+        run: |
+          python -u src/backtest/param_sweep.py
+
+      - name: Upload backtest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-results
+          path: |
+            data/backtests/**
