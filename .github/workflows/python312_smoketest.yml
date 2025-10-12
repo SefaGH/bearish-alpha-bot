@@ -1,0 +1,45 @@
+name: Python 3.12 Smoke Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps (requirements.txt)
+        run: |
+          python -V
+          pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Import sanity check (common libs)
+        run: |
+          python - << 'PY'
+          import sys, platform
+          print("Python  :", sys.version.replace("\n"," "))
+          print("Platform:", platform.platform())
+
+          # core deps
+          import ccxt, pandas, numpy, yaml, requests
+          print("ccxt    :", getattr(ccxt, "__version__", "OK"))
+          print("pandas  :", pandas.__version__)
+          print("numpy   :", numpy.__version__)
+          print("pyyaml  :", yaml.__version__)
+          print("requests:", requests.__version__)
+
+          # telegram optional (just import check)
+          try:
+              import telegram
+              print("python-telegram-bot: OK")
+          except Exception as e:
+              print("python-telegram-bot: import error ->", type(e).__name__, str(e)[:200])
+          PY
