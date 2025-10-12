@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Bearish Alpha Bot — Orchestrated MVP (patched: data sufficiency + dropna guards)
+# Bearish Alpha Bot — Orchestrated MVP (run summary + artifact guarantee)
 
 from __future__ import annotations
 import os, json, time, traceback
@@ -57,6 +57,13 @@ def run_once():
     cfg = load_config()
     tg = build_tg()
 
+    # --- RUN SUMMARY (always create artifact) ---
+    ensure_data_dir()
+    summary_path = os.path.join(DATA_DIR, "RUN_SUMMARY.txt")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write(f"Run start (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"EXCHANGES: {os.getenv('EXCHANGES','')}\n")
+
     clients = build_clients_from_env()
     if tg:
         tg.send("🔎 <b>Bearish Alpha Bot</b> tarama başlıyor (paper)")
@@ -66,6 +73,8 @@ def run_once():
     max_per_ex = int(cfg.get("universe", {}).get("top_n_per_exchange", 20) or 20)
 
     signals_out = []
+    csv_path = None
+
     for ex_name, client in clients.items():
         symbols = universe.get(ex_name, [])[:max_per_ex]
         if not symbols:
@@ -129,6 +138,7 @@ def run_once():
                     print("error", ex_name, sym, e)
                 continue
 
+    # artifacts
     if signals_out:
         csv_path = save_signals_csv(signals_out)
         if tg:
@@ -136,6 +146,15 @@ def run_once():
     else:
         if tg:
             tg.send("ℹ️ Bu turda sinyal yok.")
+
+    # --- Append run summary
+    try:
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write(f"Total signals: {len(signals_out)}\n")
+            if csv_path:
+                f.write(f"CSV: {csv_path}\n")
+    except Exception:
+        pass
 
     return signals_out
 
