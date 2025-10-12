@@ -15,6 +15,11 @@ from core.notify import Telegram
 from strategies.oversold_bounce import OversoldBounce
 from strategies.short_the_rip import ShortTheRip
 from core.state import load_state, save_state, load_day_stats, save_day_stats
+from core.trailing import initial_stops
+from core.sizing import position_size_usdt
+from core.limits import clamp_amount, meets_or_scale_notional
+from core.normalize import amount_to_precision
+from core.exec_engine import ExecEngine
 
 DATA_DIR = "data"
 
@@ -53,27 +58,148 @@ def save_signals_csv(signals: List[dict]):
 def has_min_bars(*dfs, min_bars: int = 120) -> bool:
     return all(df is not None and len(df) >= min_bars for df in dfs)
 
+def get_risk_params():
+    """Extract risk parameters from environment variables with safe defaults."""
+    return {
+        'equity_usd': float(os.getenv('RISK_EQUITY_USD', '1000')),
+        'per_trade_risk_pct': float(os.getenv('RISK_PER_TRADE_RISK_PCT', '0.01')),
+        'risk_usd_cap': float(os.getenv('RISK_RISK_USD_CAP', '50')),
+        'max_notional_per_trade': float(os.getenv('RISK_MAX_NOTIONAL_PER_TRADE', '500')),
+        'min_stop_pct': float(os.getenv('RISK_MIN_STOP_PCT', '0.005')),
+        'daily_max_trades': int(os.getenv('RISK_DAILY_MAX_TRADES', '5')),
+        'min_amount_behavior': os.getenv('RISK_MIN_AMOUNT_BEHAVIOR', 'skip'),
+        'min_notional_behavior': os.getenv('RISK_MIN_NOTIONAL_BEHAVIOR', 'skip'),
+    }
+
+def execute_signal(engine: ExecEngine, client, symbol: str, signal: dict, risk_params: dict, tg: Telegram | None):
+    """Execute a signal with proper sizing and risk management."""
+    try:
+        # Get latest price
+        ticker = client.ticker(symbol)
+        price = float(ticker.get('last') or ticker.get('close', 0))
+        if price <= 0:
+            if tg: tg.send(f"⚠️ {symbol}: invalid price {price}, skipping")
+            return None
+        
+        # Get ATR from signal metadata (if available)
+        atr = signal.get('atr', price * 0.02)  # fallback 2% ATR
+        
+        # Calculate stops
+        side = signal.get('side', 'buy')
+        tp_pct = signal.get('tp_pct', 0.015)
+        sl_atr_mult = signal.get('sl_atr_mult', 1.2)
+        tp, sl = initial_stops(side, price, atr, sl_atr_mult, tp_pct)
+        
+        # Ensure minimum stop distance
+        stop_dist_pct = abs(sl - price) / price
+        if stop_dist_pct < risk_params['min_stop_pct']:
+            if tg: tg.send(f"⚠️ {symbol}: stop too tight {stop_dist_pct:.4f} < {risk_params['min_stop_pct']}, skipping")
+            return None
+        
+        # Calculate position size
+        risk_usd = min(
+            risk_params['equity_usd'] * risk_params['per_trade_risk_pct'],
+            risk_params['risk_usd_cap']
+        )
+        qty = position_size_usdt(price, sl, risk_usd, side)
+        
+        # Check max notional
+        notional = price * qty
+        if notional > risk_params['max_notional_per_trade']:
+            qty = risk_params['max_notional_per_trade'] / price
+            if tg: tg.send(f"ℹ️ {symbol}: capped to max notional, qty={qty:.6f}")
+        
+        # Apply lot size limits
+        qty = clamp_amount(client, symbol, qty, behavior=risk_params['min_amount_behavior'])
+        if qty <= 0:
+            if tg: tg.send(f"⚠️ {symbol}: qty below min lot size, skipping")
+            return None
+        
+        # Apply notional limits
+        qty = meets_or_scale_notional(client, symbol, price, qty, behavior=risk_params['min_notional_behavior'])
+        if qty <= 0:
+            if tg: tg.send(f"⚠️ {symbol}: notional below minimum, skipping")
+            return None
+        
+        # Precision normalize
+        qty_str = amount_to_precision(client, symbol, qty)
+        qty_final = float(qty_str)
+        
+        # Execute order
+        order_side = 'sell' if side == 'sell' else 'buy'
+        order = engine.market_order(symbol, order_side, qty_final)
+        
+        if tg:
+            tg.send(f"✅ <b>EXECUTED</b> {symbol} {order_side.upper()} qty={qty_final:.6f} @ ~{price:.4f} | TP={tp:.4f} SL={sl:.4f}")
+        
+        return {
+            'symbol': symbol,
+            'side': side,
+            'qty': qty_final,
+            'price': price,
+            'tp': tp,
+            'sl': sl,
+            'order_id': order.get('id', 'N/A'),
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        if tg:
+            tg.send(f"❌ <b>EXEC FAILED</b> {symbol}: {type(e).__name__}: {str(e)[:150]}")
+        traceback.print_exc()
+        return None
+
 def run_once():
     cfg = load_config()
     tg = build_tg()
+    
+    # Determine mode
+    mode = os.getenv('MODE', 'paper').lower()
+    is_live = (mode == 'live')
+    
+    # Get execution exchange
+    from universe import pick_execution_exchange
+    exec_exchange = pick_execution_exchange()
 
     # --- RUN SUMMARY (always create artifact) ---
     ensure_data_dir()
     summary_path = os.path.join(DATA_DIR, "RUN_SUMMARY.txt")
     with open(summary_path, "w", encoding="utf-8") as f:
         f.write(f"Run start (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"MODE: {mode}\n")
+        f.write(f"EXECUTION_EXCHANGE: {exec_exchange}\n")
         f.write(f"EXCHANGES: {os.getenv('EXCHANGES','')}\n")
 
     clients = build_clients_from_env()
-    if tg:
-        tg.send("🔎 <b>Bearish Alpha Bot</b> tarama başlıyor (paper)")
+    
+    # Initialize execution engine if live mode
+    exec_engine = None
+    risk_params = None
+    if is_live:
+        if exec_exchange not in clients:
+            raise SystemExit(f"Live mode requires EXECUTION_EXCHANGE={exec_exchange} in clients")
+        exec_client = clients[exec_exchange]
+        fee_pct = float(os.getenv('EXEC_FEE_PCT', '0.0006'))
+        slip_pct = float(os.getenv('EXEC_SLIP_PCT', '0.0005'))
+        exec_engine = ExecEngine('live', exec_client, fee_pct, slip_pct, tg)
+        risk_params = get_risk_params()
+        if tg:
+            tg.send(f"🚀 <b>LIVE MODE</b> activated on {exec_exchange} | Risk: {risk_params['risk_usd_cap']}$ cap, {risk_params['daily_max_trades']} max trades/day")
+    else:
+        if tg:
+            tg.send("🔎 <b>Bearish Alpha Bot</b> tarama başlıyor (paper)")
 
     from universe import build_universe
     universe = build_universe(clients, cfg)
     max_per_ex = int(cfg.get("universe", {}).get("top_n_per_exchange", 20) or 20)
 
     signals_out = []
+    executions = []
     csv_path = None
+    
+    # Load daily stats for live mode trade counting
+    day_stats = load_day_stats() if is_live else None
+    trades_today = day_stats.get('signals', 0) if day_stats else 0
 
     for ex_name, client in clients.items():
         symbols = universe.get(ex_name, [])[:max_per_ex]
@@ -82,6 +208,12 @@ def run_once():
 
         for sym in symbols:
             try:
+                # Check daily trade limit in live mode
+                if is_live and trades_today >= risk_params['daily_max_trades']:
+                    if tg:
+                        tg.send(f"⚠️ Daily trade limit ({risk_params['daily_max_trades']}) reached, stopping scan")
+                    break
+                
                 # --- Fetch ---
                 df_30 = fetch_ohlcv(client, sym, "30m", limit=250)
                 df_1h = fetch_ohlcv(client, sym, "1h",  limit=250)
@@ -121,8 +253,14 @@ def run_once():
                         out_sig = out_sig or strp.signal(df_30i, df_1hi)
 
                 if out_sig:
+                    # Enrich signal with ATR for execution
+                    if 'atr' in df_30i.columns and len(df_30i) > 0:
+                        out_sig['atr'] = float(df_30i['atr'].iloc[-1])
+                    
+                    # Notify signal
                     msg = f"⚡ <b>{ex_name}</b> | <code>{sym}</code> | {out_sig['side'].upper()} — {out_sig['reason']}"
                     if tg: tg.send(msg)
+                    
                     signals_out.append({
                         "ts": datetime.utcnow().isoformat(),
                         "exchange": ex_name,
@@ -130,6 +268,17 @@ def run_once():
                         "side": out_sig.get("side"),
                         "reason": out_sig.get("reason"),
                     })
+                    
+                    # Execute if live mode and on execution exchange
+                    if is_live and ex_name == exec_exchange:
+                        exec_result = execute_signal(exec_engine, client, sym, out_sig, risk_params, tg)
+                        if exec_result:
+                            executions.append(exec_result)
+                            trades_today += 1
+                            # Update day stats
+                            if day_stats:
+                                day_stats['signals'] = trades_today
+                                save_day_stats(day_stats)
 
             except Exception as e:
                 if tg:
@@ -137,6 +286,10 @@ def run_once():
                 else:
                     print("error", ex_name, sym, e)
                 continue
+        
+        # Break outer loop if daily limit reached
+        if is_live and trades_today >= risk_params['daily_max_trades']:
+            break
 
     # artifacts
     if signals_out:
@@ -151,6 +304,7 @@ def run_once():
     try:
         with open(summary_path, "a", encoding="utf-8") as f:
             f.write(f"Total signals: {len(signals_out)}\n")
+            f.write(f"Total executions: {len(executions)}\n")
             if csv_path:
                 f.write(f"CSV: {csv_path}\n")
     except Exception:
