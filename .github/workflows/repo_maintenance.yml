@@ -21,17 +21,19 @@ on:
 
 permissions:
   contents: write
-  workflows: write
 
 jobs:
   patch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          persist-credentials: true
+          persist-credentials: false
+          fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
@@ -39,8 +41,9 @@ jobs:
         run: |
           python -u scripts/maintenance.py --task "${{ github.event.inputs.task }}"
 
-      - name: Commit changes (if any)
+      - name: Commit changes (if any) with PAT
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           add_options: "-A"
           commit_message: ${{ github.event.inputs.commit_message }}
+          token: ${{ secrets.BOT_PAT }}
