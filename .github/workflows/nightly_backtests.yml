@@ -1,4 +1,4 @@
-name: Nightly Backtests + Report
+name: Nightly Backtests + Report (Fixed)
 
 on:
   schedule:
@@ -13,68 +13,74 @@ on:
 jobs:
   nightly:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        symbol: ${{ fromJson( format('["{0}"]',  join('","',  split( github.event.inputs.symbols != '' && github.event.inputs.symbols || 'BTC/USDT,ETH/USDT', ',' ) ) ) ) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install deps
         run: |
           pip install --no-cache-dir -r requirements.txt
 
-      - name: OversoldBounce sweep
+      - name: Run OversoldBounce sweeps (bash loop)
         env:
           EXCHANGES: ${{ secrets.EXCHANGES }}
           EXECUTION_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE || 'bingx' }}
           BINGX_KEY:   ${{ secrets.BINGX_KEY }}
-          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+          BINGX_SECRET:${{ secrets.BINGX_SECRET }}
           BITGET_KEY:  ${{ secrets.BITGET_KEY }}
-          BITGET_SECRET: ${{ secrets.BITGET_SECRET }}
-          BITGET_PASSWORD: ${{ secrets.BITGET_PASSWORD }}
+          BITGET_SECRET:${{ secrets.BITGET_SECRET }}
+          BITGET_PASSWORD:${{ secrets.BITGET_PASSWORD }}
           BINANCE_KEY: ${{ secrets.BINANCE_KEY }}
-          BINANCE_SECRET: ${{ secrets.BINANCE_SECRET }}
+          BINANCE_SECRET:${{ secrets.BINANCE_SECRET }}
           KUCOIN_KEY:  ${{ secrets.KUCOIN_KEY }}
-          KUCOIN_SECRET: ${{ secrets.KUCOIN_SECRET }}
-          KUCOIN_PASSWORD: ${{ secrets.KUCOIN_PASSWORD }}
-          ASCENDEX_KEY: ${{ secrets.ASCENDEX_KEY }}
-          ASCENDEX_SECRET: ${{ secrets.ASCENDEX_SECRET }}
-          ASCENDEX_PASSWORD: ${{ secrets.ASCENDEX_PASSWORD }}
+          KUCOIN_SECRET:${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_PASSWORD:${{ secrets.KUCOIN_PASSWORD }}
+          ASCENDEX_KEY:${{ secrets.ASCENDEX_KEY }}
+          ASCENDEX_SECRET:${{ secrets.ASCENDEX_SECRET }}
+          ASCENDEX_PASSWORD:${{ secrets.ASCENDEX_PASSWORD }}
           CONFIG_PATH: config/config.example.yaml
-          BT_SYMBOL:   ${{ matrix.symbol }}
-          BT_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE || 'bingx' }}
-          BT_LIMIT:    1000
+          INPUT_SYMBOLS: ${{ github.event.inputs.symbols }}
         run: |
-          python -u src/backtest/param_sweep.py
+          SYMS="${INPUT_SYMBOLS:-BTC/USDT,ETH/USDT}"
+          IFS=',' read -ra ARR <<< "$SYMS"
+          for S in "${ARR[@]}"; do
+            S_TRIM=$(echo "$S" | xargs)
+            echo ">>> OB sweep for: $S_TRIM"
+            BT_SYMBOL="$S_TRIM" BT_EXCHANGE="${EXECUTION_EXCHANGE}" BT_LIMIT=1000               python -u src/backtest/param_sweep.py
+          done
 
-      - name: ShortTheRip sweep
+      - name: Run ShortTheRip sweeps (bash loop)
         env:
           EXCHANGES: ${{ secrets.EXCHANGES }}
           EXECUTION_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE || 'bingx' }}
           BINGX_KEY:   ${{ secrets.BINGX_KEY }}
-          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+          BINGX_SECRET:${{ secrets.BINGX_SECRET }}
           BITGET_KEY:  ${{ secrets.BITGET_KEY }}
-          BITGET_SECRET: ${{ secrets.BITGET_SECRET }}
-          BITGET_PASSWORD: ${{ secrets.BITGET_PASSWORD }}
+          BITGET_SECRET:${{ secrets.BITGET_SECRET }}
+          BITGET_PASSWORD:${{ secrets.BITGET_PASSWORD }}
           BINANCE_KEY: ${{ secrets.BINANCE_KEY }}
-          BINANCE_SECRET: ${{ secrets.BINANCE_SECRET }}
+          BINANCE_SECRET:${{ secrets.BINANCE_SECRET }}
           KUCOIN_KEY:  ${{ secrets.KUCOIN_KEY }}
-          KUCOIN_SECRET: ${{ secrets.KUCOIN_SECRET }}
-          KUCOIN_PASSWORD: ${{ secrets.KUCOIN_PASSWORD }}
-          ASCENDEX_KEY: ${{ secrets.ASCENDEX_KEY }}
-          ASCENDEX_SECRET: ${{ secrets.ASCENDEX_SECRET }}
-          ASCENDEX_PASSWORD: ${{ secrets.ASCENDEX_PASSWORD }}
+          KUCOIN_SECRET:${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_PASSWORD:${{ secrets.KUCOIN_PASSWORD }}
+          ASCENDEX_KEY:${{ secrets.ASCENDEX_KEY }}
+          ASCENDEX_SECRET:${{ secrets.ASCENDEX_SECRET }}
+          ASCENDEX_PASSWORD:${{ secrets.ASCENDEX_PASSWORD }}
           CONFIG_PATH: config/config.example.yaml
-          BT_SYMBOL:    ${{ matrix.symbol }}
-          BT_EXCHANGE:  ${{ secrets.EXECUTION_EXCHANGE || 'bingx' }}
-          BT_LIMIT_30M: 1000
-          BT_LIMIT_1H:  1000
+          INPUT_SYMBOLS: ${{ github.event.inputs.symbols }}
         run: |
-          python -u src/backtest/param_sweep_str.py
+          SYMS="${INPUT_SYMBOLS:-BTC/USDT,ETH/USDT}"
+          IFS=',' read -ra ARR <<< "$SYMS"
+          for S in "${ARR[@]}"; do
+            S_TRIM=$(echo "$S" | xargs)
+            echo ">>> STR sweep for: $S_TRIM"
+            BT_SYMBOL="$S_TRIM" BT_EXCHANGE="${EXECUTION_EXCHANGE}" BT_LIMIT_30M=1000 BT_LIMIT_1H=1000               python -u src/backtest/param_sweep_str.py
+          done
 
       - name: Summarize + Report
         env:
