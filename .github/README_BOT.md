@@ -7,14 +7,19 @@ Bu doküman, botun **GitHub Actions** içinde nasıl çalıştığını ve temel
 - **Önemli paketler:** ccxt 4.3.88, pandas ≥ 2.2.3, numpy ≥ 2.2.6, pandas-ta 0.4.67b0, python-telegram-bot 21.6
 
 ## Secrets
-- `EXCHANGES` → `bingx,binance,kucoinfutures` (örnek)
+- `EXCHANGES` → `kucoinfutures,binance,bitget` (örnek, varsayılan kucoinfutures)
 - Borsa anahtarları: `BINGX_KEY`, `BINGX_SECRET`, `BITGET_*`, `BINANCE_*`, `KUCOIN_*`, …
 - (Opsiyonel) Telegram: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
-- (Opsiyonel) `EXECUTION_EXCHANGE`: emir/varsayılan borsa seçimi
+- (Opsiyonel) `EXECUTION_EXCHANGE`: emir/varsayılan borsa seçimi (varsayılan: kucoinfutures)
 
 ## Çalıştırma
-- **Run Bot Once (Orchestrated):** manuel tarama ve sinyal üretimi  
+- **Run Bot Once (Orchestrated):** manuel tarama ve sinyal üretimi (paper mode)  
   Artefact: `data/RUN_SUMMARY.txt` (+ varsa `data/signals_*.csv`)
+- **Run Bot Live:** manuel tarama ve GERÇEK emir girişi (live mode)  
+  - Onay gerektirir: `confirm_live` girişi `YES` olmalı
+  - Minimal güvenli risk limitleriyle çalışır
+  - Yalnızca `EXECUTION_EXCHANGE` üzerinde emir girer
+  - Artefact: `data/**`, `state.json`, `day_stats.json`
 - **Backtest’ler:**  
   - OB: `.github/workflows/backtest.yml` → `src/backtest/param_sweep.py`  
   - STR: `.github/workflows/backtest_str.yml` → `src/backtest/param_sweep_str.py`

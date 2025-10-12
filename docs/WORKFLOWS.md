@@ -16,7 +16,7 @@ Tüm job’larda:
 
 ## 1) Run Bot Once
 `/.github/workflows/run_bot_once.yml`
-- Manuel çalıştırma; Telegram + CSV
+- Manuel çalıştırma; Telegram + CSV (paper mode)
 - Artefact yok uyarısını önlemek için:
   ```yaml
   - uses: actions/upload-artifact@v4
@@ -25,6 +25,15 @@ Tüm job’larda:
       path: data/**
       if-no-files-found: ignore
   ```
+
+## 1.5) Run Bot Live
+`/.github/workflows/run_bot_live.yml`
+- Manuel çalıştırma; GERÇEK emir girişi (live mode)
+- **Onay gerekli:** `confirm_live` girişi `YES` olmalı
+- Seçilebilir exchange (varsayılan: kucoinfutures)
+- Minimal güvenli risk overrides
+- Yalnızca `EXECUTION_EXCHANGE` üzerinde emir girer
+- Artefact: `data/**`, `state.json`, `day_stats.json`
 
 ## 2) Backtest OB
 `/.github/workflows/backtest.yml`

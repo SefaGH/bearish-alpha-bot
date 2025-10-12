@@ -1,0 +1,89 @@
+name: Run Bot Live
+
+on:
+  workflow_dispatch:
+    inputs:
+      exchange:
+        description: 'Execution exchange'
+        required: true
+        default: 'kucoinfutures'
+        type: choice
+        options:
+          - kucoinfutures
+          - bingx
+          - bitget
+          - binance
+      confirm_live:
+        description: 'Confirm LIVE mode (must type YES to proceed)'
+        required: true
+        type: string
+
+jobs:
+  confirm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation
+        run: |
+          if [ "${{ inputs.confirm_live }}" != "YES" ]; then
+            echo "❌ Live mode not confirmed. You must enter 'YES' to proceed."
+            exit 1
+          fi
+          echo "✅ Live mode confirmed. Proceeding with execution."
+
+  run-live:
+    needs: confirm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      
+      - name: Install deps
+        run: |
+          python -V
+          pip install --upgrade pip setuptools wheel
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Run Bot Live
+        env:
+          EXCHANGES: ${{ secrets.EXCHANGES }}
+          EXECUTION_EXCHANGE: ${{ inputs.exchange }}
+          MODE: live
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          
+          # Exchange credentials
+          BINGX_KEY:    ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+          BITGET_KEY:   ${{ secrets.BITGET_KEY }}
+          BITGET_SECRET: ${{ secrets.BITGET_SECRET }}
+          BITGET_PASSWORD: ${{ secrets.BITGET_PASSWORD }}
+          BINANCE_KEY:  ${{ secrets.BINANCE_KEY }}
+          BINANCE_SECRET: ${{ secrets.BINANCE_SECRET }}
+          KUCOIN_KEY:   ${{ secrets.KUCOIN_KEY }}
+          KUCOIN_SECRET: ${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_PASSWORD: ${{ secrets.KUCOIN_PASSWORD }}
+          
+          # Safe risk overrides for live mode
+          RISK_EQUITY_USD: "50"
+          RISK_PER_TRADE_RISK_PCT: "0.005"
+          RISK_RISK_USD_CAP: "1.0"
+          RISK_MAX_NOTIONAL_PER_TRADE: "20"
+          RISK_MIN_STOP_PCT: "0.003"
+          RISK_DAILY_MAX_TRADES: "5"
+          RISK_MIN_AMOUNT_BEHAVIOR: "skip"
+          RISK_MIN_NOTIONAL_BEHAVIOR: "skip"
+          
+          CONFIG_PATH: config/config.example.yaml
+        run: python -u src/main.py
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-live-run
+          path: |
+            data/**
+            state.json
+            day_stats.json
+          if-no-files-found: ignore
