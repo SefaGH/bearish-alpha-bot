@@ -1,0 +1,93 @@
+name: Nightly Backtests + Report
+
+on:
+  schedule:
+    - cron: "30 23 * * *"   # 02:30 Türkiye saati civarı (UTC 23:30)
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: 'Comma-separated symbols (e.g. BTC/USDT,ETH/USDT,SOL/USDT)'
+        required: false
+        default: 'BTC/USDT,ETH/USDT'
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        symbol: ${{ fromJson( format('["{0}"]',  join('","',  split( github.event.inputs.symbols != '' && github.event.inputs.symbols || 'BTC/USDT,ETH/USDT', ',' ) ) ) ) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: OversoldBounce sweep
+        env:
+          EXCHANGES: ${{ secrets.EXCHANGES }}
+          EXECUTION_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE || 'bingx' }}
+          BINGX_KEY:   ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET:${{ secrets.BINGX_SECRET }}
+          BITGET_KEY:  ${{ secrets.BITGET_KEY }}
+          BITGET_SECRET:${{ secrets.BITGET_SECRET }}
+          BITGET_PASSWORD:${{ secrets.BITGET_PASSWORD }}
+          BINANCE_KEY: ${{ secrets.BINANCE_KEY }}
+          BINANCE_SECRET:${{ secrets.BINANCE_SECRET }}
+          KUCOIN_KEY:  ${{ secrets.KUCOIN_KEY }}
+          KUCOIN_SECRET:${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_PASSWORD:${{ secrets.KUCOIN_PASSWORD }}
+          ASCENDEX_KEY:${{ secrets.ASCENDEX_KEY }}
+          ASCENDEX_SECRET:${{ secrets.ASCENDEX_SECRET }}
+          ASCENDEX_PASSWORD:${{ secrets.ASCENDEX_PASSWORD }}
+          CONFIG_PATH: config/config.example.yaml
+          BT_SYMBOL:   ${{ matrix.symbol }}
+          BT_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE || 'bingx' }}
+          BT_LIMIT:    1000
+        run: |
+          python -u src/backtest/param_sweep.py
+
+      - name: ShortTheRip sweep
+        env:
+          EXCHANGES: ${{ secrets.EXCHANGES }}
+          EXECUTION_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE || 'bingx' }}
+          BINGX_KEY:   ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET:${{ secrets.BINGX_SECRET }}
+          BITGET_KEY:  ${{ secrets.BITGET_KEY }}
+          BITGET_SECRET:${{ secrets.BITGET_SECRET }}
+          BITGET_PASSWORD:${{ secrets.BITGET_PASSWORD }}
+          BINANCE_KEY: ${{ secrets.BINANCE_KEY }}
+          BINANCE_SECRET:${{ secrets.BINANCE_SECRET }}
+          KUCOIN_KEY:  ${{ secrets.KUCOIN_KEY }}
+          KUCOIN_SECRET:${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_PASSWORD:${{ secrets.KUCOIN_PASSWORD }}
+          ASCENDEX_KEY:${{ secrets.ASCENDEX_KEY }}
+          ASCENDEX_SECRET:${{ secrets.ASCENDEX_SECRET }}
+          ASCENDEX_PASSWORD:${{ secrets.ASCENDEX_PASSWORD }}
+          CONFIG_PATH: config/config.example.yaml
+          BT_SYMBOL:    ${{ matrix.symbol }}
+          BT_EXCHANGE:  ${{ secrets.EXECUTION_EXCHANGE || 'bingx' }}
+          BT_LIMIT_30M: 1000
+          BT_LIMIT_1H:  1000
+        run: |
+          python -u src/backtest/param_sweep_str.py
+
+      - name: Summarize + Report
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          BT_DIR:  data/backtests
+          OUT_MD:  data/backtests/REPORT.md
+        run: |
+          python -u scripts/summarize_backtests.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-backtest-report
+          path: |
+            data/backtests/**
