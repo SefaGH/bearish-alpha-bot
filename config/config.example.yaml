@@ -41,9 +41,11 @@ regime:
   min_slow_candles: 90     # daha az eleme
 
 universe:
-  min_quote_volume_usdt: 3000000
+  min_quote_volume_usdt: 1000000
   prefer_perps: false
   max_symbols_per_exchange: 80
+  top_n_per_exchange: 15
+  only_linear: true
 
 indicators:
   rsi_period: 14
@@ -55,17 +57,23 @@ indicators:
 signals:
   oversold_bounce:
     enable: true
+    # TEST: Rejim filtresi kapalı kalsın; sinyal görmeye odaklanalım
     ignore_regime: true
-    rsi_max: 27
-    tp_pct: 0.014
-    sl_atr_mult: 1.0
+    # Eşikleri gevşet: daha fazla "oversold" sinyali yakalayalım
+    rsi_max: 38          # (mevcut: 27)
+    tp_pct: 0.010        # (mevcut: 0.014) -> TP'ye ulaşma oranı artar
+    sl_atr_mult: 1.2     # (mevcut: 1.0) -> biraz daha güvenli stop
+
   short_the_rip:
     enable: true
-    rsi_min: 59
-    tp_pct: 0.010
-    sl_atr_mult: 1.2
+    # TEST: Rejim filtresini burada da esnetelim
+    # (eğer parent'ta ignore_regime yoksa veya global değilse; yoksa bu satıra gerek olmayabilir)
+    # ignore_regime: true   # dosyada bu anahtar yoksa ekleyebilirsin, yoksa bırak
+    rsi_min: 55          # (mevcut: 59) -> daha sık short setup
+    tp_pct: 0.010        # aynı kalsın
+    sl_atr_mult: 1.2     # aynı kalsın
 
 quarantine:
   enable: true
   days: 7
-  file: data/quarantine.json
+  file: data/quarantine.json  
