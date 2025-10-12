@@ -21,12 +21,15 @@ on:
 
 permissions:
   contents: write
+  workflows: write
 
 jobs:
   patch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - uses: actions/setup-python@v5
         with:
@@ -39,5 +42,5 @@ jobs:
       - name: Commit changes (if any)
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: ${{ github.event.inputs.commit_message }}
           add_options: "-A"
+          commit_message: ${{ github.event.inputs.commit_message }}
