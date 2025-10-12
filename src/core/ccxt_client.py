@@ -1,5 +1,6 @@
 import ccxt
 import time
+from typing import Dict, Any, List
 
 EX_DEFAULTS = {
     "options": {"defaultType": "swap"},
@@ -9,75 +10,82 @@ EX_DEFAULTS = {
 
 class CcxtClient:
     def __init__(self, ex_name: str, creds: dict | None = None):
+        """
+        Initialize CCXT exchange client.
+        
+        Args:
+            ex_name: Exchange name (e.g., 'binance', 'bingx')
+            creds: API credentials dict with 'apiKey', 'secret', optional 'password'
+        
+        Raises:
+            AttributeError: If exchange name is invalid
+            ccxt.AuthenticationError: If credentials are invalid
+        """
+        if not hasattr(ccxt, ex_name):
+            raise AttributeError(f"Unknown exchange: {ex_name}")
+        
         ex_cls = getattr(ccxt, ex_name)
         params = EX_DEFAULTS | (creds or {})
         self.ex = ex_cls(params)
+        self.name = ex_name
 
-    def validate_and_get_symbol(self, requested_symbol: str = "BTC/USDT"):
+    def ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> List[List]:
         """
-        Validate symbol exists on exchange, try common variants if not.
-        Returns: validated_symbol (str) that exists on the exchange
-        Raises: SystemExit with helpful error message if no variant found
+        Fetch OHLCV data with retries.
+        
+        Args:
+            symbol: Trading pair symbol
+            timeframe: Timeframe (e.g., '1h', '30m')
+            limit: Number of candles to fetch
+        
+        Returns:
+            List of OHLCV data [[timestamp, open, high, low, close, volume], ...]
+        
+        Raises:
+            Exception: After 3 failed retry attempts
         """
-        try:
-            markets = self.markets()
-            symbols = set(markets.keys())
-            
-            # Try exact match first
-            if requested_symbol in symbols:
-                return requested_symbol
-                
-            # Try common BTC variants if it's a BTC symbol
-            if requested_symbol.upper().startswith("BTC"):
-                variants = [
-                    "BTC/USDT",
-                    "BTC/USDT:USDT",
-                    "BTCUSDT",
-                    "BTC-USDT",
-                    "BTCUSD"
-                ]
-                for variant in variants:
-                    if variant in symbols:
-                        print(f"✅ Symbol fallback: {requested_symbol} → {variant}")
-                        return variant
-            
-            # If no variants work, show available BTC symbols for debugging
-            btc_symbols = sorted([s for s in symbols if 'BTC' in s.upper()])[:10]
-            error_msg = f"Symbol '{requested_symbol}' not found on exchange."
-            if btc_symbols:
-                error_msg += f" Available BTC symbols: {btc_symbols}"
-            else:
-                error_msg += " No BTC symbols found on this exchange."
-            raise SystemExit(error_msg)
-            
-        except SystemExit:
-            raise
-        except Exception as e:
-            raise SystemExit(f"Symbol validation failed: {e}")
-
-    def ohlcv(self, symbol: str, timeframe: str, limit: int = 500):
         last_exc = None
-        for _ in range(3):
+        for attempt in range(3):
             try:
                 return self.ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             except Exception as e:
                 last_exc = e
-                time.sleep(0.8)
+                if attempt < 2:  # Don't sleep on last attempt
+                    time.sleep(0.8)
         if last_exc is not None:
             raise last_exc
-        raise RuntimeError("fetch_ohlcv failed after retries with no captured exception")
+        raise RuntimeError(f"fetch_ohlcv failed after retries for {symbol} {timeframe}")
 
-    def ticker(self, symbol: str):
+    def ticker(self, symbol: str) -> Dict[str, Any]:
+        """Fetch current ticker data for a symbol."""
         return self.ex.fetch_ticker(symbol)
 
-    def tickers(self):
+    def tickers(self) -> Dict[str, Dict[str, Any]]:
+        """Fetch all tickers. Returns empty dict on failure."""
         try:
             return self.ex.fetch_tickers()
-        except Exception:
+        except Exception as e:
+            # Don't raise - this is used for filtering, empty result is acceptable
             return {}
 
-    def markets(self):
+    def markets(self) -> Dict[str, Dict[str, Any]]:
+        """Load market information."""
         return self.ex.load_markets()
 
-    def create_order(self, symbol, side, type_, amount, price=None, params=None):
+    def create_order(self, symbol: str, side: str, type_: str, amount: float, 
+                     price: float = None, params: dict = None) -> Dict[str, Any]:
+        """
+        Create an order.
+        
+        Args:
+            symbol: Trading pair
+            side: 'buy' or 'sell'
+            type_: Order type (e.g., 'market', 'limit')
+            amount: Order size
+            price: Price for limit orders
+            params: Additional exchange-specific parameters
+        
+        Returns:
+            Order response from exchange
+        """
         return self.ex.create_order(symbol, type_, side, amount, price, params or {})

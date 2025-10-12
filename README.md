@@ -2,6 +2,19 @@
 
 Kripto türev piyasalarında (özellikle USDT margined perpetual) **ayı piyasası odaklı** fırsatları tarayıp sinyal üreten, GitHub Actions üzerinden tamamen **tarayıcıdan** çalıştırılabilen bot.
 
+## ✅ Son Güncellemeler (2025-10)
+
+Bu bot ChatGPT ile oluşturulmuş, ancak önemli hatalar ve eksiklikler tespit edilip düzeltilmiştir:
+
+- ✅ **KRİTİK: Pozisyon büyüklüğü hesaplama hatası düzeltildi** (10x hata yapıyordu!)
+- ✅ Python 3.12 deprecation uyarıları giderildi
+- ✅ Loglama sistemi eklendi
+- ✅ Gelişmiş hata yönetimi
+- ✅ Kapsamlı testler (9 test, hepsi geçiyor)
+- ✅ Detaylı dokümantasyon
+
+**📖 Detaylı değişiklikler için:** [docs/IYILESTIRMELER.md](docs/IYILESTIRMELER.md)
+
 ## Özellikler
 - **Çoklu borsa**: BingX, Binance, KuCoin Futures, Bitget (CCXT)
 - **Sinyaller**:
@@ -72,3 +85,25 @@ main.py                 # Orkestrasyon (RUN_SUMMARY yazıyor)
 - “IndexError iloc[-1]” → `main.py` veri yeterlilik ve `dropna()` guard’larıyla giderildi.
 
 Daha fazla ayrıntı için `docs/` klasörüne bak.
+
+## Dokümantasyon
+
+- 📘 [İyileştirmeler ve Değişiklikler](docs/IYILESTIRMELER.md) - Son yapılan düzeltmeler
+- 📗 [Environment Variables](docs/ENV_VARIABLES.md) - Tüm environment variable'lar
+- 📙 [Troubleshooting Guide](docs/TROUBLESHOOTING.md) - Sorun giderme kılavuzu
+- 📕 [Workflows](docs/WORKFLOWS.md) - GitHub Actions kullanımı
+- 📓 [Config Reference](docs/CONFIG_REFERENCE.md) - Config dosyası ayarları
+
+## Test Etme
+
+Bot çalışır durumda mı kontrol etmek için:
+
+```bash
+# Smoke test (önerilen)
+python tests/smoke_test.py
+
+# Tüm testler
+pytest tests/ -v
+
+# Sonuç: 9 passed ✅
+```
