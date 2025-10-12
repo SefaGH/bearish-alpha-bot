@@ -10,7 +10,7 @@ import pandas as pd
 import yaml
 
 from core.multi_exchange import build_clients_from_env
-from core.indicators import enrich as ind_enrich
+from core.indicators import add_indicators as ind_enrich
 from core.regime import is_bearish_regime
 from core.notify import Telegram
 from strategies.oversold_bounce import OversoldBounce
