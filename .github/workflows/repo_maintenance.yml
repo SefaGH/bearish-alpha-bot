@@ -1,0 +1,43 @@
+name: Repo Maintenance (auto-patch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Which patch to apply"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - standardize-secrets
+          - docker-python-312
+          - fix-backtest-imports
+          - set-exchange-kucoinfutures
+      commit_message:
+        description: "Optional commit message"
+        required: false
+        default: "chore: repo maintenance auto-patch"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run maintenance script
+        run: |
+          python -u scripts/maintenance.py --task "${{ github.event.inputs.task }}"
+
+      - name: Commit changes (if any)
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: ${{ github.event.inputs.commit_message }}
+          add_options: "-A"
