@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import os, re, sys, argparse
+import re, argparse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +13,7 @@ def read(p: Path) -> str:
 
 def write_if_changed(p: Path, new: str) -> bool:
     old = read(p)
-    if old == new:
+    if old == new or new == "":
         return False
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(new, encoding="utf-8")
@@ -24,9 +24,8 @@ def replace_many(text: str, pairs: dict[str, str]) -> str:
         text = text.replace(a, b)
     return text
 
-def patch_standardize_secrets() -> list[Path]:
+def patch_standardize_secrets():
     changed = []
-    # Hedef: workflow dosyalarında KEY/SECRET standardı, varsayılan kucoinfo değil burada
     mappings = {
         "BINGX_API_KEY": "BINGX_KEY",
         "BINGX_SECRET_KEY": "BINGX_SECRET",
@@ -48,18 +47,18 @@ def patch_standardize_secrets() -> list[Path]:
             changed.append(wf)
     return changed
 
-def patch_docker_python_312() -> list[Path]:
+def patch_docker_python_312():
     changed = []
     df = ROOT / "docker" / "Dockerfile"
     txt = read(df)
     if not txt:
         return changed
     new = re.sub(r"FROM\s+python:3\.\d+-slim", "FROM python:3.12-slim", txt)
-    if write_if_changed(df, new):
+    if write_if_changed(df, new) and new != txt:
         changed.append(df)
     return changed
 
-def patch_backtest_imports() -> list[Path]:
+def patch_backtest_imports():
     changed = []
     targets = [
         ROOT / "src" / "backtest" / "param_sweep.py",
@@ -69,7 +68,6 @@ def patch_backtest_imports() -> list[Path]:
         txt = read(p)
         if not txt:
             continue
-        # Eski varyasyonları add_indicators alias'ına çevir
         new = re.sub(
             r"from\s+core\.indicators\s+import\s+enrich(?:\s+as\s+\w+)?",
             "from core.indicators import add_indicators as ind_enrich",
@@ -81,25 +79,23 @@ def patch_backtest_imports() -> list[Path]:
             new,
             flags=re.MULTILINE,
         )
-        if write_if_changed(p, new):
+        if write_if_changed(p, new) and new != txt:
             changed.append(p)
     return changed
 
-def patch_set_exchange_kucoinfutures() -> list[Path]:
+def patch_set_exchange_kucoinfutures():
     changed = []
-    # Workflow'larda default 'bingx' → 'kucoinfutures'
+    # Workflow'larda varsayılan 'bingx' → 'kucoinfutures' (yalnızca varsayılanlarda)
     for wf in (ROOT / ".github" / "workflows").glob("*.yml"):
         txt = read(wf)
         if not txt:
             continue
         new = txt
-        # '${{ secrets.EXECUTION_EXCHANGE || 'bingx' }}' → 'kucoinfutures'
         new = re.sub(r"\|\|\s*'bingx'\s*}}", "|| 'kucoinfutures' }}", new)
-        # inputs default'ları (opsiyonel)
-        new = new.replace("default: \"bingx\"", "default: \"kucoinfutures\"")
+        new = new.replace('default: "bingx"', 'default: "kucoinfutures"')
         if write_if_changed(wf, new) and new != txt:
             changed.append(wf)
-    # env.example'da EXECUTION_EXCHANGE=bingx → kucoinfutures
+    # env.example’da EXECUTION_EXCHANGE=bingx → kucoinfutures
     envf = ROOT / "env.example"
     txt = read(envf)
     if txt:
@@ -115,7 +111,7 @@ def main():
     ])
     args = ap.parse_args()
 
-    changed: list[Path] = []
+    changed = []
     if args.task in ("all", "standardize-secrets"):
         changed += patch_standardize_secrets()
     if args.task in ("all", "docker-python-312"):
@@ -125,15 +121,10 @@ def main():
     if args.task in ("all", "set-exchange-kucoinfutures"):
         changed += patch_set_exchange_kucoinfutures()
 
-    # Özet
-    if changed:
-        print("Patched files:")
-        for p in sorted(set(changed)):
-            print(" -", p.relative_to(ROOT))
-        sys.exit(0)
-    else:
+    for p in sorted(set(changed)):
+        print("Patched:", p.relative_to(ROOT))
+    if not changed:
         print("No changes were necessary (already up to date).")
-        sys.exit(0)
 
 if __name__ == "__main__":
     main()
