@@ -1,19 +1,17 @@
-import ccxt, time
+import ccxt
+import time
 
 EX_DEFAULTS = {
-    'options': { 'defaultType': 'swap' },
-    'enableRateLimit': True
+    "options": {"defaultType": "swap"},
+    "enableRateLimit": True
 }
+
 
 class CcxtClient:
     def __init__(self, ex_name: str, creds: dict | None = None):
         ex_cls = getattr(ccxt, ex_name)
         params = EX_DEFAULTS | (creds or {})
         self.ex = ex_cls(params)
-
-    class CcxtClient:
-    def __init__(self, ex_name: str, creds: dict | None = None):
-        ...
 
     def ohlcv(self, symbol: str, timeframe: str, limit: int = 500):
         last_exc = None
