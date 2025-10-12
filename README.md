@@ -1,59 +1,74 @@
 # Bearish Alpha Bot
 
-Kısa vadeli (intraday) fırsatları **bearish** piyasa koşullarında tespit eden, çok borsalı ve çok zaman dilimli bir **sinyal üretim botu**.
+Kripto türev piyasalarında (özellikle USDT margined perpetual) **ayı piyasası odaklı** fırsatları tarayıp sinyal üreten, GitHub Actions üzerinden tamamen **tarayıcıdan** çalıştırılabilen bot.
 
-## 🎯 Amaç
-- 30m/1h/4h verileriyle **trend-takip + mean-reversion** setuplarını bulmak.
-- **RSI/EMA/ATR** gibi indikatörlerle **Short the Rip** (short fırsatı) ve **Oversold Bounce** (oversold long) sinyalleri üretmek.
-- Risk-öncelikli: küçük ama **istikrarlı** getiriler (%2–5 hedef aralığı).
+## Özellikler
+- **Çoklu borsa**: BingX, Binance, KuCoin Futures, Bitget (CCXT)
+- **Sinyaller**:
+  - Oversold Bounce (30m)
+  - Short The Rip (30m + 1h bağlam)
+- **Rejim filtresi** (4h bearish) – test amaçlı kapatılıp açılabilir
+- **Telegram bildirimi**
+- **CSV çıktı** (artefact)
+- **Backtest & Param tarama**: OB ve STR için Actions ile tek tık
+- **Nightly raporlama**: OB+STR sweep + Markdown rapor + (opsiyonel) Telegram özet
 
-## ⚙️ Nasıl Çalışır (Kısa)
-1. **Universe**: Borsalardan (BingX, Bitget, KuCoin Futures, Binance; istersen Ascendex) USDT-quoted semboller seçilir (spot+perps konfige bağlı).
-2. **Rejim filtresi (4h)**: Düşüş koşulu sağlanmazsa sinyal üretilmez.
-3. **Sinyaller**: 30m/1h RSI/EMA/ATR ile ShortTheRip & OversoldBounce kuralları.
-4. **Risk**: İşlem başı risk USD, ATR tabanlı SL/TP/Trailing, meme sınıfı limitleri.
-5. **Bildirim**: Sinyaller Telegram’a gönderilir. Paper modda PnL/istatistik saklanır.
+## Hızlı Başlangıç (sadece GitHub)
+1. **Secrets ayarla** (Repo → Settings → Secrets and variables → Actions)
+   - `EXCHANGES`: örn. `bingx,binance,kucoinfutures`
+   - Kullandığın borsa anahtarları: `BINGX_KEY`, `BINGX_SECRET`, … (spot/derivatives izinleri açık olmalı)
+   - (Opsiyonel) `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+   - (Opsiyonel) `EXECUTION_EXCHANGE`: örn. `bingx`
+2. **Python 3.12** ile çalıştır
+   - Tüm workflow dosyalarında:
+     ```yaml
+     - uses: actions/setup-python@v5
+       with:
+         python-version: "3.12"
+     ```
+3. **requirements.txt** (3.12 uyumlu)
+   ```text
+   ccxt==4.3.88
+   pandas>=2.2.3,<3
+   numpy>=2.2.6
+   python-dotenv==1.0.1
+   pyyaml==6.0.2
+   requests==2.32.3
+   python-telegram-bot==21.6
+   pandas-ta==0.4.67b0
+   ```
+4. **Botu bir kez çalıştır**  
+   Actions → **Run Bot Once (Orchestrated)** → Run  
+   - Telegram: “tarama başlıyor” + sinyal/uyarı mesajları  
+   - Artefact: `bot-run` içinde `RUN_SUMMARY.txt` ve varsa `data/signals_*.csv`
 
-## 🚀 Hızlı Kurulum
-> Lokal test gerekmiyor; GitHub Actions ile çalışır.
-
-1. **Secrets** (GitHub → Settings → Secrets → Actions):
-   - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
-   - `EXCHANGES` (örn: `bingx,bitget,kucoinfutures,binance`)
-   - `EXECUTION_EXCHANGE` (örn: `bingx`)
-   - Borsa API’leri: `BINGX_API_KEY/SECRET_KEY`, `BITGET_API_KEY/SECRET_KEY/PASSWORD`,
-     `KUCOIN_API_KEY/SECRET_KEY/PASSWORD`, `BINANCE_API_KEY/SECRET_KEY`
-2. **Workflow**: `.github/workflows/bot.yml` dosyasını ekle (bizde hazır).
-3. **Config**: `config/config.yaml` yoksa workflow otomatik `config.example.yaml`’dan kopyalar.
-4. **Çalıştır**: GitHub → Actions → **Run workflow**.
-
-## 📲 Örnek Telegram Çıktısı
+## Çalışma Akışı (MVP)
 ```
-[universe] bingx:80 | bitget:80 | kucoinfutures:80 | binance:80
-🔴 [kucoinfutures] SHORT BTC/USDT @ 126062.8
-TP~122911.2  SL~126920  Trail~126598.5  Qty~317
-RSI 68.4 & touch 1h EMA band
-Notional≈$40.0k  Risk≈$271.73
-```
-_No signals_ koşularında:
-```
-ℹ️ No signals this run. scanned=24 bearish_ok=6 signals_found=0 sent=0 open=0
-```
-
-## 🧩 Dizin Yapısı
-```
-bearish-alpha-bot/
- ├─ README.md                 # Bu dosya (özet & hızlı kurulum)
- ├─ .github/
- │   ├─ README_BOT.md         # Detaylı manifesto/dokümantasyon
- │   └─ workflows/
- │        └─ bot.yml          # CI/CD (cron + manual run)
- ├─ src/                      # Kodlar (main, universe, indicators, notify...)
- ├─ config/                   # config.yaml & config.example.yaml
- ├─ data/                     # sinyaller (csv) – artifacts
- ├─ state.json, day_stats.json# PnL/pozisyon istatistikleri – artifacts
+ENV/Secrets → CCXT veri çekimi (30m/1h/4h) → indikatörler (RSI/EMA/ATR) →
+4h regime (opsiyonel) → OB/STR stratejileri → Telegram → CSV artefact
 ```
 
----
+## Yapı
+```
+src/
+  core/
+    ccxt_client.py      # ccxt sarmalayıcı (retry’li OHLCV)
+    indicators.py       # add_indicators(...) → ema21/50/200, rsi, atr
+    multi_exchange.py   # ENV’den borsa client’ları
+    notify.py           # Telegram
+    regime.py           # 4h bearish kontrolü
+  strategies/
+    oversold_bounce.py
+    short_the_rip.py
+  backtest/
+    param_sweep.py      # OB param tarama (Actions)
+    param_sweep_str.py  # STR param tarama (Actions)
+main.py                 # Orkestrasyon (RUN_SUMMARY yazıyor)
+```
 
-> Repo kökü için bu özet yeter. Ayrıntılar için `.github/README_BOT.md` dosyasına bak.
+## Sıkça Sorulanlar
+- “Artefact yok uyarısı” → `RUN_SUMMARY.txt` her koşuda oluşturulur.  
+- “Sinyal yok” → test için `ignore_regime: true` ve RSI eşiklerini gevşet; EXCHANGES’i genişlet; `min_bars` eşiğini düşür.  
+- “IndexError iloc[-1]” → `main.py` veri yeterlilik ve `dropna()` guard’larıyla giderildi.
+
+Daha fazla ayrıntı için `docs/` klasörüne bak.
