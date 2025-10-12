@@ -12,7 +12,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
-        run: pip install --no-cache-dir -r requirements.txt
+        run: |
+          python -V
+          pip install --upgrade pip setuptools wheel
+          pip install --no-cache-dir -r requirements.txt
+
       - name: Run
         env:
           EXCHANGES: ${{ secrets.EXCHANGES }}
