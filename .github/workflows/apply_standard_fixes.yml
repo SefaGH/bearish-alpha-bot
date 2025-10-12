@@ -1,0 +1,389 @@
+name: Apply Standard Fixes (secrets naming + py3.12 + backtest imports)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply file updates
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 1) Fix secrets naming in bot workflow
+          mkdir -p .github/workflows
+          cat > .github/workflows/bot.yml << 'YAML'
+name: Run Bearish Bot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"  # Her 30 dakikada bir
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -V
+          pip install --upgrade pip setuptools wheel
+          pip install --no-cache-dir -r requirements.txt
+
+      # config.yaml yoksa example'dan kopyala (fixed bash)
+      - name: Prepare config.yaml (fallback to example)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p config
+          if [ ! -f "config/config.yaml" ]; then
+            if [ -f "config/config.example.yaml" ]; then
+              cp "config/config.example.yaml" "config/config.yaml"
+              echo "[prepare] Using config/config.example.yaml as config/config.yaml"
+            else
+              echo "::error::Neither config/config.yaml nor config/config.example.yaml found."
+              exit 1
+            fi
+          fi
+
+      - name: Run bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          EXCHANGES: ${{ secrets.EXCHANGES }}
+          EXECUTION_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE }}
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+          BITGET_KEY: ${{ secrets.BITGET_KEY }}
+          BITGET_SECRET: ${{ secrets.BITGET_SECRET }}
+          BITGET_PASSWORD: ${{ secrets.BITGET_PASSWORD }}
+          KUCOIN_KEY: ${{ secrets.KUCOIN_KEY }}
+          KUCOIN_SECRET: ${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_PASSWORD: ${{ secrets.KUCOIN_PASSWORD }}
+          BINANCE_KEY: ${{ secrets.BINANCE_KEY }}
+          BINANCE_SECRET: ${{ secrets.BINANCE_SECRET }}
+        run: |
+          python -u src/main.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-data
+          path: |
+            data/
+            state.json
+            day_stats.json
+YAML
+
+          # 2) Upgrade Dockerfile to Python 3.12-slim
+          mkdir -p docker
+          cat > docker/Dockerfile << 'DOCKER'
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+CMD ["python", "-u", "src/main.py"]
+DOCKER
+
+          # 3) Fix backtest import: enrich -> add_indicators
+          mkdir -p src/backtest
+          cat > src/backtest/param_sweep.py << 'PY'
+#!/usr/bin/env python3
+from __future__ import annotations
+import os, itertools
+from datetime import datetime
+from typing import List, Dict, Any
+import pandas as pd
+import yaml
+
+from core.multi_exchange import build_clients_from_env
+from core.indicators import add_indicators as ind_enrich
+
+DATA_DIR = "data"
+BT_DIR = os.path.join(DATA_DIR, "backtests")
+
+def _df_from_ohlcv(rows):
+    cols = ["timestamp","open","high","low","close","volume"]
+    df = pd.DataFrame(rows, columns=cols)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    return df.set_index("timestamp")
+
+def simulate_long_nextbar(df: pd.DataFrame, tp_pct: float, sl_atr_mult: float | None, fallback_sl_pct: float | None) -> Dict[str, float]:
+    pnls = []
+    df = df.dropna().copy()
+    for i in range(len(df)-1):
+        entry = float(df["close"].iloc[i])
+        atr = float(df["atr"].iloc[i])
+        hi = float(df["high"].iloc[i+1])
+        lo = float(df["low"].iloc[i+1])
+
+        tp = entry * (1 + tp_pct)
+        if sl_atr_mult is not None:
+            sl = entry - sl_atr_mult * atr
+        else:
+            sl_pct = float(fallback_sl_pct) if fallback_sl_pct is not None else 0.05
+            sl = entry * (1 - sl_pct)
+
+        if lo <= sl:
+            pnls.append(-(entry - sl)/entry)
+            continue
+        if hi >= tp:
+            pnls.append((tp - entry)/entry)
+            continue
+    if not pnls:
+        return {"trades": 0, "win_rate": 0.0, "avg_pnl": 0.0, "rr": 0.0, "net_pnl": 0.0}
+    wins = [x for x in pnls if x>0]
+    losses = [-x for x in pnls if x<0]
+    win_rate = len(wins)/len(pnls)
+    avg_gain = sum(wins)/max(1,len(wins))
+    avg_loss = sum(losses)/max(1,len(losses))
+    rr = (avg_gain/avg_loss) if (avg_gain>0 and avg_loss>0) else 0.0
+    return {"trades": len(pnls), "win_rate": win_rate, "avg_pnl": sum(pnls)/len(pnls), "rr": rr, "net_pnl": sum(pnls)}
+
+def sweep_ob(df30: pd.DataFrame, grid: Dict[str, List[Any]], fallbacks: Dict[str, Any]) -> pd.DataFrame:
+    res = []
+    for rsi_max, tp_pct, sl_atr_mult in itertools.product(grid["rsi_max"], grid["tp_pct"], grid["sl_atr_mult"]):
+        mask = df30["rsi"] <= rsi_max
+        sub = df30.loc[mask].copy()
+        if len(sub) < 5:
+            continue
+        sim = simulate_long_nextbar(sub, tp_pct=float(tp_pct), sl_atr_mult=(None if sl_atr_mult is None else float(sl_atr_mult)), fallback_sl_pct=fallbacks.get("sl_pct"))
+        res.append({
+            "strategy": "oversold_bounce",
+            "rsi_max": float(rsi_max),
+            "tp_pct": float(tp_pct),
+            "sl_atr_mult": (None if sl_atr_mult is None else float(sl_atr_mult)),
+            **sim
+        })
+    if not res:
+        return pd.DataFrame()
+    return pd.DataFrame(res).sort_values(["avg_pnl", "win_rate", "trades"], ascending=[False, False, False])
+
+def main():
+    symbol = os.getenv("BT_SYMBOL", "BTC/USDT")
+    exchange = os.getenv("BT_EXCHANGE", os.getenv("EXECUTION_EXCHANGE", "bingx"))
+    limit = int(os.getenv("BT_LIMIT", "1000"))
+    grid = {
+        "rsi_max": [20, 23, 25, 27, 30],
+        "tp_pct": [0.008, 0.010, 0.012, 0.015],
+        "sl_atr_mult": [0.8, 1.0, 1.2, 1.5]
+    }
+    cfg_path = os.getenv("CONFIG_PATH", "config/config.example.yaml")
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        cfg = {}
+    ind_cfg = cfg.get("indicators", {}) or {}
+    ob_cfg = (cfg.get("signals", {}) or {}).get("oversold_bounce", {}) or {}
+    fallback_sl_pct = ob_cfg.get("sl_pct")
+
+    clients = build_clients_from_env()
+    if exchange not in clients:
+        if clients:
+            exchange, client = next(iter(clients.items()))
+        else:
+            raise SystemExit("No exchange available. Set EXCHANGES=... in ENV")
+    else:
+        client = clients[exchange]
+
+    df30 = _df_from_ohlcv(client.ohlcv(symbol, timeframe="30m", limit=limit))
+    df30i = ind_enrich(df30, ind_cfg).dropna()
+
+    dfres = sweep_ob(df30i, grid, {"sl_pct": fallback_sl_pct})
+    if dfres.empty:
+        print("No results produced. Check data length or grid ranges.")
+        return
+
+    os.makedirs(BT_DIR, exist_ok=True)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join(BT_DIR, f"{symbol.replace('/','_')}_{ts}.csv")
+    dfres.to_csv(out_path, index=False)
+    print(f"✅ Wrote: {out_path}")
+    print(dfres.head(10).to_string(index=False))
+
+if __name__ == "__main__":
+    main()
+PY
+
+          cat > src/backtest/param_sweep_str.py << 'PY'
+#!/usr/bin/env python3
+from __future__ import annotations
+import os, itertools
+from datetime import datetime
+from typing import List, Dict, Any
+import pandas as pd
+import yaml
+
+from core.multi_exchange import build_clients_from_env
+from core.indicators import add_indicators as ind_enrich
+
+DATA_DIR = "data"
+BT_DIR = os.path.join(DATA_DIR, "backtests")
+
+def _df_from_ohlcv(rows):
+    cols = ["timestamp","open","high","low","close","volume"]
+    df = pd.DataFrame(rows, columns=cols)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    return df.set_index("timestamp")
+
+def fetch(client, symbol: str, tf: str, limit: int) -> pd.DataFrame:
+    rows = client.ohlcv(symbol, timeframe=tf, limit=limit)
+    return _df_from_ohlcv(rows)
+
+def align_1h_to_30m(df30: pd.DataFrame, df1h: pd.DataFrame) -> pd.DataFrame:
+    joined = pd.merge_asof(
+        df30.sort_index(),
+        df1h.sort_index(),
+        left_index=True, right_index=True,
+        direction="backward", suffixes=("", "_1h")
+    )
+    return joined
+
+def simulate_short_nextbar(df: pd.DataFrame, tp_pct: float, sl_atr_mult: float | None, fallback_sl_pct: float | None) -> Dict[str, float]:
+    pnls = []
+    df = df.dropna().copy()
+    for i in range(len(df)-1):
+        entry = float(df["close"].iloc[i])
+        atr = float(df["atr"].iloc[i])
+        hi = float(df["high"].iloc[i+1])
+        lo = float(df["low"].iloc[i+1])
+
+        tp = entry * (1 - tp_pct)
+        if sl_atr_mult is not None:
+            sl = entry + sl_atr_mult * atr
+        else:
+            sl_pct = float(fallback_sl_pct) if fallback_sl_pct is not None else 0.05
+            sl = entry * (1 + sl_pct)
+
+        if hi >= sl:
+            pnls.append(-(sl - entry)/entry)
+            continue
+        if lo <= tp:
+            pnls.append((entry - tp)/entry)
+            continue
+
+    if not pnls:
+        return {"trades": 0, "win_rate": 0.0, "avg_pnl": 0.0, "rr": 0.0, "net_pnl": 0.0}
+    wins = [x for x in pnls if x>0]
+    losses = [-x for x in pnls if x<0]
+    win_rate = len(wins)/len(pnls)
+    avg_gain = sum(wins)/max(1,len(wins))
+    avg_loss = sum(losses)/max(1,len(losses))
+    rr = (avg_gain/avg_loss) if (avg_gain>0 and avg_loss>0) else 0.0
+    return {"trades": len(pnls), "win_rate": win_rate, "avg_pnl": sum(pnls)/len(pnls), "rr": rr, "net_pnl": sum(pnls)}
+
+def sweep_str(df30i: pd.DataFrame, df1hi: pd.DataFrame, grid, fallbacks) -> pd.DataFrame:
+    dfj = align_1h_to_30m(df30i, df1hi)
+    res = []
+    for rsi_min, tp_pct, sl_atr_mult, require_band_touch, require_ema_align in itertools.product(
+        grid["rsi_min"], grid["tp_pct"], grid["sl_atr_mult"], grid["require_band_touch"], grid["require_ema_align"]
+    ):
+        mask = dfj["rsi"] >= rsi_min
+        if require_ema_align:
+            mask = mask & (dfj["ema21"] < dfj["ema50"]) & (dfj["ema50"] <= dfj["ema200"])
+        if require_band_touch:
+            if "ema50_1h" in dfj.columns:
+                mask = mask & (dfj["close_1h"] >= dfj["ema50_1h"])
+            else:
+                mask = mask & (dfj["close"] >= dfj["ema50"])
+        sub = dfj.loc[mask].copy()
+        if len(sub) < 5:
+            continue
+        sim = simulate_short_nextbar(sub, tp_pct=float(tp_pct), sl_atr_mult=(None if sl_atr_mult is None else float(sl_atr_mult)), fallback_sl_pct=fallbacks.get("sl_pct"))
+        res.append({
+            "strategy": "short_the_rip",
+            "rsi_min": float(rsi_min),
+            "tp_pct": float(tp_pct),
+            "sl_atr_mult": (None if sl_atr_mult is None else float(sl_atr_mult)),
+            "require_band_touch": bool(require_band_touch),
+            "require_ema_align": bool(require_ema_align),
+            **sim
+        })
+    if not res:
+        return pd.DataFrame()
+    return pd.DataFrame(res).sort_values(["avg_pnl", "win_rate", "trades"], ascending=[False, False, False])
+
+def main():
+    symbol = os.getenv("BT_SYMBOL", "BTC/USDT")
+    exchange = os.getenv("BT_EXCHANGE", os.getenv("EXECUTION_EXCHANGE", "bingx"))
+    limit30 = int(os.getenv("BT_LIMIT_30M", "1000"))
+    limit1h = int(os.getenv("BT_LIMIT_1H", "1000"))
+
+    grid = {
+        "rsi_min": [58, 60, 62, 64],
+        "tp_pct": [0.008, 0.010, 0.012, 0.015],
+        "sl_atr_mult": [1.0, 1.2, 1.5],
+        "require_band_touch": [True, False],
+        "require_ema_align": [True, False],
+    }
+
+    cfg_path = os.getenv("CONFIG_PATH", "config/config.example.yaml")
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        cfg = {}
+    ind_cfg = cfg.get("indicators", {}) or {}
+
+    clients = build_clients_from_env()
+    if exchange not in clients:
+        if clients:
+            exchange, client = next(iter(clients.items()))
+        else:
+            raise SystemExit("No exchange available. Set EXCHANGES=... in ENV")
+    else:
+        client = clients[exchange]
+
+    df30 = fetch(client, symbol, "30m", limit30)
+    df1h = fetch(client, symbol, "1h", limit1h)
+
+    df30i = ind_enrich(df30, ind_cfg).dropna()
+    df1hi = ind_enrich(df1h, ind_cfg).dropna()
+
+    dfres = sweep_str(df30i, df1hi, grid, {"sl_pct": None})
+    if dfres.empty:
+        print("No results produced. Check data length or grid ranges.")
+        return
+
+    os.makedirs(BT_DIR, exist_ok=True)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join(BT_DIR, f"str_{symbol.replace('/','_')}_{ts}.csv")
+    dfres.to_csv(out_path, index=False)
+    print(f"✅ Wrote: {out_path}")
+    print(dfres.head(10).to_string(index=False))
+
+if __name__ == "__main__":
+    main()
+PY
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: standardize secrets, upgrade to Python 3.12, fix backtest indicator import"
+            git push
+          fi
