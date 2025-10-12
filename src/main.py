@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# Bearish Alpha Bot — Orchestrated MVP
-# Flow: load env+config -> build clients+universe -> fetch OHLCV (30m/1h/4h) -> indicators -> regime -> strategies -> telegram+artifacts
+# Bearish Alpha Bot — Orchestrated MVP (patched: data sufficiency + dropna guards)
 
 from __future__ import annotations
 import os, json, time, traceback
@@ -18,8 +17,6 @@ from strategies.short_the_rip import ShortTheRip
 from core.state import load_state, save_state, load_day_stats, save_day_stats
 
 DATA_DIR = "data"
-
-# ---------- helpers ----------
 
 def load_config():
     cfg_path = os.getenv("CONFIG_PATH", "config/config.example.yaml")
@@ -53,21 +50,19 @@ def save_signals_csv(signals: List[dict]):
     pd.DataFrame(signals).to_csv(path, index=False)
     return path
 
-# ---------- main orchestration ----------
+def has_min_bars(*dfs, min_bars: int = 120) -> bool:
+    return all(df is not None and len(df) >= min_bars for df in dfs)
 
 def run_once():
     cfg = load_config()
     tg = build_tg()
 
-    # Build clients from ENV (EXCHANGES=BingX,...)
     clients = build_clients_from_env()
     if tg:
         tg.send("🔎 <b>Bearish Alpha Bot</b> tarama başlıyor (paper)")
 
-    # Universe
     from universe import build_universe
     universe = build_universe(clients, cfg)
-    # Optionally clamp per exchange top N for fast MVP
     max_per_ex = int(cfg.get("universe", {}).get("top_n_per_exchange", 20) or 20)
 
     signals_out = []
@@ -76,38 +71,45 @@ def run_once():
         if not symbols:
             continue
 
-        # Multi-timeframe fetch
         for sym in symbols:
             try:
+                # --- Fetch ---
                 df_30 = fetch_ohlcv(client, sym, "30m", limit=250)
-                df_1h = fetch_ohlcv(client, sym, "1h", limit=250)
-                df_4h = fetch_ohlcv(client, sym, "4h", limit=250)
-                if df_4h.empty or df_1h.empty or df_30.empty:
+                df_1h = fetch_ohlcv(client, sym, "1h",  limit=250)
+                df_4h = fetch_ohlcv(client, sym, "4h",  limit=250)
+
+                # --- Data sufficiency: skip thin/empty markets ---
+                if not has_min_bars(df_30, df_1h, df_4h, min_bars=120):
                     continue
 
-                # indicators
+                # --- Indicators + dropna ---
                 ind_cfg = cfg.get("indicators", {}) or {}
-                df_30i = ind_enrich(df_30, ind_cfg)
-                df_1hi = ind_enrich(df_1h, ind_cfg)
-                df_4hi = ind_enrich(df_4h, ind_cfg)
+                df_30i = ind_enrich(df_30, ind_cfg).dropna()
+                df_1hi = ind_enrich(df_1h,  ind_cfg).dropna()
+                df_4hi = ind_enrich(df_4h,  ind_cfg).dropna()
 
-                # regime
+                if df_30i.empty or df_1hi.empty or df_4hi.empty:
+                    continue
+
+                # --- Regime filter (4h) ---
                 ignore_regime = bool(cfg.get("signals", {}).get("oversold_bounce", {}).get("ignore_regime", False))
                 bearish_ok = is_bearish_regime(df_4hi)
                 if not ignore_regime and not bearish_ok:
                     continue
 
-                # strategies
+                # --- Strategies ---
                 s_cfg = cfg.get("signals", {}) or {}
                 out_sig = None
 
                 if s_cfg.get("oversold_bounce", {}).get("enable", True):
                     ob = OversoldBounce(s_cfg.get("oversold_bounce"))
-                    out_sig = out_sig or ob.signal(df_30i)
+                    if len(df_30i) >= 50:
+                        out_sig = out_sig or ob.signal(df_30i)
 
                 if s_cfg.get("short_the_rip", {}).get("enable", True):
                     strp = ShortTheRip(s_cfg.get("short_the_rip"))
-                    out_sig = out_sig or strp.signal(df_30i, df_1hi)
+                    if len(df_30i) >= 50 and len(df_1hi) >= 50:
+                        out_sig = out_sig or strp.signal(df_30i, df_1hi)
 
                 if out_sig:
                     msg = f"⚡ <b>{ex_name}</b> | <code>{sym}</code> | {out_sig['side'].upper()} — {out_sig['reason']}"
@@ -121,14 +123,12 @@ def run_once():
                     })
 
             except Exception as e:
-                # Best-effort logging; do not crash the whole scan
                 if tg:
-                    tg.send(f"⚠️ Hata: <code>{ex_name}:{sym}</code> — {type(e).__name__}: {str(e)[:140]}")
+                    tg.send(f"⚠️ {ex_name}:{sym} skip — {type(e).__name__}: {str(e)[:140]}")
                 else:
                     print("error", ex_name, sym, e)
                 continue
 
-    # artifacts
     if signals_out:
         csv_path = save_signals_csv(signals_out)
         if tg:
@@ -146,7 +146,6 @@ if __name__ == "__main__":
     except Exception as e:
         print("FATAL:", e)
         traceback.print_exc()
-        # Telegram varsa kritik hatayı bildir
         tg = build_tg()
         if tg:
             tg.send(f"🛑 FATAL: {type(e).__name__}: {str(e)[:200]}")
