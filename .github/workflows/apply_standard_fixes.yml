@@ -13,12 +13,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Apply file updates
+      - name: Patch files (bot.yml, Dockerfile, backtest scripts)
         shell: bash
         run: |
           set -euo pipefail
 
-          # 1) Fix secrets naming in bot workflow
+          # 1) Overwrite .github/workflows/bot.yml with standardized secrets
           mkdir -p .github/workflows
           cat > .github/workflows/bot.yml << 'YAML'
 name: Run Bearish Bot
@@ -46,7 +46,6 @@ jobs:
           pip install --upgrade pip setuptools wheel
           pip install --no-cache-dir -r requirements.txt
 
-      # config.yaml yoksa example'dan kopyala (fixed bash)
       - name: Prepare config.yaml (fallback to example)
         shell: bash
         run: |
@@ -102,7 +101,7 @@ COPY . .
 CMD ["python", "-u", "src/main.py"]
 DOCKER
 
-          # 3) Fix backtest import: enrich -> add_indicators
+          # 3) Fix backtest imports: core.indicators.add_indicators
           mkdir -p src/backtest
           cat > src/backtest/param_sweep.py << 'PY'
 #!/usr/bin/env python3
@@ -174,7 +173,7 @@ def sweep_ob(df30: pd.DataFrame, grid: Dict[str, List[Any]], fallbacks: Dict[str
         })
     if not res:
         return pd.DataFrame()
-    return pd.DataFrame(res).sort_values(["avg_pnl", "win_rate", "trades"], ascending=[False, False, False])
+    return pd.DataFrame(res).sort_values(["avg_pnl","win_rate","trades"], ascending=[False, False, False])
 
 def main():
     symbol = os.getenv("BT_SYMBOL", "BTC/USDT")
@@ -204,7 +203,8 @@ def main():
     else:
         client = clients[exchange]
 
-    df30 = _df_from_ohlcv(client.ohlcv(symbol, timeframe="30m", limit=limit))
+    rows = client.ohlcv(symbol, timeframe="30m", limit=limit)
+    df30 = _df_from_ohlcv(rows)
     df30i = ind_enrich(df30, ind_cfg).dropna()
 
     dfres = sweep_ob(df30i, grid, {"sl_pct": fallback_sl_pct})
@@ -319,7 +319,7 @@ def sweep_str(df30i: pd.DataFrame, df1hi: pd.DataFrame, grid, fallbacks) -> pd.D
         })
     if not res:
         return pd.DataFrame()
-    return pd.DataFrame(res).sort_values(["avg_pnl", "win_rate", "trades"], ascending=[False, False, False])
+    return pd.DataFrame(res).sort_values(["avg_pnl","win_rate","trades"], ascending=[False, False, False])
 
 def main():
     symbol = os.getenv("BT_SYMBOL", "BTC/USDT")
@@ -384,6 +384,6 @@ PY
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "chore: standardize secrets, upgrade to Python 3.12, fix backtest indicator import"
+            git commit -m "chore: standardize secrets, upgrade Python 3.12, fix backtest indicator imports"
             git push
           fi
