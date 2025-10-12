@@ -35,6 +35,31 @@ jobs:
           pip install --upgrade pip setuptools wheel
           pip install --no-cache-dir -r requirements.txt
 
+      - name: Debug KuCoin credentials
+        env:
+          EXCHANGES: ${{ secrets.EXCHANGES }}
+          EXECUTION_EXCHANGE: ${{ github.event.inputs.BT_EXCHANGE }}
+          KUCOIN_KEY: ${{ secrets.KUCOIN_KEY }}
+          KUCOIN_SECRET: ${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_PASSWORD: ${{ secrets.KUCOIN_PASSWORD }}
+        run: |
+          echo "=== CREDENTIAL DEBUG ==="
+          echo "EXCHANGES: $EXCHANGES"
+          echo "EXECUTION_EXCHANGE: $EXECUTION_EXCHANGE"
+          echo "KUCOIN_KEY exists: $([[ -n \"$KUCOIN_KEY\" ]] && echo 'YES' || echo 'NO')"
+          echo "KUCOIN_SECRET exists: $([[ -n \"$KUCOIN_SECRET\" ]] && echo 'YES' || echo 'NO')"
+          echo "KUCOIN_PASSWORD exists: $([[ -n \"$KUCOIN_PASSWORD\" ]] && echo 'YES' || echo 'NO')"
+          if [[ -n "$KUCOIN_KEY" ]]; then
+            echo "KUCOIN_KEY length: ${#KUCOIN_KEY}"
+          fi
+          if [[ -n "$KUCOIN_SECRET" ]]; then
+            echo "KUCOIN_SECRET length: ${#KUCOIN_SECRET}"
+          fi
+          if [[ -n "$KUCOIN_PASSWORD" ]]; then
+            echo "KUCOIN_PASSWORD length: ${#KUCOIN_PASSWORD}"
+          fi
+          echo "========================"
+
       - name: Run param sweep
         env:
           # ENV — buraları repo secrets ile doldurabilirsin (Settings ▸ Secrets and variables ▸ Actions)
