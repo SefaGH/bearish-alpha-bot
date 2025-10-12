@@ -1,4 +1,4 @@
-name: Nightly Backtests + Report (Fixed)
+name: Nightly Backtests + Report
 
 on:
   schedule:
