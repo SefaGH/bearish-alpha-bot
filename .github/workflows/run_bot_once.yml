@@ -1,0 +1,40 @@
+name: Run Bot Once (Orchestrated)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-once:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install --no-cache-dir -r requirements.txt
+      - name: Run
+        env:
+          EXCHANGES: ${{ secrets.EXCHANGES }}
+          EXECUTION_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE || 'bingx' }}
+          MODE: paper
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          BINGX_KEY:    ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+          BITGET_KEY:   ${{ secrets.BITGET_KEY }}
+          BITGET_SECRET:${{ secrets.BITGET_SECRET }}
+          BITGET_PASSWORD:${{ secrets.BITGET_PASSWORD }}
+          BINANCE_KEY:  ${{ secrets.BINANCE_KEY }}
+          BINANCE_SECRET:${{ secrets.BINANCE_SECRET }}
+          KUCOIN_KEY:   ${{ secrets.KUCOIN_KEY }}
+          KUCOIN_SECRET:${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_PASSWORD:${{ secrets.KUCOIN_PASSWORD }}
+          CONFIG_PATH: config/config.example.yaml
+        run: python -u src/main.py
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-run
+          path: |
+            data/**
