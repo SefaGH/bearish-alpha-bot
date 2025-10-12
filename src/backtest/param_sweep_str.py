@@ -2,6 +2,10 @@
 # Param Sweep (MVP) for ShortTheRip (30m entries with 1h context)
 
 from __future__ import annotations
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+
 import os, itertools
 from datetime import datetime
 from typing import List, Dict, Any
