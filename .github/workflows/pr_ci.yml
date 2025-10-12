@@ -1,140 +1,145 @@
-name: PR CI
+name: PR CI (tests + sanity + failure feedback)
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
-  ci:
+  test:
     runs-on: ubuntu-latest
-    
+    env:
+      PYTHONPATH: src
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      
-      - name: Install dependencies
+
+      - name: Install deps
         run: |
           python -V
           pip install --upgrade pip setuptools wheel
           pip install --no-cache-dir -r requirements.txt
           pip install pytest
-      
-      - name: Compile all Python files
+
+      - name: Syntax compile (src)
         id: compile
         continue-on-error: true
         run: |
-          python -m compileall src/ > compile.log 2>&1
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
-      
-      - name: Import sanity checks
+          python - << 'PY'
+          import compileall, sys
+          ok = compileall.compile_dir("src", maxlevels=10, quiet=1)
+          sys.exit(0 if ok else 1)
+          PY
+
+      - name: Import sanity
         id: imports
         continue-on-error: true
         run: |
-          echo "Testing key module imports..." > import_sanity.log
-          PYTHONPATH=src python -c "from backtest.param_sweep import main" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from backtest.param_sweep_str import main" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from main import run_once" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from universe import pick_execution_exchange" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from core.exec_engine import ExecEngine" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from core.trailing import initial_stops" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from core.sizing import position_size_usdt" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from core.limits import clamp_amount, meets_or_scale_notional" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from core.normalize import amount_to_precision" >> import_sanity.log 2>&1
-          echo "All imports successful!" >> import_sanity.log
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
-      
-      - name: Run pytest
+          python - << 'PY'
+          import importlib, sys
+          mods = [
+            "core.indicators",
+            "core.sizing",
+            "core.limits",
+            "core.normalize",
+            "strategies.oversold_bounce",
+            "strategies.short_the_rip",
+            "backtest.param_sweep",
+            "backtest.param_sweep_str",
+          ]
+          try:
+              for m in mods:
+                  importlib.import_module(m)
+              print("Import OK")
+              sys.exit(0)
+          except Exception as e:
+              print("Import failed:", type(e).__name__, str(e)[:400])
+              sys.exit(1)
+          PY
+
+      - name: Pytest
         id: pytest
         continue-on-error: true
         run: |
-          python -m pytest tests/ -v > pytest.log 2>&1
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
-      
-      - name: Upload logs on failure
-        if: steps.compile.outputs.exit_code != '0' || steps.imports.outputs.exit_code != '0' || steps.pytest.outputs.exit_code != '0'
+          set -o pipefail
+          pytest -q | tee pytest.out
+
+      - name: Upload CI artifacts
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: ci-failure-logs
+          name: pr-ci-artifacts
           path: |
-            compile.log
-            import_sanity.log
-            pytest.log
+            pytest.out
           if-no-files-found: ignore
-      
-      - name: Label PR on failure
-        if: steps.compile.outputs.exit_code != '0' || steps.imports.outputs.exit_code != '0' || steps.pytest.outputs.exit_code != '0'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              labels: ['ci-failed']
-            });
-      
-      - name: Comment failure summary
-        if: steps.compile.outputs.exit_code != '0' || steps.imports.outputs.exit_code != '0' || steps.pytest.outputs.exit_code != '0'
+
+      - name: Comment failure summary on PR
+        if: ${{ steps.compile.outcome == 'failure' || steps.imports.outcome == 'failure' || steps.pytest.outcome == 'failure' }}
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            let summary = '## ❌ CI Failed\n\n';
-            
-            if ('${{ steps.compile.outputs.exit_code }}' !== '0') {
-              summary += '### Compilation Errors\n```\n';
-              try {
-                const log = fs.readFileSync('compile.log', 'utf8');
-                summary += log.split('\n').slice(-20).join('\n');
-              } catch (e) {
-                summary += 'Could not read compile.log';
-              }
-              summary += '\n```\n\n';
-            }
-            
-            if ('${{ steps.imports.outputs.exit_code }}' !== '0') {
-              summary += '### Import Errors\n```\n';
-              try {
-                const log = fs.readFileSync('import_sanity.log', 'utf8');
-                summary += log.split('\n').slice(-20).join('\n');
-              } catch (e) {
-                summary += 'Could not read import_sanity.log';
-              }
-              summary += '\n```\n\n';
-            }
-            
-            if ('${{ steps.pytest.outputs.exit_code }}' !== '0') {
-              summary += '### Test Failures\n```\n';
-              try {
-                const log = fs.readFileSync('pytest.log', 'utf8');
-                summary += log.split('\n').slice(-30).join('\n');
-              } catch (e) {
-                summary += 'Could not read pytest.log';
-              }
-              summary += '\n```\n\n';
-            }
-            
-            summary += '\nFull logs are available in the workflow artifacts.';
-            
+            const pr = context.payload.pull_request;
+            const tail = (p, n=120) => {
+              try { return fs.readFileSync(p, 'utf8').trim().split('\n').slice(-n).join('\n'); }
+              catch { return '(no pytest.out log)'; }
+            };
+            const body = [
+              '❌ CI failed. Quick summary:',
+              '',
+              `• compile outcome: ${'${{ steps.compile.outcome }}'}`,
+              `• imports outcome: ${'${{ steps.imports.outcome }}'}`,
+              `• pytest outcome : ${'${{ steps.pytest.outcome }}'}`,
+              '',
+              'Last lines from pytest:',
+              '```',
+              tail('pytest.out', 80),
+              '```',
+              '> Full logs available in Actions. Artifact: pr-ci-artifacts'
+            ].join('\n');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: summary
+              issue_number: pr.number,
+              body
             });
-      
-      - name: Telegram notification on failure
-        if: (steps.compile.outputs.exit_code != '0' || steps.imports.outputs.exit_code != '0' || steps.pytest.outputs.exit_code != '0') && secrets.TELEGRAM_BOT_TOKEN != ''
+
+      - name: Add ci-failed label
+        if: ${{ steps.compile.outcome == 'failure' || steps.imports.outcome == 'failure' || steps.pytest.outcome == 'failure' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['ci-failed'],
+            });
+
+      - name: Telegram notify (optional)
+        if: ${{ steps.compile.outcome == 'failure' || steps.imports.outcome == 'failure' || steps.pytest.outcome == 'failure' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-            -d text="🛑 PR CI Failed: ${{ github.event.pull_request.html_url }}" \
-            -d parse_mode="HTML" || true
-      
+          if [ -n "${TELEGRAM_BOT_TOKEN}" ] && [ -n "${TELEGRAM_CHAT_ID}" ]; then
+            MSG="❌ CI failed on PR #${{ github.event.pull_request.number }} (branch: ${{ github.event.pull_request.head.ref }}). Check Actions logs and artifact 'pr-ci-artifacts'."
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "{\"chat_id\":\"${TELEGRAM_CHAT_ID}\",\"text\":\"${MSG}\",\"parse_mode\":\"HTML\"}" || true
+          else
+            echo "Telegram secrets not set; skipping notify."
+          fi
+
       - name: Fail job if any step failed
-        if: steps.compile.outputs.exit_code != '0' || steps.imports.outputs.exit_code != '0' || steps.pytest.outputs.exit_code != '0'
-        run: exit 1
+        if: ${{ steps.compile.outcome == 'failure' || steps.imports.outcome == 'failure' || steps.pytest.outcome == 'failure' }}
+        run: |
+          echo "One or more CI steps failed. Failing job."
+          exit 1
