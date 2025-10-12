@@ -45,13 +45,13 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           EXCHANGES: ${{ secrets.EXCHANGES }}
           EXECUTION_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE }}
-          BINGX_API_KEY: ${{ secrets.BINGX_API_KEY }}
-          BINGX_SECRET_KEY: ${{ secrets.BINGX_SECRET_KEY }}
-          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
-          BITGET_SECRET_KEY: ${{ secrets.BITGET_SECRET_KEY }}
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+          BITGET_KEY: ${{ secrets.BITGET_KEY }}
+          BITGET_SECRET: ${{ secrets.BITGET_SECRET }}
           BITGET_PASSWORD: ${{ secrets.BITGET_PASSWORD }}
-          KUCOIN_API_KEY: ${{ secrets.KUCOIN_API_KEY }}
-          KUCOIN_SECRET_KEY: ${{ secrets.KUCOIN_SECRET_KEY }}
+          KUCOIN_KEY: ${{ secrets.KUCOIN_KEY }}
+          KUCOIN_SECRET: ${{ secrets.KUCOIN_SECRET }}
           KUCOIN_PASSWORD: ${{ secrets.KUCOIN_PASSWORD }}
           BINANCE_KEY: ${{ secrets.BINANCE_KEY }}
           BINANCE_SECRET: ${{ secrets.BINANCE_SECRET }}
