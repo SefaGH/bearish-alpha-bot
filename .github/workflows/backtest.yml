@@ -31,6 +31,8 @@ jobs:
 
       - name: Install deps
         run: |
+          python -V
+          pip install --upgrade pip setuptools wheel
           pip install --no-cache-dir -r requirements.txt
 
       - name: Run param sweep
