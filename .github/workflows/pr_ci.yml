@@ -28,31 +28,39 @@ jobs:
         continue-on-error: true
         run: |
           python -m compileall src/ > compile.log 2>&1
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
+          EXIT_CODE=$?
+          echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+          exit "$EXIT_CODE"
       
       - name: Import sanity checks
         id: imports
         continue-on-error: true
         run: |
           echo "Testing key module imports..." > import_sanity.log
-          PYTHONPATH=src python -c "from backtest.param_sweep import main" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from backtest.param_sweep_str import main" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from main import run_once" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from universe import pick_execution_exchange" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from core.exec_engine import ExecEngine" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from core.trailing import initial_stops" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from core.sizing import position_size_usdt" >> import_sanity.log 2>&1
-          PYTHONPATH=src python -c "from core.limits import clamp_amount, meets_or_scale_notional" >> import_sanity.log 2>&1
+          PYTHONPATH=src python -c "from backtest.param_sweep import main" >> import_sanity.log 2>&1 && \
+          PYTHONPATH=src python -c "from backtest.param_sweep_str import main" >> import_sanity.log 2>&1 && \
+          PYTHONPATH=src python -c "from main import run_once" >> import_sanity.log 2>&1 && \
+          PYTHONPATH=src python -c "from universe import pick_execution_exchange" >> import_sanity.log 2>&1 && \
+          PYTHONPATH=src python -c "from core.exec_engine import ExecEngine" >> import_sanity.log 2>&1 && \
+          PYTHONPATH=src python -c "from core.trailing import initial_stops" >> import_sanity.log 2>&1 && \
+          PYTHONPATH=src python -c "from core.sizing import position_size_usdt" >> import_sanity.log 2>&1 && \
+          PYTHONPATH=src python -c "from core.limits import clamp_amount, meets_or_scale_notional" >> import_sanity.log 2>&1 && \
           PYTHONPATH=src python -c "from core.normalize import amount_to_precision" >> import_sanity.log 2>&1
-          echo "All imports successful!" >> import_sanity.log
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
+          EXIT_CODE=$?
+          if [ "$EXIT_CODE" -eq 0 ]; then
+            echo "All imports successful!" >> import_sanity.log
+          fi
+          echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+          exit "$EXIT_CODE"
       
       - name: Run pytest
         id: pytest
         continue-on-error: true
         run: |
           python -m pytest tests/ -v > pytest.log 2>&1
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
+          EXIT_CODE=$?
+          echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+          exit "$EXIT_CODE"
       
       - name: Upload logs on failure
         if: steps.compile.outputs.exit_code != '0' || steps.imports.outputs.exit_code != '0' || steps.pytest.outputs.exit_code != '0'
@@ -128,12 +136,17 @@ jobs:
             });
       
       - name: Telegram notification on failure
-        if: (steps.compile.outputs.exit_code != '0' || steps.imports.outputs.exit_code != '0' || steps.pytest.outputs.exit_code != '0') && secrets.TELEGRAM_BOT_TOKEN != ''
+        if: steps.compile.outputs.exit_code != '0' || steps.imports.outputs.exit_code != '0' || steps.pytest.outputs.exit_code != '0'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-            -d text="🛑 PR CI Failed: ${{ github.event.pull_request.html_url }}" \
-            -d parse_mode="HTML" || true
+          if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${TELEGRAM_CHAT_ID}" \
+              -d text="🛑 PR CI Failed: ${{ github.event.pull_request.html_url }}" \
+              -d parse_mode="HTML" || true
+          fi
       
       - name: Fail job if any step failed
         if: steps.compile.outputs.exit_code != '0' || steps.imports.outputs.exit_code != '0' || steps.pytest.outputs.exit_code != '0'
