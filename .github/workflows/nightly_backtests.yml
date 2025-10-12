@@ -31,7 +31,7 @@ jobs:
       - name: Run OversoldBounce sweeps (bash loop)
         env:
           EXCHANGES: ${{ secrets.EXCHANGES }}
-          EXECUTION_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE || 'bingx' }}
+          EXECUTION_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE || 'kucoinfutures' }}
           BINGX_KEY:   ${{ secrets.BINGX_KEY }}
           BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
           BITGET_KEY:  ${{ secrets.BITGET_KEY }}
@@ -59,7 +59,7 @@ jobs:
       - name: Run ShortTheRip sweeps (bash loop)
         env:
           EXCHANGES: ${{ secrets.EXCHANGES }}
-          EXECUTION_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE || 'bingx' }}
+          EXECUTION_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE || 'kucoinfutures' }}
           BINGX_KEY:   ${{ secrets.BINGX_KEY }}
           BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
           BITGET_KEY:  ${{ secrets.BITGET_KEY }}

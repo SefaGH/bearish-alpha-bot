@@ -10,7 +10,7 @@ on:
       BT_EXCHANGE:
         description: "Exchange key (must be in EXCHANGES env)"
         required: true
-        default: "bingx"
+        default: "kucoinfutures"
       BT_LIMIT:
         description: "Bars to fetch (30m)"
         required: true

@@ -13,7 +13,7 @@ import pandas as pd
 import yaml
 
 from core.multi_exchange import build_clients_from_env
-from core.indicators import add_indicators as ind_enrich
+from core.indicators import add_indicators as ind_enrichas ind_enrich
 
 DATA_DIR = "data"
 BT_DIR = os.path.join(DATA_DIR, "backtests")
