@@ -9,7 +9,7 @@ import pandas as pd
 import yaml
 
 from core.multi_exchange import build_clients_from_env
-from core.indicators import add_indicators as ind_enrichas ind_enrich
+from core.indicators import add_indicators as ind_enrich
 
 DATA_DIR = "data"
 BT_DIR = os.path.join(DATA_DIR, "backtests")
@@ -99,7 +99,7 @@ def sweep_str(df30i: pd.DataFrame, df1hi: pd.DataFrame, grid, fallbacks) -> pd.D
 
 def main():
     symbol = os.getenv("BT_SYMBOL", "BTC/USDT")
-    exchange = os.getenv("BT_EXCHANGE", os.getenv("EXECUTION_EXCHANGE", "bingx"))
+    exchange = os.getenv("BT_EXCHANGE", os.getenv("EXECUTION_EXCHANGE", "kucoinfutures"))
     limit30 = int(os.getenv("BT_LIMIT_30M", "1000"))
     limit1h = int(os.getenv("BT_LIMIT_1H", "1000"))
 

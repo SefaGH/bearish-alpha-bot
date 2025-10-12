@@ -103,4 +103,4 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
     return per_ex
 
 def pick_execution_exchange() -> str:
-    return os.getenv('EXECUTION_EXCHANGE', 'bingx')
+    return os.getenv('EXECUTION_EXCHANGE', 'kucoinfutures')

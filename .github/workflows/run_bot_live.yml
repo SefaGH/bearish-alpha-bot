@@ -1,0 +1,70 @@
+name: Run Bot (Live Mode)
+
+on:
+  workflow_dispatch:
+    inputs:
+      exchange:
+        description: 'Execution Exchange'
+        required: true
+        default: 'kucoinfutures'
+        type: string
+      confirm_live:
+        description: 'Type YES to confirm live trading'
+        required: true
+        type: string
+
+jobs:
+  run-live:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.confirm_live == 'YES' }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      
+      - name: Install dependencies
+        run: |
+          python -V
+          pip install --upgrade pip setuptools wheel
+          pip install --no-cache-dir -r requirements.txt
+      
+      - name: Run Bot in Live Mode
+        env:
+          MODE: live
+          EXECUTION_EXCHANGE: ${{ github.event.inputs.exchange }}
+          EXCHANGES: ${{ github.event.inputs.exchange }}
+          CONFIG_PATH: config/config.example.yaml
+          # Risk parameters (conservative defaults)
+          RISK_EQUITY_USD: "1000"
+          RISK_PER_TRADE_RISK_PCT: "0.01"
+          RISK_RISK_USD_CAP: "50"
+          RISK_MAX_NOTIONAL_PER_TRADE: "500"
+          RISK_MIN_STOP_PCT: "0.005"
+          RISK_DAILY_MAX_TRADES: "5"
+          RISK_MIN_AMOUNT_BEHAVIOR: "skip"
+          RISK_MIN_NOTIONAL_BEHAVIOR: "skip"
+          EXEC_FEE_PCT: "0.0006"
+          EXEC_SLIP_PCT: "0.0005"
+          # Exchange credentials from secrets
+          KUCOIN_FUTURES_API_KEY: ${{ secrets.KUCOIN_FUTURES_API_KEY }}
+          KUCOIN_FUTURES_SECRET: ${{ secrets.KUCOIN_FUTURES_SECRET }}
+          KUCOIN_FUTURES_PASSWORD: ${{ secrets.KUCOIN_FUTURES_PASSWORD }}
+          # Telegram notifications
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python src/main.py
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-run-results
+          path: |
+            data/**
+            state.json
+            day_stats.json
+          if-no-files-found: ignore

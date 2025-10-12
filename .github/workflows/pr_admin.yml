@@ -1,0 +1,33 @@
+name: PR Admin
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to manage'
+        required: true
+        type: number
+      merge_method:
+        description: 'Merge method'
+        required: true
+        default: 'squash'
+        type: choice
+        options:
+          - squash
+          - merge
+          - rebase
+
+jobs:
+  pr-admin:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Mark PR as ready and enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr ready ${{ github.event.inputs.pr_number }}
+          gh pr merge ${{ github.event.inputs.pr_number }} --auto --${{ github.event.inputs.merge_method }}
+          echo "✅ PR #${{ github.event.inputs.pr_number }} marked ready and auto-merge enabled with method: ${{ github.event.inputs.merge_method }}"
