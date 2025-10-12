@@ -36,7 +36,7 @@ def build_clients_from_env() -> Dict[str, CcxtClient]:
     # Validate exchange names
     invalid = [name for name in ex_names if name not in SUPPORTED_EXCHANGES]
     if invalid:
-        logger.warning(f"Unknown exchange names (may not work): {', '.join(invalid)}")
+        logger.warning(f"Unknown exchange names: {', '.join(invalid)}. Supported exchanges: {', '.join(sorted(SUPPORTED_EXCHANGES))}")
     
     clients = {}
     for name in ex_names:
