@@ -1,5 +1,11 @@
+import sys
 import math
-from src.core.sizing import position_size_usdt
+from pathlib import Path
+
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+
+from core.sizing import position_size_usdt
 
 def test_long_uses_real_distance_when_stop_below_entry():
     entry, stop, risk = 100.0, 99.0, 10.0  # distance 1.0
