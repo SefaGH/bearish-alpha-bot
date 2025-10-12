@@ -1,10 +1,11 @@
 import os, json, datetime
+from datetime import timezone
 
 STATE_PATH = 'data/state.json'
 TODAY_PATH = 'data/day_stats.json'
 
 def _now():
-    return datetime.datetime.utcnow().isoformat()
+    return datetime.datetime.now(timezone.utc).isoformat()
 
 def load_state():
     if not os.path.exists(STATE_PATH):

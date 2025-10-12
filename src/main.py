@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 import os, json, time, traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 import pandas as pd
 import yaml
@@ -50,7 +50,7 @@ def ensure_data_dir():
 
 def save_signals_csv(signals: List[dict]):
     ensure_data_dir()
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     path = os.path.join(DATA_DIR, f"signals_{ts}.csv")
     pd.DataFrame(signals).to_csv(path, index=False)
     return path
@@ -140,7 +140,7 @@ def execute_signal(engine: ExecEngine, client, symbol: str, signal: dict, risk_p
             'tp': tp,
             'sl': sl,
             'order_id': order.get('id', 'N/A'),
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
         
     except Exception as e:
@@ -165,7 +165,7 @@ def run_once():
     ensure_data_dir()
     summary_path = os.path.join(DATA_DIR, "RUN_SUMMARY.txt")
     with open(summary_path, "w", encoding="utf-8") as f:
-        f.write(f"Run start (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Run start (UTC): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"MODE: {mode}\n")
         f.write(f"EXECUTION_EXCHANGE: {exec_exchange}\n")
         f.write(f"EXCHANGES: {os.getenv('EXCHANGES','')}\n")
@@ -262,7 +262,7 @@ def run_once():
                     if tg: tg.send(msg)
                     
                     signals_out.append({
-                        "ts": datetime.utcnow().isoformat(),
+                        "ts": datetime.now(timezone.utc).isoformat(),
                         "exchange": ex_name,
                         "symbol": sym,
                         "side": out_sig.get("side"),

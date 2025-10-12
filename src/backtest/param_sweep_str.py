@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 import os, itertools
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any
 import pandas as pd
 import yaml
@@ -144,7 +144,7 @@ def main():
         return
 
     os.makedirs(BT_DIR, exist_ok=True)
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_path = os.path.join(BT_DIR, f"str_{symbol.replace('/','_')}_{ts}.csv")
     dfres.to_csv(out_path, index=False)
     print(f"✅ Wrote: {out_path}")

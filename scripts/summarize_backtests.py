@@ -2,7 +2,7 @@
 # Summarize backtest CSVs into a Markdown report and (optionally) send a Telegram brief.
 from __future__ import annotations
 import os, re, glob, json, math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Tuple
 import pandas as pd
 import requests
@@ -49,7 +49,7 @@ def top_k(df: pd.DataFrame, k=3) -> pd.DataFrame:
     return df.sort_values(["avg_pnl","win_rate","trades","rr"], ascending=[False, False, False, False]).head(k)
 
 def make_report(df: pd.DataFrame) -> str:
-    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [f"# Backtest Nightly Report\n", f"_Generated: {ts}_\n"]
     for strat in sorted(df["strategy"].unique()):
         sdf = df[df["strategy"]==strat]

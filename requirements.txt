@@ -6,3 +6,4 @@ pyyaml==6.0.2
 requests==2.32.3
 python-telegram-bot==21.6
 pandas-ta==0.4.67b0
+pytest>=7.0.0
