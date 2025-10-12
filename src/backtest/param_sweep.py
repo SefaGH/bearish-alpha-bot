@@ -13,7 +13,7 @@ import pandas as pd
 import yaml
 
 from core.multi_exchange import build_clients_from_env
-from core.indicators import add_indicators as ind_enrichas ind_enrich
+from core.indicators import add_indicators as ind_enrich
 
 DATA_DIR = "data"
 BT_DIR = os.path.join(DATA_DIR, "backtests")
@@ -77,7 +77,7 @@ def sweep_ob(df30: pd.DataFrame, grid: Dict[str, List[Any]], fallbacks: Dict[str
 
 def main():
     symbol = os.getenv("BT_SYMBOL", "BTC/USDT")
-    exchange = os.getenv("BT_EXCHANGE", os.getenv("EXECUTION_EXCHANGE", "bingx"))
+    exchange = os.getenv("BT_EXCHANGE", os.getenv("EXECUTION_EXCHANGE", "kucoinfutures"))
     limit = int(os.getenv("BT_LIMIT", "1000"))
     grid = {
         "rsi_max": [20, 23, 25, 27, 30],
