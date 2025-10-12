@@ -107,7 +107,10 @@ def main():
     else:
         client = clients[exchange]
 
-    rows = client.ohlcv(symbol, timeframe="30m", limit=limit)
+    # Validate and get the correct symbol format for this exchange
+    validated_symbol = client.validate_and_get_symbol(symbol)
+
+    rows = client.ohlcv(validated_symbol, timeframe="30m", limit=limit)
     df30 = _df_from_ohlcv(rows)
     df30i = ind_enrich(df30, ind_cfg).dropna()
 

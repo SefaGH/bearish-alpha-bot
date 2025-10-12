@@ -132,8 +132,11 @@ def main():
     else:
         client = clients[exchange]
 
-    df30 = fetch(client, symbol, "30m", limit30)
-    df1h = fetch(client, symbol, "1h", limit1h)
+    # Validate and get the correct symbol format for this exchange
+    validated_symbol = client.validate_and_get_symbol(symbol)
+
+    df30 = fetch(client, validated_symbol, "30m", limit30)
+    df1h = fetch(client, validated_symbol, "1h", limit1h)
 
     df30i = ind_enrich(df30, ind_cfg).dropna()
     df1hi = ind_enrich(df1h, ind_cfg).dropna()
