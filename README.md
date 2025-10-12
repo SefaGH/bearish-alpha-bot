@@ -72,7 +72,3 @@ main.py                 # Orkestrasyon (RUN_SUMMARY yazıyor)
 - “IndexError iloc[-1]” → `main.py` veri yeterlilik ve `dropna()` guard’larıyla giderildi.
 
 Daha fazla ayrıntı için `docs/` klasörüne bak.
-
-
-## Test Update
-- Manual PR test: 2025-10-12 21:57 UTC
