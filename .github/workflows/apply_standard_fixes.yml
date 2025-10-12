@@ -19,8 +19,7 @@ jobs:
           set -euo pipefail
 
           # 1) Overwrite .github/workflows/bot.yml with standardized secrets
-          mkdir -p .github/workflows
-          cat > .github/workflows/bot.yml << 'YAML'
+          cat <<'YAML' > .github/workflows/bot.yml
 name: Run Bearish Bot
 
 on:
@@ -91,8 +90,7 @@ jobs:
 YAML
 
           # 2) Upgrade Dockerfile to Python 3.12-slim
-          mkdir -p docker
-          cat > docker/Dockerfile << 'DOCKER'
+          cat <<'DOCKER' > docker/Dockerfile
 FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt ./
@@ -102,8 +100,7 @@ CMD ["python", "-u", "src/main.py"]
 DOCKER
 
           # 3) Fix backtest imports: core.indicators.add_indicators
-          mkdir -p src/backtest
-          cat > src/backtest/param_sweep.py << 'PY'
+          cat <<'PY' > src/backtest/param_sweep.py
 #!/usr/bin/env python3
 from __future__ import annotations
 import os, itertools
@@ -223,7 +220,7 @@ if __name__ == "__main__":
     main()
 PY
 
-          cat > src/backtest/param_sweep_str.py << 'PY'
+          cat <<'PY' > src/backtest/param_sweep_str.py
 #!/usr/bin/env python3
 from __future__ import annotations
 import os, itertools
