@@ -160,7 +160,7 @@ def main():
 
     try:
         logger.info(f"Fetching OHLCV data: {validated_symbol} 30m limit={limit}...")
-        rows = client.ohlcv(validated_symbol, timeframe="30m", limit=limit)
+        rows = client.fetch_ohlcv_bulk(validated_symbol, timeframe="30m", target_limit=limit)
         logger.info(f"✓ Fetched {len(rows)} candles")
     except Exception as e:
         logger.error(f"❌ Failed to fetch OHLCV data: {type(e).__name__}: {e}")

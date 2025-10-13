@@ -60,6 +60,10 @@ class MockCcxtClient:
     
     def ohlcv(self, symbol, timeframe='30m', limit=100):
         return self.ex.fetch_ohlcv(symbol, timeframe, limit)
+    
+    def fetch_ohlcv_bulk(self, symbol, timeframe='30m', target_limit=100):
+        """Bulk fetch using same logic as ohlcv for mock."""
+        return self.ex.fetch_ohlcv(symbol, timeframe, target_limit)
 
 # Monkey-patch the CcxtClient
 import core.ccxt_client as ccxt_client_module

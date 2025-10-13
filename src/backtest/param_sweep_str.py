@@ -32,7 +32,7 @@ def _df_from_ohlcv(rows):
     return df.set_index("timestamp")
 
 def fetch(client, symbol: str, tf: str, limit: int) -> pd.DataFrame:
-    rows = client.ohlcv(symbol, timeframe=tf, limit=limit)
+    rows = client.fetch_ohlcv_bulk(symbol, timeframe=tf, target_limit=limit)
     return _df_from_ohlcv(rows)
 
 def align_1h_to_30m(df30: pd.DataFrame, df1h: pd.DataFrame) -> pd.DataFrame:

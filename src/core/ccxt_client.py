@@ -80,6 +80,55 @@ class CcxtClient:
             raise last_exc
         raise RuntimeError(error_msg)
 
+    def fetch_ohlcv_bulk(self, symbol: str, timeframe: str, target_limit: int) -> List[List]:
+        """
+        Fetch OHLCV data with automatic pagination for large datasets.
+        
+        Args:
+            symbol: Trading pair symbol
+            timeframe: Timeframe (e.g., '1h', '30m') 
+            target_limit: Desired number of candles (can exceed exchange limits)
+        
+        Returns:
+            List of OHLCV data with up to target_limit candles
+        """
+        if target_limit <= 200:
+            # Single API call sufficient
+            return self.ohlcv(symbol, timeframe, target_limit)
+        
+        # Multiple API calls needed
+        all_candles = []
+        batches_needed = min(5, (target_limit + 199) // 200)  # Max 5 batches (1000 candles)
+        
+        for batch in range(batches_needed):
+            batch_limit = min(200, target_limit - len(all_candles))
+            if batch_limit <= 0:
+                break
+                
+            try:
+                batch_data = self.ohlcv(symbol, timeframe, batch_limit)
+                if not batch_data:
+                    break
+                    
+                all_candles.extend(batch_data)
+                logger.info(f"Batch {batch + 1}/{batches_needed}: fetched {len(batch_data)} candles, total: {len(all_candles)}")
+                
+                if len(all_candles) >= target_limit:
+                    break
+                    
+                # Rate limiting between batches
+                time.sleep(0.5)
+                
+            except Exception as e:
+                logger.warning(f"Batch {batch + 1} failed: {e}")
+                if batch == 0:  # First batch failed
+                    raise
+                break  # Use partial data from successful batches
+        
+        result = all_candles[:target_limit] if all_candles else []
+        logger.info(f"Bulk fetch complete: requested {target_limit}, got {len(result)} candles")
+        return result
+
     def ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetch current ticker data for a symbol."""
         return self.ex.fetch_ticker(symbol)
