@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-import os, itertools
+import os, itertools, logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any
 import pandas as pd
@@ -14,6 +14,13 @@ import yaml
 
 from core.multi_exchange import build_clients_from_env
 from core.indicators import add_indicators as ind_enrich
+
+# Setup logging
+logging.basicConfig(
+    level=os.getenv('LOG_LEVEL', 'INFO'),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 DATA_DIR = "data"
 BT_DIR = os.path.join(DATA_DIR, "backtests")
@@ -116,6 +123,14 @@ def main():
     limit30 = int(os.getenv("BT_LIMIT_30M", "1000"))
     limit1h = int(os.getenv("BT_LIMIT_1H", "1000"))
 
+    logger.info("=" * 60)
+    logger.info("BACKTEST PARAM SWEEP - ShortTheRip Strategy")
+    logger.info("=" * 60)
+    logger.info(f"Symbol: {symbol}")
+    logger.info(f"Exchange: {exchange}")
+    logger.info(f"30m limit: {limit30} candles")
+    logger.info(f"1h limit: {limit1h} candles")
+
     grid = {
         "rsi_min": [55, 60, 65, 70, 75],
         "tp_pct": [0.008, 0.012, 0.016, 0.020],
@@ -126,41 +141,95 @@ def main():
 
     cfg_path = os.getenv("CONFIG_PATH", "config/config.example.yaml")
     try:
+        logger.debug(f"Loading config from: {cfg_path}")
         with open(cfg_path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
-    except Exception:
+        logger.info(f"Config loaded successfully")
+    except Exception as e:
+        logger.warning(f"Failed to load config from {cfg_path}: {e}. Using defaults.")
         cfg = {}
     ind_cfg = cfg.get("indicators", {}) or {}
 
-    clients = build_clients_from_env()
+    try:
+        logger.info("Building exchange clients from environment...")
+        clients = build_clients_from_env()
+        logger.info(f"Available exchanges: {list(clients.keys())}")
+    except Exception as e:
+        logger.error(f"❌ Failed to build exchange clients: {type(e).__name__}: {e}")
+        logger.error("Please check that EXCHANGES environment variable is set and credentials are valid")
+        raise SystemExit(1) from e
+    
     if exchange not in clients:
         if clients:
+            old_exchange = exchange
             exchange, client = next(iter(clients.items()))
+            logger.warning(f"Exchange '{old_exchange}' not available. Using '{exchange}' instead.")
         else:
-            raise SystemExit("No exchange available. Set EXCHANGES=... in ENV")
+            logger.error("❌ No exchange available. Set EXCHANGES=... in environment")
+            raise SystemExit(1)
     else:
         client = clients[exchange]
+        logger.info(f"Using exchange: {exchange}")
 
     # Validate and get the correct symbol format for this exchange
-    validated_symbol = client.validate_and_get_symbol(symbol)
+    try:
+        logger.info(f"Validating symbol '{symbol}' on {exchange}...")
+        validated_symbol = client.validate_and_get_symbol(symbol)
+        logger.info(f"✓ Using symbol: {validated_symbol}")
+    except Exception as e:
+        logger.error(f"❌ Symbol validation failed: {type(e).__name__}: {e}")
+        logger.error(f"   Exchange: {exchange}")
+        logger.error(f"   Requested symbol: {symbol}")
+        raise SystemExit(1) from e
 
-    df30 = fetch(client, validated_symbol, "30m", limit30)
-    df1h = fetch(client, validated_symbol, "1h", limit1h)
+    try:
+        logger.info(f"Fetching 30m OHLCV data: {validated_symbol} limit={limit30}...")
+        df30 = fetch(client, validated_symbol, "30m", limit30)
+        logger.info(f"✓ Fetched {len(df30)} 30m candles")
+        
+        logger.info(f"Fetching 1h OHLCV data: {validated_symbol} limit={limit1h}...")
+        df1h = fetch(client, validated_symbol, "1h", limit1h)
+        logger.info(f"✓ Fetched {len(df1h)} 1h candles")
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch OHLCV data: {type(e).__name__}: {e}")
+        logger.error(f"   Exchange: {exchange}")
+        logger.error(f"   Symbol: {validated_symbol}")
+        raise SystemExit(1) from e
 
-    df30i = ind_enrich(df30, ind_cfg).dropna()
-    df1hi = ind_enrich(df1h, ind_cfg).dropna()
+    try:
+        logger.info(f"Processing indicators...")
+        df30i = ind_enrich(df30, ind_cfg).dropna()
+        df1hi = ind_enrich(df1h, ind_cfg).dropna()
+        logger.info(f"✓ Data ready: {len(df30i)} 30m candles, {len(df1hi)} 1h candles after indicator enrichment")
+    except Exception as e:
+        logger.error(f"❌ Data processing failed: {type(e).__name__}: {e}")
+        raise SystemExit(1) from e
 
-    dfres = sweep_str(df30i, df1hi, grid, {"sl_pct": None})
+    try:
+        logger.info("Running parameter sweep...")
+        dfres = sweep_str(df30i, df1hi, grid, {"sl_pct": None})
+    except Exception as e:
+        logger.error(f"❌ Parameter sweep failed: {type(e).__name__}: {e}")
+        raise SystemExit(1) from e
+    
     if dfres.empty:
-        print("No results produced. Check data length or grid ranges.")
+        logger.warning("⚠️ No results produced. Check data length or grid ranges.")
+        logger.warning(f"   30m data length: {len(df30i)} candles")
+        logger.warning(f"   1h data length: {len(df1hi)} candles")
+        logger.warning(f"   30m RSI range: {df30i['rsi'].min():.1f} - {df30i['rsi'].max():.1f}")
         return
 
-    os.makedirs(BT_DIR, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join(BT_DIR, f"str_{symbol.replace('/','_')}_{ts}.csv")
-    dfres.to_csv(out_path, index=False)
-    print(f"✅ Wrote: {out_path}")
-    print(dfres.head(10).to_string(index=False))
+    try:
+        os.makedirs(BT_DIR, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join(BT_DIR, f"str_{symbol.replace('/','_')}_{ts}.csv")
+        dfres.to_csv(out_path, index=False)
+        logger.info(f"✅ Results written to: {out_path}")
+        print(f"✅ Wrote: {out_path}")
+        print(dfres.head(10).to_string(index=False))
+    except Exception as e:
+        logger.error(f"❌ Failed to write results: {type(e).__name__}: {e}")
+        raise SystemExit(1) from e
 
 if __name__ == "__main__":
     main()

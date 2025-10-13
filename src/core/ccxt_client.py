@@ -1,6 +1,9 @@
 import ccxt
 import time
+import logging
 from typing import Dict, Any, List
+
+logger = logging.getLogger(__name__)
 
 EX_DEFAULTS = {
     "options": {"defaultType": "swap"},
@@ -47,14 +50,22 @@ class CcxtClient:
         last_exc = None
         for attempt in range(3):
             try:
-                return self.ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+                logger.debug(f"Fetching OHLCV for {symbol} {timeframe} limit={limit} (attempt {attempt + 1}/3)")
+                data = self.ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+                logger.info(f"Successfully fetched {len(data) if data else 0} candles for {symbol} {timeframe}")
+                return data
             except Exception as e:
                 last_exc = e
+                logger.warning(f"OHLCV fetch attempt {attempt + 1}/3 failed for {symbol} {timeframe}: {type(e).__name__}: {e}")
                 if attempt < 2:  # Don't sleep on last attempt
                     time.sleep(0.8)
+        
+        # All retries failed - log detailed error and raise
+        error_msg = f"Failed to fetch OHLCV for {symbol} {timeframe} after 3 attempts"
+        logger.error(f"{error_msg}. Last error: {type(last_exc).__name__}: {last_exc}")
         if last_exc is not None:
             raise last_exc
-        raise RuntimeError(f"fetch_ohlcv failed after retries for {symbol} {timeframe}")
+        raise RuntimeError(error_msg)
 
     def ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetch current ticker data for a symbol."""
@@ -70,7 +81,14 @@ class CcxtClient:
 
     def markets(self) -> Dict[str, Dict[str, Any]]:
         """Load market information."""
-        return self.ex.load_markets()
+        try:
+            logger.debug(f"Loading markets for {self.name}")
+            markets = self.ex.load_markets()
+            logger.info(f"Successfully loaded {len(markets)} markets for {self.name}")
+            return markets
+        except Exception as e:
+            logger.error(f"Failed to load markets for {self.name}: {type(e).__name__}: {e}")
+            raise
 
     def validate_and_get_symbol(self, requested_symbol="BTC/USDT"):
         """
@@ -83,14 +101,16 @@ class CcxtClient:
             str: Validated symbol that exists on the exchange
         
         Raises:
-            SystemExit: If no valid symbol variant is found
+            RuntimeError: If no valid symbol variant is found or if market loading fails
         """
         try:
+            logger.info(f"Validating symbol '{requested_symbol}' on {self.name}")
             markets = self.markets()
             symbols = set(markets.keys())
             
             # Try exact match first
             if requested_symbol in symbols:
+                logger.info(f"✓ Exact match found: {requested_symbol}")
                 return requested_symbol
                 
             # Try common BTC variants if requested symbol starts with BTC
@@ -105,17 +125,31 @@ class CcxtClient:
                 
                 for variant in variants:
                     if variant in symbols:
-                        print(f"✅ Symbol fallback: {requested_symbol} → {variant}")
+                        msg = f"✅ Symbol fallback: {requested_symbol} → {variant}"
+                        print(msg)
+                        logger.info(msg)
                         return variant
             
             # If no variants work, show available BTC symbols for debugging
             btc_symbols = [s for s in symbols if 'BTC' in s.upper()][:10]
-            raise SystemExit(f"Symbol '{requested_symbol}' not found on {self.name}. Available BTC symbols: {btc_symbols}")
+            error_msg = f"Symbol '{requested_symbol}' not found on {self.name}. Available BTC symbols: {btc_symbols}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
             
-        except SystemExit:
-            raise  # Re-raise SystemExit as-is
+        except RuntimeError:
+            raise  # Re-raise RuntimeError as-is
         except Exception as e:
-            raise SystemExit(f"Symbol validation failed for {self.name}: {e}")
+            error_msg = f"Symbol validation failed for {self.name}: {type(e).__name__}: {e}"
+            logger.error(error_msg)
+            
+            # Check if this is an authentication error
+            if 'authentication' in str(e).lower() or 'api' in str(e).lower() or 'key' in str(e).lower():
+                logger.error(f"⚠️ AUTHENTICATION ERROR: Please verify your {self.name.upper()} API credentials are correct")
+                logger.error(f"   Required: {self.name.upper()}_KEY, {self.name.upper()}_SECRET")
+                if self.name in ['kucoin', 'kucoinfutures', 'bitget', 'ascendex']:
+                    logger.error(f"   Also required: {self.name.upper()}_PASSWORD")
+            
+            raise RuntimeError(error_msg) from e
 
     def create_order(self, symbol: str, side: str, type_: str, amount: float, 
                      price: float = None, params: dict = None) -> Dict[str, Any]:
