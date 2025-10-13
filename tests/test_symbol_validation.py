@@ -75,7 +75,7 @@ def test_validate_fallback():
 
 
 def test_validate_invalid_symbol():
-    """Test that invalid symbols raise SystemExit."""
+    """Test that invalid symbols raise RuntimeError."""
     print("Testing invalid symbol handling...")
     
     try:
@@ -86,10 +86,10 @@ def test_validate_invalid_symbol():
         # Try an invalid symbol that doesn't exist and has no fallback
         try:
             result = client.validate_and_get_symbol('INVALID/PAIR')
-            print(f"  ✗ Should have raised SystemExit but got: {result}")
+            print(f"  ✗ Should have raised RuntimeError but got: {result}")
             return False
-        except SystemExit as e:
-            print(f"  ✓ Correctly raised SystemExit for invalid symbol")
+        except RuntimeError as e:
+            print(f"  ✓ Correctly raised RuntimeError for invalid symbol")
             return True
     except Exception as e:
         print(f"  ✗ Test setup failed: {e}")
