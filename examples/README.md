@@ -102,10 +102,82 @@ python3 examples/market_intelligence_example.py
 
 ---
 
+## Phase 3.1: WebSocket Streaming Example
+
+**File:** `websocket_streaming_example.py`
+
+Comprehensive demonstration of Phase 3.1 WebSocket Infrastructure:
+- Real-time OHLCV candle streaming
+- Real-time ticker data streaming
+- Multi-symbol streaming
+- Multi-exchange coordination
+- Data collection and buffering
+
+### Usage
+
+```bash
+python3 examples/websocket_streaming_example.py
+```
+
+### What You'll Learn
+
+1. **Basic OHLCV Streaming** - Stream 1-minute candles from single exchange
+2. **Multi-Symbol Streaming** - Stream BTC and ETH simultaneously
+3. **Multi-Exchange Streaming** - Stream from KuCoin and BingX simultaneously
+4. **Ticker Streaming** - Real-time bid/ask spread monitoring
+
+### Key Features Demonstrated
+
+- **Real-Time Data:** WebSocket-based streaming with < 100ms latency
+- **Async Architecture:** Non-blocking asyncio-based implementation
+- **Stream Management:** Automatic lifecycle handling and cleanup
+- **Data Collection:** Built-in buffering with configurable limits
+- **Multi-Exchange:** Unified interface across KuCoin, BingX, and more
+
+### Note
+
+WebSocket examples require live exchange connections. In sandbox environments with DNS restrictions, connections will fail gracefully with appropriate error handling.
+
+---
+
+## Phase Integration Example
+
+**File:** `phase_integration_example.py`
+
+Complete demonstration of Phase 1 + Phase 2 + Phase 3.1 integration:
+- Multi-exchange REST API data fetching (Phase 1)
+- Market regime analysis (Phase 2)
+- Real-time WebSocket streaming (Phase 3.1)
+
+### Usage
+
+```bash
+python3 examples/phase_integration_example.py
+```
+
+### What You'll Learn
+
+1. **Phase 1 Integration** - Multi-exchange REST API for historical data
+2. **Phase 2 Integration** - Intelligent market regime detection
+3. **Phase 3.1 Integration** - Real-time WebSocket streaming
+4. **Complete Workflow** - How all phases work together seamlessly
+
+### Integration Architecture
+
+```
+Phase 3.1: WebSocket Streaming (Real-time data)
+           ↓
+Phase 2: Market Intelligence (Analysis & adaptation)
+           ↓
+Phase 1: Multi-Exchange Framework (Data fetching & coordination)
+```
+
+---
+
 ## Future Examples
 
 More examples will be added here as the bot evolves:
-- Phase 3: Live trading with adaptive strategies
-- WebSocket integration for real-time updates
+- Phase 3.2: Advanced WebSocket features (order books, trades)
+- Phase 3.3: Live trading with real-time regime adaptation
 - Advanced multi-symbol portfolio management
 - Custom strategy development templates
