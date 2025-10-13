@@ -2,7 +2,7 @@
 # Bearish Alpha Bot — Orchestrated MVP (run summary + artifact guarantee)
 
 from __future__ import annotations
-import os, json, time, traceback
+import os, json, time, traceback, logging
 from datetime import datetime, timezone
 from typing import Dict, List
 import pandas as pd
@@ -312,13 +312,80 @@ def run_once():
 
     return signals_out
 
-if __name__ == "__main__":
+async def main_live_trading():
+    """Main entry point for live trading mode using Phase 3.4 infrastructure."""
+    import asyncio
+    from core.production_coordinator import ProductionCoordinator
+    
+    logger = logging.getLogger(__name__)
+    logger.info("Starting live trading mode with Phase 3.4 infrastructure")
+    
     try:
-        out = run_once()
-        print(f"✅ Done. signals={len(out)}")
+        # Load configuration
+        cfg = load_config()
+        risk_params = get_risk_params()
+        
+        # Build exchange clients (Phase 1)
+        clients = build_clients_from_env()
+        
+        if not clients:
+            raise RuntimeError("No exchange clients available")
+        
+        # Portfolio configuration
+        portfolio_config = {
+            'equity_usd': risk_params['equity_usd']
+        }
+        
+        # Initialize production coordinator
+        coordinator = ProductionCoordinator()
+        
+        # Initialize production system
+        init_result = await coordinator.initialize_production_system(
+            exchange_clients=clients,
+            portfolio_config=portfolio_config
+        )
+        
+        if not init_result['success']:
+            raise RuntimeError(f"Failed to initialize production system: {init_result.get('reason')}")
+        
+        logger.info("Production system initialized successfully")
+        
+        # Get trading mode from environment
+        trading_mode = os.getenv('TRADING_MODE', 'paper')  # 'paper', 'live', 'simulation'
+        duration = float(os.getenv('TRADING_DURATION', '0'))  # 0 = indefinite
+        
+        # Start production loop
+        if duration > 0:
+            logger.info(f"Starting {trading_mode} trading for {duration} seconds")
+            await coordinator.run_production_loop(mode=trading_mode, duration=duration)
+        else:
+            logger.info(f"Starting {trading_mode} trading (indefinite)")
+            await coordinator.run_production_loop(mode=trading_mode)
+        
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
     except Exception as e:
-        print("FATAL:", e)
+        logger.error(f"Error in live trading mode: {e}")
         traceback.print_exc()
-        tg = build_tg()
-        if tg:
-            tg.send(f"🛑 FATAL: {type(e).__name__}: {str(e)[:200]}")
+        raise
+
+
+if __name__ == "__main__":
+    import sys
+    
+    # Check if live trading mode is requested
+    if len(sys.argv) > 1 and sys.argv[1] == '--live':
+        # Run live trading mode
+        import asyncio
+        asyncio.run(main_live_trading())
+    else:
+        # Run traditional one-shot mode
+        try:
+            out = run_once()
+            print(f"✅ Done. signals={len(out)}")
+        except Exception as e:
+            print("FATAL:", e)
+            traceback.print_exc()
+            tg = build_tg()
+            if tg:
+                tg.send(f"🛑 FATAL: {type(e).__name__}: {str(e)[:200]}")
