@@ -49,9 +49,9 @@ jobs:
           EXEC_FEE_PCT: "0.0006"
           EXEC_SLIP_PCT: "0.0005"
           # Exchange credentials from secrets
-          KUCOIN_FUTURES_API_KEY: ${{ secrets.KUCOIN_FUTURES_API_KEY }}
-          KUCOIN_FUTURES_SECRET: ${{ secrets.KUCOIN_FUTURES_SECRET }}
-          KUCOIN_FUTURES_PASSWORD: ${{ secrets.KUCOIN_FUTURES_PASSWORD }}
+          KUCOIN_KEY: ${{ secrets.KUCOIN_KEY }}
+          KUCOIN_SECRET: ${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_PASSWORD: ${{ secrets.KUCOIN_PASSWORD }}
           # Telegram notifications
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

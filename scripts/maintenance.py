@@ -37,6 +37,9 @@ def patch_standardize_secrets():
         "KUCOIN_SECRET_KEY": "KUCOIN_SECRET",
         "KUCOINFUTURES_API_KEY": "KUCOIN_KEY",
         "KUCOINFUTURES_SECRET_KEY": "KUCOIN_SECRET",
+        "KUCOIN_FUTURES_API_KEY": "KUCOIN_KEY",
+        "KUCOIN_FUTURES_SECRET": "KUCOIN_SECRET",
+        "KUCOIN_FUTURES_PASSWORD": "KUCOIN_PASSWORD",
     }
     for wf in (ROOT / ".github" / "workflows").glob("*.yml"):
         txt = read(wf)
