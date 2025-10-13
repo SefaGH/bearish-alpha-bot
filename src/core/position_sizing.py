@@ -263,7 +263,7 @@ class AdvancedPositionSizing:
                 risk_per_trade = kwargs.get('risk_per_trade',
                                            self.risk_manager.portfolio_value * 0.02)
                 position_size = sizing_func(risk_per_trade, signal.get('entry', 0),
-                                          signal.get('stop', 0), **kwargs)
+                                          signal.get('stop', 0))
                 
             elif method == 'volatility_adjusted':
                 target_risk = kwargs.get('target_risk',

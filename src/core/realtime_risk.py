@@ -397,6 +397,22 @@ class RealTimeRiskMonitor:
         
         return alerts
     
+    def update_price_history(self, symbol: str, price: float):
+        """
+        Update price history buffer for a symbol.
+        
+        Args:
+            symbol: Trading symbol
+            price: Current price
+        """
+        if symbol not in self.price_buffers:
+            self.price_buffers[symbol] = deque(maxlen=self.buffer_size)
+        
+        self.price_buffers[symbol].append({
+            'price': price,
+            'timestamp': datetime.now(timezone.utc)
+        })
+    
     def stop_monitoring(self):
         """Stop all risk monitoring tasks."""
         self.monitoring_active = False
