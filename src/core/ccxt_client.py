@@ -329,7 +329,7 @@ class CcxtClient:
         
         # Fallback to essential mappings
         return {
-            'BTC/USDT:USDT': 'XBTUSDTM',
+            'BTC/USDT:USDT': 'XBTUSDM',
             'ETH/USDT:USDT': 'ETHUSDTM',
             'BNB/USDT:USDT': 'BNBUSDTM'
         }

@@ -39,8 +39,8 @@ Auto-discovers all tradable contracts from KuCoin API:
 ```python
 GET https://api-futures.kucoin.com/api/v1/contracts/active
 Response: {"code":"200000","data":[
-    {"symbol":"XBTUSDTM","baseCurrency":"XBT","quoteCurrency":"USDT"},
-    {"symbol":"ETHUSDTM","baseCurrency":"ETH","quoteCurrency":"USDT"},
+    {"symbol":"XBTUSDM","baseCurrency":"XBT","quoteCurrency":"USDT"},
+    {"symbol":"ETHUSDM","baseCurrency":"ETH","quoteCurrency":"USDT"},
     ...
 ]}
 ```
@@ -52,8 +52,8 @@ Response: {"code":"200000","data":[
 - Fallback to essential symbols if API unavailable
 
 **Symbol Mapping Examples:**
-- `BTC/USDT:USDT` → `XBTUSDTM`
-- `ETH/USDT:USDT` → `ETHUSDTM`
+- `BTC/USDT:USDT` → `XBTUSDM`
+- `ETH/USDT:USDT` → `ETHUSDM`
 - `BNB/USDT:USDT` → `BNBUSDTM`
 
 ### 3. Bulk OHLCV Fetching
@@ -95,7 +95,7 @@ Uses KuCoin's native API parameters for optimal performance:
 
 ```python
 params = {
-    'symbol': 'XBTUSDTM',      # Native KuCoin symbol
+    'symbol': 'XBTUSDM',        # Native KuCoin symbol
     'granularity': 30,          # Minutes (30m = 30)
     'from': 1728822196000,      # Start timestamp (ms)
     'to': 1728822296000         # End timestamp (ms)

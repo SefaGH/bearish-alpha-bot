@@ -71,8 +71,8 @@ def test_dynamic_symbol_mapping():
             print(f"  ✗ Missing essential symbols: {missing}")
             return False
         
-        # Check BTC maps to XBTUSDTM (KuCoin's native format)
-        if symbol_map.get('BTC/USDT:USDT') != 'XBTUSDTM':
+        # Check BTC maps to XBTUSDM (KuCoin's native format)
+        if symbol_map.get('BTC/USDT:USDT') != 'XBTUSDM':
             print(f"  ✗ BTC symbol mapping incorrect: {symbol_map.get('BTC/USDT:USDT')}")
             return False
         
