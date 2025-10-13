@@ -145,9 +145,14 @@ class CcxtClient:
             # Check if this is an authentication error
             if 'authentication' in str(e).lower() or 'api' in str(e).lower() or 'key' in str(e).lower():
                 logger.error(f"⚠️ AUTHENTICATION ERROR: Please verify your {self.name.upper()} API credentials are correct")
-                logger.error(f"   Required: {self.name.upper()}_KEY, {self.name.upper()}_SECRET")
-                if self.name in ['kucoin', 'kucoinfutures', 'bitget', 'ascendex']:
-                    logger.error(f"   Also required: {self.name.upper()}_PASSWORD")
+                if self.name == 'kucoinfutures':
+                    logger.error(f"   KuCoin Futures can use either KUCOIN_* or KUCOINFUTURES_* credentials")
+                    logger.error(f"   Required: KUCOIN_KEY + KUCOIN_SECRET + KUCOIN_PASSWORD")
+                    logger.error(f"   OR: KUCOINFUTURES_KEY + KUCOINFUTURES_SECRET + KUCOINFUTURES_PASSWORD")
+                else:
+                    logger.error(f"   Required: {self.name.upper()}_KEY, {self.name.upper()}_SECRET")
+                    if self.name in ['kucoin', 'bitget', 'ascendex']:
+                        logger.error(f"   Also required: {self.name.upper()}_PASSWORD")
             
             raise RuntimeError(error_msg) from e
 
