@@ -1,0 +1,43 @@
+name: ULTIMATE KuCoin Integration Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ultimate-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -V
+          pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Run ULTIMATE Integration Tests
+        env:
+          KUCOIN_KEY: ${{ secrets.KUCOIN_KEY }}
+          KUCOIN_SECRET: ${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_PASSWORD: ${{ secrets.KUCOIN_PASSWORD }}
+        run: |
+          echo "🏆 ULTIMATE KuCoin Integration Test Suite"
+          echo "Testing 6 critical ULTIMATE features..."
+          echo ""
+          python tests/test_kucoin_ultimate_integration.py
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ultimate-integration-results
+          path: |
+            *.log
+            test_results.txt
+          if-no-files-found: ignore
