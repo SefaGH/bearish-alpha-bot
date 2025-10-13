@@ -1,7 +1,9 @@
 import ccxt
 import time
 import logging
-from typing import Dict, Any, List
+import requests
+from typing import Dict, Any, List, Optional
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,11 @@ class CcxtClient:
         
         self.ex = ex_cls(params)
         self.name = ex_name
+        
+        # Initialize caches for KuCoin Futures integration
+        self._symbol_cache = {}
+        self._last_symbol_update = 0
+        self._server_time_offset = 0
 
     def ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> List[List]:
         """
@@ -198,3 +205,180 @@ class CcxtClient:
             Order response from exchange
         """
         return self.ex.create_order(symbol, type_, side, amount, price, params or {})
+
+    def fetch_ohlcv_bulk(self, symbol: str, timeframe: str, target_limit: int) -> List[List]:
+        """
+        Ultimate KuCoin Futures bulk OHLCV with server sync + dynamic symbols.
+        
+        Args:
+            symbol: ccxt symbol (e.g., 'BTC/USDT:USDT')
+            timeframe: Timeframe string (e.g., '30m', '1h')
+            target_limit: Desired candles (up to 2000)
+        
+        Returns:
+            Chronologically sorted OHLCV data
+        """
+        if target_limit <= 500:
+            return self.ohlcv(symbol, timeframe, target_limit)
+        
+        # Get server-synchronized time
+        server_time_ms = self._get_kucoin_server_time()
+        interval_ms = self._get_timeframe_ms(timeframe)
+        
+        all_candles = []
+        batches_needed = min(4, (target_limit + 499) // 500)
+        
+        logger.info(f"Bulk fetch: {target_limit} candles in {batches_needed} batches "
+                   f"(server time: {server_time_ms})")
+        
+        for batch_idx in range(batches_needed):
+            # Calculate time range using server time
+            end_time = server_time_ms - (batch_idx * 500 * interval_ms)
+            start_time = end_time - (500 * interval_ms)
+            
+            try:
+                batch_data = self._fetch_with_ultimate_kucoin_format(
+                    symbol, timeframe, start_time, end_time
+                )
+                
+                if not batch_data:
+                    logger.warning(f"Batch {batch_idx + 1} returned no data")
+                    break
+                    
+                all_candles.extend(batch_data)
+                logger.info(f"Batch {batch_idx + 1}/{batches_needed}: {len(batch_data)} candles "
+                           f"({datetime.fromtimestamp(start_time/1000)} to {datetime.fromtimestamp(end_time/1000)})")
+                
+                if len(all_candles) >= target_limit:
+                    break
+                    
+                time.sleep(0.7)  # Conservative rate limiting
+                
+            except Exception as e:
+                logger.warning(f"Batch {batch_idx + 1} failed: {e}")
+                if batch_idx == 0:
+                    raise
+                break
+        
+        # Sort chronologically and limit
+        all_candles.sort(key=lambda x: x[0])
+        result = all_candles[-target_limit:] if len(all_candles) > target_limit else all_candles
+        
+        logger.info(f"Ultimate bulk fetch complete: {len(result)} candles delivered")
+        return result
+    
+    def _get_kucoin_server_time(self) -> int:
+        """Get official KuCoin server timestamp with local fallback."""
+        try:
+            url = "https://api-futures.kucoin.com/api/v1/timestamp"
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            
+            server_data = response.json()
+            if server_data.get('code') == '200000':
+                server_time = int(server_data['data'])
+                local_time = int(time.time() * 1000)
+                self._server_time_offset = server_time - local_time
+                
+                logger.debug(f"Server time sync: {server_time} (offset: {self._server_time_offset}ms)")
+                return server_time
+            
+        except Exception as e:
+            logger.warning(f"Server time sync failed: {e}, using local time")
+            
+        # Fallback to local time with cached offset
+        return int(time.time() * 1000) + self._server_time_offset
+    
+    def _get_dynamic_symbol_mapping(self) -> Dict[str, str]:
+        """Get dynamic symbol mapping from KuCoin active contracts."""
+        current_time = time.time()
+        
+        # Cache for 1 hour
+        if (current_time - self._last_symbol_update) < 3600 and self._symbol_cache:
+            return self._symbol_cache
+            
+        try:
+            url = "https://api-futures.kucoin.com/api/v1/contracts/active"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            
+            contracts_data = response.json()
+            if contracts_data.get('code') == '200000':
+                symbol_map = {}
+                
+                for contract in contracts_data['data']:
+                    base = contract['baseCurrency']
+                    native_symbol = contract['symbol']
+                    
+                    # Handle BTC → XBT mapping
+                    if base == 'XBT':
+                        ccxt_symbol = 'BTC/USDT:USDT'
+                    else:
+                        ccxt_symbol = f"{base}/USDT:USDT"
+                    
+                    symbol_map[ccxt_symbol] = native_symbol
+                
+                self._symbol_cache = symbol_map
+                self._last_symbol_update = current_time
+                
+                logger.info(f"Dynamic symbol mapping updated: {len(symbol_map)} contracts")
+                return symbol_map
+                
+        except Exception as e:
+            logger.warning(f"Dynamic symbol fetch failed: {e}")
+        
+        # Fallback to essential mappings
+        return {
+            'BTC/USDT:USDT': 'XBTUSDTM',
+            'ETH/USDT:USDT': 'ETHUSDTM',
+            'BNB/USDT:USDT': 'BNBUSDTM'
+        }
+    
+    def _fetch_with_ultimate_kucoin_format(self, symbol: str, timeframe: str,
+                                          start_time: int, end_time: int) -> List[List]:
+        """Ultimate KuCoin fetch with dynamic symbols + server time."""
+        if self.name not in ['kucoin', 'kucoinfutures']:
+            return self.ex.fetch_ohlcv(symbol, timeframe, since=start_time, limit=500)
+        
+        # Get dynamic native symbol
+        symbol_map = self._get_dynamic_symbol_mapping()
+        native_symbol = symbol_map.get(symbol, symbol)
+        
+        # Native KuCoin parameters
+        granularity = self._get_kucoin_granularity(timeframe)
+        
+        params = {
+            'symbol': native_symbol,
+            'granularity': granularity,
+            'from': start_time,
+            'to': end_time
+        }
+        
+        logger.debug(f"Ultimate KuCoin API: {params}")
+        
+        return self.ex.fetch_ohlcv(
+            symbol, timeframe,
+            since=start_time,
+            limit=500,
+            params=params
+        )
+    
+    def _get_kucoin_granularity(self, timeframe: str) -> int:
+        """Convert timeframe to KuCoin granularity (minutes)."""
+        granularity_map = {
+            '1m': 1, '5m': 5, '15m': 15, '30m': 30,
+            '1h': 60, '2h': 120, '4h': 240, '8h': 480,
+            '12h': 720, '1d': 1440, '1w': 10080
+        }
+        return granularity_map.get(timeframe, 30)
+    
+    def _get_timeframe_ms(self, timeframe: str) -> int:
+        """Convert timeframe to milliseconds."""
+        timeframe_ms = {
+            '1m': 60 * 1000, '5m': 5 * 60 * 1000, '15m': 15 * 60 * 1000,
+            '30m': 30 * 60 * 1000, '1h': 60 * 60 * 1000, '2h': 2 * 60 * 60 * 1000,
+            '4h': 4 * 60 * 60 * 1000, '8h': 8 * 60 * 60 * 1000,
+            '12h': 12 * 60 * 60 * 1000, '1d': 24 * 60 * 60 * 1000,
+            '1w': 7 * 24 * 60 * 60 * 1000
+        }
+        return timeframe_ms.get(timeframe, 30 * 60 * 1000)
