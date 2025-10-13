@@ -42,9 +42,16 @@ def build_clients_from_env() -> Dict[str, CcxtClient]:
     for name in ex_names:
         creds = {}
         up = name.upper()
-        key = os.getenv(f'{up}_KEY')
-        sec = os.getenv(f'{up}_SECRET')
-        pwd = os.getenv(f'{up}_PASSWORD')
+        
+        # Special handling: kucoinfutures can use KUCOIN_* or KUCOINFUTURES_* credentials
+        if name == 'kucoinfutures':
+            key = os.getenv('KUCOIN_KEY') or os.getenv('KUCOINFUTURES_KEY')
+            sec = os.getenv('KUCOIN_SECRET') or os.getenv('KUCOINFUTURES_SECRET')
+            pwd = os.getenv('KUCOIN_PASSWORD') or os.getenv('KUCOINFUTURES_PASSWORD')
+        else:
+            key = os.getenv(f'{up}_KEY')
+            sec = os.getenv(f'{up}_SECRET')
+            pwd = os.getenv(f'{up}_PASSWORD')
         
         if not (key and sec):
             logger.warning(f"Missing credentials for {name} (KEY or SECRET not set), skipping")
