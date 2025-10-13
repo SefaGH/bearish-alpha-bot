@@ -239,6 +239,74 @@ echo $BT_EXCHANGE
 echo ${BT_EXCHANGE^^}_KEY  # Uppercase exchange name + _KEY
 ```
 
+**d) Debug logging açın:**
+```bash
+# Detaylı logları görmek için:
+export LOG_LEVEL=DEBUG
+python src/backtest/param_sweep.py
+```
+
+---
+
+### 8.1. KuCoin API Veri Çekme Sorunları (GitHub Actions)
+
+**Sorun:**
+KuCoin API anahtarları doğru eklenmiş ama GitHub Actions'da veri çekilemiyor ve hata mesajı görünmüyor.
+
+**Root Cause:**
+- Backtest scriptleri logging yapılandırması eksikti
+- Hatalar SystemExit ile sessizce sonlandırılıyordu
+- API hataları yakalanmıyor ve loglanmıyordu
+
+**Çözüm (artık otomatik):**
+✅ v1.x.x ve sonrasında bu sorunlar düzeltildi:
+- Tüm backtest scriptleri artık detaylı logging yapıyor
+- API hataları stderr'a yazılıyor (GitHub Actions'da görünür)
+- Credential sorunları için açıklayıcı mesajlar gösteriliyor
+- RuntimeError kullanılarak hatalar düzgün yakalanıyor
+
+**GitHub Actions'da Debug:**
+
+1. **Workflow loglarını kontrol edin:**
+   - Actions sekmesinde workflow run'ı açın
+   - "Run param sweep" step'inin loglarını inceleyin
+   - Artık tüm hatalar burada görünecek
+
+2. **Credential doğrulama:**
+   ```yaml
+   - name: Debug credentials
+     env:
+       EXCHANGES: ${{ secrets.EXCHANGES }}
+       KUCOIN_KEY: ${{ secrets.KUCOIN_KEY }}
+     run: |
+       echo "EXCHANGES set: $([[ -n \"$EXCHANGES\" ]] && echo 'YES' || echo 'NO')"
+       echo "KUCOIN_KEY set: $([[ -n \"$KUCOIN_KEY\" ]] && echo 'YES' || echo 'NO')"
+   ```
+
+3. **LOG_LEVEL ayarlayın:**
+   ```yaml
+   - name: Run backtest
+     env:
+       LOG_LEVEL: DEBUG  # Detaylı loglar için
+       EXCHANGES: ${{ secrets.EXCHANGES }}
+       # ... diğer env vars
+     run: python src/backtest/param_sweep.py
+   ```
+
+**KuCoin Özel Notlar:**
+
+- `kucoin` (spot) ve `kucoinfutures` her ikisi de `KUCOIN_*` credentials kullanabilir
+- 3 credential gerekli: `KUCOIN_KEY`, `KUCOIN_SECRET`, `KUCOIN_PASSWORD`
+- Alternatif olarak `KUCOINFUTURES_*` da kullanılabilir
+
+**Hata mesajı örneği (artık görünür):**
+```
+ERROR - ❌ Symbol validation failed: RuntimeError: Symbol validation failed for kucoinfutures
+ERROR - ⚠️ AUTHENTICATION ERROR: Please verify your KUCOINFUTURES API credentials are correct
+ERROR -    KuCoin Futures can use either KUCOIN_* or KUCOINFUTURES_* credentials
+ERROR -    Required: KUCOIN_KEY + KUCOIN_SECRET + KUCOIN_PASSWORD
+```
+
 ---
 
 ### 9. Deprecation Warnings

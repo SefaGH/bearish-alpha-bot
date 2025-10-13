@@ -16,12 +16,15 @@ EXCHANGES=bingx,binance,kucoinfutures
 - `binance` - Binance Futures
 - `bingx` - BingX
 - `bitget` - Bitget
+- `kucoin` - KuCoin Spot
 - `kucoinfutures` - KuCoin Futures
 - `ascendex` - AscendEX
 - `bybit` - Bybit
 - `okx` - OKX
 - `gateio` - Gate.io
 - `mexc` - MEXC
+
+**Note:** Both `kucoin` and `kucoinfutures` can share the same `KUCOIN_*` credentials.
 
 ### EXECUTION_EXCHANGE
 Exchange to use for live order execution (when MODE=live).
@@ -52,9 +55,24 @@ BITGET_SECRET=your_api_secret_here
 BITGET_PASSWORD=your_api_passphrase_here
 ```
 
+**Example for KuCoin (both spot and futures):**
+```bash
+# These credentials work for both 'kucoin' and 'kucoinfutures'
+KUCOIN_KEY=your_api_key_here
+KUCOIN_SECRET=your_api_secret_here
+KUCOIN_PASSWORD=your_api_passphrase_here
+
+# Alternative: use separate credentials for futures
+KUCOINFUTURES_KEY=your_api_key_here
+KUCOINFUTURES_SECRET=your_api_secret_here
+KUCOINFUTURES_PASSWORD=your_api_passphrase_here
+```
+
 **Required credentials by exchange:**
 - Most exchanges: `KEY` and `SECRET`
-- Bitget, KuCoin, AscendEX: `KEY`, `SECRET`, and `PASSWORD`
+- Bitget, KuCoin, KuCoin Futures, AscendEX: `KEY`, `SECRET`, and `PASSWORD`
+
+**Note:** KuCoin credentials are shared between `kucoin` (spot) and `kucoinfutures` by default. The system checks `KUCOIN_*` variables first, then falls back to `KUCOINFUTURES_*` for futures.
 
 ## Bot Operation Mode
 

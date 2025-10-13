@@ -6,7 +6,7 @@ from .ccxt_client import CcxtClient
 logger = logging.getLogger(__name__)
 
 SUPPORTED_EXCHANGES = {
-    'binance', 'bingx', 'bitget', 'kucoinfutures', 'ascendex', 
+    'binance', 'bingx', 'bitget', 'kucoin', 'kucoinfutures', 'ascendex', 
     'bybit', 'okx', 'gateio', 'mexc'
 }
 
@@ -43,19 +43,23 @@ def build_clients_from_env() -> Dict[str, CcxtClient]:
         creds = {}
         up = name.upper()
         
-        # Special handling: kucoinfutures can use KUCOIN_* or KUCOINFUTURES_* credentials
-        if name == 'kucoinfutures':
-            key = os.getenv('KUCOIN_KEY') or os.getenv('KUCOINFUTURES_KEY')
-            sec = os.getenv('KUCOIN_SECRET') or os.getenv('KUCOINFUTURES_SECRET')
-            pwd = os.getenv('KUCOIN_PASSWORD') or os.getenv('KUCOINFUTURES_PASSWORD')
+        # Special handling: both kucoin and kucoinfutures can use KUCOIN_* credentials
+        if name in ('kucoin', 'kucoinfutures'):
+            key = os.getenv('KUCOIN_KEY') or os.getenv(f'{up}_KEY')
+            sec = os.getenv('KUCOIN_SECRET') or os.getenv(f'{up}_SECRET')
+            pwd = os.getenv('KUCOIN_PASSWORD') or os.getenv(f'{up}_PASSWORD')
+            logger.debug(f"Loading credentials for {name}: using KUCOIN_* or {up}_* environment variables")
         else:
             key = os.getenv(f'{up}_KEY')
             sec = os.getenv(f'{up}_SECRET')
             pwd = os.getenv(f'{up}_PASSWORD')
+            logger.debug(f"Loading credentials for {name}: using {up}_* environment variables")
         
         if not (key and sec):
             logger.warning(f"Missing credentials for {name} (KEY or SECRET not set), skipping")
             continue
+        
+        logger.debug(f"Credentials found for {name}: KEY={'✓' if key else '✗'}, SECRET={'✓' if sec else '✗'}, PASSWORD={'✓' if pwd else '✗'}")
         
         creds = {'apiKey': key, 'secret': sec}
         if pwd:
