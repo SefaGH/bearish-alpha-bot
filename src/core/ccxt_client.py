@@ -72,6 +72,51 @@ class CcxtClient:
         """Load market information."""
         return self.ex.load_markets()
 
+    def validate_and_get_symbol(self, requested_symbol="BTC/USDT"):
+        """
+        Validate symbol exists on exchange, try common variants if not.
+        
+        Args:
+            requested_symbol: The symbol to validate (e.g., "BTC/USDT")
+        
+        Returns:
+            str: Validated symbol that exists on the exchange
+        
+        Raises:
+            SystemExit: If no valid symbol variant is found
+        """
+        try:
+            markets = self.markets()
+            symbols = set(markets.keys())
+            
+            # Try exact match first
+            if requested_symbol in symbols:
+                return requested_symbol
+                
+            # Try common BTC variants if requested symbol starts with BTC
+            if requested_symbol.upper().startswith("BTC"):
+                variants = [
+                    "BTC/USDT",        # Standard spot/some futures
+                    "BTC/USDT:USDT",   # Many perpetual futures
+                    "BTCUSDT",         # Some exchanges (Binance style)
+                    "BTC-USDT",        # Alternative format
+                    "BTCUSD"           # USD-based (if USDT not available)
+                ]
+                
+                for variant in variants:
+                    if variant in symbols:
+                        print(f"✅ Symbol fallback: {requested_symbol} → {variant}")
+                        return variant
+            
+            # If no variants work, show available BTC symbols for debugging
+            btc_symbols = [s for s in symbols if 'BTC' in s.upper()][:10]
+            raise SystemExit(f"Symbol '{requested_symbol}' not found on {self.name}. Available BTC symbols: {btc_symbols}")
+            
+        except SystemExit:
+            raise  # Re-raise SystemExit as-is
+        except Exception as e:
+            raise SystemExit(f"Symbol validation failed for {self.name}: {e}")
+
     def create_order(self, symbol: str, side: str, type_: str, amount: float, 
                      price: float = None, params: dict = None) -> Dict[str, Any]:
         """
