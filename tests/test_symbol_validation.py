@@ -15,9 +15,9 @@ class MockExchange:
     """Mock exchange for testing symbol validation."""
     def __init__(self):
         self._markets = {
-            'BTC/USDT:USDT': {'id': 'BTCUSDT', 'symbol': 'BTC/USDT:USDT'},
-            'ETH/USDT:USDT': {'id': 'ETHUSDT', 'symbol': 'ETH/USDT:USDT'},
-            'SOL/USDT:USDT': {'id': 'SOLUSDT', 'symbol': 'SOL/USDT:USDT'},
+            'BTC/USDT:USDT': {'id': 'BTCUSDTM', 'symbol': 'BTC/USDT:USDT'},  # KuCoin futures format
+            'ETH/USDT:USDT': {'id': 'ETHUSDTM', 'symbol': 'ETH/USDT:USDT'},
+            'SOL/USDT:USDT': {'id': 'SOLUSDTM', 'symbol': 'SOL/USDT:USDT'},
         }
     
     def load_markets(self):
@@ -29,7 +29,7 @@ def test_validate_exact_match():
     print("Testing exact symbol match...")
     
     try:
-        client = CcxtClient('binance')
+        client = CcxtClient('kucoinfutures')
         # Mock the markets method
         client.ex = MockExchange()
         
@@ -54,7 +54,7 @@ def test_validate_fallback():
     print("Testing BTC variant fallback...")
     
     try:
-        client = CcxtClient('binance')
+        client = CcxtClient('kucoinfutures')
         # Mock the markets method
         client.ex = MockExchange()
         
@@ -79,7 +79,7 @@ def test_validate_invalid_symbol():
     print("Testing invalid symbol handling...")
     
     try:
-        client = CcxtClient('binance')
+        client = CcxtClient('kucoinfutures')
         # Mock the markets method
         client.ex = MockExchange()
         
