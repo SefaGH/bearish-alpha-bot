@@ -146,8 +146,13 @@ class AdaptiveShortTheRip(ShortTheRip):
             # Ensure we have valid data
             if df_30m.empty:
                 return None
+            
+            # Get last row, checking critical columns only  
+            df_clean = df_30m.dropna(subset=['rsi', 'close'])
+            if df_clean.empty:
+                return None
                 
-            last30 = df_30m.dropna().iloc[-1]
+            last30 = df_clean.iloc[-1]
             
             # Get adaptive RSI threshold
             market_regime = {
