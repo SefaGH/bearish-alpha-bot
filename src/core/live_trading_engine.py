@@ -12,7 +12,12 @@ from enum import Enum
 from .order_manager import SmartOrderManager
 from .position_manager import AdvancedPositionManager
 from .execution_analytics import ExecutionAnalytics
-from ..config.live_trading_config import LiveTradingConfiguration
+
+# Import config with try/except for flexibility
+try:
+    from ..config.live_trading_config import LiveTradingConfiguration
+except ImportError:
+    from config.live_trading_config import LiveTradingConfiguration
 
 logger = logging.getLogger(__name__)
 

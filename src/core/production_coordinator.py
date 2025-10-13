@@ -16,7 +16,12 @@ from .strategy_coordinator import StrategyCoordinator
 from .circuit_breaker import CircuitBreakerSystem
 from .performance_monitor import RealTimePerformanceMonitor
 from .market_regime import MarketRegimeAnalyzer
-from ..config.live_trading_config import LiveTradingConfiguration
+
+# Import config with try/except for flexibility
+try:
+    from ..config.live_trading_config import LiveTradingConfiguration
+except ImportError:
+    from config.live_trading_config import LiveTradingConfiguration
 
 logger = logging.getLogger(__name__)
 
