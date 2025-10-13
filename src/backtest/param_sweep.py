@@ -61,12 +61,21 @@ def simulate_long_nextbar(df: pd.DataFrame, tp_pct: float, sl_atr_mult: float | 
     return {"trades": len(pnls), "win_rate": win_rate, "avg_pnl": sum(pnls)/len(pnls), "rr": rr, "net_pnl": sum(pnls)}
 
 def sweep_ob(df30: pd.DataFrame, grid: Dict[str, List[Any]], fallbacks: Dict[str, Any]) -> pd.DataFrame:
+    print(f"Input data length: {len(df30)}")
+    print(f"RSI range in data: {df30['rsi'].min():.1f} - {df30['rsi'].max():.1f}")
+    
     res = []
+    total_combinations = len(list(itertools.product(grid["rsi_max"], grid["tp_pct"], grid["sl_atr_mult"])))
+    print(f"Testing {total_combinations} parameter combinations...")
+    
     for rsi_max, tp_pct, sl_atr_mult in itertools.product(grid["rsi_max"], grid["tp_pct"], grid["sl_atr_mult"]):
         mask = df30["rsi"] <= rsi_max
         sub = df30.loc[mask].copy()
+        
         if len(sub) < 5:
             continue
+        
+        print(f"RSI≤{rsi_max}: {len(sub)} qualifying candles")
         sim = simulate_long_nextbar(sub, tp_pct=float(tp_pct), sl_atr_mult=(None if sl_atr_mult is None else float(sl_atr_mult)), fallback_sl_pct=fallbacks.get("sl_pct"))
         res.append({
             "strategy": "oversold_bounce",
@@ -84,9 +93,9 @@ def main():
     exchange = os.getenv("BT_EXCHANGE", os.getenv("EXECUTION_EXCHANGE", "kucoinfutures"))
     limit = int(os.getenv("BT_LIMIT", "1000"))
     grid = {
-        "rsi_max": [20, 23, 25, 27, 30],
-        "tp_pct": [0.008, 0.010, 0.012, 0.015],
-        "sl_atr_mult": [0.8, 1.0, 1.2, 1.5]
+        "rsi_max": [25, 30, 35, 40, 45],
+        "tp_pct": [0.008, 0.012, 0.016, 0.020],
+        "sl_atr_mult": [0.8, 1.0, 1.2, 1.5, 2.0]
     }
     cfg_path = os.getenv("CONFIG_PATH", "config/config.example.yaml")
     try:
