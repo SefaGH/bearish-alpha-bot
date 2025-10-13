@@ -7,7 +7,8 @@ logger = logging.getLogger(__name__)
 
 EX_DEFAULTS = {
     "options": {"defaultType": "swap"},
-    "enableRateLimit": True
+    "enableRateLimit": True,
+    "sandbox": False  # Force production mode for all exchanges
 }
 
 
@@ -29,6 +30,12 @@ class CcxtClient:
         
         ex_cls = getattr(ccxt, ex_name)
         params = EX_DEFAULTS | (creds or {})
+        
+        # Force production mode for KuCoin exchanges
+        if ex_name in ['kucoin', 'kucoinfutures']:
+            params['sandbox'] = False
+            logger.info(f"KuCoin {ex_name} initialized in PRODUCTION mode")
+        
         self.ex = ex_cls(params)
         self.name = ex_name
 
@@ -52,6 +59,12 @@ class CcxtClient:
             try:
                 logger.debug(f"Fetching OHLCV for {symbol} {timeframe} limit={limit} (attempt {attempt + 1}/3)")
                 data = self.ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+                
+                # Enhanced debug logging for KuCoin
+                logger.info(f"Exchange: {self.name}, Sandbox: {self.ex.sandbox if hasattr(self.ex, 'sandbox') else 'N/A'}")
+                logger.info(f"API Base URL: {getattr(self.ex, 'urls', {}).get('api', 'N/A')}")
+                logger.debug(f"Fetched {len(data) if data else 0} candles for {symbol} on {self.name}")
+                
                 logger.info(f"Successfully fetched {len(data) if data else 0} candles for {symbol} {timeframe}")
                 return data
             except Exception as e:
@@ -115,13 +128,25 @@ class CcxtClient:
                 
             # Try common BTC variants if requested symbol starts with BTC
             if requested_symbol.upper().startswith("BTC"):
-                variants = [
-                    "BTC/USDT",        # Standard spot/some futures
-                    "BTC/USDT:USDT",   # Many perpetual futures
-                    "BTCUSDT",         # Some exchanges (Binance style)
-                    "BTC-USDT",        # Alternative format
-                    "BTCUSD"           # USD-based (if USDT not available)
-                ]
+                # KuCoin Futures specific priority
+                if self.name == 'kucoinfutures':
+                    variants = [
+                        "BTC/USDT:USDT",   # KuCoin Futures perpetual format (PRIORITY)
+                        "XBTUSDM",         # Native KuCoin BTC perpetual
+                        "BTCUSDM",         # Alternative native format
+                        "BTC/USDT",        # Standard format
+                        "BTCUSDT",         # Compact format
+                        "BTC-USDT",        # Alternative format
+                        "BTCUSD"           # USD-based fallback
+                    ]
+                else:
+                    variants = [
+                        "BTC/USDT",        # Standard spot/some futures
+                        "BTC/USDT:USDT",   # Many perpetual futures
+                        "BTCUSDT",         # Some exchanges (Binance style)
+                        "BTC-USDT",        # Alternative format
+                        "BTCUSD"           # USD-based (if USDT not available)
+                    ]
                 
                 for variant in variants:
                     if variant in symbols:
