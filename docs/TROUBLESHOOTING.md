@@ -309,6 +309,77 @@ ERROR -    Required: KUCOIN_KEY + KUCOIN_SECRET + KUCOIN_PASSWORD
 
 ---
 
+### 8.2. KuCoin Futures Sandbox Mode ve Symbol Format Sorunları
+
+**Sorun:**
+KuCoin Futures API credentials doğru ama OHLCV verisi gelmiyor (sonuç 0 candle).
+
+**Root Cause:**
+1. **Sandbox Mode**: ccxt'nin KuCoin Futures implementation'ı bazı durumlarda sandbox modda çalışıyor olabilir
+2. **Symbol Format**: KuCoin Futures için doğru sembol formatı `BTC/USDT:USDT` ama kod bunu yeterince önceliklendirmiyor
+3. **Missing Production Endpoints**: KuCoin Futures için production endpoint ayarları eksik
+
+**Çözüm (artık otomatik):**
+✅ v1.x.x ve sonrasında bu sorunlar düzeltildi:
+
+**1. Production Mode Zorlaması:**
+```python
+# EX_DEFAULTS içinde global sandbox=False
+EX_DEFAULTS = {
+    "options": {"defaultType": "swap"},
+    "enableRateLimit": True,
+    "sandbox": False  # Force production mode
+}
+
+# KuCoin exchanges için ekstra zorlama
+if ex_name in ['kucoin', 'kucoinfutures']:
+    params['sandbox'] = False
+    logger.info(f"KuCoin {ex_name} initialized in PRODUCTION mode")
+```
+
+**2. Symbol Format Priority (KuCoin Futures):**
+```python
+# KuCoin Futures için BTC/USDT:USDT öncelikli
+if self.name == 'kucoinfutures':
+    variants = [
+        "BTC/USDT:USDT",   # KuCoin Futures perpetual (ÖNCELİK)
+        "XBTUSDM",         # Native KuCoin BTC perpetual
+        "BTCUSDM",         # Alternative native format
+        "BTC/USDT",        # Standard format
+        # ... diğer formatlar
+    ]
+```
+
+**3. Enhanced Debug Logging:**
+```python
+# OHLCV fetch'te detaylı logging
+logger.info(f"Exchange: {self.name}, Sandbox: {self.ex.sandbox}")
+logger.info(f"API Base URL: {getattr(self.ex, 'urls', {}).get('api', 'N/A')}")
+logger.debug(f"Fetched {len(data)} candles for {symbol}")
+```
+
+**Beklenen Sonuç:**
+- KuCoin Futures PRODUCTION modda başlatılır
+- API URL: `https://api-futures.kucoin.com` (NOT sandbox URL)
+- Symbol: `BTC/USDT:USDT` otomatik seçilir
+- OHLCV verisi başarıyla çekilir
+
+**Debug için LOG_LEVEL=DEBUG kullanın:**
+```bash
+export LOG_LEVEL=DEBUG
+python src/backtest/param_sweep.py
+```
+
+Logda göreceksiniz:
+```
+INFO - KuCoin kucoinfutures initialized in PRODUCTION mode
+INFO - Exchange: kucoinfutures, Sandbox: False
+INFO - API Base URL: https://api-futures.kucoin.com
+INFO - Successfully fetched 500 candles for BTC/USDT:USDT 30m
+```
+
+---
+
 ### 9. Deprecation Warnings
 
 **Warning:**
