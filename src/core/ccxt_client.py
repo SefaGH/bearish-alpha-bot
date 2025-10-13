@@ -208,7 +208,8 @@ class CcxtClient:
 
     def fetch_ohlcv_bulk(self, symbol: str, timeframe: str, target_limit: int) -> List[List]:
         """
-        Ultimate KuCoin Futures bulk OHLCV with server sync + dynamic symbols.
+        Ultimate bulk OHLCV fetching with server sync + dynamic symbols.
+        Supports both KuCoin and BingX exchanges.
         
         Args:
             symbol: ccxt symbol (e.g., 'BTC/USDT:USDT')
@@ -221,14 +222,18 @@ class CcxtClient:
         if target_limit <= 500:
             return self.ohlcv(symbol, timeframe, target_limit)
         
-        # Get server-synchronized time
-        server_time_ms = self._get_kucoin_server_time()
+        # Get server-synchronized time based on exchange
+        if self.name == 'bingx':
+            server_time_ms = self._get_bingx_server_time()
+        else:
+            server_time_ms = self._get_kucoin_server_time()
+        
         interval_ms = self._get_timeframe_ms(timeframe)
         
         all_candles = []
         batches_needed = min(4, (target_limit + 499) // 500)
         
-        logger.info(f"Bulk fetch: {target_limit} candles in {batches_needed} batches "
+        logger.info(f"Bulk fetch ({self.name}): {target_limit} candles in {batches_needed} batches "
                    f"(server time: {server_time_ms})")
         
         for batch_idx in range(batches_needed):
@@ -237,9 +242,14 @@ class CcxtClient:
             start_time = end_time - (500 * interval_ms)
             
             try:
-                batch_data = self._fetch_with_ultimate_kucoin_format(
-                    symbol, timeframe, start_time, end_time
-                )
+                if self.name == 'bingx':
+                    batch_data = self._fetch_with_ultimate_bingx_format(
+                        symbol, timeframe, start_time, end_time
+                    )
+                else:
+                    batch_data = self._fetch_with_ultimate_kucoin_format(
+                        symbol, timeframe, start_time, end_time
+                    )
                 
                 if not batch_data:
                     logger.warning(f"Batch {batch_idx + 1} returned no data")
@@ -289,6 +299,28 @@ class CcxtClient:
         # Fallback to local time with cached offset
         return int(time.time() * 1000) + self._server_time_offset
     
+    def _get_bingx_server_time(self) -> int:
+        """Get official BingX server timestamp with local fallback."""
+        try:
+            url = "https://open-api.bingx.com/openApi/swap/v2/server/time"
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            
+            server_data = response.json()
+            if server_data.get('code') == 0:
+                server_time = int(server_data['data'])
+                local_time = int(time.time() * 1000)
+                self._server_time_offset = server_time - local_time
+                
+                logger.debug(f"BingX server time sync: {server_time} (offset: {self._server_time_offset}ms)")
+                return server_time
+            
+        except Exception as e:
+            logger.warning(f"BingX server time sync failed: {e}, using local time")
+            
+        # Fallback to local time with cached offset
+        return int(time.time() * 1000) + self._server_time_offset
+    
     def _get_dynamic_symbol_mapping(self) -> Dict[str, str]:
         """Get dynamic symbol mapping from KuCoin active contracts."""
         current_time = time.time()
@@ -334,6 +366,53 @@ class CcxtClient:
             'BNB/USDT:USDT': 'BNBUSDTM'
         }
     
+    def _get_bingx_contracts(self) -> Dict[str, str]:
+        """Get dynamic symbol mapping from BingX active contracts."""
+        current_time = time.time()
+        
+        # Cache for 1 hour
+        if (current_time - self._last_symbol_update) < 3600 and self._symbol_cache:
+            return self._symbol_cache
+            
+        try:
+            url = "https://open-api.bingx.com/openApi/swap/v2/quote/contracts"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            
+            contracts_data = response.json()
+            if contracts_data.get('code') == 0:
+                symbol_map = {}
+                
+                for contract in contracts_data['data']:
+                    # BingX uses format like "BTC-USDT", "ETH-USDT"
+                    native_symbol = contract['symbol']
+                    asset = contract.get('asset', '')
+                    currency = contract.get('currency', 'USDT')
+                    
+                    # Convert to CCXT perpetual format: BASE/QUOTE:QUOTE
+                    if '-' in native_symbol:
+                        parts = native_symbol.split('-')
+                        if len(parts) == 2:
+                            base = parts[0]
+                            ccxt_symbol = f"{base}/USDT:USDT"
+                            symbol_map[ccxt_symbol] = native_symbol
+                
+                self._symbol_cache = symbol_map
+                self._last_symbol_update = current_time
+                
+                logger.info(f"BingX contracts discovered: {len(symbol_map)} perpetual contracts")
+                return symbol_map
+                
+        except Exception as e:
+            logger.warning(f"BingX contract discovery failed: {e}")
+        
+        # Fallback to essential mappings
+        return {
+            'BTC/USDT:USDT': 'BTC-USDT',
+            'ETH/USDT:USDT': 'ETH-USDT',
+            'VST/USDT:USDT': 'VST-USDT'
+        }
+    
     def _fetch_with_ultimate_kucoin_format(self, symbol: str, timeframe: str,
                                           start_time: int, end_time: int) -> List[List]:
         """Ultimate KuCoin fetch with dynamic symbols + server time."""
@@ -363,6 +442,37 @@ class CcxtClient:
             params=params
         )
     
+    def _fetch_with_ultimate_bingx_format(self, symbol: str, timeframe: str,
+                                          start_time: int, end_time: int) -> List[List]:
+        """Ultimate BingX fetch with dynamic symbols + server time."""
+        if self.name != 'bingx':
+            return self.ex.fetch_ohlcv(symbol, timeframe, since=start_time, limit=500)
+        
+        # Get dynamic native symbol
+        symbol_map = self._get_bingx_contracts()
+        native_symbol = symbol_map.get(symbol, symbol)
+        
+        # BingX interval format (e.g., "1m", "5m", "1h")
+        interval = self._get_bingx_interval(timeframe)
+        
+        # BingX uses startTime/endTime in milliseconds
+        params = {
+            'symbol': native_symbol,
+            'interval': interval,
+            'startTime': start_time,
+            'endTime': end_time,
+            'limit': 500
+        }
+        
+        logger.debug(f"Ultimate BingX API: {params}")
+        
+        return self.ex.fetch_ohlcv(
+            symbol, timeframe,
+            since=start_time,
+            limit=500,
+            params=params
+        )
+    
     def _get_kucoin_granularity(self, timeframe: str) -> int:
         """Convert timeframe to KuCoin granularity (minutes)."""
         granularity_map = {
@@ -371,6 +481,16 @@ class CcxtClient:
             '12h': 720, '1d': 1440, '1w': 10080
         }
         return granularity_map.get(timeframe, 30)
+    
+    def _get_bingx_interval(self, timeframe: str) -> str:
+        """Convert timeframe to BingX interval format (e.g., '1m', '1h')."""
+        # BingX uses the same format as CCXT standard timeframes
+        interval_map = {
+            '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m',
+            '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h', '8h': '8h',
+            '12h': '12h', '1d': '1d', '3d': '3d', '1w': '1w', '1M': '1M'
+        }
+        return interval_map.get(timeframe, '30m')
     
     def _get_timeframe_ms(self, timeframe: str) -> int:
         """Convert timeframe to milliseconds."""
