@@ -52,7 +52,7 @@ indicators:
   atr_period: 14
   ema_fast: 21
   ema_mid: 50
-  ema_slow: 200
+  ema_slow: 100  # Temporary fix: 200 → 100 (will revert when multiple API calls implemented)
 
 signals:
   oversold_bounce:
