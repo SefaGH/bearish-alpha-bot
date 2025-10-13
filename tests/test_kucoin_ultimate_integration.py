@@ -9,11 +9,32 @@ Test KuCoin Futures Ultimate Integration:
 import sys
 import os
 import time
+from datetime import datetime, timezone
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from core.ccxt_client import CcxtClient
+
+
+class TeeLogger:
+    """Logger that writes to both console and file."""
+    
+    def __init__(self, log_file):
+        self.terminal = sys.stdout
+        self.log = open(log_file, 'w', encoding='utf-8')
+    
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()  # Ensure immediate write
+    
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+    
+    def close(self):
+        self.log.close()
 
 
 def test_server_time_sync():
@@ -244,45 +265,110 @@ def test_cache_behavior():
 
 def main():
     """Run all KuCoin Ultimate Integration tests."""
-    print("=" * 60)
-    print("KuCoin Futures Ultimate Integration Tests")
-    print("=" * 60)
-    print()
+    # Setup log files
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    log_filename = f"ultimate_integration_{timestamp}.log"
     
-    tests = [
-        test_server_time_sync,
-        test_dynamic_symbol_mapping,
-        test_kucoin_granularity_conversion,
-        test_timeframe_milliseconds_conversion,
-        test_bulk_fetch_logic,
-        test_cache_behavior,
-    ]
+    # Setup TeeLogger to write to both console and file
+    tee_logger = TeeLogger(log_filename)
+    original_stdout = sys.stdout
+    sys.stdout = tee_logger
     
-    results = []
-    for test_func in tests:
-        try:
-            result = test_func()
-            results.append(result)
-        except Exception as e:
-            print(f"  ✗ Test crashed: {e}")
-            import traceback
-            traceback.print_exc()
-            results.append(False)
+    try:
+        print("=" * 60)
+        print("KuCoin Futures Ultimate Integration Tests")
+        print("=" * 60)
+        print(f"Log file: {log_filename}")
+        print(f"Test started at: {datetime.now(timezone.utc).isoformat()}")
         print()
+        
+        tests = [
+            test_server_time_sync,
+            test_dynamic_symbol_mapping,
+            test_kucoin_granularity_conversion,
+            test_timeframe_milliseconds_conversion,
+            test_bulk_fetch_logic,
+            test_cache_behavior,
+        ]
+        
+        test_names = [
+            "Server Time Synchronization",
+            "Dynamic Symbol Mapping",
+            "KuCoin Granularity Conversion",
+            "Timeframe Milliseconds Conversion",
+            "Bulk Fetch Logic",
+            "Cache Behavior",
+        ]
+        
+        results = []
+        test_details = []
+        
+        for test_func, test_name in zip(tests, test_names):
+            try:
+                result = test_func()
+                results.append(result)
+                test_details.append((test_name, result, None))
+            except Exception as e:
+                print(f"  ✗ Test crashed: {e}")
+                import traceback
+                traceback.print_exc()
+                results.append(False)
+                test_details.append((test_name, False, str(e)))
+            print()
+        
+        # Summary
+        passed = sum(results)
+        total = len(results)
+        print("=" * 60)
+        print(f"Results: {passed}/{total} tests passed")
+        print("=" * 60)
+        
+        if passed == total:
+            print("✓ All KuCoin Ultimate Integration tests passed!")
+            exit_code = 0
+        else:
+            print("✗ Some tests failed")
+            exit_code = 1
+        
+        print(f"Test finished at: {datetime.now(timezone.utc).isoformat()}")
+        
+    finally:
+        # Restore original stdout and close log file
+        sys.stdout = original_stdout
+        tee_logger.close()
     
-    # Summary
-    passed = sum(results)
-    total = len(results)
-    print("=" * 60)
-    print(f"Results: {passed}/{total} tests passed")
-    print("=" * 60)
+    # Write test_results.txt summary
+    try:
+        with open("test_results.txt", "w", encoding="utf-8") as f:
+            f.write("=" * 60 + "\n")
+            f.write("KuCoin Futures Ultimate Integration Test Results\n")
+            f.write("=" * 60 + "\n")
+            f.write(f"Timestamp: {datetime.now(timezone.utc).isoformat()}\n")
+            f.write(f"Log file: {log_filename}\n")
+            f.write(f"\nOverall: {passed}/{total} tests passed\n")
+            f.write("=" * 60 + "\n\n")
+            
+            f.write("Test Details:\n")
+            f.write("-" * 60 + "\n")
+            for test_name, result, error in test_details:
+                status = "✓ PASS" if result else "✗ FAIL"
+                f.write(f"{status}: {test_name}\n")
+                if error:
+                    f.write(f"  Error: {error}\n")
+            
+            f.write("\n" + "=" * 60 + "\n")
+            if exit_code == 0:
+                f.write("Status: ALL TESTS PASSED ✓\n")
+            else:
+                f.write("Status: SOME TESTS FAILED ✗\n")
+            f.write("=" * 60 + "\n")
+        
+        print(f"\n✓ Test results written to: test_results.txt")
+        print(f"✓ Detailed log written to: {log_filename}")
+    except Exception as e:
+        print(f"\n✗ Failed to write test_results.txt: {e}")
     
-    if passed == total:
-        print("✓ All KuCoin Ultimate Integration tests passed!")
-        return 0
-    else:
-        print("✗ Some tests failed")
-        return 1
+    return exit_code
 
 
 if __name__ == "__main__":
