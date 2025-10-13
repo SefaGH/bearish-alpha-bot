@@ -39,8 +39,8 @@ jobs:
         env:
           EXCHANGES: ${{ secrets.EXCHANGES }}
           EXECUTION_EXCHANGE: ${{ github.event.inputs.BT_EXCHANGE }}
-          KUCOIN_KEY: ${{ secrets.KUCOIN_KEY }}
-          KUCOIN_SECRET: ${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_KEY: ${{ secrets.KUCOIN_API_KEY }}
+          KUCOIN_SECRET: ${{ secrets.KUCOIN_SECRET_KEY }}
           KUCOIN_PASSWORD: ${{ secrets.KUCOIN_PASSWORD }}
         run: |
           echo "=== CREDENTIAL DEBUG ==="
@@ -70,8 +70,8 @@ jobs:
           BITGET_PASSWORD: ${{ secrets.BITGET_PASSWORD }}
           BINANCE_KEY: ${{ secrets.BINANCE_KEY }}
           BINANCE_SECRET: ${{ secrets.BINANCE_SECRET }}
-          KUCOIN_KEY:  ${{ secrets.KUCOIN_KEY }}
-          KUCOIN_SECRET: ${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_KEY:  ${{ secrets.KUCOIN_API_KEY }}
+          KUCOIN_SECRET: ${{ secrets.KUCOIN_SECRET_KEY }}
           KUCOIN_PASSWORD: ${{ secrets.KUCOIN_PASSWORD }}
           ASCENDEX_KEY: ${{ secrets.ASCENDEX_KEY }}
           ASCENDEX_SECRET: ${{ secrets.ASCENDEX_SECRET }}
