@@ -3,10 +3,29 @@
 Quick validation tests for Phase 1 BingX integration.
 Fast execution - critical path only (15 minutes maximum).
 
-Tests:
-1. BingX API Connectivity - Server time synchronization
-2. VST Contract Validation - Trading readiness check
-3. Multi-Exchange Sync - KuCoin + BingX initialization
+USAGE:
+    python3 tests/quick_validation_phase1.py
+
+PURPOSE:
+    Validate critical components before Phase 2 development.
+    Runs 3 essential tests focusing on blocking issues only.
+
+TESTS:
+    1. BingX API Connectivity - Server time synchronization (<100ms target)
+    2. VST Contract Validation - Trading readiness check  
+    3. Multi-Exchange Sync - KuCoin + BingX initialization
+
+SUCCESS CRITERIA:
+    - All 3 tests pass within 15 minutes
+    - BingX API connectivity confirmed
+    - VST/USDT contract validated for trading
+    - Multi-exchange framework operational
+    - Ready to proceed to Phase 2 with confidence
+
+FAILURE HANDLING:
+    - Logs specific issues for later debugging
+    - Test suite designed to handle network restrictions gracefully
+    - Fallback mechanisms validated as part of success criteria
 """
 import sys
 import os
