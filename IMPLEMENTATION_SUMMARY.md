@@ -163,8 +163,8 @@ Guide to using the examples directory
 {
   "code":"200000",
   "data":[
-    {"symbol":"XBTUSDTM","baseCurrency":"XBT","quoteCurrency":"USDT"},
-    {"symbol":"ETHUSDTM","baseCurrency":"ETH","quoteCurrency":"USDT"}
+    {"symbol":"XBTUSDM","baseCurrency":"XBT","quoteCurrency":"USDT"},
+    {"symbol":"ETHUSDM","baseCurrency":"ETH","quoteCurrency":"USDT"}
   ]
 }
 ```
@@ -183,7 +183,7 @@ Guide to using the examples directory
 **Parameters:**
 ```python
 {
-  'symbol': 'XBTUSDTM',
+  'symbol': 'XBTUSDM',
   'granularity': 30,        # Minutes
   'from': 1728822196000,    # Start timestamp (ms)
   'to': 1728822296000       # End timestamp (ms)
