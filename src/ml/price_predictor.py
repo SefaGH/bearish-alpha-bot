@@ -11,9 +11,18 @@ from typing import Dict, List, Optional, Tuple, Any
 from collections import deque
 import logging
 
-from .neural_networks import LSTMRegimePredictor, TransformerRegimePredictor
-from .feature_engineering import FeatureEngineeringPipeline
-from ..config.ml_config import MLConfiguration
+try:
+    from .neural_networks import LSTMRegimePredictor, TransformerRegimePredictor
+    from .feature_engineering import FeatureEngineeringPipeline
+    from ..config.ml_config import MLConfiguration
+except ImportError:
+    # Fallback for when running as script
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from ml.neural_networks import LSTMRegimePredictor, TransformerRegimePredictor
+    from ml.feature_engineering import FeatureEngineeringPipeline
+    from config.ml_config import MLConfiguration
 
 logger = logging.getLogger(__name__)
 

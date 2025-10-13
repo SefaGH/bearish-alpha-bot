@@ -89,7 +89,7 @@ def example_1_lstm_transformer_models():
         num_layers=3,
         forecast_horizon=12
     )
-    print(f"   LSTM Model: {lstm_model.num_layers} layers, {lstm_model.hidden_size} hidden units")
+    print(f"   LSTM Model initialized")
     print(f"   Forecast Horizon: {lstm_model.forecast_horizon} steps")
     
     # Initialize Transformer model
@@ -100,7 +100,8 @@ def example_1_lstm_transformer_models():
         num_layers=6,
         forecast_horizon=12
     )
-    print(f"   Transformer Model: {transformer_model.d_model}D, {transformer_model.forecast_horizon} steps")
+    print(f"   Transformer Model initialized")
+    print(f"   Forecast Horizon: {transformer_model.forecast_horizon} steps")
     
     # Make sample predictions
     print("\n🔮 Making Sample Predictions...")
