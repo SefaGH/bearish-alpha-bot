@@ -142,8 +142,8 @@ class CcxtClient:
             error_msg = f"Symbol validation failed for {self.name}: {type(e).__name__}: {e}"
             logger.error(error_msg)
             
-            # Check if this is an authentication error
-            if 'authentication' in str(e).lower() or 'api' in str(e).lower() or 'key' in str(e).lower():
+            # Check if this is an authentication error using ccxt exception type
+            if isinstance(e, ccxt.AuthenticationError):
                 logger.error(f"⚠️ AUTHENTICATION ERROR: Please verify your {self.name.upper()} API credentials are correct")
                 if self.name == 'kucoinfutures':
                     logger.error(f"   KuCoin Futures can use either KUCOIN_* or KUCOINFUTURES_* credentials")
