@@ -72,7 +72,16 @@ def simulate_short_nextbar(df: pd.DataFrame, tp_pct: float, sl_atr_mult: float |
 
 def sweep_str(df30i: pd.DataFrame, df1hi: pd.DataFrame, grid, fallbacks) -> pd.DataFrame:
     dfj = align_1h_to_30m(df30i, df1hi)
+    print(f"Aligned data length: {len(dfj)}")
+    print(f"RSI range: {dfj['rsi'].min():.1f} - {dfj['rsi'].max():.1f}")
+    
     res = []
+    total_combinations = len(list(itertools.product(
+        grid["rsi_min"], grid["tp_pct"], grid["sl_atr_mult"], 
+        grid["require_band_touch"], grid["require_ema_align"]
+    )))
+    print(f"Testing {total_combinations} parameter combinations...")
+    
     for rsi_min, tp_pct, sl_atr_mult, require_band_touch, require_ema_align in itertools.product(
         grid["rsi_min"], grid["tp_pct"], grid["sl_atr_mult"], grid["require_band_touch"], grid["require_ema_align"]
     ):
@@ -108,9 +117,9 @@ def main():
     limit1h = int(os.getenv("BT_LIMIT_1H", "1000"))
 
     grid = {
-        "rsi_min": [58, 60, 62, 64],
-        "tp_pct": [0.008, 0.010, 0.012, 0.015],
-        "sl_atr_mult": [1.0, 1.2, 1.5],
+        "rsi_min": [55, 60, 65, 70, 75],
+        "tp_pct": [0.008, 0.012, 0.016, 0.020],
+        "sl_atr_mult": [1.0, 1.2, 1.5, 2.0],
         "require_band_touch": [True, False],
         "require_ema_align": [True, False],
     }
