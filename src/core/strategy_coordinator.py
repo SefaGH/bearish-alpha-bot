@@ -1,0 +1,653 @@
+"""
+Strategy Coordination Engine.
+Coordinates signals and positions across multiple strategies.
+"""
+
+import asyncio
+import logging
+from typing import Dict, List, Optional, Any, Tuple
+from datetime import datetime, timezone
+from collections import defaultdict
+from enum import Enum
+
+logger = logging.getLogger(__name__)
+
+
+class SignalPriority(Enum):
+    """Signal priority levels."""
+    LOW = 1
+    MEDIUM = 2
+    HIGH = 3
+    CRITICAL = 4
+
+
+class ConflictResolutionStrategy(Enum):
+    """Conflict resolution strategies."""
+    HIGHEST_PRIORITY = 'highest_priority'
+    BEST_RISK_REWARD = 'best_risk_reward'
+    PERFORMANCE_WEIGHTED = 'performance_weighted'
+    FIRST_IN_FIRST_OUT = 'fifo'
+
+
+class StrategyCoordinator:
+    """Coordinate signals and positions across multiple strategies."""
+    
+    def __init__(self, portfolio_manager, risk_manager):
+        """
+        Initialize strategy coordinator.
+        
+        Args:
+            portfolio_manager: PortfolioManager instance
+            risk_manager: RiskManager instance
+        """
+        self.portfolio_manager = portfolio_manager
+        self.risk_manager = risk_manager
+        
+        # Signal management
+        self.active_signals = {}  # signal_id -> signal_data
+        self.signal_queue = asyncio.Queue()
+        self.signal_history = []
+        
+        # Conflict tracking
+        self.conflict_history = []
+        
+        # Signal processing stats
+        self.processing_stats = {
+            'total_signals': 0,
+            'accepted_signals': 0,
+            'rejected_signals': 0,
+            'conflicted_signals': 0,
+            'last_signal_time': None
+        }
+        
+        logger.info("StrategyCoordinator initialized")
+    
+    async def process_strategy_signal(self, strategy_name: str, signal: Dict) -> Dict[str, Any]:
+        """
+        Process incoming signals from registered strategies.
+        
+        Args:
+            strategy_name: Name of the strategy generating the signal
+            signal: Trading signal dictionary
+            
+        Returns:
+            Processing result with validation status and actions
+        """
+        try:
+            self.processing_stats['total_signals'] += 1
+            self.processing_stats['last_signal_time'] = datetime.now(timezone.utc)
+            
+            logger.info(f"Processing signal from {strategy_name}: {signal.get('symbol', 'UNKNOWN')}")
+            
+            # Step 1: Validate signal format
+            validation_result = self._validate_signal_format(signal)
+            if not validation_result['valid']:
+                self.processing_stats['rejected_signals'] += 1
+                logger.warning(f"Signal validation failed: {validation_result['reason']}")
+                return {
+                    'status': 'rejected',
+                    'reason': validation_result['reason'],
+                    'stage': 'validation'
+                }
+            
+            # Step 2: Enrich signal with metadata
+            enriched_signal = self._enrich_signal(strategy_name, signal)
+            
+            # Step 3: Check for conflicts with existing positions/signals
+            conflict_check = await self._check_signal_conflicts(enriched_signal)
+            
+            if conflict_check['has_conflict']:
+                self.processing_stats['conflicted_signals'] += 1
+                logger.info(f"Signal conflict detected: {conflict_check['conflicts']}")
+                
+                # Resolve conflicts
+                resolution = await self.resolve_signal_conflicts(
+                    enriched_signal, 
+                    conflict_check['conflicting_signals']
+                )
+                
+                if resolution['action'] == 'reject':
+                    self.processing_stats['rejected_signals'] += 1
+                    return {
+                        'status': 'rejected',
+                        'reason': resolution['reason'],
+                        'stage': 'conflict_resolution',
+                        'conflict_details': conflict_check
+                    }
+            
+            # Step 4: Risk assessment
+            risk_assessment = await self._assess_signal_risk(enriched_signal)
+            
+            if not risk_assessment['acceptable']:
+                self.processing_stats['rejected_signals'] += 1
+                logger.warning(f"Signal rejected by risk assessment: {risk_assessment['reason']}")
+                return {
+                    'status': 'rejected',
+                    'reason': risk_assessment['reason'],
+                    'stage': 'risk_assessment',
+                    'risk_metrics': risk_assessment.get('metrics', {})
+                }
+            
+            # Step 5: Priority-based routing
+            routing_result = self._route_signal(enriched_signal, risk_assessment)
+            
+            # Step 6: Register signal
+            signal_id = self._generate_signal_id(strategy_name, enriched_signal)
+            self.active_signals[signal_id] = {
+                'signal': enriched_signal,
+                'risk_assessment': risk_assessment,
+                'routing': routing_result,
+                'timestamp': datetime.now(timezone.utc),
+                'status': 'active'
+            }
+            
+            # Add to signal queue for execution
+            await self.signal_queue.put({
+                'signal_id': signal_id,
+                'signal': enriched_signal,
+                'risk_assessment': risk_assessment,
+                'routing': routing_result
+            })
+            
+            # Update stats
+            self.processing_stats['accepted_signals'] += 1
+            
+            # Record in history
+            self.signal_history.append({
+                'signal_id': signal_id,
+                'strategy_name': strategy_name,
+                'symbol': enriched_signal.get('symbol'),
+                'timestamp': datetime.now(timezone.utc),
+                'status': 'accepted'
+            })
+            
+            # Keep last 500 signals
+            if len(self.signal_history) > 500:
+                self.signal_history = self.signal_history[-500:]
+            
+            logger.info(f"Signal accepted and queued: {signal_id}")
+            
+            return {
+                'status': 'accepted',
+                'signal_id': signal_id,
+                'enriched_signal': enriched_signal,
+                'risk_assessment': risk_assessment,
+                'routing': routing_result
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing signal from {strategy_name}: {e}")
+            self.processing_stats['rejected_signals'] += 1
+            return {
+                'status': 'error',
+                'reason': str(e),
+                'stage': 'processing'
+            }
+    
+    async def resolve_signal_conflicts(self, new_signal: Dict, 
+                                      conflicting_signals: List[Dict],
+                                      resolution_strategy: ConflictResolutionStrategy = ConflictResolutionStrategy.HIGHEST_PRIORITY) -> Dict[str, Any]:
+        """
+        Resolve conflicts between competing strategy signals.
+        
+        Args:
+            new_signal: New incoming signal
+            conflicting_signals: List of conflicting existing signals
+            resolution_strategy: Strategy for conflict resolution
+            
+        Returns:
+            Resolution decision and reasoning
+        """
+        try:
+            logger.info(f"Resolving signal conflict using {resolution_strategy.value} strategy")
+            
+            all_signals = [new_signal] + conflicting_signals
+            
+            # Apply resolution strategy
+            if resolution_strategy == ConflictResolutionStrategy.HIGHEST_PRIORITY:
+                winner = self._resolve_by_priority(all_signals)
+            elif resolution_strategy == ConflictResolutionStrategy.BEST_RISK_REWARD:
+                winner = self._resolve_by_risk_reward(all_signals)
+            elif resolution_strategy == ConflictResolutionStrategy.PERFORMANCE_WEIGHTED:
+                winner = self._resolve_by_performance(all_signals)
+            elif resolution_strategy == ConflictResolutionStrategy.FIRST_IN_FIRST_OUT:
+                winner = self._resolve_by_fifo(all_signals)
+            else:
+                winner = self._resolve_by_priority(all_signals)  # Default
+            
+            # Determine action for new signal
+            if winner['signal_id'] == new_signal.get('signal_id', 'new'):
+                action = 'accept'
+                reason = f"Won conflict resolution ({resolution_strategy.value})"
+            else:
+                action = 'reject'
+                reason = f"Lost conflict resolution to {winner['strategy_name']} ({resolution_strategy.value})"
+            
+            # Record conflict
+            conflict_record = {
+                'timestamp': datetime.now(timezone.utc),
+                'new_signal': new_signal.get('signal_id', 'new'),
+                'conflicting_signals': [s.get('signal_id', 'unknown') for s in conflicting_signals],
+                'winner': winner['signal_id'],
+                'strategy': resolution_strategy.value,
+                'action': action
+            }
+            self.conflict_history.append(conflict_record)
+            
+            # Keep last 200 conflicts
+            if len(self.conflict_history) > 200:
+                self.conflict_history = self.conflict_history[-200:]
+            
+            logger.info(f"Conflict resolved: {action} new signal (winner: {winner['strategy_name']})")
+            
+            return {
+                'action': action,
+                'reason': reason,
+                'winner': winner,
+                'resolution_strategy': resolution_strategy.value,
+                'conflict_record': conflict_record
+            }
+            
+        except Exception as e:
+            logger.error(f"Error resolving signal conflict: {e}")
+            return {
+                'action': 'reject',
+                'reason': f"Conflict resolution error: {str(e)}",
+                'winner': None
+            }
+    
+    def _validate_signal_format(self, signal: Dict) -> Dict[str, Any]:
+        """Validate signal has required fields."""
+        required_fields = ['symbol', 'side', 'entry']
+        
+        for field in required_fields:
+            if field not in signal:
+                return {
+                    'valid': False,
+                    'reason': f"Missing required field: {field}"
+                }
+        
+        # Validate side
+        if signal['side'] not in ['long', 'short', 'buy', 'sell']:
+            return {
+                'valid': False,
+                'reason': f"Invalid side: {signal['side']}"
+            }
+        
+        # Validate price values
+        if signal.get('entry', 0) <= 0:
+            return {
+                'valid': False,
+                'reason': "Entry price must be positive"
+            }
+        
+        return {'valid': True}
+    
+    def _enrich_signal(self, strategy_name: str, signal: Dict) -> Dict:
+        """Enrich signal with additional metadata."""
+        enriched = signal.copy()
+        
+        # Add strategy information
+        enriched['strategy_name'] = strategy_name
+        enriched['signal_timestamp'] = datetime.now(timezone.utc)
+        
+        # Add strategy allocation
+        allocation = self.portfolio_manager.get_strategy_allocation(strategy_name)
+        enriched['strategy_allocation'] = allocation if allocation is not None else 0.0
+        
+        # Add priority based on strategy performance
+        enriched['priority'] = self._calculate_signal_priority(strategy_name, signal)
+        
+        # Add market regime if available
+        if self.portfolio_manager.performance_monitor:
+            summary = self.portfolio_manager.performance_monitor.get_strategy_summary(strategy_name)
+            enriched['strategy_metrics'] = summary.get('metrics', {})
+        
+        return enriched
+    
+    def _calculate_signal_priority(self, strategy_name: str, signal: Dict) -> SignalPriority:
+        """Calculate signal priority based on strategy performance and signal quality."""
+        # Default priority
+        priority = SignalPriority.MEDIUM
+        
+        # Check if performance monitor available
+        if not self.portfolio_manager.performance_monitor:
+            return priority
+        
+        summary = self.portfolio_manager.performance_monitor.get_strategy_summary(strategy_name)
+        metrics = summary.get('metrics', {})
+        
+        if not metrics:
+            return priority
+        
+        # Calculate priority based on metrics
+        win_rate = metrics.get('win_rate', 0.5)
+        sharpe = metrics.get('sharpe_ratio', 0)
+        profit_factor = metrics.get('profit_factor', 1.0)
+        
+        # High priority: excellent performance
+        if win_rate > 0.65 and sharpe > 1.5 and profit_factor > 2.0:
+            priority = SignalPriority.HIGH
+        # Low priority: poor performance
+        elif win_rate < 0.40 or profit_factor < 1.0:
+            priority = SignalPriority.LOW
+        
+        # Adjust for signal quality
+        if signal.get('confidence'):
+            confidence = signal['confidence']
+            if confidence > 0.8 and priority == SignalPriority.HIGH:
+                priority = SignalPriority.CRITICAL
+            elif confidence < 0.3:
+                priority = SignalPriority.LOW
+        
+        return priority
+    
+    async def _check_signal_conflicts(self, signal: Dict) -> Dict[str, Any]:
+        """Check for conflicts with existing positions and signals."""
+        conflicts = []
+        conflicting_signals = []
+        
+        symbol = signal.get('symbol')
+        side = signal.get('side')
+        
+        # Check active signals
+        for signal_id, signal_data in self.active_signals.items():
+            existing_signal = signal_data['signal']
+            
+            # Same symbol conflict
+            if existing_signal.get('symbol') == symbol:
+                # Opposite side conflict
+                if self._are_sides_opposite(side, existing_signal.get('side')):
+                    conflicts.append('opposite_direction')
+                    conflicting_signals.append({
+                        'signal_id': signal_id,
+                        'signal': existing_signal,
+                        'conflict_type': 'opposite_direction'
+                    })
+                # Same side - check if too close
+                elif side == existing_signal.get('side'):
+                    conflicts.append('same_direction')
+                    conflicting_signals.append({
+                        'signal_id': signal_id,
+                        'signal': existing_signal,
+                        'conflict_type': 'same_direction'
+                    })
+        
+        # Check active positions from risk manager
+        for position_id, position in self.risk_manager.active_positions.items():
+            if position.get('symbol') == symbol:
+                position_side = position.get('side')
+                if self._are_sides_opposite(side, position_side):
+                    conflicts.append('opposite_to_position')
+                    conflicting_signals.append({
+                        'position_id': position_id,
+                        'position': position,
+                        'conflict_type': 'opposite_to_position'
+                    })
+        
+        return {
+            'has_conflict': len(conflicts) > 0,
+            'conflicts': conflicts,
+            'conflicting_signals': conflicting_signals
+        }
+    
+    def _are_sides_opposite(self, side1: str, side2: str) -> bool:
+        """Check if two sides are opposite."""
+        long_sides = ['long', 'buy']
+        short_sides = ['short', 'sell']
+        
+        return (side1 in long_sides and side2 in short_sides) or \
+               (side1 in short_sides and side2 in long_sides)
+    
+    async def _assess_signal_risk(self, signal: Dict) -> Dict[str, Any]:
+        """Assess risk for the signal using risk manager."""
+        try:
+            # Calculate position size
+            position_size = await self.risk_manager.calculate_position_size(signal)
+            
+            if position_size <= 0:
+                return {
+                    'acceptable': False,
+                    'reason': 'Unable to calculate valid position size',
+                    'metrics': {}
+                }
+            
+            # Add position size to signal
+            signal['position_size'] = position_size
+            
+            # Validate position with risk manager
+            is_valid, reason, risk_metrics = await self.risk_manager.validate_new_position(
+                signal, 
+                {}
+            )
+            
+            if not is_valid:
+                return {
+                    'acceptable': False,
+                    'reason': reason,
+                    'metrics': risk_metrics
+                }
+            
+            return {
+                'acceptable': True,
+                'position_size': position_size,
+                'metrics': risk_metrics
+            }
+            
+        except Exception as e:
+            logger.error(f"Error assessing signal risk: {e}")
+            return {
+                'acceptable': False,
+                'reason': f"Risk assessment error: {str(e)}",
+                'metrics': {}
+            }
+    
+    def _route_signal(self, signal: Dict, risk_assessment: Dict) -> Dict[str, Any]:
+        """Route signal based on priority and risk assessment."""
+        priority = signal.get('priority', SignalPriority.MEDIUM)
+        
+        # Determine execution priority
+        if priority == SignalPriority.CRITICAL:
+            execution_priority = 'immediate'
+        elif priority == SignalPriority.HIGH:
+            execution_priority = 'high'
+        else:
+            execution_priority = 'normal'
+        
+        # Determine execution method
+        position_size = risk_assessment.get('position_size', 0)
+        if position_size > 0:
+            execution_method = 'limit_order'  # Default to limit orders
+        else:
+            execution_method = 'skip'
+        
+        return {
+            'execution_priority': execution_priority,
+            'execution_method': execution_method,
+            'position_size': position_size
+        }
+    
+    def _generate_signal_id(self, strategy_name: str, signal: Dict) -> str:
+        """Generate unique signal identifier."""
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')
+        symbol = signal.get('symbol', 'UNKNOWN').replace('/', '_').replace(':', '_')
+        return f"{strategy_name}_{symbol}_{timestamp}"
+    
+    def _resolve_by_priority(self, signals: List[Dict]) -> Dict:
+        """Resolve conflict by selecting highest priority signal."""
+        # Add signal_id if not present
+        for i, signal in enumerate(signals):
+            if 'signal_id' not in signal:
+                signal['signal_id'] = f"signal_{i}"
+        
+        # Sort by priority (highest first)
+        priority_map = {
+            SignalPriority.CRITICAL: 4,
+            SignalPriority.HIGH: 3,
+            SignalPriority.MEDIUM: 2,
+            SignalPriority.LOW: 1
+        }
+        
+        sorted_signals = sorted(
+            signals,
+            key=lambda s: priority_map.get(s.get('priority', SignalPriority.MEDIUM), 2),
+            reverse=True
+        )
+        
+        winner = sorted_signals[0]
+        return {
+            'signal_id': winner.get('signal_id'),
+            'strategy_name': winner.get('strategy_name', 'unknown'),
+            'priority': winner.get('priority', SignalPriority.MEDIUM)
+        }
+    
+    def _resolve_by_risk_reward(self, signals: List[Dict]) -> Dict:
+        """Resolve conflict by selecting best risk/reward ratio."""
+        best_signal = None
+        best_rr = 0
+        
+        for signal in signals:
+            entry = signal.get('entry', 0)
+            stop = signal.get('stop', 0)
+            target = signal.get('target', entry * 1.02)
+            
+            if entry > 0 and stop > 0:
+                risk = abs(entry - stop)
+                reward = abs(target - entry)
+                rr = reward / risk if risk > 0 else 0
+                
+                if rr > best_rr:
+                    best_rr = rr
+                    best_signal = signal
+        
+        if best_signal:
+            if 'signal_id' not in best_signal:
+                best_signal['signal_id'] = 'best_rr'
+            return {
+                'signal_id': best_signal.get('signal_id'),
+                'strategy_name': best_signal.get('strategy_name', 'unknown'),
+                'risk_reward': best_rr
+            }
+        
+        # Fallback to first signal
+        if signals:
+            if 'signal_id' not in signals[0]:
+                signals[0]['signal_id'] = 'fallback'
+            return {
+                'signal_id': signals[0].get('signal_id'),
+                'strategy_name': signals[0].get('strategy_name', 'unknown'),
+                'risk_reward': 0
+            }
+        
+        return {'signal_id': 'none', 'strategy_name': 'none', 'risk_reward': 0}
+    
+    def _resolve_by_performance(self, signals: List[Dict]) -> Dict:
+        """Resolve conflict by strategy performance."""
+        if not self.portfolio_manager.performance_monitor:
+            return self._resolve_by_priority(signals)
+        
+        best_signal = None
+        best_score = -1
+        
+        for signal in signals:
+            strategy_name = signal.get('strategy_name')
+            if not strategy_name:
+                continue
+            
+            summary = self.portfolio_manager.performance_monitor.get_strategy_summary(strategy_name)
+            metrics = summary.get('metrics', {})
+            
+            # Calculate performance score
+            win_rate = metrics.get('win_rate', 0.5)
+            sharpe = max(metrics.get('sharpe_ratio', 0), 0)
+            profit_factor = metrics.get('profit_factor', 1.0)
+            
+            score = (win_rate * 0.4) + (min(sharpe / 2.0, 0.3) * 0.3) + (min(profit_factor / 3.0, 0.3) * 0.3)
+            
+            if score > best_score:
+                best_score = score
+                best_signal = signal
+        
+        if best_signal:
+            if 'signal_id' not in best_signal:
+                best_signal['signal_id'] = 'best_performance'
+            return {
+                'signal_id': best_signal.get('signal_id'),
+                'strategy_name': best_signal.get('strategy_name', 'unknown'),
+                'performance_score': best_score
+            }
+        
+        return self._resolve_by_priority(signals)
+    
+    def _resolve_by_fifo(self, signals: List[Dict]) -> Dict:
+        """Resolve conflict by first-in-first-out."""
+        # Existing signals (from conflicting_signals) come first
+        for signal in signals[1:]:  # Skip new signal
+            if 'signal_id' in signal:
+                return {
+                    'signal_id': signal.get('signal_id'),
+                    'strategy_name': signal.get('strategy_name', 'unknown'),
+                    'reason': 'existing_signal'
+                }
+        
+        # New signal wins if no existing signals
+        if signals:
+            if 'signal_id' not in signals[0]:
+                signals[0]['signal_id'] = 'new'
+            return {
+                'signal_id': signals[0].get('signal_id'),
+                'strategy_name': signals[0].get('strategy_name', 'unknown'),
+                'reason': 'new_signal'
+            }
+        
+        return {'signal_id': 'none', 'strategy_name': 'none', 'reason': 'no_signals'}
+    
+    async def get_next_signal(self, timeout: Optional[float] = None) -> Optional[Dict]:
+        """Get next signal from queue."""
+        try:
+            if timeout:
+                signal = await asyncio.wait_for(self.signal_queue.get(), timeout=timeout)
+            else:
+                signal = await self.signal_queue.get()
+            return signal
+        except asyncio.TimeoutError:
+            return None
+        except Exception as e:
+            logger.error(f"Error getting next signal: {e}")
+            return None
+    
+    def mark_signal_executed(self, signal_id: str, execution_result: Dict):
+        """Mark signal as executed and remove from active signals."""
+        if signal_id in self.active_signals:
+            self.active_signals[signal_id]['status'] = 'executed'
+            self.active_signals[signal_id]['execution_result'] = execution_result
+            self.active_signals[signal_id]['execution_time'] = datetime.now(timezone.utc)
+            
+            # Move to history after short delay
+            # In production, clean up periodically
+            logger.info(f"Signal {signal_id} marked as executed")
+    
+    def get_processing_stats(self) -> Dict[str, Any]:
+        """Get signal processing statistics."""
+        return {
+            'stats': self.processing_stats.copy(),
+            'active_signals': len(self.active_signals),
+            'queued_signals': self.signal_queue.qsize(),
+            'signal_history_count': len(self.signal_history),
+            'conflict_history_count': len(self.conflict_history)
+        }
+    
+    def get_active_signals_summary(self) -> List[Dict]:
+        """Get summary of active signals."""
+        return [
+            {
+                'signal_id': signal_id,
+                'strategy': data['signal'].get('strategy_name'),
+                'symbol': data['signal'].get('symbol'),
+                'side': data['signal'].get('side'),
+                'priority': data['signal'].get('priority', SignalPriority.MEDIUM).name,
+                'timestamp': data['timestamp'],
+                'status': data['status']
+            }
+            for signal_id, data in self.active_signals.items()
+        ]
