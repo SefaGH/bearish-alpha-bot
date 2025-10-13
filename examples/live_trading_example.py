@@ -114,10 +114,10 @@ async def example_2_register_strategies():
         logger.info("\nRegistering strategies:")
         for name, instance, allocation in strategies:
             result = coordinator.register_strategy(name, instance, allocation)
-            if result['success']:
+            if result.get('status') == 'success':
                 logger.info(f"  ✓ {name}: {allocation*100}% allocation")
             else:
-                logger.error(f"  ✗ {name}: {result.get('reason')}")
+                logger.error(f"  ✗ {name}: {result.get('reason', 'Unknown error')}")
         
         # Check portfolio state
         portfolio_state = coordinator.portfolio_manager.portfolio_state
