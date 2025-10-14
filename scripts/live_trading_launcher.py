@@ -66,6 +66,118 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class HealthMonitor:
+    """
+    HEALTH MONITORING SYSTEM (Layer 3 Guardian)
+    
+    Provides heartbeat monitoring, performance metrics tracking,
+    and system health analysis for the trading bot.
+    """
+    
+    def __init__(self, telegram: Optional[Telegram] = None):
+        """
+        Initialize health monitor.
+        
+        Args:
+            telegram: Telegram notifier for health alerts
+        """
+        self.telegram = telegram
+        self.start_time = datetime.now(timezone.utc)
+        self.last_heartbeat = datetime.now(timezone.utc)
+        self.heartbeat_interval = 300  # 5 minutes
+        
+        # Performance metrics
+        self.metrics = {
+            'loops_completed': 0,
+            'errors_caught': 0,
+            'signals_processed': 0,
+            'last_error': None,
+            'last_error_time': None
+        }
+        
+        # Health status
+        self.health_status = 'healthy'
+        self.monitoring_active = False
+        self.monitor_task = None
+        
+        logger.info("="*70)
+        logger.info("HEALTH MONITORING SYSTEM INITIALIZED (Layer 3 Guardian)")
+        logger.info("="*70)
+        logger.info(f"Heartbeat Interval: {self.heartbeat_interval}s")
+        logger.info("="*70)
+    
+    async def start_monitoring(self):
+        """Start health monitoring task."""
+        if not self.monitoring_active:
+            self.monitoring_active = True
+            self.monitor_task = asyncio.create_task(self._monitor_loop())
+            logger.info("✓ Health monitoring started")
+    
+    async def stop_monitoring(self):
+        """Stop health monitoring task."""
+        self.monitoring_active = False
+        if self.monitor_task and not self.monitor_task.done():
+            self.monitor_task.cancel()
+            try:
+                await self.monitor_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("✓ Health monitoring stopped")
+    
+    async def _monitor_loop(self):
+        """Main health monitoring loop."""
+        try:
+            while self.monitoring_active:
+                await asyncio.sleep(self.heartbeat_interval)
+                
+                # Send heartbeat
+                uptime = (datetime.now(timezone.utc) - self.start_time).total_seconds()
+                time_since_last = (datetime.now(timezone.utc) - self.last_heartbeat).total_seconds()
+                
+                logger.info(f"💓 Heartbeat - Uptime: {uptime/3600:.1f}h, Status: {self.health_status}")
+                
+                # Update heartbeat
+                self.last_heartbeat = datetime.now(timezone.utc)
+                self.metrics['loops_completed'] += 1
+                
+                # Send periodic Telegram update
+                if self.telegram and self.metrics['loops_completed'] % 12 == 0:  # Every hour
+                    self.telegram.send(
+                        f"💓 <b>Health Check</b>\n"
+                        f"Status: {self.health_status.upper()}\n"
+                        f"Uptime: {uptime/3600:.1f}h\n"
+                        f"Loops: {self.metrics['loops_completed']}\n"
+                        f"Errors: {self.metrics['errors_caught']}"
+                    )
+                    
+        except asyncio.CancelledError:
+            logger.info("Health monitoring cancelled")
+        except Exception as e:
+            logger.error(f"Error in health monitor: {e}")
+    
+    def record_error(self, error: str):
+        """Record an error in the metrics."""
+        self.metrics['errors_caught'] += 1
+        self.metrics['last_error'] = error
+        self.metrics['last_error_time'] = datetime.now(timezone.utc)
+        
+        # Update health status based on error frequency
+        if self.metrics['errors_caught'] > 10:
+            self.health_status = 'degraded'
+        if self.metrics['errors_caught'] > 50:
+            self.health_status = 'critical'
+    
+    def get_health_report(self) -> Dict[str, Any]:
+        """Get comprehensive health report."""
+        uptime = (datetime.now(timezone.utc) - self.start_time).total_seconds()
+        return {
+            'status': self.health_status,
+            'uptime_hours': uptime / 3600,
+            'metrics': self.metrics,
+            'last_heartbeat': self.last_heartbeat.isoformat()
+        }
+
+
 class AutoRestartManager:
     """
     AUTO-RESTART FAILSAFE (Layer 2 Defense)
@@ -240,6 +352,7 @@ class LiveTradingLauncher:
         self.exchange_clients = {}
         self.strategies = {}
         self.restart_manager = None
+        self.health_monitor = None
         
         # Phase 4 AI components
         self.regime_predictor = None
@@ -299,6 +412,11 @@ class LiveTradingLauncher:
             logger.info("✓ Telegram notifications enabled")
         else:
             logger.info("ℹ Telegram notifications disabled (optional)")
+        
+        # Initialize health monitor (Layer 3)
+        if self.infinite or self.auto_restart:
+            self.health_monitor = HealthMonitor(telegram=self.telegram)
+            logger.info("✓ Health Monitor initialized (Layer 3 Guardian)")
         
         # Initialize auto-restart manager if enabled
         if self.auto_restart:
@@ -622,6 +740,10 @@ class LiveTradingLauncher:
             )
         
         try:
+            # Start health monitoring if enabled
+            if self.health_monitor:
+                await self.health_monitor.start_monitoring()
+            
             # Start production trading loop with continuous mode if enabled
             await self.coordinator.run_production_loop(
                 mode=self.mode,
@@ -635,7 +757,14 @@ class LiveTradingLauncher:
             
         except Exception as e:
             logger.error(f"❌ Critical error in trading loop: {e}")
+            if self.health_monitor:
+                self.health_monitor.record_error(str(e))
             await self._emergency_shutdown(f"Critical error: {e}")
+        
+        finally:
+            # Stop health monitoring
+            if self.health_monitor:
+                await self.health_monitor.stop_monitoring()
     
     async def _shutdown(self) -> None:
         """Graceful shutdown of trading system."""
@@ -644,13 +773,25 @@ class LiveTradingLauncher:
         logger.info("="*70)
         
         try:
+            # Stop health monitoring first
+            if self.health_monitor:
+                await self.health_monitor.stop_monitoring()
+                health_report = self.health_monitor.get_health_report()
+                logger.info(f"Final health report: {health_report}")
+            
             if self.coordinator:
                 await self.coordinator.stop_system()
                 logger.info("✓ Production system stopped")
             
-            # Send Telegram notification
+            # Send Telegram notification with health summary
             if self.telegram:
-                self.telegram.send("🛑 <b>Trading stopped - Graceful shutdown completed</b>")
+                msg = "🛑 <b>Trading stopped - Graceful shutdown completed</b>"
+                if self.health_monitor:
+                    hr = self.health_monitor.get_health_report()
+                    msg += f"\n\nUptime: {hr['uptime_hours']:.1f}h\n"
+                    msg += f"Status: {hr['status']}\n"
+                    msg += f"Errors: {hr['metrics']['errors_caught']}"
+                self.telegram.send(msg)
             
             logger.info("="*70)
             logger.info("SHUTDOWN COMPLETE")
