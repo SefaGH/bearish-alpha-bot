@@ -46,7 +46,9 @@ from core.production_coordinator import ProductionCoordinator
 from core.ccxt_client import CcxtClient
 from core.notify import Telegram
 from core.state import load_state, save_state
+from core.market_regime import MarketRegimeAnalyzer
 from config.risk_config import RiskConfiguration
+from config.optimization_config import OptimizationConfiguration
 from ml.regime_predictor import MLRegimePredictor
 from ml.price_predictor import AdvancedPricePredictionEngine
 from ml.strategy_integration import AIEnhancedStrategyAdapter
@@ -516,7 +518,8 @@ class LiveTradingLauncher:
             
             # Phase 4.3: Strategy Optimization
             logger.info("Initializing strategy optimizer...")
-            self.strategy_optimizer = StrategyOptimizer()
+            config = OptimizationConfiguration.get_default_config()
+            self.strategy_optimizer = StrategyOptimizer(config)
             logger.info("✓ Strategy Optimizer initialized")
             
             # Phase 4.4: Price Prediction
@@ -555,12 +558,28 @@ class LiveTradingLauncher:
         logger.info("\n[5/8] Initializing Trading Strategies...")
         
         try:
+            # Initialize regime analyzer for adaptive strategies
+            regime_analyzer = MarketRegimeAnalyzer()
+            
+            # Strategy configurations
+            adaptive_ob_config = {
+                'rsi_max': 30,
+                'tp_pct': 0.015,
+                'sl_atr_mult': 1.0
+            }
+            
+            adaptive_str_config = {
+                'rsi_min': 70,
+                'tp_pct': 0.012,
+                'sl_atr_mult': 1.0
+            }
+            
             # Adaptive Oversold Bounce strategy
-            self.strategies['adaptive_ob'] = AdaptiveOversoldBounce()
+            self.strategies['adaptive_ob'] = AdaptiveOversoldBounce(adaptive_ob_config, regime_analyzer)
             logger.info("✓ Adaptive Oversold Bounce strategy initialized")
             
             # Adaptive Short The Rip strategy
-            self.strategies['adaptive_str'] = AdaptiveShortTheRip()
+            self.strategies['adaptive_str'] = AdaptiveShortTheRip(adaptive_str_config, regime_analyzer)
             logger.info("✓ Adaptive Short The Rip strategy initialized")
             
             logger.info(f"\n✓ {len(self.strategies)} strategies ready for trading")
