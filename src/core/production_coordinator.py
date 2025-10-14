@@ -168,13 +168,15 @@ class ProductionCoordinator:
                 'initialized': False
             }
     
-    async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None):
+    async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
+                                  continuous: bool = False):
         """
         Main production trading loop.
         
         Args:
             mode: Trading mode ('paper', 'live', 'simulation')
             duration: Optional duration in seconds (None = run indefinitely)
+            continuous: If True, enable TRUE CONTINUOUS mode (never stops, auto-recovers)
         """
         try:
             if not self.is_initialized:
@@ -195,26 +197,36 @@ class ProductionCoordinator:
             logger.info("\n🚀 Production trading loop active")
             logger.info(f"   Mode: {mode}")
             logger.info(f"   Duration: {'Indefinite' if duration is None else f'{duration}s'}")
+            logger.info(f"   Continuous Mode: {'ENABLED (Never stops, auto-recovers)' if continuous else 'DISABLED'}")
             
             # Main loop
             start_time = datetime.now(timezone.utc)
             
             while self.is_running:
                 try:
-                    # Check emergency conditions
+                    # Check emergency conditions (always honor manual stop)
                     if self.emergency_stop_triggered:
                         logger.critical("Emergency stop triggered - shutting down")
                         break
                     
-                    # Check circuit breaker
+                    # Check circuit breaker (bypass non-critical in continuous mode)
                     breaker_status = await self.circuit_breaker.check_circuit_breaker()
                     if breaker_status.get('tripped'):
-                        logger.critical(f"Circuit breaker tripped: {breaker_status.get('reason')}")
-                        await self.handle_emergency_shutdown('circuit_breaker_tripped')
-                        break
+                        severity = breaker_status.get('severity', 'high')
+                        
+                        # In continuous mode, only stop for critical breakers
+                        if continuous and severity != 'critical':
+                            logger.warning(f"Circuit breaker tripped ({severity}): {breaker_status.get('reason')}")
+                            logger.warning("CONTINUOUS MODE: Bypassing non-critical breaker, continuing...")
+                            await asyncio.sleep(10)  # Pause briefly before continuing
+                            continue
+                        else:
+                            logger.critical(f"Circuit breaker tripped ({severity}): {breaker_status.get('reason')}")
+                            await self.handle_emergency_shutdown('circuit_breaker_tripped')
+                            break
                     
-                    # Check duration
-                    if duration:
+                    # Check duration (skip in continuous mode)
+                    if duration and not continuous:
                         elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
                         if elapsed >= duration:
                             logger.info(f"Duration {duration}s reached - stopping")
@@ -229,13 +241,34 @@ class ProductionCoordinator:
                     
                 except Exception as e:
                     logger.error(f"Error in production loop: {e}")
-                    # Decide whether to continue or stop
-                    if self.config['emergency']['enable_circuit_breaker']:
-                        await self.handle_emergency_shutdown('system_error')
-                        break
-                    else:
+                    
+                    # In continuous mode, implement auto-recovery
+                    if continuous:
+                        logger.warning("CONTINUOUS MODE: Auto-recovering from error...")
+                        
+                        # Try to restart trading engine if it stopped
+                        try:
+                            if self.trading_engine and not self.trading_engine.is_running:
+                                logger.info("Attempting to restart trading engine...")
+                                restart_result = await self.trading_engine.start_live_trading(mode=mode)
+                                if restart_result['success']:
+                                    logger.info("✓ Trading engine restarted successfully")
+                                else:
+                                    logger.error(f"Failed to restart trading engine: {restart_result.get('reason')}")
+                        except Exception as restart_error:
+                            logger.error(f"Error during auto-recovery: {restart_error}")
+                        
+                        # Continue after brief pause
                         await asyncio.sleep(5)
                         continue
+                    else:
+                        # Original behavior for non-continuous mode
+                        if self.config['emergency']['enable_circuit_breaker']:
+                            await self.handle_emergency_shutdown('system_error')
+                            break
+                        else:
+                            await asyncio.sleep(5)
+                            continue
             
             # Shutdown
             logger.info("\nShutting down production trading loop...")
