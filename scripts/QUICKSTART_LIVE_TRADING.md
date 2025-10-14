@@ -161,9 +161,9 @@ The launcher uses these pre-configured settings:
 
 | Parameter | Value |
 |-----------|-------|
-| Capital | 100 VST |
+| Capital | 100 USDT |
 | Exchange | BingX |
-| Trading Pairs | 8 (BTC, ETH, SOL, BNB, ADA, DOT, MATIC, AVAX) |
+| Trading Pairs | 8 (BTC, ETH, SOL, BNB, ADA, DOT, LTC, AVAX) |
 | Max Position | 15% of capital |
 | Stop Loss | 5% |
 | Take Profit | 10% |
@@ -212,12 +212,12 @@ source .env  # or use python-dotenv
 3. Check risk parameters are valid
 4. Ensure strategies are properly initialized
 
-### Problem: "VST contract not available"
+### Problem: "Trading pair not available"
 
 **Solution**: 
-1. Verify BingX account has VST trading enabled
-2. Check symbol format is correct: `VST/USDT:USDT`
-3. Try other pairs like `BTC/USDT:USDT`
+1. Verify the trading pair is supported on BingX
+2. Check symbol format is correct: `SYMBOL/USDT:USDT`
+3. Ensure the pair is listed in the launcher configuration
 
 ## Best Practices
 
@@ -231,7 +231,7 @@ Keep logs open and watch initial trades closely
 Configure Telegram for important notifications
 
 ### 💰 Test Capital
-Start with minimal capital (100 VST recommended)
+Start with minimal capital (100 USDT recommended for initial testing)
 
 ### 📝 Review Logs
 Regularly check log files for warnings/errors
@@ -255,7 +255,7 @@ After successful paper trading:
    - Fine-tune AI components
 
 3. **Scale Up Gradually**
-   - Start with 100 VST
+   - Start with 100 USDT
    - Monitor for 1-2 weeks
    - Gradually increase capital if performing well
 
