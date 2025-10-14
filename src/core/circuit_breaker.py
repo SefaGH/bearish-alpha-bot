@@ -113,8 +113,11 @@ class CircuitBreakerSystem:
             
             daily_loss_pct = (peak_value - portfolio_value) / peak_value if peak_value > 0 else 0
             
+            logger.debug(f"🔥 [CIRCUIT] Daily P&L: {daily_loss_pct:.2%} (limit: {threshold:.2%})")
+            
             if daily_loss_pct > threshold:
                 logger.critical(f"DAILY LOSS LIMIT BREACHED: {daily_loss_pct:.2%} > {threshold:.2%}")
+                logger.debug(f"🔥 [CIRCUIT] TRIGGERED: Daily loss limit breached")
                 await self.trigger_circuit_breaker('daily_loss', severity='critical')
                 
         except Exception as e:
@@ -181,8 +184,11 @@ class CircuitBreakerSystem:
                 if std_vol > 0:
                     z_score = (recent_vol - mean_vol) / std_vol
                     
+                    logger.debug(f"🔥 [CIRCUIT] Volatility spike check: {symbol} z-score={z_score:.2f} (threshold: {threshold})")
+                    
                     if abs(z_score) > threshold:
                         logger.warning(f"Volatility spike detected: {symbol} - z-score: {z_score:.2f}")
+                        logger.debug(f"🔥 [CIRCUIT] TRIGGERED: Volatility spike on {symbol}")
                         await self.trigger_circuit_breaker('volatility_spike',
                                                           severity='high',
                                                           details={'symbol': symbol, 'z_score': z_score})

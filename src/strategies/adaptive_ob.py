@@ -141,16 +141,24 @@ class AdaptiveOversoldBounce(OversoldBounce):
             return super().signal(df_30m)
         
         try:
+            # Debug: Market analysis started
+            logger.debug("🎯 [STRATEGY-AdaptiveOB] Market analysis started")
+            
             # Ensure we have valid data
             if df_30m.empty:
+                logger.debug("🎯 [STRATEGY-AdaptiveOB] Empty dataframe, no signal")
                 return None
             
             # Get last row, checking critical columns only (not ema200 which needs 200 bars)
             df_clean = df_30m.dropna(subset=['rsi', 'close'])
             if df_clean.empty:
+                logger.debug("🎯 [STRATEGY-AdaptiveOB] No valid data after cleaning, no signal")
                 return None
                 
             last = df_clean.iloc[-1]
+            
+            # Debug: Price data
+            logger.debug(f"📊 [STRATEGY-AdaptiveOB] Price data: close=${last['close']:.2f}, RSI={last['rsi']:.2f}")
             
             # Get adaptive RSI threshold
             market_regime = {
@@ -159,16 +167,21 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 'volatility': regime_data.get('volatility', 'normal')
             }
             
+            logger.debug(f"📊 [STRATEGY-AdaptiveOB] Market regime: {market_regime}")
+            
             adaptive_rsi_threshold = self.get_adaptive_rsi_threshold(market_regime)
+            logger.debug(f"📊 [STRATEGY-AdaptiveOB] Adaptive RSI threshold: {adaptive_rsi_threshold:.2f}")
             
             # Check RSI condition
             rsi_val = float(last['rsi'])
             if rsi_val > adaptive_rsi_threshold:
+                logger.debug(f"❌ [STRATEGY-AdaptiveOB] Signal result: No signal - RSI {rsi_val:.2f} > {adaptive_rsi_threshold:.2f}")
                 return None
             
             # Calculate position size adjustment
             volatility = regime_data.get('volatility', 'normal')
             position_mult = self.calculate_dynamic_position_size(volatility)
+            logger.debug(f"📊 [STRATEGY-AdaptiveOB] Position multiplier: {position_mult:.2f} (volatility: {volatility})")
             
             # Get trend strength for EMA adaptation
             trend_strength = regime_data.get('micro_trend_strength', 0.5)
@@ -189,6 +202,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 "ema_params": ema_params
             }
             
+            logger.debug(f"✅ [STRATEGY-AdaptiveOB] Signal result: BUY signal generated")
+            logger.debug(f"📈 [STRATEGY-AdaptiveOB] Signal strength: RSI {rsi_val:.1f} <= {adaptive_rsi_threshold:.1f}")
             logger.info(f"Adaptive OB signal: RSI {rsi_val:.1f} <= {adaptive_rsi_threshold:.1f}, "
                        f"regime={market_regime['trend']}, pos_mult={position_mult:.2f}")
             

@@ -116,18 +116,23 @@ class MLRegimePredictor:
         """
         try:
             logger.info(f"Predicting regime transition for {symbol} with {horizon} horizon")
+            logger.debug(f"🧠 [ML-REGIME] Starting regime prediction for {symbol}")
             
             # Feature extraction from multi-timeframe data
             features = self.feature_engine.extract_features(price_data)
             
             if features.empty:
                 logger.warning("No features extracted, returning default prediction")
+                logger.debug(f"🧠 [ML-REGIME] No features extracted, using default")
                 return self._default_prediction()
+            
+            logger.debug(f"🧠 [ML-REGIME] Extracted {len(features.columns)} features from price data")
             
             # Prepare features for prediction
             feature_values = features.dropna().tail(1).values
             
             if len(feature_values) == 0:
+                logger.debug(f"🧠 [ML-REGIME] No valid feature values after cleanup")
                 return self._default_prediction()
             
             # Model ensemble prediction
@@ -156,14 +161,18 @@ class MLRegimePredictor:
                 
                 self.prediction_history.append(result)
                 
+                logger.debug(f"🧠 [ML-REGIME] Market regime: {result['predicted_regime']} (confidence: {confidence:.2%})")
+                logger.debug(f"🧠 [ML-REGIME] Probabilities: Bull={probabilities[0][0]:.2%}, Neutral={probabilities[0][1]:.2%}, Bear={probabilities[0][2]:.2%}")
                 logger.info(f"Prediction: {result['predicted_regime']} (confidence: {confidence:.2f})")
                 return result
             else:
                 logger.warning("Models not trained, using fallback prediction")
+                logger.debug(f"🧠 [ML-REGIME] Models not trained, using fallback")
                 return self._fallback_prediction(symbol, price_data)
                 
         except Exception as e:
             logger.error(f"Error predicting regime transition: {e}")
+            logger.debug(f"🧠 [ML-REGIME] Prediction error: {e}")
             return self._default_prediction()
     
     def train_regime_models(self, historical_data: pd.DataFrame, 

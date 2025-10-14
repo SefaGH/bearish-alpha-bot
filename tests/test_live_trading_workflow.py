@@ -61,7 +61,8 @@ class TestLiveTradingWorkflow:
             'infinite',
             'auto_restart',
             'max_restarts',
-            'restart_delay'
+            'restart_delay',
+            'debug_mode'  # New debug mode input
         ]
 
         for input_name in required_inputs:
@@ -105,6 +106,20 @@ class TestLiveTradingWorkflow:
         # Restart delay
         assert 'restart_delay' in inputs
         assert inputs['restart_delay']['default'] == '30'
+
+    def test_debug_mode_input(self, workflow_config):
+        """Test debug mode input exists and is properly configured."""
+        inputs = workflow_config['on']['workflow_dispatch']['inputs']
+        
+        assert 'debug_mode' in inputs
+        debug_mode = inputs['debug_mode']
+        
+        assert debug_mode['type'] == 'choice'
+        assert 'false' in debug_mode['options']
+        assert 'true' in debug_mode['options']
+        assert debug_mode['default'] == 'false'
+        assert debug_mode['required'] == False
+        assert 'debug' in debug_mode['description'].lower()
 
     def test_required_jobs(self, workflow_config):
         """Test all required jobs are present."""

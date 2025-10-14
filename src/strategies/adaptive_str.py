@@ -143,16 +143,24 @@ class AdaptiveShortTheRip(ShortTheRip):
             return super().signal(df_30m, df_1h)
         
         try:
+            # Debug: Market analysis started
+            logger.debug("🎯 [STRATEGY-AdaptiveSTR] Market analysis started")
+            
             # Ensure we have valid data
             if df_30m.empty:
+                logger.debug("🎯 [STRATEGY-AdaptiveSTR] Empty dataframe, no signal")
                 return None
             
             # Get last row, checking critical columns only  
             df_clean = df_30m.dropna(subset=['rsi', 'close'])
             if df_clean.empty:
+                logger.debug("🎯 [STRATEGY-AdaptiveSTR] No valid data after cleaning, no signal")
                 return None
                 
             last30 = df_clean.iloc[-1]
+            
+            # Debug: Price data
+            logger.debug(f"📊 [STRATEGY-AdaptiveSTR] Price data: close=${last30['close']:.2f}, RSI={last30['rsi']:.2f}")
             
             # Get adaptive RSI threshold
             market_regime = {
@@ -161,11 +169,15 @@ class AdaptiveShortTheRip(ShortTheRip):
                 'volatility': regime_data.get('volatility', 'normal')
             }
             
+            logger.debug(f"📊 [STRATEGY-AdaptiveSTR] Market regime: {market_regime}")
+            
             adaptive_rsi_threshold = self.get_adaptive_rsi_threshold(market_regime)
+            logger.debug(f"📊 [STRATEGY-AdaptiveSTR] Adaptive RSI threshold: {adaptive_rsi_threshold:.2f}")
             
             # Check RSI condition
             rsi_val = float(last30['rsi'])
             if rsi_val < adaptive_rsi_threshold:
+                logger.debug(f"❌ [STRATEGY-AdaptiveSTR] Signal result: No signal - RSI {rsi_val:.2f} < {adaptive_rsi_threshold:.2f}")
                 return None
             
             # Get trend strength for EMA adaptation
@@ -181,16 +193,18 @@ class AdaptiveShortTheRip(ShortTheRip):
                     ema200 = float(last30['ema200'])
                     # Strict alignment: 21 < 50 <= 200 (bearish alignment)
                     ema_ok = ema21 < ema50 <= ema200
+                    logger.debug(f"📊 [STRATEGY-AdaptiveSTR] EMA alignment check: {ema_ok} (21={ema21:.2f}, 50={ema50:.2f}, 200={ema200:.2f})")
                 else:
                     logger.warning("Missing EMA columns for strict alignment check")
             
             if not ema_ok:
-                logger.debug(f"EMA alignment check failed for STR signal")
+                logger.debug(f"❌ [STRATEGY-AdaptiveSTR] Signal result: No signal - EMA alignment check failed")
                 return None
             
             # Calculate position size adjustment
             volatility = regime_data.get('volatility', 'normal')
             position_mult = self.calculate_dynamic_position_size(volatility)
+            logger.debug(f"📊 [STRATEGY-AdaptiveSTR] Position multiplier: {position_mult:.2f} (volatility: {volatility})")
             
             # Build adaptive signal
             signal = {
@@ -206,6 +220,8 @@ class AdaptiveShortTheRip(ShortTheRip):
                 "ema_params": ema_params
             }
             
+            logger.debug(f"✅ [STRATEGY-AdaptiveSTR] Signal result: SELL signal generated")
+            logger.debug(f"📈 [STRATEGY-AdaptiveSTR] Signal strength: RSI {rsi_val:.1f} >= {adaptive_rsi_threshold:.1f}")
             logger.info(f"Adaptive STR signal: RSI {rsi_val:.1f} >= {adaptive_rsi_threshold:.1f}, "
                        f"regime={market_regime['trend']}, pos_mult={position_mult:.2f}")
             

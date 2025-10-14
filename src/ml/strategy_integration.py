@@ -57,6 +57,8 @@ class AIEnhancedStrategyAdapter:
             Enhanced signal with AI adjustments
         """
         try:
+            logger.debug(f"🧠 [ML-ADAPTER] Enhancing signal for {symbol} at ${current_price:.2f}")
+            
             # Get price forecast
             price_forecast = self.price_engine.get_price_forecast(symbol)
             
@@ -76,9 +78,12 @@ class AIEnhancedStrategyAdapter:
                 'recommendations': []
             }
             
+            logger.debug(f"🧠 [ML-ADAPTER] Base signal: {base_signal['signal']} (strength: {base_signal.get('strength', 0.5):.2f})")
+            
             # If no AI predictions available, return base signal
             if not price_forecast:
                 enhancement['recommendations'].append('No AI forecast available')
+                logger.debug(f"🧠 [ML-ADAPTER] No price forecast available, using base signal")
                 return enhancement
             
             # Get AI signal from price forecast
@@ -89,15 +94,20 @@ class AIEnhancedStrategyAdapter:
             enhancement['ai_signal'] = ai_signal['signal']
             enhancement['ai_strength'] = ai_signal['strength']
             
+            logger.debug(f"🧠 [ML-ADAPTER] AI signal: {ai_signal['signal']} (strength: {ai_signal['strength']:.2f})")
+            
             # Combine signals
             combined = self._combine_signals(base_signal, ai_signal, price_forecast)
             
             enhancement.update(combined)
             
+            logger.debug(f"🧠 [ML-ADAPTER] Signal enhancement: {base_signal['signal']} → {enhancement['final_signal']} (strength: {enhancement['final_strength']:.2f})")
+            
             return enhancement
             
         except Exception as e:
             logger.error(f"Error enhancing strategy signal: {e}")
+            logger.debug(f"🧠 [ML-ADAPTER] Enhancement error: {e}")
             return {
                 'original_signal': base_signal['signal'],
                 'final_signal': base_signal['signal'],

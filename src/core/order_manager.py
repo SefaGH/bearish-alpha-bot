@@ -87,11 +87,15 @@ class SmartOrderManager:
             
             logger.info(f"Placing order: {order_request.get('symbol')} {order_request.get('side')} "
                        f"{order_request.get('amount')} using {execution_algo} algorithm")
+            logger.debug(f"🎪 [ORDER-MGR] Signal received: {order_request}")
             
             # Validate order request
             validation = self._validate_order_request(order_request)
+            logger.debug(f"🎪 [ORDER-MGR] Pre-execution checks: {validation}")
+            
             if not validation['valid']:
                 logger.error(f"Order validation failed: {validation['reason']}")
+                logger.debug(f"🎪 [ORDER-MGR] Execution result: REJECTED - {validation['reason']}")
                 self.execution_stats['failed_orders'] += 1
                 return {
                     'success': False,
@@ -102,8 +106,13 @@ class SmartOrderManager:
             # Select execution algorithm
             exec_func = self.execution_algorithms.get(execution_algo, self._limit_order_execution)
             
+            logger.debug(f"🎪 [ORDER-MGR] Order parameters: algo={execution_algo}, symbol={order_request.get('symbol')}, "
+                        f"side={order_request.get('side')}, amount={order_request.get('amount')}")
+            
             # Execute order
             result = await exec_func(order_request)
+            
+            logger.debug(f"🎪 [ORDER-MGR] Execution result: {'SUCCESS' if result.get('success') else 'FAILED'}")
             
             # Update statistics
             self.execution_stats['total_orders'] += 1
@@ -118,6 +127,9 @@ class SmartOrderManager:
                     (current_avg * (total - 1) + execution_time) / total
                 )
                 
+                logger.debug(f"🎪 [ORDER-MGR] Post-execution state: order_id={result.get('order_id')}, "
+                            f"executed_price={result.get('executed_price')}, execution_time={execution_time:.3f}s")
+                
                 # Store in history
                 self.order_history.append({
                     **result,
@@ -126,6 +138,7 @@ class SmartOrderManager:
                 })
             else:
                 self.execution_stats['failed_orders'] += 1
+                logger.debug(f"🎪 [ORDER-MGR] Post-execution state: FAILED - {result.get('reason')}")
             
             return result
             
