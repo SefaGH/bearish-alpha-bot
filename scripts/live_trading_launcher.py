@@ -50,7 +50,11 @@ from core.market_regime import MarketRegimeAnalyzer
 from config.risk_config import RiskConfiguration
 from config.optimization_config import OptimizationConfiguration
 from ml.regime_predictor import MLRegimePredictor
-from ml.price_predictor import AdvancedPricePredictionEngine
+from ml.price_predictor import (
+    AdvancedPricePredictionEngine, 
+    MultiTimeframePricePredictor,
+    EnsemblePricePredictor
+)
 from ml.strategy_integration import AIEnhancedStrategyAdapter
 from ml.strategy_optimizer import StrategyOptimizer
 from strategies.adaptive_ob import AdaptiveOversoldBounce
@@ -524,7 +528,17 @@ class LiveTradingLauncher:
             
             # Phase 4.4: Price Prediction
             logger.info("Initializing price prediction engine...")
-            self.price_engine = AdvancedPricePredictionEngine()
+            
+            # Initialize multi-timeframe predictor
+            models = {
+                '5m': EnsemblePricePredictor({'lstm': None, 'transformer': None}),
+                '15m': EnsemblePricePredictor({'lstm': None, 'transformer': None}),
+                '1h': EnsemblePricePredictor({'lstm': None, 'transformer': None})
+            }
+            multi_timeframe_predictor = MultiTimeframePricePredictor(models)
+            
+            # Correct initialization with required parameter
+            self.price_engine = AdvancedPricePredictionEngine(multi_timeframe_predictor)
             logger.info("✓ Price Prediction Engine initialized")
             
             # Strategy integration adapter
@@ -650,7 +664,7 @@ class LiveTradingLauncher:
                     initial_allocation=allocation_per_strategy
                 )
                 
-                if result['success']:
+                if result.get('status') == 'success':
                     logger.info(f"✓ {strategy_name}: {allocation_per_strategy:.1%} allocation")
                 else:
                     logger.warning(f"⚠ Failed to register {strategy_name}: {result.get('reason')}")
