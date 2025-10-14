@@ -350,7 +350,7 @@ python scripts/live_trading_launcher.py
 ## Known Limitations
 
 1. **Single Exchange**: Currently BingX only (by design)
-2. **Capital**: Fixed at 100 VST (configurable in code)
+2. **Capital**: Fixed at 100 USDT (configurable in code)
 3. **Pairs**: 8 pre-configured pairs (extensible)
 4. **Strategies**: 2 strategies (more can be added)
 
@@ -413,7 +413,7 @@ Potential improvements (not in scope):
 
 The live trading launcher is **production-ready** and fully implements all requirements:
 
-✅ 100 VST capital allocation  
+✅ 100 USDT capital allocation  
 ✅ BingX exchange integration  
 ✅ 8 diversified trading pairs  
 ✅ Full AI control (automated)  
