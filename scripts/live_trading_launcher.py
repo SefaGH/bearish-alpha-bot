@@ -948,6 +948,12 @@ class LiveTradingLauncher:
         logger.info("ULTIMATE CONTINUOUS MODE: AUTO-RESTART WRAPPER ACTIVE")
         logger.info("="*70)
         
+        # Guard clause: Check if restart_manager is initialized
+        if self.restart_manager is None:
+            logger.critical("❌ Auto-restart manager is not initialized. Check --auto-restart flag.")
+            logger.info("Falling back to normal execution mode...")
+            return await self._run_once(duration)
+        
         while True:
             # Check if we should attempt restart
             should_restart, reason = self.restart_manager.should_restart()
