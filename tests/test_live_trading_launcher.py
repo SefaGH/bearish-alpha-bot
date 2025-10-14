@@ -135,6 +135,26 @@ class TestLauncherIntegration:
         assert launcher._load_environment() == True
         assert launcher._initialize_exchange_connection() == True
         assert launcher._initialize_risk_management() == True
+    
+    @pytest.mark.asyncio
+    async def test_auto_restart_guard_clause(self):
+        """Test that _run_with_auto_restart handles None restart_manager gracefully."""
+        launcher = LiveTradingLauncher(mode='paper', dry_run=True, auto_restart=False)
+        
+        # Ensure restart_manager is None (auto_restart=False)
+        assert launcher.restart_manager is None
+        
+        # Mock _run_once to avoid actual execution
+        async def mock_run_once(duration):
+            return 0
+        
+        launcher._run_once = mock_run_once
+        
+        # Call _run_with_auto_restart directly - should fallback to _run_once
+        exit_code = await launcher._run_with_auto_restart()
+        
+        # Should return success and not crash with AttributeError
+        assert exit_code == 0
 
 
 if __name__ == '__main__':
