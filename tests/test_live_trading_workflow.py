@@ -309,7 +309,7 @@ class TestLiveTradingWorkflow:
         run_script = display_step['run']
 
         # Check important configurations are displayed
-        assert '100 VST' in run_script or 'Capital' in run_script
+        assert '100 USDT' in run_script or 'Capital' in run_script
         assert 'BingX' in run_script or 'Exchange' in run_script
         assert '8' in run_script or 'Trading Pairs' in run_script
 
@@ -340,8 +340,8 @@ class TestWorkflowIntegration:
         config_step = [s for s in steps if 'Configuration' in s.get('name', '')][0]
         assert '8' in config_step['run']
 
-        # Check 100 VST capital mentioned
-        assert '100 VST' in config_step['run']
+        # Check 100 USDT capital mentioned
+        assert '100 USDT' in config_step['run']
 
     def test_pr50_integration(self, workflow_config):
         """Test PR #50 (Ultimate Continuous Mode) integration."""
