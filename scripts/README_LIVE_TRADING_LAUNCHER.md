@@ -4,7 +4,7 @@ Comprehensive production-ready launcher script for the Bearish Alpha Bot live tr
 
 ## Overview
 
-The Live Trading Launcher (`live_trading_launcher.py`) is a complete integration of all Phase 1-4 components, designed for live trading on BingX with VST (Virtual test tokens).
+The Live Trading Launcher (`live_trading_launcher.py`) is a complete integration of all Phase 1-4 components, designed for live trading on BingX with real USDT capital.
 
 ### Key Features
 
@@ -16,7 +16,7 @@ The Live Trading Launcher (`live_trading_launcher.py`) is a complete integration
 
 - **Production-Ready**: Enterprise-grade error handling, logging, and monitoring
 - **Safety First**: Comprehensive pre-flight checks and emergency shutdown protocols
-- **VST Support**: Designed for VST virtual test token trading on BingX
+- **Live USDT Trading**: Designed for real money trading with proper risk management
 
 ## Configuration
 
@@ -24,7 +24,7 @@ The Live Trading Launcher (`live_trading_launcher.py`) is a complete integration
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| Capital | 100 VST | Virtual test tokens |
+| Capital | 100 USDT | Real trading capital |
 | Exchange | BingX | Single exchange focus |
 | Trading Pairs | 8 pairs | Diversified crypto portfolio |
 | Max Position Size | 15% | Maximum position relative to capital |
@@ -43,7 +43,7 @@ The launcher trades 8 diversified cryptocurrency pairs:
 4. BNB/USDT:USDT (Binance Coin)
 5. ADA/USDT:USDT (Cardano)
 6. DOT/USDT:USDT (Polkadot)
-7. MATIC/USDT:USDT (Polygon)
+7. LTC/USDT:USDT (Litecoin)
 8. AVAX/USDT:USDT (Avalanche)
 
 ## Prerequisites

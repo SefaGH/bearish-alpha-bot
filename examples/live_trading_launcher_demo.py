@@ -36,7 +36,7 @@ async def demo_launcher_capabilities():
     
     # Show configuration
     print("2. Trading Configuration:")
-    print(f"   Capital: {launcher.CAPITAL_VST} VST")
+    print(f"   Capital: {launcher.CAPITAL_USDT} USDT")
     print(f"   Exchange: BingX")
     print(f"   Trading Pairs: {len(launcher.TRADING_PAIRS)}")
     for i, pair in enumerate(launcher.TRADING_PAIRS, 1):

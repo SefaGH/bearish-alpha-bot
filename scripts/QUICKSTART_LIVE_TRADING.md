@@ -7,7 +7,7 @@ Get started with the Bearish Alpha Bot live trading launcher in 5 minutes.
 Ensure you have:
 - ✅ Python 3.8+ installed
 - ✅ BingX account with API credentials
-- ✅ VST test tokens allocated (or real USDT for live trading)
+- ✅ Real USDT for live trading (or paper trading mode for testing)
 
 ## Step 2: Installation
 
@@ -48,7 +48,6 @@ Expected output:
 ```
 ✓ BingX credentials found
 ✓ Connected to BingX - XXX markets available
-✓ VST/USDT:USDT contract verified
 ✓ All 8 trading pairs verified
 ✓ Risk configuration loaded
 ✓ ALL PRE-FLIGHT CHECKS PASSED
@@ -74,7 +73,9 @@ python scripts/live_trading_launcher.py --paper --duration 3600
 
 ### Option C: Live Trading (Production)
 
-⚠️ **Only after successful paper trading!**
+⚠️ **WARNING: Live trading uses real USDT capital!**
+⚠️ **Only proceed after successful paper trading!**
+⚠️ **Ensure you understand the risks of automated trading!**
 
 ```bash
 python scripts/live_trading_launcher.py
@@ -92,7 +93,6 @@ You'll see the launcher go through:
 
 [2/8] Initializing BingX Exchange Connection...
 ✓ Connected to BingX - 500+ markets available
-✓ VST/USDT:USDT contract verified
 ✓ All 8 trading pairs verified
 
 [3/8] Initializing Risk Management System...
