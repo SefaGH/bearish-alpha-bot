@@ -54,6 +54,15 @@ on:
         type: string
         default: '30'
 
+      debug_mode:
+        description: 'Enable debug mode (detailed logging)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
 jobs:
   validate-inputs:
     name: Validate Configuration
@@ -161,6 +170,7 @@ jobs:
           echo "Max Restarts: ${{ github.event.inputs.max_restarts }}"
           echo "Restart Delay: ${{ github.event.inputs.restart_delay }}s"
           echo "Duration: ${{ github.event.inputs.duration || 'indefinite' }}"
+          echo "Debug Mode: ${{ github.event.inputs.debug_mode }}"
           echo ""
           echo "Configuration:"
           echo "- Capital: 100 VST"
@@ -214,6 +224,11 @@ jobs:
           # Add duration if specified
           if [ -n "${{ github.event.inputs.duration }}" ]; then
             CMD="$CMD --duration ${{ github.event.inputs.duration }}"
+          fi
+
+          # Add debug mode if enabled
+          if [ "${{ github.event.inputs.debug_mode }}" = "true" ]; then
+            CMD="$CMD --debug"
           fi
 
           echo "🚀 Executing command:"
@@ -354,6 +369,7 @@ jobs:
           echo "- **Max Restarts**: ${{ github.event.inputs.max_restarts }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Restart Delay**: ${{ github.event.inputs.restart_delay }}s" >> $GITHUB_STEP_SUMMARY
           echo "- **Duration**: ${{ github.event.inputs.duration || 'indefinite' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Debug Mode**: ${{ github.event.inputs.debug_mode }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Trading Configuration" >> $GITHUB_STEP_SUMMARY
           echo "- **Capital**: 100 VST" >> $GITHUB_STEP_SUMMARY

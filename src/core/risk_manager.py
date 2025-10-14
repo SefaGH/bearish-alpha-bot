@@ -83,13 +83,19 @@ class RiskManager:
             entry_price = signal.get('entry', 0)
             stop_loss = signal.get('stop', 0)
             
+            logger.debug(f"🛡️ [RISK-CALC] Validating position for {symbol}")
+            logger.debug(f"🛡️ [RISK-CALC] Portfolio value: ${self.portfolio_value:.2f}")
+            
             risk_metrics = {}
             
             # 1. Position size validation
             position_value = position_size * entry_price
             max_position_value = self.portfolio_value * self.risk_limits['max_position_size']
             
+            logger.debug(f"🛡️ [RISK-CALC] Position size check: ${position_value:.2f} vs ${max_position_value:.2f} max")
+            
             if position_value > max_position_value:
+                logger.debug(f"🛡️ [RISK-CALC] REJECTED: Position size exceeds limit")
                 return (False, f"Position size ${position_value:.2f} exceeds max ${max_position_value:.2f}", risk_metrics)
             
             risk_metrics['position_value'] = position_value
@@ -100,12 +106,16 @@ class RiskManager:
             risk_amount = abs(entry_price - stop_loss) * position_size
             max_risk = self.portfolio_value * self.risk_limits['max_portfolio_risk']
             
+            risk_pct = risk_amount / self.portfolio_value
+            logger.debug(f"🛡️ [RISK-CALC] Risk per trade: {risk_pct:.2%} (limit: {self.risk_limits['max_portfolio_risk']:.2%})")
+            
             if risk_amount > max_risk:
+                logger.debug(f"🛡️ [RISK-CALC] REJECTED: Risk amount exceeds limit")
                 return (False, f"Risk amount ${risk_amount:.2f} exceeds max ${max_risk:.2f}", risk_metrics)
             
             risk_metrics['risk_amount'] = risk_amount
             risk_metrics['max_risk_amount'] = max_risk
-            risk_metrics['risk_pct'] = risk_amount / self.portfolio_value
+            risk_metrics['risk_pct'] = risk_pct
             
             # 3. Risk/reward ratio assessment
             target_price = signal.get('target', entry_price * 1.02)  # Default 2% target
@@ -115,12 +125,15 @@ class RiskManager:
             if risk_distance > 0:
                 risk_reward_ratio = reward_distance / risk_distance
                 risk_metrics['risk_reward_ratio'] = risk_reward_ratio
+                logger.debug(f"🛡️ [RISK-CALC] Risk/Reward ratio: {risk_reward_ratio:.2f}")
                 
                 if risk_reward_ratio < 1.5:
+                    logger.debug(f"🛡️ [RISK-CALC] REJECTED: R/R ratio too low")
                     return (False, f"Risk/reward ratio {risk_reward_ratio:.2f} below minimum 1.5", risk_metrics)
             
             # 4. Drawdown check
             if self.current_drawdown > self.risk_limits['max_drawdown']:
+                logger.debug(f"🛡️ [RISK-CALC] REJECTED: Drawdown limit exceeded")
                 return (False, f"Current drawdown {self.current_drawdown:.2%} exceeds max {self.risk_limits['max_drawdown']:.2%}", risk_metrics)
             
             risk_metrics['current_drawdown'] = self.current_drawdown
@@ -131,7 +144,10 @@ class RiskManager:
             total_risk += risk_amount
             portfolio_heat = total_risk / self.portfolio_value
             
+            logger.debug(f"🛡️ [RISK-CALC] Portfolio heat: {portfolio_heat:.2%} (limit: 10%)")
+            
             if portfolio_heat > 0.10:  # Max 10% total portfolio heat
+                logger.debug(f"🛡️ [RISK-CALC] REJECTED: Portfolio heat too high")
                 return (False, f"Portfolio heat {portfolio_heat:.2%} would exceed 10%", risk_metrics)
             
             risk_metrics['portfolio_heat'] = portfolio_heat
@@ -144,10 +160,12 @@ class RiskManager:
                 
                 win_rate = metrics.get('win_rate', 0.5)
                 if win_rate < 0.35:  # Very low win rate
+                    logger.debug(f"🛡️ [RISK-CALC] REJECTED: Strategy win rate too low")
                     return (False, f"Strategy win rate {win_rate:.2%} too low", risk_metrics)
                 
                 risk_metrics['strategy_win_rate'] = win_rate
             
+            logger.debug(f"🛡️ [RISK-CALC] APPROVED: All risk checks passed")
             logger.info(f"Position validation PASSED for {symbol}: {risk_metrics}")
             return (True, "Position validated successfully", risk_metrics)
             

@@ -47,6 +47,7 @@ from core.ccxt_client import CcxtClient
 from core.notify import Telegram
 from core.state import load_state, save_state
 from core.market_regime import MarketRegimeAnalyzer
+from core.debug_logger import DebugLogger
 from config.risk_config import RiskConfiguration
 from config.optimization_config import OptimizationConfiguration
 from ml.regime_predictor import MLRegimePredictor
@@ -337,7 +338,8 @@ class LiveTradingLauncher:
     
     def __init__(self, mode: str = 'live', dry_run: bool = False, 
                  infinite: bool = False, auto_restart: bool = False,
-                 max_restarts: int = 1000, restart_delay: int = 30):
+                 max_restarts: int = 1000, restart_delay: int = 30,
+                 debug_mode: bool = False):
         """
         Initialize live trading launcher.
         
@@ -348,11 +350,13 @@ class LiveTradingLauncher:
             auto_restart: If True, enable auto-restart failsafe
             max_restarts: Maximum restart attempts (default: 1000)
             restart_delay: Delay between restarts in seconds (default: 30)
+            debug_mode: Enable comprehensive debug logging
         """
         self.mode = mode
         self.dry_run = dry_run
         self.infinite = infinite
         self.auto_restart = auto_restart
+        self.debug_mode = debug_mode
         self.coordinator = None
         self.telegram = None
         self.exchange_clients = {}
@@ -370,6 +374,9 @@ class LiveTradingLauncher:
         self.max_restarts = max_restarts
         self.restart_delay = restart_delay
         
+        # Debug logger
+        self.debug_logger = None
+        
         logger.info("="*70)
         logger.info("BEARISH ALPHA BOT - LIVE TRADING LAUNCHER")
         logger.info("="*70)
@@ -378,6 +385,13 @@ class LiveTradingLauncher:
         logger.info(f"Exchange: BingX")
         logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
         logger.info(f"Dry Run: {dry_run}")
+        
+        # Debug mode indicator
+        if debug_mode:
+            logger.info("")
+            logger.info("🔍 DEBUG MODE ACTIVATED - Enhanced logging enabled")
+            logger.info("🔍 Monitoring: Strategy signals, AI decisions, Risk calculations")
+            logger.info("")
         
         # Live trading warning
         if mode == 'live':
@@ -425,6 +439,11 @@ class LiveTradingLauncher:
             logger.info("✓ Telegram notifications enabled")
         else:
             logger.info("ℹ Telegram notifications disabled (optional)")
+        
+        # Initialize debug logger if debug mode is enabled
+        if self.debug_mode:
+            self.debug_logger = DebugLogger(debug_mode=True)
+            logger.info("✓ Debug Logger initialized")
         
         # Initialize health monitor (Layer 3)
         if self.infinite or self.auto_restart:
@@ -1096,6 +1115,12 @@ Examples:
         help='Base delay between restarts in seconds (default: 30, uses exponential backoff)'
     )
     
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Enable debug mode with comprehensive logging for analysis'
+    )
+    
     args = parser.parse_args()
     
     # Determine mode
@@ -1108,7 +1133,8 @@ Examples:
         infinite=args.infinite,
         auto_restart=args.auto_restart,
         max_restarts=args.max_restarts,
-        restart_delay=args.restart_delay
+        restart_delay=args.restart_delay,
+        debug_mode=args.debug
     )
     exit_code = await launcher.run(duration=args.duration)
     
