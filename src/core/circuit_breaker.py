@@ -328,6 +328,57 @@ class CircuitBreakerSystem:
         
         self.volatility_history[symbol].append(volatility)
     
+    async def check_circuit_breaker(self) -> Dict[str, Any]:
+        """
+        Check all circuit breaker conditions and return status.
+        
+        Returns:
+            Dictionary with breaker status and severity
+        """
+        try:
+            # Check if any breakers are currently triggered
+            for breaker_name, breaker in self.circuit_breakers.items():
+                if breaker.get('triggered', False):
+                    return {
+                        'tripped': True,
+                        'breaker': breaker_name,
+                        'severity': 'critical',  # Adjust based on breaker type
+                        'threshold': breaker.get('threshold'),
+                        'message': f"Circuit breaker '{breaker_name}' is active"
+                    }
+            
+            # Run active checks (non-blocking)
+            await self._check_daily_loss()
+            await self._check_position_losses() 
+            await self._check_volatility_spikes()
+            
+            # Check again after running checks
+            for breaker_name, breaker in self.circuit_breakers.items():
+                if breaker.get('triggered', False):
+                    return {
+                        'tripped': True,
+                        'breaker': breaker_name,
+                        'severity': 'critical',
+                        'threshold': breaker.get('threshold'),
+                        'message': f"Circuit breaker '{breaker_name}' just triggered"
+                    }
+            
+            # All clear
+            return {
+                'tripped': False,
+                'severity': 'none',
+                'message': 'All circuit breakers normal'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error checking circuit breakers: {e}")
+            return {
+                'tripped': True,
+                'breaker': 'system_error',
+                'severity': 'critical',
+                'message': f"Circuit breaker check failed: {e}"
+            }
+    
     def get_breaker_status(self) -> Dict[str, Any]:
         """Get status of all circuit breakers."""
         return {
