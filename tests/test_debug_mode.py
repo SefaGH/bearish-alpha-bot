@@ -19,10 +19,10 @@ from core.debug_logger import DebugLogger, setup_debug_logger
 def test_debug_logger_initialization():
     """Test DebugLogger initializes correctly."""
     debug_logger = DebugLogger(debug_mode=True)
-    assert debug_logger.is_debug_enabled() == True
+    assert debug_logger.is_debug_enabled()
     
     debug_logger_off = DebugLogger(debug_mode=False)
-    assert debug_logger_off.is_debug_enabled() == False
+    assert not debug_logger_off.is_debug_enabled()
     print("✓ DebugLogger initialization test passed")
 
 
@@ -52,6 +52,8 @@ def test_debug_messages_appear_in_debug_mode():
     log_capture = StringIO()
     handler = logging.StreamHandler(log_capture)
     handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
     
     logger = logging.getLogger('test_messages')
     logger.setLevel(logging.DEBUG)
@@ -62,8 +64,8 @@ def test_debug_messages_appear_in_debug_mode():
     
     # Check that message was captured
     log_output = log_capture.getvalue()
-    # Note: The message should be in the output, even if format varies
-    assert "Test debug message" in log_output or len(log_output) > 0
+    assert "Test debug message" in log_output, "Debug message should appear in output"
+    assert "DEBUG" in log_output, "DEBUG level should appear in output"
     print("✓ Debug messages appear in debug mode test passed")
 
 
@@ -77,10 +79,20 @@ def test_debug_emoji_in_formatter():
     # Create logger with debug mode
     logger = setup_debug_logger('test_emoji', debug_mode=True)
     
-    # Check formatter includes emoji
+    # Check formatter includes emoji by testing formatted output
     if logger.handlers:
-        formatter = logger.handlers[0].formatter
-        assert '🔍' in formatter._fmt
+        # Create test log record
+        record = logging.LogRecord(
+            name='test_emoji',
+            level=logging.DEBUG,
+            pathname='',
+            lineno=0,
+            msg='Test message',
+            args=(),
+            exc_info=None
+        )
+        formatted_msg = logger.handlers[0].formatter.format(record)
+        assert '🔍' in formatted_msg, "Emoji should appear in formatted debug message"
     print("✓ Debug emoji in formatter test passed")
 
 
