@@ -27,7 +27,7 @@ class TestLiveTradingLauncher:
         
         assert launcher.mode == 'paper'
         assert launcher.dry_run == True
-        assert launcher.CAPITAL_VST == 100.0
+        assert launcher.CAPITAL_USDT == 100.0
         assert len(launcher.TRADING_PAIRS) == 8
         
     def test_trading_pairs_configuration(self):
@@ -41,7 +41,7 @@ class TestLiveTradingLauncher:
             'BNB/USDT:USDT',
             'ADA/USDT:USDT',
             'DOT/USDT:USDT',
-            'MATIC/USDT:USDT',
+            'LTC/USDT:USDT',
             'AVAX/USDT:USDT'
         ]
         
@@ -96,10 +96,10 @@ class TestLiveTradingLauncher:
         assert launcher.telegram is not None
     
     def test_capital_configuration(self):
-        """Test capital is configured to 100 VST."""
+        """Test capital is configured to 100 USDT."""
         launcher = LiveTradingLauncher(mode='paper')
         
-        assert launcher.CAPITAL_VST == 100.0
+        assert launcher.CAPITAL_USDT == 100.0
 
 
 class TestLauncherIntegration:
@@ -122,9 +122,8 @@ class TestLauncherIntegration:
             'BNB/USDT:USDT': {},
             'ADA/USDT:USDT': {},
             'DOT/USDT:USDT': {},
-            'MATIC/USDT:USDT': {},
-            'AVAX/USDT:USDT': {},
-            'VST/USDT:USDT': {}
+            'LTC/USDT:USDT': {},
+            'AVAX/USDT:USDT': {}
         }
         mock_client.ticker.return_value = {'last': 50000.0}
         mock_ccxt.return_value = mock_client

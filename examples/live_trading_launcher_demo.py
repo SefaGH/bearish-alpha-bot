@@ -36,7 +36,7 @@ async def demo_launcher_capabilities():
     
     # Show configuration
     print("2. Trading Configuration:")
-    print(f"   Capital: {launcher.CAPITAL_VST} VST")
+    print(f"   Capital: {launcher.CAPITAL_USDT} USDT")
     print(f"   Exchange: BingX")
     print(f"   Trading Pairs: {len(launcher.TRADING_PAIRS)}")
     for i, pair in enumerate(launcher.TRADING_PAIRS, 1):
@@ -141,7 +141,6 @@ async def demo_initialization_flow():
             "actions": [
                 "Initialize BingX CcxtClient",
                 "Test API connection",
-                "Verify VST/USDT:USDT contract",
                 "Validate all 8 trading pairs available"
             ]
         },
@@ -175,7 +174,7 @@ async def demo_initialization_flow():
             "phase": "6/8 - Production System",
             "actions": [
                 "Create ProductionCoordinator",
-                "Initialize portfolio manager (100 VST)",
+                "Initialize portfolio manager (100 USDT)",
                 "Initialize risk manager",
                 "Initialize live trading engine",
                 "Establish websocket connections",

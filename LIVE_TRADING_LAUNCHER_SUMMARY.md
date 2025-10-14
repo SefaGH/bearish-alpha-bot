@@ -2,7 +2,7 @@
 
 ## Overview
 
-Successfully implemented a comprehensive live trading launcher script that integrates all Phase 1-4 components of the Bearish Alpha Bot for production-ready live trading on BingX with VST (Virtual test tokens).
+Successfully implemented a comprehensive live trading launcher script that integrates all Phase 1-4 components of the Bearish Alpha Bot for production-ready live trading on BingX with real USDT capital.
 
 ## Implementation Status: ✅ COMPLETE
 
@@ -24,7 +24,7 @@ Successfully implemented a comprehensive live trading launcher script that integ
 
 | Parameter | Value | Status |
 |-----------|-------|--------|
-| Capital | 100 VST | ✅ Configured |
+| Capital | 100 USDT | ✅ Configured |
 | Exchange | BingX | ✅ Integrated |
 | Trading Pairs | 8 diversified | ✅ Configured |
 | Max Position Size | 15% | ✅ Implemented |
@@ -43,14 +43,14 @@ All 8 diversified pairs configured and validated:
 4. ✅ BNB/USDT:USDT - Binance Coin
 5. ✅ ADA/USDT:USDT - Cardano
 6. ✅ DOT/USDT:USDT - Polkadot
-7. ✅ MATIC/USDT:USDT - Polygon
+7. ✅ LTC/USDT:USDT - Litecoin
 8. ✅ AVAX/USDT:USDT - Avalanche
 
 ### 3. Phase Integration ✅
 
 #### Phase 1: Multi-Exchange Framework
 - ✅ BingX exchange connection
-- ✅ VST/USDT:USDT contract support
+- ✅ USDT perpetual contract support
 - ✅ CcxtClient integration
 - ✅ Server time synchronization
 - ✅ Dynamic contract discovery
@@ -350,7 +350,7 @@ python scripts/live_trading_launcher.py
 ## Known Limitations
 
 1. **Single Exchange**: Currently BingX only (by design)
-2. **Capital**: Fixed at 100 VST (configurable in code)
+2. **Capital**: Fixed at 100 USDT (configurable in code)
 3. **Pairs**: 8 pre-configured pairs (extensible)
 4. **Strategies**: 2 strategies (more can be added)
 
@@ -413,7 +413,7 @@ Potential improvements (not in scope):
 
 The live trading launcher is **production-ready** and fully implements all requirements:
 
-✅ 100 VST capital allocation  
+✅ 100 USDT capital allocation  
 ✅ BingX exchange integration  
 ✅ 8 diversified trading pairs  
 ✅ Full AI control (automated)  

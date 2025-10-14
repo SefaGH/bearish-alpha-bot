@@ -3,10 +3,10 @@
 Live Trading Launcher for Bearish Alpha Bot
 
 Comprehensive production-ready launcher that integrates all Phase 1-4 components
-for live trading on BingX with VST (Virtual test tokens).
+for live trading on BingX with real USDT capital.
 
 Configuration:
-- Capital: 100 VST
+- Capital: 100 USDT
 - Exchange: BingX (Single exchange focus)
 - Trading Pairs: 8 diversified crypto pairs
 - Execution Mode: Full AI control (Automated)
@@ -318,12 +318,12 @@ class LiveTradingLauncher:
         'BNB/USDT:USDT',
         'ADA/USDT:USDT',
         'DOT/USDT:USDT',
-        'MATIC/USDT:USDT',
+        'LTC/USDT:USDT',
         'AVAX/USDT:USDT'
     ]
     
-    # VST test trading configuration
-    CAPITAL_VST = 100.0  # 100 VST virtual test tokens
+    # Live trading configuration with real USDT
+    CAPITAL_USDT = 100.0  # 100 USDT (real trading capital)
     
     # Risk parameters as specified
     RISK_PARAMS = {
@@ -374,10 +374,17 @@ class LiveTradingLauncher:
         logger.info("BEARISH ALPHA BOT - LIVE TRADING LAUNCHER")
         logger.info("="*70)
         logger.info(f"Mode: {mode.upper()}")
-        logger.info(f"Capital: {self.CAPITAL_VST} VST")
+        logger.info(f"Capital: {self.CAPITAL_USDT} USDT")
         logger.info(f"Exchange: BingX")
         logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
         logger.info(f"Dry Run: {dry_run}")
+        
+        # Live trading warning
+        if mode == 'live':
+            logger.warning("")
+            logger.warning("⚠️  LIVE TRADING MODE: Using real USDT capital")
+            logger.warning("⚠️  Ensure you understand the risks before proceeding")
+            logger.warning("")
         
         # Ultimate mode indicators
         if infinite or auto_restart:
@@ -436,7 +443,7 @@ class LiveTradingLauncher:
     
     def _initialize_exchange_connection(self) -> bool:
         """
-        Initialize BingX exchange connection with VST support.
+        Initialize BingX exchange connection for live USDT trading.
         
         Returns:
             True if connection successful
@@ -457,13 +464,6 @@ class LiveTradingLauncher:
             logger.info("Testing BingX connection...")
             markets = bingx_client.markets()
             logger.info(f"✓ Connected to BingX - {len(markets)} markets available")
-            
-            # Verify VST contract availability
-            vst_symbol = 'VST/USDT:USDT'
-            if vst_symbol in markets:
-                logger.info(f"✓ VST/USDT:USDT contract verified")
-            else:
-                logger.warning(f"⚠ VST/USDT:USDT contract not found in markets")
             
             # Verify all trading pairs
             missing_pairs = [pair for pair in self.TRADING_PAIRS if pair not in markets]
@@ -614,9 +614,9 @@ class LiveTradingLauncher:
         logger.info("\n[6/8] Initializing Production Trading System...")
         
         try:
-            # Portfolio configuration with VST capital
+            # Portfolio configuration with USDT capital
             portfolio_config = {
-                'equity_usd': self.CAPITAL_VST,  # 100 VST
+                'equity_usd': self.CAPITAL_USDT,  # 100 USDT
                 'max_portfolio_risk': self.RISK_PARAMS['max_portfolio_risk'],
                 'max_position_size': self.RISK_PARAMS['max_position_size'],
                 'max_drawdown': self.RISK_PARAMS['max_drawdown']
@@ -764,7 +764,7 @@ class LiveTradingLauncher:
             self.telegram.send(
                 f"🚀 <b>LIVE TRADING STARTED</b>\n"
                 f"Mode: {self.mode.upper()}\n"
-                f"Capital: {self.CAPITAL_VST} VST\n"
+                f"Capital: {self.CAPITAL_USDT} USDT\n"
                 f"Exchange: BingX\n"
                 f"Pairs: {len(self.TRADING_PAIRS)}\n"
                 f"Max Position: {self.RISK_PARAMS['max_position_size']:.1%}\n"
