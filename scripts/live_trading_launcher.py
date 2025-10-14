@@ -34,6 +34,8 @@ import os
 import asyncio
 import logging
 import argparse
+import time
+import signal
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
@@ -43,6 +45,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from core.production_coordinator import ProductionCoordinator
 from core.ccxt_client import CcxtClient
 from core.notify import Telegram
+from core.state import load_state, save_state
 from config.risk_config import RiskConfiguration
 from ml.regime_predictor import MLRegimePredictor
 from ml.price_predictor import AdvancedPricePredictionEngine
@@ -61,6 +64,121 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+class AutoRestartManager:
+    """
+    AUTO-RESTART FAILSAFE (Layer 2 Defense)
+    
+    Monitors bot process health and implements intelligent restart logic
+    with state preservation, exponential backoff, and Telegram notifications.
+    """
+    
+    def __init__(self, max_restarts: int = 1000, restart_delay: int = 30, 
+                 telegram: Optional[Telegram] = None):
+        """
+        Initialize auto-restart manager.
+        
+        Args:
+            max_restarts: Maximum number of restart attempts (default: 1000)
+            restart_delay: Base delay between restarts in seconds (default: 30)
+            telegram: Telegram notifier instance for alerts
+        """
+        self.max_restarts = max_restarts
+        self.base_restart_delay = restart_delay
+        self.telegram = telegram
+        
+        # Tracking
+        self.restart_count = 0
+        self.last_restart_time = None
+        self.consecutive_failures = 0
+        self.start_time = datetime.now(timezone.utc)
+        
+        # Health monitoring
+        self.last_heartbeat = datetime.now(timezone.utc)
+        self.health_check_interval = 60  # seconds
+        
+        logger.info("="*70)
+        logger.info("AUTO-RESTART FAILSAFE INITIALIZED (Layer 2 Defense)")
+        logger.info("="*70)
+        logger.info(f"Max Restarts: {max_restarts}")
+        logger.info(f"Base Restart Delay: {restart_delay}s")
+        logger.info(f"Exponential Backoff: ENABLED")
+        logger.info("="*70)
+    
+    def calculate_restart_delay(self) -> int:
+        """
+        Calculate restart delay with exponential backoff.
+        
+        Returns:
+            Delay in seconds
+        """
+        # Exponential backoff: min(base_delay * 2^consecutive_failures, 3600)
+        delay = min(
+            self.base_restart_delay * (2 ** self.consecutive_failures),
+            3600  # Max 1 hour
+        )
+        return int(delay)
+    
+    def should_restart(self) -> tuple[bool, str]:
+        """
+        Determine if restart should be attempted.
+        
+        Returns:
+            (should_restart, reason) tuple
+        """
+        if self.restart_count >= self.max_restarts:
+            return False, f"Maximum restart limit reached ({self.max_restarts})"
+        
+        # Check if we're in a restart loop (too many failures too quickly)
+        if self.consecutive_failures > 10:
+            return False, "Too many consecutive failures (10+), manual intervention required"
+        
+        return True, "Restart approved"
+    
+    def record_success(self):
+        """Record successful operation, reset failure counter."""
+        self.consecutive_failures = 0
+        logger.info("✓ Bot operating normally, failure counter reset")
+    
+    def record_failure(self, reason: str):
+        """
+        Record failure and update counters.
+        
+        Args:
+            reason: Failure reason
+        """
+        self.restart_count += 1
+        self.consecutive_failures += 1
+        self.last_restart_time = datetime.now(timezone.utc)
+        
+        logger.error("="*70)
+        logger.error(f"FAILURE RECORDED (Attempt {self.restart_count}/{self.max_restarts})")
+        logger.error(f"Reason: {reason}")
+        logger.error(f"Consecutive Failures: {self.consecutive_failures}")
+        logger.error("="*70)
+        
+        # Send Telegram notification
+        if self.telegram:
+            uptime = (datetime.now(timezone.utc) - self.start_time).total_seconds()
+            self.telegram.send(
+                f"🔄 <b>AUTO-RESTART TRIGGERED</b>\n"
+                f"Attempt: {self.restart_count}/{self.max_restarts}\n"
+                f"Reason: {reason}\n"
+                f"Consecutive Failures: {self.consecutive_failures}\n"
+                f"Uptime: {uptime/3600:.1f}h\n"
+                f"Next restart in: {self.calculate_restart_delay()}s"
+            )
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get restart manager status."""
+        return {
+            'restart_count': self.restart_count,
+            'max_restarts': self.max_restarts,
+            'consecutive_failures': self.consecutive_failures,
+            'uptime_seconds': (datetime.now(timezone.utc) - self.start_time).total_seconds(),
+            'last_restart': self.last_restart_time.isoformat() if self.last_restart_time else None
+        }
 
 
 class LiveTradingLauncher:
@@ -99,26 +217,39 @@ class LiveTradingLauncher:
         'max_correlation': 0.70,      # 70% max correlation
     }
     
-    def __init__(self, mode: str = 'live', dry_run: bool = False):
+    def __init__(self, mode: str = 'live', dry_run: bool = False, 
+                 infinite: bool = False, auto_restart: bool = False,
+                 max_restarts: int = 1000, restart_delay: int = 30):
         """
         Initialize live trading launcher.
         
         Args:
             mode: Trading mode ('live' or 'paper')
             dry_run: If True, only perform checks without starting trading
+            infinite: If True, enable TRUE CONTINUOUS mode (never stops)
+            auto_restart: If True, enable auto-restart failsafe
+            max_restarts: Maximum restart attempts (default: 1000)
+            restart_delay: Delay between restarts in seconds (default: 30)
         """
         self.mode = mode
         self.dry_run = dry_run
+        self.infinite = infinite
+        self.auto_restart = auto_restart
         self.coordinator = None
         self.telegram = None
         self.exchange_clients = {}
         self.strategies = {}
+        self.restart_manager = None
         
         # Phase 4 AI components
         self.regime_predictor = None
         self.price_engine = None
         self.strategy_adapter = None
         self.strategy_optimizer = None
+        
+        # Ultimate mode settings
+        self.max_restarts = max_restarts
+        self.restart_delay = restart_delay
         
         logger.info("="*70)
         logger.info("BEARISH ALPHA BOT - LIVE TRADING LAUNCHER")
@@ -128,6 +259,17 @@ class LiveTradingLauncher:
         logger.info(f"Exchange: BingX")
         logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
         logger.info(f"Dry Run: {dry_run}")
+        
+        # Ultimate mode indicators
+        if infinite or auto_restart:
+            logger.info("")
+            logger.info("🚀 ULTIMATE CONTINUOUS TRADING MODE 🚀")
+            logger.info(f"Infinite Mode: {'ENABLED' if infinite else 'DISABLED'}")
+            logger.info(f"Auto-Restart: {'ENABLED' if auto_restart else 'DISABLED'}")
+            if auto_restart:
+                logger.info(f"Max Restarts: {max_restarts}")
+                logger.info(f"Restart Delay: {restart_delay}s")
+        
         logger.info("="*70)
     
     def _load_environment(self) -> bool:
@@ -157,6 +299,14 @@ class LiveTradingLauncher:
             logger.info("✓ Telegram notifications enabled")
         else:
             logger.info("ℹ Telegram notifications disabled (optional)")
+        
+        # Initialize auto-restart manager if enabled
+        if self.auto_restart:
+            self.restart_manager = AutoRestartManager(
+                max_restarts=self.max_restarts,
+                restart_delay=self.restart_delay,
+                telegram=self.telegram
+            )
         
         return True
     
@@ -472,10 +622,11 @@ class LiveTradingLauncher:
             )
         
         try:
-            # Start production trading loop
+            # Start production trading loop with continuous mode if enabled
             await self.coordinator.run_production_loop(
                 mode=self.mode,
-                duration=duration
+                duration=duration,
+                continuous=self.infinite
             )
             
         except KeyboardInterrupt:
@@ -545,6 +696,22 @@ class LiveTradingLauncher:
         Returns:
             Exit code (0 for success, 1 for failure)
         """
+        # If auto-restart is enabled, wrap in restart loop
+        if self.auto_restart:
+            return await self._run_with_auto_restart(duration)
+        else:
+            return await self._run_once(duration)
+    
+    async def _run_once(self, duration: Optional[float] = None) -> int:
+        """
+        Run trading system once without auto-restart.
+        
+        Args:
+            duration: Optional trading duration in seconds
+            
+        Returns:
+            Exit code (0 for success, 1 for failure)
+        """
         try:
             # Step 1: Load environment
             if not self._load_environment():
@@ -592,6 +759,83 @@ class LiveTradingLauncher:
             logger.critical(f"❌ Fatal error: {e}")
             await self._emergency_shutdown(f"Fatal error: {e}")
             return 1
+    
+    async def _run_with_auto_restart(self, duration: Optional[float] = None) -> int:
+        """
+        Run trading system with auto-restart failsafe (Layer 2 Defense).
+        
+        Args:
+            duration: Optional trading duration in seconds
+            
+        Returns:
+            Exit code (0 for success, 1 for failure)
+        """
+        logger.info("\n" + "="*70)
+        logger.info("ULTIMATE CONTINUOUS MODE: AUTO-RESTART WRAPPER ACTIVE")
+        logger.info("="*70)
+        
+        while True:
+            # Check if we should attempt restart
+            should_restart, reason = self.restart_manager.should_restart()
+            
+            if not should_restart:
+                logger.critical(f"❌ Auto-restart disabled: {reason}")
+                if self.telegram:
+                    self.telegram.send(
+                        f"🛑 <b>AUTO-RESTART STOPPED</b>\n"
+                        f"Reason: {reason}\n"
+                        f"Total Restarts: {self.restart_manager.restart_count}\n"
+                        f"Manual intervention required"
+                    )
+                return 1
+            
+            try:
+                logger.info(f"\n🚀 Starting bot (Attempt {self.restart_manager.restart_count + 1}/{self.restart_manager.max_restarts})")
+                
+                # Run the bot
+                exit_code = await self._run_once(duration)
+                
+                # If exit was clean (0), record success
+                if exit_code == 0:
+                    logger.info("✓ Bot exited cleanly")
+                    self.restart_manager.record_success()
+                    
+                    # In infinite mode, restart even on clean exit
+                    if self.infinite:
+                        logger.info("INFINITE MODE: Restarting after clean exit...")
+                        self.restart_manager.record_failure("Clean exit in infinite mode")
+                    else:
+                        # Non-infinite mode with clean exit - stop here
+                        return 0
+                else:
+                    # Exit code indicates failure
+                    self.restart_manager.record_failure(f"Bot exited with code {exit_code}")
+                
+            except KeyboardInterrupt:
+                logger.info("\n⚠ Keyboard interrupt - Manual stop requested")
+                if self.telegram:
+                    self.telegram.send("⛔ <b>Manual Stop</b> - Keyboard interrupt received")
+                return 0
+                
+            except Exception as e:
+                logger.error(f"❌ Bot crashed: {e}")
+                self.restart_manager.record_failure(f"Exception: {str(e)[:100]}")
+            
+            # Calculate restart delay with exponential backoff
+            delay = self.restart_manager.calculate_restart_delay()
+            
+            logger.warning("="*70)
+            logger.warning(f"RESTARTING IN {delay} SECONDS...")
+            logger.warning(f"Restart {self.restart_manager.restart_count}/{self.restart_manager.max_restarts}")
+            logger.warning(f"Consecutive Failures: {self.restart_manager.consecutive_failures}")
+            logger.warning("="*70)
+            
+            # Wait before restarting
+            try:
+                await asyncio.sleep(delay)
+            except KeyboardInterrupt:
+                logger.info("\n⚠ Keyboard interrupt during restart delay")
+                return 0
 
 
 async def main():
@@ -612,6 +856,18 @@ Examples:
   
   # Dry run (pre-flight checks only)
   python scripts/live_trading_launcher.py --dry-run
+  
+  # ULTIMATE MODE: True continuous trading (Layer 1 - never stops)
+  python scripts/live_trading_launcher.py --infinite
+  
+  # ULTIMATE MODE: Auto-restart failsafe (Layer 2 - external monitoring)
+  python scripts/live_trading_launcher.py --auto-restart
+  
+  # ULTIMATE MODE: Both layers enabled (maximum resilience)
+  python scripts/live_trading_launcher.py --infinite --auto-restart
+  
+  # ULTIMATE MODE: Custom restart parameters
+  python scripts/live_trading_launcher.py --infinite --auto-restart --max-restarts 500 --restart-delay 60
         """
     )
     
@@ -634,13 +890,46 @@ Examples:
         help='Perform pre-flight checks only without starting trading'
     )
     
+    parser.add_argument(
+        '--infinite',
+        action='store_true',
+        help='Enable TRUE CONTINUOUS mode (Layer 1: never stops, auto-recovers from errors)'
+    )
+    
+    parser.add_argument(
+        '--auto-restart',
+        action='store_true',
+        help='Enable auto-restart failsafe (Layer 2: external monitoring and restart)'
+    )
+    
+    parser.add_argument(
+        '--max-restarts',
+        type=int,
+        default=1000,
+        help='Maximum restart attempts when auto-restart is enabled (default: 1000)'
+    )
+    
+    parser.add_argument(
+        '--restart-delay',
+        type=int,
+        default=30,
+        help='Base delay between restarts in seconds (default: 30, uses exponential backoff)'
+    )
+    
     args = parser.parse_args()
     
     # Determine mode
     mode = 'paper' if args.paper else 'live'
     
     # Create and run launcher
-    launcher = LiveTradingLauncher(mode=mode, dry_run=args.dry_run)
+    launcher = LiveTradingLauncher(
+        mode=mode, 
+        dry_run=args.dry_run,
+        infinite=args.infinite,
+        auto_restart=args.auto_restart,
+        max_restarts=args.max_restarts,
+        restart_delay=args.restart_delay
+    )
     exit_code = await launcher.run(duration=args.duration)
     
     sys.exit(exit_code)
