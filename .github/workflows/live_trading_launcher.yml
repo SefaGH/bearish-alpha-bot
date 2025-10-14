@@ -1,0 +1,378 @@
+name: Live Trading Launcher (Ultimate Continuous Mode)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Trading Mode'
+        required: true
+        default: 'paper'
+        type: choice
+        options:
+          - paper
+          - live
+
+      confirm_live:
+        description: 'Type YES to confirm live trading (required for live mode)'
+        required: false
+        type: string
+        default: ''
+
+      duration:
+        description: 'Trading duration in seconds (leave empty for indefinite)'
+        required: false
+        type: string
+        default: ''
+
+      dry_run:
+        description: 'Dry run mode (pre-flight checks only)'
+        required: true
+        default: false
+        type: boolean
+
+      infinite:
+        description: 'Enable Layer 1: TRUE CONTINUOUS MODE (never stops)'
+        required: true
+        default: false
+        type: boolean
+
+      auto_restart:
+        description: 'Enable Layer 2: AUTO-RESTART FAILSAFE'
+        required: true
+        default: false
+        type: boolean
+
+      max_restarts:
+        description: 'Maximum restart attempts'
+        required: false
+        type: string
+        default: '1000'
+
+      restart_delay:
+        description: 'Base restart delay in seconds'
+        required: false
+        type: string
+        default: '30'
+
+jobs:
+  validate-inputs:
+    name: Validate Configuration
+    runs-on: ubuntu-latest
+    outputs:
+      should_proceed: ${{ steps.validate.outputs.should_proceed }}
+
+    steps:
+      - name: Validate Live Trading Confirmation
+        id: validate
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          CONFIRM="${{ github.event.inputs.confirm_live }}"
+
+          echo "Mode: $MODE"
+          echo "Confirmation: $CONFIRM"
+
+          if [ "$MODE" = "live" ] && [ "$CONFIRM" != "YES" ]; then
+            echo "❌ ERROR: Live trading requires typing 'YES' in the confirm_live field"
+            echo "should_proceed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "✓ Validation passed"
+          echo "should_proceed=true" >> $GITHUB_OUTPUT
+
+  pre-flight-checks:
+    name: Pre-Flight System Checks
+    runs-on: ubuntu-latest
+    needs: validate-inputs
+    if: needs.validate-inputs.outputs.should_proceed == 'true'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          echo "📦 Installing dependencies..."
+          python -V
+          pip install --upgrade pip setuptools wheel
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Run Dry-Run Pre-Flight Checks
+        env:
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "🔍 Running pre-flight checks..."
+          echo "=================================="
+
+          python scripts/live_trading_launcher.py --dry-run --paper
+
+          echo "=================================="
+          echo "✓ Pre-flight checks completed"
+
+      - name: Upload Pre-Flight Logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pre-flight-logs
+          path: |
+            live_trading_*.log
+          if-no-files-found: ignore
+
+  live-trading:
+    name: Execute Live Trading
+    runs-on: ubuntu-latest
+    needs: pre-flight-checks
+    timeout-minutes: 720  # 12 hours maximum
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          echo "📦 Installing dependencies..."
+          python -V
+          pip install --upgrade pip setuptools wheel
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Display Configuration
+        run: |
+          echo "🚀 BEARISH ALPHA BOT - LIVE TRADING LAUNCHER"
+          echo "=============================================="
+          echo "Mode: ${{ github.event.inputs.mode }}"
+          echo "Dry Run: ${{ github.event.inputs.dry_run }}"
+          echo "Infinite Mode (Layer 1): ${{ github.event.inputs.infinite }}"
+          echo "Auto-Restart (Layer 2): ${{ github.event.inputs.auto_restart }}"
+          echo "Max Restarts: ${{ github.event.inputs.max_restarts }}"
+          echo "Restart Delay: ${{ github.event.inputs.restart_delay }}s"
+          echo "Duration: ${{ github.event.inputs.duration || 'indefinite' }}"
+          echo ""
+          echo "Configuration:"
+          echo "- Capital: 100 VST"
+          echo "- Exchange: BingX"
+          echo "- Trading Pairs: 8 (BTC, ETH, SOL, BNB, ADA, DOT, MATIC, AVAX)"
+          echo "- Max Position Size: 15%"
+          echo "- Stop Loss: 5%"
+          echo "- Take Profit: 10%"
+          echo "=============================================="
+
+      - name: Launch Trading Bot
+        env:
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # Build command dynamically
+          CMD="python scripts/live_trading_launcher.py"
+
+          # Add mode
+          if [ "${{ github.event.inputs.mode }}" = "paper" ]; then
+            CMD="$CMD --paper"
+          fi
+
+          # Add dry-run if enabled
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            CMD="$CMD --dry-run"
+          fi
+
+          # Add infinite mode (Layer 1)
+          if [ "${{ github.event.inputs.infinite }}" = "true" ]; then
+            CMD="$CMD --infinite"
+          fi
+
+          # Add auto-restart (Layer 2)
+          if [ "${{ github.event.inputs.auto_restart }}" = "true" ]; then
+            CMD="$CMD --auto-restart"
+          fi
+
+          # Add max restarts if specified
+          if [ -n "${{ github.event.inputs.max_restarts }}" ] && [ "${{ github.event.inputs.max_restarts }}" != "1000" ]; then
+            CMD="$CMD --max-restarts ${{ github.event.inputs.max_restarts }}"
+          fi
+
+          # Add restart delay if specified
+          if [ -n "${{ github.event.inputs.restart_delay }}" ] && [ "${{ github.event.inputs.restart_delay }}" != "30" ]; then
+            CMD="$CMD --restart-delay ${{ github.event.inputs.restart_delay }}"
+          fi
+
+          # Add duration if specified
+          if [ -n "${{ github.event.inputs.duration }}" ]; then
+            CMD="$CMD --duration ${{ github.event.inputs.duration }}"
+          fi
+
+          echo "🚀 Executing command:"
+          echo "$CMD"
+          echo ""
+
+          # Execute
+          $CMD
+
+      - name: Generate Post-Session Summary
+        if: always()
+        run: |
+          echo "📊 POST-SESSION ANALYSIS"
+          echo "=============================================="
+          echo "Session completed at: $(date)"
+          echo ""
+
+          # Check if log files exist
+          if ls live_trading_*.log 1> /dev/null 2>&1; then
+            echo "📝 Log files generated:"
+            ls -lh live_trading_*.log
+            echo ""
+
+            echo "📈 Log file statistics:"
+            for log in live_trading_*.log; do
+              echo "  $log:"
+              echo "    - Size: $(wc -c < "$log") bytes"
+              echo "    - Lines: $(wc -l < "$log")"
+              echo "    - Errors: $(grep -c "ERROR" "$log" || echo "0")"
+              echo "    - Warnings: $(grep -c "WARNING" "$log" || echo "0")"
+              echo ""
+            done
+          else
+            echo "ℹ️ No log files found"
+          fi
+
+          # Check for state files
+          if [ -f "state.json" ]; then
+            echo "💾 State file preserved: state.json"
+          fi
+
+          echo "=============================================="
+          echo "✓ Post-session analysis complete"
+
+      - name: Upload Trading Logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trading-logs-${{ github.run_number }}
+          path: |
+            live_trading_*.log
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload Trading Data
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trading-data-${{ github.run_number }}
+          path: |
+            data/**
+            state.json
+            day_stats.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload Health Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: health-reports-${{ github.run_number }}
+          path: |
+            health_*.json
+            restart_*.log
+            circuit_breaker_*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Send Telegram Notification (Success)
+        if: success()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            MESSAGE="✅ Live Trading Session Completed Successfully%0A%0A"
+            MESSAGE="${MESSAGE}Mode: ${{ github.event.inputs.mode }}%0A"
+            MESSAGE="${MESSAGE}Duration: ${{ github.event.inputs.duration || 'indefinite' }}%0A"
+            MESSAGE="${MESSAGE}Infinite: ${{ github.event.inputs.infinite }}%0A"
+            MESSAGE="${MESSAGE}Auto-Restart: ${{ github.event.inputs.auto_restart }}%0A"
+            MESSAGE="${MESSAGE}%0AWorkflow: ${{ github.workflow }}%0A"
+            MESSAGE="${MESSAGE}Run: ${{ github.run_number }}"
+
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" \
+              -d "text=${MESSAGE}" \
+              -d "parse_mode=HTML" > /dev/null || true
+          fi
+
+      - name: Send Telegram Notification (Failure)
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            MESSAGE="❌ Live Trading Session Failed%0A%0A"
+            MESSAGE="${MESSAGE}Mode: ${{ github.event.inputs.mode }}%0A"
+            MESSAGE="${MESSAGE}Duration: ${{ github.event.inputs.duration || 'indefinite' }}%0A"
+            MESSAGE="${MESSAGE}Infinite: ${{ github.event.inputs.infinite }}%0A"
+            MESSAGE="${MESSAGE}Auto-Restart: ${{ github.event.inputs.auto_restart }}%0A"
+            MESSAGE="${MESSAGE}%0AWorkflow: ${{ github.workflow }}%0A"
+            MESSAGE="${MESSAGE}Run: ${{ github.run_number }}%0A"
+            MESSAGE="${MESSAGE}%0ACheck logs for details."
+
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" \
+              -d "text=${MESSAGE}" \
+              -d "parse_mode=HTML" > /dev/null || true
+          fi
+
+  summary:
+    name: Session Summary
+    runs-on: ubuntu-latest
+    needs: [validate-inputs, pre-flight-checks, live-trading]
+    if: always()
+
+    steps:
+      - name: Generate Workflow Summary
+        run: |
+          echo "# 🤖 Bearish Alpha Bot - Trading Session Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Mode**: ${{ github.event.inputs.mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Dry Run**: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Layer 1 (Infinite)**: ${{ github.event.inputs.infinite }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Layer 2 (Auto-Restart)**: ${{ github.event.inputs.auto_restart }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Max Restarts**: ${{ github.event.inputs.max_restarts }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Restart Delay**: ${{ github.event.inputs.restart_delay }}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration**: ${{ github.event.inputs.duration || 'indefinite' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Trading Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Capital**: 100 VST" >> $GITHUB_STEP_SUMMARY
+          echo "- **Exchange**: BingX" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trading Pairs**: 8 (BTC, ETH, SOL, BNB, ADA, DOT, MATIC, AVAX)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Max Position Size**: 15%" >> $GITHUB_STEP_SUMMARY
+          echo "- **Stop Loss**: 5%" >> $GITHUB_STEP_SUMMARY
+          echo "- **Take Profit**: 10%" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Job Status" >> $GITHUB_STEP_SUMMARY
+          echo "- **Validation**: ${{ needs.validate-inputs.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pre-Flight Checks**: ${{ needs.pre-flight-checks.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Live Trading**: ${{ needs.live-trading.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "Check the workflow run artifacts for:" >> $GITHUB_STEP_SUMMARY
+          echo "- 📝 Trading logs" >> $GITHUB_STEP_SUMMARY
+          echo "- 📊 Trading data and state" >> $GITHUB_STEP_SUMMARY
+          echo "- 🏥 Health reports" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*Workflow run: #${{ github.run_number }}*" >> $GITHUB_STEP_SUMMARY
