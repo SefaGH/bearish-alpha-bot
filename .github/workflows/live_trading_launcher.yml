@@ -173,9 +173,9 @@ jobs:
           echo "Debug Mode: ${{ github.event.inputs.debug_mode }}"
           echo ""
           echo "Configuration:"
-          echo "- Capital: 100 VST"
+          echo "- Capital: 100 USDT"
           echo "- Exchange: BingX"
-          echo "- Trading Pairs: 8 (BTC, ETH, SOL, BNB, ADA, DOT, MATIC, AVAX)"
+          echo "- Trading Pairs: 8 (BTC, ETH, SOL, BNB, ADA, DOT, LTC, AVAX)"
           echo "- Max Position Size: 15%"
           echo "- Stop Loss: 5%"
           echo "- Take Profit: 10%"
@@ -372,9 +372,9 @@ jobs:
           echo "- **Debug Mode**: ${{ github.event.inputs.debug_mode }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Trading Configuration" >> $GITHUB_STEP_SUMMARY
-          echo "- **Capital**: 100 VST" >> $GITHUB_STEP_SUMMARY
+          echo "- **Capital**: 100 USDT" >> $GITHUB_STEP_SUMMARY
           echo "- **Exchange**: BingX" >> $GITHUB_STEP_SUMMARY
-          echo "- **Trading Pairs**: 8 (BTC, ETH, SOL, BNB, ADA, DOT, MATIC, AVAX)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trading Pairs**: 8 (BTC, ETH, SOL, BNB, ADA, DOT, LTC, AVAX)" >> $GITHUB_STEP_SUMMARY
           echo "- **Max Position Size**: 15%" >> $GITHUB_STEP_SUMMARY
           echo "- **Stop Loss**: 5%" >> $GITHUB_STEP_SUMMARY
           echo "- **Take Profit**: 10%" >> $GITHUB_STEP_SUMMARY

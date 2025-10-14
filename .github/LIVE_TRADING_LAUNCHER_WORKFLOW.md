@@ -15,7 +15,7 @@ The Live Trading Launcher workflow provides a comprehensive GitHub Actions-based
 - **Manual Dispatch**: Trigger trading sessions on-demand with full control
 - **Dual Trading Modes**: Paper trading (safe testing) and Live trading (real money)
 - **Pre-Flight Checks**: Comprehensive system validation before trading
-- **BingX VST Trading**: 100 VST capital with 8 diversified trading pairs
+- **BingX USDT Trading**: 100 USDT capital with 8 diversified trading pairs
 - **Ultimate Continuous Mode**: Three-layer defense for uninterrupted operations
 - **Safety Features**: Confirmation requirements, timeouts, and emergency protocols
 
@@ -49,9 +49,9 @@ The Live Trading Launcher workflow provides a comprehensive GitHub Actions-based
 ### Trading Configuration
 
 ```yaml
-Capital: 100 VST (Virtual test tokens)
+Capital: 100 USDT (Real trading capital)
 Exchange: BingX (Single exchange focus)
-Trading Pairs: 8 (BTC, ETH, SOL, BNB, ADA, DOT, MATIC, AVAX)
+Trading Pairs: 8 (BTC, ETH, SOL, BNB, ADA, DOT, LTC, AVAX)
 Max Position Size: 15%
 Stop Loss: 5%
 Take Profit: 10%
@@ -319,7 +319,7 @@ Sent on each restart attempt:
 
 ### For Live Trading
 1. **ALWAYS** type "YES" carefully for confirmation
-2. Start with small capital (stick to 100 VST)
+2. Start with small capital (stick to 100 USDT)
 3. Monitor Telegram notifications closely
 4. Keep max restarts reasonable (100-500 for testing)
 5. Use infinite mode only when confident
