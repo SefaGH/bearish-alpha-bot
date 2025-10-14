@@ -604,6 +604,43 @@ class TestCircuitBreaker:
         assert 'circuit_breakers' in status
         assert 'monitoring_active' in status
         assert 'active_triggers' in status
+    
+    @pytest.mark.asyncio
+    async def test_check_circuit_breaker_normal(self):
+        """Test check_circuit_breaker when all breakers are normal."""
+        portfolio_config = {'equity_usd': 10000}
+        risk_manager = RiskManager(portfolio_config)
+        breaker = CircuitBreakerSystem(risk_manager)
+        
+        breaker.set_circuit_breakers()
+        
+        result = await breaker.check_circuit_breaker()
+        
+        assert 'tripped' in result
+        assert 'severity' in result
+        assert 'message' in result
+        assert result['tripped'] is False
+        assert result['severity'] == 'none'
+    
+    @pytest.mark.asyncio
+    async def test_check_circuit_breaker_triggered(self):
+        """Test check_circuit_breaker when a breaker is triggered."""
+        portfolio_config = {'equity_usd': 10000}
+        risk_manager = RiskManager(portfolio_config)
+        breaker = CircuitBreakerSystem(risk_manager)
+        
+        breaker.set_circuit_breakers()
+        
+        # Manually trigger a breaker
+        breaker.circuit_breakers['daily_loss']['triggered'] = True
+        
+        result = await breaker.check_circuit_breaker()
+        
+        assert result['tripped'] is True
+        assert result['breaker'] == 'daily_loss'
+        assert result['severity'] == 'critical'
+        assert 'threshold' in result
+        assert 'message' in result
 
 
 class TestIntegration:
