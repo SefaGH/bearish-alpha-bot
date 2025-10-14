@@ -216,12 +216,12 @@ class ProductionCoordinator:
                         
                         # In continuous mode, only stop for critical breakers
                         if continuous and severity != 'critical':
-                            logger.warning(f"Circuit breaker tripped ({severity}): {breaker_status.get('reason')}")
+                            logger.warning(f"Circuit breaker tripped ({severity}): {breaker_status.get('message')}")
                             logger.warning("CONTINUOUS MODE: Bypassing non-critical breaker, continuing...")
                             await asyncio.sleep(10)  # Pause briefly before continuing
                             continue
                         else:
-                            logger.critical(f"Circuit breaker tripped ({severity}): {breaker_status.get('reason')}")
+                            logger.critical(f"Circuit breaker tripped ({severity}): {breaker_status.get('message')}")
                             await self.handle_emergency_shutdown('circuit_breaker_tripped')
                             break
                     
