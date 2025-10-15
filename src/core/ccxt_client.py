@@ -47,6 +47,11 @@ class CcxtClient:
         self._last_symbol_update = 0
         self._server_time_offset = 0
         
+        # Lazy loading for market data
+        self._markets_cache = None
+        self._markets_cache_time = 0
+        self._required_symbols_only = set()  # Sadece ihtiyaç duyulan semboller
+        
         # Add BingX authenticator
         if ex_name == 'bingx' and creds:
             self.bingx_auth = BingXAuthenticator(
@@ -56,6 +61,16 @@ class CcxtClient:
             logger.info("🔐 [CCXT-CLIENT] BingX authenticator added")
         else:
             self.bingx_auth = None
+
+    def set_required_symbols(self, symbols: List[str]):
+        """
+        Set symbols that should be loaded. Enables selective market loading.
+        
+        Args:
+            symbols: List of symbols to load (e.g., ['BTC/USDT:USDT', 'ETH/USDT:USDT'])
+        """
+        self._required_symbols_only = set(symbols)
+        logger.info(f"Required symbols set for {self.name}: {len(symbols)} symbols")
 
     def ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> List[List]:
         """
@@ -110,20 +125,63 @@ class CcxtClient:
             # Don't raise - this is used for filtering, empty result is acceptable
             return {}
 
-    def markets(self) -> Dict[str, Dict[str, Any]]:
-        """Load market information."""
+    def markets(self, force_reload: bool = False) -> Dict[str, Dict[str, Any]]:
+        """
+        Load market information with lazy loading and caching support.
+        
+        Args:
+            force_reload: Force reload markets even if cached
+            
+        Returns:
+            Dictionary of market information
+        """
+        current_time = time.time()
+        
+        # Cache 1 saat geçerli
+        if not force_reload and self._markets_cache and (current_time - self._markets_cache_time) < 3600:
+            return self._markets_cache
+            
         try:
-            logger.debug(f"Loading markets for {self.name}")
-            markets = self.ex.load_markets()
-            logger.info(f"Successfully loaded {len(markets)} markets for {self.name}")
+            # Load all markets (CCXT requirement - we can't load individual markets)
+            all_markets = self.ex.load_markets()
+            
+            if self._required_symbols_only:
+                # Filter to only required symbols for logging and memory efficiency
+                logger.info(f"Filtering markets to {len(self._required_symbols_only)} required symbols")
+                markets = {}
+                
+                # BingX için özel işlem - contract mapping kullan
+                if self.name == 'bingx':
+                    all_contracts = self._get_bingx_contracts()
+                    for ccxt_symbol in self._required_symbols_only:
+                        if ccxt_symbol in all_markets:
+                            markets[ccxt_symbol] = all_markets[ccxt_symbol]
+                else:
+                    # Diğer borsalar için sadece required symbols
+                    for symbol in self._required_symbols_only:
+                        if symbol in all_markets:
+                            markets[symbol] = all_markets[symbol]
+                
+                logger.info(f"Filtered to {len(markets)}/{len(all_markets)} markets")
+            else:
+                # Tüm marketleri kullan
+                markets = all_markets
+                logger.info(f"Loaded all {len(markets)} markets for {self.name}")
+                
+            self._markets_cache = markets
+            self._markets_cache_time = current_time
+            
+            logger.info(f"Loaded {len(markets)} markets for {self.name}")
             return markets
+            
         except Exception as e:
-            logger.error(f"Failed to load markets for {self.name}: {type(e).__name__}: {e}")
+            logger.error(f"Failed to load markets: {e}")
             raise
 
     def validate_and_get_symbol(self, requested_symbol="BTC/USDT"):
         """
         Validate symbol exists on exchange, try common variants if not.
+        Enhanced with BingX-specific handling.
         
         Args:
             requested_symbol: The symbol to validate (e.g., "BTC/USDT")
@@ -135,7 +193,40 @@ class CcxtClient:
             RuntimeError: If no valid symbol variant is found or if market loading fails
         """
         try:
-            logger.info(f"Validating symbol '{requested_symbol}' on {self.name}")
+            logger.info(f"Validating '{requested_symbol}' on {self.name}")
+            
+            # BingX için özel işlem
+            if self.name == 'bingx':
+                # Önce contract discovery yap
+                symbol_map = self._get_bingx_contracts()
+                
+                # CCXT formatı BingX mapping'de var mı?
+                if requested_symbol in symbol_map:
+                    logger.info(f"✅ BingX symbol found via mapping: {requested_symbol}")
+                    return requested_symbol
+                    
+                # Perpetual format dene
+                if not requested_symbol.endswith(':USDT'):
+                    perp_format = f"{requested_symbol}:USDT"
+                    if perp_format in symbol_map:
+                        logger.info(f"✅ BingX symbol with perpetual suffix: {perp_format}")
+                        return perp_format
+                        
+                # Spot'tan perpetual'a dönüşüm
+                if '/' in requested_symbol and not requested_symbol.endswith(':USDT'):
+                    base = requested_symbol.split('/')[0]
+                    perp_symbol = f"{base}/USDT:USDT"
+                    if perp_symbol in symbol_map:
+                        logger.info(f"✅ BingX converted to perpetual: {requested_symbol} → {perp_symbol}")
+                        return perp_symbol
+                        
+                # Hata durumunda mevcut sembolleri göster
+                available = list(symbol_map.keys())[:10]
+                logger.error(f"❌ BingX symbol not found: {requested_symbol}")
+                logger.error(f"   Available samples: {available}")
+                raise RuntimeError(f"Symbol '{requested_symbol}' not found on BingX")
+            
+            # Diğer borsalar için mevcut logic
             markets = self.markets()
             symbols = set(markets.keys())
             
@@ -319,7 +410,9 @@ class CcxtClient:
             
             server_data = response.json()
             if server_data.get('code') == 0:
-                server_time = int(server_data['data'])
+                # BingX returns data as dict with serverTime key
+                data = server_data.get('data', {})
+                server_time = int(data.get('serverTime', data)) if isinstance(data, dict) else int(data)
                 local_time = int(time.time() * 1000)
                 self._server_time_offset = server_time - local_time
                 
@@ -378,50 +471,60 @@ class CcxtClient:
         }
     
     def _get_bingx_contracts(self) -> Dict[str, str]:
-        """Get dynamic symbol mapping from BingX active contracts."""
+        """
+        BingX contract discovery with caching.
+        
+        Returns:
+            Dictionary mapping CCXT format symbols to BingX native format
+            (e.g., 'BTC/USDT:USDT' -> 'BTC-USDT')
+        """
         current_time = time.time()
         
-        # Cache for 1 hour
+        # 1 saatlik cache
         if (current_time - self._last_symbol_update) < 3600 and self._symbol_cache:
             return self._symbol_cache
             
         try:
+            # BingX public endpoint - authentication gerekmez
             url = "https://open-api.bingx.com/openApi/swap/v2/quote/contracts"
             response = requests.get(url, timeout=10)
             response.raise_for_status()
             
-            contracts_data = response.json()
-            if contracts_data.get('code') == 0:
+            data = response.json()
+            if data.get('code') == 0:
                 symbol_map = {}
                 
-                for contract in contracts_data['data']:
-                    # BingX uses format like "BTC-USDT", "ETH-USDT"
-                    native_symbol = contract['symbol']
-                    asset = contract.get('asset', '')
-                    currency = contract.get('currency', 'USDT')
+                for contract in data.get('data', []):
+                    # BingX format: "BTC-USDT"
+                    native_symbol = contract.get('symbol', '')
                     
-                    # Convert to CCXT perpetual format: BASE/QUOTE:QUOTE
-                    if '-' in native_symbol:
-                        parts = native_symbol.split('-')
-                        if len(parts) == 2:
-                            base = parts[0]
-                            ccxt_symbol = f"{base}/USDT:USDT"
-                            symbol_map[ccxt_symbol] = native_symbol
-                
+                    # Base currency'yi çıkar
+                    if '-USDT' in native_symbol:
+                        base = native_symbol.replace('-USDT', '')
+                        ccxt_symbol = f"{base}/USDT:USDT"
+                        symbol_map[ccxt_symbol] = native_symbol
+                        
                 self._symbol_cache = symbol_map
                 self._last_symbol_update = current_time
                 
-                logger.info(f"BingX contracts discovered: {len(symbol_map)} perpetual contracts")
+                logger.info(f"✅ BingX: {len(symbol_map)} perpetual contracts discovered")
+                
+                # Debug: İlk 5 mapping'i göster
+                sample = list(symbol_map.items())[:5]
+                for ccxt_sym, native_sym in sample:
+                    logger.debug(f"  {ccxt_sym} → {native_sym}")
+                    
                 return symbol_map
                 
         except Exception as e:
-            logger.warning(f"BingX contract discovery failed: {e}")
+            logger.warning(f"BingX contract discovery failed: {e}, using fallback")
         
-        # Fallback to essential mappings
+        # Fallback mapping
         return {
             'BTC/USDT:USDT': 'BTC-USDT',
             'ETH/USDT:USDT': 'ETH-USDT',
-            'VST/USDT:USDT': 'VST-USDT'
+            'SOL/USDT:USDT': 'SOL-USDT',
+            'BNB/USDT:USDT': 'BNB-USDT',
         }
     
     def _fetch_with_ultimate_kucoin_format(self, symbol: str, timeframe: str,
