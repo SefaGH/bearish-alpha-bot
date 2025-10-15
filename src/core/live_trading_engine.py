@@ -42,7 +42,8 @@ class EngineState(Enum):
 class LiveTradingEngine:
     """Production-ready live trading execution engine."""
     
-    def __init__(self, portfolio_manager, risk_manager, websocket_manager, exchange_clients: Dict):
+    def __init__(self, mode='paper', portfolio_manager=None, risk_manager=None, websocket_manager=None, exchange_clients=None):
+        self.mode = mode
         """
         Initialize live trading engine.
         
