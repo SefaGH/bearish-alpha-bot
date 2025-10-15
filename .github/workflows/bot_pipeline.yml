@@ -8,7 +8,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 60  # Max 1 saat çalışsın
+    timeout-minutes: 35  # Max 35 dakika (30dk script + 5dk overhead)
     
     steps:
       - uses: actions/checkout@v4

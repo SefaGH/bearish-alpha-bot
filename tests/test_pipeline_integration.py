@@ -5,6 +5,7 @@ Integration tests for Market Data Pipeline with main.py
 
 import sys
 import os
+import time
 from unittest.mock import Mock, patch
 import pytest
 import asyncio
@@ -25,7 +26,6 @@ async def test_pipeline_async_methods():
     mock_client.validate_and_get_symbol.return_value = 'BTC/USDT:USDT'
     
     # Mock OHLCV data (format: [timestamp, open, high, low, close, volume])
-    import time
     timestamp = int(time.time() * 1000) - (5 * 60 * 1000)  # 5 minutes ago
     sample_data = []
     for i in range(100):

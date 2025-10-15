@@ -49,7 +49,7 @@ The pipeline mode can run automatically via GitHub Actions:
 
 - **Workflow**: `.github/workflows/bot_pipeline.yml`
 - **Schedule**: Every 15 minutes
-- **Duration**: Max 30 minutes per run
+- **Duration**: 30 minutes per run (with 35-minute workflow timeout)
 - **Manual trigger**: Can be triggered via workflow_dispatch
 
 To use:
