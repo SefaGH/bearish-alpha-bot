@@ -14,6 +14,10 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 
+# Test constants
+EXPECTED_WIN_RATE = 2 / 3  # 2 wins out of 3 trades
+WIN_RATE_TOLERANCE = 0.0001
+
 
 @pytest.fixture
 def temp_data_dir():
@@ -97,7 +101,7 @@ def test_telegram_monitor_stats_collection(temp_data_dir):
     assert stats['total_trades'] == 3
     assert stats['open_positions'] == 1
     assert stats['total_pnl'] == 5.5
-    assert abs(stats['win_rate'] - 0.6666666666666666) < 0.0001
+    assert abs(stats['win_rate'] - EXPECTED_WIN_RATE) < WIN_RATE_TOLERANCE
     assert stats['daily_pnl'] == 5.5
     assert stats['daily_signals'] == 12
     assert stats['status'] == 'running'
@@ -179,7 +183,7 @@ def test_html_report_generation(temp_data_dir):
     assert stats['total_trades'] == 3
     assert stats['open_positions'] == 1
     assert stats['total_pnl'] == 5.5
-    assert abs(stats['win_rate'] - 0.6666666666666666) < 0.0001
+    assert abs(stats['win_rate'] - EXPECTED_WIN_RATE) < WIN_RATE_TOLERANCE
 
 
 @pytest.mark.unit

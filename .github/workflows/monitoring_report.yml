@@ -3,7 +3,7 @@ name: Trading Monitoring Report
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"  # Her 30 dakikada bir
+    - cron: "*/30 * * * *"  # Every 30 minutes
 
 jobs:
   monitor:
