@@ -441,6 +441,45 @@ def test_buffer_limit_enforcement_multiple_timeframes(pipeline_with_mock):
             assert len(df) <= pipeline_with_mock.BUFFER_LIMITS[timeframe]
 
 
+@pytest.mark.asyncio
+async def test_start_feeds_async(pipeline_with_mock, mock_ccxt_client):
+    """Test async version of start_feeds."""
+    # Test single symbol and timeframe
+    results = await pipeline_with_mock.start_feeds_async(['BTC/USDT:USDT'], ['30m'])
+    
+    assert results['successful_fetches'] > 0
+    assert 'mock1' in results['exchanges_used']
+    assert pipeline_with_mock.is_running == True
+    assert mock_ccxt_client.ohlcv.called or mock_ccxt_client.fetch_ohlcv_bulk.called
+    
+    # Test multiple symbols and timeframes
+    results_multi = await pipeline_with_mock.start_feeds_async(
+        ['BTC/USDT:USDT', 'ETH/USDT:USDT'],
+        ['30m', '1h']
+    )
+    
+    assert results_multi['successful_fetches'] >= 4
+    assert results_multi['failed_fetches'] == 0
+
+
+def test_get_health_status(pipeline_with_mock):
+    """Test get_health_status method."""
+    pipeline_with_mock.start_feeds(['BTC/USDT:USDT'], ['30m'])
+    
+    health = pipeline_with_mock.get_health_status()
+    
+    # Validate required fields
+    assert 'overall_status' in health
+    assert 'uptime_seconds' in health
+    assert 'active_feeds' in health
+    assert 'error_rate' in health
+    assert 'memory_mb' in health
+    
+    assert health['overall_status'] == 'healthy'
+    assert health['active_feeds'] > 0
+    assert health['error_rate'] == 0
+
+
 # Legacy main function for backward compatibility
 def main():
     """Run tests using pytest."""

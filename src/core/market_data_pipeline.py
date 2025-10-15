@@ -5,6 +5,7 @@ Provides multi-exchange data collection, storage, and health monitoring
 for Phase 2.2 WebSocket integration foundation.
 """
 
+import asyncio
 import logging
 import time
 import pandas as pd
@@ -388,3 +389,61 @@ class MarketDataPipeline:
         logger.info(f"   - Error rate: {final_stats['error_rate']}%")
         logger.info(f"   - Active streams: {final_stats['active_streams']}")
         logger.info(f"   - Memory used: {final_stats['memory_estimate_mb']} MB")
+    
+    async def start_feeds_async(self, symbols: List[str], timeframes: List[str] = ['30m', '1h']) -> Dict[str, Any]:
+        """
+        Async version of start_feeds for asynchronous operation.
+        
+        Args:
+            symbols: List of trading symbols to fetch
+            timeframes: List of timeframes to fetch
+        
+        Returns:
+            Dict with summary of data collection results
+        """
+        logger.info(f"🔄 Starting async data feeds for {len(symbols)} symbols across {len(timeframes)} timeframes")
+        self.is_running = True
+        
+        results = {
+            'symbols_processed': 0,
+            'successful_fetches': 0,
+            'failed_fetches': 0,
+            'exchanges_used': set(),
+            'errors': []
+        }
+        
+        for symbol in symbols:
+            for timeframe in timeframes:
+                # Try to fetch from best available exchange
+                success = self._fetch_and_store(symbol, timeframe, results)
+                
+                if success:
+                    results['symbols_processed'] += 1
+                
+                # Rate limiting between symbol fetches
+                await asyncio.sleep(0.1)
+        
+        results['exchanges_used'] = list(results['exchanges_used'])
+        
+        logger.info(f"✅ Async data feeds started: {results['successful_fetches']} successful, "
+                   f"{results['failed_fetches']} failed")
+        
+        return results
+    
+    def get_health_status(self) -> Dict[str, Any]:
+        """
+        Get health status of the pipeline (alias for get_pipeline_status).
+        
+        Returns:
+            Dict with health status and metrics
+        """
+        status = self.get_pipeline_status()
+        
+        # Simplify for health check
+        return {
+            'overall_status': status['status'],
+            'uptime_seconds': status['uptime_seconds'],
+            'active_feeds': status['active_streams'],
+            'error_rate': status['error_rate'],
+            'memory_mb': status['memory_estimate_mb']
+        }

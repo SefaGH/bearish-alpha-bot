@@ -8,6 +8,12 @@ from typing import Dict, List
 import pandas as pd
 import yaml
 
+# Configure basic logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
 from core.multi_exchange import build_clients_from_env
 from core.indicators import add_indicators as ind_enrich
 from core.regime import is_bearish_regime
@@ -312,6 +318,123 @@ def run_once():
 
     return signals_out
 
+async def run_with_pipeline():
+    """Market Data Pipeline ile optimize edilmiş çalışma modu"""
+    from core.market_data_pipeline import MarketDataPipeline
+    import asyncio
+    
+    logger = logging.getLogger(__name__)
+    
+    cfg = load_config()
+    tg = build_tg()
+    
+    # Build clients with selective symbol loading
+    required_symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+    clients = build_clients_from_env(required_symbols=required_symbols)
+    
+    if not clients:
+        logger.error("No exchange clients available")
+        if tg:
+            tg.send("🛑 No exchange clients available for pipeline mode")
+        return
+    
+    # Initialize pipeline
+    logger.info(f"Initializing pipeline with {len(clients)} exchanges")
+    pipeline = MarketDataPipeline(clients)
+    
+    # Timeframes to track
+    timeframes = ['30m', '1h', '4h']
+    
+    # Start data feeds
+    logger.info(f"Starting data feeds for {len(required_symbols)} symbols")
+    await pipeline.start_feeds_async(required_symbols, timeframes)
+    
+    if tg:
+        tg.send(f"🚀 Pipeline mode started | {len(required_symbols)} symbols | {len(timeframes)} timeframes")
+    
+    # Ana döngü
+    iteration = 0
+    while True:
+        try:
+            iteration += 1
+            logger.info(f"Pipeline iteration {iteration}")
+            
+            # Pipeline health check
+            health = pipeline.get_health_status()
+            if health['overall_status'] != 'healthy':
+                logger.warning(f"Pipeline health issue: {health}")
+                if tg:
+                    tg.send(f"⚠️ Pipeline health: {health['overall_status']} (error rate: {health['error_rate']}%)")
+            
+            # Process each symbol
+            signals_count = 0
+            for symbol in required_symbols:
+                try:
+                    # Get cached data from pipeline (fast!)
+                    df_30m = pipeline.get_latest_ohlcv(symbol, '30m')
+                    df_1h = pipeline.get_latest_ohlcv(symbol, '1h')
+                    df_4h = pipeline.get_latest_ohlcv(symbol, '4h')
+                    
+                    if df_30m is None or len(df_30m) < 50:
+                        logger.debug(f"Insufficient 30m data for {symbol}")
+                        continue
+                    
+                    # Regime check
+                    if df_4h is not None and len(df_4h) >= 50:
+                        bearish = is_bearish_regime(df_4h)
+                        if not bearish and not cfg.get("signals", {}).get("ignore_regime", False):
+                            logger.debug(f"{symbol} not in bearish regime, skipping")
+                            continue
+                    
+                    # Strategy signals
+                    signal = None
+                    
+                    # OversoldBounce
+                    if cfg.get("signals", {}).get("oversold_bounce", {}).get("enable", True):
+                        ob = OversoldBounce(cfg.get("signals", {}).get("oversold_bounce"))
+                        signal = ob.signal(df_30m)
+                    
+                    # ShortTheRip
+                    if not signal and cfg.get("signals", {}).get("short_the_rip", {}).get("enable", True):
+                        str_cfg = cfg.get("signals", {}).get("short_the_rip")
+                        strp = ShortTheRip(str_cfg)
+                        signal = strp.signal(df_30m, df_1h)
+                    
+                    # Process signal
+                    if signal:
+                        signals_count += 1
+                        msg = f"⚡ Pipeline | {symbol} | {signal['side'].upper()} — {signal['reason']}"
+                        if tg: 
+                            tg.send(msg)
+                        logger.info(f"Signal generated: {msg}")
+                        
+                        # TODO: Execute trade if live mode
+                        
+                except Exception as e:
+                    logger.error(f"Error processing {symbol}: {e}")
+                    continue
+            
+            # Log iteration summary
+            if iteration % 10 == 0:  # Every 10 iterations
+                logger.info(f"Iteration {iteration} complete. Signals: {signals_count}. Health: {health['overall_status']}")
+            
+            # Wait before next iteration
+            await asyncio.sleep(30)  # 30 saniye bekle
+            
+        except KeyboardInterrupt:
+            logger.info("Stopping pipeline...")
+            break
+        except Exception as e:
+            logger.error(f"Pipeline loop error: {e}", exc_info=True)
+            if tg:
+                tg.send(f"❌ Pipeline error: {type(e).__name__}: {str(e)[:150]}")
+            await asyncio.sleep(60)  # Hata durumunda 1 dk bekle
+    
+    # Shutdown
+    pipeline.shutdown()
+    if tg:
+        tg.send("✅ Pipeline mode stopped")
+
 async def main_live_trading():
     """Main entry point for live trading mode using Phase 3.4 infrastructure."""
     import asyncio
@@ -372,11 +495,15 @@ async def main_live_trading():
 
 if __name__ == "__main__":
     import sys
+    import asyncio
     
-    # Check if live trading mode is requested
-    if len(sys.argv) > 1 and sys.argv[1] == '--live':
+    # Check for pipeline mode
+    if '--pipeline' in sys.argv:
+        logger = logging.getLogger(__name__)
+        logger.info("Starting with Market Data Pipeline mode")
+        asyncio.run(run_with_pipeline())
+    elif len(sys.argv) > 1 and sys.argv[1] == '--live':
         # Run live trading mode
-        import asyncio
         asyncio.run(main_live_trading())
     else:
         # Run traditional one-shot mode

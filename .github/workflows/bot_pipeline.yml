@@ -1,0 +1,54 @@
+name: Run Bot with Pipeline
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"  # Her 15 dakikada bir
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60  # Max 1 saat çalışsın
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      
+      - name: Install deps
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run bot with pipeline
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          EXCHANGES: ${{ secrets.EXCHANGES }}
+          EXECUTION_EXCHANGE: ${{ secrets.EXECUTION_EXCHANGE }}
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+          BINANCE_KEY: ${{ secrets.BINANCE_KEY }}
+          BINANCE_SECRET: ${{ secrets.BINANCE_SECRET }}
+          KUCOIN_KEY: ${{ secrets.KUCOIN_KEY }}
+          KUCOIN_SECRET: ${{ secrets.KUCOIN_SECRET }}
+          KUCOIN_PASSPHRASE: ${{ secrets.KUCOIN_PASSPHRASE }}
+          OKX_KEY: ${{ secrets.OKX_KEY }}
+          OKX_SECRET: ${{ secrets.OKX_SECRET }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+          BYBIT_KEY: ${{ secrets.BYBIT_KEY }}
+          BYBIT_SECRET: ${{ secrets.BYBIT_SECRET }}
+        run: |
+          # 30 dakika çalıştır
+          timeout 1800 python src/main.py --pipeline || true
+      
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-${{ github.run_id }}
+          path: |
+            logs/
+            data/
