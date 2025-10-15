@@ -4,7 +4,6 @@ Market Data Pipeline Example - Phase 2.1
 Demonstrates integration with existing Bearish Alpha Bot infrastructure
 """
 
-import asyncio
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
