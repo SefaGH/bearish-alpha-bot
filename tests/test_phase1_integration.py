@@ -191,8 +191,8 @@ def test_performance_improvements():
             result2 = False
         
         # Check that we only verify trading pairs
-        # Check for the f-string pattern in source code
-        if re.search(r'Verifying.*TRADING_PAIRS.*trading pairs', content):
+        # Check for the f-string pattern that verifies TRADING_PAIRS
+        if re.search(r"Verifying.*len\(self\.TRADING_PAIRS\).*trading pairs", content):
             print("  ✓ Only verifying 8 trading pairs")
             result3 = True
         else:
