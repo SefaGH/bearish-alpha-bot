@@ -462,7 +462,7 @@ class LiveTradingLauncher:
     
     def _initialize_exchange_connection(self) -> bool:
         """
-        Initialize BingX exchange connection for live USDT trading.
+        OPTIMIZED BingX initialization - verify only 8 trading pairs, not 2528 markets.
         
         Returns:
             True if connection successful
@@ -479,19 +479,36 @@ class LiveTradingLauncher:
             bingx_client = CcxtClient('bingx', bingx_creds)
             self.exchange_clients['bingx'] = bingx_client
             
-            # Test connection
+            # Test connection with single API call instead of loading 2528 markets
             logger.info("Testing BingX connection...")
-            markets = bingx_client.markets()
-            logger.info(f"✓ Connected to BingX - {len(markets)} markets available")
+            test_ticker = bingx_client.fetch_ticker('BTC/USDT:USDT')
+            logger.info(f"✓ Connected to BingX - Test price: BTC=${test_ticker['last']:.2f}")
             
-            # Verify all trading pairs
-            missing_pairs = [pair for pair in self.TRADING_PAIRS if pair not in markets]
-            if missing_pairs:
-                logger.warning(f"⚠ Some trading pairs not available: {missing_pairs}")
+            # Test authentication with balance check
+            try:
+                balance = bingx_client.get_bingx_balance()
+                logger.info("✓ BingX authentication successful")
+            except Exception as e:
+                logger.warning(f"⚠️  BingX authentication test failed: {e}")
+            
+            # Verify ONLY our 8 trading pairs (not all 2528 markets!)
+            logger.info(f"Verifying {len(self.TRADING_PAIRS)} trading pairs...")
+            verified_pairs = []
+            
+            for pair in self.TRADING_PAIRS:
+                try:
+                    ticker = bingx_client.fetch_ticker(pair)
+                    verified_pairs.append(pair)
+                    logger.info(f"  ✓ {pair}: ${ticker['last']:.2f}")
+                except Exception as e:
+                    logger.warning(f"  ❌ {pair}: {e}")
+            
+            if len(verified_pairs) >= 6:  # Allow for some pair failures
+                logger.info(f"✓ {len(verified_pairs)}/{len(self.TRADING_PAIRS)} trading pairs verified")
+                return True
             else:
-                logger.info(f"✓ All {len(self.TRADING_PAIRS)} trading pairs verified")
-            
-            return True
+                logger.error(f"Only {len(verified_pairs)}/{len(self.TRADING_PAIRS)} pairs verified")
+                return False
             
         except Exception as e:
             logger.error(f"❌ Failed to connect to BingX: {e}")

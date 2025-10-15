@@ -4,6 +4,7 @@ import logging
 import requests
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+from .bingx_authenticator import BingXAuthenticator
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,16 @@ class CcxtClient:
         self._symbol_cache = {}
         self._last_symbol_update = 0
         self._server_time_offset = 0
+        
+        # Add BingX authenticator
+        if ex_name == 'bingx' and creds:
+            self.bingx_auth = BingXAuthenticator(
+                api_key=creds.get('apiKey', ''),
+                secret_key=creds.get('secret', '')
+            )
+            logger.info("🔐 [CCXT-CLIENT] BingX authenticator added")
+        else:
+            self.bingx_auth = None
 
     def ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> List[List]:
         """
@@ -502,3 +513,115 @@ class CcxtClient:
             '1w': 7 * 24 * 60 * 60 * 1000
         }
         return timeframe_ms.get(timeframe, 30 * 60 * 1000)
+    
+    def _make_authenticated_bingx_request(self, endpoint: str, params: Dict = None, method: str = 'GET') -> Dict:
+        """
+        Make authenticated request to BingX API.
+        
+        Args:
+            endpoint: API endpoint (e.g., '/openApi/swap/v2/user/balance')
+            params: Optional request parameters
+            method: HTTP method ('GET', 'POST', 'DELETE')
+            
+        Returns:
+            API response as dictionary
+            
+        Raises:
+            ValueError: If BingX authenticator is not configured
+            requests.RequestException: If request fails
+        """
+        if not self.bingx_auth:
+            raise ValueError("BingX authenticator not configured")
+        
+        auth_data = self.bingx_auth.prepare_authenticated_request(params)
+        url = f"https://open-api.bingx.com{endpoint}"
+        
+        try:
+            if method == 'GET':
+                response = requests.get(url, params=auth_data['params'], headers=auth_data['headers'])
+            elif method == 'POST':
+                response = requests.post(url, data=auth_data['params'], headers=auth_data['headers'])
+            elif method == 'DELETE':
+                response = requests.delete(url, params=auth_data['params'], headers=auth_data['headers'])
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            logger.debug(f"🔐 [BINGX-API] {method} {endpoint} successful")
+            return result
+            
+        except requests.RequestException as e:
+            logger.error(f"🔐 [BINGX-API] {method} {endpoint} failed: {e}")
+            raise
+    
+    def get_bingx_balance(self) -> Dict:
+        """
+        Get BingX account balance with authentication.
+        
+        Returns:
+            Balance information dictionary
+        """
+        logger.info("🔐 [BINGX-API] Fetching account balance")
+        return self._make_authenticated_bingx_request('/openApi/swap/v2/user/balance')
+    
+    def get_bingx_positions(self, symbol: str = None) -> Dict:
+        """
+        Get BingX positions with authentication.
+        
+        Args:
+            symbol: Optional symbol filter (CCXT format, e.g., 'BTC/USDT:USDT')
+            
+        Returns:
+            Positions information dictionary
+        """
+        params = {}
+        if symbol:
+            params['symbol'] = self.bingx_auth.convert_symbol_to_bingx(symbol)
+        
+        logger.info(f"🔐 [BINGX-API] Fetching positions {symbol or 'all'}")
+        return self._make_authenticated_bingx_request('/openApi/swap/v2/user/positions', params)
+    
+    def place_bingx_order(self, symbol: str, side: str, order_type: str, 
+                         amount: float, price: float = None) -> Dict:
+        """
+        Place BingX order with authentication.
+        
+        Args:
+            symbol: Trading pair (CCXT format, e.g., 'BTC/USDT:USDT')
+            side: Order side ('buy' or 'sell')
+            order_type: Order type ('market' or 'limit')
+            amount: Order amount/volume
+            price: Optional price for limit orders
+            
+        Returns:
+            Order response dictionary
+        """
+        bingx_symbol = self.bingx_auth.convert_symbol_to_bingx(symbol)
+        
+        params = {
+            'symbol': bingx_symbol,
+            'side': side.upper(),
+            'positionSide': 'LONG',  # Default to LONG
+            'type': order_type.upper(),
+            'volume': str(amount)
+        }
+        
+        if price and order_type.upper() == 'LIMIT':
+            params['price'] = str(price)
+        
+        logger.info(f"🔐 [BINGX-API] Placing {side} order: {amount} {symbol} @ ${price}")
+        return self._make_authenticated_bingx_request('/openApi/swap/v2/trade/order', params, 'POST')
+    
+    def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
+        """
+        Fetch current ticker for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            Ticker data dictionary
+        """
+        return self.ex.fetch_ticker(symbol)
