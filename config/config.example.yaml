@@ -58,19 +58,19 @@ signals:
   oversold_bounce:
     enable: true
     # TEST: Rejim filtresi kapalı kalsın; sinyal görmeye odaklanalım
-    ignore_regime: false  # Production'da false olmalı
+    ignore_regime: true  # Production'da false olmalı
     # Eşikleri gevşet: daha fazla "oversold" sinyali yakalayalım
-    rsi_max: 38          # (mevcut: 27)
-    tp_pct: 0.010        # (mevcut: 0.014) -> TP'ye ulaşma oranı artar
+    rsi_max: 45          # (mevcut: 27)
+    tp_pct: 0.008        # (mevcut: 0.014) -> TP'ye ulaşma oranı artar
     sl_atr_mult: 1.2     # (mevcut: 1.0) -> biraz daha güvenli stop
 
   short_the_rip:
     enable: true
     # TEST: Rejim filtresini burada da esnetelim
     # (eğer parent'ta ignore_regime yoksa veya global değilse; yoksa bu satıra gerek olmayabilir)
-    # ignore_regime: true   # dosyada bu anahtar yoksa ekleyebilirsin, yoksa bırak
-    rsi_min: 55          # (mevcut: 59) -> daha sık short setup
-    tp_pct: 0.010        # aynı kalsın
+    ignore_regime: true   # dosyada bu anahtar yoksa ekleyebilirsin, yoksa bırak
+    rsi_min: 50          # (mevcut: 59) -> daha sık short setup
+    tp_pct: 0.008        # aynı kalsın
     sl_atr_mult: 1.2     # aynı kalsın
 
 quarantine:
