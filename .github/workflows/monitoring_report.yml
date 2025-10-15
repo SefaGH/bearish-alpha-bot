@@ -1,0 +1,46 @@
+name: Trading Monitoring Report
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"  # Every 30 minutes
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      
+      - name: Install deps
+        run: pip install -r requirements.txt
+      
+      - name: Download latest state
+        uses: actions/download-artifact@v4
+        with:
+          name: live-trading-state
+          path: data/
+        continue-on-error: true
+      
+      - name: Generate monitoring report
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python scripts/telegram_monitor.py
+      
+      - name: Generate HTML report
+        run: |
+          python scripts/generate_html_report.py
+      
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-report-${{ github.run_id }}
+          path: |
+            data/report.html
+            data/stats.json
