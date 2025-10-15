@@ -36,7 +36,7 @@ class MonitoringDashboard:
             'start_time': datetime.now().isoformat(),
             'total_signals': 0,
             'total_trades': 0,
-            'win_rate': 0.0,
+            'win_rate': 0.0,  # Stored as decimal (0.0-1.0), displayed as percentage in UI
             'total_pnl': 0.0,
             'open_positions': [],
             'recent_signals': [],
@@ -439,6 +439,8 @@ class MonitoringDashboard:
         
         Args:
             **kwargs: Metric values to update
+                     win_rate should be provided as decimal (0.0-1.0), it will be
+                     displayed as percentage in the UI
         """
         self.metrics.update(kwargs)
         self.metrics['last_update'] = datetime.now().isoformat()

@@ -166,8 +166,9 @@ class TestPerformanceAnalytics:
         
         pf = analytics.calculate_profit_factor(trades)
         assert pf > 0
-        # (100 + 80) / (50 + 20) = 180 / 70 = 2.57
-        assert abs(pf - 2.571) < 0.01
+        # Expected: (100 + 80) / (50 + 20) = 180 / 70 = 2.5714...
+        expected_pf = 180.0 / 70.0
+        assert abs(pf - expected_pf) < 0.01
     
     def test_max_drawdown(self):
         """Test maximum drawdown calculation."""

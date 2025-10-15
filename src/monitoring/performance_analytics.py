@@ -87,6 +87,7 @@ class PerformanceAnalytics:
             
         Returns:
             Tuple of (max_drawdown_pct, start_date, end_date)
+            max_drawdown_pct is returned as a positive percentage (e.g., 0.20 for 20% drawdown)
         """
         if len(equity_curve) < 2:
             return 0.0, None, None
@@ -94,16 +95,17 @@ class PerformanceAnalytics:
         # Calculate running maximum
         running_max = equity_curve.cummax()
         
-        # Calculate drawdown series
+        # Calculate drawdown series (negative values indicate drawdown)
         drawdown = (equity_curve - running_max) / running_max
         
-        # Find maximum drawdown
-        max_dd = drawdown.min()
+        # Find maximum drawdown (most negative value)
+        max_dd = drawdown.min()  # This will be negative or zero
         max_dd_end = drawdown.idxmin()
         
         # Find start of maximum drawdown
         max_dd_start = equity_curve[:max_dd_end].idxmax()
         
+        # Return as positive percentage
         return abs(max_dd), max_dd_start, max_dd_end
     
     def calculate_win_rate(self, trades: List[Dict]) -> float:

@@ -25,6 +25,11 @@ Bu bot ChatGPT ile oluşturulmuş, ancak önemli hatalar ve eksiklikler tespit e
 - **CSV çıktı** (artefact)
 - **Backtest & Param tarama**: OB ve STR için Actions ile tek tık
 - **Nightly raporlama**: OB+STR sweep + Markdown rapor + (opsiyonel) Telegram özet
+- **🆕 Monitoring & Alerting**: Real-time web dashboard, multi-channel alerts, performance analytics
+  - Web-based dashboard with live WebSocket updates
+  - Advanced alert management (Telegram, Discord, Webhook)
+  - Performance metrics (Sharpe ratio, win rate, drawdown, etc.)
+  - 📊 [Monitoring System Documentation](docs/MONITORING_SYSTEM.md)
 
 ## Hızlı Başlangıç (sadece GitHub)
 1. **Secrets ayarla** (Repo → Settings → Secrets and variables → Actions)
@@ -76,6 +81,10 @@ src/
   backtest/
     param_sweep.py      # OB param tarama (Actions)
     param_sweep_str.py  # STR param tarama (Actions)
+  monitoring/           # 🆕 Real-time monitoring & alerting
+    dashboard.py        # Web dashboard with WebSocket
+    alert_manager.py    # Multi-channel alerts
+    performance_analytics.py  # Performance metrics
 main.py                 # Orkestrasyon (RUN_SUMMARY yazıyor)
 ```
 

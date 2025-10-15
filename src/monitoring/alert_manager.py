@@ -137,7 +137,7 @@ class AlertManager:
         
         # Create alert
         alert = Alert(
-            id=f"{datetime.now().timestamp()}_{hash(title)}",
+            id=f"{datetime.now().timestamp()}_{abs(hash(title)) % 10**8}",
             timestamp=datetime.now(),
             priority=priority,
             title=title,
