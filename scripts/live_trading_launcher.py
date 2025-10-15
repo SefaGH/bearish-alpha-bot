@@ -664,7 +664,7 @@ class LiveTradingLauncher:
             # Initialize complete production system
             init_result = await self.coordinator.initialize_production_system(
                 exchange_clients=self.exchange_clients,
-                portfolio_config=portfolio_config
+                portfolio_config=portfolio_config,
                 mode=self.mode  # ✅ Mode'u ekle!
             )
             
