@@ -131,7 +131,7 @@ class MarketDataPipeline:
                     validated_symbol = client.validate_and_get_symbol(symbol)
                     
                     # Fetch OHLCV data
-                    if limit > 500:
+                    if limit > 500 and hasattr(client, 'fetch_ohlcv_bulk'):
                         ohlcv_data = client.fetch_ohlcv_bulk(validated_symbol, timeframe, limit)
                     else:
                         ohlcv_data = client.ohlcv(validated_symbol, timeframe, limit)
