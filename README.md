@@ -126,6 +126,38 @@ df = pipeline.get_latest_ohlcv('BTC/USDT:USDT', '30m')
 
 **Daha Fazla Örnek:** `examples/market_data_pipeline_example.py`
 
+### Task 7: Pipeline Mode Integration (YENİ! 🚀)
+
+Pipeline mode, market data pipeline'ı ana bot'a entegre eder ve **60x daha hızlı** sinyal üretimi sağlar:
+
+**Kullanım:**
+```bash
+# Pipeline mode (optimize edilmiş, sürekli çalışma)
+python src/main.py --pipeline
+
+# Geleneksel mode (tek seferlik)
+python src/main.py
+
+# Live trading mode
+python src/main.py --live
+```
+
+**Avantajlar:**
+- ⚡ **60x daha hızlı**: 30 saniyede bir kontrol (geleneksel: 30 dakika)
+- 💾 **5x daha az API çağrısı**: Veri cache'leniyor
+- 🔄 **Otomatik failover**: Bir borsa çökerse diğerlerinden veri alınır
+- 🧠 **Bellek yönetimi**: Circular buffers ile kontrol
+
+**GitHub Actions:**
+- Workflow: `.github/workflows/bot_pipeline.yml`
+- Otomatik çalışma: Her 15 dakikada bir
+- Manuel tetikleme: Actions → Run Bot with Pipeline
+
+**Dokümantasyon:**
+- 📘 [Pipeline Mode Kullanım Kılavuzu](docs/PIPELINE_MODE.md)
+- 💻 Örnek: `examples/pipeline_mode_example.py`
+- 🧪 Test: `scripts/test_pipeline_integration.py`
+
 ## Test Etme
 
 Bot çalışır durumda mı kontrol etmek için:
