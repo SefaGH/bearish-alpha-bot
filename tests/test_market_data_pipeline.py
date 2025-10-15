@@ -4,6 +4,14 @@ Test Market Data Pipeline Core Foundation.
 
 Tests for Phase 2.2 market data pipeline implementation.
 Uses pytest and unittest.mock for comprehensive testing.
+
+Tests cover:
+- Pipeline initialization with various configurations
+- Data feed management and retrieval
+- Health monitoring and status tracking
+- Error handling and resilience
+- Buffer management and memory optimization
+- Integration with CcxtClient
 """
 
 import sys
@@ -20,29 +28,47 @@ from core.market_data_pipeline import MarketDataPipeline
 from core.ccxt_client import CcxtClient
 
 
+# Fixed timestamp for deterministic tests (recent enough to pass freshness checks)
+FIXED_TIMESTAMP = int(time.time() * 1000) - (5 * 60 * 1000)  # 5 minutes ago
+
+
 @pytest.fixture
-def mock_ccxt_client():
+def current_timestamp():
+    """Provide a fixed timestamp for deterministic tests."""
+    return FIXED_TIMESTAMP
+
+
+@pytest.fixture
+def generate_ohlcv_data():
+    """Factory fixture to generate consistent OHLCV test data."""
+    def _generate(count=100, interval_minutes=30, base_price=50000):
+        data = []
+        for i in range(count):
+            timestamp = FIXED_TIMESTAMP - (i * interval_minutes * 60 * 1000)
+            data.append([
+                timestamp,
+                base_price + i * 10,      # open
+                base_price + i * 10 + 100,  # high
+                base_price + i * 10 - 100,  # low
+                base_price + i * 10 + 50,   # close
+                1000 + i                   # volume
+            ])
+        return list(reversed(data))
+    return _generate
+
+
+@pytest.fixture
+def mock_ccxt_client(generate_ohlcv_data):
     """Create a mock CcxtClient for testing."""
     client = Mock(spec=CcxtClient)
     client.name = 'test_exchange'
     client.validate_and_get_symbol.return_value = 'BTC/USDT:USDT'
     
-    # Generate mock OHLCV data
-    current_time = int(time.time() * 1000)
-    sample_data = []
-    for i in range(100):
-        timestamp = current_time - (i * 30 * 60 * 1000)  # 30min intervals
-        sample_data.append([
-            timestamp,
-            50000 + i * 10,  # open
-            51000 + i * 10,  # high
-            49000 + i * 10,  # low
-            50500 + i * 10,  # close
-            1000 + i        # volume
-        ])
+    # Use fixture to generate consistent test data
+    sample_data = generate_ohlcv_data()
     
-    client.ohlcv.return_value = list(reversed(sample_data))
-    client.fetch_ohlcv_bulk.return_value = list(reversed(sample_data))
+    client.ohlcv.return_value = sample_data
+    client.fetch_ohlcv_bulk.return_value = sample_data
     
     return client
 
@@ -68,28 +94,18 @@ def pipeline_with_mock(mock_ccxt_client):
 
 
 @pytest.fixture
-def pipeline_multi_exchange(mock_ccxt_client):
+def pipeline_multi_exchange(mock_ccxt_client, generate_ohlcv_data):
     """Create a pipeline with multiple mock exchanges."""
     # Create second mock client
     client2 = Mock(spec=CcxtClient)
     client2.name = 'test_exchange_2'
     client2.validate_and_get_symbol.return_value = 'BTC/USDT:USDT'
     
-    current_time = int(time.time() * 1000)
-    sample_data = []
-    for i in range(90):  # Different count to differentiate
-        timestamp = current_time - (i * 30 * 60 * 1000)
-        sample_data.append([
-            timestamp,
-            50000 + i * 10,
-            51000 + i * 10,
-            49000 + i * 10,
-            50500 + i * 10,
-            1000 + i
-        ])
+    # Different count to differentiate
+    sample_data = generate_ohlcv_data(count=90)
     
-    client2.ohlcv.return_value = list(reversed(sample_data))
-    client2.fetch_ohlcv_bulk.return_value = list(reversed(sample_data))
+    client2.ohlcv.return_value = sample_data
+    client2.fetch_ohlcv_bulk.return_value = sample_data
     
     exchanges = {
         'mock1': mock_ccxt_client,
@@ -284,17 +300,13 @@ def test_error_handling_resilience(mock_ccxt_client, mock_failing_client):
     assert not df.empty
 
 
-def test_store_data_circular_buffer(pipeline_with_mock, mock_ccxt_client):
+def test_store_data_circular_buffer(pipeline_with_mock, mock_ccxt_client, generate_ohlcv_data):
     """Test _store_data() circular buffer management."""
     # Create a DataFrame larger than buffer limit
-    current_time = int(time.time() * 1000)
-    large_data = []
-    for i in range(2000):  # More than 1h buffer limit of 500
-        timestamp = current_time - (i * 60 * 60 * 1000)  # 1h intervals
-        large_data.append([timestamp, 100, 101, 99, 100.5, 1000])
+    large_data = generate_ohlcv_data(count=2000, interval_minutes=60, base_price=50000)
     
     # Mock the client to return large dataset
-    mock_ccxt_client.ohlcv.return_value = list(reversed(large_data))
+    mock_ccxt_client.ohlcv.return_value = large_data
     
     # Start feeds for 1h timeframe (buffer limit = 500)
     pipeline_with_mock.start_feeds(['BTC/USDT:USDT'], ['1h'])

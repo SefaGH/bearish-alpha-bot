@@ -4,6 +4,15 @@ Test Data Aggregator for Cross-Exchange Normalization.
 
 Tests for Phase 2.2 data aggregator implementation.
 Uses pytest and unittest.mock for comprehensive testing.
+
+Tests cover:
+- Data aggregator initialization
+- Exchange-specific data normalization
+- Multi-exchange aggregation with quality scoring
+- Best data source selection
+- Consensus data generation
+- Data validation and cleaning
+- Integration with MarketDataPipeline
 """
 
 import sys
@@ -24,69 +33,69 @@ from core.ccxt_client import CcxtClient
 from core.indicators import add_indicators
 
 
+# Fixed timestamp for deterministic tests (recent enough to pass freshness checks)
+FIXED_TIMESTAMP = int(time.time() * 1000) - (5 * 60 * 1000)  # 5 minutes ago
+
+
 @pytest.fixture
-def mock_ccxt_client():
+def generate_ohlcv_data():
+    """Factory fixture to generate consistent OHLCV test data."""
+    def _generate(count=100, interval_minutes=30, base_price=50000, with_issues=False):
+        data = []
+        for i in range(count):
+            timestamp = FIXED_TIMESTAMP - (i * interval_minutes * 60 * 1000)
+            
+            if with_issues and i % 10 == 0:
+                # Invalid OHLC relationship
+                high = base_price - 200
+                low = base_price - 100
+            else:
+                high = base_price + 100
+                low = base_price - 100
+            
+            volume = 0 if (with_issues and i % 15 == 0) else (1000 + i)
+            
+            data.append([
+                timestamp,
+                base_price,
+                high,
+                low,
+                base_price + 50,
+                volume
+            ])
+            base_price += 10
+        return list(reversed(data))
+    return _generate
+
+
+@pytest.fixture
+def mock_ccxt_client(generate_ohlcv_data):
     """Create a mock CcxtClient for testing with clean data."""
     client = Mock(spec=CcxtClient)
     client.name = 'binance'
     client.validate_and_get_symbol.return_value = 'BTC/USDT:USDT'
     
-    # Generate clean mock OHLCV data
-    current_time = int(time.time() * 1000)
-    sample_data = []
-    for i in range(100):
-        timestamp = current_time - (i * 30 * 60 * 1000)
-        base_price = 50000 + i * 10
-        sample_data.append([
-            timestamp,
-            base_price,          # open
-            base_price + 100,    # high
-            base_price - 100,    # low
-            base_price + 50,     # close
-            1000 + i            # volume
-        ])
+    # Use fixture to generate consistent test data
+    sample_data = generate_ohlcv_data()
     
-    client.ohlcv.return_value = list(reversed(sample_data))
-    client.fetch_ohlcv_bulk.return_value = list(reversed(sample_data))
+    client.ohlcv.return_value = sample_data
+    client.fetch_ohlcv_bulk.return_value = sample_data
     
     return client
 
 
 @pytest.fixture
-def mock_ccxt_client_with_issues():
+def mock_ccxt_client_with_issues(generate_ohlcv_data):
     """Create a mock CcxtClient with data quality issues."""
     client = Mock(spec=CcxtClient)
     client.name = 'bitget'
     client.validate_and_get_symbol.return_value = 'BTC/USDT:USDT'
     
-    current_time = int(time.time() * 1000)
-    sample_data = []
-    for i in range(50):  # Fewer candles
-        timestamp = current_time - (i * 30 * 60 * 1000)
-        base_price = 50000 + i * 10
-        
-        # Add issues
-        if i % 10 == 0:
-            # Invalid OHLC relationship
-            high = base_price - 200  # high < low
-            low = base_price - 100
-        else:
-            high = base_price + 100
-            low = base_price - 100
-        
-        volume = 0 if i % 15 == 0 else (1000 + i)
-        
-        sample_data.append([
-            timestamp,
-            base_price,
-            high,
-            low,
-            base_price + 50,
-            volume
-        ])
+    # Use fixture to generate test data with issues
+    sample_data = generate_ohlcv_data(count=50, with_issues=True)
     
-    client.ohlcv.return_value = list(reversed(sample_data))
-    client.fetch_ohlcv_bulk.return_value = list(reversed(sample_data))
+    client.ohlcv.return_value = sample_data
+    client.fetch_ohlcv_bulk.return_value = sample_data
     
     return client
 
@@ -125,22 +134,12 @@ def test_initialization(pipeline_with_aggregator):
     assert aggregator.quality_thresholds['freshness_minutes'] == 60
 
 
-def test_normalize_ohlcv_data_for_different_exchanges(pipeline_with_aggregator):
+def test_normalize_ohlcv_data_for_different_exchanges(pipeline_with_aggregator, generate_ohlcv_data):
     """Test exchange-specific data normalization for different exchanges."""
     pipeline, aggregator = pipeline_with_aggregator
     
-    # Generate mock raw data
-    current_time = int(time.time() * 1000)
-    raw_data = []
-    for i in range(10):
-        raw_data.append([
-            current_time - (i * 30 * 60 * 1000),
-            50000.0,
-            50100.0,
-            49900.0,
-            50050.0,
-            1000.0
-        ])
+    # Use fixture to generate consistent test data
+    raw_data = generate_ohlcv_data(count=10)
     
     # Test normalization for different exchanges
     exchanges_to_test = ['bingx', 'kucoinfutures', 'binance', 'bitget', 'ascendex']
@@ -195,24 +194,12 @@ def test_get_best_data_source_reliability_ranking(pipeline_with_aggregator):
     assert best in pipeline.exchanges.keys()
 
 
-def test_get_consensus_data_weighted_average(pipeline_multi_exchange):
+def test_get_consensus_data_weighted_average(pipeline_multi_exchange, generate_ohlcv_data):
     """Test get_consensus_data() weighted average calculation."""
     aggregator = DataAggregator(pipeline_multi_exchange)
     
-    # Manually populate both exchanges with synchronized data
-    current_time = int(time.time() * 1000)
-    shared_ohlcv = []
-    for i in range(100):
-        timestamp = current_time - (i * 30 * 60 * 1000)
-        shared_ohlcv.append([
-            timestamp,
-            50000 + i * 10,
-            50100 + i * 10,
-            49900 + i * 10,
-            50050 + i * 10,
-            1000 + i
-        ])
-    shared_ohlcv = list(reversed(shared_ohlcv))
+    # Use fixture to generate synchronized data
+    shared_ohlcv = generate_ohlcv_data()
     
     # Store same timestamps for both exchanges with slight variations
     for exchange_name in ['binance', 'bitget']:
@@ -368,18 +355,12 @@ def test_multi_timeframe_support(pipeline_with_aggregator):
         assert best is not None
 
 
-def test_exchange_specific_normalization_methods(pipeline_with_aggregator):
+def test_exchange_specific_normalization_methods(pipeline_with_aggregator, generate_ohlcv_data):
     """Test exchange-specific normalization methods."""
     pipeline, aggregator = pipeline_with_aggregator
     
-    # Test with various timestamp formats and data structures
-    current_time = int(time.time() * 1000)
-    
-    # Test case 1: Standard format
-    raw_data_standard = [
-        [current_time - i * 30 * 60 * 1000, 100, 101, 99, 100.5, 1000]
-        for i in range(5)
-    ]
+    # Use fixture to generate test data
+    raw_data_standard = generate_ohlcv_data(count=5, base_price=100)
     
     df_standard = aggregator.normalize_ohlcv_data(raw_data_standard, 'binance')
     assert not df_standard.empty
