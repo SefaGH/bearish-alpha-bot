@@ -5,8 +5,9 @@ Coordinates WebSocket connections across multiple exchanges.
 
 import asyncio
 import logging
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional, Callable, Union
 from datetime import datetime, timezone
+from collections import defaultdict
 from .websocket_client import WebSocketClient
 
 logger = logging.getLogger(__name__)
@@ -21,21 +22,42 @@ class WebSocketManager:
     - Stream multiplexing for multiple symbols
     - Automatic connection management
     - Integration with existing multi-exchange framework
+    - Support for CcxtClient-based initialization for better Phase 1 integration
     """
     
-    def __init__(self, exchanges: Optional[Dict[str, Dict[str, str]]] = None):
+    def __init__(self, exchanges: Optional[Union[Dict[str, Dict[str, str]], Dict[str, Any]]] = None, config: Dict[str, Any] = None):
         """
         Initialize WebSocketManager.
         
         Args:
-            exchanges: Dict mapping exchange names to credentials
-                      e.g., {'kucoinfutures': {'apiKey': '...', 'secret': '...'},
-                             'bingx': {'apiKey': '...', 'secret': '...'}}
+            exchanges: Can be either:
+                      1. Dict mapping exchange names to credentials (legacy):
+                         {'kucoinfutures': {'apiKey': '...', 'secret': '...'},
+                          'bingx': {'apiKey': '...', 'secret': '...'}}
+                      2. Dict mapping exchange names to CcxtClient instances (Phase 1 integration):
+                         {'kucoinfutures': CcxtClient(...), 'bingx': CcxtClient(...)}
                       If None, creates unauthenticated clients for KuCoin and BingX
+            config: Optional configuration dict for WebSocket behavior
         """
         self.clients: Dict[str, WebSocketClient] = {}
+        self.exchanges = exchanges or {}
+        self.config = config or {}
+        self.connections = {}
+        self.callbacks = defaultdict(list)
+        self.is_running = False
+        self.reconnect_delays = {}
         self._tasks: List[asyncio.Task] = []
         self._running = False
+        
+        # Detect if we're using CcxtClient instances or credentials
+        self._use_ccxt_clients = False
+        if exchanges:
+            # Check if any value is a CcxtClient instance
+            from .ccxt_client import CcxtClient
+            first_value = next(iter(exchanges.values()), None)
+            if isinstance(first_value, CcxtClient):
+                self._use_ccxt_clients = True
+                logger.info("Initializing with CcxtClient instances (Phase 1 integration)")
         
         if exchanges is None:
             # Default to unauthenticated clients
@@ -44,9 +66,29 @@ class WebSocketManager:
                 'bingx': None
             }
         
-        for ex_name, creds in exchanges.items():
+        # Initialize WebSocket clients based on input type
+        for ex_name, ex_data in exchanges.items():
             try:
-                self.clients[ex_name] = WebSocketClient(ex_name, creds)
+                if self._use_ccxt_clients:
+                    # Extract credentials from CcxtClient if available
+                    from .ccxt_client import CcxtClient
+                    if isinstance(ex_data, CcxtClient):
+                        # Get credentials from the CcxtClient's exchange object
+                        creds = None
+                        if hasattr(ex_data.ex, 'apiKey') and ex_data.ex.apiKey:
+                            creds = {
+                                'apiKey': ex_data.ex.apiKey,
+                                'secret': ex_data.ex.secret
+                            }
+                            if hasattr(ex_data.ex, 'password') and ex_data.ex.password:
+                                creds['password'] = ex_data.ex.password
+                        self.clients[ex_name] = WebSocketClient(ex_name, creds)
+                    else:
+                        self.clients[ex_name] = WebSocketClient(ex_name, None)
+                else:
+                    # Legacy mode: ex_data is credentials dict or None
+                    self.clients[ex_name] = WebSocketClient(ex_name, ex_data)
+                    
                 logger.info(f"WebSocket client initialized for {ex_name}")
             except Exception as e:
                 logger.error(f"Failed to initialize WebSocket client for {ex_name}: {e}")
@@ -225,6 +267,155 @@ class WebSocketManager:
             'completed_streams': len(completed_tasks),
             'exchanges': list(self.clients.keys())
         }
+    
+    async def subscribe_tickers(self, symbols: List[str], callback=None):
+        """
+        Subscribe to real-time ticker updates.
+        
+        This is a convenience method that distributes symbols across available exchanges
+        and sets up ticker streaming with optional callback.
+        
+        Args:
+            symbols: List of trading pair symbols (e.g., ['BTC/USDT:USDT', 'ETH/USDT:USDT'])
+            callback: Optional callback function for ticker updates
+                     Signature: async def callback(exchange, symbol, ticker)
+        
+        Returns:
+            List of tasks for each ticker stream
+        """
+        if callback:
+            self.callbacks['ticker'].append(callback)
+        
+        # Distribute symbols across available exchanges
+        symbols_per_exchange = {}
+        available_exchanges = list(self.clients.keys())
+        
+        for i, symbol in enumerate(symbols):
+            # Round-robin distribution across exchanges
+            exchange = available_exchanges[i % len(available_exchanges)]
+            if exchange not in symbols_per_exchange:
+                symbols_per_exchange[exchange] = []
+            symbols_per_exchange[exchange].append(symbol)
+        
+        logger.info(f"Subscribing to tickers for {len(symbols)} symbols across {len(symbols_per_exchange)} exchanges")
+        
+        # Use existing stream_tickers method
+        return await self.stream_tickers(
+            symbols_per_exchange,
+            callback=callback
+        )
+    
+    async def subscribe_orderbook(self, symbol: str, depth: int = 20, callback=None):
+        """
+        Subscribe to L2 orderbook streams.
+        
+        Note: This is a placeholder for future orderbook support.
+        Current implementation uses ticker data as proxy.
+        
+        Args:
+            symbol: Trading pair symbol
+            depth: Orderbook depth (default: 20)
+            callback: Optional callback function for orderbook updates
+        
+        Returns:
+            Task for the orderbook stream
+        """
+        logger.warning(f"Orderbook streaming not yet fully implemented, using ticker stream for {symbol}")
+        
+        if callback:
+            self.callbacks['orderbook'].append(callback)
+        
+        # Use ticker streaming as a proxy until full orderbook support is added
+        return await self.subscribe_tickers([symbol], callback)
+    
+    async def start_streams(self, subscriptions: Dict[str, List[str]]):
+        """
+        Start WebSocket streams for specified subscriptions.
+        
+        Args:
+            subscriptions: Dict with subscription types and symbols
+                          e.g., {'tickers': ['BTC/USDT:USDT', 'ETH/USDT:USDT'],
+                                 'ohlcv': ['BTC/USDT:USDT']}
+        
+        Returns:
+            Dict mapping subscription types to their tasks
+        """
+        self.is_running = True
+        self._running = True
+        stream_tasks = {}
+        
+        # Start ticker streams
+        if 'tickers' in subscriptions:
+            ticker_symbols = subscriptions['tickers']
+            callback = self.callbacks['ticker'][0] if self.callbacks['ticker'] else None
+            tasks = await self.subscribe_tickers(ticker_symbols, callback)
+            stream_tasks['tickers'] = tasks
+            logger.info(f"Started {len(tasks)} ticker streams")
+        
+        # Start OHLCV streams
+        if 'ohlcv' in subscriptions:
+            ohlcv_symbols = subscriptions['ohlcv']
+            timeframe = subscriptions.get('timeframe', '1m')
+            
+            # Distribute symbols across exchanges
+            symbols_per_exchange = {}
+            available_exchanges = list(self.clients.keys())
+            
+            for i, symbol in enumerate(ohlcv_symbols):
+                exchange = available_exchanges[i % len(available_exchanges)]
+                if exchange not in symbols_per_exchange:
+                    symbols_per_exchange[exchange] = []
+                symbols_per_exchange[exchange].append(symbol)
+            
+            callback = self.callbacks['ohlcv'][0] if self.callbacks['ohlcv'] else None
+            tasks = await self.stream_ohlcv(symbols_per_exchange, timeframe, callback)
+            stream_tasks['ohlcv'] = tasks
+            logger.info(f"Started {len(tasks)} OHLCV streams")
+        
+        # Start orderbook streams (if supported)
+        if 'orderbook' in subscriptions:
+            logger.warning("Orderbook streams not yet fully implemented")
+        
+        logger.info(f"Started {sum(len(tasks) for tasks in stream_tasks.values())} total streams")
+        return stream_tasks
+    
+    def on_ticker_update(self, callback):
+        """
+        Register callback for ticker updates.
+        
+        Args:
+            callback: Async function with signature: async def callback(exchange, symbol, ticker)
+        
+        Returns:
+            self (for method chaining)
+        """
+        self.callbacks['ticker'].append(callback)
+        logger.info("Registered ticker update callback")
+        return self
+    
+    def on_orderbook_update(self, callback):
+        """
+        Register callback for orderbook updates.
+        
+        Args:
+            callback: Async function with signature: async def callback(exchange, symbol, orderbook)
+        
+        Returns:
+            self (for method chaining)
+        """
+        self.callbacks['orderbook'].append(callback)
+        logger.info("Registered orderbook update callback")
+        return self
+    
+    async def shutdown(self):
+        """
+        Graceful shutdown of all WebSocket connections.
+        
+        This is an alias for the existing close() method to match the API in problem statement.
+        """
+        logger.info("Initiating graceful shutdown of WebSocket connections")
+        self.is_running = False
+        await self.close()
 
 
 class StreamDataCollector:
