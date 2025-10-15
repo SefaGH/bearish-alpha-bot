@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from core.data_aggregator import DataAggregator
 from core.market_data_pipeline import MarketDataPipeline
+from core.indicators import add_indicators
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone, timedelta
@@ -287,8 +288,6 @@ def test_get_consensus_data():
         shared_ohlcv = list(reversed(shared_ohlcv))
         
         # Store same timestamps for both exchanges (with slight price variations)
-        from core.indicators import add_indicators
-        
         for exchange_name in ['bingx', 'binance']:
             # Use shared timestamps but slightly different prices
             ohlcv_data = []
@@ -423,7 +422,6 @@ def test_calculate_quality_score():
             client = exchanges[exchange_name]
             ohlcv_data = client.ohlcv('BTC/USDT:USDT', '30m', 100)
             df = pipeline._ohlcv_to_dataframe(ohlcv_data)
-            from core.indicators import add_indicators
             df = add_indicators(df, None)
             pipeline._store_data(exchange_name, 'BTC/USDT:USDT', '30m', df)
         

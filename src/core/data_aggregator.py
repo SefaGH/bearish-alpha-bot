@@ -26,6 +26,9 @@ class DataAggregator:
     - OHLC integrity validation and outlier removal
     """
     
+    # Outlier detection threshold (multiplier for IQR)
+    OUTLIER_IQR_MULTIPLIER = 3.0
+    
     def __init__(self, pipeline):
         """
         Initialize DataAggregator.
@@ -33,9 +36,8 @@ class DataAggregator:
         Args:
             pipeline: MarketDataPipeline instance for data access
         """
-        from .market_data_pipeline import MarketDataPipeline
-        
-        if not isinstance(pipeline, MarketDataPipeline):
+        # Avoid circular import by checking type without importing
+        if not hasattr(pipeline, 'exchanges') or not hasattr(pipeline, 'get_latest_ohlcv'):
             raise TypeError("pipeline must be a MarketDataPipeline instance")
         
         self.pipeline = pipeline
@@ -395,9 +397,10 @@ class DataAggregator:
             q3 = df_clean['close'].quantile(0.75)
             iqr = q3 - q1
             
-            # Define outlier bounds (1.5 * IQR is standard)
-            lower_bound = q1 - 3 * iqr  # Using 3*IQR for less aggressive filtering
-            upper_bound = q3 + 3 * iqr
+            # Define outlier bounds using configurable multiplier
+            # Standard is 1.5, but we use 3.0 for less aggressive filtering in crypto markets
+            lower_bound = q1 - self.OUTLIER_IQR_MULTIPLIER * iqr
+            upper_bound = q3 + self.OUTLIER_IQR_MULTIPLIER * iqr
             
             outlier_mask = (df_clean['close'] < lower_bound) | (df_clean['close'] > upper_bound)
             outlier_count = outlier_mask.sum()
