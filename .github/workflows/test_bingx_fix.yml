@@ -1,0 +1,85 @@
+name: Test BingX Fix
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+        
+      - name: Test BingX Symbol Discovery
+        env:
+          EXCHANGES: bingx
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+        run: |
+          python -c "
+          import logging
+          logging.basicConfig(level=logging.INFO)
+          
+          from core.multi_exchange import build_clients_from_env
+          
+          print('=== BingX Symbol Discovery Test ===')
+          
+          # Test 1: Symbol discovery
+          clients = build_clients_from_env()
+          if 'bingx' not in clients:
+              raise Exception('BingX client not initialized')
+              
+          client = clients['bingx']
+          
+          # Test 2: Get BingX contracts
+          contracts = client._get_bingx_contracts()
+          print(f'✅ Discovered {len(contracts)} BingX contracts')
+          
+          # Test 3: Validate common symbols
+          test_symbols = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
+          for sym in test_symbols:
+              try:
+                  validated = client.validate_and_get_symbol(sym)
+                  print(f'✅ {sym} → {validated}')
+              except Exception as e:
+                  print(f'❌ {sym}: {e}')
+                  
+          # Test 4: Fetch data
+          try:
+              symbol = client.validate_and_get_symbol('BTC/USDT')
+              data = client.ohlcv(symbol, '30m', 10)
+              print(f'✅ Fetched {len(data)} candles for {symbol}')
+          except Exception as e:
+              print(f'❌ Data fetch failed: {e}')
+              
+          print('=== Test Complete ===')
+          "
+          
+      - name: Test Selective Market Loading
+        env:
+          EXCHANGES: bingx
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+        run: |
+          python -c "
+          from core.multi_exchange import build_clients_from_env
+          
+          print('=== Selective Market Loading Test ===')
+          
+          # Sadece 3 sembol yükle
+          required = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+          clients = build_clients_from_env(required_symbols=required)
+          
+          client = clients['bingx']
+          markets = client.markets()
+          
+          print(f'✅ Loaded only {len(markets)} markets (instead of thousands)')
+          print(f'   Markets: {list(markets.keys())}')
+          
+          print('=== Test Complete ===')
+          "

@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Dict
+from typing import Dict, List
 from .ccxt_client import CcxtClient
 
 logger = logging.getLogger(__name__)
@@ -10,13 +10,16 @@ SUPPORTED_EXCHANGES = {
     'bybit', 'okx', 'gateio', 'mexc'
 }
 
-def build_clients_from_env() -> Dict[str, CcxtClient]:
+def build_clients_from_env(required_symbols: list = None) -> Dict[str, CcxtClient]:
     """
     Build exchange clients from environment variables.
     
     Reads EXCHANGES env var (comma-separated list) and creates authenticated
     clients for each exchange with credentials from {EXCHANGE}_KEY, {EXCHANGE}_SECRET,
     and optionally {EXCHANGE}_PASSWORD environment variables.
+    
+    Args:
+        required_symbols: Only load markets for these symbols (performance optimization)
     
     Returns:
         Dictionary mapping exchange name to CcxtClient instance
@@ -66,7 +69,14 @@ def build_clients_from_env() -> Dict[str, CcxtClient]:
             creds['password'] = pwd
         
         try:
-            clients[name] = CcxtClient(name, creds)
+            client = CcxtClient(name, creds)
+            
+            # Eğer sembol listesi verilmişse, sadece onları yükle
+            if required_symbols:
+                client.set_required_symbols(required_symbols)
+                logger.info(f"Client {name} will only load {len(required_symbols)} symbols")
+            
+            clients[name] = client
             logger.info(f"Initialized exchange client: {name}")
         except Exception as e:
             logger.error(f"Failed to initialize {name}: {type(e).__name__}: {e}")
