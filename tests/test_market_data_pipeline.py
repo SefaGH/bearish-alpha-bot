@@ -3,437 +3,449 @@
 Test Market Data Pipeline Core Foundation.
 
 Tests for Phase 2.2 market data pipeline implementation.
+Uses pytest and unittest.mock for comprehensive testing.
+
+Tests cover:
+- Pipeline initialization with various configurations
+- Data feed management and retrieval
+- Health monitoring and status tracking
+- Error handling and resilience
+- Buffer management and memory optimization
+- Integration with CcxtClient
 """
 
 import sys
 import os
+from unittest.mock import Mock, patch
+import pytest
+import pandas as pd
+import time
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from core.market_data_pipeline import MarketDataPipeline
 from core.ccxt_client import CcxtClient
-import pandas as pd
 
 
-class MockCcxtClient:
-    """Mock CcxtClient for testing."""
-    
-    def __init__(self, name: str, should_fail: bool = False):
-        self.name = name
-        self.should_fail = should_fail
-        self.fetch_count = 0
-    
-    def validate_and_get_symbol(self, symbol: str) -> str:
-        """Mock symbol validation."""
-        return symbol
-    
-    def ohlcv(self, symbol: str, timeframe: str, limit: int = 500):
-        """Mock OHLCV fetch."""
-        self.fetch_count += 1
-        
-        if self.should_fail:
-            raise Exception(f"Mock error from {self.name}")
-        
-        # Generate mock OHLCV data
-        import time
-        current_time = int(time.time() * 1000)
-        
+# Fixed timestamp for deterministic tests (recent enough to pass freshness checks)
+FIXED_TIMESTAMP = int(time.time() * 1000) - (5 * 60 * 1000)  # 5 minutes ago
+
+
+@pytest.fixture
+def current_timestamp():
+    """Provide a fixed timestamp for deterministic tests."""
+    return FIXED_TIMESTAMP
+
+
+@pytest.fixture
+def generate_ohlcv_data():
+    """Factory fixture to generate consistent OHLCV test data."""
+    def _generate(count=100, interval_minutes=30, base_price=50000):
         data = []
-        for i in range(min(limit, 100)):
-            timestamp = current_time - (i * 30 * 60 * 1000)  # 30min intervals
+        for i in range(count):
+            timestamp = FIXED_TIMESTAMP - (i * interval_minutes * 60 * 1000)
             data.append([
                 timestamp,
-                100.0 + i,  # open
-                101.0 + i,  # high
-                99.0 + i,   # low
-                100.5 + i,  # close
-                1000.0      # volume
+                base_price + i * 10,      # open
+                base_price + i * 10 + 100,  # high
+                base_price + i * 10 - 100,  # low
+                base_price + i * 10 + 50,   # close
+                1000 + i                   # volume
             ])
-        
         return list(reversed(data))
+    return _generate
+
+
+@pytest.fixture
+def mock_ccxt_client(generate_ohlcv_data):
+    """Create a mock CcxtClient for testing."""
+    client = Mock(spec=CcxtClient)
+    client.name = 'test_exchange'
+    client.validate_and_get_symbol.return_value = 'BTC/USDT:USDT'
     
-    def fetch_ohlcv_bulk(self, symbol: str, timeframe: str, target_limit: int):
-        """Mock bulk OHLCV fetch."""
-        return self.ohlcv(symbol, timeframe, target_limit)
-
-
-def test_pipeline_initialization():
-    """Test MarketDataPipeline initialization."""
-    print("\n" + "="*60)
-    print("TEST: Pipeline Initialization")
-    print("="*60)
+    # Use fixture to generate consistent test data
+    sample_data = generate_ohlcv_data()
     
-    try:
-        exchanges = {
-            'mock1': MockCcxtClient('mock1'),
-            'mock2': MockCcxtClient('mock2')
-        }
-        
-        pipeline = MarketDataPipeline(exchanges)
-        
-        assert pipeline.exchanges == exchanges, "Exchanges not stored correctly"
-        assert pipeline.total_requests == 0, "Initial requests should be 0"
-        assert pipeline.failed_requests == 0, "Initial failures should be 0"
-        assert pipeline.is_running == False, "Pipeline should not be running initially"
-        
-        print("✅ PASS: Pipeline initialized correctly")
-        return True
-        
-    except Exception as e:
-        print(f"❌ FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-def test_start_feeds():
-    """Test starting data feeds."""
-    print("\n" + "="*60)
-    print("TEST: Start Data Feeds")
-    print("="*60)
+    client.ohlcv.return_value = sample_data
+    client.fetch_ohlcv_bulk.return_value = sample_data
     
-    try:
-        exchanges = {
-            'mock1': MockCcxtClient('mock1'),
-        }
-        
-        pipeline = MarketDataPipeline(exchanges)
-        
-        # Start feeds for multiple symbols and timeframes
-        symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT']
-        timeframes = ['30m', '1h']
-        
-        results = pipeline.start_feeds(symbols, timeframes)
-        
-        assert results['successful_fetches'] > 0, "Should have successful fetches"
-        assert 'mock1' in results['exchanges_used'], "Mock exchange should be used"
-        assert pipeline.is_running == True, "Pipeline should be running after start"
-        
-        print(f"✅ PASS: Started feeds successfully")
-        print(f"   - Successful fetches: {results['successful_fetches']}")
-        print(f"   - Failed fetches: {results['failed_fetches']}")
-        print(f"   - Exchanges used: {results['exchanges_used']}")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    return client
 
 
-def test_get_latest_ohlcv():
-    """Test getting latest OHLCV data."""
-    print("\n" + "="*60)
-    print("TEST: Get Latest OHLCV")
-    print("="*60)
+@pytest.fixture
+def mock_failing_client():
+    """Create a mock CcxtClient that fails."""
+    client = Mock(spec=CcxtClient)
+    client.name = 'failing_exchange'
+    client.validate_and_get_symbol.side_effect = Exception("Mock error")
+    client.ohlcv.side_effect = Exception("Mock error")
     
-    try:
-        exchanges = {
-            'mock1': MockCcxtClient('mock1'),
-        }
-        
-        pipeline = MarketDataPipeline(exchanges)
-        
-        # Start feeds first
-        pipeline.start_feeds(['BTC/USDT:USDT'], ['30m'])
-        
-        # Get data
-        df = pipeline.get_latest_ohlcv('BTC/USDT:USDT', '30m')
-        
-        assert df is not None, "Should return DataFrame"
-        assert not df.empty, "DataFrame should not be empty"
-        assert 'open' in df.columns, "Should have 'open' column"
-        assert 'close' in df.columns, "Should have 'close' column"
-        assert 'rsi' in df.columns, "Should have 'rsi' indicator"
-        assert 'ema21' in df.columns, "Should have 'ema21' indicator"
-        
-        print(f"✅ PASS: Retrieved OHLCV data successfully")
-        print(f"   - Rows: {len(df)}")
-        print(f"   - Columns: {list(df.columns)}")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    return client
 
 
-def test_buffer_limits():
-    """Test circular buffer memory management."""
-    print("\n" + "="*60)
-    print("TEST: Buffer Limits")
-    print("="*60)
+@pytest.fixture
+def pipeline_with_mock(mock_ccxt_client):
+    """Create a pipeline with mock clients."""
+    exchanges = {
+        'mock1': mock_ccxt_client,
+    }
+    return MarketDataPipeline(exchanges)
+
+
+@pytest.fixture
+def pipeline_multi_exchange(mock_ccxt_client, generate_ohlcv_data):
+    """Create a pipeline with multiple mock exchanges."""
+    # Create second mock client
+    client2 = Mock(spec=CcxtClient)
+    client2.name = 'test_exchange_2'
+    client2.validate_and_get_symbol.return_value = 'BTC/USDT:USDT'
     
-    try:
-        exchanges = {
-            'mock1': MockCcxtClient('mock1'),
-        }
-        
-        pipeline = MarketDataPipeline(exchanges)
-        
-        # Verify buffer limits are configured
-        assert '30m' in pipeline.BUFFER_LIMITS, "Should have 30m buffer limit"
-        assert '1h' in pipeline.BUFFER_LIMITS, "Should have 1h buffer limit"
-        assert '4h' in pipeline.BUFFER_LIMITS, "Should have 4h buffer limit"
-        assert '1d' in pipeline.BUFFER_LIMITS, "Should have 1d buffer limit"
-        
-        assert pipeline.BUFFER_LIMITS['30m'] == 1000, "30m buffer should be 1000"
-        assert pipeline.BUFFER_LIMITS['1h'] == 500, "1h buffer should be 500"
-        assert pipeline.BUFFER_LIMITS['4h'] == 200, "4h buffer should be 200"
-        assert pipeline.BUFFER_LIMITS['1d'] == 100, "1d buffer should be 100"
-        
-        print("✅ PASS: Buffer limits configured correctly")
-        print(f"   - Limits: {pipeline.BUFFER_LIMITS}")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-def test_health_check():
-    """Test health check functionality."""
-    print("\n" + "="*60)
-    print("TEST: Health Check")
-    print("="*60)
+    # Different count to differentiate
+    sample_data = generate_ohlcv_data(count=90)
     
-    try:
-        exchanges = {
-            'mock1': MockCcxtClient('mock1'),
-        }
-        
-        pipeline = MarketDataPipeline(exchanges)
-        
-        # Initial health check
-        health = pipeline.health_check()
-        
-        assert 'status' in health, "Should have status"
-        assert 'uptime_seconds' in health, "Should have uptime"
-        assert 'total_requests' in health, "Should have total_requests"
-        assert 'failed_requests' in health, "Should have failed_requests"
-        assert 'error_rate' in health, "Should have error_rate"
-        assert 'active_streams' in health, "Should have active_streams"
-        
-        assert health['status'] == 'healthy', "Initial status should be healthy"
-        assert health['total_requests'] == 0, "Initial requests should be 0"
-        
-        print("✅ PASS: Health check working correctly")
-        print(f"   - Status: {health['status']}")
-        print(f"   - Error rate: {health['error_rate']}%")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-def test_pipeline_status():
-    """Test detailed pipeline status."""
-    print("\n" + "="*60)
-    print("TEST: Pipeline Status")
-    print("="*60)
+    client2.ohlcv.return_value = sample_data
+    client2.fetch_ohlcv_bulk.return_value = sample_data
     
-    try:
-        exchanges = {
-            'mock1': MockCcxtClient('mock1'),
-            'mock2': MockCcxtClient('mock2'),
-        }
-        
-        pipeline = MarketDataPipeline(exchanges)
-        
-        # Start some feeds
-        pipeline.start_feeds(['BTC/USDT:USDT'], ['30m', '1h'])
-        
-        # Get status
-        status = pipeline.get_pipeline_status()
-        
-        assert 'exchanges' in status, "Should have exchanges breakdown"
-        assert 'memory_estimate_mb' in status, "Should have memory estimate"
-        assert 'data_freshness' in status, "Should have freshness metrics"
-        assert 'buffer_limits' in status, "Should have buffer limits"
-        
-        assert status['active_streams'] > 0, "Should have active streams"
-        
-        print("✅ PASS: Pipeline status working correctly")
-        print(f"   - Active streams: {status['active_streams']}")
-        print(f"   - Memory estimate: {status['memory_estimate_mb']} MB")
-        print(f"   - Exchanges: {list(status['exchanges'].keys())}")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    exchanges = {
+        'mock1': mock_ccxt_client,
+        'mock2': client2,
+    }
+    return MarketDataPipeline(exchanges)
 
 
-def test_error_handling():
-    """Test error handling with retry logic."""
-    print("\n" + "="*60)
-    print("TEST: Error Handling and Retry Logic")
-    print("="*60)
+def test_pipeline_initialization(mock_ccxt_client):
+    """Test MarketDataPipeline initialization with different configurations."""
+    # Test basic initialization
+    exchanges = {'mock1': mock_ccxt_client}
+    pipeline = MarketDataPipeline(exchanges)
     
-    try:
-        # First exchange fails, second succeeds
-        exchanges = {
-            'mock_fail': MockCcxtClient('mock_fail', should_fail=True),
-            'mock_success': MockCcxtClient('mock_success', should_fail=False),
-        }
-        
-        pipeline = MarketDataPipeline(exchanges)
-        
-        # This should try mock_fail (and fail), then try mock_success (and succeed)
-        results = pipeline.start_feeds(['BTC/USDT:USDT'], ['30m'])
-        
-        assert pipeline.failed_requests > 0, "Should have some failed requests"
-        assert results['successful_fetches'] > 0, "Should eventually succeed with fallback"
-        
-        # Check that data was stored from successful exchange
-        df = pipeline.get_latest_ohlcv('BTC/USDT:USDT', '30m')
-        assert df is not None, "Should have data from successful exchange"
-        
-        print("✅ PASS: Error handling working correctly")
-        print(f"   - Failed requests: {pipeline.failed_requests}")
-        print(f"   - Successful fetches: {results['successful_fetches']}")
-        print(f"   - Fallback worked: data retrieved from backup exchange")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-def test_best_data_source():
-    """Test best data source selection."""
-    print("\n" + "="*60)
-    print("TEST: Best Data Source Selection")
-    print("="*60)
+    assert pipeline.exchanges == exchanges
+    assert pipeline.total_requests == 0
+    assert pipeline.failed_requests == 0
+    assert pipeline.is_running == False
     
-    try:
-        exchanges = {
-            'mock1': MockCcxtClient('mock1'),
-            'mock2': MockCcxtClient('mock2'),
-        }
-        
-        pipeline = MarketDataPipeline(exchanges)
-        
-        # Both exchanges should have data
-        pipeline.start_feeds(['BTC/USDT:USDT'], ['30m'])
-        
-        # Get data without specifying exchange (should pick best)
-        df = pipeline.get_latest_ohlcv('BTC/USDT:USDT', '30m')
-        
-        assert df is not None, "Should return data from best source"
-        assert not df.empty, "Data should not be empty"
-        
-        # Get data from specific exchange
-        df_specific = pipeline.get_latest_ohlcv('BTC/USDT:USDT', '30m', exchange='mock1')
-        
-        assert df_specific is not None, "Should return data from specific exchange"
-        
-        print("✅ PASS: Best data source selection working")
-        print(f"   - Auto-selected best source: {len(df)} rows")
-        print(f"   - Specific exchange fetch: {len(df_specific)} rows")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-def test_shutdown():
-    """Test pipeline shutdown."""
-    print("\n" + "="*60)
-    print("TEST: Pipeline Shutdown")
-    print("="*60)
+    # Test initialization with config
+    config = {'indicators': {'rsi_period': 14}}
+    pipeline_with_config = MarketDataPipeline(exchanges, config=config)
+    assert pipeline_with_config.config == config
     
-    try:
-        exchanges = {
-            'mock1': MockCcxtClient('mock1'),
-        }
-        
-        pipeline = MarketDataPipeline(exchanges)
-        pipeline.start_feeds(['BTC/USDT:USDT'], ['30m'])
-        
-        assert pipeline.is_running == True, "Should be running"
-        
-        pipeline.shutdown()
-        
-        assert pipeline.is_running == False, "Should not be running after shutdown"
-        
-        print("✅ PASS: Pipeline shutdown correctly")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    # Test initialization with multiple exchanges
+    client2 = Mock(spec=CcxtClient)
+    client2.name = 'exchange2'
+    multi_exchanges = {'mock1': mock_ccxt_client, 'mock2': client2}
+    pipeline_multi = MarketDataPipeline(multi_exchanges)
+    assert len(pipeline_multi.exchanges) == 2
 
 
+def test_start_feeds(pipeline_with_mock, mock_ccxt_client):
+    """Test starting data feeds with mock CcxtClient responses."""
+    # Test single symbol and timeframe
+    results = pipeline_with_mock.start_feeds(['BTC/USDT:USDT'], ['30m'])
+    
+    assert results['successful_fetches'] > 0
+    assert 'mock1' in results['exchanges_used']
+    assert pipeline_with_mock.is_running == True
+    assert mock_ccxt_client.ohlcv.called or mock_ccxt_client.fetch_ohlcv_bulk.called
+    
+    # Test multiple symbols and timeframes
+    results_multi = pipeline_with_mock.start_feeds(
+        ['BTC/USDT:USDT', 'ETH/USDT:USDT'],
+        ['30m', '1h']
+    )
+    
+    assert results_multi['successful_fetches'] >= 4
+    assert results_multi['failed_fetches'] == 0
+
+
+def test_get_latest_ohlcv_specific_exchange(pipeline_with_mock):
+    """Test getting latest OHLCV data from specific exchange."""
+    pipeline_with_mock.start_feeds(['BTC/USDT:USDT'], ['30m'])
+    
+    # Get data from specific exchange
+    df = pipeline_with_mock.get_latest_ohlcv('BTC/USDT:USDT', '30m', exchange='mock1')
+    
+    assert df is not None
+    assert not df.empty
+    assert 'open' in df.columns
+    assert 'close' in df.columns
+    assert 'rsi' in df.columns
+    assert 'ema21' in df.columns
+    assert len(df) > 0
+
+
+def test_get_latest_ohlcv_auto_selection(pipeline_multi_exchange):
+    """Test getting latest OHLCV data with auto-selection of best source."""
+    pipeline_multi_exchange.start_feeds(['BTC/USDT:USDT'], ['30m'])
+    
+    # Get data without specifying exchange (auto-selection)
+    df = pipeline_multi_exchange.get_latest_ohlcv('BTC/USDT:USDT', '30m')
+    
+    assert df is not None
+    assert not df.empty
+    assert 'open' in df.columns
+    assert 'close' in df.columns
+
+
+def test_buffer_limits(pipeline_with_mock):
+    """Test circular buffer memory management and enforcement."""
+    # Verify buffer limits are configured
+    assert '30m' in pipeline_with_mock.BUFFER_LIMITS
+    assert '1h' in pipeline_with_mock.BUFFER_LIMITS
+    assert '4h' in pipeline_with_mock.BUFFER_LIMITS
+    assert '1d' in pipeline_with_mock.BUFFER_LIMITS
+    
+    assert pipeline_with_mock.BUFFER_LIMITS['30m'] == 1000
+    assert pipeline_with_mock.BUFFER_LIMITS['1h'] == 500
+    assert pipeline_with_mock.BUFFER_LIMITS['4h'] == 200
+    assert pipeline_with_mock.BUFFER_LIMITS['1d'] == 100
+    
+    # Test buffer limit enforcement
+    pipeline_with_mock.start_feeds(['BTC/USDT:USDT'], ['1h'])
+    df = pipeline_with_mock.get_latest_ohlcv('BTC/USDT:USDT', '1h')
+    
+    # Verify data doesn't exceed buffer limit
+    if df is not None:
+        assert len(df) <= pipeline_with_mock.BUFFER_LIMITS['1h']
+
+
+def test_health_check_accuracy(pipeline_with_mock, mock_failing_client):
+    """Test health check accuracy with various data states."""
+    # Test initial healthy state
+    health = pipeline_with_mock.health_check()
+    
+    assert 'status' in health
+    assert 'uptime_seconds' in health
+    assert 'total_requests' in health
+    assert 'failed_requests' in health
+    assert 'error_rate' in health
+    assert 'active_streams' in health
+    
+    assert health['status'] == 'healthy'
+    assert health['total_requests'] == 0
+    assert health['error_rate'] == 0
+    
+    # Test after successful fetches
+    pipeline_with_mock.start_feeds(['BTC/USDT:USDT'], ['30m'])
+    health_after = pipeline_with_mock.health_check()
+    assert health_after['status'] == 'healthy'
+    assert health_after['total_requests'] > 0
+    
+    # Test degraded state with some failures
+    pipeline_with_failures = MarketDataPipeline({
+        'failing': mock_failing_client,
+        'mock1': pipeline_with_mock.exchanges['mock1']
+    })
+    pipeline_with_failures.start_feeds(['BTC/USDT:USDT'], ['30m'])
+    health_degraded = pipeline_with_failures.health_check()
+    # Should have some failed requests from the failing client
+    assert health_degraded['failed_requests'] > 0
+
+
+def test_pipeline_status_detailed_metrics(pipeline_multi_exchange):
+    """Test get_pipeline_status() detailed metrics validation."""
+    # Start feeds to generate data
+    pipeline_multi_exchange.start_feeds(['BTC/USDT:USDT'], ['30m', '1h'])
+    
+    # Get detailed status
+    status = pipeline_multi_exchange.get_pipeline_status()
+    
+    # Validate all required fields
+    assert 'exchanges' in status
+    assert 'memory_estimate_mb' in status
+    assert 'data_freshness' in status
+    assert 'buffer_limits' in status
+    assert 'active_streams' in status
+    assert 'total_requests' in status
+    assert 'failed_requests' in status
+    
+    # Validate exchanges breakdown
+    assert isinstance(status['exchanges'], dict)
+    for exchange_name, exchange_data in status['exchanges'].items():
+        assert 'streams' in exchange_data
+        assert 'symbols' in exchange_data
+    
+    # Validate data freshness
+    assert 'fresh' in status['data_freshness']
+    assert 'stale' in status['data_freshness']
+    assert 'expired' in status['data_freshness']
+    
+    # Validate memory estimate is reasonable
+    assert status['memory_estimate_mb'] >= 0
+    assert status['memory_estimate_mb'] < 1000  # Should be reasonable for test data
+    
+    # Validate active streams
+    assert status['active_streams'] > 0
+
+
+def test_error_handling_resilience(mock_ccxt_client, mock_failing_client):
+    """Test error handling resilience with retry logic and fallback."""
+    # First exchange fails, second succeeds
+    exchanges = {
+        'failing': mock_failing_client,
+        'success': mock_ccxt_client,
+    }
+    
+    pipeline = MarketDataPipeline(exchanges)
+    
+    # This should try failing (and fail with retries), then try success (and succeed)
+    results = pipeline.start_feeds(['BTC/USDT:USDT'], ['30m'])
+    
+    assert pipeline.failed_requests > 0  # Should have failed attempts
+    assert results['successful_fetches'] > 0  # Should eventually succeed with fallback
+    
+    # Check that data was stored from successful exchange
+    df = pipeline.get_latest_ohlcv('BTC/USDT:USDT', '30m')
+    assert df is not None
+    assert not df.empty
+
+
+def test_store_data_circular_buffer(pipeline_with_mock, mock_ccxt_client, generate_ohlcv_data):
+    """Test _store_data() circular buffer management."""
+    # Create a DataFrame larger than buffer limit
+    large_data = generate_ohlcv_data(count=2000, interval_minutes=60, base_price=50000)
+    
+    # Mock the client to return large dataset
+    mock_ccxt_client.ohlcv.return_value = large_data
+    
+    # Start feeds for 1h timeframe (buffer limit = 500)
+    pipeline_with_mock.start_feeds(['BTC/USDT:USDT'], ['1h'])
+    
+    # Get stored data
+    df = pipeline_with_mock.get_latest_ohlcv('BTC/USDT:USDT', '1h')
+    
+    # Verify data respects buffer limit
+    assert len(df) <= pipeline_with_mock.BUFFER_LIMITS['1h']
+
+
+def test_get_best_data_source_algorithm(pipeline_multi_exchange):
+    """Test _get_best_data_source() selection algorithm."""
+    # Start feeds to populate data (fallback means only first successful exchange stores data)
+    pipeline_multi_exchange.start_feeds(['BTC/USDT:USDT'], ['30m'])
+    
+    # Test auto-selection of best source
+    df = pipeline_multi_exchange.get_latest_ohlcv('BTC/USDT:USDT', '30m')
+    
+    assert df is not None
+    assert not df.empty
+    
+    # Test specific exchange selection (only mock1 has data due to fallback)
+    df_mock1 = pipeline_multi_exchange.get_latest_ohlcv('BTC/USDT:USDT', '30m', exchange='mock1')
+    
+    assert df_mock1 is not None
+    assert not df_mock1.empty
+    
+    # mock2 should not have data due to fallback mechanism
+    df_mock2 = pipeline_multi_exchange.get_latest_ohlcv('BTC/USDT:USDT', '30m', exchange='mock2')
+    assert df_mock2 is None  # No data stored in mock2 due to fallback
+
+
+def test_graceful_shutdown(pipeline_with_mock):
+    """Test graceful shutdown() behavior."""
+    pipeline_with_mock.start_feeds(['BTC/USDT:USDT'], ['30m'])
+    
+    assert pipeline_with_mock.is_running == True
+    
+    # Test shutdown
+    pipeline_with_mock.shutdown()
+    
+    assert pipeline_with_mock.is_running == False
+    
+    # Test idempotent shutdown (should not raise error)
+    pipeline_with_mock.shutdown()
+    assert pipeline_with_mock.is_running == False
+
+
+def test_integration_pipeline_ccxt_compatibility(mock_ccxt_client):
+    """Test Pipeline + existing CcxtClient compatibility."""
+    # Verify mock client has all expected methods
+    assert hasattr(mock_ccxt_client, 'name')
+    assert hasattr(mock_ccxt_client, 'validate_and_get_symbol')
+    assert hasattr(mock_ccxt_client, 'ohlcv')
+    
+    # Test pipeline initialization with mock client
+    exchanges = {'test': mock_ccxt_client}
+    pipeline = MarketDataPipeline(exchanges)
+    
+    # Test that pipeline can work with the client
+    results = pipeline.start_feeds(['BTC/USDT:USDT'], ['30m'])
+    assert results['successful_fetches'] > 0
+    
+    # Verify client methods were called correctly
+    assert mock_ccxt_client.validate_and_get_symbol.called
+    assert mock_ccxt_client.ohlcv.called or mock_ccxt_client.fetch_ohlcv_bulk.called
+
+
+def test_real_exchange_symbol_validation():
+    """Test real exchange symbol validation (with mocks)."""
+    client = Mock(spec=CcxtClient)
+    client.name = 'binance'
+    
+    # Mock successful validation
+    client.validate_and_get_symbol.return_value = 'BTC/USDT:USDT'
+    
+    result = client.validate_and_get_symbol('BTC/USDT:USDT')
+    assert result == 'BTC/USDT:USDT'
+    
+    # Mock validation failure
+    client.validate_and_get_symbol.side_effect = ValueError("Invalid symbol")
+    
+    with pytest.raises(ValueError):
+        client.validate_and_get_symbol('INVALID')
+
+
+def test_memory_usage_estimation(pipeline_multi_exchange):
+    """Test memory usage estimation accuracy."""
+    pipeline_multi_exchange.start_feeds(['BTC/USDT:USDT', 'ETH/USDT:USDT'], ['30m', '1h'])
+    
+    status = pipeline_multi_exchange.get_pipeline_status()
+    
+    # Verify memory estimate exists and is reasonable
+    assert 'memory_estimate_mb' in status
+    assert status['memory_estimate_mb'] > 0
+    assert status['memory_estimate_mb'] < 100  # Should be reasonable for test data
+    
+    # Verify exchange tracking exists
+    assert 'exchanges' in status
+    for exchange_name, exchange_data in status['exchanges'].items():
+        assert 'streams' in exchange_data
+        assert 'symbols' in exchange_data
+        assert exchange_data['streams'] >= 0
+        assert exchange_data['symbols'] >= 0
+
+
+def test_error_handling_all_exchanges_fail(mock_failing_client):
+    """Test error handling when all exchanges fail."""
+    exchanges = {
+        'failing1': mock_failing_client,
+    }
+    
+    pipeline = MarketDataPipeline(exchanges)
+    
+    # Should handle gracefully when all exchanges fail
+    results = pipeline.start_feeds(['BTC/USDT:USDT'], ['30m'])
+    
+    assert results['failed_fetches'] > 0
+    assert results['successful_fetches'] == 0
+    assert len(results['errors']) > 0
+
+
+def test_buffer_limit_enforcement_multiple_timeframes(pipeline_with_mock):
+    """Test buffer limit enforcement across multiple timeframes."""
+    pipeline_with_mock.start_feeds(['BTC/USDT:USDT'], ['30m', '1h', '4h'])
+    
+    # Check each timeframe respects its buffer limit
+    for timeframe in ['30m', '1h', '4h']:
+        df = pipeline_with_mock.get_latest_ohlcv('BTC/USDT:USDT', timeframe)
+        if df is not None and not df.empty:
+            assert len(df) <= pipeline_with_mock.BUFFER_LIMITS[timeframe]
+
+
+# Legacy main function for backward compatibility
 def main():
-    """Run all market data pipeline tests."""
-    print("\n" + "="*70)
-    print("MARKET DATA PIPELINE TEST SUITE")
-    print("Phase 2.2: Core Foundation")
-    print("="*70)
-    
-    tests = [
-        test_pipeline_initialization,
-        test_start_feeds,
-        test_get_latest_ohlcv,
-        test_buffer_limits,
-        test_health_check,
-        test_pipeline_status,
-        test_error_handling,
-        test_best_data_source,
-        test_shutdown,
-    ]
-    
-    results = []
-    for test_func in tests:
-        try:
-            result = test_func()
-            results.append(result)
-        except Exception as e:
-            print(f"\n❌ Test crashed: {e}")
-            import traceback
-            traceback.print_exc()
-            results.append(False)
-    
-    # Summary
-    passed = sum(results)
-    total = len(results)
-    
-    print("\n" + "="*70)
-    print(f"TEST RESULTS: {passed}/{total} PASSED")
-    print("="*70)
-    
-    if passed == total:
-        print("✅ ALL TESTS PASSED")
-        return 0
-    else:
-        print("❌ SOME TESTS FAILED")
-        return 1
+    """Run tests using pytest."""
+    import pytest
+    return pytest.main([__file__, '-v'])
 
 
 if __name__ == '__main__':
