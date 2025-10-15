@@ -113,19 +113,16 @@ class TestLauncherIntegration:
     @patch('live_trading_launcher.CcxtClient')
     async def test_dry_run_workflow(self, mock_ccxt):
         """Test dry-run workflow completes successfully."""
-        # Mock the CCXT client
-        mock_client = Mock()
-        mock_client.markets.return_value = {
-            'BTC/USDT:USDT': {},
-            'ETH/USDT:USDT': {},
-            'SOL/USDT:USDT': {},
-            'BNB/USDT:USDT': {},
-            'ADA/USDT:USDT': {},
-            'DOT/USDT:USDT': {},
-            'LTC/USDT:USDT': {},
-            'AVAX/USDT:USDT': {}
-        }
-        mock_client.ticker.return_value = {'last': 50000.0}
+        # Mock the CCXT client with proper methods
+        mock_client = MagicMock()
+        
+        # Mock fetch_ticker to return a dictionary with 'last' key
+        mock_client.fetch_ticker.return_value = {'last': 50000.0}
+        
+        # Mock get_bingx_balance (authentication test)
+        mock_client.get_bingx_balance.return_value = {'USDT': {'free': 100.0, 'used': 0.0, 'total': 100.0}}
+        
+        # Set the mock client as return value for CcxtClient constructor
         mock_ccxt.return_value = mock_client
         
         launcher = LiveTradingLauncher(mode='paper', dry_run=True)

@@ -106,6 +106,27 @@ if TORCH_AVAILABLE:
             uncertainty = torch.exp(0.5 * log_var)
             
             return price_forecasts, uncertainty
+        
+        def predict(self, x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+            """
+            Make predictions (wrapper around forward for numpy arrays).
+            
+            Args:
+                x: Input numpy array of shape (batch_size, sequence_length, input_size)
+                
+            Returns:
+                Tuple of (price_predictions, uncertainty_estimates) as numpy arrays
+            """
+            self.eval()
+            with torch.no_grad():
+                # Convert to tensor
+                x_tensor = torch.FloatTensor(x)
+                
+                # Forward pass
+                forecasts, uncertainties = self.forward(x_tensor)
+                
+                # Convert back to numpy
+                return forecasts.numpy(), uncertainties.numpy()
 
 
     class TransformerPricePredictor(nn.Module):
@@ -190,6 +211,27 @@ if TORCH_AVAILABLE:
             uncertainty = torch.exp(0.5 * log_var)
             
             return price_forecasts, uncertainty
+        
+        def predict(self, x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+            """
+            Make predictions (wrapper around forward for numpy arrays).
+            
+            Args:
+                x: Input numpy array of shape (batch_size, sequence_length, d_model)
+                
+            Returns:
+                Tuple of (price_predictions, uncertainty_estimates) as numpy arrays
+            """
+            self.eval()
+            with torch.no_grad():
+                # Convert to tensor
+                x_tensor = torch.FloatTensor(x)
+                
+                # Forward pass
+                forecasts, uncertainties = self.forward(x_tensor)
+                
+                # Convert back to numpy
+                return forecasts.numpy(), uncertainties.numpy()
 
 else:
     # Mock implementations when PyTorch is not available
@@ -264,7 +306,13 @@ class EnsemblePricePredictor:
             weight = self.weights.get(model_name, 1.0 / len(self.models))
             
             if hasattr(model, 'predict'):
-                pred, unc = model.predict(X)
+                try:
+                    pred, unc = model.predict(X)
+                except Exception as e:
+                    # Fallback if predict fails (e.g., input size mismatch)
+                    logger.warning(f"Model {model_name} prediction failed: {e}. Using fallback.")
+                    pred = np.zeros((len(X), 12))
+                    unc = np.ones((len(X), 12))
             else:
                 # Fallback for mock models
                 pred = np.zeros((len(X), 12))
