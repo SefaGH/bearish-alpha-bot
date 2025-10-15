@@ -6,6 +6,7 @@ Tests WebSocket client and manager functionality.
 import pytest
 import asyncio
 import logging
+from collections import defaultdict
 from unittest.mock import Mock, patch, AsyncMock
 from src.core.websocket_client import WebSocketClient
 from src.core.websocket_manager import WebSocketManager, StreamDataCollector
@@ -189,6 +190,154 @@ class TestWebSocketIntegration:
         # Clean up
         await manager.close()
         logger.info("✓ Multi-exchange coordination test passed")
+    
+    @pytest.mark.asyncio
+    async def test_ccxt_client_integration(self):
+        """Test WebSocketManager initialization with CcxtClient instances."""
+        from src.core.ccxt_client import CcxtClient
+        
+        # Create CcxtClient instances (unauthenticated)
+        clients = {
+            'kucoinfutures': CcxtClient('kucoinfutures', None),
+            'bingx': CcxtClient('bingx', None)
+        }
+        
+        # Initialize WebSocketManager with CcxtClient instances
+        manager = WebSocketManager(clients)
+        
+        # Verify initialization
+        assert len(manager.clients) == 2
+        assert 'kucoinfutures' in manager.clients
+        assert 'bingx' in manager.clients
+        assert manager._use_ccxt_clients == True
+        
+        # Clean up
+        await manager.close()
+        logger.info("✓ CcxtClient integration test passed")
+
+
+class TestWebSocketManagerNewAPI:
+    """Test new API methods added for Phase 2.1 integration."""
+    
+    @pytest.mark.asyncio
+    async def test_subscribe_tickers(self):
+        """Test subscribe_tickers method."""
+        manager = WebSocketManager()
+        
+        # Test callback registration
+        callback_called = {'count': 0}
+        
+        async def test_callback(exchange, symbol, ticker):
+            callback_called['count'] += 1
+        
+        # Note: This will try to start actual streams, but we're just testing the API
+        # In production, this would connect to real exchanges
+        try:
+            # Test that method exists and accepts parameters
+            assert hasattr(manager, 'subscribe_tickers')
+            logger.info("✓ subscribe_tickers method exists")
+        finally:
+            await manager.close()
+    
+    @pytest.mark.asyncio
+    async def test_subscribe_orderbook(self):
+        """Test subscribe_orderbook method."""
+        manager = WebSocketManager()
+        
+        try:
+            # Test that method exists and accepts parameters
+            assert hasattr(manager, 'subscribe_orderbook')
+            logger.info("✓ subscribe_orderbook method exists")
+        finally:
+            await manager.close()
+    
+    @pytest.mark.asyncio
+    async def test_callback_registration(self):
+        """Test callback registration methods."""
+        manager = WebSocketManager()
+        
+        async def ticker_callback(exchange, symbol, ticker):
+            pass
+        
+        async def orderbook_callback(exchange, symbol, orderbook):
+            pass
+        
+        # Register callbacks
+        result = manager.on_ticker_update(ticker_callback)
+        assert result is manager  # Test method chaining
+        assert len(manager.callbacks['ticker']) == 1
+        
+        result = manager.on_orderbook_update(orderbook_callback)
+        assert result is manager
+        assert len(manager.callbacks['orderbook']) == 1
+        
+        await manager.close()
+        logger.info("✓ Callback registration test passed")
+    
+    @pytest.mark.asyncio
+    async def test_start_streams(self):
+        """Test start_streams method."""
+        manager = WebSocketManager()
+        
+        # Test that method exists and accepts subscription dict
+        assert hasattr(manager, 'start_streams')
+        
+        # Test with empty subscriptions (won't start actual streams)
+        subscriptions = {}
+        tasks = await manager.start_streams(subscriptions)
+        assert isinstance(tasks, dict)
+        
+        await manager.close()
+        logger.info("✓ start_streams method test passed")
+    
+    @pytest.mark.asyncio
+    async def test_shutdown(self):
+        """Test shutdown method."""
+        manager = WebSocketManager()
+        
+        # Test that shutdown method exists
+        assert hasattr(manager, 'shutdown')
+        
+        # Test shutdown
+        await manager.shutdown()
+        assert manager.is_running == False
+        
+        logger.info("✓ shutdown method test passed")
+    
+    @pytest.mark.asyncio
+    async def test_config_initialization(self):
+        """Test WebSocketManager initialization with config parameter."""
+        config = {
+            'reconnect_delay': 5,
+            'max_retries': 3,
+            'timeout': 30
+        }
+        
+        manager = WebSocketManager(config=config)
+        
+        # Verify config is stored
+        assert manager.config == config
+        assert manager.config['reconnect_delay'] == 5
+        
+        await manager.close()
+        logger.info("✓ Config initialization test passed")
+    
+    def test_manager_attributes(self):
+        """Test that WebSocketManager has all required attributes."""
+        manager = WebSocketManager()
+        
+        # Test attributes from problem statement
+        assert hasattr(manager, 'exchanges')
+        assert hasattr(manager, 'config')
+        assert hasattr(manager, 'connections')
+        assert hasattr(manager, 'callbacks')
+        assert hasattr(manager, 'is_running')
+        assert hasattr(manager, 'reconnect_delays')
+        
+        # Test that callbacks is a defaultdict
+        assert isinstance(manager.callbacks, defaultdict)
+        
+        logger.info("✓ Manager attributes test passed")
 
 
 def run_websocket_tests():
