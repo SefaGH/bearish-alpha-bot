@@ -88,11 +88,43 @@ Daha fazla ayrıntı için `docs/` klasörüne bak.
 
 ## Dokümantasyon
 
+### Genel Dokümantasyon
 - 📘 [İyileştirmeler ve Değişiklikler](docs/IYILESTIRMELER.md) - Son yapılan düzeltmeler
 - 📗 [Environment Variables](docs/ENV_VARIABLES.md) - Tüm environment variable'lar
 - 📙 [Troubleshooting Guide](docs/TROUBLESHOOTING.md) - Sorun giderme kılavuzu
 - 📕 [Workflows](docs/WORKFLOWS.md) - GitHub Actions kullanımı
 - 📓 [Config Reference](docs/CONFIG_REFERENCE.md) - Config dosyası ayarları
+
+### Phase 2.1: Market Data Pipeline (YENİ! ✨)
+- 🔷 [**Phase 2.1 Comprehensive Guide**](docs/PHASE2_MARKET_DATA.md) - Tam dokümantasyon
+- 🔷 [Market Data Pipeline Usage](docs/market_data_pipeline_usage.md) - Detaylı kullanım kılavuzu
+- 🔷 [Implementation Details](IMPLEMENTATION_DATA_AGGREGATOR.md) - Teknik uygulama detayları
+
+**Phase 2.1 Özellikleri:**
+- ✅ Çoklu borsa veri toplama ve otomatik yedekleme
+- ✅ Otomatik bellek yönetimi (circular buffers)
+- ✅ Entegre göstergeler (RSI, ATR, EMA21/50/200)
+- ✅ Sağlık izleme ve durum takibi
+- ✅ Veri kalite skorlaması ve konsensüs oluşturma
+- ✅ Üretim ortamı için hazır (16 test geçiyor ✅)
+
+**Örnek Kullanım:**
+```python
+from core.multi_exchange import build_clients_from_env
+from core.market_data_pipeline import MarketDataPipeline
+
+# Borsalardan veri topla
+clients = build_clients_from_env()
+pipeline = MarketDataPipeline(clients)
+
+# Veri akışlarını başlat
+pipeline.start_feeds(['BTC/USDT:USDT', 'ETH/USDT:USDT'], ['30m', '1h'])
+
+# Göstergelerle zenginleştirilmiş veri al
+df = pipeline.get_latest_ohlcv('BTC/USDT:USDT', '30m')
+```
+
+**Daha Fazla Örnek:** `examples/market_data_pipeline_example.py`
 
 ## Test Etme
 

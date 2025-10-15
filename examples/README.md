@@ -2,6 +2,56 @@
 
 This directory contains example scripts demonstrating various features of the Bearish Alpha Bot.
 
+## Phase 2.1: Market Data Pipeline Example (NEW! ✨)
+
+**File:** `market_data_pipeline_example.py`
+
+Comprehensive demonstration of Phase 2.1 Market Data Pipeline:
+- Multi-exchange data collection with automatic fallback
+- Automatic memory management with circular buffers
+- Integrated indicators (RSI, ATR, EMA21/50/200)
+- Health monitoring and status tracking
+- Data aggregator with quality scoring
+- Error handling and resilience
+
+### Usage
+
+```bash
+# Without environment (demonstration mode)
+python3 examples/market_data_pipeline_example.py
+
+# With live exchanges
+export EXCHANGES='bingx,kucoinfutures'
+export BINGX_KEY='your_key'
+export BINGX_SECRET='your_secret'
+python3 examples/market_data_pipeline_example.py
+```
+
+### What You'll Learn
+
+1. **Basic Pipeline Usage** - Integration with existing infrastructure
+2. **Health Monitoring** - Status tracking and pipeline metrics
+3. **Data Aggregator** - Multi-exchange data quality and consensus
+4. **Custom Configuration** - Custom indicator settings
+5. **Multi-Timeframe Analysis** - Cross-timeframe data analysis
+6. **Error Handling** - Resilience and graceful degradation
+
+### Key Features Demonstrated
+
+- **Multi-Exchange Support:** Automatic failover across exchanges
+- **Memory Management:** Circular buffers with timeframe-specific limits
+- **Quality Scoring:** Best data source selection based on quality metrics
+- **Health Tracking:** Real-time monitoring of pipeline status
+- **Integration Ready:** Works seamlessly with strategies and intelligence systems
+
+### Documentation
+
+- 📘 [Phase 2.1 Comprehensive Guide](../docs/PHASE2_MARKET_DATA.md)
+- 📗 [Market Data Pipeline Usage](../docs/market_data_pipeline_usage.md)
+- 📙 [Implementation Details](../IMPLEMENTATION_DATA_AGGREGATOR.md)
+
+---
+
 ## KuCoin Futures Bulk Fetch Example
 
 **File:** `kucoin_bulk_fetch_example.py`
