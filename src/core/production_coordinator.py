@@ -57,7 +57,8 @@ class ProductionCoordinator:
         logger.info("ProductionCoordinator created")
     
     async def initialize_production_system(self, exchange_clients: Dict, 
-                                          portfolio_config: Dict) -> Dict[str, Any]:
+                                          portfolio_config: Dict,
+                                          mode: str = 'paper') -> Dict[str, Any]:  # mode ekle!
         """
         Initialize complete production trading system.
         
@@ -133,12 +134,13 @@ class ProductionCoordinator:
             # Phase 3.4: Live trading activation
             logger.info("\n[Phase 3.4] Initializing Live Trading Engine...")
             self.trading_engine = LiveTradingEngine(
+                mode=mode,  # ✅ Artık dinamik mode kullanıyor!
                 portfolio_manager=self.portfolio_manager,
                 risk_manager=self.risk_manager,
                 websocket_manager=self.websocket_manager,
                 exchange_clients=self.exchange_clients
             )
-            logger.info("  ✓ Live Trading Engine initialized")
+            logger.info(f"  ✓ Live Trading Engine initialized (mode: {mode})")  # Log ekle
             
             self.is_initialized = True
             
