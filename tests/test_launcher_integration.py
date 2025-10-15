@@ -8,6 +8,7 @@ after applying the Phase 2 fixes.
 
 import sys
 import os
+import pytest
 import asyncio
 from unittest.mock import Mock, MagicMock, patch
 
@@ -15,6 +16,7 @@ from unittest.mock import Mock, MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 
+@pytest.mark.asyncio
 async def test_launcher_initialization_flow():
     """Test the complete initialization flow as it appears in the launcher."""
     
@@ -117,6 +119,7 @@ async def test_launcher_initialization_flow():
         return False
 
 
+@pytest.mark.asyncio
 async def test_error_scenarios():
     """Test that the old broken code patterns would fail."""
     
