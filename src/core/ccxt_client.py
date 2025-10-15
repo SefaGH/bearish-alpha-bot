@@ -142,34 +142,31 @@ class CcxtClient:
             return self._markets_cache
             
         try:
+            # Load all markets (CCXT requirement - we can't load individual markets)
+            all_markets = self.ex.load_markets()
+            
             if self._required_symbols_only:
-                # Sadece gerekli sembolleri yükle
-                logger.info(f"Loading markets for {len(self._required_symbols_only)} symbols only")
+                # Filter to only required symbols for logging and memory efficiency
+                logger.info(f"Filtering markets to {len(self._required_symbols_only)} required symbols")
                 markets = {}
                 
-                # BingX için özel işlem
+                # BingX için özel işlem - contract mapping kullan
                 if self.name == 'bingx':
                     all_contracts = self._get_bingx_contracts()
                     for ccxt_symbol in self._required_symbols_only:
-                        if ccxt_symbol in all_contracts:
-                            # Sadece bu sembolün market bilgisini yükle
-                            try:
-                                market_info = self.ex.market(ccxt_symbol)
-                                markets[ccxt_symbol] = market_info
-                            except:
-                                pass
+                        if ccxt_symbol in all_markets:
+                            markets[ccxt_symbol] = all_markets[ccxt_symbol]
                 else:
-                    # Diğer borsalar için selective loading
+                    # Diğer borsalar için sadece required symbols
                     for symbol in self._required_symbols_only:
-                        try:
-                            market_info = self.ex.market(symbol)
-                            markets[symbol] = market_info
-                        except:
-                            pass
+                        if symbol in all_markets:
+                            markets[symbol] = all_markets[symbol]
+                
+                logger.info(f"Filtered to {len(markets)}/{len(all_markets)} markets")
             else:
-                # Fallback: tüm marketleri yükle (eski davranış)
-                logger.warning(f"Loading ALL markets for {self.name} (no filter set)")
-                markets = self.ex.load_markets()
+                # Tüm marketleri kullan
+                markets = all_markets
+                logger.info(f"Loaded all {len(markets)} markets for {self.name}")
                 
             self._markets_cache = markets
             self._markets_cache_time = current_time
@@ -413,7 +410,9 @@ class CcxtClient:
             
             server_data = response.json()
             if server_data.get('code') == 0:
-                server_time = int(server_data['data'])
+                # BingX returns data as dict with serverTime key
+                data = server_data.get('data', {})
+                server_time = int(data.get('serverTime', data)) if isinstance(data, dict) else int(data)
                 local_time = int(time.time() * 1000)
                 self._server_time_offset = server_time - local_time
                 
