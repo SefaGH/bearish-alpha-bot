@@ -1,5 +1,5 @@
 execution:
-  enable_live: false
+  enable_live: true  # LIVE MODE AKTİF
   order_type: market
   time_in_force: IOC
   fee_pct: 0.0006
@@ -9,15 +9,15 @@ execution:
     overrides: {}
 
 risk:
-  equity_usd: 50
-  per_trade_risk_pct: 0.005
+  equity_usd: 100  # 100 USDT capital
+  per_trade_risk_pct: 0.01  # %1 risk per trade
   daily_loss_limit_pct: 0.02
-  risk_usd_cap: 1.0
+  risk_usd_cap: 5  # Max 5 USDT risk
   max_notional_per_trade: 20
   min_stop_pct: 0.003
   min_amount_behavior: skip
   min_notional_behavior: skip
-  daily_max_trades: 5
+  daily_max_trades: 5  # Günlük max 5 işlem
 
 class_limits:
   meme:
@@ -58,7 +58,7 @@ signals:
   oversold_bounce:
     enable: true
     # TEST: Rejim filtresi kapalı kalsın; sinyal görmeye odaklanalım
-    ignore_regime: true
+    ignore_regime: false  # Production'da false olmalı
     # Eşikleri gevşet: daha fazla "oversold" sinyali yakalayalım
     rsi_max: 38          # (mevcut: 27)
     tp_pct: 0.010        # (mevcut: 0.014) -> TP'ye ulaşma oranı artar
