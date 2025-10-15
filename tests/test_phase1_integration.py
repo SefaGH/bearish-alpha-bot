@@ -162,6 +162,8 @@ def test_phase1_requirements():
 
 def test_performance_improvements():
     """Test performance improvements."""
+    import re
+    
     print("\n" + "="*70)
     print("PERFORMANCE IMPROVEMENTS VALIDATION")
     print("="*70)
@@ -189,7 +191,7 @@ def test_performance_improvements():
             result2 = False
         
         # Check that we only verify trading pairs
-        if 'Verifying' in content and 'trading pairs' in content:
+        if re.search(r'Verifying \{len\(self\.TRADING_PAIRS\)\} trading pairs', content):
             print("  ✓ Only verifying 8 trading pairs")
             result3 = True
         else:
