@@ -322,14 +322,34 @@ async def run_with_pipeline():
     """Market Data Pipeline ile optimize edilmiş çalışma modu"""
     from core.market_data_pipeline import MarketDataPipeline
     import asyncio
+    import signal
     
     logger = logging.getLogger(__name__)
     
     cfg = load_config()
     tg = build_tg()
     
-    # Build clients with selective symbol loading
-    required_symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+    # Pipeline duration from environment
+    duration_minutes = int(os.getenv('PIPELINE_DURATION_MINUTES', '0'))
+    max_iterations = int(os.getenv('PIPELINE_MAX_ITERATIONS', '0'))
+    
+    if duration_minutes > 0:
+        max_iterations = duration_minutes * 2  # Her 30 saniye bir iteration
+        logger.info(f"Pipeline will run for {duration_minutes} minutes ({max_iterations} iterations)")
+    elif max_iterations > 0:
+        logger.info(f"Pipeline will run for {max_iterations} iterations")
+    else:
+        logger.info("Pipeline running in CONTINUOUS mode (until interrupted)")
+        max_iterations = float('inf')  # Sonsuz
+    
+    # Build clients
+    required_symbols = [
+        'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT',
+        'BNB/USDT:USDT', 'ADA/USDT:USDT', 'DOT/USDT:USDT',
+        'LTC/USDT:USDT', 'AVAX/USDT:USDT'
+    ]
+    
+    logger.info("Building exchange clients...")
     clients = build_clients_from_env(required_symbols=required_symbols)
     
     if not clients:
@@ -342,6 +362,16 @@ async def run_with_pipeline():
     logger.info(f"Initializing pipeline with {len(clients)} exchanges")
     pipeline = MarketDataPipeline(clients)
     
+    # Setup signal handler for graceful shutdown
+    shutdown_event = asyncio.Event()
+    
+    def signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, shutting down...")
+        shutdown_event.set()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     # Timeframes to track
     timeframes = ['30m', '1h', '4h']
     
@@ -350,90 +380,157 @@ async def run_with_pipeline():
     await pipeline.start_feeds_async(required_symbols, timeframes)
     
     if tg:
-        tg.send(f"🚀 Pipeline mode started | {len(required_symbols)} symbols | {len(timeframes)} timeframes")
+        tg.send(
+            f"🚀 <b>Pipeline Mode Started</b>\n"
+            f"Symbols: {len(required_symbols)}\n"
+            f"Timeframes: {len(timeframes)}\n"
+            f"Duration: {'Continuous' if max_iterations == float('inf') else f'{max_iterations} iterations'}"
+        )
     
     # Ana döngü
     iteration = 0
-    while True:
-        try:
-            iteration += 1
-            logger.info(f"Pipeline iteration {iteration}")
-            
-            # Pipeline health check
-            health = pipeline.get_health_status()
-            if health['overall_status'] != 'healthy':
-                logger.warning(f"Pipeline health issue: {health}")
-                if tg:
-                    tg.send(f"⚠️ Pipeline health: {health['overall_status']} (error rate: {health['error_rate']}%)")
-            
-            # Process each symbol
-            signals_count = 0
-            for symbol in required_symbols:
-                try:
-                    # Get cached data from pipeline (fast!)
-                    df_30m = pipeline.get_latest_ohlcv(symbol, '30m')
-                    df_1h = pipeline.get_latest_ohlcv(symbol, '1h')
-                    df_4h = pipeline.get_latest_ohlcv(symbol, '4h')
-                    
-                    if df_30m is None or len(df_30m) < 50:
-                        logger.debug(f"Insufficient 30m data for {symbol}")
-                        continue
-                    
-                    # Regime check
-                    if df_4h is not None and len(df_4h) >= 50:
-                        bearish = is_bearish_regime(df_4h)
-                        if not bearish and not cfg.get("signals", {}).get("ignore_regime", False):
-                            logger.debug(f"{symbol} not in bearish regime, skipping")
-                            continue
-                    
-                    # Strategy signals
-                    signal = None
-                    
-                    # OversoldBounce
-                    if cfg.get("signals", {}).get("oversold_bounce", {}).get("enable", True):
-                        ob = OversoldBounce(cfg.get("signals", {}).get("oversold_bounce"))
-                        signal = ob.signal(df_30m)
-                    
-                    # ShortTheRip
-                    if not signal and cfg.get("signals", {}).get("short_the_rip", {}).get("enable", True):
-                        str_cfg = cfg.get("signals", {}).get("short_the_rip")
-                        strp = ShortTheRip(str_cfg)
-                        signal = strp.signal(df_30m, df_1h)
-                    
-                    # Process signal
-                    if signal:
-                        signals_count += 1
-                        msg = f"⚡ Pipeline | {symbol} | {signal['side'].upper()} — {signal['reason']}"
-                        if tg: 
-                            tg.send(msg)
-                        logger.info(f"Signal generated: {msg}")
-                        
-                        # TODO: Execute trade if live mode
-                        
-                except Exception as e:
-                    logger.error(f"Error processing {symbol}: {e}")
-                    continue
-            
-            # Log iteration summary
-            if iteration % 10 == 0:  # Every 10 iterations
-                logger.info(f"Iteration {iteration} complete. Signals: {signals_count}. Health: {health['overall_status']}")
-            
-            # Wait before next iteration
-            await asyncio.sleep(30)  # 30 saniye bekle
-            
-        except KeyboardInterrupt:
-            logger.info("Stopping pipeline...")
-            break
-        except Exception as e:
-            logger.error(f"Pipeline loop error: {e}", exc_info=True)
-            if tg:
-                tg.send(f"❌ Pipeline error: {type(e).__name__}: {str(e)[:150]}")
-            await asyncio.sleep(60)  # Hata durumunda 1 dk bekle
+    start_time = datetime.now(timezone.utc)
+    signals_total = 0
+    errors_total = 0
     
-    # Shutdown
-    pipeline.shutdown()
-    if tg:
-        tg.send("✅ Pipeline mode stopped")
+    try:
+        while iteration < max_iterations and not shutdown_event.is_set():
+            try:
+                iteration += 1
+                logger.info(f"=" * 60)
+                logger.info(f"Pipeline iteration {iteration}")
+                logger.info(f"=" * 60)
+                
+                # Pipeline health check
+                health = pipeline.get_health_status()
+                if health['overall_status'] != 'healthy':
+                    logger.warning(f"Pipeline health issue: {health}")
+                    errors_total += 1
+                    if tg and errors_total % 10 == 0:  # Her 10 hatada bir bildir
+                        tg.send(
+                            f"⚠️ Pipeline health: {health['overall_status']}\n"
+                            f"Error rate: {health['error_rate']}%\n"
+                            f"Errors total: {errors_total}"
+                        )
+                
+                # Process each symbol
+                signals_count = 0
+                for symbol in required_symbols:
+                    try:
+                        # Get cached data from pipeline (fast!)
+                        df_30m = pipeline.get_latest_ohlcv(symbol, '30m')
+                        df_1h = pipeline.get_latest_ohlcv(symbol, '1h')
+                        df_4h = pipeline.get_latest_ohlcv(symbol, '4h')
+                        
+                        if df_30m is None or len(df_30m) < 50:
+                            logger.debug(f"Insufficient 30m data for {symbol}")
+                            continue
+                        
+                        # Indicators are already included in pipeline data
+                        ind_cfg = cfg.get("indicators", {}) or {}
+                        
+                        # Ensure indicators are present
+                        if 'rsi' not in df_30m.columns:
+                            df_30m = ind_enrich(df_30m, ind_cfg).dropna()
+                        if df_1h is not None and 'rsi' not in df_1h.columns:
+                            df_1h = ind_enrich(df_1h, ind_cfg).dropna()
+                        if df_4h is not None and 'rsi' not in df_4h.columns:
+                            df_4h = ind_enrich(df_4h, ind_cfg).dropna()
+                        
+                        # Regime check
+                        ignore_regime = cfg.get("signals", {}).get("oversold_bounce", {}).get("ignore_regime", False)
+                        if df_4h is not None and len(df_4h) >= 50 and not ignore_regime:
+                            bearish = is_bearish_regime(df_4h)
+                            if not bearish:
+                                logger.debug(f"{symbol} not in bearish regime, skipping")
+                                continue
+                        
+                        # Strategy signals
+                        signal = None
+                        
+                        # OversoldBounce
+                        if cfg.get("signals", {}).get("oversold_bounce", {}).get("enable", True):
+                            ob = OversoldBounce(cfg.get("signals", {}).get("oversold_bounce"))
+                            signal = ob.signal(df_30m)
+                        
+                        # ShortTheRip
+                        if not signal and cfg.get("signals", {}).get("short_the_rip", {}).get("enable", True):
+                            str_cfg = cfg.get("signals", {}).get("short_the_rip")
+                            strp = ShortTheRip(str_cfg)
+                            if df_1h is not None and len(df_1h) >= 50:
+                                signal = strp.signal(df_30m, df_1h)
+                        
+                        # Process signal
+                        if signal:
+                            signals_count += 1
+                            signals_total += 1
+                            msg = f"⚡ Pipeline | {symbol} | {signal['side'].upper()} — {signal['reason']}"
+                            if tg: 
+                                tg.send(msg)
+                            logger.info(f"Signal generated: {msg}")
+                            
+                            # TODO: Execute trade if live mode
+                            mode = os.getenv('MODE', 'paper').lower()
+                            if mode == 'live':
+                                logger.info(f"TODO: Execute live trade for {symbol}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing {symbol}: {e}")
+                        errors_total += 1
+                        continue
+                
+                # Log iteration summary
+                elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+                logger.info(f"Iteration {iteration} complete:")
+                logger.info(f"  Signals this iteration: {signals_count}")
+                logger.info(f"  Total signals: {signals_total}")
+                logger.info(f"  Total errors: {errors_total}")
+                logger.info(f"  Elapsed time: {elapsed/60:.1f} minutes")
+                logger.info(f"  Health: {health['overall_status']}")
+                
+                # Periodic summary to Telegram
+                if iteration % 20 == 0 and tg:  # Every 10 minutes
+                    tg.send(
+                        f"📊 <b>Pipeline Status</b>\n"
+                        f"Iteration: {iteration}\n"
+                        f"Signals: {signals_total}\n"
+                        f"Errors: {errors_total}\n"
+                        f"Uptime: {elapsed/60:.1f}m\n"
+                        f"Health: {health['overall_status']}"
+                    )
+                
+                # Wait before next iteration
+                await asyncio.sleep(30)  # 30 saniye bekle
+                
+            except asyncio.CancelledError:
+                logger.info("Pipeline cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Pipeline loop error: {e}", exc_info=True)
+                errors_total += 1
+                if tg and errors_total == 1:  # İlk hatada bildir
+                    tg.send(f"❌ Pipeline error: {type(e).__name__}: {str(e)[:150]}")
+                await asyncio.sleep(60)  # Hata durumunda 1 dk bekle
+    
+    except KeyboardInterrupt:
+        logger.info("Pipeline interrupted by user")
+    finally:
+        # Shutdown
+        logger.info("Shutting down pipeline...")
+        pipeline.shutdown()
+        
+        # Final summary
+        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+        summary_msg = (
+            f"Pipeline stopped after {iteration} iterations\n"
+            f"Total runtime: {elapsed/60:.1f} minutes\n"
+            f"Total signals: {signals_total}\n"
+            f"Total errors: {errors_total}"
+        )
+        logger.info(summary_msg)
+        
+        if tg:
+            tg.send(f"✅ <b>Pipeline Stopped</b>\n{summary_msg}")
 
 async def main_live_trading():
     """Main entry point for live trading mode using Phase 3.4 infrastructure."""
