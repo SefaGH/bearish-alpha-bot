@@ -1,9 +1,9 @@
 name: Run Bearish Bot
 
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: "*/30 * * * *"  # Her 30 dakikada bir
+  workflow_dispatch:  # Manuel tetikleme
+  # schedule:  # Otomatik çalışmayı kapat
+  #   - cron: "*/30 * * * *"
 
 jobs:
   run:
