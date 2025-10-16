@@ -1,0 +1,23 @@
+name: Test Signal Generation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      
+      - name: Install deps
+        run: pip install -r requirements.txt
+      
+      - name: Test signals
+        env:
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+        run: |
+          python scripts/test_signal_generation.py
