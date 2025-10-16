@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Test if signals can be generated with current config."""
-
+import pandas as pd
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
