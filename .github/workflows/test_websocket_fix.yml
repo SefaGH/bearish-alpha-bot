@@ -1,9 +1,7 @@
-name: Test WebSocket Parse Frame Fix
+name: Test WebSocket Fix
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 */4 * * *"  # Her 4 saatte bir
 
 jobs:
   test:
@@ -15,24 +13,51 @@ jobs:
         with:
           python-version: "3.12"
       
-      - name: Install dependencies with fixed versions
+      - name: Install fixed deps
         run: |
-          # Clean install with fixed aiohttp version
-          pip install --no-cache-dir --upgrade pip
-          pip install --no-cache-dir aiohttp==3.8.6 yarl<2.0 multidict<7.0
+          pip install --upgrade pip
+          # Quotes ile version specifier'ları koru
+          pip install --no-cache-dir "aiohttp==3.8.6" "yarl<2.0" "multidict<7.0"
           pip install --no-cache-dir -r requirements.txt
       
-      - name: Test WebSocket recovery
+      - name: Check versions
+        run: |
+          python -c "import aiohttp; print(f'aiohttp: {aiohttp.__version__}')"
+          python -c "import yarl; print(f'yarl: {yarl.__version__}')"
+          python -c "import multidict; print(f'multidict: {multidict.__version__}')"
+      
+      - name: Test WebSocket Connection
         env:
           EXCHANGES: bingx
           BINGX_KEY: ${{ secrets.BINGX_KEY }}
           BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
         run: |
-          python scripts/test_websocket_recovery.py
-      
-      - name: Upload logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: websocket-test-logs
-          path: "*.log"
+          # Simple WebSocket test
+          python -c "
+import asyncio
+import ccxt.pro as ccxtpro
+
+async def test():
+    exchange = ccxtpro.bingx({'enableRateLimit': True})
+    try:
+        print('Testing WebSocket...')
+        ohlcv = await exchange.watch_ohlcv('BTC/USDT:USDT', '1m')
+        print(f'✅ WebSocket working! Got {len(ohlcv)} candles')
+        print('✅ parse_frame error FIXED!')
+        await exchange.close()
+        return True
+    except AttributeError as e:
+        if 'parse_frame' in str(e):
+            print(f'❌ parse_frame error still exists: {e}')
+        else:
+            print(f'❌ Other AttributeError: {e}')
+        await exchange.close()
+        return False
+    except Exception as e:
+        print(f'❌ Error: {e}')
+        await exchange.close()
+        return False
+
+success = asyncio.run(test())
+exit(0 if success else 1)
+          "
