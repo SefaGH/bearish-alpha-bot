@@ -427,22 +427,40 @@ class LiveTradingEngine:
                                         try:
                                             signal = None
                                             
-                                            # Check if strategy is adaptive and has regime awareness
-                                            if hasattr(strategy, 'signal'):
-                                                # Adaptive strategies accept regime_data
-                                                if 'Adaptive' in strategy.__class__.__name__:
-                                                    # AdaptiveOversoldBounce takes (df_30m, regime_data)
-                                                    if 'OversoldBounce' in strategy.__class__.__name__:
-                                                        signal = strategy.signal(df_30m, regime_data)
-                                                    # AdaptiveShortTheRip takes (df_30m, df_1h, regime_data)
-                                                    elif 'ShortTheRip' in strategy.__class__.__name__ and df_1h is not None:
+                                            # Check if strategy has signal method
+                                            if not hasattr(strategy, 'signal'):
+                                                logger.debug(f"Strategy {strategy_name} has no signal method, skipping")
+                                                continue
+                                            
+                                            # Try to determine strategy requirements by checking method signature
+                                            import inspect
+                                            sig = inspect.signature(strategy.signal)
+                                            params = list(sig.parameters.keys())
+                                            
+                                            # Check if strategy accepts regime_data (adaptive strategies)
+                                            has_regime_param = 'regime_data' in params
+                                            
+                                            # Determine if strategy needs multiple timeframes
+                                            needs_1h = len(params) >= 2 and params[0] != 'self'
+                                            
+                                            # Call strategy with appropriate parameters
+                                            try:
+                                                if has_regime_param:
+                                                    # Adaptive strategy with regime awareness
+                                                    if needs_1h and df_1h is not None:
                                                         signal = strategy.signal(df_30m, df_1h, regime_data)
+                                                    else:
+                                                        signal = strategy.signal(df_30m, regime_data)
                                                 else:
-                                                    # Base strategies without regime awareness
-                                                    if 'ShortTheRip' in strategy.__class__.__name__ and df_1h is not None:
+                                                    # Base strategy without regime awareness
+                                                    if needs_1h and df_1h is not None:
                                                         signal = strategy.signal(df_30m, df_1h)
                                                     else:
                                                         signal = strategy.signal(df_30m)
+                                            except TypeError as te:
+                                                # Fallback: try calling with just df_30m
+                                                logger.debug(f"Strategy {strategy_name} parameter mismatch, trying with df_30m only: {te}")
+                                                signal = strategy.signal(df_30m)
                                             
                                             # If signal generated, add to queue
                                             if signal:
@@ -545,8 +563,6 @@ class LiveTradingEngine:
         Returns:
             DataFrame with OHLCV data or None on error
         """
-        import pandas as pd
-        
         # Try each exchange client until successful
         for exchange_name, client in self.exchange_clients.items():
             try:
