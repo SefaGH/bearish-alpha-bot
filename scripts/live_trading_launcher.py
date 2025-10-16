@@ -1466,7 +1466,7 @@ Examples:
   
   # ULTIMATE MODE: Custom restart parameters
   python scripts/live_trading_launcher.py --infinite --auto-restart --max-restarts 500 --restart-delay 60
-        """
+            """
     )
     
     parser.add_argument(
