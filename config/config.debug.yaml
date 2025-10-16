@@ -1,0 +1,85 @@
+# DEBUG/TEST Configuration for Signal Generation Testing
+# Use this config to verify signal generation and strategy control
+# Based on issue requirements: https://github.com/SefaGH/bearish-alpha-bot/issues/xxx
+
+execution:
+  enable_live: false  # PAPER MODE for testing
+  order_type: market
+  time_in_force: IOC
+  fee_pct: 0.0006
+  max_slippage_pct: 0.001
+  leverage:
+    default: 5
+    overrides: {}
+
+risk:
+  equity_usd: 100  # 100 USDT capital
+  per_trade_risk_pct: 0.01  # 1% risk per trade
+  daily_loss_limit_pct: 0.02
+  risk_usd_cap: 5  # Max 5 USDT risk
+  max_notional_per_trade: 20
+  min_stop_pct: 0.003
+  min_amount_behavior: skip
+  min_notional_behavior: skip
+  daily_max_trades: 5  # Daily max 5 trades
+
+class_limits:
+  meme:
+    max_notional_per_trade: 10
+    risk_usd_cap: 0.5
+  microcap:
+    max_notional_per_trade: 15
+    risk_usd_cap: 0.75
+  bluechip:
+    max_notional_per_trade: 25
+    risk_usd_cap: 1.0
+
+notify:
+  send_all: true
+  push_no_signal: true
+  push_debug: true  # Enable debug notifications
+  min_cooldown_sec: 300
+  push_trail_updates: false
+
+regime:
+  min_slow_candles: 90
+
+# ⚠️ TEST-OPTIMIZED UNIVERSE SETTINGS
+universe:
+  min_quote_volume_usdt: 50000  # Lowered from 1M to 50K for more symbols
+  prefer_perps: false
+  max_symbols_per_exchange: 20  # Increased for more coverage
+  top_n_per_exchange: 20  # Match max_symbols
+  only_linear: true
+
+indicators:
+  rsi_period: 14
+  atr_period: 14
+  ema_fast: 21
+  ema_mid: 50
+  ema_slow: 200
+
+# ⚠️ TEST-OPTIMIZED SIGNAL SETTINGS (Relaxed thresholds)
+signals:
+  oversold_bounce:
+    enable: true
+    ignore_regime: true  # ⚠️ Regime control DISABLED for testing
+    rsi_max: 50  # Relaxed threshold (easier to trigger)
+    adaptive_rsi_base: 45
+    adaptive_rsi_range: 15
+    tp_pct: 0.006
+    sl_atr_mult: 1.5
+
+  short_the_rip:
+    enable: true
+    ignore_regime: true  # ⚠️ Regime control DISABLED for testing
+    rsi_min: 50  # Relaxed threshold (easier to trigger)
+    adaptive_rsi_base: 55
+    adaptive_rsi_range: 15
+    tp_pct: 0.006
+    sl_atr_mult: 1.5
+
+quarantine:
+  enable: true
+  days: 7
+  file: data/quarantine.json
