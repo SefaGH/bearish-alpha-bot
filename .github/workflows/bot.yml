@@ -22,7 +22,7 @@ jobs:
           python -V
           pip install --upgrade pip setuptools wheel
           # Fix for parse_frame error - install specific versions first
-          pip install --no-cache-dir aiohttp==3.8.6 yarl<2.0 multidict<7.0
+          pip install --no-cache-dir "aiohttp==3.8.6" "yarl<2.0" "multidict<7.0"
           pip install --no-cache-dir -r requirements.txt
 
       # config.yaml yoksa example'dan kopyala (fixed bash)
