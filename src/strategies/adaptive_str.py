@@ -22,6 +22,13 @@ class AdaptiveShortTheRip(ShortTheRip):
     # Maximum adjustment to base threshold (in RSI points)
     MAX_THRESHOLD_ADJUSTMENT = 5
     
+    # Default regime data for fallback scenarios
+    DEFAULT_REGIME = {
+        'trend': 'neutral',
+        'momentum': 'sideways',
+        'volatility': 'normal'
+    }
+    
     def __init__(self, cfg: Dict, regime_analyzer=None):
         """
         Initialize adaptive ShortTheRip strategy.
@@ -182,12 +189,8 @@ class AdaptiveShortTheRip(ShortTheRip):
                         regime_data = None
             
             if regime_data is None:
-                # Simplified regime analysis with 30m only
-                regime_data = {
-                    'trend': 'neutral',
-                    'momentum': 'sideways',
-                    'volatility': 'normal'
-                }
+                # Use default neutral regime
+                regime_data = self.DEFAULT_REGIME.copy()
         
         try:
             # Ensure we have valid data with critical columns

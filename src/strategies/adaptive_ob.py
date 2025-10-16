@@ -22,6 +22,13 @@ class AdaptiveOversoldBounce(OversoldBounce):
     # Maximum adjustment to base threshold (in RSI points)
     MAX_THRESHOLD_ADJUSTMENT = 5
     
+    # Default regime data for fallback scenarios
+    DEFAULT_REGIME = {
+        'trend': 'neutral',
+        'momentum': 'sideways',
+        'volatility': 'normal'
+    }
+    
     def __init__(self, cfg: Dict, regime_analyzer=None):
         """
         Initialize adaptive OversoldBounce strategy.
@@ -142,7 +149,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
         Args:
             df_30m: 30-minute OHLCV dataframe with indicators
             regime_data: Optional market regime data for adaptation
-                        If None, generates simplified regime data
+                        If None, creates default regime data with neutral settings
         
         Returns:
             Signal dictionary or None
@@ -158,13 +165,9 @@ class AdaptiveOversoldBounce(OversoldBounce):
             logger.warning(f"[STRATEGY-AdaptiveOB] Insufficient 30m data")
             return None
         
-        # If no regime data provided, create simplified regime
+        # If no regime data provided, use default neutral regime
         if regime_data is None:
-            regime_data = {
-                'trend': 'neutral',
-                'momentum': 'sideways',
-                'volatility': 'normal'
-            }
+            regime_data = self.DEFAULT_REGIME.copy()
         
         try:
             # Debug: Market analysis started
