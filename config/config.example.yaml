@@ -79,25 +79,19 @@ indicators:
 signals:
   oversold_bounce:
     enable: true
-    # TEST: Rejim filtresi kapalı kalsın; sinyal görmeye odaklanalım
-    ignore_regime: true  # Production'da false olmalı
-    # Eşikleri gevşet: daha fazla "oversold" sinyali yakalayalım
-    rsi_max: 60          # (mevcut: 45)
-    adaptive_rsi_base: 45  # Base threshold for adaptive strategy
-    adaptive_rsi_range: 10  # Max ±10 adjustment for gentler adaptation
-    tp_pct: 0.006        # (mevcut: 0.006) -> TP'ye ulaşma oranı artar
-    sl_atr_mult: 1.5     # (mevcut: 1.0) -> biraz daha güvenli stop
+    ignore_regime: false  # Production'da false
+    adaptive_rsi_base: 30  # Dinamik RSI için baz değer
+    adaptive_rsi_range: 15  # ±15 dinamik ayarlama
+    tp_pct: 0.015
+    sl_atr_mult: 1.0
 
   short_the_rip:
     enable: true
-    # TEST: Rejim filtresini burada da esnetelim
-    # (eğer parent'ta ignore_regime yoksa veya global değilse; yoksa bu satıra gerek olmayabilir)
-    ignore_regime: true   # dosyada bu anahtar yoksa ekleyebilirsin, yoksa bırak
-    rsi_min: 40          # (mevcut: 50) -> daha sık short setup
-    adaptive_rsi_base: 50  # Base threshold for adaptive strategy
-    adaptive_rsi_range: 10  # Max ±10 adjustment for gentler adaptation
-    tp_pct: 0.006        # aynı kalsın
-    sl_atr_mult: 1.5     # aynı kalsın
+    ignore_regime: false
+    adaptive_rsi_base: 70  # Dinamik RSI için baz değer
+    adaptive_rsi_range: 15  # ±15 dinamik ayarlama
+    tp_pct: 0.012
+    sl_atr_mult: 1.0
 
 quarantine:
   enable: true

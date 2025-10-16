@@ -136,41 +136,64 @@ class AdaptiveShortTheRip(ShortTheRip):
             }
     
     def signal(self, df_30m: pd.DataFrame, 
-               df_1h: pd.DataFrame,
+               df_1h: pd.DataFrame = None,
                regime_data: Optional[Dict] = None) -> Optional[Dict]:
         """
         Generate adaptive trading signal based on market regime.
         
         Args:
             df_30m: 30-minute OHLCV dataframe with indicators
-            df_1h: 1-hour OHLCV dataframe with indicators
+            df_1h: Optional 1-hour OHLCV dataframe with indicators
             regime_data: Optional market regime data for adaptation
                         If None, falls back to base strategy
         
         Returns:
             Signal dictionary or None
         """
-        # If no regime data provided, use base strategy
+        # Data validation
+        if df_30m is None or df_30m.empty:
+            return None
+        
+        # Safely get last row
+        try:
+            last30 = df_30m.dropna().iloc[-1]
+        except IndexError:
+            logger.warning(f"[STRATEGY-AdaptiveSTR] Insufficient 30m data")
+            return None
+        
+        # 1h data is optional for adaptive strategy
+        last1h = None
+        if df_1h is not None and not df_1h.empty:
+            try:
+                last1h = df_1h.dropna().iloc[-1]
+            except IndexError:
+                # Continue without 1h data
+                pass
+        
+        # Analyze market regime with available data
         if regime_data is None:
-            logger.debug("No regime data provided, using base ShortTheRip strategy")
-            return super().signal(df_30m, df_1h)
+            if last1h is not None:
+                # Try to analyze regime if we have regime analyzer
+                if self.regime_analyzer:
+                    try:
+                        regime_data = self.regime_analyzer.analyze_regime(last30, last1h)
+                    except Exception as e:
+                        logger.debug(f"Failed to analyze regime: {e}")
+                        regime_data = None
+            
+            if regime_data is None:
+                # Simplified regime analysis with 30m only
+                regime_data = {
+                    'trend': 'neutral',
+                    'momentum': 'sideways',
+                    'volatility': 'normal'
+                }
         
         try:
-            # Debug: Market analysis started
-            logger.debug("🎯 [STRATEGY-AdaptiveSTR] Market analysis started")
-            
-            # Ensure we have valid data
-            if df_30m.empty:
-                logger.debug("🎯 [STRATEGY-AdaptiveSTR] Empty dataframe, no signal")
+            # Ensure we have valid data with critical columns
+            if 'rsi' not in last30.index or 'close' not in last30.index:
+                logger.debug("🎯 [STRATEGY-AdaptiveSTR] Missing required columns, no signal")
                 return None
-            
-            # Get last row, checking critical columns only  
-            df_clean = df_30m.dropna(subset=['rsi', 'close'])
-            if df_clean.empty:
-                logger.debug("🎯 [STRATEGY-AdaptiveSTR] No valid data after cleaning, no signal")
-                return None
-                
-            last30 = df_clean.iloc[-1]
             
             # Debug: Price data
             logger.debug(f"📊 [STRATEGY-AdaptiveSTR] Price data: close=${last30['close']:.2f}, RSI={last30['rsi']:.2f}")
@@ -242,8 +265,11 @@ class AdaptiveShortTheRip(ShortTheRip):
             
         except Exception as e:
             logger.error(f"Error in adaptive signal generation: {e}")
-            # Fallback to base strategy on error
-            return super().signal(df_30m, df_1h)
+            # Fallback to base strategy on error if df_1h is available
+            if df_1h is not None:
+                return super().signal(df_30m, df_1h)
+            else:
+                return None
     
     def get_strategy_state(self) -> Dict:
         """
