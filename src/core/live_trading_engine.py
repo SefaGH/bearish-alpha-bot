@@ -550,29 +550,37 @@ class LiveTradingEngine:
             logger.error(f"Fatal error in signal processing loop: {e}")
     
     def _get_scan_symbols(self) -> List[str]:
-        """
-        Get list of symbols to scan for signals.
+    """Get list of symbols to scan for signals."""
+    # Import universe builder
+    try:
+        from universe import build_universe
         
-        Returns:
-            List of trading symbols
-        """
-        # Default symbols to scan - can be made configurable
-        default_symbols = [
-            'BTC/USDT:USDT',
-            'ETH/USDT:USDT',
-            'SOL/USDT:USDT',
-            'BNB/USDT:USDT',
-            'ADA/USDT:USDT',
-            'DOT/USDT:USDT',
-            'LTC/USDT:USDT',
-            'AVAX/USDT:USDT'
+        # Build universe using exchange clients
+        universe_dict = build_universe(self.exchange_clients, self.config)
+        
+        # Flatten all symbols from all exchanges
+        all_symbols = []
+        for exchange_symbols in universe_dict.values():
+            all_symbols.extend(exchange_symbols)
+        
+        # Remove duplicates
+        unique_symbols = list(set(all_symbols))
+        
+        # Set required symbols on all clients
+        for client in self.exchange_clients.values():
+            client.set_required_symbols(unique_symbols)
+            
+        logger.info(f"[UNIVERSE] Scan list: {len(unique_symbols)} symbols from universe builder")
+        return unique_symbols
+        
+    except ImportError:
+        # Fallback to default symbols
+        logger.warning("[UNIVERSE] Universe builder not available, using defaults")
+        return [
+            'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT',
+            'BNB/USDT:USDT', 'ADA/USDT:USDT', 'DOT/USDT:USDT',
+            'LTC/USDT:USDT', 'AVAX/USDT:USDT'
         ]
-        
-        # Check if config has custom symbols
-        if 'symbols' in self.config:
-            return self.config['symbols']
-        
-        return default_symbols
     
     async def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         """
