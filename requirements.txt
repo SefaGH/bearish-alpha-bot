@@ -21,4 +21,7 @@ multidict<7.0             # Required for aiohttp 3.8.x
 pytest>=7.0.0             # Testing framework
 pytest-asyncio>=0.21.0    # Async test support
 
+# === MACHINE LEARNING (Optional) ===
+torch>=2.0.0              # PyTorch for neural networks
+torchvision>=0.15.0       # Computer vision (optional)
 scikit-learn>=1.0
