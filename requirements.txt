@@ -1,17 +1,21 @@
-# Core trading bot dependencies
-ccxt==4.3.88
-pandas>=2.2.3,<3
-numpy>=2.2.6
-python-dotenv==1.0.1
-pyyaml==6.0.2
-requests==2.32.3
+# Bearish Alpha Bot Requirements
+# Python 3.12+ compatible
 
-# Notifications
-python-telegram-bot==21.6
+# === CORE DEPENDENCIES ===
+ccxt==4.3.88              # Exchange APIs (REQUIRED)
+pandas>=2.2.3,<3          # Data processing (REQUIRED)
+numpy>=2.2.6              # Numerical operations (REQUIRED)
+python-dotenv==1.0.1      # Environment variables (REQUIRED)
+pyyaml==6.0.2             # YAML config files (REQUIRED)
+requests==2.32.3          # HTTP requests (REQUIRED)
 
-# WebSocket support (ccxt.pro için gerekli)
-aiohttp>=3.9.0
+# === NOTIFICATIONS ===
+python-telegram-bot==21.6 # Telegram alerts
 
-# Development & Testing (opsiyonel)
-pytest>=7.0.0
-pytest-asyncio>=0.21.0
+# === ASYNC/WEBSOCKET ===
+aiohttp>=3.9.0            # Async HTTP/WebSocket support
+
+# === DEVELOPMENT & TESTING ===
+# Comment out in production if not needed
+pytest>=7.0.0             # Testing framework
+pytest-asyncio>=0.21.0    # Async test support
