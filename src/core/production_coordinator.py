@@ -58,6 +58,33 @@ class ProductionCoordinator:
         self.config = LiveTradingConfiguration.get_all_configs()
         
         logger.info("ProductionCoordinator created")
+
+    def _setup_websocket_connections(self):
+    """WebSocket bağlantılarını kur - OPTİMİZE EDİLMİŞ"""
+    
+    # Config'den sabit sembolleri al
+    fixed_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
+    
+    if fixed_symbols:
+        # Sadece config'deki semboller için stream aç
+        logger.info(f"[WS] Opening streams for {len(fixed_symbols)} configured symbols only")
+        self.ws_manager.subscribe_to_symbols(fixed_symbols)
+    else:
+        # Fallback: En fazla 20 sembol
+        logger.warning("[WS] No fixed symbols, limiting to top 20")
+        top_symbols = self._get_top_volume_symbols(limit=20)
+        self.ws_manager.subscribe_to_symbols(top_symbols)
+
+        # BingX maksimum 50 stream destekler
+    if exchange_name == 'bingx':
+        MAX_STREAMS = 50
+    
+        # Öncelik sırasına göre sembol seç
+        priority_symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+        other_symbols = [s for s in symbols if s not in priority_symbols]
+    
+        # Öncelikli + diğerleri (max 50)
+        final_symbols = priority_symbols + other_symbols[:MAX_STREAMS - len(priority_symbols)]
     
     async def initialize_production_system(self, exchange_clients: Dict, 
                                           portfolio_config: Dict,
