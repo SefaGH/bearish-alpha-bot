@@ -26,8 +26,11 @@ jobs:
       
       - name: Install deps
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          python -V
+          pip install --upgrade pip setuptools wheel
+          # Fix for parse_frame error - install specific versions first
+          pip install --no-cache-dir aiohttp==3.8.6 yarl<2.0 multidict<7.0
+          pip install --no-cache-dir -r requirements.txt
       
       - name: Run bot with pipeline
         env:
