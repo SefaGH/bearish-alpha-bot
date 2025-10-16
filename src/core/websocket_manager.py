@@ -498,47 +498,47 @@ class StreamDataCollector:
         logger.info("StreamDataCollector cleared")
 
     def _setup_optimized_websocket(self, fixed_symbols: List[str] = None):
-    """Setup WebSocket with optimization"""
+        """Setup WebSocket with optimization"""
     
-    # Config'den sembolleri al
-    if not fixed_symbols:
-        universe_cfg = self.config.get('universe', {})
-        fixed_symbols = universe_cfg.get('fixed_symbols', [])
+        # Config'den sembolleri al
+        if not fixed_symbols:
+            universe_cfg = self.config.get('universe', {})
+            fixed_symbols = universe_cfg.get('fixed_symbols', [])
     
-    if not fixed_symbols:
-        logger.warning("[WS] No fixed symbols configured, WebSocket disabled")
-        return None
+        if not fixed_symbols:
+            logger.warning("[WS] No fixed symbols configured, WebSocket disabled")
+            return None
     
-    # BingX için özel limitler
-    max_streams_config = {
-        'bingx': 50,      # BingX max 50 stream
-        'binance': 200,   # Binance daha yüksek
-        'kucoinfutures': 100,
-        'default': 20     # Diğerleri için varsayılan
-    }
+        # BingX için özel limitler
+        max_streams_config = {
+            'bingx': 50,      # BingX max 50 stream
+            'binance': 200,   # Binance daha yüksek
+            'kucoinfutures': 100,
+            'default': 20     # Diğerleri için varsayılan
+        }
     
-    # Her borsa için optimize edilmiş manager oluştur
-    from core.websocket_manager import OptimizedWebSocketManager
+        # Her borsa için optimize edilmiş manager oluştur
+        from core.websocket_manager import OptimizedWebSocketManager
     
-    ws_manager = OptimizedWebSocketManager(
-        exchanges=self.exchange_clients,
-        config=self.config,
-        max_streams_per_exchange=20  # Varsayılan
-    )
-    
-    # Sabit sembolleri set et
-    ws_manager.set_fixed_symbols(fixed_symbols)
-    
-    # BingX için özel ayar
-    for exchange_name in self.exchange_clients.keys():
-        max_streams = max_streams_config.get(
-            exchange_name, 
-            max_streams_config['default']
+        ws_manager = OptimizedWebSocketManager(
+            exchanges=self.exchange_clients,
+            config=self.config,
+            max_streams_per_exchange=20  # Varsayılan
         )
-        logger.info(f"[WS] {exchange_name}: Max streams set to {max_streams}")
     
-    # Subscribe with optimization
-    ws_manager.subscribe_optimized()
+        # Sabit sembolleri set et
+        ws_manager.set_fixed_symbols(fixed_symbols)
+    
+        # BingX için özel ayar
+        for exchange_name in self.exchange_clients.keys():
+            max_streams = max_streams_config.get(
+                exchange_name, 
+                max_streams_config['default']
+            )
+            logger.info(f"[WS] {exchange_name}: Max streams set to {max_streams}")
+    
+        # Subscribe with optimization
+        ws_manager.subscribe_optimized()
     
     logger.info(f"[WS] Optimized WebSocket setup complete for {len(fixed_symbols)} symbols")
     return ws_manager
