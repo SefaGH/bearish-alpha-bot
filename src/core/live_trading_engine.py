@@ -433,7 +433,11 @@ class LiveTradingEngine:
                                                 logger.debug(f"Strategy {strategy_name} has no signal method, skipping")
                                                 continue
                                             
-                                            # Determine strategy requirements by checking method signature
+                                            # Determine strategy requirements by inspecting method signature
+                                            # Note: Strategies should use consistent parameter naming:
+                                            #   - 'df_30m' for 30-minute timeframe data (required)
+                                            #   - 'df_1h' for 1-hour timeframe data (optional)
+                                            #   - 'regime_data' for market regime information (optional)
                                             sig = inspect.signature(strategy.signal)
                                             params = list(sig.parameters.keys())
                                             
@@ -457,7 +461,8 @@ class LiveTradingEngine:
                                                         signal = strategy.signal(df_30m)
                                             except TypeError as te:
                                                 # Fallback: try calling with just df_30m
-                                                expected_params = ', '.join(params)
+                                                # Filter out 'self' from parameter list for cleaner error message
+                                                expected_params = ', '.join([p for p in params if p != 'self'])
                                                 logger.warning(
                                                     f"Strategy {strategy_name} parameter mismatch. "
                                                     f"Expected params: [{expected_params}]. "
