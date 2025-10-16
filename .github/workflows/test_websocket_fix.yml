@@ -32,32 +32,35 @@ jobs:
           BINGX_KEY: ${{ secrets.BINGX_KEY }}
           BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
         run: |
-          # Simple WebSocket test
-          python -c "
+          # Create test script as separate file
+          cat > test_websocket.py << 'EOF'
           import asyncio
           import ccxt.pro as ccxtpro
-
-async def test():
-    exchange = ccxtpro.bingx({'enableRateLimit': True})
-    try:
-        print('Testing WebSocket...')
-        ohlcv = await exchange.watch_ohlcv('BTC/USDT:USDT', '1m')
-        print(f'✅ WebSocket working! Got {len(ohlcv)} candles')
-        print('✅ parse_frame error FIXED!')
-        await exchange.close()
-        return True
-    except AttributeError as e:
-        if 'parse_frame' in str(e):
-            print(f'❌ parse_frame error still exists: {e}')
-        else:
-            print(f'❌ Other AttributeError: {e}')
-        await exchange.close()
-        return False
-    except Exception as e:
-        print(f'❌ Error: {e}')
-        await exchange.close()
-        return False
-
-success = asyncio.run(test())
-exit(0 if success else 1)
-          "
+          
+          async def test():
+              exchange = ccxtpro.bingx({'enableRateLimit': True})
+              try:
+                  print('Testing WebSocket...')
+                  ohlcv = await exchange.watch_ohlcv('BTC/USDT:USDT', '1m')
+                  print(f'SUCCESS: WebSocket working! Got {len(ohlcv)} candles')
+                  print('SUCCESS: parse_frame error FIXED!')
+                  await exchange.close()
+                  return True
+              except AttributeError as e:
+                  if 'parse_frame' in str(e):
+                      print(f'ERROR: parse_frame error still exists: {e}')
+                  else:
+                      print(f'ERROR: Other AttributeError: {e}')
+                  await exchange.close()
+                  return False
+              except Exception as e:
+                  print(f'ERROR: {e}')
+                  await exchange.close()
+                  return False
+          
+          success = asyncio.run(test())
+          exit(0 if success else 1)
+          EOF
+          
+          # Run the test script
+          python test_websocket.py
