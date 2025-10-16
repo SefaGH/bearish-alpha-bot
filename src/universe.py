@@ -6,19 +6,32 @@ def _is_usdt_candidate(market: dict, only_linear: bool = True) -> bool:
     only_linear=True  -> sadece USDT-quoted linear swap (perps)
     only_linear=False -> USDT-quoted linear swap **veya** USDT-quoted spot
     """
-    if not market.get('active', True):
-        return False
-    if market.get('quote') != 'USDT':
-        return False
-
+    symbol = market.get('symbol', 'UNKNOWN')
+    is_active = market.get('active', True)
+    quote = market.get('quote')
     is_swap = bool(market.get('swap', False))
     is_spot = not is_swap and bool(market.get('spot', not is_swap))
     is_linear = (market.get('linear') is not False)  # yoksa True varsay
+    
+    # Debug log for each symbol evaluation
+    print(f"[UNIVERSE] {symbol}: active={is_active}, quote={quote}, swap={is_swap}, spot={is_spot}, linear={is_linear}")
+    
+    if not is_active:
+        return False
+    if quote != 'USDT':
+        return False
 
     if only_linear:
-        return is_swap and is_linear
+        # BingX perpetuals are all linear USDT
+        result = is_swap and is_linear
+        if result:
+            print(f"[UNIVERSE] ✅ {symbol} accepted as linear USDT perpetual")
+        return result
     else:
-        return (is_swap and is_linear) or is_spot
+        result = (is_swap and is_linear) or is_spot
+        if result:
+            print(f"[UNIVERSE] ✅ {symbol} accepted (linear perpetual or spot)")
+        return result
 
 def _synced_lists(u: dict) -> (Set[str], Set[str]):
     include = set(u.get('include', []) or []).union(set(u.get('allow_list', []) or []))
@@ -45,15 +58,20 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
     only_linear = bool(u.get('only_linear', u.get('prefer_perps', True)))
     exclude_stables = bool(u.get('exclude_stables', True))
     allow_set, deny_set = _synced_lists(u)
+    
+    print(f"[UNIVERSE] Building universe with: min_qv={min_qv}, top_n={top_n}, only_linear={only_linear}")
 
     per_ex: Dict[str, List[str]] = {}
 
     for name, client in exchanges.items():
+        print(f"[UNIVERSE] Processing exchange: {name}")
+        
         # 1) markets
         try:
             mkts = client.markets()
+            print(f"[UNIVERSE] {name}: loaded {len(mkts)} markets")
         except Exception as e:
-            print(f"[universe] skip {name}: markets() failed: {e}")
+            print(f"[UNIVERSE] skip {name}: markets() failed: {e}")
             continue
 
         # 2) adaylar
@@ -62,18 +80,22 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
             try:
                 if _is_usdt_candidate(m, only_linear):
                     if sym in deny_set:
+                        print(f"[UNIVERSE] {sym} denied (blacklist)")
                         continue
                     if exclude_stables and _is_stable_base(sym):
+                        print(f"[UNIVERSE] {sym} excluded (stable base)")
                         continue
                     candidates.append(sym)
             except Exception:
                 continue
+        
+        print(f"[UNIVERSE] {name}: {len(candidates)} candidates after filtering")
 
         # 3) tickers & hacim (quoteVolume yoksa baseVolume fallback)
         try:
             tks = client.tickers()
         except Exception as e:
-            print(f"[universe] {name}: tickers() failed: {e}")
+            print(f"[UNIVERSE] {name}: tickers() failed: {e}")
             tks = {}
 
         def qv(sym: str) -> float:
@@ -89,17 +111,22 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
 
         # min qv filtresi
         if min_qv > 0:
+            before_filter = len(ranked)
             ranked = [s for s in ranked if qv(s) >= min_qv]
+            print(f"[UNIVERSE] {name}: volume filter removed {before_filter - len(ranked)} symbols")
 
         if not ranked:
-            print(f"[universe] {name}: no eligible symbols after filtering; skipping.")
+            print(f"[UNIVERSE] {name}: no eligible symbols after filtering; skipping.")
             continue
 
         per_ex[name] = ranked[:top_n]
+        print(f"[UNIVERSE] {name}: selected {len(per_ex[name])} symbols: {per_ex[name][:5]}...")
 
     if not per_ex:
         raise SystemExit("Universe is empty. Lower min_quote_volume_usdt, increase max_symbols_per_exchange, "
                          "or set prefer_perps: false to include spot.")
+    
+    print(f"[UNIVERSE] Built universe: {per_ex}")
     return per_ex
 
 def pick_execution_exchange() -> str:
