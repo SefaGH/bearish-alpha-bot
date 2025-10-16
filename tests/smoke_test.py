@@ -6,6 +6,7 @@ Tests all critical components including Phase 3-4 infrastructure.
 import sys
 import os
 import asyncio
+import yaml  # ⚠️ EKSIK IMPORT EKLENDI
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -53,10 +54,10 @@ def test_core_imports():
         from universe import build_universe, pick_execution_exchange
         
         print("  ✓ All core imports successful")
-        return True
+        assert True  # ⚠️ RETURN YERINE ASSERT
     except ImportError as e:
         print(f"  ✗ Import failed: {e}")
-        return False
+        assert False, f"Import failed: {e}"  # ⚠️ RETURN YERINE ASSERT
 
 def test_phase3_components():
     """Test Phase 3 production components initialization."""
@@ -79,10 +80,10 @@ def test_phase3_components():
         risk_manager = RiskManager(portfolio_config, None, None)
         
         print("  ✓ Phase 3 components initialized")
-        return True
+        assert True  # ⚠️ RETURN YERINE ASSERT
     except Exception as e:
         print(f"  ✗ Phase 3 test failed: {e}")
-        return False
+        assert False, f"Phase 3 test failed: {e}"  # ⚠️ RETURN YERINE ASSERT
 
 def test_phase4_ml():
     """Test Phase 4 ML components."""
@@ -105,10 +106,10 @@ def test_phase4_ml():
         predictor.is_bearish = True  # Default state
         
         print("  ✓ Phase 4 ML components working")
-        return True
+        assert True  # ⚠️ RETURN YERINE ASSERT
     except Exception as e:
         print(f"  ✗ Phase 4 test failed: {e}")
-        return False
+        assert False, f"Phase 4 test failed: {e}"  # ⚠️ RETURN YERINE ASSERT
 
 def test_bingx_authentication():
     """Test BingX authentication module."""
@@ -123,26 +124,19 @@ def test_bingx_authentication():
         ccxt_symbol = "BTC/USDT:USDT"
         bingx_symbol = auth.convert_symbol_to_bingx(ccxt_symbol)
         
-        if bingx_symbol == "BTC-USDT":
-            print("  ✓ BingX symbol conversion working")
-        else:
-            print(f"  ✗ Symbol conversion wrong: {bingx_symbol}")
-            return False
+        assert bingx_symbol == "BTC-USDT", f"Symbol conversion wrong: {bingx_symbol}"  # ⚠️ ASSERT
+        print("  ✓ BingX symbol conversion working")
             
         # Test signature generation (should not crash)
         params = {'test': 'value'}
         signed = auth.prepare_authenticated_request(params)
         
-        if 'headers' in signed and 'params' in signed:
-            print("  ✓ BingX authentication logic working")
-            return True
-        else:
-            print("  ✗ Authentication preparation failed")
-            return False
+        assert 'headers' in signed and 'params' in signed, "Authentication preparation failed"  # ⚠️ ASSERT
+        print("  ✓ BingX authentication logic working")
             
     except Exception as e:
         print(f"  ✗ BingX authentication test failed: {e}")
-        return False
+        assert False, f"BingX authentication test failed: {e}"  # ⚠️ RETURN YERINE ASSERT
 
 def test_live_trading_launcher():
     """Test live trading launcher components."""
@@ -162,33 +156,26 @@ def test_live_trading_launcher():
         health = HealthMonitor(telegram=None)
         report = health.get_health_report()
         
-        if 'status' in report and 'uptime_hours' in report:
-            print("  ✓ Health monitor working")
-        else:
-            print("  ✗ Health monitor report incomplete")
-            return False
+        assert 'status' in report and 'uptime_hours' in report, "Health monitor report incomplete"  # ⚠️ ASSERT
+        print("  ✓ Health monitor working")
             
         # Test auto-restart manager
         restart_mgr = AutoRestartManager(max_restarts=10)
         should_restart, reason = restart_mgr.should_restart()
         
-        if isinstance(should_restart, bool):
-            print("  ✓ Auto-restart manager working")
-        else:
-            print("  ✗ Auto-restart manager failed")
-            return False
+        assert isinstance(should_restart, bool), "Auto-restart manager failed"  # ⚠️ ASSERT
+        print("  ✓ Auto-restart manager working")
             
         print("  ✓ Live trading launcher components working")
-        return True
         
     except Exception as e:
         print(f"  ✗ Live trading launcher test failed: {e}")
-        return False
+        assert False, f"Live trading launcher test failed: {e}"  # ⚠️ RETURN YERINE ASSERT
 
 def test_config_and_strategies():
     """Test config loading and strategy initialization."""
     print("Testing config and strategies...")
-    import yaml
+    import yaml  # ⚠️ LOCAL IMPORT DA EKLENEBILIR
     config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'config.example.yaml')
     
     try:
@@ -199,9 +186,7 @@ def test_config_and_strategies():
         required = ['execution', 'risk', 'signals', 'notify']
         missing = [k for k in required if k not in cfg]
         
-        if missing:
-            print(f"  ✗ Missing config sections: {missing}")
-            return False
+        assert not missing, f"Missing config sections: {missing}"  # ⚠️ ASSERT
             
         # Check ignore_regime settings (test için true olmalı)
         ob_ignore = cfg.get('signals', {}).get('oversold_bounce', {}).get('ignore_regime')
@@ -222,11 +207,11 @@ def test_config_and_strategies():
         str_strat = AdaptiveShortTheRip({}, regime)
         
         print("  ✓ Strategies initialized successfully")
-        return True
+        assert True  # ⚠️ RETURN YERINE ASSERT
         
     except Exception as e:
         print(f"  ✗ Config/strategy test failed: {e}")
-        return False
+        assert False, f"Config/strategy test failed: {e}"  # ⚠️ RETURN YERINE ASSERT
 
 async def test_async_components():
     """Test async components (WebSocket, etc)."""
@@ -242,11 +227,11 @@ async def test_async_components():
         ws_manager = WebSocketManager(exchanges=['bingx', 'kucoinfutures'])
         
         print("  ✓ Async components initialized")
-        return True
+        assert True  # ⚠️ RETURN YERINE ASSERT
         
     except Exception as e:
         print(f"  ✗ Async test failed: {e}")
-        return False
+        assert False, f"Async test failed: {e}"  # ⚠️ RETURN YERINE ASSERT
 
 def test_production_mode_check():
     """Check if system is properly configured for production."""
@@ -256,7 +241,7 @@ def test_production_mode_check():
     # Check config
     config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'config.example.yaml')
     with open(config_path, 'r') as f:
-        cfg = yaml.safe_load(f)
+        cfg = yaml.safe_load(f)  # ⚠️ ARTIK YAML IMPORT EDİLDİ
     
     # Check live mode setting
     if not cfg.get('execution', {}).get('enable_live'):
@@ -275,10 +260,10 @@ def test_production_mode_check():
         print("  ⚠ Production issues found:")
         for issue in issues:
             print(f"    - {issue}")
-        return False
+        assert False, f"Production issues: {issues}"  # ⚠️ ASSERT
     else:
         print("  ✓ Production configuration looks good")
-        return True
+        assert True  # ⚠️ RETURN YERINE ASSERT
 
 def main():
     """Run all smoke tests."""
@@ -301,8 +286,11 @@ def main():
     results = []
     for test_func in tests:
         try:
-            result = test_func()
-            results.append(result)
+            test_func()
+            results.append(True)
+        except AssertionError as e:
+            print(f"  ✗ Test failed: {e}")
+            results.append(False)
         except Exception as e:
             print(f"  ✗ Test crashed: {e}")
             import traceback
@@ -312,8 +300,11 @@ def main():
     
     # Run async tests
     try:
-        result = asyncio.run(test_async_components())
-        results.append(result)
+        asyncio.run(test_async_components())
+        results.append(True)
+    except AssertionError as e:
+        print(f"  ✗ Async test failed: {e}")
+        results.append(False)
     except Exception as e:
         print(f"  ✗ Async test crashed: {e}")
         results.append(False)
