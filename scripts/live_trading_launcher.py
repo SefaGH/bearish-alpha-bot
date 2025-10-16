@@ -1466,7 +1466,7 @@ Examples:
   
   # ULTIMATE MODE: Custom restart parameters
   python scripts/live_trading_launcher.py --infinite --auto-restart --max-restarts 500 --restart-delay 60
-            """
+        """
     )
     
     parser.add_argument(
@@ -1519,7 +1519,7 @@ Examples:
         action='store_true',
         help='Enable debug mode with comprehensive logging for analysis'
     )
-    
+        
     args = parser.parse_args()
     
     # Determine mode
@@ -1538,7 +1538,7 @@ Examples:
     exit_code = await launcher.run(duration=args.duration)
     
     sys.exit(exit_code)
-
+        """
 
 if __name__ == '__main__':
     asyncio.run(main())
