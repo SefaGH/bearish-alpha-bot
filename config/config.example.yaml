@@ -95,7 +95,7 @@ indicators:
 signals:
   oversold_bounce:
     enable: true
-    ignore_regime: false  # Production'da false
+    ignore_regime: true  # Production'da false
     adaptive_rsi_base: 30  # Dinamik RSI için baz değer
     adaptive_rsi_range: 15  # ±15 dinamik ayarlama
     tp_pct: 0.015
@@ -103,7 +103,7 @@ signals:
 
   short_the_rip:
     enable: true
-    ignore_regime: false
+    ignore_regime: true
     adaptive_rsi_base: 70  # Dinamik RSI için baz değer
     adaptive_rsi_range: 15  # ±15 dinamik ayarlama
     tp_pct: 0.012
