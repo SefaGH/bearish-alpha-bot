@@ -1,6 +1,8 @@
 import os
 from typing import Dict, List, Set
 
+# src/universe.py - _is_usdt_candidate() fonksiyonu
+
 def _is_usdt_candidate(market: dict, only_linear: bool = True) -> bool:
     """
     only_linear=True  -> sadece USDT-quoted linear swap (perps)
@@ -9,12 +11,29 @@ def _is_usdt_candidate(market: dict, only_linear: bool = True) -> bool:
     symbol = market.get('symbol', 'UNKNOWN')
     is_active = market.get('active', True)
     quote = market.get('quote')
-    is_swap = bool(market.get('swap', False))
-    is_spot = not is_swap and bool(market.get('spot', not is_swap))
-    is_linear = (market.get('linear') is not False)  # yoksa True varsay
     
-    # Debug log for each symbol evaluation
-    print(f"[UNIVERSE] {symbol}: active={is_active}, quote={quote}, swap={is_swap}, spot={is_spot}, linear={is_linear}")
+    # BingX için özel durum: swap/spot anahtarları yoksa, type'a bak
+    market_type = market.get('type', '')
+    
+    # Önce explicit swap/spot anahtarlarına bak
+    is_swap = market.get('swap', False)
+    is_spot = market.get('spot', False)
+    
+    # Eğer her ikisi de yoksa veya False ise, type'dan çıkar
+    if not is_swap and not is_spot:
+        if market_type in ['swap', 'future', 'perpetual']:
+            is_swap = True
+        elif market_type == 'spot':
+            is_spot = True
+        else:
+            # BingX futures API'de olduğumuz için varsayılan swap
+            is_swap = True
+    
+    is_linear = market.get('linear', True)  # Varsayılan True (BingX hepsi linear)
+    
+    # Debug log
+    print(f"[UNIVERSE] {symbol}: active={is_active}, quote={quote}, swap={is_swap}, "
+          f"spot={is_spot}, linear={is_linear}, type={market_type}")
     
     if not is_active:
         return False
@@ -22,15 +41,16 @@ def _is_usdt_candidate(market: dict, only_linear: bool = True) -> bool:
         return False
 
     if only_linear:
-        # BingX perpetuals are all linear USDT
+        # Sadece linear USDT perpetuals
         result = is_swap and is_linear
         if result:
             print(f"[UNIVERSE] ✅ {symbol} accepted as linear USDT perpetual")
         return result
     else:
+        # Linear perpetuals veya spot
         result = (is_swap and is_linear) or is_spot
         if result:
-            print(f"[UNIVERSE] ✅ {symbol} accepted (linear perpetual or spot)")
+            print(f"[UNIVERSE] ✅ {symbol} accepted")
         return result
 
 def _synced_lists(u: dict) -> (Set[str], Set[str]):
