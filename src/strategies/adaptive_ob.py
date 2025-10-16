@@ -19,6 +19,9 @@ class AdaptiveOversoldBounce(OversoldBounce):
     based on real-time market regime analysis.
     """
     
+    # Maximum adjustment to base threshold (in RSI points)
+    MAX_THRESHOLD_ADJUSTMENT = 5
+    
     def __init__(self, cfg: Dict, regime_analyzer=None):
         """
         Initialize adaptive OversoldBounce strategy.
@@ -59,16 +62,16 @@ class AdaptiveOversoldBounce(OversoldBounce):
         if trend == 'bullish':
             # In uptrends, be slightly more selective
             if momentum == 'strong':
-                threshold = base_rsi - min(5, adapt_range/2)  # Max -5 adjustment
+                threshold = base_rsi - min(self.MAX_THRESHOLD_ADJUSTMENT, adapt_range/2)
             else:
-                threshold = base_rsi - min(3, adapt_range/3)  # Max -3 adjustment
+                threshold = base_rsi - min(self.MAX_THRESHOLD_ADJUSTMENT * 0.6, adapt_range/3)
         
         elif trend == 'bearish':
             # In downtrends, be slightly more aggressive
             if momentum == 'strong':
-                threshold = base_rsi + min(5, adapt_range/2)  # Max +5 adjustment
+                threshold = base_rsi + min(self.MAX_THRESHOLD_ADJUSTMENT, adapt_range/2)
             else:
-                threshold = base_rsi + min(3, adapt_range/3)  # Max +3 adjustment
+                threshold = base_rsi + min(self.MAX_THRESHOLD_ADJUSTMENT * 0.6, adapt_range/3)
         
         # Clamp to reasonable range (never below 30 or above 50)
         min_threshold = max(30, base_rsi - adapt_range)

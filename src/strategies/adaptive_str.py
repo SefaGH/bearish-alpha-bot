@@ -19,6 +19,9 @@ class AdaptiveShortTheRip(ShortTheRip):
     based on real-time market regime analysis.
     """
     
+    # Maximum adjustment to base threshold (in RSI points)
+    MAX_THRESHOLD_ADJUSTMENT = 5
+    
     def __init__(self, cfg: Dict, regime_analyzer=None):
         """
         Initialize adaptive ShortTheRip strategy.
@@ -60,16 +63,16 @@ class AdaptiveShortTheRip(ShortTheRip):
         if trend == 'bearish':
             # In downtrends, be slightly more aggressive with shorts
             if momentum == 'strong':
-                threshold = base_rsi - min(5, adapt_range/2)  # Max -5 adjustment
+                threshold = base_rsi - min(self.MAX_THRESHOLD_ADJUSTMENT, adapt_range/2)
             else:
-                threshold = base_rsi - min(3, adapt_range/3)  # Max -3 adjustment
+                threshold = base_rsi - min(self.MAX_THRESHOLD_ADJUSTMENT * 0.6, adapt_range/3)
         
         elif trend == 'bullish':
             # In uptrends, be more selective (need higher RSI)
             if momentum == 'strong':
-                threshold = base_rsi + min(5, adapt_range/2)  # Max +5 adjustment
+                threshold = base_rsi + min(self.MAX_THRESHOLD_ADJUSTMENT, adapt_range/2)
             else:
-                threshold = base_rsi + min(3, adapt_range/3)  # Max +3 adjustment
+                threshold = base_rsi + min(self.MAX_THRESHOLD_ADJUSTMENT * 0.6, adapt_range/3)
         
         # Clamp to reasonable range for shorts (50-70 range)
         min_threshold = max(50, base_rsi - adapt_range)
