@@ -1,0 +1,33 @@
+# Unused File Candidates
+# Format: relative/path — reason tags
+# This is an automated analysis - manual review required before removal
+# Total candidates found: 28
+
+src/scanners/dca_advisor.py — not_imported_runtime
+src/scanners/arbitrage_scan.py — not_imported_runtime
+src/monitoring/performance_analytics.py — not_imported_runtime
+src/monitoring/dashboard.py — not_imported_runtime
+src/monitoring/alert_manager.py — not_imported_runtime
+src/core/vst_intelligence.py — not_imported_runtime
+src/core/trailing.py — not_imported_runtime
+src/core/sizing.py — not_imported_runtime
+src/core/realtime_risk.py — not_imported_runtime
+src/core/position_sizing.py — not_imported_runtime
+src/core/portfolio_manager.py — coverage=8.2%
+src/core/performance_monitor.py — coverage=9.6%
+src/core/normalize.py — not_imported_runtime
+src/core/market_data_pipeline.py — not_imported_runtime
+src/core/logger.py — not_imported_runtime
+src/core/limits.py — not_imported_runtime
+src/core/execution_analytics.py — coverage=8.9%
+src/core/exec_engine.py — not_imported_runtime
+src/core/data_aggregator.py — not_imported_runtime
+src/core/correlation_monitor.py — not_imported_runtime
+src/core/asset_class.py — not_imported_runtime
+src/config/risk_config.py — not_imported_runtime
+src/config/optimization_config.py — not_imported_runtime
+src/config/ml_config.py — not_imported_runtime
+src/config/live_trading_config.py — not_imported_runtime
+src/backtest/simple_backtest.py — not_imported_runtime
+src/backtest/param_sweep_str.py — not_imported_runtime
+src/backtest/param_sweep.py — not_imported_runtime

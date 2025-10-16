@@ -1,0 +1,58 @@
+{
+  "metadata": {
+    "start_time": "2025-10-16T06:56:59.637621",
+    "end_time": "2025-10-16T06:56:59.647300",
+    "total_unique_imports": 21,
+    "project_imports": 0,
+    "stdlib_imports": 13,
+    "external_imports": 7
+  },
+  "project_modules": [],
+  "stdlib_modules": [
+    "collections.abc",
+    "contextlib",
+    "copy",
+    "errno",
+    "fnmatch",
+    "ipaddress",
+    "math",
+    "ntpath",
+    "pathlib",
+    "pyexpat",
+    "urllib",
+    "weakref",
+    "xml"
+  ],
+  "external_modules": [
+    "pyexpat.errors",
+    "pyexpat.model",
+    "tools.analyze_unused",
+    "urllib.parse",
+    "xml.etree",
+    "xml.etree.ElementPath",
+    "xml.etree.ElementTree"
+  ],
+  "all_imports": [
+    "_elementtree",
+    "collections.abc",
+    "contextlib",
+    "copy",
+    "errno",
+    "fnmatch",
+    "ipaddress",
+    "math",
+    "ntpath",
+    "pathlib",
+    "pyexpat",
+    "pyexpat.errors",
+    "pyexpat.model",
+    "tools.analyze_unused",
+    "urllib",
+    "urllib.parse",
+    "weakref",
+    "xml",
+    "xml.etree",
+    "xml.etree.ElementPath",
+    "xml.etree.ElementTree"
+  ]
+}

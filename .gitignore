@@ -38,6 +38,7 @@ env/
 htmlcov/
 .tox/
 *.backup
+coverage_html/
 
 # Environment variables
 .env
