@@ -946,6 +946,56 @@ class LiveTradingLauncher:
         except Exception as e:
             logger.error(f"❌ Failed to initialize production system: {e}")
             return False
+
+        async def _monitor_websocket_health(self):
+            """WebSocket sağlık kontrolü loop'u - periyodik monitoring"""
+            logger.info("Starting WebSocket health monitor...")
+    
+            while self.ws_optimizer and self.ws_optimizer.is_initialized:
+                try:
+                    await asyncio.sleep(300)  # Her 5 dakikada bir kontrol
+            
+                    status = await self.ws_optimizer.get_stream_status()
+            
+                    # Log current status
+                    logger.info(f"[WS-MONITOR] Active streams: {status['active_streams']}/{status['total_streams']}")
+            
+                    # Sağlık kontrolü
+                    if status['active_streams'] > 50:
+                        logger.warning(f"⚠️ Too many WebSocket streams: {status['active_streams']}")
+                        if self.telegram:
+                            self.telegram.send(
+                                f"⚠️ <b>WebSocket Warning</b>\n"
+                                f"Active streams: {status['active_streams']}\n"
+                                f"Consider reducing symbols"
+                            )
+            
+                    elif status['active_streams'] == 0:
+                        logger.error("❌ No active WebSocket streams!")
+                        if self.telegram:
+                            self.telegram.send("❌ <b>WebSocket Lost!</b> Attempting restart...")
+                
+                        # WebSocket'leri yeniden başlat
+                        logger.info("Attempting WebSocket reconnection...")
+                        await self.ws_optimizer.initialize_websockets(self.exchange_clients)
+                
+                        if self.ws_optimizer.is_initialized:
+                            logger.info("✅ WebSocket reconnection successful")
+                            if self.telegram:
+                                self.telegram.send("✅ WebSocket reconnected successfully")
+                        else:
+                            logger.error("Failed to reconnect WebSocket")
+            
+                    else:
+                        logger.info(f"✅ WebSocket healthy: {status['active_streams']} streams active")
+                
+                except Exception as e:
+                    logger.error(f"WebSocket monitor error: {e}")
+                    await asyncio.sleep(60)  # Hata durumunda 1 dakika bekle
+
+        async def _shutdown(self) -> None:  # <-- Bu metod zaten var, üstüne ekliyorsunuz
+            """Graceful shutdown of trading system."""
+            # ... mevcut kod ...
     
     async def _register_strategies(self) -> bool:
         """
