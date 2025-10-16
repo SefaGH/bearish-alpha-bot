@@ -59,8 +59,6 @@ def test_ml_components_light():
 def test_bingx_auth_light():
     """Import bingx authenticator and run a tiny pure-python unit if available."""
     mod = safe_import("core.bingx_authenticator")
-    if not mod:
-        return
     # only do light checks if class exists
     cls = getattr(mod, "BingXAuthenticator", None)
     if cls is None:
