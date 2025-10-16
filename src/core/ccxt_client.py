@@ -126,42 +126,42 @@ class CcxtClient:
             return {}
 
     def markets(self, force_reload: bool = False) -> Dict[str, Dict[str, Any]]:
-    """Load only required markets, not all."""
-    current_time = time.time()
+        """Load only required markets, not all."""
+        current_time = time.time()
     
-    # Cache 1 saat geçerli
-    if not force_reload and self._markets_cache and (current_time - self._markets_cache_time) < 3600:
-        return self._markets_cache
+        # Cache 1 saat geçerli
+        if not force_reload and self._markets_cache and (current_time - self._markets_cache_time) < 3600:
+            return self._markets_cache
     
-    try:
-        # Only load markets if we have required symbols
-        if self._required_symbols_only:
-            logger.info(f"Loading markets for {len(self._required_symbols_only)} required symbols only")
+        try:
+            # Only load markets if we have required symbols
+            if self._required_symbols_only:
+                logger.info(f"Loading markets for {len(self._required_symbols_only)} required symbols only")
             
-            # For BingX, we need to load all markets first (CCXT limitation)
-            # But we'll filter the results
-            all_markets = self.ex.load_markets()
+                # For BingX, we need to load all markets first (CCXT limitation)
+                # But we'll filter the results
+                all_markets = self.ex.load_markets()
             
-            # Filter to only required symbols
-            markets = {}
-            for symbol in self._required_symbols_only:
-                if symbol in all_markets:
-                    markets[symbol] = all_markets[symbol]
+                # Filter to only required symbols
+                markets = {}
+                for symbol in self._required_symbols_only:
+                    if symbol in all_markets:
+                        markets[symbol] = all_markets[symbol]
                     
-            logger.info(f"Filtered to {len(markets)} markets from {len(all_markets)} total")
+                logger.info(f"Filtered to {len(markets)} markets from {len(all_markets)} total")
             
-        else:
-            # Load all markets (old behavior)
-            markets = self.ex.load_markets()
-            logger.info(f"Loaded all {len(markets)} markets for {self.name}")
+            else:
+                # Load all markets (old behavior)
+                markets = self.ex.load_markets()
+                logger.info(f"Loaded all {len(markets)} markets for {self.name}")
         
-        self._markets_cache = markets
-        self._markets_cache_time = current_time
-        return markets
+            self._markets_cache = markets
+            self._markets_cache_time = current_time
+            return markets
         
-    except Exception as e:
-        logger.error(f"Failed to load markets: {e}")
-        raise
+        except Exception as e:
+            logger.error(f"Failed to load markets: {e}")
+            raise
 
     def validate_and_get_symbol(self, requested_symbol="BTC/USDT"):
         """
