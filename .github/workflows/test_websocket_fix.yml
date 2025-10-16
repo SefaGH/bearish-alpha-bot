@@ -34,8 +34,8 @@ jobs:
         run: |
           # Simple WebSocket test
           python -c "
-import asyncio
-import ccxt.pro as ccxtpro
+          import asyncio
+          import ccxt.pro as ccxtpro
 
 async def test():
     exchange = ccxtpro.bingx({'enableRateLimit': True})
