@@ -1015,12 +1015,16 @@ class LiveTradingLauncher:
     
     async def _monitor_websocket_health(self):
         """
-        WebSocket health monitoring loop - periodic checks with reconnection logic.
+        Enhanced WebSocket health monitor with error recovery.
         
         This method monitors WebSocket stream health and attempts automatic recovery
         when issues are detected. Moved to class-level to be accessible as a proper method.
+        Includes consecutive error tracking, parse frame error detection, and exponential backoff.
         """
         logger.info("Starting WebSocket health monitor...")
+        
+        consecutive_errors = 0
+        max_consecutive_errors = 3
         
         # Use helper method to safely check WebSocket initialization
         while self._is_ws_initialized():
@@ -1029,10 +1033,21 @@ class LiveTradingLauncher:
                 
                 status = await self.ws_optimizer.get_stream_status()
                 
-                # Log current status
-                logger.info(f"[WS-MONITOR] Active streams: {status.get('active_streams', 0)}/{status.get('total_streams', 0)}")
+                # Parse frame errors - special check for critical errors
+                error_count = status.get('error_count', 0)
+                if error_count > 0:
+                    logger.warning(f"⚠️ WebSocket errors detected: {error_count}")
+                    
+                    # If parse_frame errors detected, attempt immediate recovery
+                    if status.get('parse_frame_errors', 0) > 0:
+                        logger.error("❌ parse_frame errors detected! Attempting recovery...")
+                        
+                        # Restart WebSockets with exponential backoff
+                        await self._restart_websockets_with_backoff()
+                        consecutive_errors = 0
+                        continue
                 
-                # Health check
+                # Normal health check
                 if status.get('active_streams', 0) > 50:
                     logger.warning(f"⚠️ Too many WebSocket streams: {status['active_streams']}")
                     if self.telegram:
@@ -1043,28 +1058,86 @@ class LiveTradingLauncher:
                         )
                 
                 elif status.get('active_streams', 0) == 0:
-                    logger.error("❌ No active WebSocket streams!")
-                    if self.telegram:
-                        self.telegram.send("❌ <b>WebSocket Lost!</b> Attempting restart...")
+                    consecutive_errors += 1
+                    logger.error(f"❌ No active WebSocket streams! (attempt {consecutive_errors}/{max_consecutive_errors})")
                     
-                    # Attempt to restart WebSocket connections
-                    logger.info("Attempting WebSocket reconnection...")
-                    await self.ws_optimizer.initialize_websockets(self.exchange_clients)
-                    
-                    # Use helper method to check after reconnection
-                    if self._is_ws_initialized():
-                        logger.info("✅ WebSocket reconnection successful")
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.critical("❌ WebSocket completely failed after multiple attempts!")
                         if self.telegram:
-                            self.telegram.send("✅ WebSocket reconnected successfully")
+                            self.telegram.send(
+                                "🛑 <b>CRITICAL</b>\n"
+                                "WebSocket system failure!\n"
+                                "Manual intervention required."
+                            )
+                        # System may need to shutdown
+                        await self._emergency_shutdown("WebSocket system failure")
                     else:
-                        logger.error("Failed to reconnect WebSocket")
+                        # Attempt restart with exponential backoff
+                        await self._restart_websockets_with_backoff()
                 
                 else:
+                    # Everything is normal
+                    consecutive_errors = 0
                     logger.info(f"✅ WebSocket healthy: {status['active_streams']} streams active")
                 
             except Exception as e:
                 logger.error(f"WebSocket monitor error: {e}")
+                consecutive_errors += 1
+                
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.critical(f"Monitor failed {max_consecutive_errors} times!")
+                    break
+                
                 await asyncio.sleep(60)  # Wait 1 minute on error
+    
+    async def _restart_websockets_with_backoff(self):
+        """
+        Restart WebSockets with exponential backoff strategy.
+        
+        Attempts to restart WebSocket connections up to max_attempts times with
+        increasing delays between attempts to allow system stabilization.
+        """
+        max_attempts = 3
+        base_delay = 5  # seconds
+        
+        for attempt in range(max_attempts):
+            try:
+                delay = base_delay * (2 ** attempt)  # Exponential backoff
+                
+                logger.info(f"Restarting WebSockets (attempt {attempt + 1}/{max_attempts})...")
+                
+                if attempt > 0:
+                    logger.info(f"Waiting {delay} seconds before retry...")
+                    await asyncio.sleep(delay)
+                
+                # First, close existing connections
+                await self.ws_optimizer.shutdown()
+                await asyncio.sleep(2)
+                
+                # Restart WebSocket connections
+                await self.ws_optimizer.initialize_websockets(self.exchange_clients)
+                
+                # Check if restart was successful
+                await asyncio.sleep(5)  # Wait for stabilization
+                status = await self.ws_optimizer.get_stream_status()
+                
+                if status.get('active_streams', 0) > 0:
+                    logger.info(f"✅ WebSocket restart successful! {status['active_streams']} streams active")
+                    if self.telegram:
+                        self.telegram.send(
+                            f"✅ <b>WebSocket Recovered</b>\n"
+                            f"Active streams: {status['active_streams']}\n"
+                            f"System operational"
+                        )
+                    return True
+                else:
+                    logger.warning(f"WebSocket restart attempt {attempt + 1} failed")
+                    
+            except Exception as e:
+                logger.error(f"WebSocket restart error (attempt {attempt + 1}): {e}")
+        
+        logger.error(f"❌ Failed to restart WebSockets after {max_attempts} attempts")
+        return False
     
     async def _shutdown(self) -> None:
         """Graceful shutdown of trading system."""
