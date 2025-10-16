@@ -550,37 +550,37 @@ class LiveTradingEngine:
             logger.error(f"Fatal error in signal processing loop: {e}")
     
     def _get_scan_symbols(self) -> List[str]:
-    """Get list of symbols to scan for signals."""
-    # Import universe builder
-    try:
-        from universe import build_universe
+        """Get list of symbols to scan for signals."""
+        # Import universe builder
+        try:
+            from universe import build_universe
         
-        # Build universe using exchange clients
-        universe_dict = build_universe(self.exchange_clients, self.config)
+            # Build universe using exchange clients
+            universe_dict = build_universe(self.exchange_clients, self.config)
         
-        # Flatten all symbols from all exchanges
-        all_symbols = []
-        for exchange_symbols in universe_dict.values():
-            all_symbols.extend(exchange_symbols)
+            # Flatten all symbols from all exchanges
+            all_symbols = []
+            for exchange_symbols in universe_dict.values():
+                all_symbols.extend(exchange_symbols)
         
-        # Remove duplicates
-        unique_symbols = list(set(all_symbols))
+            # Remove duplicates
+            unique_symbols = list(set(all_symbols))
         
-        # Set required symbols on all clients
-        for client in self.exchange_clients.values():
-            client.set_required_symbols(unique_symbols)
+            # Set required symbols on all clients
+            for client in self.exchange_clients.values():
+                client.set_required_symbols(unique_symbols)
             
-        logger.info(f"[UNIVERSE] Scan list: {len(unique_symbols)} symbols from universe builder")
-        return unique_symbols
+            logger.info(f"[UNIVERSE] Scan list: {len(unique_symbols)} symbols from universe builder")
+            return unique_symbols
         
-    except ImportError:
-        # Fallback to default symbols
-        logger.warning("[UNIVERSE] Universe builder not available, using defaults")
-        return [
-            'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT',
-            'BNB/USDT:USDT', 'ADA/USDT:USDT', 'DOT/USDT:USDT',
-            'LTC/USDT:USDT', 'AVAX/USDT:USDT'
-        ]
+        except ImportError:
+            # Fallback to default symbols
+            logger.warning("[UNIVERSE] Universe builder not available, using defaults")
+            return [
+                'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT',
+                'BNB/USDT:USDT', 'ADA/USDT:USDT', 'DOT/USDT:USDT',
+                'LTC/USDT:USDT', 'AVAX/USDT:USDT'
+            ]
         
     except ImportError:
         # Fallback to default symbols
