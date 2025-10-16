@@ -1,0 +1,38 @@
+name: Test WebSocket Parse Frame Fix
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */4 * * *"  # Her 4 saatte bir
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      
+      - name: Install dependencies with fixed versions
+        run: |
+          # Clean install with fixed aiohttp version
+          pip install --no-cache-dir --upgrade pip
+          pip install --no-cache-dir aiohttp==3.8.6 yarl<2.0 multidict<7.0
+          pip install --no-cache-dir -r requirements.txt
+      
+      - name: Test WebSocket recovery
+        env:
+          EXCHANGES: bingx
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+        run: |
+          python scripts/test_websocket_recovery.py
+      
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: websocket-test-logs
+          path: "*.log"
