@@ -1,0 +1,154 @@
+name: Analyze Architecture
+
+on:
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      
+      - name: Find Strategy Registration
+        run: |
+          echo "🔍 STRATEGY REGISTRATION ANALYSIS"
+          echo "================================="
+          
+          echo -e "\n1. Looking for register_strategy calls:"
+          grep -rn "register_strategy" src/ --include="*.py" || echo "❌ No register_strategy calls found"
+          
+          echo -e "\n2. Looking for strategy imports:"
+          grep -rn "from strategies\." src/ --include="*.py" || echo "❌ No strategy imports found"
+          
+          echo -e "\n3. Looking for OversoldBounce usage:"
+          grep -rn "OversoldBounce" src/ --include="*.py" || echo "❌ No OversoldBounce usage found"
+          
+          echo -e "\n4. Looking for adaptive strategies (should NOT exist):"
+          grep -rn "adaptive_ob\|adaptive_str\|AdaptiveOB\|AdaptiveSTR" src/ --include="*.py" && echo "⚠️ PROBLEM: Adaptive strategies found!" || echo "✅ Good: No adaptive strategies"
+          
+          echo -e "\n5. Checking portfolio_manager.py strategies dict:"
+          grep -A5 "self.strategies" src/core/portfolio_manager.py || echo "❌ Can't find strategies dict"
+          
+          echo -e "\n6. Checking production_coordinator.py:"
+          grep -B2 -A10 "register_strategy\|strategies\[" src/core/production_coordinator.py || echo "❌ No strategy registration in production_coordinator"
+          
+          echo -e "\n7. Live trading engine strategy usage:"
+          grep -B2 -A5 "portfolio_manager.strategies" src/core/live_trading_engine.py || echo "❌ Can't find strategy iteration"
+      
+      - name: Check Universe Integration
+        run: |
+          echo -e "\n🌍 UNIVERSE INTEGRATION ANALYSIS"
+          echo "================================="
+          
+          echo -e "\n1. Universe builder usage:"
+          grep -rn "build_universe\|from universe" src/ --include="*.py" || echo "❌ No universe usage found"
+          
+          echo -e "\n2. set_required_symbols calls:"
+          grep -rn "set_required_symbols" src/ --include="*.py" || echo "❌ No set_required_symbols calls"
+          
+          echo -e "\n3. _get_scan_symbols implementation:"
+          grep -B2 -A15 "_get_scan_symbols" src/core/live_trading_engine.py || echo "❌ Can't find _get_scan_symbols"
+      
+      - name: Create Dependency Map
+        run: |
+          echo -e "\n📊 FILE DEPENDENCY MAP"
+          echo "====================="
+          
+          python3 - << 'EOF'
+          import os
+          import re
+          from pathlib import Path
+          
+          # Key files to analyze
+          key_files = [
+              'scripts/live_trading_launcher.py',
+              'src/core/production_coordinator.py', 
+              'src/core/portfolio_manager.py',
+              'src/core/strategy_coordinator.py',
+              'src/core/live_trading_engine.py',
+              'src/strategies/oversold_bounce.py',
+              'src/strategies/short_the_rip.py'
+          ]
+          
+          print("\n📁 KEY FILES STRUCTURE:")
+          print("-" * 40)
+          
+          for file_path in key_files:
+              if os.path.exists(file_path):
+                  print(f"✅ {file_path}")
+                  
+                  # Check imports
+                  with open(file_path, 'r') as f:
+                      content = f.read()
+                      imports = re.findall(r'^from .* import .*|^import .*', content, re.MULTILINE)
+                      
+                      # Filter relevant imports
+                      relevant = [imp for imp in imports[:10] if any(x in imp for x in 
+                                  ['strategies', 'portfolio', 'coordinator', 'trading', 'risk'])]
+                      
+                      if relevant:
+                          print("  Imports:")
+                          for imp in relevant[:5]:
+                              print(f"    - {imp.strip()}")
+                      
+                      # Check for strategy registration
+                      if 'register_strategy' in content:
+                          print("  ⚡ Contains register_strategy calls!")
+                      
+                      # Check for strategy class usage
+                      if 'OversoldBounce' in content or 'ShortTheRip' in content:
+                          print("  ⚡ Uses strategy classes!")
+              else:
+                  print(f"❌ {file_path} - NOT FOUND")
+              print()
+          
+          EOF
+      
+      - name: Summary Report
+        run: |
+          echo -e "\n📋 ANALYSIS SUMMARY"
+          echo "=================="
+          
+          cat << 'EOF' > analysis_summary.md
+          # Architecture Analysis Report
+          
+          ## Critical Issues to Check:
+          
+          1. **Strategy Registration Chain**
+             - [ ] production_coordinator.py imports strategies
+             - [ ] production_coordinator calls portfolio_manager.register_strategy()
+             - [ ] portfolio_manager.strategies dict gets populated
+             - [ ] live_trading_engine reads from portfolio_manager.strategies
+          
+          2. **Universe Integration**
+             - [ ] live_trading_engine uses build_universe()
+             - [ ] set_required_symbols() is called on clients
+             - [ ] Only 8-10 symbols loaded (not 250)
+          
+          3. **Correct Strategy Classes**
+             - [ ] Using OversoldBounce and ShortTheRip
+             - [ ] NOT using adaptive_ob or adaptive_str
+          
+          ## Next Steps:
+          
+          1. Fix strategy imports in production_coordinator.py
+          2. Add register_strategy calls in initialize_production_system()
+          3. Fix _get_scan_symbols() to use universe builder
+          4. Add debug logging for strategy checks
+          
+          EOF
+          
+          cat analysis_summary.md
+      
+      - name: Upload Analysis Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-analysis
+          path: |
+            analysis_summary.md
