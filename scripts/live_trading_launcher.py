@@ -1105,8 +1105,9 @@ class LiveTradingLauncher:
             return False
     
     async def _start_trading_loop(self, duration: Optional[float] = None) -> None:
-        """
-        Start the main trading loop with WebSocket optimization.
+        """Start the main trading loop with WebSocket optimization."""
+        logger.info("\n" + "="*70)
+        logger.info("STARTING LIVE TRADING")
         
         Args:
             duration: Optional duration in seconds (None for indefinite)
@@ -1222,16 +1223,54 @@ class LiveTradingLauncher:
         
         try:
             # Force close WebSocket connections
-            if self.ws_optimizer:
-                try:
+            ws_monitor_task = None  # <-- YENİ
+    
+            try:
+                # Start health monitoring if enabled
+                if self.health_monitor:
+                    await self.health_monitor.start_monitoring()
+        
+                # ✅ YENİ: WebSocket monitor'ü başlat
+                if self.ws_optimizer and self.ws_optimizer.is_initialized:
+                    ws_monitor_task = asyncio.create_task(self._monitor_websocket_health())
+                    logger.info("✓ WebSocket health monitoring started")
+        
+                # Start production trading loop
+                await self.coordinator.run_production_loop(
+                    mode=self.mode,
+                    duration=duration,
+                    continuous=self.infinite
+                )
+        
+            except KeyboardInterrupt:
+                logger.info("\n⚠ Keyboard interrupt received - initiating shutdown...")
+                await self._shutdown()
+        
+            except Exception as e:
+                logger.error(f"❌ Critical error in trading loop: {e}")
+                if self.health_monitor:
+                    self.health_monitor.record_error(str(e))
+                await self._emergency_shutdown(f"Critical error: {e}")
+    
+            finally:
+                # ✅ YENİ: WebSocket monitor'ü durdur
+                if ws_monitor_task and not ws_monitor_task.done():
+                    logger.info("Stopping WebSocket monitor...")
+                    ws_monitor_task.cancel()
+                    try:
+                        await ws_monitor_task
+                    except asyncio.CancelledError:
+                        pass
+                    logger.info("✓ WebSocket monitor stopped")
+        
+                # Stop health monitoring
+                if self.health_monitor:
+                    await self.health_monitor.stop_monitoring()
+        
+                # Shutdown WebSocket connections
+                if self.ws_optimizer:
                     await self.ws_optimizer.shutdown()
-                    logger.info("✓ WebSocket connections force closed")
-                except Exception as e:
-                    logger.error(f"Failed to close WebSocket: {e}")
-            
-            if self.coordinator:
-                await self.coordinator.handle_emergency_shutdown(reason)
-            
+
             # Send Telegram alert
             if self.telegram:
                 self.telegram.send(
