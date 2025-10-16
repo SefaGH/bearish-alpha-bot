@@ -46,6 +46,21 @@ regime:
 
 # ⚠️ TEST-OPTIMIZED UNIVERSE SETTINGS
 universe:
+  # Fixed symbol list for testing (no market loading!)
+  fixed_symbols:
+    - BTC/USDT:USDT
+    - ETH/USDT:USDT
+    - SOL/USDT:USDT
+    - BNB/USDT:USDT
+    - ADA/USDT:USDT
+    - DOT/USDT:USDT
+    - AVAX/USDT:USDT
+    - MATIC/USDT:USDT
+  
+  # Auto-select OFF (use fixed symbol list)
+  auto_select: false
+  
+  # Old parameters (used only when auto_select is true)
   min_quote_volume_usdt: 50000  # Lowered from 1M to 50K for more symbols
   prefer_perps: false
   max_symbols_per_exchange: 20  # Increased for more coverage

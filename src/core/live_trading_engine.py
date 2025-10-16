@@ -83,6 +83,10 @@ class LiveTradingEngine:
         # Load configuration
         self.config = LiveTradingConfiguration.get_all_configs()
         
+        # Cache for symbols (optimization)
+        self._cached_symbols = None
+        self._universe_built = False
+        
         logger.info("LiveTradingEngine initialized")
         logger.info(f"  Mode: {self.mode.value}")
         logger.info(f"  Exchange clients: {list(exchange_clients.keys())}")
@@ -550,8 +554,35 @@ class LiveTradingEngine:
             logger.error(f"Fatal error in signal processing loop: {e}")
     
     def _get_scan_symbols(self) -> List[str]:
-        """Get list of symbols to scan for signals."""
-        # Import universe builder
+        """Get list of symbols to scan for signals - with caching and fixed symbols support."""
+        
+        # Return cached symbols if available
+        if self._cached_symbols:
+            return self._cached_symbols
+        
+        # Check config for fixed symbols first
+        cfg = self.config
+        universe_cfg = cfg.get('universe', {})
+        
+        # Get fixed symbols and auto_select flag
+        fixed_symbols = universe_cfg.get('fixed_symbols', [])
+        auto_select = universe_cfg.get('auto_select', False)
+        
+        # If fixed symbols are provided and auto_select is False, use them directly
+        if fixed_symbols and not auto_select:
+            # ✅ Direct use, no market loading!
+            logger.info(f"[UNIVERSE] Using {len(fixed_symbols)} FIXED symbols (no market loading)")
+            self._cached_symbols = fixed_symbols
+            
+            # Notify exchange clients to use only these symbols (optimization)
+            for client in self.exchange_clients.values():
+                if hasattr(client, 'set_required_symbols'):
+                    client.set_required_symbols(fixed_symbols)
+            
+            return fixed_symbols
+        
+        # Fallback: Use universe builder (will load markets)
+        logger.warning("[UNIVERSE] Using universe builder (will load markets)")
         try:
             from universe import build_universe
         
@@ -568,19 +599,24 @@ class LiveTradingEngine:
         
             # Set required symbols on all clients
             for client in self.exchange_clients.values():
-                client.set_required_symbols(unique_symbols)
+                if hasattr(client, 'set_required_symbols'):
+                    client.set_required_symbols(unique_symbols)
             
+            # Cache the result
+            self._cached_symbols = unique_symbols
             logger.info(f"[UNIVERSE] Scan list: {len(unique_symbols)} symbols from universe builder")
             return unique_symbols
         
         except ImportError:
             # Fallback to default symbols
             logger.warning("[UNIVERSE] Universe builder not available, using defaults")
-            return [
+            default_symbols = [
                 'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT',
                 'BNB/USDT:USDT', 'ADA/USDT:USDT', 'DOT/USDT:USDT',
                 'LTC/USDT:USDT', 'AVAX/USDT:USDT'
             ]
+            self._cached_symbols = default_symbols
+            return default_symbols
     
     async def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         """

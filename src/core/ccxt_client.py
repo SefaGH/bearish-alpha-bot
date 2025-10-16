@@ -51,6 +51,7 @@ class CcxtClient:
         self._markets_cache = None
         self._markets_cache_time = 0
         self._required_symbols_only = set()  # Sadece ihtiyaç duyulan semboller
+        self._skip_market_load = False  # Skip market loading for fixed symbols mode
         
         # Add BingX authenticator
         if ex_name == 'bingx' and creds:
@@ -65,12 +66,14 @@ class CcxtClient:
     def set_required_symbols(self, symbols: List[str]):
         """
         Set symbols that should be loaded. Enables selective market loading.
+        When called, enables skip_market_load mode for maximum optimization.
         
         Args:
             symbols: List of symbols to load (e.g., ['BTC/USDT:USDT', 'ETH/USDT:USDT'])
         """
         self._required_symbols_only = set(symbols)
-        logger.info(f"Required symbols set for {self.name}: {len(symbols)} symbols")
+        self._skip_market_load = True
+        logger.info(f"[{self.name}] Will only work with {len(symbols)} symbols (no market load)")
 
     def ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> List[List]:
         """
@@ -126,12 +129,31 @@ class CcxtClient:
             return {}
 
     def markets(self, force_reload: bool = False) -> Dict[str, Dict[str, Any]]:
-        """Load only required markets, not all."""
+        """Load markets - or skip if we're in fixed symbols mode."""
         current_time = time.time()
     
-        # Cache 1 saat geçerli
+        # Return cached markets if available and valid
         if not force_reload and self._markets_cache and (current_time - self._markets_cache_time) < 3600:
             return self._markets_cache
+        
+        # If skip_market_load is enabled (fixed symbols mode), return minimal fake markets
+        if self._skip_market_load and not force_reload:
+            logger.info(f"[{self.name}] Skipping market load (fixed symbols mode)")
+            # Create minimal market structure for required symbols
+            fake_markets = {}
+            for symbol in self._required_symbols_only:
+                fake_markets[symbol] = {
+                    'symbol': symbol,
+                    'active': True,
+                    'quote': 'USDT',
+                    'type': 'swap',
+                    'linear': True,
+                    'swap': True,
+                    'spot': False
+                }
+            self._markets_cache = fake_markets
+            self._markets_cache_time = current_time
+            return fake_markets
     
         try:
             # Only load markets if we have required symbols

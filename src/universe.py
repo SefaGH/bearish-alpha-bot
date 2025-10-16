@@ -64,6 +64,30 @@ def _is_stable_base(symbol: str) -> bool:
 
 def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[str]]:
     u = cfg.get('universe', {}) or {}
+    
+    # Check for fixed symbols mode
+    fixed_symbols = u.get('fixed_symbols', [])
+    auto_select = u.get('auto_select', False)  # Default to False for fixed mode
+    
+    # If fixed symbols are provided and auto_select is False, use them directly
+    if fixed_symbols and not auto_select:
+        print(f"[UNIVERSE] ✅ Using FIXED symbol list: {len(fixed_symbols)} symbols")
+        print(f"[UNIVERSE] No market loading needed! 🚀")
+        
+        per_ex = {}
+        for name in exchanges.keys():
+            # Assign the same fixed list to each exchange
+            per_ex[name] = fixed_symbols.copy()
+            print(f"[UNIVERSE] {name}: Assigned {len(fixed_symbols)} symbols")
+        
+        # Debug: Show first 5 symbols
+        if fixed_symbols:
+            print(f"[UNIVERSE] Symbols: {', '.join(fixed_symbols[:5])}...")
+        
+        return per_ex
+    
+    # AUTO_SELECT = TRUE (old method, loads all markets)
+    print(f"[UNIVERSE] ⚠️ Auto-select mode active (will load all markets)")
 
     # thresholds (sağlam parse)
     try:
@@ -150,4 +174,4 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
     return per_ex
 
 def pick_execution_exchange() -> str:
-    return os.getenv('EXECUTION_EXCHANGE', 'kucoinfutures')
+    return os.getenv('EXECUTION_EXCHANGE', 'bingx')
