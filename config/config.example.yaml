@@ -61,8 +61,8 @@ signals:
     ignore_regime: true  # Production'da false olmalı
     # Eşikleri gevşet: daha fazla "oversold" sinyali yakalayalım
     rsi_max: 50          # (mevcut: 45)
-    adaptive_rsi_base: 45  # YENİ: Adaptive için base threshold
-    adaptive_rsi_range: 15  # YENİ: Adaptive ±15 range
+    adaptive_rsi_base: 45  # Base threshold for adaptive strategy
+    adaptive_rsi_range: 10  # Max ±10 adjustment for gentler adaptation
     tp_pct: 0.006        # (mevcut: 0.006) -> TP'ye ulaşma oranı artar
     sl_atr_mult: 1.5     # (mevcut: 1.0) -> biraz daha güvenli stop
 
@@ -72,8 +72,8 @@ signals:
     # (eğer parent'ta ignore_regime yoksa veya global değilse; yoksa bu satıra gerek olmayabilir)
     ignore_regime: true   # dosyada bu anahtar yoksa ekleyebilirsin, yoksa bırak
     rsi_min: 45          # (mevcut: 50) -> daha sık short setup
-    adaptive_rsi_base: 50  # YENİ: Adaptive için base threshold
-    adaptive_rsi_range: 15  # YENİ: Adaptive ±15 range
+    adaptive_rsi_base: 50  # Base threshold for adaptive strategy
+    adaptive_rsi_range: 10  # Max ±10 adjustment for gentler adaptation
     tp_pct: 0.006        # aynı kalsın
     sl_atr_mult: 1.5     # aynı kalsın
 
