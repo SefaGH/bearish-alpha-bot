@@ -41,6 +41,28 @@ regime:
   min_slow_candles: 90     # daha az eleme
 
 universe:
+  # Sabit sembol listesi (market yükleme YOK!)
+  fixed_symbols:
+    - BTC/USDT:USDT
+    - ETH/USDT:USDT
+    - SOL/USDT:USDT
+    - BNB/USDT:USDT
+    - ADA/USDT:USDT
+    - DOT/USDT:USDT
+    - AVAX/USDT:USDT
+    - MATIC/USDT:USDT
+    - LINK/USDT:USDT
+    - LTC/USDT:USDT
+    - UNI/USDT:USDT
+    - ATOM/USDT:USDT
+    - XRP/USDT:USDT
+    - ARB/USDT:USDT
+    - OP/USDT:USDT
+  
+  # Otomatik seçim KAPALI (sabit liste kullan)
+  auto_select: false
+  
+  # Eski parametreler (auto_select=false ise kullanılmaz)
   min_quote_volume_usdt: 1000000
   prefer_perps: true
   max_symbols_per_exchange: 80

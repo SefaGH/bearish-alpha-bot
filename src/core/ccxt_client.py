@@ -51,6 +51,7 @@ class CcxtClient:
         self._markets_cache = None
         self._markets_cache_time = 0
         self._required_symbols_only = set()  # Sadece ihtiyaç duyulan semboller
+        self._skip_market_load = False
         
         # Add BingX authenticator
         if ex_name == 'bingx' and creds:
@@ -64,13 +65,14 @@ class CcxtClient:
 
     def set_required_symbols(self, symbols: List[str]):
         """
-        Set symbols that should be loaded. Enables selective market loading.
+        Set required symbols and skip market loading.
         
         Args:
             symbols: List of symbols to load (e.g., ['BTC/USDT:USDT', 'ETH/USDT:USDT'])
         """
         self._required_symbols_only = set(symbols)
-        logger.info(f"Required symbols set for {self.name}: {len(symbols)} symbols")
+        self._skip_market_load = True
+        logger.info(f"[{self.name}] Will only work with {len(symbols)} symbols (no market load)")
 
     def ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> List[List]:
         """
@@ -126,7 +128,26 @@ class CcxtClient:
             return {}
 
     def markets(self, force_reload: bool = False) -> Dict[str, Dict[str, Any]]:
-        """Load only required markets, not all."""
+        """Load markets - or skip if we have fixed symbols."""
+        
+        # Fixed sembol modundaysa market yükleme!
+        if self._skip_market_load and not force_reload:
+            logger.info(f"[{self.name}] Skipping market load (fixed symbols mode)")
+            # Minimal mapping dön
+            fake_markets = {}
+            for symbol in self._required_symbols_only:
+                fake_markets[symbol] = {
+                    'symbol': symbol,
+                    'active': True,
+                    'quote': 'USDT',
+                    'type': 'swap',
+                    'linear': True,
+                    'swap': True,
+                    'spot': False
+                }
+            return fake_markets
+        
+        # Normal market yükleme (eski kod)
         current_time = time.time()
     
         # Cache 1 saat geçerli
