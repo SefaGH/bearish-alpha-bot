@@ -7,6 +7,7 @@ import pandas as pd
 import logging
 from typing import Optional, Dict
 from .oversold_bounce import OversoldBounce
+from . import DEFAULT_MARKET_REGIME
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +22,6 @@ class AdaptiveOversoldBounce(OversoldBounce):
     
     # Maximum adjustment to base threshold (in RSI points)
     MAX_THRESHOLD_ADJUSTMENT = 5
-    
-    # Default regime data for fallback scenarios
-    DEFAULT_REGIME = {
-        'trend': 'neutral',
-        'momentum': 'sideways',
-        'volatility': 'normal'
-    }
     
     def __init__(self, cfg: Dict, regime_analyzer=None):
         """
@@ -167,7 +161,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
         
         # If no regime data provided, use default neutral regime
         if regime_data is None:
-            regime_data = self.DEFAULT_REGIME.copy()
+            regime_data = DEFAULT_MARKET_REGIME.copy()
         
         try:
             # Debug: Market analysis started

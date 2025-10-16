@@ -7,6 +7,7 @@ import pandas as pd
 import logging
 from typing import Optional, Dict
 from .short_the_rip import ShortTheRip
+from . import DEFAULT_MARKET_REGIME
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +22,6 @@ class AdaptiveShortTheRip(ShortTheRip):
     
     # Maximum adjustment to base threshold (in RSI points)
     MAX_THRESHOLD_ADJUSTMENT = 5
-    
-    # Default regime data for fallback scenarios
-    DEFAULT_REGIME = {
-        'trend': 'neutral',
-        'momentum': 'sideways',
-        'volatility': 'normal'
-    }
     
     def __init__(self, cfg: Dict, regime_analyzer=None):
         """
@@ -190,7 +184,7 @@ class AdaptiveShortTheRip(ShortTheRip):
             
             if regime_data is None:
                 # Use default neutral regime
-                regime_data = self.DEFAULT_REGIME.copy()
+                regime_data = DEFAULT_MARKET_REGIME.copy()
         
         try:
             # Ensure we have valid data with critical columns
