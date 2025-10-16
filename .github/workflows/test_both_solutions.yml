@@ -1,0 +1,232 @@
+name: Test Both Solutions (Python 3.11 vs aiohttp 3.9)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-python-311:
+    name: Test with Python 3.11 + aiohttp 3.8.6
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"  # ← Python 3.11
+      
+      - name: Install deps with aiohttp 3.8.6
+        run: |
+          pip install --upgrade pip
+          pip install --no-cache-dir "aiohttp==3.8.6" "yarl<2.0" "multidict<7.0"
+          pip install --no-cache-dir -r requirements.txt
+      
+      - name: Check versions
+        run: |
+          echo "=== PYTHON 3.11 + AIOHTTP 3.8.6 TEST ==="
+          python -c "import sys; print(f'Python: {sys.version}')"
+          python -c "import aiohttp; print(f'aiohttp: {aiohttp.__version__}')"
+      
+      - name: Create WebSocket test
+        run: |
+          cat > test_websocket.py << 'EOF'
+          import asyncio
+          import time
+          import sys
+          
+          print("=" * 60)
+          print("TEST: Python 3.11 + aiohttp 3.8.6")
+          print("=" * 60)
+          
+          try:
+              import ccxt.pro as ccxtpro
+              
+              async def test():
+                  exchange = ccxtpro.bingx({'enableRateLimit': True})
+                  start_time = time.time()
+                  errors = 0
+                  success = 0
+                  
+                  # 10 kez dene
+                  for i in range(10):
+                      try:
+                          print(f"Attempt {i+1}/10...")
+                          ohlcv = await exchange.watch_ohlcv('BTC/USDT:USDT', '1m')
+                          print(f"  SUCCESS: Got {len(ohlcv)} candles")
+                          success += 1
+                      except AttributeError as e:
+                          if 'parse_frame' in str(e):
+                              print(f"  ERROR: parse_frame error!")
+                              errors += 1
+                          else:
+                              print(f"  ERROR: {e}")
+                              errors += 1
+                      except Exception as e:
+                          print(f"  ERROR: {e}")
+                          errors += 1
+                  
+                  await exchange.close()
+                  
+                  elapsed = time.time() - start_time
+                  print("\n" + "=" * 60)
+                  print(f"RESULTS (Python 3.11 + aiohttp 3.8.6):")
+                  print(f"  Success: {success}/10")
+                  print(f"  Errors: {errors}/10")
+                  print(f"  Time: {elapsed:.2f}s")
+                  print(f"  Status: {'PASSED' if errors == 0 else 'FAILED'}")
+                  print("=" * 60)
+                  
+                  return errors == 0
+              
+              result = asyncio.run(test())
+              sys.exit(0 if result else 1)
+              
+          except Exception as e:
+              print(f"FATAL ERROR: {e}")
+              sys.exit(1)
+          EOF
+      
+      - name: Run WebSocket test
+        env:
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+        run: python test_websocket.py
+
+  test-aiohttp-39:
+    name: Test with Python 3.12 + aiohttp 3.9+
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"  # ← Python 3.12
+      
+      - name: Update requirements for aiohttp 3.9+
+        run: |
+          # requirements.txt'i güncelle
+          cat > requirements_test.txt << 'EOF'
+          ccxt==4.3.88
+          pandas>=2.2.3,<3
+          numpy>=2.2.6
+          python-dotenv==1.0.1
+          pyyaml==6.0.2
+          requests==2.32.3
+          python-telegram-bot==21.6
+          aiohttp>=3.9.0
+          pytest>=7.0.0
+          pytest-asyncio>=0.21.0
+          EOF
+      
+      - name: Install deps with aiohttp 3.9+
+        run: |
+          pip install --upgrade pip
+          pip install --no-cache-dir -r requirements_test.txt
+      
+      - name: Check versions
+        run: |
+          echo "=== PYTHON 3.12 + AIOHTTP 3.9+ TEST ==="
+          python -c "import sys; print(f'Python: {sys.version}')"
+          python -c "import aiohttp; print(f'aiohttp: {aiohttp.__version__}')"
+      
+      - name: Create WebSocket test
+        run: |
+          cat > test_websocket.py << 'EOF'
+          import asyncio
+          import time
+          import sys
+          
+          print("=" * 60)
+          print("TEST: Python 3.12 + aiohttp 3.9+")
+          print("=" * 60)
+          
+          try:
+              import ccxt.pro as ccxtpro
+              
+              async def test():
+                  exchange = ccxtpro.bingx({'enableRateLimit': True})
+                  start_time = time.time()
+                  errors = 0
+                  success = 0
+                  
+                  # 10 kez dene
+                  for i in range(10):
+                      try:
+                          print(f"Attempt {i+1}/10...")
+                          ohlcv = await exchange.watch_ohlcv('BTC/USDT:USDT', '1m')
+                          print(f"  SUCCESS: Got {len(ohlcv)} candles")
+                          success += 1
+                      except AttributeError as e:
+                          if 'parse_frame' in str(e):
+                              print(f"  ERROR: parse_frame error!")
+                              errors += 1
+                          else:
+                              print(f"  ERROR: {e}")
+                              errors += 1
+                      except Exception as e:
+                          print(f"  ERROR: {e}")
+                          errors += 1
+                  
+                  await exchange.close()
+                  
+                  elapsed = time.time() - start_time
+                  print("\n" + "=" * 60)
+                  print(f"RESULTS (Python 3.12 + aiohttp 3.9+):")
+                  print(f"  Success: {success}/10")
+                  print(f"  Errors: {errors}/10")
+                  print(f"  Time: {elapsed:.2f}s")
+                  print(f"  Status: {'PASSED' if errors == 0 else 'FAILED'}")
+                  print("=" * 60)
+                  
+                  return errors == 0
+              
+              result = asyncio.run(test())
+              sys.exit(0 if result else 1)
+              
+          except Exception as e:
+              print(f"FATAL ERROR: {e}")
+              sys.exit(1)
+          EOF
+      
+      - name: Run WebSocket test
+        env:
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+        run: python test_websocket.py
+
+  compare-results:
+    name: Compare and Recommend
+    needs: [test-python-311, test-aiohttp-39]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Analyze results
+        run: |
+          echo "============================================"
+          echo "           TEST RESULTS COMPARISON          "
+          echo "============================================"
+          echo ""
+          echo "Option 1: Python 3.11 + aiohttp 3.8.6"
+          echo "  Status: ${{ needs.test-python-311.result }}"
+          echo ""
+          echo "Option 2: Python 3.12 + aiohttp 3.9+"
+          echo "  Status: ${{ needs.test-aiohttp-39.result }}"
+          echo ""
+          echo "============================================"
+          echo "                RECOMMENDATION              "
+          echo "============================================"
+          
+          if [ "${{ needs.test-python-311.result }}" == "success" ] && [ "${{ needs.test-aiohttp-39.result }}" == "failure" ]; then
+            echo "✅ RECOMMENDATION: Use Python 3.11 + aiohttp 3.8.6"
+            echo "   Python 3.11 works perfectly with no parse_frame errors!"
+          elif [ "${{ needs.test-python-311.result }}" == "failure" ] && [ "${{ needs.test-aiohttp-39.result }}" == "success" ]; then
+            echo "✅ RECOMMENDATION: Use Python 3.12 + aiohttp 3.9+"
+            echo "   aiohttp 3.9+ fixed the parse_frame issue!"
+          elif [ "${{ needs.test-python-311.result }}" == "success" ] && [ "${{ needs.test-aiohttp-39.result }}" == "success" ]; then
+            echo "✅ BOTH OPTIONS WORK!"
+            echo "   Recommendation: Use Python 3.12 + aiohttp 3.9+ (newer versions)"
+          else
+            echo "❌ BOTH OPTIONS FAILED!"
+            echo "   Need to investigate further..."
+          fi
+          
+          echo "============================================"
