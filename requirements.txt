@@ -12,10 +12,11 @@ requests==2.32.3          # HTTP requests (REQUIRED)
 # === NOTIFICATIONS ===
 python-telegram-bot==21.6 # Telegram alerts
 
-# === ASYNC/WEBSOCKET ===
-aiohttp>=3.9.0            # Async HTTP/WebSocket support
+# === ASYNC/WEBSOCKET (FIXED VERSION FOR PARSE_FRAME FIX) ===
+aiohttp==3.8.6            # Downgraded to fix parse_frame error
+yarl<2.0                  # Required for aiohttp 3.8.x
+multidict<7.0             # Required for aiohttp 3.8.x
 
 # === DEVELOPMENT & TESTING ===
-# Comment out in production if not needed
 pytest>=7.0.0             # Testing framework
 pytest-asyncio>=0.21.0    # Async test support
