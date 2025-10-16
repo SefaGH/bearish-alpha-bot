@@ -581,15 +581,6 @@ class LiveTradingEngine:
                 'BNB/USDT:USDT', 'ADA/USDT:USDT', 'DOT/USDT:USDT',
                 'LTC/USDT:USDT', 'AVAX/USDT:USDT'
             ]
-        
-    except ImportError:
-        # Fallback to default symbols
-        logger.warning("[UNIVERSE] Universe builder not available, using defaults")
-        return [
-            'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT',
-            'BNB/USDT:USDT', 'ADA/USDT:USDT', 'DOT/USDT:USDT',
-            'LTC/USDT:USDT', 'AVAX/USDT:USDT'
-        ]
     
     async def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         """
