@@ -8,6 +8,8 @@ import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 
+from ..strategies.oversold_bounce import OversoldBounce
+from ..strategies.short_the_rip import ShortTheRip
 from .live_trading_engine import LiveTradingEngine
 from .websocket_manager import WebSocketManager
 from .risk_manager import RiskManager
@@ -116,6 +118,37 @@ class ProductionCoordinator:
                 websocket_manager=self.websocket_manager
             )
             logger.info("  ✓ Portfolio Manager initialized")
+
+            # Register trading strategies
+            logger.info("  Registering trading strategies...")
+
+            signals_config = self.config.get('signals', {})
+
+            # Register OversoldBounce
+            if signals_config.get('oversold_bounce', {}).get('enable', True):
+                ob_config = signals_config.get('oversold_bounce', {})
+                ob_strategy = OversoldBounce(ob_config)
+    
+                result = self.portfolio_manager.register_strategy(
+                    strategy_name='oversold_bounce',
+                    strategy_instance=ob_strategy,
+                    initial_allocation=0.5
+                )
+                logger.info(f"    ✓ OversoldBounce registered")
+
+            # Register ShortTheRip
+            if signals_config.get('short_the_rip', {}).get('enable', True):
+                str_config = signals_config.get('short_the_rip', {})
+                str_strategy = ShortTheRip(str_config)
+    
+                result = self.portfolio_manager.register_strategy(
+                    strategy_name='short_the_rip',
+                    strategy_instance=str_strategy,
+                    initial_allocation=0.5
+                )
+                logger.info(f"    ✓ ShortTheRip registered")
+
+            logger.info(f"  ✓ {len(self.portfolio_manager.strategies)} strategies registered")
             
             # Initialize strategy coordinator
             self.strategy_coordinator = StrategyCoordinator(
