@@ -52,12 +52,7 @@ universe:
     - AVAX/USDT:USDT
     - MATIC/USDT:USDT
     - LINK/USDT:USDT
-    - LTC/USDT:USDT
-    - UNI/USDT:USDT
-    - ATOM/USDT:USDT
-    - XRP/USDT:USDT
-    - ARB/USDT:USDT
-    - OP/USDT:USDT
+    - LTC/USDT:USD
   
   # Otomatik seçim KAPALI (sabit liste kullan)
   auto_select: false
@@ -79,7 +74,7 @@ indicators:
 signals:
   oversold_bounce:
     enable: true
-    ignore_regime: true  # Production'da false
+    ignore_regime: false  # Production'da false
     adaptive_rsi_base: 30  # Dinamik RSI için baz değer
     adaptive_rsi_range: 15  # ±15 dinamik ayarlama
     tp_pct: 0.015
