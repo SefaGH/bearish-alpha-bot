@@ -63,7 +63,34 @@ def _is_stable_base(symbol: str) -> bool:
     return base in {'USDT', 'USDC', 'FDUSD', 'TUSD', 'DAI'}
 
 def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[str]]:
+    """
+    Build universe with fixed symbols (no market loading!) or dynamic auto-select.
+    """
     u = cfg.get('universe', {}) or {}
+    
+    # Config'den sabit sembol listesi
+    fixed_symbols = u.get('fixed_symbols', [])
+    auto_select = u.get('auto_select', False)  # Varsayılan FALSE!
+    
+    # Sabit liste varsa ve auto_select kapalıysa
+    if fixed_symbols and not auto_select:
+        print(f"[UNIVERSE] ✅ Using FIXED symbol list: {len(fixed_symbols)} symbols")
+        print(f"[UNIVERSE] No market loading needed! 🚀")
+        
+        per_ex = {}
+        for name in exchanges.keys():
+            # Her borsa için aynı listeyi kullan
+            per_ex[name] = fixed_symbols.copy()
+            print(f"[UNIVERSE] {name}: Assigned {len(fixed_symbols)} symbols")
+        
+        # Debug: İlk 5 sembolü göster
+        if fixed_symbols:
+            print(f"[UNIVERSE] Symbols: {', '.join(fixed_symbols[:5])}...")
+        
+        return per_ex
+    
+    # AUTO_SELECT = TRUE (eski yöntem, önerilmez)
+    print(f"[UNIVERSE] ⚠️ Auto-select mode active (will load all markets)")
 
     # thresholds (sağlam parse)
     try:
