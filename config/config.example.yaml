@@ -40,8 +40,25 @@ notify:
 regime:
   min_slow_candles: 90     # daha az eleme
 
+# WebSocket Optimization Settings
+websocket:
+  enabled: true
+  max_streams_per_exchange: 
+    bingx: 10        # BingX için max 10 stream (conservative)
+    binance: 20      # Binance daha fazla destekler
+    kucoinfutures: 15
+    default: 10      # Diğerleri için
+  
+  stream_timeframes:
+    - 1m             # Sadece gerekli timeframe'ler
+    - 5m
+  
+  reconnect_delay: 5  # Saniye
+  max_reconnect_attempts: 3
+
+# Universe Settings (KRITIK!)
 universe:
-  # Sabit sembol listesi (market yükleme YOK!)
+  # Sabit sembol listesi - SADECE BUNLAR KULLANILACAK
   fixed_symbols:
     - BTC/USDT:USDT
     - ETH/USDT:USDT
@@ -50,12 +67,16 @@ universe:
     - ADA/USDT:USDT
     - DOT/USDT:USDT
     - AVAX/USDT:USDT
-    - MATIC/USDT:USDT
-    - LINK/USDT:USDT
-    - LTC/USDT:USD
+    - LTC/USDT:USDT
   
-  # Otomatik seçim KAPALI (sabit liste kullan)
-  auto_select: false
+  # AUTO SELECT KAPALI!
+  auto_select: false  # ← KRİTİK: FALSE OLMALI!
+  
+  # WebSocket için öncelik sırası (opsiyonel)
+  priority_order:
+    - BTC/USDT:USDT  # En önemli
+    - ETH/USDT:USDT
+    - SOL/USDT:USDT
   
   # Eski parametreler (auto_select=false ise kullanılmaz)
   min_quote_volume_usdt: 1000000
