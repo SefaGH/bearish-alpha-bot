@@ -5,6 +5,8 @@ Production-ready live trading execution engine.
 
 import asyncio
 import logging
+import inspect
+import pandas as pd
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from enum import Enum
@@ -351,62 +353,254 @@ class LiveTradingEngine:
             }
     
     async def _signal_processing_loop(self):
-        """Background task for processing signals from queue."""
+        """Background task for processing signals from queue and generating new signals."""
         logger.info("Signal processing loop started")
-    
-        while self.running:
-            try:
-                # DEBUG: Loop başlangıcı
-                logger.debug("🔍 Signal scan starting...")
-            
-                # Get symbols to scan
-                symbols = self._get_scan_symbols()
-                logger.debug(f"🔍 Scanning {len(symbols)} symbols")
-            
-                for symbol in symbols:
-                    # DEBUG: Her sembol için
-                    logger.debug(f"🔍 Checking {symbol}...")
-                
-                    # Fetch data
-                    df_30m = await self._fetch_ohlcv(symbol, '30m')
-                
-                    if df_30m is not None and len(df_30m) > 0:
-                        # DEBUG: RSI değerini log'la
-                        if 'rsi' in df_30m.columns:
-                            last_rsi = df_30m['rsi'].iloc[-1]
-                            logger.info(f"📊 {symbol}: RSI={last_rsi:.1f}")
-                
-                await asyncio.sleep(30)
-            
-            except Exception as e:
-                logger.error(f"Signal processing error: {e}")
+        
+        # Import indicators
+        try:
+            from ..core.indicators import add_indicators
+        except ImportError:
+            from core.indicators import add_indicators
+        
+        # Import market regime analyzer
+        try:
+            from ..core.market_regime import MarketRegimeAnalyzer
+        except ImportError:
+            from core.market_regime import MarketRegimeAnalyzer
+        
+        # Initialize regime analyzer
+        regime_analyzer = MarketRegimeAnalyzer()
+        
+        # Track last scan time to avoid too frequent scans
+        last_scan_time = 0
+        scan_interval = 30  # 30 seconds between market scans
         
         try:
             while self.state == EngineState.RUNNING:
                 try:
-                    # Get signal from queue with timeout
-                    signal = await asyncio.wait_for(
-                        self.signal_queue.get(),
-                        timeout=self.config['signal']['signal_timeout']
-                    )
+                    current_time = asyncio.get_event_loop().time()
                     
-                    # Process signal
-                    result = await self.execute_signal(signal)
+                    # Market scanning phase (every 30 seconds)
+                    if current_time - last_scan_time >= scan_interval:
+                        logger.debug("🔍 Market scan starting...")
+                        last_scan_time = current_time
+                        
+                        # Get symbols to scan
+                        symbols = self._get_scan_symbols()
+                        logger.debug(f"🔍 Scanning {len(symbols)} symbols")
+                        
+                        for symbol in symbols:
+                            try:
+                                logger.debug(f"🔍 Checking {symbol}...")
+                                
+                                # Fetch OHLCV data for multiple timeframes
+                                df_30m = await self._fetch_ohlcv(symbol, '30m', limit=200)
+                                df_1h = await self._fetch_ohlcv(symbol, '1h', limit=200)
+                                df_4h = await self._fetch_ohlcv(symbol, '4h', limit=200)
+                                
+                                if df_30m is None or len(df_30m) == 0:
+                                    logger.debug(f"⚠️ No data for {symbol}, skipping")
+                                    continue
+                                
+                                # Add technical indicators
+                                indicator_config = self.config.get('indicators', {})
+                                df_30m = add_indicators(df_30m, indicator_config)
+                                
+                                if df_1h is not None and len(df_1h) > 0:
+                                    df_1h = add_indicators(df_1h, indicator_config)
+                                if df_4h is not None and len(df_4h) > 0:
+                                    df_4h = add_indicators(df_4h, indicator_config)
+                                
+                                # Log RSI value for monitoring
+                                if 'rsi' in df_30m.columns and len(df_30m) > 0:
+                                    last_rsi = df_30m['rsi'].iloc[-1]
+                                    logger.info(f"📊 {symbol}: RSI={last_rsi:.1f}")
+                                
+                                # Perform market regime analysis if we have all timeframes
+                                regime_data = None
+                                if df_1h is not None and df_4h is not None and len(df_1h) > 0 and len(df_4h) > 0:
+                                    regime_data = regime_analyzer.analyze_market_regime(df_30m, df_1h, df_4h)
+                                    logger.debug(f"📊 {symbol} Regime: {regime_data.get('trend', 'unknown')}")
+                                
+                                # Run strategies registered in portfolio manager
+                                if self.portfolio_manager and hasattr(self.portfolio_manager, 'strategies'):
+                                    for strategy_name, strategy in self.portfolio_manager.strategies.items():
+                                        try:
+                                            signal = None
+                                            
+                                            # Check if strategy has signal method
+                                            if not hasattr(strategy, 'signal'):
+                                                logger.debug(f"Strategy {strategy_name} has no signal method, skipping")
+                                                continue
+                                            
+                                            # Determine strategy requirements by inspecting method signature
+                                            # Note: Strategies should use consistent parameter naming:
+                                            #   - 'df_30m' for 30-minute timeframe data (required)
+                                            #   - 'df_1h' for 1-hour timeframe data (optional)
+                                            #   - 'regime_data' for market regime information (optional)
+                                            sig = inspect.signature(strategy.signal)
+                                            params = list(sig.parameters.keys())
+                                            
+                                            # Check for specific parameter names
+                                            has_regime_param = 'regime_data' in params
+                                            has_df_1h_param = 'df_1h' in params
+                                            
+                                            # Call strategy with appropriate parameters
+                                            try:
+                                                if has_regime_param:
+                                                    # Adaptive strategy with regime awareness
+                                                    if has_df_1h_param and df_1h is not None:
+                                                        signal = strategy.signal(df_30m, df_1h, regime_data)
+                                                    else:
+                                                        signal = strategy.signal(df_30m, regime_data)
+                                                else:
+                                                    # Base strategy without regime awareness
+                                                    if has_df_1h_param and df_1h is not None:
+                                                        signal = strategy.signal(df_30m, df_1h)
+                                                    else:
+                                                        signal = strategy.signal(df_30m)
+                                            except TypeError as te:
+                                                # Fallback: try calling with just df_30m
+                                                # Filter out 'self' from parameter list for cleaner error message
+                                                expected_params = ', '.join([p for p in params if p != 'self'])
+                                                logger.warning(
+                                                    f"Strategy {strategy_name} parameter mismatch. "
+                                                    f"Expected params: [{expected_params}]. "
+                                                    f"Trying with df_30m only. Error: {te}"
+                                                )
+                                                signal = strategy.signal(df_30m)
+                                            
+                                            # If signal generated, add to queue
+                                            if signal:
+                                                # Enrich signal with metadata
+                                                signal['symbol'] = symbol
+                                                signal['strategy'] = strategy_name
+                                                signal['timestamp'] = datetime.now(timezone.utc).isoformat()
+                                                
+                                                # Add current price if available
+                                                if len(df_30m) > 0:
+                                                    signal['entry'] = float(df_30m['close'].iloc[-1])
+                                                
+                                                # Add regime data if available
+                                                if regime_data:
+                                                    signal['regime_data'] = regime_data
+                                                
+                                                # Add to signal queue
+                                                await self.signal_queue.put(signal)
+                                                logger.info(f"✅ Signal generated: {strategy_name} - {symbol} - {signal.get('side', 'unknown').upper()}")
+                                                logger.info(f"   Reason: {signal.get('reason', 'N/A')}")
+                                        
+                                        except Exception as e:
+                                            logger.error(f"Error running strategy {strategy_name} for {symbol}: {e}")
+                                            continue
+                                
+                            except Exception as e:
+                                logger.error(f"Error scanning {symbol}: {e}")
+                                continue
+                        
+                        logger.debug("✓ Market scan completed")
                     
-                    if result['success']:
-                        logger.info(f"Signal processed successfully: {signal.get('symbol')}")
-                    else:
-                        logger.warning(f"Signal processing failed: {result.get('reason')}")
+                    # Signal processing phase (check queue with short timeout)
+                    try:
+                        # Check if there are signals in queue to process
+                        signal = await asyncio.wait_for(
+                            self.signal_queue.get(),
+                            timeout=1.0  # 1 second timeout
+                        )
+                        
+                        # Process signal
+                        logger.info(f"Processing signal from queue: {signal.get('symbol', 'unknown')}")
+                        result = await self.execute_signal(signal)
+                        
+                        if result['success']:
+                            logger.info(f"✓ Signal processed successfully: {signal.get('symbol')}")
+                        else:
+                            logger.warning(f"⚠️ Signal processing failed: {result.get('reason')}")
                     
-                except asyncio.TimeoutError:
-                    # No signals in queue, continue
-                    await asyncio.sleep(1)
-                    continue
+                    except asyncio.TimeoutError:
+                        # No signals in queue, continue scanning loop
+                        await asyncio.sleep(0.1)  # Small delay to prevent CPU spinning
+                        continue
+                
+                except asyncio.CancelledError:
+                    logger.info("Signal processing loop cancelled")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error in signal processing loop: {e}")
+                    await asyncio.sleep(5)  # Wait before retrying after error
                     
         except asyncio.CancelledError:
             logger.info("Signal processing loop cancelled")
         except Exception as e:
-            logger.error(f"Error in signal processing loop: {e}")
+            logger.error(f"Fatal error in signal processing loop: {e}")
+    
+    def _get_scan_symbols(self) -> List[str]:
+        """
+        Get list of symbols to scan for signals.
+        
+        Returns:
+            List of trading symbols
+        """
+        # Default symbols to scan - can be made configurable
+        default_symbols = [
+            'BTC/USDT:USDT',
+            'ETH/USDT:USDT',
+            'SOL/USDT:USDT',
+            'BNB/USDT:USDT',
+            'ADA/USDT:USDT',
+            'DOT/USDT:USDT',
+            'LTC/USDT:USDT',
+            'AVAX/USDT:USDT'
+        ]
+        
+        # Check if config has custom symbols
+        if 'symbols' in self.config:
+            return self.config['symbols']
+        
+        return default_symbols
+    
+    async def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
+        """
+        Fetch OHLCV data from exchange with error handling.
+        
+        Args:
+            symbol: Trading symbol
+            timeframe: Timeframe (e.g., '30m', '1h', '4h')
+            limit: Number of candles to fetch
+            
+        Returns:
+            DataFrame with OHLCV data or None on error
+        """
+        # Try each exchange client until successful
+        for exchange_name, client in self.exchange_clients.items():
+            try:
+                # Check if client has ohlcv method
+                if hasattr(client, 'ohlcv'):
+                    data = client.ohlcv(symbol, timeframe, limit=limit)
+                elif hasattr(client, 'ex') and hasattr(client.ex, 'fetch_ohlcv'):
+                    data = client.ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+                else:
+                    logger.warning(f"Exchange client {exchange_name} does not support OHLCV fetching")
+                    continue
+                
+                if data and len(data) > 0:
+                    # Convert to DataFrame
+                    df = pd.DataFrame(
+                        data,
+                        columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+                    )
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    df.set_index('timestamp', inplace=True)
+                    
+                    logger.debug(f"Fetched {len(df)} candles for {symbol} {timeframe} from {exchange_name}")
+                    return df
+                    
+            except Exception as e:
+                logger.debug(f"Could not fetch {symbol} {timeframe} from {exchange_name}: {e}")
+                continue
+        
+        logger.warning(f"Failed to fetch {symbol} {timeframe} from all exchanges")
+        return None
     
     async def _position_monitoring_loop(self):
         """Background task for monitoring active positions."""
