@@ -126,57 +126,42 @@ class CcxtClient:
             return {}
 
     def markets(self, force_reload: bool = False) -> Dict[str, Dict[str, Any]]:
-        """
-        Load market information with lazy loading and caching support.
-        
-        Args:
-            force_reload: Force reload markets even if cached
+    """Load only required markets, not all."""
+    current_time = time.time()
+    
+    # Cache 1 saat geçerli
+    if not force_reload and self._markets_cache and (current_time - self._markets_cache_time) < 3600:
+        return self._markets_cache
+    
+    try:
+        # Only load markets if we have required symbols
+        if self._required_symbols_only:
+            logger.info(f"Loading markets for {len(self._required_symbols_only)} required symbols only")
             
-        Returns:
-            Dictionary of market information
-        """
-        current_time = time.time()
-        
-        # Cache 1 saat geçerli
-        if not force_reload and self._markets_cache and (current_time - self._markets_cache_time) < 3600:
-            return self._markets_cache
-            
-        try:
-            # Load all markets (CCXT requirement - we can't load individual markets)
+            # For BingX, we need to load all markets first (CCXT limitation)
+            # But we'll filter the results
             all_markets = self.ex.load_markets()
             
-            if self._required_symbols_only:
-                # Filter to only required symbols for logging and memory efficiency
-                logger.info(f"Filtering markets to {len(self._required_symbols_only)} required symbols")
-                markets = {}
-                
-                # BingX için özel işlem - contract mapping kullan
-                if self.name == 'bingx':
-                    all_contracts = self._get_bingx_contracts()
-                    for ccxt_symbol in self._required_symbols_only:
-                        if ccxt_symbol in all_markets:
-                            markets[ccxt_symbol] = all_markets[ccxt_symbol]
-                else:
-                    # Diğer borsalar için sadece required symbols
-                    for symbol in self._required_symbols_only:
-                        if symbol in all_markets:
-                            markets[symbol] = all_markets[symbol]
-                
-                logger.info(f"Filtered to {len(markets)}/{len(all_markets)} markets")
-            else:
-                # Tüm marketleri kullan
-                markets = all_markets
-                logger.info(f"Loaded all {len(markets)} markets for {self.name}")
-                
-            self._markets_cache = markets
-            self._markets_cache_time = current_time
+            # Filter to only required symbols
+            markets = {}
+            for symbol in self._required_symbols_only:
+                if symbol in all_markets:
+                    markets[symbol] = all_markets[symbol]
+                    
+            logger.info(f"Filtered to {len(markets)} markets from {len(all_markets)} total")
             
-            logger.info(f"Loaded {len(markets)} markets for {self.name}")
-            return markets
-            
-        except Exception as e:
-            logger.error(f"Failed to load markets: {e}")
-            raise
+        else:
+            # Load all markets (old behavior)
+            markets = self.ex.load_markets()
+            logger.info(f"Loaded all {len(markets)} markets for {self.name}")
+        
+        self._markets_cache = markets
+        self._markets_cache_time = current_time
+        return markets
+        
+    except Exception as e:
+        logger.error(f"Failed to load markets: {e}")
+        raise
 
     def validate_and_get_symbol(self, requested_symbol="BTC/USDT"):
         """
