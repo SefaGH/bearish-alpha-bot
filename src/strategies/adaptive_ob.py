@@ -7,6 +7,7 @@ import pandas as pd
 import logging
 from typing import Optional, Dict
 from .oversold_bounce import OversoldBounce
+from . import DEFAULT_MARKET_REGIME
 
 logger = logging.getLogger(__name__)
 
@@ -142,32 +143,34 @@ class AdaptiveOversoldBounce(OversoldBounce):
         Args:
             df_30m: 30-minute OHLCV dataframe with indicators
             regime_data: Optional market regime data for adaptation
-                        If None, falls back to base strategy
+                        If None, creates default regime data with neutral settings
         
         Returns:
             Signal dictionary or None
         """
-        # If no regime data provided, use base strategy
+        # Data validation
+        if df_30m is None or df_30m.empty:
+            return None
+        
+        # Safely get last row
+        try:
+            last = df_30m.dropna().iloc[-1]
+        except IndexError:
+            logger.warning(f"[STRATEGY-AdaptiveOB] Insufficient 30m data")
+            return None
+        
+        # If no regime data provided, use default neutral regime
         if regime_data is None:
-            logger.debug("No regime data provided, using base OversoldBounce strategy")
-            return super().signal(df_30m)
+            regime_data = DEFAULT_MARKET_REGIME.copy()
         
         try:
             # Debug: Market analysis started
             logger.debug("🎯 [STRATEGY-AdaptiveOB] Market analysis started")
             
-            # Ensure we have valid data
-            if df_30m.empty:
-                logger.debug("🎯 [STRATEGY-AdaptiveOB] Empty dataframe, no signal")
+            # Ensure we have valid data with critical columns
+            if 'rsi' not in last.index or 'close' not in last.index:
+                logger.debug("🎯 [STRATEGY-AdaptiveOB] Missing required columns, no signal")
                 return None
-            
-            # Get last row, checking critical columns only (not ema200 which needs 200 bars)
-            df_clean = df_30m.dropna(subset=['rsi', 'close'])
-            if df_clean.empty:
-                logger.debug("🎯 [STRATEGY-AdaptiveOB] No valid data after cleaning, no signal")
-                return None
-                
-            last = df_clean.iloc[-1]
             
             # Debug: Price data
             logger.debug(f"📊 [STRATEGY-AdaptiveOB] Price data: close=${last['close']:.2f}, RSI={last['rsi']:.2f}")
@@ -223,8 +226,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
             
         except Exception as e:
             logger.error(f"Error in adaptive signal generation: {e}")
-            # Fallback to base strategy on error
-            return super().signal(df_30m)
+            # Return None on error for safety
+            return None
     
     def get_strategy_state(self) -> Dict:
         """

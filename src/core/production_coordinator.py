@@ -8,8 +8,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
-from strategies.oversold_bounce import OversoldBounce
-from strategies.short_the_rip import ShortTheRip
+from strategies.adaptive_ob import AdaptiveOversoldBounce
+from strategies.adaptive_str import AdaptiveShortTheRip
 
 from .live_trading_engine import LiveTradingEngine
 from .websocket_manager import WebSocketManager
@@ -121,35 +121,44 @@ class ProductionCoordinator:
             logger.info("  ✓ Portfolio Manager initialized")
 
             # Register trading strategies
-            logger.info("  Registering trading strategies...")
+            logger.info("  Registering adaptive trading strategies...")
 
             signals_config = self.config.get('signals', {})
+            regime_analyzer = MarketRegimeAnalyzer()
 
-            # Register OversoldBounce
+            # 1. Adaptive OversoldBounce
             if signals_config.get('oversold_bounce', {}).get('enable', True):
-                ob_config = signals_config.get('oversold_bounce', {})
-                ob_strategy = OversoldBounce(ob_config)
-    
+                adaptive_ob_config = {
+                    'rsi_max': signals_config.get('oversold_bounce', {}).get('adaptive_rsi_base', 30),
+                    'tp_pct': signals_config.get('oversold_bounce', {}).get('tp_pct', 0.015),
+                    'sl_atr_mult': signals_config.get('oversold_bounce', {}).get('sl_atr_mult', 1.0)
+                }
+                adaptive_ob = AdaptiveOversoldBounce(adaptive_ob_config, regime_analyzer)
+                
                 result = self.portfolio_manager.register_strategy(
-                    strategy_name='oversold_bounce',
-                    strategy_instance=ob_strategy,
-                    initial_allocation=0.5
+                    strategy_name='adaptive_ob',
+                    strategy_instance=adaptive_ob,
+                    initial_allocation=0.5  # %50
                 )
-                logger.info(f"    ✓ OversoldBounce registered")
+                logger.info("    ✓ AdaptiveOversoldBounce registered")
 
-            # Register ShortTheRip
+            # 2. Adaptive ShortTheRip  
             if signals_config.get('short_the_rip', {}).get('enable', True):
-                str_config = signals_config.get('short_the_rip', {})
-                str_strategy = ShortTheRip(str_config)
-    
+                adaptive_str_config = {
+                    'rsi_min': signals_config.get('short_the_rip', {}).get('adaptive_rsi_base', 70),
+                    'tp_pct': signals_config.get('short_the_rip', {}).get('tp_pct', 0.012),
+                    'sl_atr_mult': signals_config.get('short_the_rip', {}).get('sl_atr_mult', 1.0)
+                }
+                adaptive_str = AdaptiveShortTheRip(adaptive_str_config, regime_analyzer)
+                
                 result = self.portfolio_manager.register_strategy(
-                    strategy_name='short_the_rip',
-                    strategy_instance=str_strategy,
-                    initial_allocation=0.5
+                    strategy_name='adaptive_str',
+                    strategy_instance=adaptive_str,
+                    initial_allocation=0.5  # %50
                 )
-                logger.info(f"    ✓ ShortTheRip registered")
+                logger.info("    ✓ AdaptiveShortTheRip registered")
 
-            logger.info(f"  ✓ {len(self.portfolio_manager.strategies)} strategies registered")
+            logger.info(f"  ✓ {len(self.portfolio_manager.strategies)} adaptive strategies registered")
             
             # Initialize strategy coordinator
             self.strategy_coordinator = StrategyCoordinator(
