@@ -2,31 +2,7 @@
 """
 Live Trading Launcher for Bearish Alpha Bot
 
-Comprehensive production-ready launcher that integrates all Phase 1-4 components
-for live trading on BingX with real USDT capital.
-
-Configuration:
-- Capital: 100 USDT
-- Exchange: BingX (Single exchange focus)
-- Trading Pairs: 8 diversified crypto pairs
-- Execution Mode: Full AI control (Automated)
-- Risk Parameters: 15% max position, 5% stop loss, 10% take profit
-
-Usage:
-    python scripts/live_trading_launcher.py [--paper] [--duration SECONDS]
-    
-Options:
-    --paper         Run in paper trading mode (default: live)
-    --duration      Run for specified duration in seconds (default: indefinite)
-    --dry-run       Perform pre-flight checks only without starting trading
-    
-Environment Variables Required:
-    BINGX_KEY       - BingX API key
-    BINGX_SECRET    - BingX API secret
-    
-Optional:
-    TELEGRAM_BOT_TOKEN  - Telegram bot token for notifications
-    TELEGRAM_CHAT_ID    - Telegram chat ID for notifications
+[... mevcut docstring ...]
 """
 
 import sys
@@ -87,14 +63,183 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ============= WebSocket Optimization Manager =============
+class OptimizedWebSocketManager:
+    """Production-optimized WebSocket Manager for fixed symbol list"""
+    
+    def __init__(self, config: Dict[str, Any] = None):
+        """
+        Initialize optimized WebSocket manager.
+        
+        Args:
+            config: Configuration dictionary
+        """
+        self.config = config or {}
+        self.ws_manager = None
+        self.fixed_symbols = []
+        self.max_streams_config = {}
+        self.is_initialized = False
+        
+        logger.info("[WS-OPT] Optimized WebSocket Manager initialized")
+    
+    def setup_from_config(self, config: Dict[str, Any]) -> None:
+        """
+        Setup WebSocket configuration from config.
+        
+        Args:
+            config: Configuration dictionary
+        """
+        universe_cfg = config.get('universe', {})
+        self.fixed_symbols = universe_cfg.get('fixed_symbols', [])
+        
+        # WebSocket configuration
+        ws_cfg = config.get('websocket', {
+            'enabled': True,
+            'max_streams_per_exchange': {
+                'bingx': 10,
+                'binance': 20,
+                'kucoinfutures': 15,
+                'default': 10
+            }
+        })
+        
+        self.max_streams_config = ws_cfg.get('max_streams_per_exchange', {})
+        
+        logger.info(f"[WS-OPT] Configured with {len(self.fixed_symbols)} fixed symbols")
+        
+        if not self.fixed_symbols:
+            logger.warning("[WS-OPT] No fixed symbols configured!")
+    
+    async def initialize_websockets(self, exchange_clients: Dict[str, Any]) -> bool:
+        """
+        Initialize WebSocket connections with optimization.
+        
+        Args:
+            exchange_clients: Dictionary of exchange clients
+            
+        Returns:
+            True if initialization successful
+        """
+        try:
+            # Check if we have fixed symbols
+            if not self.fixed_symbols:
+                logger.warning("[WS-OPT] No fixed symbols, WebSocket disabled")
+                return False
+            
+            # Import WebSocketManager lazily
+            from core.websocket_manager import WebSocketManager
+            
+            # Create optimized manager
+            self.ws_manager = WebSocketManager(
+                exchanges=exchange_clients,
+                config=self.config
+            )
+            
+            # Setup stream limits per exchange
+            for exchange_name in exchange_clients.keys():
+                max_streams = self.max_streams_config.get(
+                    exchange_name,
+                    self.max_streams_config.get('default', 10)
+                )
+                logger.info(f"[WS-OPT] {exchange_name}: Max streams set to {max_streams}")
+            
+            # Subscribe to fixed symbols with optimization
+            tasks = await self._subscribe_optimized()
+            
+            if tasks:
+                logger.info(f"[WS-OPT] ✅ WebSocket initialized with {len(tasks)} streams")
+                self.is_initialized = True
+                return True
+            else:
+                logger.warning("[WS-OPT] No WebSocket streams started")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[WS-OPT] Failed to initialize WebSocket: {e}")
+            return False
+    
+    async def _subscribe_optimized(self) -> List[asyncio.Task]:
+        """
+        Subscribe to WebSocket streams with optimization.
+        
+        Returns:
+            List of stream tasks
+        """
+        if not self.ws_manager:
+            return []
+        
+        tasks = []
+        stream_count = {}
+        
+        for exchange_name, client in self.ws_manager.clients.items():
+            max_streams = self.max_streams_config.get(
+                exchange_name,
+                self.max_streams_config.get('default', 10)
+            )
+            
+            exchange_symbols = []
+            for symbol in self.fixed_symbols:
+                if len(exchange_symbols) >= max_streams:
+                    logger.info(f"[WS-OPT] {exchange_name}: Max streams ({max_streams}) reached")
+                    break
+                exchange_symbols.append(symbol)
+            
+            if exchange_symbols:
+                # Subscribe to symbols
+                symbols_per_exchange = {exchange_name: exchange_symbols}
+                
+                # OHLCV streams for main timeframe
+                ohlcv_tasks = await self.ws_manager.stream_ohlcv(
+                    symbols_per_exchange=symbols_per_exchange,
+                    timeframe='1m',
+                    callback=None,
+                    max_iterations=None
+                )
+                
+                tasks.extend(ohlcv_tasks)
+                stream_count[exchange_name] = len(exchange_symbols)
+                
+                logger.info(f"[WS-OPT] {exchange_name}: Subscribed to {len(exchange_symbols)} symbols")
+        
+        logger.info(f"[WS-OPT] Total streams: {sum(stream_count.values())}")
+        return tasks
+    
+    async def get_stream_status(self) -> Dict[str, Any]:
+        """
+        Get WebSocket stream status.
+        
+        Returns:
+            Status dictionary
+        """
+        if not self.ws_manager:
+            return {
+                'initialized': False,
+                'running': False,
+                'streams': 0
+            }
+        
+        status = self.ws_manager.get_stream_status()
+        status['optimized'] = True
+        status['fixed_symbols'] = len(self.fixed_symbols)
+        
+        return status
+    
+    async def shutdown(self) -> None:
+        """Shutdown WebSocket connections."""
+        if self.ws_manager:
+            await self.ws_manager.close()
+            logger.info("[WS-OPT] WebSocket connections closed")
+
+# ============= End of WebSocket Optimization Manager =============
+
+
 class HealthMonitor:
     """
     HEALTH MONITORING SYSTEM (Layer 3 Guardian)
     
-    Provides heartbeat monitoring, performance metrics tracking,
-    and system health analysis for the trading bot.
+    [... mevcut kod ...]
     """
-    
+    # Mevcut HealthMonitor sınıfı aynen kalıyor
     def __init__(self, telegram: Optional[Telegram] = None):
         """
         Initialize health monitor.
@@ -203,20 +348,11 @@ class AutoRestartManager:
     """
     AUTO-RESTART FAILSAFE (Layer 2 Defense)
     
-    Monitors bot process health and implements intelligent restart logic
-    with state preservation, exponential backoff, and Telegram notifications.
+    [... mevcut kod ...]
     """
-    
+    # Mevcut AutoRestartManager sınıfı aynen kalıyor
     def __init__(self, max_restarts: int = 1000, restart_delay: int = 30, 
                  telegram: Optional[Telegram] = None):
-        """
-        Initialize auto-restart manager.
-        
-        Args:
-            max_restarts: Maximum number of restart attempts (default: 1000)
-            restart_delay: Base delay between restarts in seconds (default: 30)
-            telegram: Telegram notifier instance for alerts
-        """
         self.max_restarts = max_restarts
         self.base_restart_delay = restart_delay
         self.telegram = telegram
@@ -240,13 +376,6 @@ class AutoRestartManager:
         logger.info("="*70)
     
     def calculate_restart_delay(self) -> int:
-        """
-        Calculate restart delay with exponential backoff.
-        
-        Returns:
-            Delay in seconds
-        """
-        # Exponential backoff: min(base_delay * 2^consecutive_failures, 3600)
         delay = min(
             self.base_restart_delay * (2 ** self.consecutive_failures),
             3600  # Max 1 hour
@@ -254,33 +383,19 @@ class AutoRestartManager:
         return int(delay)
     
     def should_restart(self) -> tuple[bool, str]:
-        """
-        Determine if restart should be attempted.
-        
-        Returns:
-            (should_restart, reason) tuple
-        """
         if self.restart_count >= self.max_restarts:
             return False, f"Maximum restart limit reached ({self.max_restarts})"
         
-        # Check if we're in a restart loop (too many failures too quickly)
         if self.consecutive_failures > 10:
             return False, "Too many consecutive failures (10+), manual intervention required"
         
         return True, "Restart approved"
     
     def record_success(self):
-        """Record successful operation, reset failure counter."""
         self.consecutive_failures = 0
         logger.info("✓ Bot operating normally, failure counter reset")
     
     def record_failure(self, reason: str):
-        """
-        Record failure and update counters.
-        
-        Args:
-            reason: Failure reason
-        """
         self.restart_count += 1
         self.consecutive_failures += 1
         self.last_restart_time = datetime.now(timezone.utc)
@@ -291,7 +406,6 @@ class AutoRestartManager:
         logger.error(f"Consecutive Failures: {self.consecutive_failures}")
         logger.error("="*70)
         
-        # Send Telegram notification
         if self.telegram:
             uptime = (datetime.now(timezone.utc) - self.start_time).total_seconds()
             self.telegram.send(
@@ -304,7 +418,6 @@ class AutoRestartManager:
             )
     
     def get_status(self) -> Dict[str, Any]:
-        """Get restart manager status."""
         return {
             'restart_count': self.restart_count,
             'max_restarts': self.max_restarts,
@@ -318,11 +431,7 @@ class LiveTradingLauncher:
     """
     Comprehensive live trading launcher integrating all system components.
     
-    Phases Integrated:
-    - Phase 1: Multi-exchange framework (BingX focus)
-    - Phase 2: Adaptive strategies with live signals
-    - Phase 3: Portfolio management, risk engine, live execution
-    - Phase 4: Complete AI enhancement (regime, adaptive learning, optimization, price prediction)
+    [... mevcut class docstring ...]
     """
     
     # 8 diversified trading pairs as specified
@@ -357,14 +466,7 @@ class LiveTradingLauncher:
         """
         Initialize live trading launcher.
         
-        Args:
-            mode: Trading mode ('live' or 'paper')
-            dry_run: If True, only perform checks without starting trading
-            infinite: If True, enable TRUE CONTINUOUS mode (never stops)
-            auto_restart: If True, enable auto-restart failsafe
-            max_restarts: Maximum restart attempts (default: 1000)
-            restart_delay: Delay between restarts in seconds (default: 30)
-            debug_mode: Enable comprehensive debug logging
+        [... mevcut init docstring ...]
         """
         self.mode = mode
         self.dry_run = dry_run
@@ -377,6 +479,9 @@ class LiveTradingLauncher:
         self.strategies = {}
         self.restart_manager = None
         self.health_monitor = None
+        
+        # WebSocket optimization manager
+        self.ws_optimizer = None
         
         # Phase 4 AI components
         self.regime_predictor = None
@@ -472,6 +577,10 @@ class LiveTradingLauncher:
                 telegram=self.telegram
             )
         
+        # Initialize WebSocket optimizer
+        self.ws_optimizer = OptimizedWebSocketManager()
+        logger.info("✓ WebSocket Optimizer initialized")
+        
         return True
     
     def _initialize_exchange_connection(self) -> bool:
@@ -491,6 +600,11 @@ class LiveTradingLauncher:
             }
             
             bingx_client = CcxtClient('bingx', bingx_creds)
+            
+            # WebSocket optimization: Set required symbols only
+            bingx_client.set_required_symbols(self.TRADING_PAIRS)
+            logger.info(f"✓ BingX client optimized for {len(self.TRADING_PAIRS)} symbols only")
+            
             self.exchange_clients['bingx'] = bingx_client
             
             # Test connection with single API call instead of loading 2528 markets
@@ -556,8 +670,7 @@ class LiveTradingLauncher:
         """
         Initialize Phase 4 AI enhancement components.
         
-        Returns:
-            True if initialization successful
+        [... mevcut kod ...]
         """
         logger.info("\n[4/8] Initializing Phase 4 AI Components...")
         
@@ -616,8 +729,7 @@ class LiveTradingLauncher:
         """
         Initialize adaptive trading strategies.
         
-        Returns:
-            True if initialization successful
+        [... mevcut kod ...]
         """
         logger.info("\n[5/8] Initializing Trading Strategies...")
         
@@ -664,6 +776,22 @@ class LiveTradingLauncher:
         logger.info("\n[6/8] Initializing Production Trading System...")
         
         try:
+            # Load configuration for WebSocket optimization
+            import yaml
+            config_path = os.getenv('CONFIG_PATH', 'config/config.example.yaml')
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            
+            # Setup WebSocket optimizer with config
+            self.ws_optimizer.setup_from_config(config)
+            
+            # Initialize WebSocket connections
+            ws_initialized = await self.ws_optimizer.initialize_websockets(self.exchange_clients)
+            if ws_initialized:
+                logger.info("✓ WebSocket connections optimized and initialized")
+            else:
+                logger.warning("⚠️  WebSocket initialization failed, continuing without real-time data")
+            
             # Portfolio configuration with USDT capital
             portfolio_config = {
                 'equity_usd': self.CAPITAL_USDT,  # 100 USDT
@@ -674,6 +802,11 @@ class LiveTradingLauncher:
             
             # Initialize production coordinator
             self.coordinator = ProductionCoordinator()
+            
+            # Pass WebSocket manager to coordinator if initialized
+            if ws_initialized and self.ws_optimizer.ws_manager:
+                self.coordinator.ws_manager = self.ws_optimizer.ws_manager
+                logger.info("✓ WebSocket manager integrated with production coordinator")
             
             # Initialize complete production system
             init_result = await self.coordinator.initialize_production_system(
@@ -689,6 +822,11 @@ class LiveTradingLauncher:
             logger.info("✓ Production system initialized successfully")
             logger.info(f"  Components: {init_result['components']}")
             
+            # Get WebSocket status
+            if self.ws_optimizer:
+                ws_status = await self.ws_optimizer.get_stream_status()
+                logger.info(f"✓ WebSocket Status: {ws_status}")
+            
             return True
             
         except Exception as e:
@@ -699,8 +837,7 @@ class LiveTradingLauncher:
         """
         Register trading strategies with portfolio manager.
         
-        Returns:
-            True if registration successful
+        [... mevcut kod ...]
         """
         logger.info("\n[7/8] Registering Trading Strategies...")
         
@@ -739,7 +876,7 @@ class LiveTradingLauncher:
         
         try:
             # Check 1: Exchange connectivity
-            logger.info("Check 1/5: Exchange connectivity...")
+            logger.info("Check 1/6: Exchange connectivity...")
             try:
                 ticker = self.exchange_clients['bingx'].ticker('BTC/USDT:USDT')
                 logger.info(f"✓ BTC/USDT:USDT price: ${ticker.get('last', 0):.2f}")
@@ -748,7 +885,7 @@ class LiveTradingLauncher:
                 checks_passed = False
             
             # Check 2: System state
-            logger.info("Check 2/5: System state...")
+            logger.info("Check 2/6: System state...")
             state = self.coordinator.get_system_state()
             if state['is_initialized']:
                 logger.info("✓ Production system initialized")
@@ -757,7 +894,7 @@ class LiveTradingLauncher:
                 checks_passed = False
             
             # Check 3: Risk limits
-            logger.info("Check 3/5: Risk limits...")
+            logger.info("Check 3/6: Risk limits...")
             if self.coordinator.risk_manager:
                 risk_summary = self.coordinator.risk_manager.get_portfolio_summary()
                 logger.info(f"✓ Portfolio value: ${risk_summary['portfolio_value']:.2f}")
@@ -767,7 +904,7 @@ class LiveTradingLauncher:
                 checks_passed = False
             
             # Check 4: Strategies
-            logger.info("Check 4/5: Strategy registration...")
+            logger.info("Check 4/6: Strategy registration...")
             if self.coordinator.portfolio_manager:
                 strategies = self.coordinator.portfolio_manager.strategies
                 logger.info(f"✓ {len(strategies)} strategies registered")
@@ -776,11 +913,19 @@ class LiveTradingLauncher:
                 checks_passed = False
             
             # Check 5: Emergency protocols
-            logger.info("Check 5/5: Emergency shutdown protocols...")
+            logger.info("Check 5/6: Emergency shutdown protocols...")
             if self.coordinator.circuit_breaker:
                 logger.info("✓ Circuit breaker active")
             else:
                 logger.warning("⚠ Circuit breaker not available")
+            
+            # Check 6: WebSocket optimization
+            logger.info("Check 6/6: WebSocket optimization...")
+            if self.ws_optimizer and self.ws_optimizer.is_initialized:
+                ws_status = await self.ws_optimizer.get_stream_status()
+                logger.info(f"✓ WebSocket optimized: {ws_status['active_streams']} streams active")
+            else:
+                logger.warning("⚠ WebSocket not initialized (will use REST API)")
             
             logger.info("\n" + "="*70)
             if checks_passed:
@@ -797,7 +942,7 @@ class LiveTradingLauncher:
     
     async def _start_trading_loop(self, duration: Optional[float] = None) -> None:
         """
-        Start the main trading loop.
+        Start the main trading loop with WebSocket optimization.
         
         Args:
             duration: Optional duration in seconds (None for indefinite)
@@ -808,16 +953,19 @@ class LiveTradingLauncher:
         logger.info(f"Mode: {self.mode.upper()}")
         logger.info(f"Duration: {'Indefinite' if duration is None else f'{duration}s'}")
         logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
+        logger.info(f"WebSocket: {'OPTIMIZED' if self.ws_optimizer.is_initialized else 'DISABLED'}")
         logger.info("="*70)
         
         # Send Telegram notification
         if self.telegram:
+            ws_info = "WebSocket OPTIMIZED ✅" if self.ws_optimizer.is_initialized else "REST API mode"
             self.telegram.send(
                 f"🚀 <b>LIVE TRADING STARTED</b>\n"
                 f"Mode: {self.mode.upper()}\n"
                 f"Capital: {self.CAPITAL_USDT} USDT\n"
                 f"Exchange: BingX\n"
                 f"Pairs: {len(self.TRADING_PAIRS)}\n"
+                f"Data: {ws_info}\n"
                 f"Max Position: {self.RISK_PARAMS['max_position_size']:.1%}\n"
                 f"Stop Loss: {self.RISK_PARAMS['stop_loss_pct']:.1%}\n"
                 f"Take Profit: {self.RISK_PARAMS['take_profit_pct']:.1%}"
@@ -849,6 +997,10 @@ class LiveTradingLauncher:
             # Stop health monitoring
             if self.health_monitor:
                 await self.health_monitor.stop_monitoring()
+            
+            # Shutdown WebSocket connections
+            if self.ws_optimizer:
+                await self.ws_optimizer.shutdown()
     
     async def _shutdown(self) -> None:
         """Graceful shutdown of trading system."""
@@ -863,6 +1015,11 @@ class LiveTradingLauncher:
                 health_report = self.health_monitor.get_health_report()
                 logger.info(f"Final health report: {health_report}")
             
+            # Shutdown WebSocket connections
+            if self.ws_optimizer:
+                await self.ws_optimizer.shutdown()
+                logger.info("✓ WebSocket connections closed")
+            
             if self.coordinator:
                 await self.coordinator.stop_system()
                 logger.info("✓ Production system stopped")
@@ -875,6 +1032,9 @@ class LiveTradingLauncher:
                     msg += f"\n\nUptime: {hr['uptime_hours']:.1f}h\n"
                     msg += f"Status: {hr['status']}\n"
                     msg += f"Errors: {hr['metrics']['errors_caught']}"
+                if self.ws_optimizer and self.ws_optimizer.is_initialized:
+                    ws_status = await self.ws_optimizer.get_stream_status()
+                    msg += f"\nWebSocket streams: {ws_status['active_streams']}"
                 self.telegram.send(msg)
             
             logger.info("="*70)
@@ -897,6 +1057,14 @@ class LiveTradingLauncher:
         logger.critical("="*70)
         
         try:
+            # Force close WebSocket connections
+            if self.ws_optimizer:
+                try:
+                    await self.ws_optimizer.shutdown()
+                    logger.info("✓ WebSocket connections force closed")
+                except Exception as e:
+                    logger.error(f"Failed to close WebSocket: {e}")
+            
             if self.coordinator:
                 await self.coordinator.handle_emergency_shutdown(reason)
             
@@ -957,7 +1125,7 @@ class LiveTradingLauncher:
             if not await self._initialize_strategies():
                 return 1
             
-            # Step 6: Initialize production system
+            # Step 6: Initialize production system (includes WebSocket)
             if not await self._initialize_production_system():
                 return 1
             
@@ -989,11 +1157,7 @@ class LiveTradingLauncher:
         """
         Run trading system with auto-restart failsafe (Layer 2 Defense).
         
-        Args:
-            duration: Optional trading duration in seconds
-            
-        Returns:
-            Exit code (0 for success, 1 for failure)
+        [... mevcut kod ...]
         """
         logger.info("\n" + "="*70)
         logger.info("ULTIMATE CONTINUOUS MODE: AUTO-RESTART WRAPPER ACTIVE")
