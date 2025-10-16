@@ -1,5 +1,5 @@
 # Bearish Alpha Bot Requirements
-# Python 3.12+ compatible
+# Python 3.11 required (ccxt.pro incompatible with Python 3.12)
 
 # === CORE DEPENDENCIES ===
 ccxt==4.3.88              # Exchange APIs (REQUIRED)
@@ -12,8 +12,8 @@ requests==2.32.3          # HTTP requests (REQUIRED)
 # === NOTIFICATIONS ===
 python-telegram-bot==21.6 # Telegram alerts
 
-# === ASYNC/WEBSOCKET (FIXED VERSION FOR PARSE_FRAME FIX) ===
-aiohttp==3.8.6            # Downgraded to fix parse_frame error
+# === ASYNC/WEBSOCKET (Fixed for parse_frame error) ===
+aiohttp==3.8.6            # Must use 3.8.6 to avoid ccxt.pro parse_frame error
 yarl<2.0                  # Required for aiohttp 3.8.x
 multidict<7.0             # Required for aiohttp 3.8.x
 
