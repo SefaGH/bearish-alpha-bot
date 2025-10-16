@@ -36,6 +36,20 @@ import logging
 import argparse
 import time
 import signal
+import logging
+
+# Production için sadece WARNING ve üstü
+if os.getenv('PRODUCTION', 'false').lower() == 'true':
+    logging.basicConfig(
+        level=logging.WARNING,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+else:
+    # Development/test için INFO
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
