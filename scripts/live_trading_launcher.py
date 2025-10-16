@@ -666,6 +666,15 @@ class LiveTradingLauncher:
             logger.error(f"❌ Failed to initialize risk management: {e}")
             return False
     
+    def _is_ws_initialized(self) -> bool:
+        """
+        Helper method to safely check if WebSocket optimizer is initialized.
+        
+        Returns:
+            True if ws_optimizer exists and is initialized, False otherwise
+        """
+        return self.ws_optimizer is not None and getattr(self.ws_optimizer, 'is_initialized', False)
+    
     async def _initialize_ai_components(self) -> bool:
         """
         Initialize Phase 4 AI enhancement components.
@@ -921,8 +930,8 @@ class LiveTradingLauncher:
             
             # Check 6: WebSocket optimization
             logger.info("Check 6/6: WebSocket optimization...")
-            # Defensive check: use getattr to safely check ws_optimizer.is_initialized
-            if self.ws_optimizer and getattr(self.ws_optimizer, 'is_initialized', False):
+            # Use helper method to safely check WebSocket initialization
+            if self._is_ws_initialized():
                 ws_status = await self.ws_optimizer.get_stream_status()
                 logger.info(f"✓ WebSocket optimized: {ws_status['active_streams']} streams active")
             else:
@@ -954,14 +963,13 @@ class LiveTradingLauncher:
         logger.info(f"Mode: {self.mode.upper()}")
         logger.info(f"Duration: {'Indefinite' if duration is None else f'{duration}s'}")
         logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
-        # Defensive check: use getattr in case ws_optimizer is None
-        ws_is_initialized = getattr(self.ws_optimizer, 'is_initialized', False)
-        logger.info(f"WebSocket: {'OPTIMIZED' if ws_is_initialized else 'DISABLED'}")
+        # Use helper method to safely check WebSocket initialization
+        logger.info(f"WebSocket: {'OPTIMIZED' if self._is_ws_initialized() else 'DISABLED'}")
         logger.info("="*70)
         
         # Send Telegram notification
         if self.telegram:
-            ws_info = "WebSocket OPTIMIZED ✅" if ws_is_initialized else "REST API mode"
+            ws_info = "WebSocket OPTIMIZED ✅" if self._is_ws_initialized() else "REST API mode"
             self.telegram.send(
                 f"🚀 <b>LIVE TRADING STARTED</b>\n"
                 f"Mode: {self.mode.upper()}\n"
@@ -1014,7 +1022,8 @@ class LiveTradingLauncher:
         """
         logger.info("Starting WebSocket health monitor...")
         
-        while self.ws_optimizer and getattr(self.ws_optimizer, 'is_initialized', False):
+        # Use helper method to safely check WebSocket initialization
+        while self._is_ws_initialized():
             try:
                 await asyncio.sleep(300)  # Check every 5 minutes
                 
@@ -1042,8 +1051,8 @@ class LiveTradingLauncher:
                     logger.info("Attempting WebSocket reconnection...")
                     await self.ws_optimizer.initialize_websockets(self.exchange_clients)
                     
-                    # Defensive check after reconnection
-                    if getattr(self.ws_optimizer, 'is_initialized', False):
+                    # Use helper method to check after reconnection
+                    if self._is_ws_initialized():
                         logger.info("✅ WebSocket reconnection successful")
                         if self.telegram:
                             self.telegram.send("✅ WebSocket reconnected successfully")
@@ -1087,8 +1096,8 @@ class LiveTradingLauncher:
                     msg += f"\n\nUptime: {hr['uptime_hours']:.1f}h\n"
                     msg += f"Status: {hr['status']}\n"
                     msg += f"Errors: {hr['metrics']['errors_caught']}"
-                # Defensive check: use getattr to safely check ws_optimizer.is_initialized
-                if self.ws_optimizer and getattr(self.ws_optimizer, 'is_initialized', False):
+                # Use helper method to safely check WebSocket initialization
+                if self._is_ws_initialized():
                     ws_status = await self.ws_optimizer.get_stream_status()
                     msg += f"\nWebSocket streams: {ws_status['active_streams']}"
                 self.telegram.send(msg)
