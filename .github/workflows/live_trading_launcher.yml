@@ -187,6 +187,7 @@ jobs:
           BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LOG_LEVEL: INFO  # DEBUG yerine INFO kullan
         run: |
           # Build command dynamically
           CMD="python scripts/live_trading_launcher.py"
