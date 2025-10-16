@@ -353,6 +353,33 @@ class LiveTradingEngine:
     async def _signal_processing_loop(self):
         """Background task for processing signals from queue."""
         logger.info("Signal processing loop started")
+    
+        while self.running:
+            try:
+                # DEBUG: Loop başlangıcı
+                logger.debug("🔍 Signal scan starting...")
+            
+                # Get symbols to scan
+                symbols = self._get_scan_symbols()
+                logger.debug(f"🔍 Scanning {len(symbols)} symbols")
+            
+                for symbol in symbols:
+                    # DEBUG: Her sembol için
+                    logger.debug(f"🔍 Checking {symbol}...")
+                
+                    # Fetch data
+                    df_30m = await self._fetch_ohlcv(symbol, '30m')
+                
+                    if df_30m is not None and len(df_30m) > 0:
+                        # DEBUG: RSI değerini log'la
+                        if 'rsi' in df_30m.columns:
+                            last_rsi = df_30m['rsi'].iloc[-1]
+                            logger.info(f"📊 {symbol}: RSI={last_rsi:.1f}")
+                
+                await asyncio.sleep(30)
+            
+            except Exception as e:
+                logger.error(f"Signal processing error: {e}")
         
         try:
             while self.state == EngineState.RUNNING:
