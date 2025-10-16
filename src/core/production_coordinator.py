@@ -1,15 +1,16 @@
 """
 Production Coordinator.
-Coordinate all Phase 3 components for production deployment.
+Coordinate all Phase 3-4 components for production deployment.
 """
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
+from typing import Dict, List, Optional, Any
 
-from ..strategies.oversold_bounce import OversoldBounce
-from ..strategies.short_the_rip import ShortTheRip
+from strategies.oversold_bounce import OversoldBounce
+from strategies.short_the_rip import ShortTheRip
+
 from .live_trading_engine import LiveTradingEngine
 from .websocket_manager import WebSocketManager
 from .risk_manager import RiskManager
