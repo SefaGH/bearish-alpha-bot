@@ -7,7 +7,6 @@ Kripto türev piyasalarında (özellikle USDT margined perpetual) **ayı piyasas
 Bu bot ChatGPT ile oluşturulmuş, ancak önemli hatalar ve eksiklikler tespit edilip düzeltilmiştir:
 
 - ✅ **KRİTİK: Pozisyon büyüklüğü hesaplama hatası düzeltildi** (10x hata yapıyordu!)
-- ✅ Python 3.12 deprecation uyarıları giderildi
 - ✅ Loglama sistemi eklendi
 - ✅ Gelişmiş hata yönetimi
 - ✅ Kapsamlı testler (9 test, hepsi geçiyor)
@@ -37,14 +36,14 @@ Bu bot ChatGPT ile oluşturulmuş, ancak önemli hatalar ve eksiklikler tespit e
    - Kullandığın borsa anahtarları: `BINGX_KEY`, `BINGX_SECRET`, … (spot/derivatives izinleri açık olmalı)
    - (Opsiyonel) `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
    - (Opsiyonel) `EXECUTION_EXCHANGE`: örn. `bingx`
-2. **Python 3.12** ile çalıştır
+2. **Python 3.11** ile çalıştır
    - Tüm workflow dosyalarında:
      ```yaml
      - uses: actions/setup-python@v5
        with:
-         python-version: "3.12"
+         python-version: "3.11"
      ```
-3. **requirements.txt** (3.12 uyumlu)
+3. **requirements.txt** (3.11 uyumlu)
    ```text
    ccxt==4.3.88
    pandas>=2.2.3,<3
