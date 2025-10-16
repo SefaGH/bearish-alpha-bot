@@ -391,7 +391,7 @@ class LiveTradingEngine:
                         
                         for symbol in symbols:
                             try:
-                                logger.debug(f"🔍 Checking {symbol}...")
+                                logger.info(f"[PROCESSING] Symbol: {symbol}")
                                 
                                 # Fetch OHLCV data for multiple timeframes
                                 df_30m = await self._fetch_ohlcv(symbol, '30m', limit=200)
@@ -402,6 +402,10 @@ class LiveTradingEngine:
                                     logger.debug(f"⚠️ No data for {symbol}, skipping")
                                     continue
                                 
+                                # Log data fetching result
+                                last_close = df_30m['close'].iloc[-1] if len(df_30m) > 0 else 0
+                                logger.info(f"[DATA] {symbol}: 30m={len(df_30m)} bars, last_close={last_close:.2f}")
+                                
                                 # Add technical indicators
                                 indicator_config = self.config.get('indicators', {})
                                 df_30m = add_indicators(df_30m, indicator_config)
@@ -411,10 +415,11 @@ class LiveTradingEngine:
                                 if df_4h is not None and len(df_4h) > 0:
                                     df_4h = add_indicators(df_4h, indicator_config)
                                 
-                                # Log RSI value for monitoring
+                                # Log indicators after calculation
                                 if 'rsi' in df_30m.columns and len(df_30m) > 0:
                                     last_rsi = df_30m['rsi'].iloc[-1]
-                                    logger.info(f"📊 {symbol}: RSI={last_rsi:.1f}")
+                                    last_atr = df_30m['atr'].iloc[-1] if 'atr' in df_30m.columns else 0
+                                    logger.info(f"[INDICATORS] {symbol}: RSI={last_rsi:.1f}, ATR={last_atr:.4f}")
                                 
                                 # Perform market regime analysis if we have all timeframes
                                 regime_data = None
@@ -426,6 +431,7 @@ class LiveTradingEngine:
                                 if self.portfolio_manager and hasattr(self.portfolio_manager, 'strategies'):
                                     for strategy_name, strategy in self.portfolio_manager.strategies.items():
                                         try:
+                                            logger.info(f"[STRATEGY-CHECK] {strategy_name} for {symbol}")
                                             signal = None
                                             
                                             # Check if strategy has signal method
@@ -487,8 +493,17 @@ class LiveTradingEngine:
                                                 
                                                 # Add to signal queue
                                                 await self.signal_queue.put(signal)
-                                                logger.info(f"✅ Signal generated: {strategy_name} - {symbol} - {signal.get('side', 'unknown').upper()}")
+                                                logger.info(f"✅ [SIGNAL] {symbol}: {signal}")
+                                                logger.info(f"   Strategy: {strategy_name}")
+                                                logger.info(f"   Side: {signal.get('side', 'unknown').upper()}")
                                                 logger.info(f"   Reason: {signal.get('reason', 'N/A')}")
+                                            else:
+                                                # Log when no signal is generated
+                                                current_rsi = df_30m['rsi'].iloc[-1] if 'rsi' in df_30m.columns and len(df_30m) > 0 else None
+                                                if current_rsi is not None:
+                                                    logger.info(f"[NO-SIGNAL] {symbol} ({strategy_name}): RSI={current_rsi:.1f}")
+                                                else:
+                                                    logger.debug(f"[NO-SIGNAL] {symbol} ({strategy_name}): conditions not met")
                                         
                                         except Exception as e:
                                             logger.error(f"Error running strategy {strategy_name} for {symbol}: {e}")
