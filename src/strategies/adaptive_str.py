@@ -19,6 +19,9 @@ class AdaptiveShortTheRip(ShortTheRip):
     based on real-time market regime analysis.
     """
     
+    # Maximum adjustment to base threshold (in RSI points)
+    MAX_THRESHOLD_ADJUSTMENT = 5
+    
     def __init__(self, cfg: Dict, regime_analyzer=None):
         """
         Initialize adaptive ShortTheRip strategy.
@@ -34,6 +37,7 @@ class AdaptiveShortTheRip(ShortTheRip):
     def get_adaptive_rsi_threshold(self, market_regime: Dict) -> float:
         """
         Dynamic RSI thresholds based on market conditions.
+        Now respects config values and uses gentler adjustments.
         
         Args:
             market_regime: Dictionary with 'trend', 'momentum', 'volatility'
@@ -41,31 +45,40 @@ class AdaptiveShortTheRip(ShortTheRip):
         Returns:
             Adaptive RSI threshold for overbought detection
         """
-        # Base threshold from config or default
-        base_rsi = float(self.base_cfg.get('rsi_min', 61))
+        # Get config values with proper fallbacks
+        base_rsi = float(self.base_cfg.get('adaptive_rsi_base',
+                         self.base_cfg.get('rsi_min', 50)))
+        
+        # Get adjustment range from config (default ±10)
+        adapt_range = float(self.base_cfg.get('adaptive_rsi_range', 10))
         
         trend = market_regime.get('trend', 'neutral')
         momentum = market_regime.get('momentum', 'sideways')
         
-        # Bearish regime: More aggressive shorting (lower RSI acceptable)
-        # More opportunities to short in downtrends
+        # Start with base value
+        threshold = base_rsi
+        
+        # Gentler adjustments based on regime
+        # For short strategy: bearish = more aggressive (lower threshold), bullish = more selective (higher threshold)
         if trend == 'bearish':
+            # In downtrends, be slightly more aggressive with shorts
             if momentum == 'strong':
-                return max(base_rsi - 10, 55)  # RSI 55-60 range
+                threshold = base_rsi - min(self.MAX_THRESHOLD_ADJUSTMENT, adapt_range/2)
             else:
-                return max(base_rsi - 5, 58)   # RSI 58-65 range
+                threshold = base_rsi - min(self.MAX_THRESHOLD_ADJUSTMENT * 0.6, adapt_range/3)
         
-        # Bullish regime: More selective (higher RSI required)
-        # Need stronger overbought signals in uptrends
         elif trend == 'bullish':
+            # In uptrends, be more selective (need higher RSI)
             if momentum == 'strong':
-                return min(base_rsi + 10, 75)  # RSI 70-75 range
+                threshold = base_rsi + min(self.MAX_THRESHOLD_ADJUSTMENT, adapt_range/2)
             else:
-                return min(base_rsi + 5, 70)   # RSI 65-70 range
+                threshold = base_rsi + min(self.MAX_THRESHOLD_ADJUSTMENT * 0.6, adapt_range/3)
         
-        # Neutral regime: Balanced approach
-        else:
-            return base_rsi  # Use base configuration
+        # Clamp to reasonable range for shorts (50-70 range)
+        min_threshold = max(50, base_rsi - adapt_range)
+        max_threshold = min(70, base_rsi + adapt_range)
+        
+        return max(min_threshold, min(max_threshold, threshold))
     
     def calculate_dynamic_position_size(self, volatility_regime: str, 
                                        base_multiplier: float = 1.0) -> float:
