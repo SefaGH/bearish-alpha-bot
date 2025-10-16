@@ -5,6 +5,7 @@ Production-ready live trading execution engine.
 
 import asyncio
 import logging
+import inspect
 import pandas as pd
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
@@ -432,34 +433,36 @@ class LiveTradingEngine:
                                                 logger.debug(f"Strategy {strategy_name} has no signal method, skipping")
                                                 continue
                                             
-                                            # Try to determine strategy requirements by checking method signature
-                                            import inspect
+                                            # Determine strategy requirements by checking method signature
                                             sig = inspect.signature(strategy.signal)
                                             params = list(sig.parameters.keys())
                                             
-                                            # Check if strategy accepts regime_data (adaptive strategies)
+                                            # Check for specific parameter names
                                             has_regime_param = 'regime_data' in params
-                                            
-                                            # Determine if strategy needs multiple timeframes
-                                            needs_1h = len(params) >= 2 and params[0] != 'self'
+                                            has_df_1h_param = 'df_1h' in params
                                             
                                             # Call strategy with appropriate parameters
                                             try:
                                                 if has_regime_param:
                                                     # Adaptive strategy with regime awareness
-                                                    if needs_1h and df_1h is not None:
+                                                    if has_df_1h_param and df_1h is not None:
                                                         signal = strategy.signal(df_30m, df_1h, regime_data)
                                                     else:
                                                         signal = strategy.signal(df_30m, regime_data)
                                                 else:
                                                     # Base strategy without regime awareness
-                                                    if needs_1h and df_1h is not None:
+                                                    if has_df_1h_param and df_1h is not None:
                                                         signal = strategy.signal(df_30m, df_1h)
                                                     else:
                                                         signal = strategy.signal(df_30m)
                                             except TypeError as te:
                                                 # Fallback: try calling with just df_30m
-                                                logger.debug(f"Strategy {strategy_name} parameter mismatch, trying with df_30m only: {te}")
+                                                expected_params = ', '.join(params)
+                                                logger.warning(
+                                                    f"Strategy {strategy_name} parameter mismatch. "
+                                                    f"Expected params: [{expected_params}]. "
+                                                    f"Trying with df_30m only. Error: {te}"
+                                                )
                                                 signal = strategy.signal(df_30m)
                                             
                                             # If signal generated, add to queue
