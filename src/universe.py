@@ -76,8 +76,8 @@ def build_universe(exchanges: Dict[str, object], cfg: dict) -> Dict[str, List[st
         
         per_ex = {}
         for name in exchanges.keys():
-            # Assign the same fixed list to each exchange
-            per_ex[name] = fixed_symbols.copy()
+            # Assign the same fixed list to each exchange (no copy needed, not modified)
+            per_ex[name] = fixed_symbols
             print(f"[UNIVERSE] {name}: Assigned {len(fixed_symbols)} symbols")
         
         # Debug: Show first 5 symbols

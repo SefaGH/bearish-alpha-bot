@@ -142,14 +142,25 @@ class CcxtClient:
             # Create minimal market structure for required symbols
             fake_markets = {}
             for symbol in self._required_symbols_only:
+                # Extract quote currency from symbol (e.g., 'BTC/USDT:USDT' -> 'USDT')
+                quote = 'USDT'  # default
+                if '/' in symbol:
+                    parts = symbol.split('/')
+                    if len(parts) > 1:
+                        # Get quote from second part, before any colon
+                        quote = parts[1].split(':')[0]
+                
+                # Determine market type from symbol format
+                is_swap = ':' in symbol  # Perpetual format like 'BTC/USDT:USDT'
+                
                 fake_markets[symbol] = {
                     'symbol': symbol,
                     'active': True,
-                    'quote': 'USDT',
-                    'type': 'swap',
+                    'quote': quote,
+                    'type': 'swap' if is_swap else 'spot',
                     'linear': True,
-                    'swap': True,
-                    'spot': False
+                    'swap': is_swap,
+                    'spot': not is_swap
                 }
             self._markets_cache = fake_markets
             self._markets_cache_time = current_time
