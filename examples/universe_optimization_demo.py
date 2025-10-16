@@ -38,9 +38,9 @@ def demo_without_optimization():
             'swap': True
         }
     
-    def slow_markets():
+    def simulate_slow_markets():
         """Simulate slow API call"""
-        time.sleep(0.5)  # Simulate 500ms API delay
+        time.sleep(0.2)  # Simulate 200ms API delay
         return mock_markets
     
     # Create tickers with sufficient volume
@@ -53,7 +53,7 @@ def demo_without_optimization():
         }
     
     mock_client = Mock()
-    mock_client.markets = Mock(side_effect=slow_markets)
+    mock_client.markets = Mock(side_effect=simulate_slow_markets)
     mock_client.tickers = Mock(return_value=mock_tickers)
     
     exchanges = {'bingx': mock_client}

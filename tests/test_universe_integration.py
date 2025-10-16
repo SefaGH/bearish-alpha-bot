@@ -22,12 +22,12 @@ def test_fixed_symbols_integration():
     print("FIXED SYMBOL LIST OPTIMIZATION - INTEGRATION TEST")
     print("="*70)
     
-    # Create mock exchange clients
+    # Create separate mock exchange clients for each exchange
     mock_bingx = Mock()
     mock_bingx.markets = Mock(return_value={})
     mock_bingx.tickers = Mock(return_value={})
     
-    mock_kucoin = Mock()
+    mock_kucoin = Mock()  # Separate instance
     mock_kucoin.markets = Mock(return_value={})
     mock_kucoin.tickers = Mock(return_value={})
     
