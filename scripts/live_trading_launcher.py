@@ -230,6 +230,120 @@ class OptimizedWebSocketManager:
             await self.ws_manager.close()
             logger.info("[WS-OPT] WebSocket connections closed")
 
+    async def _monitor_websocket_health(self):
+        """Enhanced WebSocket health monitor with error recovery"""
+        logger.info("Starting WebSocket health monitor...")
+    
+        consecutive_errors = 0
+        max_consecutive_errors = 3
+    
+        while self.ws_optimizer and self.ws_optimizer.is_initialized:
+            try:
+                await asyncio.sleep(300)  # Her 5 dakikada bir kontrol
+            
+                status = await self.ws_optimizer.get_stream_status()
+            
+                # Parse frame hataları için özel kontrol
+                error_count = status.get('error_count', 0)
+                if error_count > 0:
+                    logger.warning(f"⚠️ WebSocket errors detected: {error_count}")
+                
+                    # Eğer parse_frame hatası varsa
+                    if status.get('parse_frame_errors', 0) > 0:
+                        logger.error("❌ parse_frame errors detected! Attempting recovery...")
+                    
+                        # WebSocket'leri yeniden başlat
+                        await self._restart_websockets_with_backoff()
+                        consecutive_errors = 0
+                        continue
+            
+                # Normal sağlık kontrolü
+                if status['active_streams'] > 50:
+                    logger.warning(f"⚠️ Too many WebSocket streams: {status['active_streams']}")
+                    if self.telegram:
+                        await self.telegram.send_async(
+                            f"⚠️ <b>WebSocket Warning</b>\n"
+                            f"Active streams: {status['active_streams']}\n"
+                            f"Consider reducing symbols"
+                        )
+            
+                elif status['active_streams'] == 0:
+                    consecutive_errors += 1
+                    logger.error(f"❌ No active WebSocket streams! (attempt {consecutive_errors}/{max_consecutive_errors})")
+                
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.critical("❌ WebSocket completely failed after multiple attempts!")
+                        if self.telegram:
+                            await self.telegram.send_async(
+                                "🛑 <b>CRITICAL</b>\n"
+                                "WebSocket system failure!\n"
+                                "Manual intervention required."
+                            )
+                        # Sistem durması gerekebilir
+                        await self._emergency_shutdown("WebSocket system failure")
+                    else:
+                        # Yeniden başlatma denemesi
+                        await self._restart_websockets_with_backoff()
+            
+                else:
+                    # Her şey normal
+                    consecutive_errors = 0
+                    logger.info(f"✅ WebSocket healthy: {status['active_streams']} streams active")
+                
+            except Exception as e:
+                logger.error(f"WebSocket monitor error: {e}")
+                consecutive_errors += 1
+            
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.critical(f"Monitor failed {max_consecutive_errors} times!")
+                    break
+                
+                await asyncio.sleep(60)
+
+    async def _restart_websockets_with_backoff(self):
+        """Restart WebSockets with exponential backoff"""
+        max_attempts = 3
+        base_delay = 5  # seconds
+    
+        for attempt in range(max_attempts):
+            try:
+                delay = base_delay * (2 ** attempt)  # Exponential backoff
+            
+                logger.info(f"Restarting WebSockets (attempt {attempt + 1}/{max_attempts})...")
+            
+                if attempt > 0:
+                    logger.info(f"Waiting {delay} seconds before retry...")
+                    await asyncio.sleep(delay)
+            
+                # Önce mevcut bağlantıları kapat
+                await self.ws_optimizer.shutdown()
+                await asyncio.sleep(2)
+            
+                # Yeniden başlat
+                await self.ws_optimizer.initialize_websockets(self.exchange_clients)
+            
+                # Başarılı mı kontrol et
+                await asyncio.sleep(5)  # Stabilizasyon için bekle
+                status = await self.ws_optimizer.get_stream_status()
+            
+                if status['active_streams'] > 0:
+                    logger.info(f"✅ WebSocket restart successful! {status['active_streams']} streams active")
+                    if self.telegram:
+                        await self.telegram.send_async(
+                            f"✅ <b>WebSocket Recovered</b>\n"
+                            f"Active streams: {status['active_streams']}\n"
+                            f"System operational"
+                        )
+                    return True
+                else:
+                    logger.warning(f"WebSocket restart attempt {attempt + 1} failed")
+                
+            except Exception as e:
+                logger.error(f"WebSocket restart error (attempt {attempt + 1}): {e}")
+    
+        logger.error(f"❌ Failed to restart WebSockets after {max_attempts} attempts")
+        return False
+
 # ============= End of WebSocket Optimization Manager =============
 
 
