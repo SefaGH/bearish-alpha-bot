@@ -42,7 +42,7 @@ regime:
 
 universe:
   min_quote_volume_usdt: 1000000
-  prefer_perps: false
+  prefer_perps: true
   max_symbols_per_exchange: 80
   top_n_per_exchange: 15
   only_linear: true
