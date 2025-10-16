@@ -540,5 +540,5 @@ class StreamDataCollector:
         # Subscribe with optimization
         ws_manager.subscribe_optimized()
     
-    logger.info(f"[WS] Optimized WebSocket setup complete for {len(fixed_symbols)} symbols")
-    return ws_manager
+        logger.info(f"[WS] Optimized WebSocket setup complete for {len(fixed_symbols)} symbols")
+        return ws_manager
