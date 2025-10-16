@@ -1,6 +1,6 @@
 # DEBUG/TEST Configuration for Signal Generation Testing
 # Use this config to verify signal generation and strategy control
-# Based on issue requirements: https://github.com/SefaGH/bearish-alpha-bot/issues/xxx
+# Based on issue requirements for enhanced debug logging
 
 execution:
   enable_live: false  # PAPER MODE for testing
