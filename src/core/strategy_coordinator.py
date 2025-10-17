@@ -258,7 +258,7 @@ class StrategyCoordinator:
     
     def _validate_signal_format(self, signal: Dict) -> Dict[str, Any]:
         """Validate signal has required fields."""
-        required_fields = ['symbol', 'side', 'entry']
+        required_fields = ['symbol', 'side']
         
         for field in required_fields:
             if field not in signal:
@@ -274,8 +274,8 @@ class StrategyCoordinator:
                 'reason': f"Invalid side: {signal['side']}"
             }
         
-        # Validate price values
-        if signal.get('entry', 0) <= 0:
+        # Entry yoksa da geçerli say (enrich'te eklenecek)
+        if 'entry' in signal and signal.get('entry', 0) <= 0:
             return {
                 'valid': False,
                 'reason': "Entry price must be positive"
@@ -286,6 +286,29 @@ class StrategyCoordinator:
     def _enrich_signal(self, strategy_name: str, signal: Dict) -> Dict:
         """Enrich signal with additional metadata."""
         enriched = signal.copy()
+
+        # Entry yoksa, mevcut fiyatı al ve ekle
+        if 'entry' not in enriched and 'symbol' in enriched:
+            try:
+                # Exchange client'ı bul
+                for ex_name, client in self.portfolio_manager.exchange_clients.items():
+                    try:
+                        ticker = client.fetch_ticker(enriched['symbol'])
+                        last_price = ticker.get('last', ticker.get('close', 0))
+                        if last_price > 0:
+                            enriched['entry'] = float(last_price)
+                            logger.info(f"Added entry price {last_price} to signal for {enriched['symbol']}")
+                            break
+                    except:
+                        continue
+                
+                # Hala entry yoksa varsayılan değer
+                if 'entry' not in enriched:
+                    logger.warning(f"Could not fetch entry price for {enriched.get('symbol')}, signal may be rejected")
+                    enriched['entry'] = 0  # Risk manager reddedecek
+                    
+            except Exception as e:
+                logger.error(f"Error fetching entry price: {e}")
         
         # Add strategy information
         enriched['strategy_name'] = strategy_name
