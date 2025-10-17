@@ -280,3 +280,158 @@ class MarketRegimeAnalyzer:
             Dictionary with current regime states
         """
         return self.current_regime.copy()
+
+    def get_regime_recommendations(self, df_30m: pd.DataFrame, 
+                                   df_1h: pd.DataFrame, 
+                                   df_4h: pd.DataFrame) -> List[str]:
+        """
+        Get trading recommendations based on current regime analysis.
+        
+        Returns:
+            List of recommendation strings for current market conditions
+        """
+        # Önce market regime analizi yap
+        regime = self.analyze_market_regime(df_30m, df_1h, df_4h)
+        
+        recommendations = []
+        trend = regime.get('trend', 'neutral')
+        momentum = regime.get('momentum', 'sideways')
+        volatility = regime.get('volatility', 'normal')
+        risk_mult = regime.get('risk_multiplier', 1.0)
+        entry_score = regime.get('entry_score', 0.5)
+        
+        # Trend bazlı öneriler
+        if trend == 'bearish':
+            recommendations.append("📉 Bearish trend confirmed - SHORT opportunities favored")
+            if momentum == 'strong':
+                recommendations.append("⚡ Strong bearish momentum - wait for pullbacks to short")
+            elif momentum == 'weak':
+                recommendations.append("📊 Weak momentum - potential reversal zone, be cautious")
+        elif trend == 'bullish':
+            recommendations.append("📈 Bullish trend detected - LONG setups preferred")
+            if momentum == 'strong':
+                recommendations.append("🚀 Strong bullish momentum - buy dips")
+        else:  # neutral
+            recommendations.append("➡️ Neutral/ranging market - mean reversion strategies")
+            recommendations.append("🎯 Focus on range boundaries for entries")
+        
+        # Volatility bazlı öneriler
+        if volatility == 'high':
+            recommendations.append(f"⚠️ HIGH volatility - reduce position size to {risk_mult:.1f}x")
+            recommendations.append("🛡️ Use wider stops to avoid premature exits")
+        elif volatility == 'low':
+            recommendations.append(f"✅ LOW volatility - can increase size to {risk_mult:.1f}x")
+            recommendations.append("📍 Tighter stops acceptable in current conditions")
+        
+        # Entry score bazlı öneriler
+        if entry_score >= 0.7:
+            recommendations.append("🟢 EXCELLENT entry conditions (score: {:.1f})".format(entry_score))
+        elif entry_score >= 0.5:
+            recommendations.append("🟡 MODERATE entry conditions (score: {:.1f})".format(entry_score))
+        else:
+            recommendations.append("🔴 POOR entry conditions (score: {:.1f}) - wait for better setup".format(entry_score))
+        
+        # RSI bazlı öneriler (30m data'dan)
+        if not df_30m.empty and 'rsi' in df_30m.columns:
+            last_rsi = float(df_30m['rsi'].dropna().iloc[-1]) if len(df_30m['rsi'].dropna()) > 0 else 50
+            if last_rsi > 70:
+                recommendations.append(f"🔴 RSI overbought ({last_rsi:.1f}) - potential SHORT setup")
+            elif last_rsi < 30:
+                recommendations.append(f"🟢 RSI oversold ({last_rsi:.1f}) - potential BOUNCE setup")
+        
+        # Adaptive RSI threshold önerisi
+        adaptive_threshold = self.get_adaptive_rsi_threshold(trend, momentum, volatility)
+        recommendations.append(f"🎯 Adaptive RSI threshold: {adaptive_threshold:.1f}")
+        
+        return recommendations
+    
+    def get_adaptive_rsi_threshold(self, trend: str, momentum: str, volatility: str) -> float:
+        """
+        Calculate adaptive RSI threshold based on market regime.
+        Used for dynamic strategy adjustment.
+        
+        Returns:
+            Adaptive RSI threshold (25-55 range typically)
+        """
+        # Base threshold
+        base_rsi = 40.0
+        
+        # Trend adjustment
+        if trend == 'bearish':
+            base_rsi += 3  # More lenient in bearish (43)
+        elif trend == 'bullish':
+            base_rsi -= 3  # Stricter in bullish (37)
+        
+        # Momentum adjustment
+        if momentum == 'strong':
+            base_rsi += 2  # Wait for extremes
+        elif momentum == 'weak':
+            base_rsi -= 2  # Earlier entries
+        
+        # Volatility adjustment
+        if volatility == 'high':
+            base_rsi += 5  # Much more conservative
+        elif volatility == 'low':
+            base_rsi -= 5  # More aggressive
+        
+        # Clamp to reasonable range
+        return max(25.0, min(55.0, base_rsi))
+    
+    def is_favorable_for_strategy(self, strategy: str, 
+                                 df_30m: pd.DataFrame, 
+                                 df_1h: pd.DataFrame, 
+                                 df_4h: pd.DataFrame) -> Tuple[bool, str]:
+        """
+        Check if current regime is favorable for a specific strategy.
+        
+        Args:
+            strategy: 'oversold_bounce' or 'short_the_rip'
+            df_30m, df_1h, df_4h: Market data
+            
+        Returns:
+            Tuple of (is_favorable: bool, reason: str)
+        """
+        regime = self.analyze_market_regime(df_30m, df_1h, df_4h)
+        
+        trend = regime.get('trend', 'neutral')
+        momentum = regime.get('momentum', 'sideways')
+        volatility = regime.get('volatility', 'normal')
+        entry_score = regime.get('entry_score', 0.5)
+        
+        if strategy == 'oversold_bounce':
+            # OB strategy favors bearish/neutral trends with oversold conditions
+            if trend == 'bullish' and momentum == 'strong':
+                return False, "Strong bullish trend - OB not recommended"
+            if entry_score < 0.4:
+                return False, f"Poor entry conditions (score: {entry_score:.2f})"
+            if volatility == 'high' and trend == 'bearish':
+                return True, "High volatility bearish - good for oversold bounces"
+            if trend in ['bearish', 'neutral']:
+                return True, f"{trend.capitalize()} regime - OB strategy favorable"
+            return False, "Market conditions not ideal for OB"
+            
+        elif strategy == 'short_the_rip':
+            # STR strategy favors bearish trends with overbought conditions
+            if trend == 'bullish':
+                return False, "Bullish trend - shorting not recommended"
+            if entry_score < 0.3:
+                return False, f"Very poor entry conditions (score: {entry_score:.2f})"
+            if trend == 'bearish' and momentum in ['strong', 'weak']:
+                return True, f"Bearish {momentum} momentum - ideal for STR"
+            if volatility == 'high':
+                return True, "High volatility - rips likely to fail"
+            return False, "Market conditions not ideal for STR"
+        
+        return False, f"Unknown strategy: {strategy}"
+    
+    def get_position_size_multiplier(self, df_30m: pd.DataFrame, 
+                                    df_1h: pd.DataFrame, 
+                                    df_4h: pd.DataFrame) -> float:
+        """
+        Get position size multiplier based on market regime.
+        
+        Returns:
+            Multiplier (0.5 to 1.5 typically)
+        """
+        regime = self.analyze_market_regime(df_30m, df_1h, df_4h)
+        return regime.get('risk_multiplier', 1.0)
