@@ -435,10 +435,3 @@ class MarketRegimeAnalyzer:
         """
         regime = self.analyze_market_regime(df_30m, df_1h, df_4h)
         return regime.get('risk_multiplier', 1.0)
-
-    # Sınıfa metodları ekle
-    MarketRegimeAnalyzer.get_regime_recommendations = get_regime_recommendations
-    MarketRegimeAnalyzer.get_adaptive_rsi_threshold = get_adaptive_rsi_threshold
-    MarketRegimeAnalyzer.is_favorable_for_strategy = is_favorable_for_strategy
-    MarketRegimeAnalyzer.get_position_size_multiplier = get_position_size_multiplier
-
