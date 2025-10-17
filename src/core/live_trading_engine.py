@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 # Strategy import kısmı güncelleme:
-from strategies.adaptive_ob import AdaptiveOversoldBounce
+from strategies import AdaptiveOversoldBounce, AdaptiveShortTheRip
 try:
     from strategies.adaptive_str import AdaptiveShortTheRip
 except ImportError:
