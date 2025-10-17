@@ -5,7 +5,7 @@ Provides multi-timeframe analysis for intelligent strategy adaptation.
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 import logging
 
 logger = logging.getLogger(__name__)
