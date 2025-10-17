@@ -8,6 +8,15 @@ import logging
 from typing import Optional, Dict
 from .short_the_rip import ShortTheRip
 from . import DEFAULT_MARKET_REGIME
+# Default market regime for fallback
+DEFAULT_MARKET_REGIME = {
+    'trend': 'neutral',
+    'momentum': 'sideways', 
+    'volatility': 'normal',
+    'micro_trend_strength': 0.5,
+    'entry_score': 0.5,
+    'risk_multiplier': 1.0
+}
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +84,9 @@ class AdaptiveShortTheRip(ShortTheRip):
             else:
                 threshold = base_rsi + min(self.MAX_THRESHOLD_ADJUSTMENT * 0.6, adapt_range/3)
         
-        # Clamp to reasonable range for shorts (50-70 range)
-        min_threshold = max(50, base_rsi - adapt_range)
-        max_threshold = min(70, base_rsi + adapt_range)
+        # Clamp to reasonable range for shorts (55-85 range)
+        min_threshold = max(55, base_rsi - adapt_range)  # STR için minimum 55
+        max_threshold = min(85, base_rsi + adapt_range)  # STR için maximum 85
         
         return max(min_threshold, min(max_threshold, threshold))
     
