@@ -1,30 +1,40 @@
 """
-Production Coordinator.
-Coordinate all Phase 3-4 components for production deployment.
+Production Coordinator - Phase 3 Orchestration Layer
+Manages the complete production trading system with all phases integrated.
 """
 
-import asyncio
+import os  # ✅ EKLE!
 import logging
+import asyncio
+from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any
+from enum import Enum
 
-from strategies.adaptive_ob import AdaptiveOversoldBounce
-from strategies.adaptive_str import AdaptiveShortTheRip
+# Phase 1: Multi-Exchange Framework
+from .multi_exchange import build_clients_from_env
+from .ccxt_client import CcxtClient
 
-from .live_trading_engine import LiveTradingEngine
+# Phase 2: Market Intelligence  
+from .market_regime_analyzer import MarketRegimeAnalyzer
+from .performance_monitor import PerformanceMonitor
 from .websocket_manager import WebSocketManager
+
+# Phase 3.1-3.3: Risk & Portfolio Management
 from .risk_manager import RiskManager
 from .portfolio_manager import PortfolioManager
 from .strategy_coordinator import StrategyCoordinator
 from .circuit_breaker import CircuitBreakerSystem
-from .performance_monitor import RealTimePerformanceMonitor
-from .market_regime import MarketRegimeAnalyzer
 
-# Import config with try/except for flexibility
+# Phase 3.4: Live Trading Components
+from .live_trading_engine import LiveTradingEngine
+
+# Phase 4: ML Components (optional)
 try:
-    from ..config.live_trading_config import LiveTradingConfiguration
+    from ml.regime_predictor import RegimePredictor
+    from ml.strategy_optimizer import StrategyOptimizer
+    ML_AVAILABLE = True
 except ImportError:
-    from config.live_trading_config import LiveTradingConfiguration
+    ML_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
