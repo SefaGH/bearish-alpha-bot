@@ -5,14 +5,19 @@ Tracks strategy performance and provides optimization feedback.
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, timezone, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-class RealTimePerformanceMonitor:
+class PerformanceMonitor:
+    """Alias for RealTimePerformanceMonitor for backward compatibility."""
+    pass
+
+
+class RealTimePerformanceMonitor(PerformanceMonitor):
     """
     Real-time strategy performance monitoring and optimization.
     
@@ -25,9 +30,60 @@ class RealTimePerformanceMonitor:
         self.performance_history = {}
         self.optimization_feedback = {}
         self.strategy_states = {}
+        self.trades = []  # Production coordinator için
+        self.metrics = {}  # Production coordinator için
+        
+    def record_trade(self, trade_data: Dict[str, Any]):
+        """Record a trade for tracking (production compatibility)."""
+        self.trades.append({
+            'timestamp': datetime.now(timezone.utc),
+            'data': trade_data
+        })
+        
+        # Extract strategy name if available
+        strategy_name = trade_data.get('strategy', 'unknown')
+        
+        # Track using existing method
+        result = {
+            'pnl': trade_data.get('pnl', 0),
+            'symbol': trade_data.get('symbol'),
+            'side': trade_data.get('side'),
+            'price': trade_data.get('price'),
+            'quantity': trade_data.get('quantity')
+        }
+        
+        self.track_strategy_performance(strategy_name, result)
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get overall metrics (production compatibility)."""
+        all_metrics = {
+            'total_trades': len(self.trades),
+            'strategies': {}
+        }
+        
+        # Aggregate metrics from all strategies
+        for strategy_name, history in self.performance_history.items():
+            metrics = history.get('metrics', {})
+            all_metrics['strategies'][strategy_name] = metrics
+            
+            # Update overall metrics
+            if metrics:
+                if 'total_pnl' not in all_metrics:
+                    all_metrics['total_pnl'] = 0
+                all_metrics['total_pnl'] += metrics.get('total_pnl', 0)
+                
+                if 'overall_win_rate' not in all_metrics:
+                    all_metrics['overall_win_rate'] = []
+                all_metrics['overall_win_rate'].append(metrics.get('win_rate', 0))
+        
+        # Calculate averages
+        if 'overall_win_rate' in all_metrics and all_metrics['overall_win_rate']:
+            all_metrics['avg_win_rate'] = sum(all_metrics['overall_win_rate']) / len(all_metrics['overall_win_rate'])
+        
+        return all_metrics
         
     def track_strategy_performance(self, strategy_name: str, 
-                                   results: Dict) -> Dict[str, any]:
+                                   results: Dict) -> Dict[str, Any]:
         """
         Track real-time strategy performance metrics.
         
@@ -73,7 +129,7 @@ class RealTimePerformanceMonitor:
             logger.error(f"Error tracking performance for {strategy_name}: {e}")
             return {}
     
-    def _calculate_strategy_metrics(self, strategy_name: str) -> Dict[str, any]:
+    def _calculate_strategy_metrics(self, strategy_name: str) -> Dict[str, Any]:
         """
         Calculate comprehensive performance metrics for a strategy.
         
@@ -248,7 +304,7 @@ class RealTimePerformanceMonitor:
             logger.error(f"Error detecting parameter drift: {e}")
             return (False, [f"Error: {str(e)}"])
     
-    def provide_optimization_feedback(self, strategy_name: str) -> Dict[str, any]:
+    def provide_optimization_feedback(self, strategy_name: str) -> Dict[str, Any]:
         """
         Provide real-time optimization recommendations.
         
@@ -332,7 +388,7 @@ class RealTimePerformanceMonitor:
                 'recommendations': [f"Error: {str(e)}"]
             }
     
-    def get_strategy_summary(self, strategy_name: str) -> Dict[str, any]:
+    def get_strategy_summary(self, strategy_name: str) -> Dict[str, Any]:
         """
         Get comprehensive summary for a strategy.
         
@@ -367,3 +423,34 @@ class RealTimePerformanceMonitor:
             strategy: self.get_strategy_summary(strategy)
             for strategy in self.performance_history.keys()
         }
+    
+    def get_current_performance(self) -> Dict[str, Any]:
+        """Get current performance snapshot for production coordinator."""
+        return {
+            'timestamp': datetime.now(timezone.utc),
+            'total_trades': len(self.trades),
+            'metrics': self.get_metrics(),
+            'strategies': self.get_all_strategies_summary()
+        }
+    
+    def reset_daily_stats(self):
+        """Reset daily statistics (for daily limit tracking)."""
+        logger.info("Resetting daily performance statistics")
+        
+        # Keep history but reset daily counters
+        for strategy_name in self.performance_history:
+            # Mark daily reset in parameters
+            if 'parameters' not in self.performance_history[strategy_name]:
+                self.performance_history[strategy_name]['parameters'] = []
+            
+            self.performance_history[strategy_name]['parameters'].append({
+                'timestamp': datetime.now(timezone.utc),
+                'event': 'daily_reset',
+                'metrics_before_reset': self.performance_history[strategy_name].get('metrics', {}).copy()
+            })
+        
+        # Clear today's trades for daily counting
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        self.trades = [t for t in self.trades if t.get('timestamp', datetime.now(timezone.utc)) >= today_start]
+        
+        logger.info(f"Daily stats reset complete. Kept {len(self.trades)} trades from today")
