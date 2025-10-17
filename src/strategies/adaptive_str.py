@@ -7,7 +7,7 @@ import pandas as pd
 import logging
 from typing import Optional, Dict
 from .short_the_rip import ShortTheRip
-from . import DEFAULT_MARKET_REGIME
+
 # Default market regime for fallback
 DEFAULT_MARKET_REGIME = {
     'trend': 'neutral',
@@ -248,12 +248,20 @@ class AdaptiveShortTheRip(ShortTheRip):
             position_mult = self.calculate_dynamic_position_size(volatility)
             logger.debug(f"📊 [STRATEGY-AdaptiveSTR] Position multiplier: {position_mult:.2f} (volatility: {volatility})")
             
+            # ===== KRİTİK DÜZELTME: ENTRY FİYATI EKLE =====
+            entry_price = float(last30['close'])  # Son kapanış fiyatı
+            
+            # ATR değerini al (stop loss hesaplaması için)
+            atr_value = float(last30['atr']) if 'atr' in last30.index else entry_price * 0.02  # Default %2
+            
             # Build adaptive signal
             signal = {
                 "side": "sell",
+                "entry": entry_price,  # ⬅️ KRİTİK: BU SATIR EKSİKTİ!
                 "reason": f"Adaptive RSI overbought {rsi_val:.1f} (threshold: {adaptive_rsi_threshold:.1f}, regime: {market_regime['trend']})",
                 "tp_pct": float(self.cfg.get("tp_pct", 0.012)),
                 "sl_atr_mult": float(self.cfg.get("sl_atr_mult", 1.2)),
+                "atr": atr_value,  # ATR değerini de ekle (opsiyonel ama faydalı)
                 
                 # Adaptive parameters
                 "position_multiplier": position_mult,
