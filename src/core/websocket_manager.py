@@ -188,6 +188,8 @@ class WebSocketManager:
         
         total_subscribed = sum(len(syms) for syms in subscribed.values())
         logger.info(f"Subscribed to {total_subscribed} symbols across {len(subscribed)} exchanges")
+        # Data collector ekle (init'in sonuna)
+        self._data_collector = StreamDataCollector(buffer_size=100)
         
         return dict(subscribed)
     
@@ -226,12 +228,14 @@ class WebSocketManager:
                 if not self.start_ohlcv_stream(exchange_name, symbol, timeframe):
                     continue
                 
-                # Create a callback wrapper that includes exchange info
-                if callback:
-                    async def wrapped_callback(sym, tf, ohlcv, ex=exchange_name):
+                # Create a callback wrapper that includes exchange info AND data collector
+                async def wrapped_callback(sym, tf, ohlcv, ex=exchange_name):
+                    # Store in data collector
+                    if hasattr(self, '_data_collector'):
+                        await self._data_collector.ohlcv_callback(ex, sym, tf, ohlcv)
+                    # Call user callback if provided
+                    if callback:
                         await callback(ex, sym, tf, ohlcv)
-                else:
-                    wrapped_callback = None
                 
                 # Start watch loop for this symbol
                 task = asyncio.create_task(
@@ -375,6 +379,38 @@ class WebSocketManager:
                 for exchange, streams in self._active_streams.items()
             }
         }
+
+    def get_latest_data(self, symbol: str, timeframe: str = '1m') -> Optional[Dict[str, Any]]:
+        """
+        Get latest cached data for a symbol (PRODUCTION COORDINATOR COMPAT).
+        
+        Args:
+            symbol: Trading pair (e.g., 'BTC/USDT:USDT')
+            timeframe: Timeframe (e.g., '1m', '5m')
+            
+        Returns:
+            Dict with latest OHLCV data or None if not available
+        """
+        # Data collector yoksa oluştur
+        if not hasattr(self, '_data_collector'):
+            self._data_collector = StreamDataCollector(buffer_size=100)
+            
+        # Get from any available exchange
+        for exchange in self._active_streams.keys():
+            # Try to get cached data
+            latest_ohlcv = self._data_collector.get_latest_ohlcv(exchange, symbol, timeframe)
+            if latest_ohlcv:
+                return {
+                    'exchange': exchange,
+                    'symbol': symbol,
+                    'timeframe': timeframe,
+                    'ohlcv': latest_ohlcv,
+                    'timestamp': datetime.now(timezone.utc)
+                }
+                
+        # No cached data available
+        logger.debug(f"No cached data for {symbol} {timeframe}")
+        return None
     
     async def subscribe_tickers(self, symbols: List[str], callback=None):
         """
@@ -537,6 +573,7 @@ class OptimizedWebSocketManager(WebSocketManager):
     """
     
     def __init__(self, exchanges: Optional[Dict[str, Any]] = None, 
+                 super().__init__(exchanges, config)
                  config: Dict[str, Any] = None,
                  max_streams_per_exchange: int = 10):
         """
