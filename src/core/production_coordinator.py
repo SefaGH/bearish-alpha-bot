@@ -3,12 +3,13 @@ Production Coordinator - Phase 3 Orchestration Layer
 Manages the complete production trading system with all phases integrated.
 """
 
-import os  # ✅ EKLE!
 import logging
 import asyncio
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
 from enum import Enum
+import os
+import yaml
 
 # Phase 1: Multi-Exchange Framework
 from .multi_exchange import build_clients_from_env
@@ -22,6 +23,19 @@ from market_regime import MarketRegimeAnalyzer  # ✅ Mevcut dosya
 from .performance_monitor import PerformanceMonitor
 from .websocket_manager import WebSocketManager
 
+# Performance Monitor için basit fallback
+class RealTimePerformanceMonitor:
+    """Basit performance monitor fallback."""
+    def __init__(self):
+        self.trades = []
+        self.metrics = {}
+    
+    def record_trade(self, trade_data):
+        self.trades.append(trade_data)
+    
+    def get_metrics(self):
+        return self.metrics
+
 # Phase 3.1-3.3: Risk & Portfolio Management
 from .risk_manager import RiskManager
 from .portfolio_manager import PortfolioManager
@@ -30,6 +44,14 @@ from .circuit_breaker import CircuitBreakerSystem
 
 # Phase 3.4: Live Trading Components
 from .live_trading_engine import LiveTradingEngine
+
+# Strategy imports
+from strategies.adaptive_ob import AdaptiveOversoldBounce
+try:
+    from strategies.adaptive_str import AdaptiveShortTheRip
+except ImportError:
+    # Fallback: use base ShortTheRip
+    from strategies.short_the_rip import ShortTheRip as AdaptiveShortTheRip
 
 # Phase 4: ML Components (optional)
 try:
@@ -69,6 +91,8 @@ class ProductionCoordinator:
         
         # Configuration
         self.config = LiveTradingConfiguration.get_all_configs()
+        # Configuration için LiveTradingConfiguration import
+        from .live_trading_config import LiveTradingConfiguration
         
         logger.info("ProductionCoordinator created")
 
