@@ -7,7 +7,6 @@ import logging
 import asyncio
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
-from enum import Enum
 import os
 import yaml
 import pandas as pd
@@ -59,7 +58,8 @@ from .circuit_breaker import CircuitBreakerSystem
 from .live_trading_engine import LiveTradingEngine
 
 # Strategy imports - DÜZELTILDI
-from strategies import AdaptiveOversoldBounce, AdaptiveShortTheRip
+from strategies.adaptive_ob import AdaptiveOversoldBounce
+from strategies.adaptive_str import AdaptiveShortTheRip
 
 # Phase 4: ML Components (optional)
 try:
@@ -100,7 +100,7 @@ class ProductionCoordinator:
         self.active_symbols = []  # Takip edilen semboller
         self.processed_symbols_count = 0  # İşlenen sembol sayacı
         
-        # Configuration - DÜZELTILDI
+        # Configuration
         self.config = LiveTradingConfiguration.get_all_configs()
         
         # Market regime analyzer başlat
@@ -109,44 +109,53 @@ class ProductionCoordinator:
         
         logger.info("ProductionCoordinator created")
 
-        def _setup_websocket_connections(self):
-            """WebSocket bağlantılarını kur - DÜZELTILMIŞ"""
+    def _setup_websocket_connections(self):
+        """WebSocket bağlantılarını kur."""
+        # WebSocket manager yoksa oluştur
+        if not self.websocket_manager:
+            self.websocket_manager = WebSocketManager(exchanges=self.exchange_clients)
+        
+        # Config'den sabit sembolleri al  
+        fixed_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
+        
+        if not fixed_symbols:
+            logger.warning("[WS] No fixed symbols configured")
+            return
             
-            # ZATEN websocket_manager varsa yeniden oluşturma!
-            if not self.websocket_manager:
-                self.websocket_manager = WebSocketManager(exchanges=self.exchange_clients)
+        logger.info(f"[WS] Setting up {len(fixed_symbols)} configured symbols")
+        
+        # Config'den timeframe'leri al
+        ws_config = self.config.get('websocket', {})
+        timeframes = ws_config.get('stream_timeframes', ['1m', '5m'])
+        
+        # Her exchange için stream limitleri kontrol et
+        for exchange_name in self.exchange_clients.keys():
+            # Stream limit kontrolü
+            max_streams = 10  # Default limit
+            if hasattr(self.websocket_manager, '_stream_limits'):
+                max_streams = self.websocket_manager._stream_limits.get(exchange_name, 10)
             
-            # Config'den sabit sembolleri al  
-            fixed_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
+            required_streams = len(fixed_symbols) * len(timeframes)
             
-            if fixed_symbols:
-                logger.info(f"[WS] Setting up {len(fixed_symbols)} configured symbols")
-                
-                # Config'den timeframe'leri al
-                ws_config = self.config.get('websocket', {})
-                timeframes = ws_config.get('stream_timeframes', ['1m', '5m'])
-                
-                # Stream limitleri kontrol et
-                for exchange_name in self.exchange_clients.keys():
-                    max_streams = self.websocket_manager._stream_limits.get(exchange_name, 10)
-                    required_streams = len(fixed_symbols) * len(timeframes)
-                    
-                    if required_streams > max_streams:
-                        # Otomatik ayarlama: Ya sembol sayısını ya da timeframe'i azalt
-                        max_symbols = max_streams // len(timeframes)
-                        symbols_to_use = fixed_symbols[:max_symbols]
-                        logger.warning(f"[WS] {exchange_name}: Required {required_streams} streams > limit {max_streams}")
-                        logger.info(f"[WS] {exchange_name}: Using only first {max_symbols} symbols")
-                    else:
-                        symbols_to_use = fixed_symbols
-                    
-                    # Stream'leri başlat
-                    for symbol in symbols_to_use:
-                        for tf in timeframes:
-                            self.websocket_manager.start_ohlcv_stream(exchange_name, symbol, tf)
-                    
-                    self.active_symbols = symbols_to_use
-                    logger.info(f"[WS] {exchange_name}: {len(symbols_to_use)} symbols × {len(timeframes)} timeframes = {len(symbols_to_use) * len(timeframes)} streams")
+            if required_streams > max_streams:
+                # Otomatik ayarlama
+                max_symbols = max_streams // len(timeframes)
+                symbols_to_use = fixed_symbols[:max_symbols]
+                logger.warning(f"[WS] {exchange_name}: Required {required_streams} streams > limit {max_streams}")
+                logger.info(f"[WS] {exchange_name}: Using only first {max_symbols} symbols")
+            else:
+                symbols_to_use = fixed_symbols
+            
+            # Stream'leri başlat
+            for symbol in symbols_to_use:
+                for tf in timeframes:
+                    try:
+                        self.websocket_manager.start_ohlcv_stream(exchange_name, symbol, tf)
+                    except Exception as e:
+                        logger.debug(f"[WS] Could not start stream for {symbol} {tf}: {e}")
+            
+            self.active_symbols = symbols_to_use
+            logger.info(f"[WS] {exchange_name}: {len(symbols_to_use)} symbols active")
 
     def _get_top_volume_symbols(self, limit=20):
         """Get top volume symbols from exchanges."""
@@ -157,7 +166,7 @@ class ProductionCoordinator:
         ]
         return default_symbols[:limit]
 
-    def process_symbol(self, symbol: str) -> Optional[Dict]:
+    async def process_symbol(self, symbol: str) -> Optional[Dict]:
         """
         Process a single symbol for signals with market regime analysis.
         
@@ -193,6 +202,19 @@ class ProductionCoordinator:
                 except AttributeError:
                     logger.debug(f"WebSocketManager missing get_latest_data method")
                     pass
+            
+            # REST API fallback
+            if df_30m is None and self.exchange_clients:
+                # İlk mevcut exchange'i kullan
+                for exchange_name, client in self.exchange_clients.items():
+                    try:
+                        df_30m = self._fetch_ohlcv(client, symbol, '30m')
+                        df_1h = self._fetch_ohlcv(client, symbol, '1h')
+                        df_4h = self._fetch_ohlcv(client, symbol, '4h')
+                        break
+                    except Exception as e:
+                        logger.debug(f"REST API fetch failed for {symbol} on {exchange_name}: {e}")
+                        continue
             
             # Veri yoksa skip
             if df_30m is None or df_1h is None or df_4h is None:
@@ -296,26 +318,15 @@ class ProductionCoordinator:
     async def _process_trading_loop(self):
         """Main trading loop processing."""
         try:
+            if not self.active_symbols:
+                logger.warning("No active symbols to process")
+                return
+                
             # Process each active symbol
             for symbol in self.active_symbols:
                 try:
-                    # WebSocket'ten veri al
-                    latest_data = None
-                    if self.websocket_manager:
-                        # get_latest_data metodunu kullan
-                        latest_data = self.websocket_manager.get_latest_data(symbol, '1m')
-                    
-                    # Eğer WebSocket'ten veri gelmezse, trading engine'e bırak
-                    if not latest_data:
-                        logger.debug(f"No WebSocket data for {symbol}, will use REST API fallback")
-                        # Trading engine kendi REST API çağrısını yapacak
-                        continue
-                    
-                    # Veri varsa logla
-                    logger.debug(f"Processing {symbol} with WebSocket data from {latest_data.get('exchange')}")
-                    
-                    # Process symbol ile sinyal üret
-                    signal = self.process_symbol(symbol)
+                    # Process symbol - AWAIT KULLAN!
+                    signal = await self.process_symbol(symbol)
                     
                     if signal:
                         # Submit signal to trading engine
@@ -323,15 +334,6 @@ class ProductionCoordinator:
                         if result['success']:
                             logger.info(f"✅ Signal submitted: {symbol} {signal.get('strategy')}")
                     
-                except AttributeError as e:
-                    # get_latest_data metodu eksik hatası
-                    if "'WebSocketManager' object has no attribute 'get_latest_data'" in str(e):
-                        logger.error(f"WebSocketManager missing get_latest_data method - please update websocket_manager.py")
-                        logger.error("Using fallback: skipping WebSocket data for now")
-                        continue
-                    else:
-                        logger.error(f"Error processing {symbol}: {e}")
-                        
                 except Exception as e:
                     logger.error(f"Error processing {symbol}: {e}")
                     continue
@@ -379,11 +381,8 @@ class ProductionCoordinator:
             # Phase 3.1: WebSocket connections
             logger.info("\n[Phase 3.1] Establishing WebSocket Connections...")
             try:
-                # Exchange clients ile initialize et
-                if not self.websocket_manager:
-                    self.websocket_manager = WebSocketManager(exchanges=self.exchange_clients)
-                
-                self._setup_websocket_connections()  # Sembolleri ayarla
+                # WebSocket bağlantılarını kur
+                self._setup_websocket_connections()
                 logger.info("  ✓ WebSocket Manager initialized")
             except Exception as e:
                 logger.warning(f"  ⚠️  WebSocket initialization failed: {e}")
@@ -835,7 +834,7 @@ class ProductionCoordinator:
             state['market_regime'] = self.market_regime_analyzer.get_current_regime()
         
         return state
-        
+    
     def _ohlcv_to_dataframe(self, ohlcv_data: List) -> pd.DataFrame:
         """Convert OHLCV list data to DataFrame."""
         import pandas as pd
@@ -854,6 +853,15 @@ class ProductionCoordinator:
             df = add_indicators(df, self.config.get('indicators', {}))
         
         return df
+    
+    def _fetch_ohlcv(self, client, symbol: str, timeframe: str) -> pd.DataFrame:
+        """Helper method to fetch OHLCV data via REST API."""
+        try:
+            rows = client.ohlcv(symbol, timeframe, limit=200)
+            return self._ohlcv_to_dataframe(rows)
+        except Exception as e:
+            logger.error(f"Failed to fetch {symbol} {timeframe}: {e}")
+            return None
     
     async def stop_system(self):
         """Stop the production system gracefully."""
