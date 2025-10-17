@@ -85,6 +85,14 @@ class LiveTradingEngine:
         
         # Load configuration
         self.config = LiveTradingConfiguration.get_all_configs()
+
+        # ✅ DEBUG: Config içeriğini kontrol et
+        logger.info(f"[CONFIG-DEBUG] Config keys: {list(self.config.keys())}")
+        if 'universe' in self.config:
+            universe_cfg = self.config['universe']
+            logger.info(f"[CONFIG-DEBUG] Universe config found: fixed_symbols={len(universe_cfg.get('fixed_symbols', []))}, auto_select={universe_cfg.get('auto_select')}")
+        else:
+            logger.warning("[CONFIG-DEBUG] ⚠️ NO UNIVERSE CONFIG FOUND!")
         
         # Universe cache for optimization
         self._cached_symbols = None
