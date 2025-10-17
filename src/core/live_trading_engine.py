@@ -601,18 +601,39 @@ class LiveTradingEngine:
         
         # Config'den direkt oku
         cfg = self.config
+        
+        # ✅ CONFIG DEBUG
+        logger.info(f"[UNIVERSE-DEBUG] Full config keys: {list(cfg.keys())}")
+        
         universe_cfg = cfg.get('universe', {})
+        
+        # ✅ UNIVERSE CONFIG DEBUG
+        logger.info(f"[UNIVERSE-DEBUG] Universe config: {universe_cfg}")
         
         # Sabit liste var mı?
         fixed_symbols = universe_cfg.get('fixed_symbols', [])
-        auto_select = universe_cfg.get('auto_select', False)
+        auto_select = universe_cfg.get('auto_select', None)  # None default
         
-        if fixed_symbols and not auto_select:
+        # ✅ DETAYLI DEBUG
+        logger.info(f"[UNIVERSE-DEBUG] fixed_symbols count: {len(fixed_symbols) if fixed_symbols else 0}")
+        logger.info(f"[UNIVERSE-DEBUG] fixed_symbols: {fixed_symbols[:3] if fixed_symbols else 'NONE'}...")
+        logger.info(f"[UNIVERSE-DEBUG] auto_select value: {auto_select}")
+        logger.info(f"[UNIVERSE-DEBUG] auto_select type: {type(auto_select).__name__}")
+        logger.info(f"[UNIVERSE-DEBUG] auto_select == False: {auto_select == False}")
+        logger.info(f"[UNIVERSE-DEBUG] auto_select is False: {auto_select is False}")
+        
+        # ✅ EN GÜVENLİ KONTROL
+        # auto_select sadece True ise aktif olsun, diğer tüm durumlar fixed kullanır
+        use_fixed = bool(fixed_symbols) and auto_select != True
+        
+        logger.info(f"[UNIVERSE-DEBUG] use_fixed decision: {use_fixed}")
+        
+        if use_fixed:
             # ✅ Direkt kullan, market yükleme YOK!
-            logger.info(f"[UNIVERSE] Using {len(fixed_symbols)} FIXED symbols (no market loading)")
+            logger.info(f"[UNIVERSE] ✅ Using {len(fixed_symbols)} FIXED symbols (no market loading)")
             self._cached_symbols = fixed_symbols
             
-            # Exchange client'lara bildir (optimize fetch için)
+            # Exchange client'lara bildir
             for client in self.exchange_clients.values():
                 if hasattr(client, 'set_required_symbols'):
                     client.set_required_symbols(fixed_symbols)
