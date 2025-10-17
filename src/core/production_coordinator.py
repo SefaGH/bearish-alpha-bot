@@ -109,44 +109,44 @@ class ProductionCoordinator:
         
         logger.info("ProductionCoordinator created")
 
-    def _setup_websocket_connections(self):
-    """WebSocket bağlantılarını kur - DÜZELTILMIŞ"""
-    
-    # ZATEN websocket_manager varsa yeniden oluşturma!
-    if not self.websocket_manager:
-        self.websocket_manager = WebSocketManager(exchanges=self.exchange_clients)
-    
-    # Config'den sabit sembolleri al
-    fixed_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
-    
-    if fixed_symbols:
-        logger.info(f"[WS] Setting up {len(fixed_symbols)} configured symbols")
-        
-        # Config'den timeframe'leri al
-        ws_config = self.config.get('websocket', {})
-        timeframes = ws_config.get('stream_timeframes', ['1m', '5m'])
-        
-        # Stream limitleri kontrol et
-        for exchange_name in self.exchange_clients.keys():
-            max_streams = self.websocket_manager._stream_limits.get(exchange_name, 10)
-            required_streams = len(fixed_symbols) * len(timeframes)
+        def _setup_websocket_connections(self):
+            """WebSocket bağlantılarını kur - DÜZELTILMIŞ"""
             
-            if required_streams > max_streams:
-                # Otomatik ayarlama: Ya sembol sayısını ya da timeframe'i azalt
-                max_symbols = max_streams // len(timeframes)
-                symbols_to_use = fixed_symbols[:max_symbols]
-                logger.warning(f"[WS] {exchange_name}: Required {required_streams} streams > limit {max_streams}")
-                logger.info(f"[WS] {exchange_name}: Using only first {max_symbols} symbols")
-            else:
-                symbols_to_use = fixed_symbols
+            # ZATEN websocket_manager varsa yeniden oluşturma!
+            if not self.websocket_manager:
+                self.websocket_manager = WebSocketManager(exchanges=self.exchange_clients)
             
-            # Stream'leri başlat
-            for symbol in symbols_to_use:
-                for tf in timeframes:
-                    self.websocket_manager.start_ohlcv_stream(exchange_name, symbol, tf)
+            # Config'den sabit sembolleri al  
+            fixed_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
             
-            self.active_symbols = symbols_to_use
-            logger.info(f"[WS] {exchange_name}: {len(symbols_to_use)} symbols × {len(timeframes)} timeframes = {len(symbols_to_use) * len(timeframes)} streams")
+            if fixed_symbols:
+                logger.info(f"[WS] Setting up {len(fixed_symbols)} configured symbols")
+                
+                # Config'den timeframe'leri al
+                ws_config = self.config.get('websocket', {})
+                timeframes = ws_config.get('stream_timeframes', ['1m', '5m'])
+                
+                # Stream limitleri kontrol et
+                for exchange_name in self.exchange_clients.keys():
+                    max_streams = self.websocket_manager._stream_limits.get(exchange_name, 10)
+                    required_streams = len(fixed_symbols) * len(timeframes)
+                    
+                    if required_streams > max_streams:
+                        # Otomatik ayarlama: Ya sembol sayısını ya da timeframe'i azalt
+                        max_symbols = max_streams // len(timeframes)
+                        symbols_to_use = fixed_symbols[:max_symbols]
+                        logger.warning(f"[WS] {exchange_name}: Required {required_streams} streams > limit {max_streams}")
+                        logger.info(f"[WS] {exchange_name}: Using only first {max_symbols} symbols")
+                    else:
+                        symbols_to_use = fixed_symbols
+                    
+                    # Stream'leri başlat
+                    for symbol in symbols_to_use:
+                        for tf in timeframes:
+                            self.websocket_manager.start_ohlcv_stream(exchange_name, symbol, tf)
+                    
+                    self.active_symbols = symbols_to_use
+                    logger.info(f"[WS] {exchange_name}: {len(symbols_to_use)} symbols × {len(timeframes)} timeframes = {len(symbols_to_use) * len(timeframes)} streams")
 
     def _get_top_volume_symbols(self, limit=20):
         """Get top volume symbols from exchanges."""
@@ -576,11 +576,6 @@ class ProductionCoordinator:
                     
                     # Process trading loop with WebSocket data
                     await self._process_trading_loop()
-                        if signal:
-                            # Submit signal to trading engine
-                            result = await self.submit_signal(signal)
-                            if result['success']:
-                                logger.info(f"✅ Signal submitted: {symbol} {signal['strategy']}")
                     
                     # Market regime recommendations (periyodik)
                     current_time = datetime.now(timezone.utc)
