@@ -44,14 +44,13 @@ regime:
 websocket:
   enabled: true
   max_streams_per_exchange: 
-    bingx: 10        # BingX için max 10 stream (conservative)
+    bingx: 6        # BingX için max 10 stream (conservative)
     binance: 20      # Binance daha fazla destekler
     kucoinfutures: 15
     default: 10      # Diğerleri için
   
   stream_timeframes:
     - 1m             # Sadece gerekli timeframe'ler
-    - 5m
   
   reconnect_delay: 5  # Saniye
   max_reconnect_attempts: 3
@@ -64,8 +63,6 @@ universe:
     - BTC/USDT:USDT
     - ETH/USDT:USDT
     - SOL/USDT:USDT
-    - BNB/USDT:USDT
-    - ADA/USDT:USDT
     # Yedekler kaldırıldı
   
   # AUTO SELECT KAPALI!
@@ -95,7 +92,7 @@ signals:
   oversold_bounce:
     enable: true
     ignore_regime: true  # Production'da false
-    adaptive_rsi_base: 55  # Dinamik RSI için baz değer
+    adaptive_rsi_base: 40  # Dinamik RSI için baz değer
     adaptive_rsi_range: 10  # ±15 dinamik ayarlama
     tp_pct: 0.010
     sl_atr_mult: 1.0
@@ -103,8 +100,8 @@ signals:
   short_the_rip:
     enable: true
     ignore_regime: true
-    adaptive_rsi_base: 50  # Dinamik RSI için baz değer
-    adaptive_rsi_range: 15  # ±15 dinamik ayarlama
+    adaptive_rsi_base: 65  # Dinamik RSI için baz değer
+    adaptive_rsi_range: 10  # ±15 dinamik ayarlama
     tp_pct: 0.008
     sl_atr_mult: 1.0
 
