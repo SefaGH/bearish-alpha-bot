@@ -22,7 +22,7 @@ sys.path.append(str(Path(__file__).parent.parent))  # src/ dizinini ekle
 from core.market_regime import MarketRegimeAnalyzer
 from .performance_monitor import PerformanceMonitor
 from .websocket_manager import WebSocketManager
-from .live_trading_config import LiveTradingConfiguration
+from config.live_trading_config import LiveTradingConfiguration
 
 # Performance Monitor için basit fallback
 class RealTimePerformanceMonitor:
