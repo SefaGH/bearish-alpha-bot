@@ -12,7 +12,7 @@ import logging
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from market_regime import MarketRegimeAnalyzer
+from core.market_regime import MarketRegimeAnalyzer
 
 # Setup logging
 logging.basicConfig(
