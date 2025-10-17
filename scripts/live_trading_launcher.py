@@ -862,7 +862,6 @@ class LiveTradingLauncher:
                 exchange_clients=self.exchange_clients,
                 portfolio_config=portfolio_config,
                 mode=self.mode,  # ✅ Mode'u ekle!
-                strategies=self.strategies
             )
             
             if not init_result['success']:
