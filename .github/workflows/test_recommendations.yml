@@ -2,6 +2,10 @@ name: Test Market Recommendations
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'src/market_regime.py'
+      - 'scripts/test_recommendations*.py'
 
 jobs:
   test:
@@ -16,13 +20,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install pandas numpy pyyaml
       
-      - name: Test recommendations
-        env:
-          EXCHANGES: ${{ secrets.EXCHANGES }}
-          BINGX_KEY: ${{ secrets.BINGX_KEY }}
-          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
-          # ... diğer exchange credentials
+      - name: Test recommendations (Mock)
         run: |
-          python scripts/test_recommendations.py
+          python scripts/test_recommendations_mock.py
