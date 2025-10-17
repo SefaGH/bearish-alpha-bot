@@ -2,6 +2,7 @@
 Live Trading Engine.
 Production-ready live trading execution engine.
 """
+import os
 import yaml
 import asyncio
 import logging
@@ -13,7 +14,17 @@ from enum import Enum
 
 # Strategy import kısmı güncelleme:
 from strategies.adaptive_ob import AdaptiveOversoldBounce
-from strategies.adaptive_str import AdaptiveShortTheRip
+try:
+    from strategies.adaptive_str import AdaptiveShortTheRip
+except ImportError:
+    # Eğer adaptive_str.py yoksa, base strategy kullan
+    from strategies.short_the_rip import ShortTheRip
+    
+    class AdaptiveShortTheRip(ShortTheRip):
+        """Fallback adaptive wrapper for ShortTheRip"""
+        def __init__(self, cfg, regime_analyzer=None):
+            super().__init__(cfg)
+            self.regime_analyzer = regime_analyzerp
 from .order_manager import SmartOrderManager
 from .position_manager import AdvancedPositionManager
 from .execution_analytics import ExecutionAnalytics
