@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import os
 import yaml
+import pandas as pd
 
 # Phase 1: Multi-Exchange Framework
 from .multi_exchange import build_clients_from_env
@@ -159,15 +160,31 @@ class ProductionCoordinator:
         try:
             self.processed_symbols_count += 1
             
-            # WebSocket'ten veri al
-            if not self.websocket_manager:
-                logger.debug(f"No WebSocket manager for {symbol}")
-                return None
-                
-            df_30m = self.websocket_manager.get_latest_data(symbol, '30m')
-            df_1h = self.websocket_manager.get_latest_data(symbol, '1h')
-            df_4h = self.websocket_manager.get_latest_data(symbol, '4h')
+            # WebSocket'ten veri almayı dene
+            df_30m = None
+            df_1h = None
+            df_4h = None
             
+            if self.websocket_manager:
+                try:
+                    # get_latest_data metodunu kullan
+                    data_30m = self.websocket_manager.get_latest_data(symbol, '30m')
+                    data_1h = self.websocket_manager.get_latest_data(symbol, '1h')
+                    data_4h = self.websocket_manager.get_latest_data(symbol, '4h')
+                    
+                    # OHLCV verilerini DataFrame'e dönüştür
+                    if data_30m and 'ohlcv' in data_30m:
+                        df_30m = self._ohlcv_to_dataframe(data_30m['ohlcv'])
+                    if data_1h and 'ohlcv' in data_1h:
+                        df_1h = self._ohlcv_to_dataframe(data_1h['ohlcv'])
+                    if data_4h and 'ohlcv' in data_4h:
+                        df_4h = self._ohlcv_to_dataframe(data_4h['ohlcv'])
+                        
+                except AttributeError:
+                    logger.debug(f"WebSocketManager missing get_latest_data method")
+                    pass
+            
+            # Veri yoksa skip
             if df_30m is None or df_1h is None or df_4h is None:
                 logger.debug(f"Insufficient data for {symbol}")
                 return None
@@ -265,6 +282,55 @@ class ProductionCoordinator:
         except Exception as e:
             logger.error(f"Error processing {symbol}: {e}")
             return None
+
+    async def _process_trading_loop(self):
+        """Main trading loop processing."""
+        try:
+            # Process each active symbol
+            for symbol in self.active_symbols:
+                try:
+                    # WebSocket'ten veri al
+                    latest_data = None
+                    if self.websocket_manager:
+                        # get_latest_data metodunu kullan
+                        latest_data = self.websocket_manager.get_latest_data(symbol, '1m')
+                    
+                    # Eğer WebSocket'ten veri gelmezse, trading engine'e bırak
+                    if not latest_data:
+                        logger.debug(f"No WebSocket data for {symbol}, will use REST API fallback")
+                        # Trading engine kendi REST API çağrısını yapacak
+                        continue
+                    
+                    # Veri varsa logla
+                    logger.debug(f"Processing {symbol} with WebSocket data from {latest_data.get('exchange')}")
+                    
+                    # Process symbol ile sinyal üret
+                    signal = self.process_symbol(symbol)
+                    
+                    if signal:
+                        # Submit signal to trading engine
+                        result = await self.submit_signal(signal)
+                        if result['success']:
+                            logger.info(f"✅ Signal submitted: {symbol} {signal.get('strategy')}")
+                    
+                except AttributeError as e:
+                    # get_latest_data metodu eksik hatası
+                    if "'WebSocketManager' object has no attribute 'get_latest_data'" in str(e):
+                        logger.error(f"WebSocketManager missing get_latest_data method - please update websocket_manager.py")
+                        logger.error("Using fallback: skipping WebSocket data for now")
+                        continue
+                    else:
+                        logger.error(f"Error processing {symbol}: {e}")
+                        
+                except Exception as e:
+                    logger.error(f"Error processing {symbol}: {e}")
+                    continue
+            
+            # Sleep between iterations
+            await asyncio.sleep(self.loop_interval)
+            
+        except Exception as e:
+            logger.error(f"Trading loop error: {e}")
 
     async def initialize_production_system(self, exchange_clients: Dict, 
                                           portfolio_config: Dict,
@@ -495,9 +561,8 @@ class ProductionCoordinator:
                             logger.info(f"Duration {duration}s reached - stopping")
                             break
                     
-                    # Process symbols for signals
-                    for symbol in self.active_symbols:
-                        signal = self.process_symbol(symbol)
+                    # Process trading loop with WebSocket data
+                    await self._process_trading_loop()
                         if signal:
                             # Submit signal to trading engine
                             result = await self.submit_signal(signal)
@@ -762,6 +827,25 @@ class ProductionCoordinator:
             state['market_regime'] = self.market_regime_analyzer.get_current_regime()
         
         return state
+        
+    def _ohlcv_to_dataframe(self, ohlcv_data: List) -> pd.DataFrame:
+        """Convert OHLCV list data to DataFrame."""
+        import pandas as pd
+        
+        if not ohlcv_data:
+            return None
+        
+        # OHLCV formatı: [timestamp, open, high, low, close, volume]
+        df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        
+        # Indicators ekle (eğer yoksa)
+        from core.indicators import add_indicators
+        if 'rsi' not in df.columns:
+            df = add_indicators(df, self.config.get('indicators', {}))
+        
+        return df
     
     async def stop_system(self):
         """Stop the production system gracefully."""
