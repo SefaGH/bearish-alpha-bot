@@ -778,6 +778,10 @@ class LiveTradingLauncher:
                        f"range=±{adaptive_ob_config['adaptive_rsi_range']}")
             logger.info(f"✓ STR Config loaded: base={adaptive_str_config['adaptive_rsi_base']}, "
                        f"range=±{adaptive_str_config['adaptive_rsi_range']}")
+
+            # DEBUG: Config değerlerini göster
+            logger.debug(f"OB full config: {adaptive_ob_config}")
+            logger.debug(f"STR full config: {adaptive_str_config}")
             
             # Adaptive Oversold Bounce strategy
             self.strategies['adaptive_ob'] = AdaptiveOversoldBounce(adaptive_ob_config, regime_analyzer)
