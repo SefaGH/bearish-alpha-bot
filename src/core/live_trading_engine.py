@@ -233,8 +233,12 @@ class LiveTradingEngine:
         Returns:
             Execution result
         """
-        try:
-            symbol = signal.get('symbol', 'UNKNOWN')
+        # Adaptive signal ise logla
+        if signal.get('is_adaptive'):
+            logger.info(f"Executing ADAPTIVE signal for {symbol}")
+            if signal.get('adaptive_threshold'):
+                logger.info(f"  Adaptive RSI threshold was: {signal['adaptive_threshold']:.1f}")
+        else:
             logger.info(f"Executing signal for {symbol}")
             
             # Step 1: Risk validation (Phase 3.2)
