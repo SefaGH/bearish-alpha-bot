@@ -2,7 +2,7 @@
 Live Trading Engine.
 Production-ready live trading execution engine.
 """
-
+import yaml
 import asyncio
 import logging
 import inspect
@@ -86,13 +86,21 @@ class LiveTradingEngine:
         # Load configuration
         self.config = LiveTradingConfiguration.get_all_configs()
 
-        # ✅ DEBUG: Config içeriğini kontrol et
-        logger.info(f"[CONFIG-DEBUG] Config keys: {list(self.config.keys())}")
-        if 'universe' in self.config:
-            universe_cfg = self.config['universe']
-            logger.info(f"[CONFIG-DEBUG] Universe config found: fixed_symbols={len(universe_cfg.get('fixed_symbols', []))}, auto_select={universe_cfg.get('auto_select')}")
-        else:
-            logger.warning("[CONFIG-DEBUG] ⚠️ NO UNIVERSE CONFIG FOUND!")
+        # ✅ Config'i direkt YAML'dan yükle!
+        config_path = os.getenv("CONFIG_PATH", "config/config.example.yaml")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                yaml_config = yaml.safe_load(f) or {}
+                
+            # YAML'daki universe config'i ekle
+            if 'universe' in yaml_config:
+                self.config['universe'] = yaml_config['universe']
+                logger.info(f"✅ Universe config loaded from YAML")
+                logger.info(f"   fixed_symbols: {len(yaml_config['universe'].get('fixed_symbols', []))}")
+                logger.info(f"   auto_select: {yaml_config['universe'].get('auto_select')}")
+                
+        except Exception as e:
+            logger.warning(f"Could not load universe from YAML: {e}")
         
         # Universe cache for optimization
         self._cached_symbols = None
