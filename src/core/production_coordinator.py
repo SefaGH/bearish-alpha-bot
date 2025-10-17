@@ -46,7 +46,7 @@ from .circuit_breaker import CircuitBreakerSystem
 from .live_trading_engine import LiveTradingEngine
 
 # Strategy imports
-from strategies.adaptive_ob import AdaptiveOversoldBounce
+from strategies import AdaptiveOversoldBounce, AdaptiveShortTheRip
 try:
     from strategies.adaptive_str import AdaptiveShortTheRip
 except ImportError:
