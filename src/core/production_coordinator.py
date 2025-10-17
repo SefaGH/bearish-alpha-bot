@@ -340,6 +340,44 @@ class ProductionCoordinator:
                         if elapsed >= duration:
                             logger.info(f"Duration {duration}s reached - stopping")
                             break
+
+                    # Market regime recommendations (YENİ!)
+                    if self.market_regime_analyzer and hasattr(self.market_regime_analyzer, 'get_regime_recommendations'):
+                        try:
+                            # Örnek bir sembol için test et
+                            test_symbol = 'BTC/USDT:USDT'
+                            
+                            # Veri varsa recommendations al
+                            if self.websocket_manager:
+                                df_30m = self.websocket_manager.get_latest_data(test_symbol, '30m')
+                                df_1h = self.websocket_manager.get_latest_data(test_symbol, '1h')
+                                df_4h = self.websocket_manager.get_latest_data(test_symbol, '4h')
+                                
+                                if df_30m and df_1h and df_4h:
+                                    recommendations = self.market_regime_analyzer.get_regime_recommendations(
+                                        df_30m, df_1h, df_4h
+                                    )
+                                    
+                                    # İlk 3 öneriyi logla
+                                    if recommendations:
+                                        logger.info("\n📊 MARKET RECOMMENDATIONS:")
+                                        for rec in recommendations[:3]:
+                                            logger.info(f"  • {rec}")
+                                    
+                                    # Strategy favorability check
+                                    if hasattr(self.market_regime_analyzer, 'is_favorable_for_strategy'):
+                                        is_good_ob, reason_ob = self.market_regime_analyzer.is_favorable_for_strategy(
+                                            'oversold_bounce', df_30m, df_1h, df_4h
+                                        )
+                                        is_good_str, reason_str = self.market_regime_analyzer.is_favorable_for_strategy(
+                                            'short_the_rip', df_30m, df_1h, df_4h
+                                        )
+                                        
+                                        logger.info(f"  • OB Strategy: {'✅' if is_good_ob else '❌'} {reason_ob}")
+                                        logger.info(f"  • STR Strategy: {'✅' if is_good_str else '❌'} {reason_str}")
+                            
+                        except Exception as e:
+                            logger.debug(f"Could not get recommendations: {e}")
                     
                     # Sleep between iterations
                     await asyncio.sleep(1)
