@@ -96,8 +96,6 @@ class CcxtClient:
                 data = self.ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
                 
                 # Enhanced debug logging for KuCoin
-                logger.info(f"Exchange: {self.name}, Sandbox: {self.ex.sandbox if hasattr(self.ex, 'sandbox') else 'N/A'}")
-                logger.info(f"API Base URL: {getattr(self.ex, 'urls', {}).get('api', 'N/A')}")
                 logger.debug(f"Fetched {len(data) if data else 0} candles for {symbol} on {self.name}")
                 
                 logger.info(f"Successfully fetched {len(data) if data else 0} candles for {symbol} {timeframe}")
