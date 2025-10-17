@@ -432,13 +432,39 @@ class LiveTradingEngine:
                                 regime_data = None
                                 if df_1h is not None and df_4h is not None and len(df_1h) > 0 and len(df_4h) > 0:
                                     regime_data = regime_analyzer.analyze_market_regime(df_30m, df_1h, df_4h)
-                                    logger.debug(f"📊 {symbol} Regime: {regime_data.get('trend', 'unknown')}")
+                                    logger.debug(f"📊 {symbol} Regime: trend={regime_data.get('trend', 'unknown')}, "
+                                               f"momentum={regime_data.get('momentum', 'unknown')}, "
+                                               f"volatility={regime_data.get('volatility', 'unknown')}")
                                 
                                 # Run strategies registered in portfolio manager
                                 if self.portfolio_manager and hasattr(self.portfolio_manager, 'strategies'):
                                     for strategy_name, strategy in self.portfolio_manager.strategies.items():
                                         try:
                                             logger.info(f"[STRATEGY-CHECK] {strategy_name} for {symbol}")
+                                            
+                                            # ✅ ADAPTIVE KONTROL EKLE!
+                                            is_adaptive = False
+                                            adaptive_info = ""
+                                            adaptive_threshold = None
+                                            
+                                            # Check if this is an adaptive strategy
+                                            if hasattr(strategy, 'get_adaptive_rsi_threshold'):
+                                                is_adaptive = True
+                                                # Get current market regime if available
+                                                if regime_data:
+                                                    adaptive_threshold = strategy.get_adaptive_rsi_threshold(regime_data)
+                                                    adaptive_info = f" (adaptive RSI threshold: {adaptive_threshold:.1f})"
+                                                    logger.info(f"🎯 [ADAPTIVE] {strategy_name} using adaptive RSI threshold: {adaptive_threshold:.1f}")
+                                                    logger.info(f"   Market regime: trend={regime_data.get('trend')}, "
+                                                              f"momentum={regime_data.get('momentum')}, "
+                                                              f"volatility={regime_data.get('volatility')}")
+                                                    
+                                                    # Position size multiplier bilgisini de logla
+                                                    if hasattr(strategy, 'calculate_dynamic_position_size'):
+                                                        volatility = regime_data.get('volatility', 'normal')
+                                                        pos_mult = strategy.calculate_dynamic_position_size(volatility)
+                                                        logger.info(f"   Position multiplier: {pos_mult:.2f} (volatility: {volatility})")
+                                            
                                             signal = None
                                             
                                             # Check if strategy has signal method
@@ -447,10 +473,6 @@ class LiveTradingEngine:
                                                 continue
                                             
                                             # Determine strategy requirements by inspecting method signature
-                                            # Note: Strategies should use consistent parameter naming:
-                                            #   - 'df_30m' for 30-minute timeframe data (required)
-                                            #   - 'df_1h' for 1-hour timeframe data (optional)
-                                            #   - 'regime_data' for market regime information (optional)
                                             sig = inspect.signature(strategy.signal)
                                             params = list(sig.parameters.keys())
                                             
@@ -474,7 +496,6 @@ class LiveTradingEngine:
                                                         signal = strategy.signal(df_30m)
                                             except TypeError as te:
                                                 # Fallback: try calling with just df_30m
-                                                # Filter out 'self' from parameter list for cleaner error message
                                                 expected_params = ', '.join([p for p in params if p != 'self'])
                                                 logger.warning(
                                                     f"Strategy {strategy_name} parameter mismatch. "
@@ -485,6 +506,13 @@ class LiveTradingEngine:
                                             
                                             # If signal generated, add to queue
                                             if signal:
+                                                # Adaptive bilgileri ekle
+                                                if is_adaptive:
+                                                    signal['is_adaptive'] = True
+                                                    signal['adaptive_info'] = adaptive_info
+                                                    if adaptive_threshold:
+                                                        signal['adaptive_threshold'] = adaptive_threshold
+                                                
                                                 # Enrich signal with metadata
                                                 signal['symbol'] = symbol
                                                 signal['strategy'] = strategy_name
@@ -504,11 +532,19 @@ class LiveTradingEngine:
                                                 logger.info(f"   Strategy: {strategy_name}")
                                                 logger.info(f"   Side: {signal.get('side', 'unknown').upper()}")
                                                 logger.info(f"   Reason: {signal.get('reason', 'N/A')}")
+                                                if is_adaptive:
+                                                    logger.info(f"   🎯 ADAPTIVE: Threshold={adaptive_threshold:.1f}")
                                             else:
-                                                # Log when no signal is generated
+                                                # Log when no signal is generated - enhanced for adaptive
                                                 current_rsi = df_30m['rsi'].iloc[-1] if 'rsi' in df_30m.columns and len(df_30m) > 0 else None
                                                 if current_rsi is not None:
-                                                    logger.info(f"[NO-SIGNAL] {symbol} ({strategy_name}): RSI={current_rsi:.1f}")
+                                                    # Adaptive strateji için daha detaylı log
+                                                    if is_adaptive and adaptive_threshold:
+                                                        logger.info(f"[NO-SIGNAL] {symbol} ({strategy_name}): "
+                                                                  f"RSI={current_rsi:.1f}, Adaptive threshold={adaptive_threshold:.1f}, "
+                                                                  f"Regime={regime_data.get('trend', 'unknown') if regime_data else 'N/A'}")
+                                                    else:
+                                                        logger.info(f"[NO-SIGNAL] {symbol} ({strategy_name}): RSI={current_rsi:.1f}")
                                                 else:
                                                     logger.debug(f"[NO-SIGNAL] {symbol} ({strategy_name}): conditions not met")
                                         
@@ -521,6 +557,8 @@ class LiveTradingEngine:
                                 continue
                         
                         logger.debug("✓ Market scan completed")
+                    
+                    # ... rest of the signal processing loop ...
                     
                     # Signal processing phase (check queue with short timeout)
                     try:
