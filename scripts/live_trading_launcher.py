@@ -735,17 +735,18 @@ class LiveTradingLauncher:
             return False  # Non-critical, can continue
     
     async def _initialize_strategies(self) -> bool:
-        """
-        Initialize adaptive trading strategies.
-        
-        [... mevcut kod ...]
-        """
         logger.info("\n[5/8] Initializing Trading Strategies...")
-        
+    
         try:
+            # CONFIG'İ YÜKLE! (KRİTİK)
+            import yaml
+            config_path = os.getenv('CONFIG_PATH', 'config/config.example.yaml')
+            with open(config_path, 'r') as f:
+                self.config = yaml.safe_load(f)
+        
             # Initialize regime analyzer for adaptive strategies
             regime_analyzer = MarketRegimeAnalyzer()
-            
+        
             # Strategy configurations FROM CONFIG FILE
             signals_config = self.config.get('signals', {})
 
