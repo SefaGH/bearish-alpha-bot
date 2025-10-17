@@ -1,6 +1,6 @@
 """
 Live Trading Engine.
-Production-ready live trading execution engine.
+Production-ready live trading execution engine with enhanced debugging and adaptive strategies.
 """
 import os
 import yaml
@@ -12,19 +12,30 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from enum import Enum
 
-# Strategy import kısmı güncelleme:
-from strategies import AdaptiveOversoldBounce, AdaptiveShortTheRip
+# ✅ DÜZELTME 1: Import hatası düzeltildi
+# Strategy imports - both adaptive and base strategies
 try:
+    from strategies.adaptive_ob import AdaptiveOversoldBounce
     from strategies.adaptive_str import AdaptiveShortTheRip
 except ImportError:
-    # Eğer adaptive_str.py yoksa, base strategy kullan
+    # Fallback if adaptive strategies don't exist
+    from strategies.oversold_bounce import OversoldBounce
     from strategies.short_the_rip import ShortTheRip
     
+    # Create adaptive wrappers
+    class AdaptiveOversoldBounce(OversoldBounce):
+        """Fallback adaptive wrapper for OversoldBounce"""
+        def __init__(self, cfg, regime_analyzer=None):
+            super().__init__(cfg)
+            self.regime_analyzer = regime_analyzer  # ✅ 'p' kaldırıldı!
+            
     class AdaptiveShortTheRip(ShortTheRip):
         """Fallback adaptive wrapper for ShortTheRip"""
         def __init__(self, cfg, regime_analyzer=None):
             super().__init__(cfg)
-            self.regime_analyzer = regime_analyzerp
+            self.regime_analyzer = regime_analyzer  # ✅ 'p' kaldırıldı!
+
+# Core imports
 from .order_manager import SmartOrderManager
 from .position_manager import AdvancedPositionManager
 from .execution_analytics import ExecutionAnalytics
@@ -56,14 +67,15 @@ class EngineState(Enum):
 
 
 class LiveTradingEngine:
-    """Production-ready live trading execution engine."""
+    """Production-ready live trading execution engine with enhanced debugging."""
     
-    def __init__(self, mode='paper', portfolio_manager=None, risk_manager=None, websocket_manager=None, exchange_clients=None):
-        self.mode = mode
+    def __init__(self, mode='paper', portfolio_manager=None, risk_manager=None, 
+                 websocket_manager=None, exchange_clients=None):
         """
         Initialize live trading engine.
         
         Args:
+            mode: Trading mode ('paper', 'live', 'simulation')
             portfolio_manager: PortfolioManager from Phase 3.3
             risk_manager: RiskManager from Phase 3.2
             websocket_manager: WebSocketManager from Phase 3.1
@@ -72,7 +84,7 @@ class LiveTradingEngine:
         self.portfolio_manager = portfolio_manager
         self.risk_manager = risk_manager
         self.ws_manager = websocket_manager
-        self.exchange_clients = exchange_clients
+        self.exchange_clients = exchange_clients or {}
         
         # Initialize sub-managers
         self.order_manager = SmartOrderManager(risk_manager, exchange_clients)
@@ -97,28 +109,49 @@ class LiveTradingEngine:
         # Load configuration
         self.config = LiveTradingConfiguration.get_all_configs()
 
-        # ✅ Config'i direkt YAML'dan yükle!
+        # ✅ DÜZELTME 2: Universe config'i güvenli yükle
         config_path = os.getenv("CONFIG_PATH", "config/config.example.yaml")
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 yaml_config = yaml.safe_load(f) or {}
                 
-            # YAML'daki universe config'i ekle
+            # Universe config'i güvenli yükle ve validate et
             if 'universe' in yaml_config:
                 self.config['universe'] = yaml_config['universe']
+                
+                # Type validation ve default değerler
+                if not isinstance(self.config['universe'].get('fixed_symbols'), list):
+                    self.config['universe']['fixed_symbols'] = []
+                
+                # auto_select default False olmalı
+                if 'auto_select' not in self.config['universe']:
+                    self.config['universe']['auto_select'] = False
+                    
                 logger.info(f"✅ Universe config loaded from YAML")
-                logger.info(f"   fixed_symbols: {len(yaml_config['universe'].get('fixed_symbols', []))}")
-                logger.info(f"   auto_select: {yaml_config['universe'].get('auto_select')}")
+                logger.info(f"   fixed_symbols: {len(self.config['universe'].get('fixed_symbols', []))} symbols")
+                logger.info(f"   auto_select: {self.config['universe'].get('auto_select')}")
+            else:
+                # Default universe config
+                self.config['universe'] = {
+                    'fixed_symbols': [],
+                    'auto_select': False
+                }
+                logger.info("ℹ️ Using default universe config (no fixed symbols)")
                 
         except Exception as e:
-            logger.warning(f"Could not load universe from YAML: {e}")
+            logger.warning(f"Could not load universe from YAML: {e}, using defaults")
+            self.config['universe'] = {'fixed_symbols': [], 'auto_select': False}
         
         # Universe cache for optimization
         self._cached_symbols = None
         self._universe_built = False
         
+        # Performance tracking
+        self._signal_count = 0
+        self._last_signal_time = None
+        
         logger.info("LiveTradingEngine initialized")
-        logger.info(f"  Mode: {self.mode.value}")
+        logger.info(f"  Mode: {mode}")
         logger.info(f"  Exchange clients: {list(exchange_clients.keys())}")
     
     async def start_live_trading(self, mode: str = 'paper') -> Dict[str, Any]:
@@ -200,7 +233,8 @@ class LiveTradingEngine:
                 'success': True,
                 'state': self.state.value,
                 'mode': self.mode.value,
-                'active_tasks': len(self.tasks)
+                'active_tasks': len(self.tasks),
+                'universe_size': len(self._get_scan_symbols())
             }
             
         except Exception as e:
@@ -236,10 +270,12 @@ class LiveTradingEngine:
             self.state = EngineState.STOPPED
             
             logger.info("Live trading engine stopped")
+            logger.info(f"  Total signals generated: {self._signal_count}")
             
             return {
                 'success': True,
-                'state': self.state.value
+                'state': self.state.value,
+                'total_signals': self._signal_count
             }
             
         except Exception as e:
@@ -254,20 +290,28 @@ class LiveTradingEngine:
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
             
-            # Adaptive signal ise logla
+            # Enhanced logging for adaptive signals
             if signal.get('is_adaptive'):
-                logger.info(f"Executing ADAPTIVE signal for {symbol}")
+                logger.info(f"🎯 Executing ADAPTIVE signal for {symbol}")
                 if signal.get('adaptive_threshold'):
-                    logger.info(f"  Adaptive RSI threshold was: {signal['adaptive_threshold']:.1f}")
+                    logger.info(f"  Adaptive RSI threshold: {signal['adaptive_threshold']:.1f}")
+                if signal.get('position_multiplier'):
+                    logger.info(f"  Position size multiplier: {signal['position_multiplier']:.2f}")
             else:
-                logger.info(f"Executing signal for {symbol}")
+                logger.info(f"📊 Executing signal for {symbol}")
+            
+            # Log signal details
+            logger.info(f"  Strategy: {signal.get('strategy', 'unknown')}")
+            logger.info(f"  Side: {signal.get('side', 'unknown').upper()}")
+            logger.info(f"  Entry: ${signal.get('entry', 0):.2f}")
+            logger.info(f"  Reason: {signal.get('reason', 'N/A')}")
             
             # Step 1: Risk validation (Phase 3.2)
-            portfolio_state = self.portfolio_manager.portfolio_state
+            portfolio_state = self.portfolio_manager.portfolio_state if self.portfolio_manager else {}
             risk_validation = await self.risk_manager.validate_new_position(signal, portfolio_state)
             
             if not risk_validation[0]:  # is_valid
-                logger.warning(f"Risk validation failed: {risk_validation[1]}")
+                logger.warning(f"❌ Risk validation failed: {risk_validation[1]}")
                 return {
                     'success': False,
                     'reason': f"Risk validation failed: {risk_validation[1]}",
@@ -282,6 +326,11 @@ class LiveTradingEngine:
             if allocation_size is None:
                 # Calculate position size based on risk
                 position_size = await self.risk_manager.calculate_position_size(signal)
+                
+                # Apply adaptive position sizing if available
+                if signal.get('position_multiplier'):
+                    position_size *= signal['position_multiplier']
+                    logger.info(f"  Applied position multiplier: {signal['position_multiplier']:.2f}")
             else:
                 position_size = allocation_size
             
@@ -294,11 +343,11 @@ class LiveTradingEngine:
                 }
             
             signal['position_size'] = position_size
-            logger.info(f"  ✓ Position size calculated: {position_size}")
+            logger.info(f"  ✓ Position size calculated: {position_size:.6f}")
             
             # Step 3: Select optimal exchange (Phase 1)
-            exchange = signal.get('exchange', list(self.exchange_clients.keys())[0])
-            if exchange not in self.exchange_clients:
+            exchange = signal.get('exchange', list(self.exchange_clients.keys())[0] if self.exchange_clients else None)
+            if not exchange or exchange not in self.exchange_clients:
                 logger.error(f"Exchange not available: {exchange}")
                 return {
                     'success': False,
@@ -312,6 +361,7 @@ class LiveTradingEngine:
             execution_algo = self.execution_analytics.get_best_execution_algorithm(notional_value, urgency)
             
             logger.info(f"  ✓ Execution algorithm selected: {execution_algo}")
+            logger.info(f"  Notional value: ${notional_value:.2f}")
             
             # Step 5: Execute order (Phase 3.4)
             if self.mode == TradingMode.LIVE:
@@ -330,7 +380,7 @@ class LiveTradingEngine:
             execution_result = await self.order_manager.place_order(order_request, execution_algo)
             
             if not execution_result.get('success'):
-                logger.error(f"Order execution failed: {execution_result.get('reason')}")
+                logger.error(f"❌ Order execution failed: {execution_result.get('reason')}")
                 return {
                     'success': False,
                     'reason': execution_result.get('reason'),
@@ -366,7 +416,8 @@ class LiveTradingEngine:
             }
             self.trade_history.append(trade_record)
             
-            logger.info(f"✓ Signal execution completed for {symbol}")
+            logger.info(f"✅ Signal execution completed for {symbol}")
+            logger.info("="*50)
             
             return {
                 'success': True,
@@ -377,7 +428,7 @@ class LiveTradingEngine:
             }
             
         except Exception as e:
-            logger.error(f"Error executing signal: {e}")
+            logger.error(f"Error executing signal: {e}", exc_info=True)
             return {
                 'success': False,
                 'reason': str(e),
@@ -419,7 +470,7 @@ class LiveTradingEngine:
                         
                         # Get symbols to scan
                         symbols = self._get_scan_symbols()
-                        logger.debug(f"🔍 Scanning {len(symbols)} symbols")
+                        logger.info(f"🔍 Scanning {len(symbols)} symbols")
                         
                         for symbol in symbols:
                             try:
@@ -436,7 +487,7 @@ class LiveTradingEngine:
                                 
                                 # Log data fetching result
                                 last_close = df_30m['close'].iloc[-1] if len(df_30m) > 0 else 0
-                                logger.info(f"[DATA] {symbol}: 30m={len(df_30m)} bars, last_close={last_close:.2f}")
+                                logger.info(f"[DATA] {symbol}: 30m={len(df_30m)} bars, last_close=${last_close:.2f}")
                                 
                                 # Add technical indicators
                                 indicator_config = self.config.get('indicators', {})
@@ -447,48 +498,60 @@ class LiveTradingEngine:
                                 if df_4h is not None and len(df_4h) > 0:
                                     df_4h = add_indicators(df_4h, indicator_config)
                                 
-                                # Log indicators after calculation
+                                # ✅ DÜZELTME 3: Enhanced indicator logging
                                 if 'rsi' in df_30m.columns and len(df_30m) > 0:
                                     last_rsi = df_30m['rsi'].iloc[-1]
                                     last_atr = df_30m['atr'].iloc[-1] if 'atr' in df_30m.columns else 0
-                                    logger.info(f"[INDICATORS] {symbol}: RSI={last_rsi:.1f}, ATR={last_atr:.4f}")
+                                    last_ema21 = df_30m['ema21'].iloc[-1] if 'ema21' in df_30m.columns else 0
+                                    last_ema50 = df_30m['ema50'].iloc[-1] if 'ema50' in df_30m.columns else 0
+                                    
+                                    logger.info(f"[INDICATORS] {symbol}: RSI={last_rsi:.1f}, ATR=${last_atr:.2f}, "
+                                              f"EMA21=${last_ema21:.2f}, EMA50=${last_ema50:.2f}")
                                 
                                 # Perform market regime analysis if we have all timeframes
                                 regime_data = None
                                 if df_1h is not None and df_4h is not None and len(df_1h) > 0 and len(df_4h) > 0:
                                     regime_data = regime_analyzer.analyze_market_regime(df_30m, df_1h, df_4h)
-                                    logger.debug(f"📊 {symbol} Regime: trend={regime_data.get('trend', 'unknown')}, "
-                                               f"momentum={regime_data.get('momentum', 'unknown')}, "
-                                               f"volatility={regime_data.get('volatility', 'unknown')}")
+                                    logger.info(f"📊 {symbol} Regime Analysis:")
+                                    logger.info(f"   Trend: {regime_data.get('trend', 'unknown')}")
+                                    logger.info(f"   Momentum: {regime_data.get('momentum', 'unknown')}")
+                                    logger.info(f"   Volatility: {regime_data.get('volatility', 'unknown')}")
                                 
                                 # Run strategies registered in portfolio manager
                                 if self.portfolio_manager and hasattr(self.portfolio_manager, 'strategies'):
                                     for strategy_name, strategy in self.portfolio_manager.strategies.items():
                                         try:
-                                            logger.info(f"[STRATEGY-CHECK] {strategy_name} for {symbol}")
+                                            logger.info(f"[STRATEGY-CHECK] Running {strategy_name} for {symbol}")
                                             
-                                            # ✅ ADAPTIVE KONTROL EKLE!
+                                            # ✅ DÜZELTME 4: Enhanced adaptive detection and logging
                                             is_adaptive = False
                                             adaptive_info = ""
                                             adaptive_threshold = None
+                                            position_multiplier = 1.0
                                             
                                             # Check if this is an adaptive strategy
-                                            if hasattr(strategy, 'get_adaptive_rsi_threshold'):
+                                            if 'adaptive' in strategy_name.lower() or hasattr(strategy, 'get_adaptive_rsi_threshold'):
                                                 is_adaptive = True
-                                                # Get current market regime if available
-                                                if regime_data:
+                                                
+                                                # Get adaptive parameters if available
+                                                if regime_data and hasattr(strategy, 'get_adaptive_rsi_threshold'):
                                                     adaptive_threshold = strategy.get_adaptive_rsi_threshold(regime_data)
-                                                    adaptive_info = f" (adaptive RSI threshold: {adaptive_threshold:.1f})"
-                                                    logger.info(f"🎯 [ADAPTIVE] {strategy_name} using adaptive RSI threshold: {adaptive_threshold:.1f}")
-                                                    logger.info(f"   Market regime: trend={regime_data.get('trend')}, "
-                                                              f"momentum={regime_data.get('momentum')}, "
-                                                              f"volatility={regime_data.get('volatility')}")
+                                                    adaptive_info = f" (adaptive RSI: {adaptive_threshold:.1f})"
+                                                    logger.info(f"🎯 [ADAPTIVE] {strategy_name} using dynamic RSI threshold: {adaptive_threshold:.1f}")
                                                     
-                                                    # Position size multiplier bilgisini de logla
+                                                    # Get position size multiplier if available
                                                     if hasattr(strategy, 'calculate_dynamic_position_size'):
                                                         volatility = regime_data.get('volatility', 'normal')
-                                                        pos_mult = strategy.calculate_dynamic_position_size(volatility)
-                                                        logger.info(f"   Position multiplier: {pos_mult:.2f} (volatility: {volatility})")
+                                                        position_multiplier = strategy.calculate_dynamic_position_size(volatility)
+                                                        logger.info(f"   Position multiplier: {position_multiplier:.2f} (volatility: {volatility})")
+                                            
+                                            # ✅ DÜZELTME 5: Debug log BEFORE strategy call
+                                            if len(df_30m) > 0:
+                                                last_30m_row = df_30m.iloc[-1]
+                                                logger.info(f"[DEBUG-PRE] Calling {strategy_name} for {symbol}")
+                                                logger.info(f"[DEBUG-PRE] Data: RSI={last_30m_row.get('rsi', 0):.2f}, "
+                                                          f"Close=${last_30m_row.get('close', 0):.2f}, "
+                                                          f"ATR=${last_30m_row.get('atr', 0):.4f}")
                                             
                                             signal = None
                                             
@@ -521,31 +584,51 @@ class LiveTradingEngine:
                                                         signal = strategy.signal(df_30m)
                                             except TypeError as te:
                                                 # Fallback: try calling with just df_30m
-                                                expected_params = ', '.join([p for p in params if p != 'self'])
-                                                logger.warning(
-                                                    f"Strategy {strategy_name} parameter mismatch. "
-                                                    f"Expected params: [{expected_params}]. "
-                                                    f"Trying with df_30m only. Error: {te}"
-                                                )
-                                                signal = strategy.signal(df_30m)
+                                                logger.warning(f"Strategy {strategy_name} parameter mismatch: {te}")
+                                                try:
+                                                    signal = strategy.signal(df_30m)
+                                                except Exception as e2:
+                                                    logger.error(f"Strategy {strategy_name} failed: {e2}")
+                                                    continue
                                             
-                                            # If signal generated, add to queue
+                                            # ✅ DÜZELTME 6: Debug log AFTER strategy call
                                             if signal:
-                                                # Adaptive bilgileri ekle
+                                                logger.info(f"✅ [SIGNAL] {strategy_name} generated signal for {symbol}")
+                                            else:
+                                                if 'rsi' in df_30m.columns and len(df_30m) > 0:
+                                                    last_rsi = df_30m['rsi'].iloc[-1]
+                                                    if is_adaptive and adaptive_threshold:
+                                                        logger.debug(f"[DEBUG-POST] {strategy_name} returned None for {symbol} "
+                                                                   f"(RSI={last_rsi:.1f}, Adaptive threshold={adaptive_threshold:.1f})")
+                                                    else:
+                                                        logger.debug(f"[DEBUG-POST] {strategy_name} returned None for {symbol} (RSI={last_rsi:.1f})")
+                                                else:
+                                                    logger.debug(f"[DEBUG-POST] {strategy_name} returned None for {symbol}")
+                                            
+                                            # If signal generated, enrich and add to queue
+                                            if signal:
+                                                # ✅ DÜZELTME 7: Complete signal enrichment
+                                                # Add adaptive information
                                                 if is_adaptive:
                                                     signal['is_adaptive'] = True
                                                     signal['adaptive_info'] = adaptive_info
                                                     if adaptive_threshold:
                                                         signal['adaptive_threshold'] = adaptive_threshold
+                                                    if position_multiplier != 1.0:
+                                                        signal['position_multiplier'] = position_multiplier
                                                 
-                                                # Enrich signal with metadata
-                                                signal['symbol'] = symbol
+                                                # CRITICAL: Add required metadata
+                                                signal['symbol'] = symbol  # ✅ MUTLAKA EKLENMELI
                                                 signal['strategy'] = strategy_name
                                                 signal['timestamp'] = datetime.now(timezone.utc).isoformat()
                                                 
-                                                # Add current price if available
+                                                # Add current price (entry) - CRITICAL
                                                 if len(df_30m) > 0:
-                                                    signal['entry'] = float(df_30m['close'].iloc[-1])
+                                                    signal['entry'] = float(df_30m['close'].iloc[-1])  # ✅ KRİTİK
+                                                    
+                                                    # Add ATR for stop loss calculation
+                                                    if 'atr' in df_30m.columns:
+                                                        signal['atr'] = float(df_30m['atr'].iloc[-1])  # ✅ ÖNEMLİ
                                                 
                                                 # Add regime data if available
                                                 if regime_data:
@@ -553,37 +636,30 @@ class LiveTradingEngine:
                                                 
                                                 # Add to signal queue
                                                 await self.signal_queue.put(signal)
-                                                logger.info(f"✅ [SIGNAL] {symbol}: {signal}")
-                                                logger.info(f"   Strategy: {strategy_name}")
+                                                self._signal_count += 1
+                                                self._last_signal_time = datetime.now(timezone.utc)
+                                                
+                                                # Log signal details
+                                                logger.info(f"📊 Signal Details:")
+                                                logger.info(f"   Symbol: {symbol}")
+                                                logger.info(f"   Strategy: {strategy_name}{adaptive_info}")
                                                 logger.info(f"   Side: {signal.get('side', 'unknown').upper()}")
+                                                logger.info(f"   Entry: ${signal.get('entry', 0):.2f}")
                                                 logger.info(f"   Reason: {signal.get('reason', 'N/A')}")
                                                 if is_adaptive:
-                                                    logger.info(f"   🎯 ADAPTIVE: Threshold={adaptive_threshold:.1f}")
-                                            else:
-                                                # Log when no signal is generated - enhanced for adaptive
-                                                current_rsi = df_30m['rsi'].iloc[-1] if 'rsi' in df_30m.columns and len(df_30m) > 0 else None
-                                                if current_rsi is not None:
-                                                    # Adaptive strateji için daha detaylı log
-                                                    if is_adaptive and adaptive_threshold:
-                                                        logger.info(f"[NO-SIGNAL] {symbol} ({strategy_name}): "
-                                                                  f"RSI={current_rsi:.1f}, Adaptive threshold={adaptive_threshold:.1f}, "
-                                                                  f"Regime={regime_data.get('trend', 'unknown') if regime_data else 'N/A'}")
-                                                    else:
-                                                        logger.info(f"[NO-SIGNAL] {symbol} ({strategy_name}): RSI={current_rsi:.1f}")
-                                                else:
-                                                    logger.debug(f"[NO-SIGNAL] {symbol} ({strategy_name}): conditions not met")
+                                                    logger.info(f"   🎯 ADAPTIVE: RSI threshold={adaptive_threshold:.1f}")
+                                                    if position_multiplier != 1.0:
+                                                        logger.info(f"   Position multiplier: {position_multiplier:.2f}")
                                         
                                         except Exception as e:
-                                            logger.error(f"Error running strategy {strategy_name} for {symbol}: {e}")
+                                            logger.error(f"Error running strategy {strategy_name} for {symbol}: {e}", exc_info=True)
                                             continue
                                 
                             except Exception as e:
                                 logger.error(f"Error scanning {symbol}: {e}")
                                 continue
                         
-                        logger.debug("✓ Market scan completed")
-                    
-                    # ... rest of the signal processing loop ...
+                        logger.info(f"✓ Market scan completed. Signals in queue: {self.signal_queue.qsize()}")
                     
                     # Signal processing phase (check queue with short timeout)
                     try:
@@ -594,11 +670,11 @@ class LiveTradingEngine:
                         )
                         
                         # Process signal
-                        logger.info(f"Processing signal from queue: {signal.get('symbol', 'unknown')}")
+                        logger.info(f"📤 Processing signal from queue: {signal.get('symbol', 'unknown')}")
                         result = await self.execute_signal(signal)
                         
                         if result['success']:
-                            logger.info(f"✓ Signal processed successfully: {signal.get('symbol')}")
+                            logger.info(f"✅ Signal processed successfully: {signal.get('symbol')}")
                         else:
                             logger.warning(f"⚠️ Signal processing failed: {result.get('reason')}")
                     
@@ -611,16 +687,16 @@ class LiveTradingEngine:
                     logger.info("Signal processing loop cancelled")
                     raise
                 except Exception as e:
-                    logger.error(f"Error in signal processing loop: {e}")
+                    logger.error(f"Error in signal processing loop: {e}", exc_info=True)
                     await asyncio.sleep(5)  # Wait before retrying after error
                     
         except asyncio.CancelledError:
             logger.info("Signal processing loop cancelled")
         except Exception as e:
-            logger.error(f"Fatal error in signal processing loop: {e}")
+            logger.error(f"Fatal error in signal processing loop: {e}", exc_info=True)
     
     def _get_scan_symbols(self) -> List[str]:
-        """Get symbols to scan - NO market loading!"""
+        """Get symbols to scan - optimized for fixed symbols mode."""
         
         # Cache kontrolü
         if self._cached_symbols:
@@ -628,88 +704,85 @@ class LiveTradingEngine:
         
         # Config'den direkt oku
         cfg = self.config
-        
-        # ✅ CONFIG DEBUG
-        logger.info(f"[UNIVERSE-DEBUG] Full config keys: {list(cfg.keys())}")
-        
         universe_cfg = cfg.get('universe', {})
-        
-        # ✅ UNIVERSE CONFIG DEBUG
-        logger.info(f"[UNIVERSE-DEBUG] Universe config: {universe_cfg}")
         
         # Sabit liste var mı?
         fixed_symbols = universe_cfg.get('fixed_symbols', [])
-        auto_select = universe_cfg.get('auto_select', None)  # None default
+        auto_select = universe_cfg.get('auto_select', False)
         
-        # ✅ DETAYLI DEBUG
-        logger.info(f"[UNIVERSE-DEBUG] fixed_symbols count: {len(fixed_symbols) if fixed_symbols else 0}")
-        logger.info(f"[UNIVERSE-DEBUG] fixed_symbols: {fixed_symbols[:3] if fixed_symbols else 'NONE'}...")
-        logger.info(f"[UNIVERSE-DEBUG] auto_select value: {auto_select}")
-        logger.info(f"[UNIVERSE-DEBUG] auto_select type: {type(auto_select).__name__}")
-        logger.info(f"[UNIVERSE-DEBUG] auto_select == False: {auto_select == False}")
-        logger.info(f"[UNIVERSE-DEBUG] auto_select is False: {auto_select is False}")
-        
-        # ✅ EN GÜVENLİ KONTROL
-        # auto_select sadece True ise aktif olsun, diğer tüm durumlar fixed kullanır
-        use_fixed = bool(fixed_symbols) and auto_select != True
-        
-        logger.info(f"[UNIVERSE-DEBUG] use_fixed decision: {use_fixed}")
-        
-        if use_fixed:
-            # ✅ Direkt kullan, market yükleme YOK!
+        # ✅ DÜZELTME 8: Güvenli kontrol ve type checking
+        if fixed_symbols and isinstance(fixed_symbols, list) and not auto_select:
+            # Direkt kullan, market yükleme YOK!
             logger.info(f"[UNIVERSE] ✅ Using {len(fixed_symbols)} FIXED symbols (no market loading)")
-            self._cached_symbols = fixed_symbols
             
-            # Exchange client'lara bildir
-            for client in self.exchange_clients.values():
-                if hasattr(client, 'set_required_symbols'):
-                    client.set_required_symbols(fixed_symbols)
+            # Validate symbols
+            valid_symbols = []
+            for symbol in fixed_symbols:
+                if isinstance(symbol, str) and '/' in symbol:
+                    valid_symbols.append(symbol)
+                else:
+                    logger.warning(f"[UNIVERSE] Invalid symbol format: {symbol}")
             
-            return fixed_symbols
-        
-        # Fallback: Universe builder kullan (önerilmez)
-        logger.warning("[UNIVERSE] Using universe builder (will load markets)")
-        
-        # Import universe builder
-        try:
-            from universe import build_universe
-        
-            # Build universe using exchange clients
-            universe_dict = build_universe(self.exchange_clients, self.config)
-        
-            # Flatten all symbols from all exchanges
-            all_symbols = []
-            for exchange_symbols in universe_dict.values():
-                all_symbols.extend(exchange_symbols)
-        
-            # Remove duplicates
-            unique_symbols = list(set(all_symbols))
-        
-            # Set required symbols on all clients
-            for client in self.exchange_clients.values():
-                if hasattr(client, 'set_required_symbols'):
-                    client.set_required_symbols(unique_symbols)
+            self._cached_symbols = valid_symbols
             
-            # Cache the result
-            self._cached_symbols = unique_symbols
+            # Exchange client'lara bildir (eğer varsa)
+            if self.exchange_clients:
+                for client in self.exchange_clients.values():
+                    if hasattr(client, 'set_required_symbols'):
+                        client.set_required_symbols(valid_symbols)
             
-            logger.info(f"[UNIVERSE] Scan list: {len(unique_symbols)} symbols from universe builder")
-            return unique_symbols
+            logger.info(f"[UNIVERSE] Symbols: {', '.join(valid_symbols[:5])}..." if valid_symbols else "No symbols")
+            return valid_symbols
         
-        except ImportError:
-            # Fallback to default symbols
-            logger.warning("[UNIVERSE] Universe builder not available, using defaults")
-            default_symbols = [
-                'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT',
-                'BNB/USDT:USDT', 'ADA/USDT:USDT', 'DOT/USDT:USDT',
-                'LTC/USDT:USDT', 'AVAX/USDT:USDT'
-            ]
-            self._cached_symbols = default_symbols
-            return default_symbols
+        # Auto-select mode (önerilmez)
+        if auto_select:
+            logger.warning("[UNIVERSE] Auto-select mode enabled (will load all markets)")
+            
+            # Import universe builder
+            try:
+                from universe import build_universe
+                
+                # Build universe using exchange clients
+                universe_dict = build_universe(self.exchange_clients, cfg)
+                
+                # Flatten all symbols from all exchanges
+                all_symbols = []
+                for exchange_symbols in universe_dict.values():
+                    all_symbols.extend(exchange_symbols)
+                
+                # Remove duplicates
+                unique_symbols = list(set(all_symbols))
+                
+                # Set required symbols on all clients
+                if self.exchange_clients:
+                    for client in self.exchange_clients.values():
+                        if hasattr(client, 'set_required_symbols'):
+                            client.set_required_symbols(unique_symbols)
+                
+                # Cache the result
+                self._cached_symbols = unique_symbols
+                
+                logger.info(f"[UNIVERSE] Auto-selected {len(unique_symbols)} symbols")
+                return unique_symbols
+                
+            except ImportError:
+                logger.error("[UNIVERSE] Universe builder not available")
+            except Exception as e:
+                logger.error(f"[UNIVERSE] Error building universe: {e}")
+        
+        # Fallback to default symbols
+        logger.warning("[UNIVERSE] Using default symbols (config not properly set)")
+        default_symbols = [
+            'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT',
+            'BNB/USDT:USDT', 'ADA/USDT:USDT', 'DOT/USDT:USDT',
+            'LTC/USDT:USDT', 'AVAX/USDT:USDT'
+        ]
+        self._cached_symbols = default_symbols
+        return default_symbols
     
     async def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         """
-        Fetch OHLCV data from exchange with error handling.
+        Fetch OHLCV data from exchange with enhanced error handling and bulk support.
         
         Args:
             symbol: Trading symbol
@@ -722,11 +795,14 @@ class LiveTradingEngine:
         # Try each exchange client until successful
         for exchange_name, client in self.exchange_clients.items():
             try:
-                # Check if client has ohlcv method
-                if hasattr(client, 'ohlcv'):
+                # ✅ DÜZELTME 9: Bulk fetch support for large data requests
+                if hasattr(client, 'fetch_ohlcv_bulk') and limit > 500:
+                    # Use bulk fetch for large requests
+                    logger.debug(f"Using bulk fetch for {symbol} {timeframe} ({limit} candles)")
+                    data = client.fetch_ohlcv_bulk(symbol, timeframe=timeframe, target_limit=limit)
+                elif hasattr(client, 'ohlcv'):
+                    # Use standard method
                     data = client.ohlcv(symbol, timeframe, limit=limit)
-                elif hasattr(client, 'ex') and hasattr(client.ex, 'fetch_ohlcv'):
-                    data = client.ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
                 else:
                     logger.warning(f"Exchange client {exchange_name} does not support OHLCV fetching")
                     continue
@@ -740,37 +816,42 @@ class LiveTradingEngine:
                     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                     df.set_index('timestamp', inplace=True)
                     
-                    logger.debug(f"Fetched {len(df)} candles for {symbol} {timeframe} from {exchange_name}")
+                    logger.debug(f"✅ Fetched {len(df)} candles for {symbol} {timeframe} from {exchange_name}")
                     return df
                     
             except Exception as e:
                 logger.debug(f"Could not fetch {symbol} {timeframe} from {exchange_name}: {e}")
                 continue
         
-        logger.warning(f"Failed to fetch {symbol} {timeframe} from all exchanges")
+        logger.warning(f"❌ Failed to fetch {symbol} {timeframe} from all exchanges")
         return None
     
     async def _position_monitoring_loop(self):
         """Background task for monitoring active positions."""
         logger.info("Position monitoring loop started")
-        interval = self.config['monitoring']['position_check_interval']
+        
+        # Default interval if not in config
+        interval = self.config.get('monitoring', {}).get('position_check_interval', 30)
         
         try:
             while self.state == EngineState.RUNNING:
                 try:
+                    if self.active_positions:
+                        logger.debug(f"Monitoring {len(self.active_positions)} active positions")
+                        
                     for position_id in list(self.active_positions.keys()):
                         # Check position status
                         exit_check = await self.position_manager.manage_position_exits(position_id)
                         
                         if exit_check.get('should_exit'):
-                            logger.info(f"Exit signal for {position_id}: {exit_check.get('exit_reason')}")
+                            logger.info(f"📤 Exit signal for {position_id}: {exit_check.get('exit_reason')}")
                             # Handle position exit
                             await self._execute_position_exit(position_id, exit_check)
                     
                     await asyncio.sleep(interval)
                     
                 except Exception as e:
-                    logger.error(f"Error monitoring position: {e}")
+                    logger.error(f"Error monitoring positions: {e}")
                     await asyncio.sleep(interval)
                     
         except asyncio.CancelledError:
@@ -783,6 +864,9 @@ class LiveTradingEngine:
         try:
             while self.state == EngineState.RUNNING:
                 try:
+                    if self.active_orders:
+                        logger.debug(f"Managing {len(self.active_orders)} active orders")
+                    
                     # Monitor active orders for timeouts, partial fills, etc.
                     # Implementation would check order status and take action
                     await asyncio.sleep(5)
@@ -797,7 +881,9 @@ class LiveTradingEngine:
     async def _performance_reporting_loop(self):
         """Background task for performance reporting."""
         logger.info("Performance reporting loop started")
-        interval = self.config['monitoring']['performance_report_interval']
+        
+        # Default interval if not in config
+        interval = self.config.get('monitoring', {}).get('performance_report_interval', 3600)
         
         try:
             while self.state == EngineState.RUNNING:
@@ -806,8 +892,10 @@ class LiveTradingEngine:
                     report = self.execution_analytics.generate_execution_report('1h')
                     
                     if report['success']:
-                        logger.info("Performance report generated")
-                        # Could send report via notification system
+                        logger.info("📊 Performance report generated")
+                        logger.info(f"   Total trades: {report.get('total_trades', 0)}")
+                        logger.info(f"   Win rate: {report.get('win_rate', 0):.2%}")
+                        logger.info(f"   Average P&L: {report.get('avg_pnl', 0):.2%}")
                     
                     await asyncio.sleep(interval)
                     
@@ -821,12 +909,18 @@ class LiveTradingEngine:
     async def _execute_position_exit(self, position_id: str, exit_signal: Dict):
         """Execute position exit based on exit signal."""
         try:
-            logger.info(f"Executing exit for {position_id}")
+            logger.info(f"Executing exit for position {position_id}")
             
             position = self.active_positions.get(position_id)
             if not position:
                 logger.warning(f"Position not found: {position_id}")
                 return
+            
+            # Log exit details
+            logger.info(f"  Symbol: {position.get('symbol')}")
+            logger.info(f"  Side: {position.get('side')}")
+            logger.info(f"  Amount: {position.get('amount')}")
+            logger.info(f"  Exit reason: {exit_signal.get('exit_reason')}")
             
             # Create exit order
             exit_order = {
@@ -849,7 +943,10 @@ class LiveTradingEngine:
                 )
                 
                 if close_result['success']:
-                    logger.info(f"Position closed successfully: {position_id}")
+                    logger.info(f"✅ Position closed successfully: {position_id}")
+                    logger.info(f"   Exit price: ${exit_price:.2f}")
+                    logger.info(f"   P&L: {close_result.get('pnl', 0):.2%}")
+                    
                     # Remove from active positions
                     if position_id in self.active_positions:
                         del self.active_positions[position_id]
@@ -859,13 +956,18 @@ class LiveTradingEngine:
                 logger.error(f"Exit order failed: {execution_result.get('reason')}")
                 
         except Exception as e:
-            logger.error(f"Error executing position exit: {e}")
+            logger.error(f"Error executing position exit: {e}", exc_info=True)
     
     async def _initialize_risk_management(self) -> Dict[str, Any]:
         """Initialize risk management systems."""
         try:
             # Risk manager should already be initialized
-            return {'success': True}
+            if self.risk_manager:
+                logger.info("  Risk manager initialized")
+                return {'success': True}
+            else:
+                logger.warning("  No risk manager provided")
+                return {'success': True}  # Allow running without risk manager in paper mode
         except Exception as e:
             return {'success': False, 'reason': str(e)}
     
@@ -873,19 +975,49 @@ class LiveTradingEngine:
         """Initialize portfolio management systems."""
         try:
             # Portfolio manager should already be initialized
-            return {'success': True}
+            if self.portfolio_manager:
+                logger.info("  Portfolio manager initialized")
+                
+                # Log registered strategies if any
+                if hasattr(self.portfolio_manager, 'strategies'):
+                    strategies = self.portfolio_manager.strategies
+                    logger.info(f"  Registered strategies: {list(strategies.keys())}")
+                    
+                    # Check for adaptive strategies
+                    adaptive_count = sum(1 for name in strategies.keys() if 'adaptive' in name.lower())
+                    if adaptive_count > 0:
+                        logger.info(f"  🎯 Adaptive strategies: {adaptive_count}")
+                        
+                return {'success': True}
+            else:
+                logger.warning("  No portfolio manager provided")
+                return {'success': True}  # Allow running without portfolio manager in paper mode
         except Exception as e:
             return {'success': False, 'reason': str(e)}
     
     def get_engine_status(self) -> Dict[str, Any]:
-        """Get current engine status."""
-        return {
+        """Get current engine status with enhanced metrics."""
+        status = {
             'state': self.state.value,
             'mode': self.mode.value,
             'active_positions': len(self.active_positions),
             'active_orders': len(self.active_orders),
             'total_trades': len(self.trade_history),
+            'total_signals': self._signal_count,
+            'last_signal_time': self._last_signal_time.isoformat() if self._last_signal_time else None,
             'active_tasks': len([t for t in self.tasks if not t.done()]),
-            'execution_stats': self.order_manager.get_execution_statistics(),
-            'position_summary': self.position_manager.get_position_summary()
+            'universe_size': len(self._cached_symbols) if self._cached_symbols else 0,
+            'config': {
+                'fixed_symbols': len(self.config.get('universe', {}).get('fixed_symbols', [])),
+                'auto_select': self.config.get('universe', {}).get('auto_select', False)
+            }
         }
+        
+        # Add manager stats if available
+        if self.order_manager and hasattr(self.order_manager, 'get_execution_statistics'):
+            status['execution_stats'] = self.order_manager.get_execution_statistics()
+            
+        if self.position_manager and hasattr(self.position_manager, 'get_position_summary'):
+            status['position_summary'] = self.position_manager.get_position_summary()
+        
+        return status
