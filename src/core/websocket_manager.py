@@ -5,7 +5,7 @@ Coordinates WebSocket connections across multiple exchanges.
 
 import asyncio
 import logging
-from typing import Dict, List, Any, Optional, Callable, Union
+from typing import Dict, List, Any, Optional, Callable, Union, Set
 from datetime import datetime, timezone
 from collections import defaultdict
 from .websocket_client import WebSocketClient
@@ -49,6 +49,10 @@ class WebSocketManager:
         self._tasks: List[asyncio.Task] = []
         self._running = False
         
+        # Track active streams
+        self._active_streams: Dict[str, Set[str]] = defaultdict(set)
+        self._stream_limits: Dict[str, int] = {}
+        
         # Detect if we're using CcxtClient instances or credentials
         self._use_ccxt_clients = False
         if exchanges:
@@ -90,10 +94,102 @@ class WebSocketManager:
                     self.clients[ex_name] = WebSocketClient(ex_name, ex_data)
                     
                 logger.info(f"WebSocket client initialized for {ex_name}")
+                
+                # Set stream limits from config
+                ws_config = config.get('websocket', {}) if config else {}
+                max_streams_config = ws_config.get('max_streams_per_exchange', {})
+                
+                if isinstance(max_streams_config, dict):
+                    self._stream_limits[ex_name] = max_streams_config.get(
+                        ex_name, 
+                        max_streams_config.get('default', 10)
+                    )
+                else:
+                    self._stream_limits[ex_name] = 10
+                    
             except Exception as e:
                 logger.error(f"Failed to initialize WebSocket client for {ex_name}: {e}")
         
         logger.info(f"WebSocketManager initialized with {len(self.clients)} exchanges: {list(self.clients.keys())}")
+    
+    def start_ohlcv_stream(self, exchange: str, symbol: str, timeframe: str) -> bool:
+        """
+        Start OHLCV stream for a specific symbol (PRODUCTION COORDINATOR COMPAT).
+        
+        Args:
+            exchange: Exchange name (e.g., 'bingx')
+            symbol: Trading pair (e.g., 'BTC/USDT:USDT')
+            timeframe: Timeframe (e.g., '1m', '5m')
+            
+        Returns:
+            bool: True if stream started, False otherwise
+        """
+        try:
+            # Check stream limit
+            current_streams = len(self._active_streams[exchange])
+            max_streams = self._stream_limits.get(exchange, 10)
+            
+            if current_streams >= max_streams:
+                logger.warning(f"[{exchange}] Stream limit reached ({max_streams}), skipping {symbol}")
+                return False
+            
+            # Track stream
+            stream_key = f"{symbol}_{timeframe}"
+            if stream_key in self._active_streams[exchange]:
+                logger.debug(f"Stream already active: {exchange} {symbol} {timeframe}")
+                return True
+                
+            self._active_streams[exchange].add(stream_key)
+            logger.info(f"Started OHLCV stream: {exchange} {symbol} {timeframe}")
+            
+            # Note: Actual WebSocket connection would be handled by WebSocketClient
+            # This is a tracking layer for production coordinator
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to start stream {exchange} {symbol} {timeframe}: {e}")
+            return False
+    
+    def subscribe_to_symbols(self, symbols: List[str], timeframes: Optional[List[str]] = None) -> Dict[str, List[str]]:
+        """
+        Subscribe to multiple symbols across exchanges (PRODUCTION COORDINATOR COMPAT).
+        
+        Args:
+            symbols: List of symbols to subscribe to
+            timeframes: Optional list of timeframes (default: ['1m', '5m'])
+            
+        Returns:
+            Dict mapping exchange names to list of successfully subscribed symbols
+        """
+        if not timeframes:
+            timeframes = self.config.get('websocket', {}).get('stream_timeframes', ['1m', '5m'])
+        
+        subscribed = defaultdict(list)
+        
+        # Distribute symbols across available exchanges
+        exchanges = list(self.clients.keys())
+        if not exchanges:
+            logger.error("No exchanges available for subscription")
+            return dict(subscribed)
+        
+        for symbol in symbols:
+            # Round-robin distribution
+            for exchange in exchanges:
+                success = True
+                for timeframe in timeframes:
+                    if not self.start_ohlcv_stream(exchange, symbol, timeframe):
+                        success = False
+                        break
+                        
+                if success:
+                    subscribed[exchange].append(symbol)
+                    break  # Symbol subscribed, move to next
+        
+        total_subscribed = sum(len(syms) for syms in subscribed.values())
+        logger.info(f"Subscribed to {total_subscribed} symbols across {len(subscribed)} exchanges")
+        
+        return dict(subscribed)
     
     async def stream_ohlcv(self, 
                           symbols_per_exchange: Dict[str, List[str]],
@@ -126,6 +222,10 @@ class WebSocketManager:
             client = self.clients[exchange_name]
             
             for symbol in symbols:
+                # Check stream limit
+                if not self.start_ohlcv_stream(exchange_name, symbol, timeframe):
+                    continue
+                
                 # Create a callback wrapper that includes exchange info
                 if callback:
                     async def wrapped_callback(sym, tf, ohlcv, ex=exchange_name):
@@ -140,9 +240,9 @@ class WebSocketManager:
                 tasks.append(task)
                 self._tasks.append(task)
                 
-                logger.info(f"Started OHLCV stream: {exchange_name} {symbol} {timeframe}")
+                logger.info(f"Started OHLCV stream task: {exchange_name} {symbol} {timeframe}")
         
-        logger.info(f"Started {len(tasks)} OHLCV streams across {len(symbols_per_exchange)} exchanges")
+        logger.info(f"Started {len(tasks)} OHLCV stream tasks across {len(symbols_per_exchange)} exchanges")
         return tasks
     
     async def stream_tickers(self,
@@ -248,6 +348,7 @@ class WebSocketManager:
             await client.close()
         
         self._tasks.clear()
+        self._active_streams.clear()
         logger.info("WebSocketManager closed")
     
     def get_stream_status(self) -> Dict[str, Any]:
@@ -260,12 +361,19 @@ class WebSocketManager:
         active_tasks = [t for t in self._tasks if not t.done()]
         completed_tasks = [t for t in self._tasks if t.done()]
         
+        # Count total active streams
+        total_streams = sum(len(streams) for streams in self._active_streams.values())
+        
         return {
             'running': self._running,
-            'total_streams': len(self._tasks),
+            'total_streams': total_streams,
             'active_streams': len(active_tasks),
             'completed_streams': len(completed_tasks),
-            'exchanges': list(self.clients.keys())
+            'exchanges': list(self.clients.keys()),
+            'stream_distribution': {
+                exchange: len(streams) 
+                for exchange, streams in self._active_streams.items()
+            }
         }
     
     async def subscribe_tickers(self, symbols: List[str], callback=None):
@@ -418,6 +526,107 @@ class WebSocketManager:
         await self.close()
 
 
+class OptimizedWebSocketManager(WebSocketManager):
+    """
+    Optimized WebSocket Manager with production features.
+    
+    Additional features:
+    - Fixed symbol support without market loading
+    - Per-exchange stream limits
+    - Automatic stream optimization
+    """
+    
+    def __init__(self, exchanges: Optional[Dict[str, Any]] = None, 
+                 config: Dict[str, Any] = None,
+                 max_streams_per_exchange: int = 10):
+        """
+        Initialize optimized WebSocket manager.
+        
+        Args:
+            exchanges: Exchange clients dictionary
+            config: Configuration dictionary
+            max_streams_per_exchange: Default max streams per exchange
+        """
+        super().__init__(exchanges, config)
+        
+        self.fixed_symbols: List[str] = []
+        self.optimized = True
+        self.default_max_streams = max_streams_per_exchange
+        
+        # Override stream limits with more conservative defaults
+        for exchange in self.clients.keys():
+            if exchange not in self._stream_limits:
+                self._stream_limits[exchange] = self.default_max_streams
+                
+        logger.info(f"[WS-OPT] Optimized WebSocket Manager initialized")
+        logger.info(f"[WS-OPT] Stream limits: {self._stream_limits}")
+    
+    def set_fixed_symbols(self, symbols: List[str]):
+        """
+        Set fixed symbols for optimized streaming.
+        
+        Args:
+            symbols: List of symbols to stream
+        """
+        self.fixed_symbols = symbols
+        logger.info(f"[WS-OPT] Configured with {len(symbols)} fixed symbols")
+    
+    def subscribe_optimized(self) -> Dict[str, int]:
+        """
+        Subscribe to fixed symbols with optimization.
+        
+        Returns:
+            Dict mapping exchange names to number of subscribed streams
+        """
+        if not self.fixed_symbols:
+            logger.warning("[WS-OPT] No fixed symbols configured")
+            return {}
+        
+        result = {}
+        timeframes = self.config.get('websocket', {}).get('stream_timeframes', ['1m', '5m'])
+        
+        for exchange in self.clients.keys():
+            max_streams = self._stream_limits.get(exchange, self.default_max_streams)
+            streams_per_symbol = len(timeframes)
+            max_symbols = max_streams // streams_per_symbol
+            
+            symbols_to_subscribe = self.fixed_symbols[:max_symbols]
+            
+            for symbol in symbols_to_subscribe:
+                for timeframe in timeframes:
+                    self.start_ohlcv_stream(exchange, symbol, timeframe)
+            
+            result[exchange] = len(symbols_to_subscribe) * streams_per_symbol
+            logger.info(f"[WS-OPT] {exchange}: Subscribed to {len(symbols_to_subscribe)} symbols "
+                       f"({result[exchange]} total streams)")
+        
+        logger.info(f"[WS-OPT] Total streams: {sum(result.values())}")
+        return result
+    
+    def get_optimization_status(self) -> Dict[str, Any]:
+        """
+        Get optimization status and statistics.
+        
+        Returns:
+            Dict with optimization metrics
+        """
+        total_possible = len(self.fixed_symbols) * len(self.clients) * 2  # 2 timeframes
+        total_active = sum(len(streams) for streams in self._active_streams.values())
+        
+        return {
+            'optimized': True,
+            'fixed_symbols': len(self.fixed_symbols),
+            'total_possible_streams': total_possible,
+            'total_active_streams': total_active,
+            'optimization_ratio': total_active / total_possible if total_possible > 0 else 0,
+            'stream_limits': self._stream_limits,
+            'active_distribution': {
+                exchange: len(streams)
+                for exchange, streams in self._active_streams.items()
+            }
+        }
+
+
 class StreamDataCollector:
     """
     Helper class to collect streaming data into buffers for analysis.
@@ -496,49 +705,3 @@ class StreamDataCollector:
         self.ohlcv_data.clear()
         self.ticker_data.clear()
         logger.info("StreamDataCollector cleared")
-
-    def _setup_optimized_websocket(self, fixed_symbols: List[str] = None):
-        """Setup WebSocket with optimization"""
-    
-        # Config'den sembolleri al
-        if not fixed_symbols:
-            universe_cfg = self.config.get('universe', {})
-            fixed_symbols = universe_cfg.get('fixed_symbols', [])
-    
-        if not fixed_symbols:
-            logger.warning("[WS] No fixed symbols configured, WebSocket disabled")
-            return None
-    
-        # BingX için özel limitler
-        max_streams_config = {
-            'bingx': 50,      # BingX max 50 stream
-            'binance': 200,   # Binance daha yüksek
-            'kucoinfutures': 100,
-            'default': 20     # Diğerleri için varsayılan
-        }
-    
-        # Her borsa için optimize edilmiş manager oluştur
-        from core.websocket_manager import OptimizedWebSocketManager
-    
-        ws_manager = OptimizedWebSocketManager(
-            exchanges=self.exchange_clients,
-            config=self.config,
-            max_streams_per_exchange=20  # Varsayılan
-        )
-    
-        # Sabit sembolleri set et
-        ws_manager.set_fixed_symbols(fixed_symbols)
-    
-        # BingX için özel ayar
-        for exchange_name in self.exchange_clients.keys():
-            max_streams = max_streams_config.get(
-                exchange_name, 
-                max_streams_config['default']
-            )
-            logger.info(f"[WS] {exchange_name}: Max streams set to {max_streams}")
-    
-        # Subscribe with optimization
-        ws_manager.subscribe_optimized()
-    
-        logger.info(f"[WS] Optimized WebSocket setup complete for {len(fixed_symbols)} symbols")
-        return ws_manager
