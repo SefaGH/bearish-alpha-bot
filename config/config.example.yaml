@@ -66,10 +66,7 @@ universe:
     - SOL/USDT:USDT
     - BNB/USDT:USDT
     - ADA/USDT:USDT
-    # Yedekler (limit aşılırsa kullanılmaz)
-    - DOT/USDT:USDT
-    - AVAX/USDT:USDT
-    - LTC/USDT:USDT
+    # Yedekler kaldırıldı
   
   # AUTO SELECT KAPALI!
   auto_select: false  # ← KRİTİK: FALSE OLMALI!
