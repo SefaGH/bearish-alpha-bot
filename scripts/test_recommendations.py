@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent / 'src'))
 
 import logging
-from market_regime import MarketRegimeAnalyzer
+from core.market_regime import MarketRegimeAnalyzer
 from core.multi_exchange import build_clients_from_env
 from core.indicators import add_indicators
 import pandas as pd
