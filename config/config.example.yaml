@@ -60,11 +60,13 @@ websocket:
 universe:
   # Sabit sembol listesi - SADECE BUNLAR KULLANILACAK
   fixed_symbols:
+    # 5 sembol × 2 timeframe = 10 stream (tam limit!)
     - BTC/USDT:USDT
     - ETH/USDT:USDT
     - SOL/USDT:USDT
     - BNB/USDT:USDT
     - ADA/USDT:USDT
+    # Yedekler (limit aşılırsa kullanılmaz)
     - DOT/USDT:USDT
     - AVAX/USDT:USDT
     - LTC/USDT:USDT
