@@ -746,18 +746,37 @@ class LiveTradingLauncher:
             # Initialize regime analyzer for adaptive strategies
             regime_analyzer = MarketRegimeAnalyzer()
             
-            # Strategy configurations
+            # Strategy configurations FROM CONFIG FILE
+            signals_config = self.config.get('signals', {})
+
+            # Adaptive OB config - config dosyasından oku!
+            ob_cfg = signals_config.get('oversold_bounce', {})
             adaptive_ob_config = {
-                'rsi_max': 30,
-                'tp_pct': 0.015,
-                'sl_atr_mult': 1.0
+                'adaptive_rsi_base': ob_cfg.get('adaptive_rsi_base', 40),
+                'adaptive_rsi_range': ob_cfg.get('adaptive_rsi_range', 15),
+                'tp_pct': ob_cfg.get('tp_pct', 0.015),
+                'sl_atr_mult': ob_cfg.get('sl_atr_mult', 1.0),
+                'ignore_regime': ob_cfg.get('ignore_regime', True),
+                # Backwards compatibility için eski parametre adlarını da ekle
+                'rsi_max': ob_cfg.get('rsi_max', ob_cfg.get('adaptive_rsi_base', 40))
             }
-            
+
+            # Adaptive STR config - config dosyasından oku!
+            str_cfg = signals_config.get('short_the_rip', {})
             adaptive_str_config = {
-                'rsi_min': 70,
-                'tp_pct': 0.012,
-                'sl_atr_mult': 1.0
+                'adaptive_rsi_base': str_cfg.get('adaptive_rsi_base', 40),
+                'adaptive_rsi_range': str_cfg.get('adaptive_rsi_range', 15),
+                'tp_pct': str_cfg.get('tp_pct', 0.012),
+                'sl_atr_mult': str_cfg.get('sl_atr_mult', 1.2),
+                'ignore_regime': str_cfg.get('ignore_regime', True),
+                # Backwards compatibility için eski parametre adlarını da ekle
+                'rsi_min': str_cfg.get('rsi_min', str_cfg.get('adaptive_rsi_base', 40))
             }
+
+            logger.info(f"✓ OB Config loaded: base={adaptive_ob_config['adaptive_rsi_base']}, "
+                       f"range=±{adaptive_ob_config['adaptive_rsi_range']}")
+            logger.info(f"✓ STR Config loaded: base={adaptive_str_config['adaptive_rsi_base']}, "
+                       f"range=±{adaptive_str_config['adaptive_rsi_range']}")
             
             # Adaptive Oversold Bounce strategy
             self.strategies['adaptive_ob'] = AdaptiveOversoldBounce(adaptive_ob_config, regime_analyzer)
