@@ -573,7 +573,6 @@ class OptimizedWebSocketManager(WebSocketManager):
     """
     
     def __init__(self, exchanges: Optional[Dict[str, Any]] = None, 
-                 super().__init__(exchanges, config)
                  config: Dict[str, Any] = None,
                  max_streams_per_exchange: int = 10):
         """
