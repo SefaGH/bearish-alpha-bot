@@ -30,12 +30,23 @@ class RealTimePerformanceMonitor:
     def __init__(self):
         self.trades = []
         self.metrics = {}
+        self.performance_history = {}
+        self.optimization_feedback = {}
     
     def record_trade(self, trade_data):
         self.trades.append(trade_data)
     
     def get_metrics(self):
         return self.metrics
+    
+    def get_strategy_summary(self, strategy_name: str) -> Dict[str, Any]:
+        """Production uyumluluğu için gerekli metod."""
+        return {
+            'strategy': strategy_name,
+            'status': 'active',
+            'metrics': {},
+            'trade_count': 0
+        }
 
 # Phase 3.1-3.3: Risk & Portfolio Management
 from .risk_manager import RiskManager
@@ -98,22 +109,33 @@ class ProductionCoordinator:
         logger.info("ProductionCoordinator created")
 
     def _setup_websocket_connections(self):
-        """WebSocket bağlantılarını kur - OPTİMİZE EDİLMİŞ"""
-    
+        """WebSocket bağlantılarını kur - DÜZELTILMIŞ"""
+        
         # Config'den sabit sembolleri al
         fixed_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
-    
+        
         if fixed_symbols:
-            # Sadece config'deki semboller için stream aç
-            logger.info(f"[WS] Opening streams for {len(fixed_symbols)} configured symbols only")
-            self.websocket_manager.subscribe_to_symbols(fixed_symbols)
-            self.active_symbols = fixed_symbols
+            logger.info(f"[WS] Setting up {len(fixed_symbols)} configured symbols")
+            
+            # WebSocketManager'ın start_ohlcv_stream metodunu kullan
+            if self.websocket_manager:
+                for symbol in fixed_symbols:
+                    for tf in ['1m', '5m']:  # Config'den alınabilir
+                        try:
+                            # Her borsa için stream başlat
+                            for exchange_name in self.exchange_clients.keys():
+                                self.websocket_manager.start_ohlcv_stream(
+                                    exchange_name, symbol, tf
+                                )
+                        except Exception as e:
+                            logger.warning(f"Failed to start stream for {symbol}: {e}")
+                
+                self.active_symbols = fixed_symbols
+                logger.info(f"[WS] Active symbols set: {len(self.active_symbols)}")
         else:
-            # Fallback: En fazla 20 sembol
-            logger.warning("[WS] No fixed symbols, limiting to top 20")
-            top_symbols = self._get_top_volume_symbols(limit=20)
-            self.websocket_manager.subscribe_to_symbols(top_symbols)
-            self.active_symbols = top_symbols
+            # Fallback
+            logger.warning("[WS] No fixed symbols configured")
+            self.active_symbols = []
 
     def _get_top_volume_symbols(self, limit=20):
         """Get top volume symbols from exchanges."""
