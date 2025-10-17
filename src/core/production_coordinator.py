@@ -22,6 +22,7 @@ sys.path.append(str(Path(__file__).parent.parent))  # src/ dizinini ekle
 from core.market_regime import MarketRegimeAnalyzer
 from .performance_monitor import PerformanceMonitor
 from .websocket_manager import WebSocketManager
+from .live_trading_config import LiveTradingConfiguration
 
 # Performance Monitor için basit fallback
 class RealTimePerformanceMonitor:
@@ -45,13 +46,8 @@ from .circuit_breaker import CircuitBreakerSystem
 # Phase 3.4: Live Trading Components
 from .live_trading_engine import LiveTradingEngine
 
-# Strategy imports
+# Strategy imports - DÜZELTILDI
 from strategies import AdaptiveOversoldBounce, AdaptiveShortTheRip
-try:
-    from strategies.adaptive_str import AdaptiveShortTheRip
-except ImportError:
-    # Fallback: use base ShortTheRip
-    from strategies.short_the_rip import ShortTheRip as AdaptiveShortTheRip
 
 # Phase 4: ML Components (optional)
 try:
@@ -88,13 +84,14 @@ class ProductionCoordinator:
         self.is_running = False
         self.is_initialized = False
         self.emergency_stop_triggered = False
+        self.loop_interval = 30  # Ana döngü bekleme süresi
+        self.active_symbols = []  # Takip edilen semboller
+        self.processed_symbols_count = 0  # İşlenen sembol sayacı
         
-        # Configuration
+        # Configuration - DÜZELTILDI
         self.config = LiveTradingConfiguration.get_all_configs()
-        # Configuration için LiveTradingConfiguration import
-        from .live_trading_config import LiveTradingConfiguration
-
-        # Market regime analyzer ekle
+        
+        # Market regime analyzer başlat
         self.market_regime_analyzer = MarketRegimeAnalyzer()
         logger.info("✅ Market regime analyzer initialized")
         
@@ -109,33 +106,154 @@ class ProductionCoordinator:
         if fixed_symbols:
             # Sadece config'deki semboller için stream aç
             logger.info(f"[WS] Opening streams for {len(fixed_symbols)} configured symbols only")
-            self.ws_manager.subscribe_to_symbols(fixed_symbols)
+            self.websocket_manager.subscribe_to_symbols(fixed_symbols)
+            self.active_symbols = fixed_symbols
         else:
             # Fallback: En fazla 20 sembol
             logger.warning("[WS] No fixed symbols, limiting to top 20")
             top_symbols = self._get_top_volume_symbols(limit=20)
-            self.ws_manager.subscribe_to_symbols(top_symbols)
+            self.websocket_manager.subscribe_to_symbols(top_symbols)
+            self.active_symbols = top_symbols
 
-        # BingX maksimum 50 stream destekler
-        if exchange_name == 'bingx':
-            MAX_STREAMS = 50
-    
-            # Öncelik sırasına göre sembol seç
-            priority_symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
-            other_symbols = [s for s in symbols if s not in priority_symbols]
-    
-            # Öncelikli + diğerleri (max 50)
-            final_symbols = priority_symbols + other_symbols[:MAX_STREAMS - len(priority_symbols)]
-    
+    def _get_top_volume_symbols(self, limit=20):
+        """Get top volume symbols from exchanges."""
+        # Basit implementasyon
+        default_symbols = [
+            'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT',
+            'BNB/USDT:USDT', 'ADA/USDT:USDT'
+        ]
+        return default_symbols[:limit]
+
+    def process_symbol(self, symbol: str) -> Optional[Dict]:
+        """
+        Process a single symbol for signals with market regime analysis.
+        
+        Args:
+            symbol: Trading symbol to process
+            
+        Returns:
+            Signal dictionary if found, None otherwise
+        """
+        try:
+            self.processed_symbols_count += 1
+            
+            # WebSocket'ten veri al
+            if not self.websocket_manager:
+                logger.debug(f"No WebSocket manager for {symbol}")
+                return None
+                
+            df_30m = self.websocket_manager.get_latest_data(symbol, '30m')
+            df_1h = self.websocket_manager.get_latest_data(symbol, '1h')
+            df_4h = self.websocket_manager.get_latest_data(symbol, '4h')
+            
+            if df_30m is None or df_1h is None or df_4h is None:
+                logger.debug(f"Insufficient data for {symbol}")
+                return None
+            
+            # ===== MARKET REGIME ANALYSIS =====
+            metadata = {}
+            
+            if self.market_regime_analyzer:
+                try:
+                    # Regime analizi yap
+                    regime = self.market_regime_analyzer.analyze_market_regime(df_30m, df_1h, df_4h)
+                    
+                    # Her 10 sembolde bir recommendations logla
+                    if self.processed_symbols_count % 10 == 0:
+                        recommendations = self.market_regime_analyzer.get_regime_recommendations(df_30m, df_1h, df_4h)
+                        if recommendations:
+                            logger.info(f"\n📊 MARKET REGIME for {symbol}:")
+                            for rec in recommendations[:3]:
+                                logger.info(f"  • {rec}")
+                    
+                    # Strategy uygunluğunu kontrol et
+                    ob_favorable, ob_reason = self.market_regime_analyzer.is_favorable_for_strategy(
+                        'oversold_bounce', df_30m, df_1h, df_4h
+                    )
+                    str_favorable, str_reason = self.market_regime_analyzer.is_favorable_for_strategy(
+                        'short_the_rip', df_30m, df_1h, df_4h
+                    )
+                    
+                    # Uygun olmayan durumları logla ama atlamak yerine metadata'ya ekle
+                    if not ob_favorable and not str_favorable:
+                        logger.debug(f"{symbol}: Regime not ideal - OB: {ob_reason}, STR: {str_reason}")
+                    
+                    # Metadata'ya ekle
+                    metadata = {
+                        'regime': regime,
+                        'ob_favorable': ob_favorable,
+                        'str_favorable': str_favorable,
+                        'ob_reason': ob_reason,
+                        'str_reason': str_reason
+                    }
+                    
+                except Exception as e:
+                    logger.debug(f"Regime analysis failed for {symbol}: {e}")
+            
+            # ===== STRATEGY SIGNALS =====
+            signals_config = self.config.get('signals', {})
+            signal = None
+            
+            # Check AdaptiveOversoldBounce
+            if signals_config.get('oversold_bounce', {}).get('enable', True):
+                # Sadece regime uygunsa veya ignore_regime true ise
+                ignore_regime = signals_config.get('oversold_bounce', {}).get('ignore_regime', False)
+                
+                if metadata.get('ob_favorable', True) or ignore_regime:
+                    try:
+                        ob_config = signals_config.get('oversold_bounce', {})
+                        ob = AdaptiveOversoldBounce(ob_config, self.market_regime_analyzer)
+                        
+                        # Adaptive strateji farklı parametre alıyor
+                        signal = ob.signal(df_30m, df_1h, regime_data=metadata.get('regime'))
+                        
+                        if signal:
+                            signal['strategy'] = 'adaptive_ob'
+                            logger.info(f"📈 Adaptive OB signal for {symbol}: {signal}")
+                            
+                    except Exception as e:
+                        logger.debug(f"AdaptiveOB error for {symbol}: {e}")
+            
+            # Check AdaptiveShortTheRip (sadece signal yoksa)
+            if not signal and signals_config.get('short_the_rip', {}).get('enable', True):
+                ignore_regime = signals_config.get('short_the_rip', {}).get('ignore_regime', False)
+                
+                if metadata.get('str_favorable', True) or ignore_regime:
+                    try:
+                        str_config = signals_config.get('short_the_rip', {})
+                        strp = AdaptiveShortTheRip(str_config, self.market_regime_analyzer)
+                        
+                        signal = strp.signal(df_30m, df_1h, regime_data=metadata.get('regime'))
+                        
+                        if signal:
+                            signal['strategy'] = 'adaptive_str'
+                            logger.info(f"📉 Adaptive STR signal for {symbol}: {signal}")
+                            
+                    except Exception as e:
+                        logger.debug(f"AdaptiveSTR error for {symbol}: {e}")
+            
+            # Signal'e metadata ekle
+            if signal:
+                signal['metadata'] = metadata
+                signal['symbol'] = symbol
+                signal['timestamp'] = datetime.now(timezone.utc)
+                
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error processing {symbol}: {e}")
+            return None
+
     async def initialize_production_system(self, exchange_clients: Dict, 
                                           portfolio_config: Dict,
-                                          mode: str = 'paper') -> Dict[str, Any]:  # mode ekle!
+                                          mode: str = 'paper') -> Dict[str, Any]:
         """
         Initialize complete production trading system.
         
         Args:
             exchange_clients: Dictionary of exchange client instances (Phase 1)
             portfolio_config: Portfolio configuration dictionary
+            mode: Trading mode ('paper', 'live', 'simulation')
             
         Returns:
             Initialization result
@@ -153,9 +271,8 @@ class ProductionCoordinator:
             # Phase 2: Market intelligence activation
             logger.info("\n[Phase 2] Activating Market Intelligence...")
             
-            # Initialize market regime analyzer
-            self.market_regime_analyzer = MarketRegimeAnalyzer()
-            logger.info("  ✓ Market Regime Analyzer initialized")
+            # Market regime analyzer zaten init'te oluşturuldu
+            logger.info("  ✓ Market Regime Analyzer already initialized")
             
             # Initialize performance monitor
             self.performance_monitor = RealTimePerformanceMonitor()
@@ -165,6 +282,7 @@ class ProductionCoordinator:
             logger.info("\n[Phase 3.1] Establishing WebSocket Connections...")
             try:
                 self.websocket_manager = WebSocketManager(exchanges=None)  # Will use default
+                self._setup_websocket_connections()  # Sembolleri ayarla
                 logger.info("  ✓ WebSocket Manager initialized")
             except Exception as e:
                 logger.warning(f"  ⚠️  WebSocket initialization failed: {e}")
@@ -192,16 +310,18 @@ class ProductionCoordinator:
             logger.info("  Registering adaptive trading strategies...")
 
             signals_config = self.config.get('signals', {})
-            regime_analyzer = MarketRegimeAnalyzer()
+            strategies_registered = 0
 
             # 1. Adaptive OversoldBounce
             if signals_config.get('oversold_bounce', {}).get('enable', True):
                 adaptive_ob_config = {
-                    'rsi_max': signals_config.get('oversold_bounce', {}).get('adaptive_rsi_base', 30),
+                    'rsi_max': signals_config.get('oversold_bounce', {}).get('adaptive_rsi_base', 40),
+                    'adaptive_rsi_range': signals_config.get('oversold_bounce', {}).get('adaptive_rsi_range', 15),
                     'tp_pct': signals_config.get('oversold_bounce', {}).get('tp_pct', 0.015),
-                    'sl_atr_mult': signals_config.get('oversold_bounce', {}).get('sl_atr_mult', 1.0)
+                    'sl_atr_mult': signals_config.get('oversold_bounce', {}).get('sl_atr_mult', 1.0),
+                    'ignore_regime': signals_config.get('oversold_bounce', {}).get('ignore_regime', False)
                 }
-                adaptive_ob = AdaptiveOversoldBounce(adaptive_ob_config, regime_analyzer)
+                adaptive_ob = AdaptiveOversoldBounce(adaptive_ob_config, self.market_regime_analyzer)
                 
                 result = self.portfolio_manager.register_strategy(
                     strategy_name='adaptive_ob',
@@ -209,15 +329,18 @@ class ProductionCoordinator:
                     initial_allocation=0.5  # %50
                 )
                 logger.info("    ✓ AdaptiveOversoldBounce registered")
+                strategies_registered += 1
 
             # 2. Adaptive ShortTheRip  
             if signals_config.get('short_the_rip', {}).get('enable', True):
                 adaptive_str_config = {
-                    'rsi_min': signals_config.get('short_the_rip', {}).get('adaptive_rsi_base', 70),
+                    'rsi_min': signals_config.get('short_the_rip', {}).get('adaptive_rsi_base', 65),
+                    'adaptive_rsi_range': signals_config.get('short_the_rip', {}).get('adaptive_rsi_range', 20),
                     'tp_pct': signals_config.get('short_the_rip', {}).get('tp_pct', 0.012),
-                    'sl_atr_mult': signals_config.get('short_the_rip', {}).get('sl_atr_mult', 1.0)
+                    'sl_atr_mult': signals_config.get('short_the_rip', {}).get('sl_atr_mult', 1.2),
+                    'ignore_regime': signals_config.get('short_the_rip', {}).get('ignore_regime', False)
                 }
-                adaptive_str = AdaptiveShortTheRip(adaptive_str_config, regime_analyzer)
+                adaptive_str = AdaptiveShortTheRip(adaptive_str_config, self.market_regime_analyzer)
                 
                 result = self.portfolio_manager.register_strategy(
                     strategy_name='adaptive_str',
@@ -225,8 +348,9 @@ class ProductionCoordinator:
                     initial_allocation=0.5  # %50
                 )
                 logger.info("    ✓ AdaptiveShortTheRip registered")
+                strategies_registered += 1
 
-            logger.info(f"  ✓ {len(self.portfolio_manager.strategies)} adaptive strategies registered")
+            logger.info(f"  ✓ {strategies_registered} adaptive strategies registered")
             
             # Initialize strategy coordinator
             self.strategy_coordinator = StrategyCoordinator(
@@ -245,13 +369,13 @@ class ProductionCoordinator:
             # Phase 3.4: Live trading activation
             logger.info("\n[Phase 3.4] Initializing Live Trading Engine...")
             self.trading_engine = LiveTradingEngine(
-                mode=mode,  # ✅ Artık dinamik mode kullanıyor!
+                mode=mode,  # Dinamik mode
                 portfolio_manager=self.portfolio_manager,
                 risk_manager=self.risk_manager,
                 websocket_manager=self.websocket_manager,
                 exchange_clients=self.exchange_clients
             )
-            logger.info(f"  ✓ Live Trading Engine initialized (mode: {mode})")  # Log ekle
+            logger.info(f"  ✓ Live Trading Engine initialized (mode: {mode})")
             
             self.is_initialized = True
             
@@ -268,12 +392,14 @@ class ProductionCoordinator:
                     'risk_manager': True,
                     'portfolio_manager': True,
                     'trading_engine': True,
-                    'circuit_breaker': True
+                    'circuit_breaker': True,
+                    'market_regime': True,
+                    'strategies': strategies_registered
                 }
             }
             
         except Exception as e:
-            logger.error(f"Error initializing production system: {e}")
+            logger.error(f"Error initializing production system: {e}", exc_info=True)
             self.is_initialized = False
             return {
                 'success': False,
@@ -311,93 +437,97 @@ class ProductionCoordinator:
             logger.info(f"   Mode: {mode}")
             logger.info(f"   Duration: {'Indefinite' if duration is None else f'{duration}s'}")
             logger.info(f"   Continuous Mode: {'ENABLED (Never stops, auto-recovers)' if continuous else 'DISABLED'}")
+            logger.info(f"   Active Symbols: {len(self.active_symbols)}")
             
             # Main loop
             start_time = datetime.now(timezone.utc)
+            last_recommendation_time = start_time
+            recommendation_interval = 300  # Her 5 dakikada bir recommendations
             
             while self.is_running:
                 try:
-                    # Check emergency conditions (always honor manual stop)
+                    # Check emergency conditions
                     if self.emergency_stop_triggered:
                         logger.critical("Emergency stop triggered - shutting down")
                         break
                     
-                    # Check circuit breaker (bypass non-critical in continuous mode)
+                    # Check circuit breaker
                     breaker_status = await self.circuit_breaker.check_circuit_breaker()
                     if breaker_status.get('tripped'):
                         severity = breaker_status.get('severity', 'high')
                         
-                        # In continuous mode, only stop for critical breakers
                         if continuous and severity != 'critical':
                             logger.warning(f"Circuit breaker tripped ({severity}): {breaker_status.get('message')}")
                             logger.warning("CONTINUOUS MODE: Bypassing non-critical breaker, continuing...")
-                            await asyncio.sleep(10)  # Pause briefly before continuing
+                            await asyncio.sleep(10)
                             continue
                         else:
                             logger.critical(f"Circuit breaker tripped ({severity}): {breaker_status.get('message')}")
                             await self.handle_emergency_shutdown('circuit_breaker_tripped')
                             break
                     
-                    # Check duration (skip in continuous mode)
+                    # Check duration
                     if duration and not continuous:
                         elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
                         if elapsed >= duration:
                             logger.info(f"Duration {duration}s reached - stopping")
                             break
-
-                    # Market regime recommendations (YENİ!)
-                    if self.market_regime_analyzer and hasattr(self.market_regime_analyzer, 'get_regime_recommendations'):
-                        try:
-                            # Örnek bir sembol için test et
-                            test_symbol = 'BTC/USDT:USDT'
-                            
-                            # Veri varsa recommendations al
-                            if self.websocket_manager:
-                                df_30m = self.websocket_manager.get_latest_data(test_symbol, '30m')
-                                df_1h = self.websocket_manager.get_latest_data(test_symbol, '1h')
-                                df_4h = self.websocket_manager.get_latest_data(test_symbol, '4h')
+                    
+                    # Process symbols for signals
+                    for symbol in self.active_symbols:
+                        signal = self.process_symbol(symbol)
+                        if signal:
+                            # Submit signal to trading engine
+                            result = await self.submit_signal(signal)
+                            if result['success']:
+                                logger.info(f"✅ Signal submitted: {symbol} {signal['strategy']}")
+                    
+                    # Market regime recommendations (periyodik)
+                    current_time = datetime.now(timezone.utc)
+                    time_since_last = (current_time - last_recommendation_time).total_seconds()
+                    
+                    if time_since_last >= recommendation_interval:
+                        if self.market_regime_analyzer and self.active_symbols:
+                            try:
+                                # İlk sembol için recommendations al
+                                test_symbol = self.active_symbols[0]
                                 
-                                if df_30m and df_1h and df_4h:
-                                    recommendations = self.market_regime_analyzer.get_regime_recommendations(
-                                        df_30m, df_1h, df_4h
-                                    )
+                                if self.websocket_manager:
+                                    df_30m = self.websocket_manager.get_latest_data(test_symbol, '30m')
+                                    df_1h = self.websocket_manager.get_latest_data(test_symbol, '1h')
+                                    df_4h = self.websocket_manager.get_latest_data(test_symbol, '4h')
                                     
-                                    # İlk 3 öneriyi logla
-                                    if recommendations:
-                                        logger.info("\n📊 MARKET RECOMMENDATIONS:")
-                                        for rec in recommendations[:3]:
-                                            logger.info(f"  • {rec}")
-                                    
-                                    # Strategy favorability check
-                                    if hasattr(self.market_regime_analyzer, 'is_favorable_for_strategy'):
-                                        is_good_ob, reason_ob = self.market_regime_analyzer.is_favorable_for_strategy(
-                                            'oversold_bounce', df_30m, df_1h, df_4h
-                                        )
-                                        is_good_str, reason_str = self.market_regime_analyzer.is_favorable_for_strategy(
-                                            'short_the_rip', df_30m, df_1h, df_4h
+                                    if df_30m is not None and df_1h is not None and df_4h is not None:
+                                        recommendations = self.market_regime_analyzer.get_regime_recommendations(
+                                            df_30m, df_1h, df_4h
                                         )
                                         
-                                        logger.info(f"  • OB Strategy: {'✅' if is_good_ob else '❌'} {reason_ob}")
-                                        logger.info(f"  • STR Strategy: {'✅' if is_good_str else '❌'} {reason_str}")
-                            
-                        except Exception as e:
-                            logger.debug(f"Could not get recommendations: {e}")
+                                        if recommendations:
+                                            logger.info("\n" + "="*50)
+                                            logger.info("📊 MARKET RECOMMENDATIONS UPDATE:")
+                                            for rec in recommendations[:5]:
+                                                logger.info(f"  • {rec}")
+                                            logger.info("="*50 + "\n")
+                                        
+                                        last_recommendation_time = current_time
+                                
+                            except Exception as e:
+                                logger.debug(f"Could not get recommendations: {e}")
                     
                     # Sleep between iterations
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(self.loop_interval)
                     
                 except KeyboardInterrupt:
                     logger.info("Keyboard interrupt received - stopping gracefully")
                     break
                     
                 except Exception as e:
-                    logger.error(f"Error in production loop: {e}")
+                    logger.error(f"Error in production loop: {e}", exc_info=True)
                     
-                    # In continuous mode, implement auto-recovery
+                    # Auto-recovery in continuous mode
                     if continuous:
                         logger.warning("CONTINUOUS MODE: Auto-recovering from error...")
                         
-                        # Try to restart trading engine if it stopped
                         try:
                             if self.trading_engine and not self.trading_engine.is_running:
                                 logger.info("Attempting to restart trading engine...")
@@ -409,12 +539,11 @@ class ProductionCoordinator:
                         except Exception as restart_error:
                             logger.error(f"Error during auto-recovery: {restart_error}")
                         
-                        # Continue after brief pause
                         await asyncio.sleep(5)
                         continue
                     else:
                         # Original behavior for non-continuous mode
-                        if self.config['emergency']['enable_circuit_breaker']:
+                        if self.config.get('emergency', {}).get('enable_circuit_breaker', True):
                             await self.handle_emergency_shutdown('system_error')
                             break
                         else:
@@ -429,7 +558,7 @@ class ProductionCoordinator:
             logger.info("✓ Production trading loop stopped")
             
         except Exception as e:
-            logger.error(f"Critical error in production loop: {e}")
+            logger.error(f"Critical error in production loop: {e}", exc_info=True)
             self.is_running = False
             await self.handle_emergency_shutdown('critical_error')
     
@@ -450,14 +579,14 @@ class ProductionCoordinator:
             
             # Step 1: Stop new signals
             logger.critical("Step 1: Stopping new signal processing...")
-            # Signal queue should stop accepting new signals
+            self.is_running = False
             
             # Step 2: Cancel pending orders
             logger.critical("Step 2: Cancelling pending orders...")
             # Would iterate through active orders and cancel them
             
             # Step 3: Close positions (if configured)
-            close_method = self.config['emergency']['emergency_close_method']
+            close_method = self.config.get('emergency', {}).get('emergency_close_method', 'market')
             logger.critical(f"Step 3: Closing positions using {close_method} method...")
             
             # Get active positions
@@ -499,7 +628,7 @@ class ProductionCoordinator:
             # Could send alert notification here
             
         except Exception as e:
-            logger.critical(f"Error during emergency shutdown: {e}")
+            logger.critical(f"Error during emergency shutdown: {e}", exc_info=True)
     
     def _generate_emergency_report(self, reason: str) -> Dict[str, Any]:
         """Generate emergency shutdown report."""
@@ -593,7 +722,9 @@ class ProductionCoordinator:
             'timestamp': datetime.now(timezone.utc),
             'is_running': self.is_running,
             'is_initialized': self.is_initialized,
-            'emergency_stop': self.emergency_stop_triggered
+            'emergency_stop': self.emergency_stop_triggered,
+            'active_symbols': self.active_symbols,
+            'processed_symbols': self.processed_symbols_count
         }
         
         if self.trading_engine:
@@ -604,6 +735,9 @@ class ProductionCoordinator:
         
         if self.risk_manager:
             state['risk_limits'] = self.risk_manager.risk_limits
+        
+        if self.market_regime_analyzer:
+            state['market_regime'] = self.market_regime_analyzer.get_current_regime()
         
         return state
     
