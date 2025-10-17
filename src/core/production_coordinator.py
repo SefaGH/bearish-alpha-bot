@@ -19,7 +19,7 @@ from .ccxt_client import CcxtClient
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))  # src/ dizinini ekle
-from market_regime import MarketRegimeAnalyzer  # ✅ Mevcut dosya
+from core.market_regime import MarketRegimeAnalyzer
 from .performance_monitor import PerformanceMonitor
 from .websocket_manager import WebSocketManager
 
@@ -93,6 +93,10 @@ class ProductionCoordinator:
         self.config = LiveTradingConfiguration.get_all_configs()
         # Configuration için LiveTradingConfiguration import
         from .live_trading_config import LiveTradingConfiguration
+
+        # Market regime analyzer ekle
+        self.market_regime_analyzer = MarketRegimeAnalyzer()
+        logger.info("✅ Market regime analyzer initialized")
         
         logger.info("ProductionCoordinator created")
 
