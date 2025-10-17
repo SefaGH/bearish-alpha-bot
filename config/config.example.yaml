@@ -92,7 +92,7 @@ signals:
   oversold_bounce:
     enable: true
     ignore_regime: true  # Production'da false
-    adaptive_rsi_base: 40  # Dinamik RSI için baz değer
+    adaptive_rsi_base: 35  # Dinamik RSI için baz değer
     adaptive_rsi_range: 10  # ±15 dinamik ayarlama
     tp_pct: 0.010
     sl_atr_mult: 1.0
