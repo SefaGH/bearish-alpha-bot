@@ -270,16 +270,28 @@ class AdaptiveShortTheRip(ShortTheRip):
             logger.debug(f"📈 [STRATEGY-AdaptiveSTR] Signal strength: RSI {rsi_val:.1f} >= {adaptive_rsi_threshold:.1f}")
             logger.info(f"Adaptive STR signal: RSI {rsi_val:.1f} >= {adaptive_rsi_threshold:.1f}, "
                        f"regime={market_regime['trend']}, pos_mult={position_mult:.2f}")
-            
+
+        if signal:
+            signal['strategy_type'] = 'adaptive'
             return signal
             
         except Exception as e:
-            logger.error(f"Error in adaptive signal generation: {e}")
-            # Fallback to base strategy on error if df_1h is available
-            if df_1h is not None:
-                return super().signal(df_30m, df_1h)
-            else:
-                return None
+            logger.warning(f"Adaptive strategy failed: {e}, falling back to base")
+            
+            # FALLBACK TO BASE STRATEGY
+            try:
+                # Base OversoldBounce için
+                if hasattr(super(), 'signal'):
+                    base_signal = super().signal(df_30m)
+                    if base_signal:
+                        base_signal['strategy_type'] = 'base_fallback'
+                        base_signal['fallback_reason'] = str(e)
+                        logger.info("✅ Fallback to base strategy successful")
+                        return base_signal
+            except Exception as fallback_error:
+                logger.error(f"Base strategy also failed: {fallback_error}")
+                
+        return None
     
     def get_strategy_state(self) -> Dict:
         """
