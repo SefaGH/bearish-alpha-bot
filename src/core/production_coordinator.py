@@ -314,11 +314,11 @@ class ProductionCoordinator:
                 from core.adaptive_monitor import adaptive_monitor
                 adaptive_monitor.record_adaptive_signal(symbol, signal)
             
-           return signal
+            return signal
             
-       except Exception as e:
-           logger.error(f"Error processing {symbol}: {e}")
-           return None 
+        except Exception as e:
+            logger.error(f"Error processing {symbol}: {e}")
+            return None 
 
     async def _process_trading_loop(self):
         """Main trading loop processing."""
