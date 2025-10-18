@@ -249,24 +249,20 @@ class AdaptiveShortTheRip(ShortTheRip):
             logger.debug(f"📊 [STRATEGY-AdaptiveSTR] Position multiplier: {position_mult:.2f} (volatility: {volatility})")
             
             # ===== KRİTİK DÜZELTME: ENTRY FİYATI EKLE =====
-            entry_price = float(last30['close'])  # Son kapanış fiyatı
+            entry_price = float(last30['close'])
+            atr_value = float(last30['atr']) if 'atr' in last30.index else entry_price * 0.02
             
-            # ATR değerini al (stop loss hesaplaması için)
-            atr_value = float(last30['atr']) if 'atr' in last30.index else entry_price * 0.02  # Default %2
-            
-            # Build adaptive signal
             signal = {
                 "side": "sell",
-                "entry": entry_price,  # ⬅️ KRİTİK: BU SATIR EKSİKTİ!
+                "entry": entry_price,  # ⬅️ KRİTİK: ARTIK VAR!
                 "reason": f"Adaptive RSI overbought {rsi_val:.1f} (threshold: {adaptive_rsi_threshold:.1f}, regime: {market_regime['trend']})",
                 "tp_pct": float(self.cfg.get("tp_pct", 0.012)),
                 "sl_atr_mult": float(self.cfg.get("sl_atr_mult", 1.2)),
-                "atr": atr_value,  # ATR değerini de ekle (opsiyonel ama faydalı)
-                
-                # Adaptive parameters
+                "atr": atr_value,
+                "is_adaptive": True,  # Flag ekle
+                "adaptive_threshold": adaptive_rsi_threshold,
                 "position_multiplier": position_mult,
                 "market_regime": market_regime,
-                "adaptive_rsi_threshold": adaptive_rsi_threshold,
                 "ema_params": ema_params
             }
             
