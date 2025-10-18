@@ -12,7 +12,9 @@ import logging
 import argparse
 import time
 import signal
-import logging
+import yaml  # ← Add this import
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Any
 
 # Production için sadece WARNING ve üstü
 if os.getenv('PRODUCTION', 'false').lower() == 'true':
@@ -441,9 +443,21 @@ class LiveTradingLauncher:
         
         [... mevcut init docstring ...]
         """
+                     
+        # Define capital and risk parameters FIRST
+        self.CAPITAL_USDT = 100  # Default capital in USDT
+        self.RISK_PARAMS = {
+            'max_position_size': 0.20,  # 20% max position
+            'stop_loss_pct': 0.02,      # 2% stop loss
+            'take_profit_pct': 0.015,   # 1.5% take profit
+            'max_portfolio_risk': 0.05, # 5% max portfolio risk
+            'max_drawdown': 0.10        # 10% max drawdown
+        }
+                     
         # Config ve trading pairs için instance variables
         self.config = None
         self.trading_pairs = []  # ← Config'den gelecek
+        self.TRADING_PAIRS = []  # For backward compatibility in logging
         self.mode = mode
         self.dry_run = dry_run
         self.infinite = infinite
