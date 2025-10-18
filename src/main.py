@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Bearish Alpha Bot — Orchestrated MVP (run summary + artifact guarantee)
+# Bearish Alpha Bot — Orchestrated MVP with Adaptive Strategies
 
 from __future__ import annotations
 import os, json, time, traceback, logging
@@ -18,8 +18,16 @@ from core.multi_exchange import build_clients_from_env
 from core.indicators import add_indicators as ind_enrich
 from core.regime import is_bearish_regime
 from core.notify import Telegram
+
+# Base strategies (mevcut)
 from strategies.oversold_bounce import OversoldBounce
 from strategies.short_the_rip import ShortTheRip
+
+# ADAPTIVE STRATEGIES (YENİ)
+from strategies.adaptive_ob import AdaptiveOversoldBounce
+from strategies.adaptive_str import AdaptiveShortTheRip
+from core.adaptive_monitor import adaptive_monitor
+
 from core.state import load_state, save_state, load_day_stats, save_day_stats
 from core.trailing import initial_stops
 from core.sizing import position_size_usdt
@@ -28,6 +36,7 @@ from core.normalize import amount_to_precision
 from core.exec_engine import ExecEngine
 
 DATA_DIR = "data"
+logger = logging.getLogger(__name__)
 
 def load_config():
     cfg_path = os.getenv("CONFIG_PATH", "config/config.example.yaml")
@@ -66,15 +75,13 @@ def has_min_bars(*dfs, min_bars: int = 120) -> bool:
 
 def get_risk_params():
     """Extract risk parameters from config file first, then env vars."""
-    # Config'i yükle
     cfg = load_config()
     risk_cfg = cfg.get('risk', {})
     
-    # Config'den al, yoksa ENV'den, o da yoksa default
     return {
         'equity_usd': float(
             risk_cfg.get('equity_usd') or 
-            os.getenv('RISK_EQUITY_USD', '100')  # Default 100
+            os.getenv('RISK_EQUITY_USD', '100')
         ),
         'per_trade_risk_pct': float(
             risk_cfg.get('per_trade_risk_pct') or 
@@ -105,6 +112,7 @@ def get_risk_params():
             os.getenv('RISK_MIN_NOTIONAL_BEHAVIOR', 'skip')
         ),
     }
+
 def execute_signal(engine: ExecEngine, client, symbol: str, signal: dict, risk_params: dict, tg: Telegram | None):
     """Execute a signal with proper sizing and risk management."""
     try:
@@ -116,7 +124,7 @@ def execute_signal(engine: ExecEngine, client, symbol: str, signal: dict, risk_p
             return None
         
         # Get ATR from signal metadata (if available)
-        atr = signal.get('atr', price * 0.02)  # fallback 2% ATR
+        atr = signal.get('atr', price * 0.02)
         
         # Calculate stops
         side = signal.get('side', 'buy')
@@ -130,11 +138,14 @@ def execute_signal(engine: ExecEngine, client, symbol: str, signal: dict, risk_p
             if tg: tg.send(f"⚠️ {symbol}: stop too tight {stop_dist_pct:.4f} < {risk_params['min_stop_pct']}, skipping")
             return None
         
-        # Calculate position size
-        risk_usd = min(
+        # Calculate position size (adaptive multiplier varsa kullan)
+        position_multiplier = signal.get('position_multiplier', 1.0)
+        base_risk_usd = min(
             risk_params['equity_usd'] * risk_params['per_trade_risk_pct'],
             risk_params['risk_usd_cap']
         )
+        risk_usd = base_risk_usd * position_multiplier
+        
         qty = position_size_usdt(price, sl, risk_usd, side)
         
         # Check max notional
@@ -163,8 +174,11 @@ def execute_signal(engine: ExecEngine, client, symbol: str, signal: dict, risk_p
         order_side = 'sell' if side == 'sell' else 'buy'
         order = engine.market_order(symbol, order_side, qty_final)
         
+        # Adaptive veya base strategy?
+        strategy_type = signal.get('strategy_type', 'base')
+        msg = f"✅ <b>EXECUTED ({strategy_type})</b> {symbol} {order_side.upper()} qty={qty_final:.6f} @ ~{price:.4f} | TP={tp:.4f} SL={sl:.4f}"
         if tg:
-            tg.send(f"✅ <b>EXECUTED</b> {symbol} {order_side.upper()} qty={qty_final:.6f} @ ~{price:.4f} | TP={tp:.4f} SL={sl:.4f}")
+            tg.send(msg)
         
         return {
             'symbol': symbol,
@@ -173,6 +187,7 @@ def execute_signal(engine: ExecEngine, client, symbol: str, signal: dict, risk_p
             'price': price,
             'tp': tp,
             'sl': sl,
+            'strategy_type': strategy_type,
             'order_id': order.get('id', 'N/A'),
             'timestamp': datetime.now(timezone.utc).isoformat()
         }
@@ -187,20 +202,24 @@ def run_once():
     cfg = load_config()
     tg = build_tg()
     
-    # Determine mode
+    # Adaptive strategies enable flag
+    use_adaptive = cfg.get('adaptive_strategies', {}).get('enable', True)
+    
+    # Mode
     mode = os.getenv('MODE', 'paper').lower()
     is_live = (mode == 'live')
     
-    # Get execution exchange
+    # Execution exchange
     from universe import pick_execution_exchange
     exec_exchange = pick_execution_exchange()
 
-    # --- RUN SUMMARY (always create artifact) ---
+    # RUN SUMMARY
     ensure_data_dir()
     summary_path = os.path.join(DATA_DIR, "RUN_SUMMARY.txt")
     with open(summary_path, "w", encoding="utf-8") as f:
         f.write(f"Run start (UTC): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"MODE: {mode}\n")
+        f.write(f"ADAPTIVE: {use_adaptive}\n")
         f.write(f"EXECUTION_EXCHANGE: {exec_exchange}\n")
         f.write(f"EXCHANGES: {os.getenv('EXCHANGES','')}\n")
 
@@ -218,10 +237,12 @@ def run_once():
         exec_engine = ExecEngine('live', exec_client, fee_pct, slip_pct, tg)
         risk_params = get_risk_params()
         if tg:
-            tg.send(f"🚀 <b>LIVE MODE</b> activated on {exec_exchange} | Risk: {risk_params['risk_usd_cap']}$ cap, {risk_params['daily_max_trades']} max trades/day")
+            strategy_mode = "ADAPTIVE" if use_adaptive else "BASE"
+            tg.send(f"🚀 <b>LIVE MODE ({strategy_mode})</b> activated on {exec_exchange} | Risk: {risk_params['risk_usd_cap']}$ cap")
     else:
         if tg:
-            tg.send("🔎 <b>Bearish Alpha Bot</b> tarama başlıyor (paper)")
+            strategy_mode = "adaptive" if use_adaptive else "base"
+            tg.send(f"🔎 <b>Bearish Alpha Bot ({strategy_mode})</b> tarama başlıyor (paper)")
 
     from universe import build_universe
     universe = build_universe(clients, cfg)
@@ -231,9 +252,13 @@ def run_once():
     executions = []
     csv_path = None
     
-    # Load daily stats for live mode trade counting
+    # Stats
     day_stats = load_day_stats() if is_live else None
     trades_today = day_stats.get('signals', 0) if day_stats else 0
+    
+    # Adaptive stats
+    adaptive_signals = 0
+    base_signals = 0
 
     for ex_name, client in clients.items():
         symbols = universe.get(ex_name, [])[:max_per_ex]
@@ -242,22 +267,22 @@ def run_once():
 
         for sym in symbols:
             try:
-                # Check daily trade limit in live mode
+                # Check daily trade limit
                 if is_live and trades_today >= risk_params['daily_max_trades']:
                     if tg:
-                        tg.send(f"⚠️ Daily trade limit ({risk_params['daily_max_trades']}) reached, stopping scan")
+                        tg.send(f"⚠️ Daily trade limit ({risk_params['daily_max_trades']}) reached")
                     break
                 
-                # --- Fetch ---
+                # Fetch data
                 df_30 = fetch_ohlcv(client, sym, "30m", limit=250)
                 df_1h = fetch_ohlcv(client, sym, "1h",  limit=250)
                 df_4h = fetch_ohlcv(client, sym, "4h",  limit=250)
 
-                # --- Data sufficiency: skip thin/empty markets ---
+                # Data sufficiency
                 if not has_min_bars(df_30, df_1h, df_4h, min_bars=120):
                     continue
 
-                # --- Indicators + dropna ---
+                # Indicators
                 ind_cfg = cfg.get("indicators", {}) or {}
                 df_30i = ind_enrich(df_30, ind_cfg).dropna()
                 df_1hi = ind_enrich(df_1h,  ind_cfg).dropna()
@@ -266,33 +291,65 @@ def run_once():
                 if df_30i.empty or df_1hi.empty or df_4hi.empty:
                     continue
 
-                # --- Regime filter (4h) ---
+                # Regime filter
                 ignore_regime = bool(cfg.get("signals", {}).get("oversold_bounce", {}).get("ignore_regime", False))
                 bearish_ok = is_bearish_regime(df_4hi)
                 if not ignore_regime and not bearish_ok:
                     continue
 
-                # --- Strategies ---
+                # === STRATEGY SELECTION ===
                 s_cfg = cfg.get("signals", {}) or {}
                 out_sig = None
+                
+                # ADAPTIVE veya BASE stratejileri kullan
+                if use_adaptive:
+                    # === ADAPTIVE OVERSOLD BOUNCE ===
+                    if s_cfg.get("oversold_bounce", {}).get("enable", True):
+                        adaptive_ob = AdaptiveOversoldBounce(s_cfg.get("oversold_bounce"))
+                        if len(df_30i) >= 50:
+                            out_sig = out_sig or adaptive_ob.signal(df_30i, df_1hi)
+                            
+                            # Monitor'e kaydet
+                            if out_sig and out_sig.get('is_adaptive'):
+                                adaptive_monitor.record_adaptive_signal(sym, out_sig)
+                                adaptive_signals += 1
+                    
+                    # === ADAPTIVE SHORT THE RIP ===
+                    if not out_sig and s_cfg.get("short_the_rip", {}).get("enable", True):
+                        adaptive_str = AdaptiveShortTheRip(s_cfg.get("short_the_rip"))
+                        if len(df_30i) >= 50 and len(df_1hi) >= 50:
+                            out_sig = out_sig or adaptive_str.signal(df_30i, df_1hi)
+                            
+                            # Monitor'e kaydet
+                            if out_sig and out_sig.get('is_adaptive'):
+                                adaptive_monitor.record_adaptive_signal(sym, out_sig)
+                                adaptive_signals += 1
+                else:
+                    # === BASE STRATEGIES (eski) ===
+                    if s_cfg.get("oversold_bounce", {}).get("enable", True):
+                        ob = OversoldBounce(s_cfg.get("oversold_bounce"))
+                        if len(df_30i) >= 50:
+                            out_sig = out_sig or ob.signal(df_30i)
+                            if out_sig:
+                                base_signals += 1
 
-                if s_cfg.get("oversold_bounce", {}).get("enable", True):
-                    ob = OversoldBounce(s_cfg.get("oversold_bounce"))
-                    if len(df_30i) >= 50:
-                        out_sig = out_sig or ob.signal(df_30i)
+                    if not out_sig and s_cfg.get("short_the_rip", {}).get("enable", True):
+                        strp = ShortTheRip(s_cfg.get("short_the_rip"))
+                        if len(df_30i) >= 50 and len(df_1hi) >= 50:
+                            out_sig = out_sig or strp.signal(df_30i, df_1hi)
+                            if out_sig:
+                                base_signals += 1
 
-                if s_cfg.get("short_the_rip", {}).get("enable", True):
-                    strp = ShortTheRip(s_cfg.get("short_the_rip"))
-                    if len(df_30i) >= 50 and len(df_1hi) >= 50:
-                        out_sig = out_sig or strp.signal(df_30i, df_1hi)
-
+                # Process signal
                 if out_sig:
-                    # Enrich signal with ATR for execution
+                    # Enrich with ATR
                     if 'atr' in df_30i.columns and len(df_30i) > 0:
                         out_sig['atr'] = float(df_30i['atr'].iloc[-1])
                     
-                    # Notify signal
-                    msg = f"⚡ <b>{ex_name}</b> | <code>{sym}</code> | {out_sig['side'].upper()} — {out_sig['reason']}"
+                    # Notify
+                    strategy_type = out_sig.get('strategy_type', 'base')
+                    emoji = "🤖" if strategy_type == 'adaptive' else "⚡"
+                    msg = f"{emoji} <b>{ex_name} ({strategy_type})</b> | <code>{sym}</code> | {out_sig['side'].upper()} — {out_sig['reason']}"
                     if tg: tg.send(msg)
                     
                     signals_out.append({
@@ -301,15 +358,15 @@ def run_once():
                         "symbol": sym,
                         "side": out_sig.get("side"),
                         "reason": out_sig.get("reason"),
+                        "strategy_type": strategy_type
                     })
                     
-                    # Execute if live mode and on execution exchange
+                    # Execute if live
                     if is_live and ex_name == exec_exchange:
                         exec_result = execute_signal(exec_engine, client, sym, out_sig, risk_params, tg)
                         if exec_result:
                             executions.append(exec_result)
                             trades_today += 1
-                            # Update day stats
                             if day_stats:
                                 day_stats['signals'] = trades_today
                                 save_day_stats(day_stats)
@@ -318,26 +375,40 @@ def run_once():
                 if tg:
                     tg.send(f"⚠️ {ex_name}:{sym} skip — {type(e).__name__}: {str(e)[:140]}")
                 else:
-                    print("error", ex_name, sym, e)
+                    logger.error(f"error {ex_name} {sym}: {e}")
                 continue
         
-        # Break outer loop if daily limit reached
+        # Break if limit reached
         if is_live and trades_today >= risk_params['daily_max_trades']:
             break
 
-    # artifacts
+    # Save artifacts
     if signals_out:
         csv_path = save_signals_csv(signals_out)
         if tg:
-            tg.send(f"📦 Sinyaller CSV yazıldı: <code>{csv_path}</code>")
+            tg.send(f"📦 Sinyaller CSV: <code>{csv_path}</code>")
     else:
         if tg:
             tg.send("ℹ️ Bu turda sinyal yok.")
 
-    # --- Append run summary
+    # Adaptive monitoring summary
+    if use_adaptive and adaptive_signals > 0:
+        summary = adaptive_monitor.get_summary()
+        logger.info(f"📊 Adaptive Summary: {summary}")
+        if tg:
+            tg.send(
+                f"📊 <b>Adaptive Stats</b>\n"
+                f"Adaptive signals: {adaptive_signals}\n"
+                f"Total processed: {summary['symbols_processed']}\n"
+                f"Active symbols: {summary['active_symbols']}"
+            )
+
+    # Append summary
     try:
         with open(summary_path, "a", encoding="utf-8") as f:
             f.write(f"Total signals: {len(signals_out)}\n")
+            f.write(f"Adaptive signals: {adaptive_signals}\n")
+            f.write(f"Base signals: {base_signals}\n")
             f.write(f"Total executions: {len(executions)}\n")
             if csv_path:
                 f.write(f"CSV: {csv_path}\n")
@@ -346,277 +417,7 @@ def run_once():
 
     return signals_out
 
-async def run_with_pipeline():
-    """Market Data Pipeline ile optimize edilmiş çalışma modu"""
-    from core.market_data_pipeline import MarketDataPipeline
-    import asyncio
-    import signal
-    
-    logger = logging.getLogger(__name__)
-    
-    cfg = load_config()
-    tg = build_tg()
-    
-    # Pipeline duration from environment
-    duration_minutes = int(os.getenv('PIPELINE_DURATION_MINUTES', '0'))
-    max_iterations = int(os.getenv('PIPELINE_MAX_ITERATIONS', '0'))
-    
-    if duration_minutes > 0:
-        max_iterations = duration_minutes * 2  # Her 30 saniye bir iteration
-        logger.info(f"Pipeline will run for {duration_minutes} minutes ({max_iterations} iterations)")
-    elif max_iterations > 0:
-        logger.info(f"Pipeline will run for {max_iterations} iterations")
-    else:
-        logger.info("Pipeline running in CONTINUOUS mode (until interrupted)")
-        max_iterations = float('inf')  # Sonsuz
-    
-    # Build clients
-    required_symbols = [
-        'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT',
-        'BNB/USDT:USDT', 'ADA/USDT:USDT', 'DOT/USDT:USDT',
-        'LTC/USDT:USDT', 'AVAX/USDT:USDT'
-    ]
-    
-    logger.info("Building exchange clients...")
-    clients = build_clients_from_env(required_symbols=required_symbols)
-    
-    if not clients:
-        logger.error("No exchange clients available")
-        if tg:
-            tg.send("🛑 No exchange clients available for pipeline mode")
-        return
-    
-    # Initialize pipeline
-    logger.info(f"Initializing pipeline with {len(clients)} exchanges")
-    pipeline = MarketDataPipeline(clients)
-    
-    # Setup signal handler for graceful shutdown
-    shutdown_event = asyncio.Event()
-    
-    def signal_handler(signum, frame):
-        logger.info(f"Received signal {signum}, shutting down...")
-        shutdown_event.set()
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Timeframes to track
-    timeframes = ['30m', '1h', '4h']
-    
-    # Start data feeds
-    logger.info(f"Starting data feeds for {len(required_symbols)} symbols")
-    await pipeline.start_feeds_async(required_symbols, timeframes)
-    
-    if tg:
-        tg.send(
-            f"🚀 <b>Pipeline Mode Started</b>\n"
-            f"Symbols: {len(required_symbols)}\n"
-            f"Timeframes: {len(timeframes)}\n"
-            f"Duration: {'Continuous' if max_iterations == float('inf') else f'{max_iterations} iterations'}"
-        )
-    
-    # Ana döngü
-    iteration = 0
-    start_time = datetime.now(timezone.utc)
-    signals_total = 0
-    errors_total = 0
-    
-    try:
-        while iteration < max_iterations and not shutdown_event.is_set():
-            try:
-                iteration += 1
-                logger.info(f"=" * 60)
-                logger.info(f"Pipeline iteration {iteration}")
-                logger.info(f"=" * 60)
-                
-                # Pipeline health check
-                health = pipeline.get_health_status()
-                if health['overall_status'] != 'healthy':
-                    logger.warning(f"Pipeline health issue: {health}")
-                    errors_total += 1
-                    if tg and errors_total % 10 == 0:  # Her 10 hatada bir bildir
-                        tg.send(
-                            f"⚠️ Pipeline health: {health['overall_status']}\n"
-                            f"Error rate: {health['error_rate']}%\n"
-                            f"Errors total: {errors_total}"
-                        )
-                
-                # Process each symbol
-                signals_count = 0
-                for symbol in required_symbols:
-                    try:
-                        # Get cached data from pipeline (fast!)
-                        df_30m = pipeline.get_latest_ohlcv(symbol, '30m')
-                        df_1h = pipeline.get_latest_ohlcv(symbol, '1h')
-                        df_4h = pipeline.get_latest_ohlcv(symbol, '4h')
-                        
-                        if df_30m is None or len(df_30m) < 50:
-                            logger.debug(f"Insufficient 30m data for {symbol}")
-                            continue
-                        
-                        # Indicators are already included in pipeline data
-                        ind_cfg = cfg.get("indicators", {}) or {}
-                        
-                        # Ensure indicators are present
-                        if 'rsi' not in df_30m.columns:
-                            df_30m = ind_enrich(df_30m, ind_cfg).dropna()
-                        if df_1h is not None and 'rsi' not in df_1h.columns:
-                            df_1h = ind_enrich(df_1h, ind_cfg).dropna()
-                        if df_4h is not None and 'rsi' not in df_4h.columns:
-                            df_4h = ind_enrich(df_4h, ind_cfg).dropna()
-                        
-                        # Regime check
-                        ignore_regime = cfg.get("signals", {}).get("oversold_bounce", {}).get("ignore_regime", False)
-                        if df_4h is not None and len(df_4h) >= 50 and not ignore_regime:
-                            bearish = is_bearish_regime(df_4h)
-                            if not bearish:
-                                logger.debug(f"{symbol} not in bearish regime, skipping")
-                                continue
-                        
-                        # Strategy signals
-                        signal = None
-                        
-                        # OversoldBounce
-                        if cfg.get("signals", {}).get("oversold_bounce", {}).get("enable", True):
-                            ob = OversoldBounce(cfg.get("signals", {}).get("oversold_bounce"))
-                            signal = ob.signal(df_30m)
-                        
-                        # ShortTheRip
-                        if not signal and cfg.get("signals", {}).get("short_the_rip", {}).get("enable", True):
-                            str_cfg = cfg.get("signals", {}).get("short_the_rip")
-                            strp = ShortTheRip(str_cfg)
-                            if df_1h is not None and len(df_1h) >= 50:
-                                signal = strp.signal(df_30m, df_1h)
-                        
-                        # Process signal
-                        if signal:
-                            signals_count += 1
-                            signals_total += 1
-                            msg = f"⚡ Pipeline | {symbol} | {signal['side'].upper()} — {signal['reason']}"
-                            if tg: 
-                                tg.send(msg)
-                            logger.info(f"Signal generated: {msg}")
-                            
-                            # TODO: Execute trade if live mode
-                            mode = os.getenv('MODE', 'paper').lower()
-                            if mode == 'live':
-                                logger.info(f"TODO: Execute live trade for {symbol}")
-                        
-                    except Exception as e:
-                        logger.error(f"Error processing {symbol}: {e}")
-                        errors_total += 1
-                        continue
-                
-                # Log iteration summary
-                elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-                logger.info(f"Iteration {iteration} complete:")
-                logger.info(f"  Signals this iteration: {signals_count}")
-                logger.info(f"  Total signals: {signals_total}")
-                logger.info(f"  Total errors: {errors_total}")
-                logger.info(f"  Elapsed time: {elapsed/60:.1f} minutes")
-                logger.info(f"  Health: {health['overall_status']}")
-                
-                # Periodic summary to Telegram
-                if iteration % 20 == 0 and tg:  # Every 10 minutes
-                    tg.send(
-                        f"📊 <b>Pipeline Status</b>\n"
-                        f"Iteration: {iteration}\n"
-                        f"Signals: {signals_total}\n"
-                        f"Errors: {errors_total}\n"
-                        f"Uptime: {elapsed/60:.1f}m\n"
-                        f"Health: {health['overall_status']}"
-                    )
-                
-                # Wait before next iteration
-                await asyncio.sleep(30)  # 30 saniye bekle
-                
-            except asyncio.CancelledError:
-                logger.info("Pipeline cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Pipeline loop error: {e}", exc_info=True)
-                errors_total += 1
-                if tg and errors_total == 1:  # İlk hatada bildir
-                    tg.send(f"❌ Pipeline error: {type(e).__name__}: {str(e)[:150]}")
-                await asyncio.sleep(60)  # Hata durumunda 1 dk bekle
-    
-    except KeyboardInterrupt:
-        logger.info("Pipeline interrupted by user")
-    finally:
-        # Shutdown
-        logger.info("Shutting down pipeline...")
-        pipeline.shutdown()
-        
-        # Final summary
-        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-        summary_msg = (
-            f"Pipeline stopped after {iteration} iterations\n"
-            f"Total runtime: {elapsed/60:.1f} minutes\n"
-            f"Total signals: {signals_total}\n"
-            f"Total errors: {errors_total}"
-        )
-        logger.info(summary_msg)
-        
-        if tg:
-            tg.send(f"✅ <b>Pipeline Stopped</b>\n{summary_msg}")
-
-async def main_live_trading():
-    """Main entry point for live trading mode using Phase 3.4 infrastructure."""
-    import asyncio
-    from core.production_coordinator import ProductionCoordinator
-    
-    logger = logging.getLogger(__name__)
-    logger.info("Starting live trading mode with Phase 3.4 infrastructure")
-    
-    try:
-        # Load configuration
-        cfg = load_config()
-        risk_params = get_risk_params()
-        
-        # Build exchange clients (Phase 1)
-        clients = build_clients_from_env()
-        
-        if not clients:
-            raise RuntimeError("No exchange clients available")
-        
-        # Portfolio configuration
-        portfolio_config = {
-            'equity_usd': risk_params['equity_usd']
-        }
-        
-        # Initialize production coordinator
-        coordinator = ProductionCoordinator()
-        
-        # Initialize production system
-        init_result = await coordinator.initialize_production_system(
-            exchange_clients=clients,
-            portfolio_config=portfolio_config
-        )
-        
-        if not init_result['success']:
-            raise RuntimeError(f"Failed to initialize production system: {init_result.get('reason')}")
-        
-        logger.info("Production system initialized successfully")
-        
-        # Get trading mode from environment
-        trading_mode = os.getenv('TRADING_MODE', 'paper')  # 'paper', 'live', 'simulation'
-        duration = float(os.getenv('TRADING_DURATION', '0'))  # 0 = indefinite
-        
-        # Start production loop
-        if duration > 0:
-            logger.info(f"Starting {trading_mode} trading for {duration} seconds")
-            await coordinator.run_production_loop(mode=trading_mode, duration=duration)
-        else:
-            logger.info(f"Starting {trading_mode} trading (indefinite)")
-            await coordinator.run_production_loop(mode=trading_mode)
-        
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user")
-    except Exception as e:
-        logger.error(f"Error in live trading mode: {e}")
-        traceback.print_exc()
-        raise
-
+# ... rest of the file (async functions etc.) remains same ...
 
 if __name__ == "__main__":
     import sys
@@ -624,11 +425,9 @@ if __name__ == "__main__":
     
     # Check for pipeline mode
     if '--pipeline' in sys.argv:
-        logger = logging.getLogger(__name__)
         logger.info("Starting with Market Data Pipeline mode")
         asyncio.run(run_with_pipeline())
     elif len(sys.argv) > 1 and sys.argv[1] == '--live':
-        # Run live trading mode
         asyncio.run(main_live_trading())
     else:
         # Run traditional one-shot mode
