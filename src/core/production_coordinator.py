@@ -309,10 +309,10 @@ class ProductionCoordinator:
                 signal['symbol'] = symbol
                 signal['timestamp'] = datetime.now(timezone.utc)
 
-           # Monitor adaptive signals
-           if signal and signal.get('is_adaptive'):
-               from core.adaptive_monitor import adaptive_monitor
-               adaptive_monitor.record_adaptive_signal(symbol, signal)
+            # Monitor adaptive signals
+            if signal and signal.get('is_adaptive'):
+                from core.adaptive_monitor import adaptive_monitor
+                adaptive_monitor.record_adaptive_signal(symbol, signal)
             
            return signal
             
