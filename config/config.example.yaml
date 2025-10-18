@@ -91,19 +91,31 @@ indicators:
 signals:
   oversold_bounce:
     enable: true
-    ignore_regime: true  # Production'da false
-    adaptive_rsi_base: 45  # Dinamik RSI için baz değer
-    adaptive_rsi_range: 15  # ±15 dinamik ayarlama
+    ignore_regime: false
+    
+    # Base strategy için (backwards compat)
+    rsi_max: 45  # ← Base strategy bunu bekler
+    
+    # Adaptive parameters
+    adaptive_rsi_base: 45    # Adaptive için merkez değer
+    adaptive_rsi_range: 15   # ±15 ayarlama aralığı
+    
     tp_pct: 0.010
     sl_atr_mult: 1.0
 
   short_the_rip:
     enable: true
-    ignore_regime: true
-    adaptive_rsi_base: 55  # Dinamik RSI için baz değer
-    adaptive_rsi_range: 15  # ±15 dinamik ayarlama
+    ignore_regime: false
+    
+    # Base strategy için
+    rsi_min: 55  # ← Base strategy bunu bekler
+    
+    # Adaptive parameters  
+    adaptive_rsi_base: 55
+    adaptive_rsi_range: 15
+    
     tp_pct: 0.008
-    sl_atr_mult: 1.0
+    sl_atr_mult: 1.2
 
 quarantine:
   enable: true
