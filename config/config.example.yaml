@@ -93,12 +93,12 @@ signals:
     enable: true
     ignore_regime: false
     
-    # Base strategy için (backwards compat)
-    rsi_max: 45  # ← Base strategy bunu bekler
+    # Base strategy için
+    rsi_max: 45
     
     # Adaptive parameters
-    adaptive_rsi_base: 45    # Adaptive için merkez değer
-    adaptive_rsi_range: 15   # ±15 ayarlama aralığı
+    adaptive_rsi_base: 45
+    adaptive_rsi_range: 15
     
     tp_pct: 0.010
     sl_atr_mult: 1.0
@@ -108,7 +108,7 @@ signals:
     ignore_regime: false
     
     # Base strategy için
-    rsi_min: 55  # ← Base strategy bunu bekler
+    rsi_min: 55
     
     # Adaptive parameters  
     adaptive_rsi_base: 55
