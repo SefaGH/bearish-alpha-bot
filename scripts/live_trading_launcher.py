@@ -853,7 +853,7 @@ class LiveTradingLauncher:
             logger.error(traceback.format_exc())
             return False
     
-    async def initialize_production_system(self) -> bool:
+    async def _initialize_production_system(self) -> bool:
         """Initialize Phase 3 production coordinator with all components."""
         logger.info("\n[6/8] Initializing Production Trading System...")
         
