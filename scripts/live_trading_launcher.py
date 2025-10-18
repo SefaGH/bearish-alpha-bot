@@ -430,34 +430,7 @@ class AutoRestartManager:
 class LiveTradingLauncher:
     """
     Comprehensive live trading launcher integrating all system components.
-    
-    [... mevcut class docstring ...]
     """
-    
-    # 8 diversified trading pairs as specified
-    TRADING_PAIRS = [
-        'BTC/USDT:USDT',
-        'ETH/USDT:USDT',
-        'SOL/USDT:USDT',
-        'BNB/USDT:USDT',
-        'ADA/USDT:USDT',
-        'DOT/USDT:USDT',
-        'LTC/USDT:USDT',
-        'AVAX/USDT:USDT'
-    ]
-    
-    # Live trading configuration with real USDT
-    CAPITAL_USDT = 100.0  # 100 USDT (real trading capital)
-    
-    # Risk parameters as specified
-    RISK_PARAMS = {
-        'max_position_size': 0.15,    # 15% max position size
-        'stop_loss_pct': 0.05,        # 5% stop loss
-        'take_profit_pct': 0.10,      # 10% take profit
-        'max_drawdown': 0.15,         # 15% max drawdown
-        'max_portfolio_risk': 0.02,   # 2% risk per trade
-        'max_correlation': 0.70,      # 70% max correlation
-    }
     
     def __init__(self, mode: str = 'live', dry_run: bool = False, 
                  infinite: bool = False, auto_restart: bool = False,
@@ -468,6 +441,9 @@ class LiveTradingLauncher:
         
         [... mevcut init docstring ...]
         """
+        # Config ve trading pairs için instance variables
+        self.config = None
+        self.trading_pairs = []  # ← Config'den gelecek
         self.mode = mode
         self.dry_run = dry_run
         self.infinite = infinite
@@ -503,6 +479,7 @@ class LiveTradingLauncher:
         logger.info(f"Capital: {self.CAPITAL_USDT} USDT")
         logger.info(f"Exchange: BingX")
         logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
+        logger.info(f"Symbols: {', '.join(self.trading_pairs[:3])}...")
         logger.info(f"Dry Run: {dry_run}")
         
         # Debug mode indicator
@@ -530,6 +507,49 @@ class LiveTradingLauncher:
                 logger.info(f"Restart Delay: {restart_delay}s")
         
         logger.info("="*70)
+
+    def _load_config(self) -> Dict[str, Any]:
+        """Load and cache configuration."""
+        if self.config is None:
+            config_path = os.getenv('CONFIG_PATH', 'config/config.example.yaml')
+            try:
+                with open(config_path, 'r') as f:
+                    self.config = yaml.safe_load(f)
+                logger.info(f"✓ Config loaded from {config_path}")
+            except Exception as e:
+                logger.error(f"❌ Failed to load config: {e}")
+                self.config = {}
+        return self.config
+    
+    def _get_trading_pairs(self) -> List[str]:
+        """Get trading pairs from config, not hardcoded!"""
+        if self.trading_pairs:
+            return self.trading_pairs
+            
+        config = self._load_config()
+        universe_cfg = config.get('universe', {})
+        
+        # 1. Önce fixed_symbols bak
+        fixed_symbols = universe_cfg.get('fixed_symbols', [])
+        
+        # 2. Auto-select KAPALI mı kontrol et
+        auto_select = universe_cfg.get('auto_select', False)
+        
+        if fixed_symbols and not auto_select:
+            self.trading_pairs = fixed_symbols
+            logger.info(f"✓ Using {len(fixed_symbols)} symbols from config (fixed mode)")
+            logger.info(f"✓ Symbols: {', '.join(fixed_symbols)}")
+        else:
+            # Fallback: Default 3 symbols
+            logger.warning("⚠️ No fixed symbols in config or auto_select=true")
+            self.trading_pairs = [
+                'BTC/USDT:USDT',
+                'ETH/USDT:USDT', 
+                'SOL/USDT:USDT'
+            ]
+            logger.info(f"✓ Using default {len(self.trading_pairs)} symbols")
+        
+        return self.trading_pairs
     
     def _load_environment(self) -> bool:
         """
@@ -584,13 +604,11 @@ class LiveTradingLauncher:
         return True
     
     def _initialize_exchange_connection(self) -> bool:
-        """
-        OPTIMIZED BingX initialization - verify only 8 trading pairs, not 2528 markets.
-        
-        Returns:
-            True if connection successful
-        """
+        """OPTIMIZED BingX initialization."""
         logger.info("\n[2/8] Initializing BingX Exchange Connection...")
+        
+        # Get trading pairs from config
+        trading_pairs = self._get_trading_pairs()
         
         try:
             # Create BingX client with credentials
@@ -600,10 +618,10 @@ class LiveTradingLauncher:
             }
             
             bingx_client = CcxtClient('bingx', bingx_creds)
-            
-            # WebSocket optimization: Set required symbols only
-            bingx_client.set_required_symbols(self.TRADING_PAIRS)
-            logger.info(f"✓ BingX client optimized for {len(self.TRADING_PAIRS)} symbols only")
+
+            # WebSocket optimization with CONFIG symbols
+            bingx_client.set_required_symbols(trading_pairs)
+            logger.info(f"✓ BingX client optimized for {len(trading_pairs)} symbols only")
             
             self.exchange_clients['bingx'] = bingx_client
             
@@ -619,17 +637,17 @@ class LiveTradingLauncher:
             except Exception as e:
                 logger.warning(f"⚠️  BingX authentication test failed: {e}")
             
-            # Verify ONLY our 8 trading pairs (not all 2528 markets!)
-            logger.info(f"Verifying {len(self.TRADING_PAIRS)} trading pairs...")
+            # Verify ONLY configured pairs
+            logger.info(f"Verifying {len(trading_pairs)} trading pairs...")
             verified_pairs = []
-            
-            for pair in self.TRADING_PAIRS:
-                try:
-                    ticker = bingx_client.fetch_ticker(pair)
-                    verified_pairs.append(pair)
-                    logger.info(f"  ✓ {pair}: ${ticker['last']:.2f}")
-                except Exception as e:
-                    logger.warning(f"  ❌ {pair}: {e}")
+        
+            for pair in trading_pairs:  # ← CONFIG'DEN GELEN LİSTE
+            try:
+                ticker = bingx_client.fetch_ticker(pair)
+                verified_pairs.append(pair)
+                logger.info(f"  ✓ {pair}: ${ticker['last']:.2f}")
+            except Exception as e:
+                logger.warning(f"  ❌ {pair}: {e}")
             
             if len(verified_pairs) >= 6:  # Allow for some pair failures
                 logger.info(f"✓ {len(verified_pairs)}/{len(self.TRADING_PAIRS)} trading pairs verified")
@@ -816,81 +834,52 @@ class LiveTradingLauncher:
             return False
     
     async def _initialize_production_system(self) -> bool:
-        """
-        Initialize Phase 3 production coordinator with all components.
-        
-        Returns:
-            True if initialization successful
-        """
+        """Initialize Phase 3 production coordinator with all components."""
         logger.info("\n[6/8] Initializing Production Trading System...")
         
         try:
-            # Load configuration for WebSocket optimization
-            import yaml
-            config_path = os.getenv('CONFIG_PATH', 'config/config.example.yaml')
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f)
+            # Config ZATEN yüklü (self.config)
+            if not self.config:
+                self._load_config()
             
-            # Setup WebSocket optimizer with config
-            self.ws_optimizer.setup_from_config(config)
+            # Setup WebSocket optimizer with CONFIG
+            self.ws_optimizer.setup_from_config(self.config)
             
-            # Initialize WebSocket connections
+            # WebSocket'i SADECE BİR KERE başlat
             ws_initialized = await self.ws_optimizer.initialize_websockets(self.exchange_clients)
+            
             if ws_initialized:
-                logger.info("✓ WebSocket connections optimized and initialized")
-            else:
-                logger.warning("⚠️  WebSocket initialization failed, continuing without real-time data")
+            logger.info("✓ WebSocket connections initialized")
             
-            # Portfolio configuration with USDT capital
-            portfolio_config = {
-                'equity_usd': self.CAPITAL_USDT,  # 100 USDT
-                'max_portfolio_risk': self.RISK_PARAMS['max_portfolio_risk'],
-                'max_position_size': self.RISK_PARAMS['max_position_size'],
-                'max_drawdown': self.RISK_PARAMS['max_drawdown']
-            }
-            
-            # Initialize production coordinator
+             # ProductionCoordinator HAZIR ws_manager'ı geç
             self.coordinator = ProductionCoordinator()
-            
-            # Pass WebSocket manager to coordinator if initialized
-            if ws_initialized and self.ws_optimizer.ws_manager:
-                self.coordinator.ws_manager = self.ws_optimizer.ws_manager
-                logger.info("✓ WebSocket manager integrated with production coordinator")
-            
-            # Initialize complete production system
+            self.coordinator.ws_manager = self.ws_optimizer.ws_manager
+
+            # TEKRAR WebSocket başlatma! (coordinator içinde)
+            self.coordinator.skip_ws_init = True  # Flag ekle
+        else:
+            logger.warning("⚠️ WebSocket failed, using REST API mode")
+            self.coordinator = ProductionCoordinator()
+
+            # Production coordinator'a config VE symbols geç
             init_result = await self.coordinator.initialize_production_system(
                 exchange_clients=self.exchange_clients,
                 portfolio_config=portfolio_config,
-                mode=self.mode,  # ✅ Mode'u ekle!
+                mode=self.mode,
+                config=self.config,  # ← Config geç
+                trading_symbols=self.trading_pairs  # ← Symbols geç
             )
-            
-            if not init_result['success']:
-                logger.error(f"❌ Production system initialization failed: {init_result.get('reason')}")
-                return False
-            
-            logger.info("✓ Production system initialized successfully")
-            logger.info(f"  Components: {init_result['components']}")
-            
-            # Get WebSocket status
-            if self.ws_optimizer:
-                ws_status = await self.ws_optimizer.get_stream_status()
-                logger.info(f"✓ WebSocket Status: {ws_status}")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize production system: {e}")
-            return False
     
     async def _register_strategies(self) -> bool:
-        """
-        Register trading strategies with portfolio manager.
-        
-        [... mevcut kod ...]
-        """
-        logger.info("\n[7/8] Registering Trading Strategies...")
+        """Initialize adaptive trading strategies."""
+        logger.info("\n[5/8] Initializing Trading Strategies...")
         
         try:
+            # Config ZATEN yüklü olmalı
+            if not self.config:
+                self._load_config()
+            
+            logger.info(f"✓ Using config with {len(self.trading_pairs)} symbols")
             # Equal allocation across strategies
             allocation_per_strategy = 1.0 / len(self.strategies)
             
