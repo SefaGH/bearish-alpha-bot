@@ -145,7 +145,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
             }
     
     def signal(self, df_30m: pd.DataFrame, 
-               df_1h: pd.DataFrame = None,  # EKLENDI: df_1h parametresi opsiyonel
+               df_1h: pd.DataFrame = None,
                regime_data: Optional[Dict] = None) -> Optional[Dict]:
         """
         Generate adaptive trading signal based on market regime.
@@ -217,26 +217,19 @@ class AdaptiveOversoldBounce(OversoldBounce):
             entry_price = float(last['close'])  # Son kapanış fiyatı
             atr_value = float(last['atr']) if 'atr' in last.index else entry_price * 0.02
             
-            # Build adaptive signal
+            # Build adaptive signal - TEK VE DÜZGÜN DICTIONARY
             signal = {
                 "side": "buy",
-                "entry": entry_price,  # ⬅️ KRİTİK: ARTIK VAR!
+                "entry": entry_price,
                 "reason": f"Adaptive RSI oversold {rsi_val:.1f} (threshold: {adaptive_rsi_threshold:.1f}, regime: {market_regime['trend']})",
                 "tp_pct": float(self.cfg.get("tp_pct", 0.015)),
-                "sl_pct": (float(self.cfg["sl_pct"]) if "sl_pct" in self.cfg else None),
+                "sl_pct": float(self.cfg["sl_pct"]) if "sl_pct" in self.cfg else None,
                 "sl_atr_mult": float(self.cfg.get("sl_atr_mult", 1.0)),
                 "atr": atr_value,
-                "is_adaptive": True,  # Flag ekle
+                "is_adaptive": True,
                 "adaptive_threshold": adaptive_rsi_threshold,
                 "position_multiplier": position_mult,
                 "market_regime": market_regime,
-                "ema_params": ema_params
-            }
-                
-                # Adaptive parameters
-                "position_multiplier": position_mult,
-                "market_regime": market_regime,
-                "adaptive_rsi_threshold": adaptive_rsi_threshold,
                 "ema_params": ema_params
             }
             
@@ -244,8 +237,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
             logger.debug(f"📈 [STRATEGY-AdaptiveOB] Signal strength: RSI {rsi_val:.1f} <= {adaptive_rsi_threshold:.1f}")
             logger.info(f"Adaptive OB signal: RSI {rsi_val:.1f} <= {adaptive_rsi_threshold:.1f}, "
                        f"regime={market_regime['trend']}, pos_mult={position_mult:.2f}")
-
-        if signal:
+            
+            # Strategy type ekle ve signal'i döndür
             signal['strategy_type'] = 'adaptive'
             return signal
             
