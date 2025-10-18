@@ -15,14 +15,7 @@ class RiskManager:
     """Comprehensive risk management engine for multi-strategy portfolio."""
     
     def __init__(self, portfolio_config: Dict, websocket_manager=None, performance_monitor=None):
-        """
-        Initialize risk manager.
-        
-        Args:
-            portfolio_config: Portfolio configuration including equity, limits, etc.
-            websocket_manager: WebSocket manager for real-time data (from Phase 3.1)
-            performance_monitor: Performance monitor for strategy metrics (from Phase 2)
-        """
+        """Initialize risk manager."""
         self.portfolio_config = portfolio_config
         self.ws_manager = websocket_manager
         self.performance_monitor = performance_monitor
@@ -38,12 +31,14 @@ class RiskManager:
         # Active positions tracking
         self.active_positions = {}
         
-        # Portfolio state
-        self.portfolio_value = portfolio_config.get('equity_usd', 10000)
+        # Portfolio state - DÜZELTME
+        self.portfolio_value = float(portfolio_config.get('equity_usd', 100))  # 100 default!
         self.current_drawdown = 0.0
         self.peak_portfolio_value = self.portfolio_value
         
+        # DEBUG LOG EKLE
         logger.info(f"RiskManager initialized with portfolio value: ${self.portfolio_value:.2f}")
+        logger.info(f"Config received: {portfolio_config}")  # Debug için
         logger.info(f"Risk limits: {self.risk_limits}")
     
     def set_risk_limits(self, max_portfolio_risk: float = 0.02, max_position_size: float = 0.10,
