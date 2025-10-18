@@ -856,12 +856,27 @@ class LiveTradingLauncher:
     async def _initialize_production_system(self) -> bool:
         """Initialize Phase 3 production coordinator with all components."""
         logger.info("\n[6/8] Initializing Production Trading System...")
+
+        # Debug: Check if module and method exist
+        try:
+            from core.production_coordinator import ProductionCoordinator
+            logger.info(f"✓ ProductionCoordinator imported successfully")
+            logger.info(f"✓ Available methods: {[m for m in dir(ProductionCoordinator) if not m.startswith('_')][:10]}")
+            
+            # Check if the method exists
+            if hasattr(ProductionCoordinator, 'initialize_production_system'):
+                logger.info("✓ initialize_production_system method exists")
+            else:
+                logger.error("❌ initialize_production_system method NOT found!")
+                logger.error(f"Available public methods: {[m for m in dir(ProductionCoordinator) if not m.startswith('_')]}")
+        except ImportError as e:
+            logger.error(f"❌ Failed to import ProductionCoordinator: {e}")
         
         try:
             # Config ZATEN yüklü (self.config)
             if not self.config:
                 self._load_config()
-
+            
             # Import ProductionCoordinator explicitly to ensure correct import
             from core.production_coordinator import ProductionCoordinator
             
@@ -878,14 +893,13 @@ class LiveTradingLauncher:
                 logger.info("✓ WebSocket connections initialized")
                 
                 # ProductionCoordinator'a HAZIR ws_manager'ı geç
-                self.coordinator = ProductionCoordinator()
                 self.coordinator.ws_manager = self.ws_optimizer.ws_manager
                 
-                # TEKRAR WebSocket başlatma! (coordinator içinde)
-                self.coordinator.skip_ws_init = True  # Flag ekle
+                # Set skip flag to avoid re-initializing WebSocket in coordinator
+                if hasattr(self.coordinator, '_setup_websocket_connections'):
+                    self.coordinator.skip_ws_init = True  # Add a flag to skip WS init
             else:
                 logger.warning("⚠️ WebSocket failed, using REST API mode")
-                self.coordinator = ProductionCoordinator()
                 # WebSocket başarısız, REST API modunda devam et
             
             # Portfolio configuration
@@ -896,18 +910,21 @@ class LiveTradingLauncher:
                 'max_drawdown': self.RISK_PARAMS['max_drawdown']
             }
             
-            # Production coordinator'a config VE symbols geç
+            # Call the initialize_production_system method (it DOES exist in ProductionCoordinator!)
             init_result = await self.coordinator.initialize_production_system(
                 exchange_clients=self.exchange_clients,
                 portfolio_config=portfolio_config,
-                mode=self.mode,
-                config=self.config,  # ← Config geç
-                trading_symbols=self.trading_pairs  # ← Symbols geç
+                mode=self.mode
             )
             
             if not init_result['success']:
                 logger.error(f"❌ Production system initialization failed: {init_result.get('reason')}")
                 return False
+            
+            # After initialization, manually set the active symbols if needed
+            if hasattr(self.coordinator, 'active_symbols'):
+                self.coordinator.active_symbols = self.trading_pairs
+                logger.info(f"✓ Coordinator configured with {len(self.trading_pairs)} symbols")
             
             logger.info("✓ Production system initialized successfully")
             logger.info(f"  Components: {init_result['components']}")
@@ -918,10 +935,16 @@ class LiveTradingLauncher:
                 logger.info(f"✓ WebSocket Status: {ws_status}")
             
             return True
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize production system: {e}")
-            return False
+        
+    except AttributeError as e:
+        logger.error(f"❌ AttributeError in production system init: {e}")
+        logger.error("Check that ProductionCoordinator has initialize_production_system method")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize production system: {e}")
+        return False
     
     async def _register_strategies(self) -> bool:
         """Initialize adaptive trading strategies."""
