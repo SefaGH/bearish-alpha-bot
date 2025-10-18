@@ -856,7 +856,7 @@ class LiveTradingLauncher:
     async def _initialize_production_system(self) -> bool:
         """Initialize Phase 3 production coordinator with all components."""
         logger.info("\n[6/8] Initializing Production Trading System...")
-
+    
         # Debug: Check if module and method exist
         try:
             from core.production_coordinator import ProductionCoordinator
@@ -928,13 +928,23 @@ class LiveTradingLauncher:
             
             logger.info("✓ Production system initialized successfully")
             logger.info(f"  Components: {init_result['components']}")
-            
-            # Get WebSocket status
-            if self.ws_optimizer:
-                ws_status = await self.ws_optimizer.get_stream_status()
-                logger.info(f"✓ WebSocket Status: {ws_status}")
-            
-            return True
+        
+        # Get WebSocket status
+        if self.ws_optimizer:
+            ws_status = await self.ws_optimizer.get_stream_status()
+            logger.info(f"✓ WebSocket Status: {ws_status}")
+        
+        return True
+        
+    except AttributeError as e:  # ← FIXED: Now properly indented with the try block
+        logger.error(f"❌ AttributeError in production system init: {e}")
+        logger.error("Check that ProductionCoordinator has initialize_production_system method")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+    except Exception as e:  # ← FIXED: Now properly indented with the try block
+        logger.error(f"❌ Failed to initialize production system: {e}")
+        return False
         
     except AttributeError as e:
         logger.error(f"❌ AttributeError in production system init: {e}")
