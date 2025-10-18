@@ -856,86 +856,67 @@ class LiveTradingLauncher:
     async def _initialize_production_system(self) -> bool:
         """Initialize Phase 3 production coordinator with all components."""
         logger.info("\n[6/8] Initializing Production Trading System...")
-    
+        
         try:
-            # Config ZATEN yüklü (self.config)
+            # Config'i yükle
             if not self.config:
                 self._load_config()
             
-            # Import ProductionCoordinator explicitly to ensure correct import
+            # ProductionCoordinator'ı SADECE BİR KEZ yarat!
             from core.production_coordinator import ProductionCoordinator
-            
-            # Create coordinator instance
             self.coordinator = ProductionCoordinator()
             
-            # Setup WebSocket optimizer with CONFIG
+            # WebSocket optimizer'ı ayarla ve başlat
             self.ws_optimizer.setup_from_config(self.config)
-            
-            # WebSocket'i SADECE BİR KERE başlat
             ws_initialized = await self.ws_optimizer.initialize_websockets(self.exchange_clients)
             
+            # Eğer WebSocket başarılıysa, coordinator'a ver
             if ws_initialized:
                 logger.info("✓ WebSocket connections initialized")
-                
-                # ProductionCoordinator'a HAZIR ws_manager'ı geç
-                self.coordinator.ws_manager = self.ws_optimizer.ws_manager
-                
-                # Set skip flag to avoid re-initializing WebSocket in coordinator
-                if hasattr(self.coordinator, '_setup_websocket_connections'):
-                    self.coordinator.skip_ws_init = True  # Add a flag to skip WS init
+                # Coordinator'ın websocket_manager attribute'una dışarıdan set et
+                self.coordinator.websocket_manager = self.ws_optimizer.ws_manager
             else:
                 logger.warning("⚠️ WebSocket failed, using REST API mode")
+                # WebSocket yoksa bile devam et, REST API kullanılacak
             
-            # Instead of calling non-existent initialize_production_system,
-            # we'll set up the coordinator's components directly
-            
-            # Set exchange clients
-            self.coordinator.exchange_clients = self.exchange_clients
-            
-            # Set portfolio configuration
+            # Portfolio config hazırla
             portfolio_config = {
-                'equity_usd': self.CAPITAL_USDT,  # 100 USDT
+                'equity_usd': self.CAPITAL_USDT,
                 'max_portfolio_risk': self.RISK_PARAMS['max_portfolio_risk'],
                 'max_position_size': self.RISK_PARAMS['max_position_size'],
                 'max_drawdown': self.RISK_PARAMS['max_drawdown']
             }
             
-            # Initialize coordinator's internal components if they have setters
-            if hasattr(self.coordinator, 'portfolio_config'):
-                self.coordinator.portfolio_config = portfolio_config
+            # PUBLIC initialize_production_system metodunu çağır (artık var!)
+            init_result = await self.coordinator.initialize_production_system(
+                exchange_clients=self.exchange_clients,
+                portfolio_config=portfolio_config,
+                mode=self.mode
+            )
             
-            # Set mode
-            if hasattr(self.coordinator, 'mode'):
-                self.coordinator.mode = self.mode
+            if not init_result['success']:
+                logger.error(f"❌ Failed: {init_result.get('reason')}")
+                return False
             
-            # After initialization, manually set the active symbols if needed
+            # Active symbols'ı ayarla
             if hasattr(self.coordinator, 'active_symbols'):
                 self.coordinator.active_symbols = self.trading_pairs
-                logger.info(f"✓ Coordinator configured with {len(self.trading_pairs)} symbols")
+                logger.info(f"✓ Configured with {len(self.trading_pairs)} symbols")
             
-            # Mark as initialized
-            if hasattr(self.coordinator, 'is_initialized'):
-                self.coordinator.is_initialized = True
+            logger.info("✓ Production system initialized")
+            logger.info(f"  Components: {init_result['components']}")
             
-            logger.info("✓ Production system initialized successfully")
-            logger.info(f"  Mode: {self.mode}")
-            logger.info(f"  Capital: {self.CAPITAL_USDT} USDT")
-            logger.info(f"  Symbols: {len(self.trading_pairs)}")
-            
-            # Get WebSocket status
+            # WebSocket durumunu göster
             if self.ws_optimizer:
                 ws_status = await self.ws_optimizer.get_stream_status()
                 logger.info(f"✓ WebSocket Status: {ws_status}")
             
             return True
             
-        except AttributeError as e:
-            logger.error(f"❌ AttributeError in production system init: {e}")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            return False
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize production system: {e}")
             return False
     
     async def _register_strategies(self) -> bool:
