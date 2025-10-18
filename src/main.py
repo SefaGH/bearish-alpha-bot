@@ -65,18 +65,46 @@ def has_min_bars(*dfs, min_bars: int = 120) -> bool:
     return all(df is not None and len(df) >= min_bars for df in dfs)
 
 def get_risk_params():
-    """Extract risk parameters from environment variables with safe defaults."""
+    """Extract risk parameters from config file first, then env vars."""
+    # Config'i yükle
+    cfg = load_config()
+    risk_cfg = cfg.get('risk', {})
+    
+    # Config'den al, yoksa ENV'den, o da yoksa default
     return {
-        'equity_usd': float(os.getenv('RISK_EQUITY_USD', '1000')),
-        'per_trade_risk_pct': float(os.getenv('RISK_PER_TRADE_RISK_PCT', '0.01')),
-        'risk_usd_cap': float(os.getenv('RISK_RISK_USD_CAP', '50')),
-        'max_notional_per_trade': float(os.getenv('RISK_MAX_NOTIONAL_PER_TRADE', '500')),
-        'min_stop_pct': float(os.getenv('RISK_MIN_STOP_PCT', '0.005')),
-        'daily_max_trades': int(os.getenv('RISK_DAILY_MAX_TRADES', '5')),
-        'min_amount_behavior': os.getenv('RISK_MIN_AMOUNT_BEHAVIOR', 'skip'),
-        'min_notional_behavior': os.getenv('RISK_MIN_NOTIONAL_BEHAVIOR', 'skip'),
+        'equity_usd': float(
+            risk_cfg.get('equity_usd') or 
+            os.getenv('RISK_EQUITY_USD', '100')  # Default 100
+        ),
+        'per_trade_risk_pct': float(
+            risk_cfg.get('per_trade_risk_pct') or 
+            os.getenv('RISK_PER_TRADE_RISK_PCT', '0.01')
+        ),
+        'risk_usd_cap': float(
+            risk_cfg.get('risk_usd_cap') or 
+            os.getenv('RISK_RISK_USD_CAP', '5')
+        ),
+        'max_notional_per_trade': float(
+            risk_cfg.get('max_notional_per_trade') or 
+            os.getenv('RISK_MAX_NOTIONAL_PER_TRADE', '20')
+        ),
+        'min_stop_pct': float(
+            risk_cfg.get('min_stop_pct') or 
+            os.getenv('RISK_MIN_STOP_PCT', '0.003')
+        ),
+        'daily_max_trades': int(
+            risk_cfg.get('daily_max_trades') or 
+            os.getenv('RISK_DAILY_MAX_TRADES', '5')
+        ),
+        'min_amount_behavior': (
+            risk_cfg.get('min_amount_behavior') or 
+            os.getenv('RISK_MIN_AMOUNT_BEHAVIOR', 'skip')
+        ),
+        'min_notional_behavior': (
+            risk_cfg.get('min_notional_behavior') or 
+            os.getenv('RISK_MIN_NOTIONAL_BEHAVIOR', 'skip')
+        ),
     }
-
 def execute_signal(engine: ExecEngine, client, symbol: str, signal: dict, risk_params: dict, tg: Telegram | None):
     """Execute a signal with proper sizing and risk management."""
     try:
