@@ -473,7 +473,7 @@ class LiveTradingEngine:
         
         # Track last scan time to avoid too frequent scans
         last_scan_time = 0
-        scan_interval = 30  # 30 seconds between market scans
+        scan_interval = 10  # 10 seconds between market scans
         
         try:
             while self.state == EngineState.RUNNING:
@@ -663,6 +663,19 @@ class LiveTradingEngine:
                             logger.info(f"✅ Signal processed successfully: {signal.get('symbol')}")
                         else:
                             logger.warning(f"⚠️ Signal processing failed: {result.get('reason')}")
+
+                        if signal:
+                            # Signal bulundu - queue'ya ekle!
+                            signal['symbol'] = symbol
+                            signal['exchange'] = exchange_name
+                            signal['timestamp'] = datetime.now(timezone.utc)
+                            
+                            # KRİTİK: Queue'ya ekle!
+                            await self.signal_queue.put(signal)
+                            self._signal_count += 1
+                            self._last_signal_time = datetime.now(timezone.utc)
+                            
+                            logger.info(f"✅ Signal queued for {symbol}: {signal.get('reason')}")
 
                         # Her signal'de monitoring
                         if signal and signal.get('is_adaptive'):
