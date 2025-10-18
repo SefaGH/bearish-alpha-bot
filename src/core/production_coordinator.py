@@ -376,17 +376,17 @@ class ProductionCoordinator:
             except:
                 self.performance_monitor = RealTimePerformanceMonitor()
             
-            # Portfolio config kullan
+            # Portfolio config - GÜVENLİK İÇİN KALMALI! ✅
             portfolio_config = portfolio_config or {}
             
-            # Risk Manager FIRST (PortfolioManager needs it)
+            # Risk Manager 
             self.risk_manager = RiskManager(portfolio_config.get('risk_limits', {}))
             
-            # Portfolio Manager - DOĞRU SIRALAMA VE PARAMETRELER! ✅
+            # Portfolio Manager - DOĞRU PARAMETRELERLE
             self.portfolio_manager = PortfolioManager(
-                risk_manager=self.risk_manager,           # 1. parametre
-                performance_monitor=self.performance_monitor,  # 2. parametre (EKSIKTI!)
-                websocket_manager=self.websocket_manager      # 3. parametre (opsiyonel)
+                risk_manager=self.risk_manager,              # 1. parametre
+                performance_monitor=self.performance_monitor, # 2. parametre (düzeltildi!)
+                websocket_manager=self.websocket_manager     # 3. parametre (opsiyonel)
             )
             
             # Other components...
