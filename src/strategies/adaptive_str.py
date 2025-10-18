@@ -252,14 +252,15 @@ class AdaptiveShortTheRip(ShortTheRip):
             entry_price = float(last30['close'])
             atr_value = float(last30['atr']) if 'atr' in last30.index else entry_price * 0.02
             
+            # Build adaptive signal - TEK VE DÜZGÜN DICTIONARY
             signal = {
                 "side": "sell",
-                "entry": entry_price,  # ⬅️ KRİTİK: ARTIK VAR!
+                "entry": entry_price,
                 "reason": f"Adaptive RSI overbought {rsi_val:.1f} (threshold: {adaptive_rsi_threshold:.1f}, regime: {market_regime['trend']})",
                 "tp_pct": float(self.cfg.get("tp_pct", 0.012)),
                 "sl_atr_mult": float(self.cfg.get("sl_atr_mult", 1.2)),
                 "atr": atr_value,
-                "is_adaptive": True,  # Flag ekle
+                "is_adaptive": True,
                 "adaptive_threshold": adaptive_rsi_threshold,
                 "position_multiplier": position_mult,
                 "market_regime": market_regime,
@@ -270,8 +271,8 @@ class AdaptiveShortTheRip(ShortTheRip):
             logger.debug(f"📈 [STRATEGY-AdaptiveSTR] Signal strength: RSI {rsi_val:.1f} >= {adaptive_rsi_threshold:.1f}")
             logger.info(f"Adaptive STR signal: RSI {rsi_val:.1f} >= {adaptive_rsi_threshold:.1f}, "
                        f"regime={market_regime['trend']}, pos_mult={position_mult:.2f}")
-
-        if signal:
+            
+            # Strategy type ekle ve signal'i döndür
             signal['strategy_type'] = 'adaptive'
             return signal
             
@@ -280,9 +281,9 @@ class AdaptiveShortTheRip(ShortTheRip):
             
             # FALLBACK TO BASE STRATEGY
             try:
-                # Base OversoldBounce için
+                # Base ShortTheRip için
                 if hasattr(super(), 'signal'):
-                    base_signal = super().signal(df_30m)
+                    base_signal = super().signal(df_30m, df_1h)
                     if base_signal:
                         base_signal['strategy_type'] = 'base_fallback'
                         base_signal['fallback_reason'] = str(e)
