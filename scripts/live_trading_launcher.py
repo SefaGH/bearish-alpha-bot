@@ -849,7 +849,7 @@ class LiveTradingLauncher:
             ws_initialized = await self.ws_optimizer.initialize_websockets(self.exchange_clients)
             
             if ws_initialized:
-            logger.info("✓ WebSocket connections initialized")
+                logger.info("✓ WebSocket connections initialized")
             
              # ProductionCoordinator HAZIR ws_manager'ı geç
             self.coordinator = ProductionCoordinator()
