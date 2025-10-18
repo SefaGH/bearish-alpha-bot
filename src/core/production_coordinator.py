@@ -308,12 +308,17 @@ class ProductionCoordinator:
                 signal['metadata'] = metadata
                 signal['symbol'] = symbol
                 signal['timestamp'] = datetime.now(timezone.utc)
-                
-            return signal
+
+           # Monitor adaptive signals
+           if signal and signal.get('is_adaptive'):
+               from core.adaptive_monitor import adaptive_monitor
+               adaptive_monitor.record_adaptive_signal(symbol, signal)
             
-        except Exception as e:
-            logger.error(f"Error processing {symbol}: {e}")
-            return None
+           return signal
+            
+       except Exception as e:
+           logger.error(f"Error processing {symbol}: {e}")
+           return None 
 
     async def _process_trading_loop(self):
         """Main trading loop processing."""
