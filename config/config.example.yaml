@@ -107,14 +107,14 @@ adaptive_strategies:
 signals:
   oversold_bounce:
     enable: true
-    ignore_regime: false  # Adaptive'de regime dikkate alınıyor
+    ignore_regime: true  # Adaptive'de regime dikkate alınıyor
     
     # Base parameters (geriye uyumluluk)
     rsi_max: 45
     
     # Adaptive parameters
-    adaptive_rsi_base: 45
-    adaptive_rsi_range: 15
+    adaptive_rsi_base: 35
+    adaptive_rsi_range: 25
     
     # YENİ: Adaptive fine-tuning
     adaptive_mode: "dynamic"  # "dynamic" | "conservative" | "aggressive"
@@ -125,14 +125,14 @@ signals:
 
   short_the_rip:
     enable: true
-    ignore_regime: false
+    ignore_regime: true
     
     # Base parameters
     rsi_min: 55
     
     # Adaptive parameters  
-    adaptive_rsi_base: 55
-    adaptive_rsi_range: 15
+    adaptive_rsi_base: 65
+    adaptive_rsi_range: 25
     
     # YENİ: Adaptive fine-tuning
     adaptive_mode: "dynamic"
