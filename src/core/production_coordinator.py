@@ -392,7 +392,15 @@ class ProductionCoordinator:
             # Other components...
             self.strategy_coordinator = StrategyCoordinator(self.portfolio_manager, self.risk_manager)
             self.circuit_breaker = CircuitBreakerSystem(self.portfolio_manager, self.risk_manager)
-            self.trading_engine = LiveTradingEngine(self.exchange_clients, self.portfolio_manager, self.risk_manager)
+
+            # LiveTradingEngine - DOĞRU KEYWORD ARGÜMANLARLA! ✅
+            self.trading_engine = LiveTradingEngine(
+                mode=mode,  # Artık mode parametresi doğru yerde
+                portfolio_manager=self.portfolio_manager,
+                risk_manager=self.risk_manager,
+                websocket_manager=self.websocket_manager,
+                exchange_clients=self.exchange_clients
+            )
             
             # Set active symbols
             if trading_symbols:
