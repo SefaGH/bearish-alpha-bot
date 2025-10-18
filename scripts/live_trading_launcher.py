@@ -850,17 +850,26 @@ class LiveTradingLauncher:
             
             if ws_initialized:
                 logger.info("✓ WebSocket connections initialized")
+                
+                # ProductionCoordinator'a HAZIR ws_manager'ı geç
+                self.coordinator = ProductionCoordinator()
+                self.coordinator.ws_manager = self.ws_optimizer.ws_manager
+                
+                # TEKRAR WebSocket başlatma! (coordinator içinde)
+                self.coordinator.skip_ws_init = True  # Flag ekle
+            else:
+                logger.warning("⚠️ WebSocket failed, using REST API mode")
+                self.coordinator = ProductionCoordinator()
+                # WebSocket başarısız, REST API modunda devam et
             
-             # ProductionCoordinator HAZIR ws_manager'ı geç
-            self.coordinator = ProductionCoordinator()
-            self.coordinator.ws_manager = self.ws_optimizer.ws_manager
-
-            # TEKRAR WebSocket başlatma! (coordinator içinde)
-            self.coordinator.skip_ws_init = True  # Flag ekle
-        else:
-            logger.warning("⚠️ WebSocket failed, using REST API mode")
-            self.coordinator = ProductionCoordinator()
-
+            # Portfolio configuration
+            portfolio_config = {
+                'equity_usd': self.CAPITAL_USDT,  # 100 USDT
+                'max_portfolio_risk': self.RISK_PARAMS['max_portfolio_risk'],
+                'max_position_size': self.RISK_PARAMS['max_position_size'],
+                'max_drawdown': self.RISK_PARAMS['max_drawdown']
+            }
+            
             # Production coordinator'a config VE symbols geç
             init_result = await self.coordinator.initialize_production_system(
                 exchange_clients=self.exchange_clients,
@@ -869,6 +878,24 @@ class LiveTradingLauncher:
                 config=self.config,  # ← Config geç
                 trading_symbols=self.trading_pairs  # ← Symbols geç
             )
+            
+            if not init_result['success']:
+                logger.error(f"❌ Production system initialization failed: {init_result.get('reason')}")
+                return False
+            
+            logger.info("✓ Production system initialized successfully")
+            logger.info(f"  Components: {init_result['components']}")
+            
+            # Get WebSocket status
+            if self.ws_optimizer:
+                ws_status = await self.ws_optimizer.get_stream_status()
+                logger.info(f"✓ WebSocket Status: {ws_status}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize production system: {e}")
+            return False
     
     async def _register_strategies(self) -> bool:
         """Initialize adaptive trading strategies."""
