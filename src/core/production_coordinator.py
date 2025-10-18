@@ -345,74 +345,66 @@ class ProductionCoordinator:
             logger.error(f"Trading loop error: {e}")
 
     async def _initialize_production_system(self) -> bool:
-        """Initialize Phase 3 production coordinator with all components."""
-        logger.info("\n[6/8] Initializing Production Trading System...")
+        """Legacy wrapper - just calls the public method."""
+        # Public metodu çağır ve sonucunu döndür
+        result = await self.initialize_production_system()
+        return result.get('success', False)
+
+    async def initialize_production_system(self, 
+                                          exchange_clients: Optional[Dict] = None,
+                                          portfolio_config: Optional[Dict] = None,
+                                          mode: str = 'paper',
+                                          trading_symbols: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Initialize production system with all components.
+        Public method for external callers.
+        """
+        logger.info("Initializing Production Trading System...")
         
         try:
-            # Config ZATEN yüklü (self.config)
-            if not self.config:
-                self._load_config()
+            # Store provided configuration
+            if exchange_clients:
+                self.exchange_clients = exchange_clients
             
-            # Setup WebSocket optimizer with CONFIG
-            self.ws_optimizer.setup_from_config(self.config)
+            # Skip WebSocket init if already provided externally
+            if not self.websocket_manager and not hasattr(self, 'skip_ws_init'):
+                self.websocket_manager = WebSocketManager(exchanges=self.exchange_clients)
             
-            # WebSocket'i SADECE BİR KERE başlat
-            ws_initialized = await self.ws_optimizer.initialize_websockets(self.exchange_clients)
+            # Initialize components with graceful fallbacks
+            try:
+                self.performance_monitor = PerformanceMonitor()
+            except:
+                self.performance_monitor = RealTimePerformanceMonitor()
             
-            if ws_initialized:
-                logger.info("✓ WebSocket connections initialized")
-                
-                # ProductionCoordinator'a HAZIR ws_manager'ı geç
-                self.coordinator = ProductionCoordinator()
-                self.coordinator.ws_manager = self.ws_optimizer.ws_manager
-                
-                # TEKRAR WebSocket başlatma! (coordinator içinde)
-                self.coordinator.skip_ws_init = True  # Flag ekle
-            else:
-                logger.warning("⚠️ WebSocket failed, using REST API mode")
-                self.coordinator = ProductionCoordinator()
-                # WebSocket başarısız, REST API modunda devam et
+            # Portfolio config kullan
+            portfolio_config = portfolio_config or {}
             
-            # Portfolio configuration
-            portfolio_config = {
-                'equity_usd': self.CAPITAL_USDT,  # 100 USDT
-                'max_portfolio_risk': self.RISK_PARAMS['max_portfolio_risk'],
-                'max_position_size': self.RISK_PARAMS['max_position_size'],
-                'max_drawdown': self.RISK_PARAMS['max_drawdown']
-            }
+            # Risk Manager
+            self.risk_manager = RiskManager(portfolio_config.get('risk_limits', {}))
             
-            # Production coordinator uses its own config loading internally
-            # Don't pass config as parameter!
-            init_result = await self.coordinator.initialize_production_system(
-                exchange_clients=self.exchange_clients,
-                portfolio_config=portfolio_config,
-                mode=self.mode
-                # REMOVED: config=self.config  ← This was causing the error!
-                # REMOVED: trading_symbols=self.trading_pairs  ← This too!
-            )
+            # Portfolio Manager
+            self.portfolio_manager = PortfolioManager(portfolio_config)
             
-            if not init_result['success']:
-                logger.error(f"❌ Production system initialization failed: {init_result.get('reason')}")
-                return False
+            # Other components...
+            self.strategy_coordinator = StrategyCoordinator(self.portfolio_manager, self.risk_manager)
+            self.circuit_breaker = CircuitBreakerSystem(self.portfolio_manager, self.risk_manager)
+            self.trading_engine = LiveTradingEngine(self.exchange_clients, self.portfolio_manager, self.risk_manager)
             
-            # After initialization, manually set the active symbols if needed
-            if hasattr(self.coordinator, 'active_symbols'):
-                self.coordinator.active_symbols = self.trading_pairs
-                logger.info(f"✓ Coordinator configured with {len(self.trading_pairs)} symbols")
+            # Set active symbols
+            if trading_symbols:
+                self.active_symbols = trading_symbols
             
-            logger.info("✓ Production system initialized successfully")
-            logger.info(f"  Components: {init_result['components']}")
+            self.is_initialized = True
             
-            # Get WebSocket status
-            if self.ws_optimizer:
-                ws_status = await self.ws_optimizer.get_stream_status()
-                logger.info(f"✓ WebSocket Status: {ws_status}")
+            components = ['websocket_manager', 'performance_monitor', 'risk_manager', 
+                         'portfolio_manager', 'strategy_coordinator', 'circuit_breaker', 
+                         'trading_engine']
             
-            return True
+            return {'success': True, 'components': components}
             
         except Exception as e:
-            logger.error(f"❌ Failed to initialize production system: {e}")
-            return False
+            logger.error(f"Failed to initialize: {e}")
+            return {'success': False, 'reason': str(e)}
             
     async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
                                   continuous: bool = False):
