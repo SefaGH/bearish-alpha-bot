@@ -21,6 +21,9 @@ except ImportError:
     # Fallback if adaptive strategies don't exist
     from strategies.oversold_bounce import OversoldBounce
     from strategies.short_the_rip import ShortTheRip
+
+    # Import config validator
+    from core.config_validator import ConfigValidator
     
     # Create adaptive wrappers
     class AdaptiveOversoldBounce(OversoldBounce):
@@ -443,6 +446,15 @@ class LiveTradingEngine:
     async def _signal_processing_loop(self):
         """Background task for processing signals from queue and generating new signals."""
         logger.info("Signal processing loop started")
+
+        """Enhanced signal processing with validation and monitoring."""
+    
+        # Validate config at startup
+        validated_config = ConfigValidator.validate_and_fix(self.config)
+        self.config = validated_config
+        
+        # Import monitor
+        from core.adaptive_monitor import adaptive_monitor
         
         # Import indicators
         try:
@@ -651,6 +663,10 @@ class LiveTradingEngine:
                             logger.info(f"✅ Signal processed successfully: {signal.get('symbol')}")
                         else:
                             logger.warning(f"⚠️ Signal processing failed: {result.get('reason')}")
+
+                        # Her signal'de monitoring
+                        if signal and signal.get('is_adaptive'):
+                            adaptive_monitor.record_adaptive_signal(symbol, signal)
                     
                     except asyncio.TimeoutError:
                         # No signals in queue, continue scanning loop
