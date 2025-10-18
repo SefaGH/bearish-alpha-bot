@@ -71,6 +71,18 @@ jobs:
       should_proceed: ${{ steps.validate.outputs.should_proceed }}
 
     steps:
+      # KRİTİK: Repository'yi checkout et
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML for validation
+        run: pip install pyyaml
+
       - name: Validate Live Trading Confirmation
         id: validate
         run: |
@@ -89,27 +101,18 @@ jobs:
           echo "✓ Validation passed"
           echo "should_proceed=true" >> $GITHUB_OUTPUT
 
-      # Config'i validate et
       - name: Validate Adaptive Configuration
         run: |
-          python -c "
-          import yaml
-          with open('config/config.example.yaml', 'r') as f:
-              config = yaml.safe_load(f)
+          echo "🔍 Checking config file..."
+          if [ ! -f "config/config.example.yaml" ]; then
+            echo "❌ Config file not found!"
+            exit 1
+          fi
           
-          adaptive = config.get('adaptive_strategies', {})
-          if adaptive.get('enable'):
-              print('✅ Adaptive strategies ENABLED')
-              
-              # Check for required adaptive parameters
-              ob = config['signals']['oversold_bounce']
-              if 'adaptive_rsi_base' in ob:
-                  print(f'  ✓ OB adaptive base: {ob[\"adaptive_rsi_base\"]}')
-              if 'adaptive_rsi_range' in ob:
-                  print(f'  ✓ OB adaptive range: ±{ob[\"adaptive_rsi_range\"]}')
-          else:
-              print('⚡ Base strategies enabled')
-          "
+          echo "📋 Config file contents (first 20 lines):"
+          head -n 20 config/config.example.yaml
+          
+          python scripts/validate_adaptive_config.py
 
   pre-flight-checks:
     name: Pre-Flight System Checks
