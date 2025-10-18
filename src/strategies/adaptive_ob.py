@@ -215,19 +215,23 @@ class AdaptiveOversoldBounce(OversoldBounce):
             
             # ===== KRİTİK DÜZELTME: ENTRY FİYATI EKLE =====
             entry_price = float(last['close'])  # Son kapanış fiyatı
-            
-            # ATR değerini al (stop loss hesaplaması için)
-            atr_value = float(last['atr']) if 'atr' in last.index else entry_price * 0.02  # Default %2
+            atr_value = float(last['atr']) if 'atr' in last.index else entry_price * 0.02
             
             # Build adaptive signal
             signal = {
                 "side": "buy",
-                "entry": entry_price,  # ⬅️ KRİTİK: BU SATIR EKSİKTİ!
+                "entry": entry_price,  # ⬅️ KRİTİK: ARTIK VAR!
                 "reason": f"Adaptive RSI oversold {rsi_val:.1f} (threshold: {adaptive_rsi_threshold:.1f}, regime: {market_regime['trend']})",
                 "tp_pct": float(self.cfg.get("tp_pct", 0.015)),
                 "sl_pct": (float(self.cfg["sl_pct"]) if "sl_pct" in self.cfg else None),
                 "sl_atr_mult": float(self.cfg.get("sl_atr_mult", 1.0)),
-                "atr": atr_value,  # ATR değerini de ekle (opsiyonel ama faydalı)
+                "atr": atr_value,
+                "is_adaptive": True,  # Flag ekle
+                "adaptive_threshold": adaptive_rsi_threshold,
+                "position_multiplier": position_mult,
+                "market_regime": market_regime,
+                "ema_params": ema_params
+            }
                 
                 # Adaptive parameters
                 "position_multiplier": position_mult,
