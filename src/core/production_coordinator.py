@@ -357,7 +357,6 @@ class ProductionCoordinator:
                                           trading_symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Initialize production system with all components.
-        Public method for external callers.
         """
         logger.info("Initializing Production Trading System...")
         
@@ -376,26 +375,51 @@ class ProductionCoordinator:
             except:
                 self.performance_monitor = RealTimePerformanceMonitor()
             
-            # Portfolio config - GÜVENLİK İÇİN KALMALI! ✅
+            # ÇÖZÜM: portfolio_config'i doğrudan RiskManager'a geç!
             portfolio_config = portfolio_config or {}
             
-            # Risk Manager 
-            self.risk_manager = RiskManager(portfolio_config.get('risk_limits', {}))
+            # Config'den risk parametrelerini al ve birleştir
+            config = self.config
+            risk_config = config.get('risk', {})
             
-            # Portfolio Manager - DOĞRU PARAMETRELERLE
+            # RiskManager için portfolio_config hazırla
+            risk_manager_config = {
+                'equity_usd': float(
+                    portfolio_config.get('equity_usd') or 
+                    risk_config.get('equity_usd', 100)  # Config'den veya default 100
+                ),
+                'per_trade_risk_pct': float(risk_config.get('per_trade_risk_pct', 0.01)),
+                'daily_loss_limit_pct': float(risk_config.get('daily_loss_limit_pct', 0.02)),
+                'risk_usd_cap': float(risk_config.get('risk_usd_cap', 5)),
+                'max_notional_per_trade': float(risk_config.get('max_notional_per_trade', 20)),
+                'max_portfolio_risk': 0.02,  # RiskManager defaults
+                'max_position_size': 0.10,
+                'max_drawdown': 0.15,
+                'max_correlation': 0.70
+            }
+            
+            # Risk Manager - DOĞRU PARAMETRELERLE
+            logger.info(f"Initializing RiskManager with equity_usd: ${risk_manager_config['equity_usd']}")
+            self.risk_manager = RiskManager(
+                portfolio_config=risk_manager_config,  # Artık doğru format!
+                websocket_manager=self.websocket_manager,
+                performance_monitor=self.performance_monitor
+            )
+            
+            # Portfolio Manager
             self.portfolio_manager = PortfolioManager(
-                risk_manager=self.risk_manager,              # 1. parametre
-                performance_monitor=self.performance_monitor, # 2. parametre (düzeltildi!)
-                websocket_manager=self.websocket_manager     # 3. parametre (opsiyonel)
+                risk_manager=self.risk_manager,
+                performance_monitor=self.performance_monitor,
+                websocket_manager=self.websocket_manager
             )
             
             # Other components...
             self.strategy_coordinator = StrategyCoordinator(self.portfolio_manager, self.risk_manager)
             self.circuit_breaker = CircuitBreakerSystem(self.portfolio_manager, self.risk_manager)
-
-            # LiveTradingEngine - DOĞRU KEYWORD ARGÜMANLARLA! ✅
+            
+            # LiveTradingEngine
             self.trading_engine = LiveTradingEngine(
-                mode=mode,  # Artık mode parametresi doğru yerde
+                mode=mode,
                 portfolio_manager=self.portfolio_manager,
                 risk_manager=self.risk_manager,
                 websocket_manager=self.websocket_manager,
@@ -407,6 +431,9 @@ class ProductionCoordinator:
                 self.active_symbols = trading_symbols
             
             self.is_initialized = True
+            
+            # SUCCESS LOG
+            logger.info(f"✅ System initialized with portfolio value: ${self.risk_manager.portfolio_value:.2f}")
             
             components = ['websocket_manager', 'performance_monitor', 'risk_manager', 
                          'portfolio_manager', 'strategy_coordinator', 'circuit_breaker', 
