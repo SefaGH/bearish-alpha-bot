@@ -1,0 +1,291 @@
+name: Test Adaptive Strategies
+
+on:
+  workflow_dispatch:  # Manuel tetikleme
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/strategies/adaptive_*.py'
+      - 'src/core/config_validator.py'
+      - 'src/core/adaptive_monitor.py'
+      - '.github/workflows/test_adaptive.yml'
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-adaptive:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir "aiohttp==3.8.6" "yarl<2.0" "multidict<7.0"
+          pip install --no-cache-dir -r requirements.txt
+      
+      - name: Create Adaptive Test Script
+        run: |
+          cat > test_adaptive_strategies.py << 'EOF'
+          #!/usr/bin/env python3
+          """Test script specifically for adaptive strategies."""
+          
+          import sys
+          import pandas as pd
+          from pathlib import Path
+          
+          # Add src to path
+          sys.path.insert(0, 'src')
+          
+          def create_test_data(rsi_value=25.0):
+              """Create test dataframe."""
+              return pd.DataFrame({
+                  'close': [100.0],
+                  'rsi': [rsi_value],
+                  'atr': [2.0],
+                  'ema21': [105.0],
+                  'ema50': [110.0],
+                  'ema200': [115.0]
+              }, index=[pd.Timestamp.now()])
+          
+          def test_adaptive_ob():
+              """Test Adaptive OversoldBounce."""
+              print("\n=== Testing Adaptive OversoldBounce ===")
+              
+              from strategies.adaptive_ob import AdaptiveOversoldBounce
+              
+              config = {
+                  'adaptive_rsi_base': 45,
+                  'adaptive_rsi_range': 15,
+                  'rsi_max': 45,
+                  'tp_pct': 0.01,
+                  'sl_atr_mult': 1.0
+              }
+              
+              # Create strategy
+              ob = AdaptiveOversoldBounce(config)
+              
+              # Test with oversold RSI
+              test_data = create_test_data(rsi_value=25.0)
+              signal = ob.signal(test_data)
+              
+              # Assertions
+              assert signal is not None, "Should generate signal with RSI=25"
+              assert 'entry' in signal, "❌ CRITICAL: entry field missing!"
+              assert signal['entry'] == 100.0, "Entry should be last close price"
+              assert signal.get('is_adaptive') == True, "Should be marked as adaptive"
+              
+              print(f"✅ OB Signal generated: entry=${signal['entry']:.2f}")
+              print(f"   Adaptive threshold: {signal.get('adaptive_threshold', 'N/A')}")
+              
+              # Test with high RSI (no signal expected)
+              test_data_high = create_test_data(rsi_value=55.0)
+              no_signal = ob.signal(test_data_high)
+              assert no_signal is None, "Should not generate signal with RSI=55"
+              print("✅ Correctly rejected high RSI")
+              
+              return True
+          
+          def test_adaptive_str():
+              """Test Adaptive ShortTheRip."""
+              print("\n=== Testing Adaptive ShortTheRip ===")
+              
+              from strategies.adaptive_str import AdaptiveShortTheRip
+              
+              config = {
+                  'adaptive_rsi_base': 55,
+                  'adaptive_rsi_range': 15,
+                  'rsi_min': 55,
+                  'tp_pct': 0.008,
+                  'sl_atr_mult': 1.2
+              }
+              
+              # Create strategy
+              str_strategy = AdaptiveShortTheRip(config)
+              
+              # Test with overbought RSI
+              test_data = create_test_data(rsi_value=75.0)
+              signal = str_strategy.signal(test_data)
+              
+              # Assertions
+              assert signal is not None, "Should generate signal with RSI=75"
+              assert 'entry' in signal, "❌ CRITICAL: entry field missing!"
+              assert signal['entry'] == 100.0, "Entry should be last close price"
+              
+              print(f"✅ STR Signal generated: entry=${signal['entry']:.2f}")
+              
+              # Test with low RSI (no signal expected)
+              test_data_low = create_test_data(rsi_value=45.0)
+              no_signal = str_strategy.signal(test_data_low)
+              assert no_signal is None, "Should not generate signal with RSI=45"
+              print("✅ Correctly rejected low RSI")
+              
+              return True
+          
+          def test_config_validator():
+              """Test config validation."""
+              print("\n=== Testing Config Validator ===")
+              
+              from core.config_validator import ConfigValidator
+              
+              config = {
+                  'signals': {
+                      'oversold_bounce': {
+                          'enable': True,
+                          # Missing adaptive_rsi_base - should be added
+                      }
+                  }
+              }
+              
+              validated = ConfigValidator.validate_and_fix(config)
+              
+              ob_config = validated['signals']['oversold_bounce']
+              assert 'adaptive_rsi_base' in ob_config, "Should add missing adaptive_rsi_base"
+              assert ob_config['adaptive_rsi_base'] == 45, "Should use default value"
+              assert 'rsi_max' in ob_config, "Should add backwards compat rsi_max"
+              
+              print(f"✅ Config validation working")
+              print(f"   Added keys: adaptive_rsi_base={ob_config['adaptive_rsi_base']}, rsi_max={ob_config['rsi_max']}")
+              
+              return True
+          
+          def test_adaptive_monitor():
+              """Test adaptive monitoring."""
+              print("\n=== Testing Adaptive Monitor ===")
+              
+              from core.adaptive_monitor import AdaptiveStrategyMonitor
+              
+              monitor = AdaptiveStrategyMonitor()
+              
+              # Simulate signals
+              for i in range(5):
+                  test_signal = {
+                      'is_adaptive': True,
+                      'adaptive_threshold': 40 + i,
+                      'position_multiplier': 1.0 + (i * 0.1),
+                      'market_regime': {'trend': 'bearish' if i % 2 == 0 else 'bullish'}
+                  }
+                  monitor.record_adaptive_signal(f'TEST/USDT:{i}', test_signal)
+              
+              # Get summary
+              summary = monitor.get_summary()
+              assert summary['total_signals'] == 5, "Should have 5 signals"
+              assert summary['active_symbols'] == 5, "Should have 5 symbols"
+              
+              print(f"✅ Monitoring working: {summary}")
+              
+              return True
+          
+          def main():
+              """Run all adaptive strategy tests."""
+              print("="*60)
+              print("ADAPTIVE STRATEGY TEST SUITE")
+              print("="*60)
+              
+              tests = [
+                  ("Adaptive OversoldBounce", test_adaptive_ob),
+                  ("Adaptive ShortTheRip", test_adaptive_str),
+                  ("Config Validation", test_config_validator),
+                  ("Monitoring System", test_adaptive_monitor)
+              ]
+              
+              passed = 0
+              failed = 0
+              
+              for test_name, test_func in tests:
+                  try:
+                      if test_func():
+                          passed += 1
+                          print(f"✅ {test_name}: PASSED\n")
+                      else:
+                          failed += 1
+                          print(f"❌ {test_name}: FAILED\n")
+                  except Exception as e:
+                      failed += 1
+                      print(f"❌ {test_name}: ERROR - {e}\n")
+                      import traceback
+                      traceback.print_exc()
+              
+              print("="*60)
+              print(f"RESULTS: {passed} passed, {failed} failed")
+              print("="*60)
+              
+              if failed == 0:
+                  print("\n🎉 ALL TESTS PASSED! Adaptive strategies are ready.")
+                  return 0
+              else:
+                  print(f"\n⚠️ {failed} tests failed. Please fix before deploying.")
+                  return 1
+          
+          if __name__ == "__main__":
+              sys.exit(main())
+          EOF
+      
+      - name: Run Adaptive Strategy Tests
+        run: |
+          python test_adaptive_strategies.py
+      
+      - name: Test Entry Field Specifically
+        run: |
+          python -c "
+          import sys
+          import pandas as pd
+          sys.path.insert(0, 'src')
+          
+          print('Testing entry field existence...')
+          
+          from strategies.adaptive_ob import AdaptiveOversoldBounce
+          from strategies.adaptive_str import AdaptiveShortTheRip
+          
+          # Test data
+          df = pd.DataFrame({
+              'close': [100.0],
+              'rsi': [25.0],
+              'atr': [2.0],
+              'ema21': [105.0],
+              'ema50': [110.0],
+              'ema200': [115.0]
+          }, index=[pd.Timestamp.now()])
+          
+          # Test OB
+          ob = AdaptiveOversoldBounce({'adaptive_rsi_base': 45, 'adaptive_rsi_range': 15, 'rsi_max': 45})
+          ob_signal = ob.signal(df)
+          assert ob_signal is not None, 'OB should generate signal'
+          assert 'entry' in ob_signal, 'OB signal missing entry field!'
+          print(f'✅ OB has entry field: {ob_signal[\"entry\"]}')
+          
+          # Test STR
+          df['rsi'] = 75.0
+          str_strategy = AdaptiveShortTheRip({'adaptive_rsi_base': 55, 'adaptive_rsi_range': 15, 'rsi_min': 55})
+          str_signal = str_strategy.signal(df)
+          assert str_signal is not None, 'STR should generate signal'
+          assert 'entry' in str_signal, 'STR signal missing entry field!'
+          print(f'✅ STR has entry field: {str_signal[\"entry\"]}')
+          
+          print('='*40)
+          print('✅✅ ENTRY FIELD TEST PASSED!')
+          "
+      
+      - name: Summary
+        if: always()
+        run: |
+          echo "=========================================="
+          echo "✅ Adaptive Strategy Tests Complete"
+          echo "=========================================="
+          echo ""
+          echo "Tested components:"
+          echo "  - AdaptiveOversoldBounce strategy"
+          echo "  - AdaptiveShortTheRip strategy"
+          echo "  - Config validation system"
+          echo "  - Adaptive monitoring system"
+          echo "  - Entry field existence"
+          echo ""
+          echo "NOTE: This workflow does NOT run tests from tests/ directory"
+          echo "It only tests adaptive strategies and related components."
