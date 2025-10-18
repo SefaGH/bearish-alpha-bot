@@ -89,6 +89,28 @@ jobs:
           echo "✓ Validation passed"
           echo "should_proceed=true" >> $GITHUB_OUTPUT
 
+      # Config'i validate et
+      - name: Validate Adaptive Configuration
+        run: |
+          python -c "
+          import yaml
+          with open('config/config.example.yaml', 'r') as f:
+              config = yaml.safe_load(f)
+          
+          adaptive = config.get('adaptive_strategies', {})
+          if adaptive.get('enable'):
+              print('✅ Adaptive strategies ENABLED')
+              
+              # Check for required adaptive parameters
+              ob = config['signals']['oversold_bounce']
+              if 'adaptive_rsi_base' in ob:
+                  print(f'  ✓ OB adaptive base: {ob[\"adaptive_rsi_base\"]}')
+              if 'adaptive_rsi_range' in ob:
+                  print(f'  ✓ OB adaptive range: ±{ob[\"adaptive_rsi_range\"]}')
+          else:
+              print('⚡ Base strategies enabled')
+          "
+
   pre-flight-checks:
     name: Pre-Flight System Checks
     runs-on: ubuntu-latest
