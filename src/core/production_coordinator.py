@@ -379,11 +379,15 @@ class ProductionCoordinator:
             # Portfolio config kullan
             portfolio_config = portfolio_config or {}
             
-            # Risk Manager
+            # Risk Manager FIRST (PortfolioManager needs it)
             self.risk_manager = RiskManager(portfolio_config.get('risk_limits', {}))
             
-            # Portfolio Manager
-            self.portfolio_manager = PortfolioManager(portfolio_config)
+            # Portfolio Manager - DOĞRU SIRALAMA VE PARAMETRELER! ✅
+            self.portfolio_manager = PortfolioManager(
+                risk_manager=self.risk_manager,           # 1. parametre
+                performance_monitor=self.performance_monitor,  # 2. parametre (EKSIKTI!)
+                websocket_manager=self.websocket_manager      # 3. parametre (opsiyonel)
+            )
             
             # Other components...
             self.strategy_coordinator = StrategyCoordinator(self.portfolio_manager, self.risk_manager)
