@@ -344,169 +344,76 @@ class ProductionCoordinator:
         except Exception as e:
             logger.error(f"Trading loop error: {e}")
 
-    async def initialize_production_system(self, exchange_clients: Dict, 
-                                          portfolio_config: Dict,
-                                          mode: str = 'paper') -> Dict[str, Any]:
-        """
-        Initialize complete production trading system.
+    async def _initialize_production_system(self) -> bool:
+        """Initialize Phase 3 production coordinator with all components."""
+        logger.info("\n[6/8] Initializing Production Trading System...")
         
-        Args:
-            exchange_clients: Dictionary of exchange client instances (Phase 1)
-            portfolio_config: Portfolio configuration dictionary
-            mode: Trading mode ('paper', 'live', 'simulation')
-            
-        Returns:
-            Initialization result
-        """
         try:
-            logger.info("="*70)
-            logger.info("INITIALIZING PRODUCTION TRADING SYSTEM")
-            logger.info("="*70)
+            # Config ZATEN yüklü (self.config)
+            if not self.config:
+                self._load_config()
             
-            # Phase 1: Multi-exchange setup
-            logger.info("\n[Phase 1] Setting up Multi-Exchange Framework...")
-            self.exchange_clients = exchange_clients
-            logger.info(f"  ✓ {len(exchange_clients)} exchange(s) configured: {list(exchange_clients.keys())}")
+            # Setup WebSocket optimizer with CONFIG
+            self.ws_optimizer.setup_from_config(self.config)
             
-            # Phase 2: Market intelligence activation
-            logger.info("\n[Phase 2] Activating Market Intelligence...")
+            # WebSocket'i SADECE BİR KERE başlat
+            ws_initialized = await self.ws_optimizer.initialize_websockets(self.exchange_clients)
             
-            # Market regime analyzer zaten init'te oluşturuldu
-            logger.info("  ✓ Market Regime Analyzer already initialized")
-            
-            # Initialize performance monitor
-            self.performance_monitor = RealTimePerformanceMonitor()
-            logger.info("  ✓ Performance Monitor initialized")
-            
-            # Phase 3.1: WebSocket connections
-            logger.info("\n[Phase 3.1] Establishing WebSocket Connections...")
-            try:
-                # WebSocket bağlantılarını kur
-                self._setup_websocket_connections()
-                logger.info("  ✓ WebSocket Manager initialized")
-            except Exception as e:
-                logger.warning(f"  ⚠️  WebSocket initialization failed: {e}")
-                # WebSocket hata verse bile devam et (REST API fallback var)
-            
-            # Phase 3.2: Risk management setup
-            logger.info("\n[Phase 3.2] Setting up Risk Management...")
-            self.risk_manager = RiskManager(
-                portfolio_config=portfolio_config,
-                websocket_manager=self.websocket_manager,
-                performance_monitor=self.performance_monitor
-            )
-            logger.info(f"  ✓ Risk Manager initialized with ${portfolio_config.get('equity_usd', 0):.2f} portfolio")
-            
-            # Phase 3.3: Portfolio optimization
-            logger.info("\n[Phase 3.3] Initializing Portfolio Management...")
-            self.portfolio_manager = PortfolioManager(
-                risk_manager=self.risk_manager,
-                performance_monitor=self.performance_monitor,
-                websocket_manager=self.websocket_manager
-            )
-            logger.info("  ✓ Portfolio Manager initialized")
-
-            # Register trading strategies
-            logger.info("  Registering adaptive trading strategies...")
-
-            signals_config = self.config.get('signals', {})
-            strategies_registered = 0
-
-            # 1. Adaptive OversoldBounce
-            if signals_config.get('oversold_bounce', {}).get('enable', True):
-                adaptive_ob_config = {
-                    'rsi_max': signals_config.get('oversold_bounce', {}).get('adaptive_rsi_base', 40),
-                    'adaptive_rsi_range': signals_config.get('oversold_bounce', {}).get('adaptive_rsi_range', 15),
-                    'tp_pct': signals_config.get('oversold_bounce', {}).get('tp_pct', 0.015),
-                    'sl_atr_mult': signals_config.get('oversold_bounce', {}).get('sl_atr_mult', 1.0),
-                    'ignore_regime': signals_config.get('oversold_bounce', {}).get('ignore_regime', False)
-                }
-                adaptive_ob = AdaptiveOversoldBounce(adaptive_ob_config, self.market_regime_analyzer)
+            if ws_initialized:
+                logger.info("✓ WebSocket connections initialized")
                 
-                result = self.portfolio_manager.register_strategy(
-                    strategy_name='adaptive_ob',
-                    strategy_instance=adaptive_ob,
-                    initial_allocation=0.5  # %50
-                )
-                logger.info("    ✓ AdaptiveOversoldBounce registered")
-                strategies_registered += 1
-
-            # 2. Adaptive ShortTheRip  
-            if signals_config.get('short_the_rip', {}).get('enable', True):
-                adaptive_str_config = {
-                    'rsi_min': signals_config.get('short_the_rip', {}).get('adaptive_rsi_base', 65),
-                    'adaptive_rsi_range': signals_config.get('short_the_rip', {}).get('adaptive_rsi_range', 20),
-                    'tp_pct': signals_config.get('short_the_rip', {}).get('tp_pct', 0.012),
-                    'sl_atr_mult': signals_config.get('short_the_rip', {}).get('sl_atr_mult', 1.2),
-                    'ignore_regime': signals_config.get('short_the_rip', {}).get('ignore_regime', False)
-                }
-                adaptive_str = AdaptiveShortTheRip(adaptive_str_config, self.market_regime_analyzer)
+                # ProductionCoordinator'a HAZIR ws_manager'ı geç
+                self.coordinator = ProductionCoordinator()
+                self.coordinator.ws_manager = self.ws_optimizer.ws_manager
                 
-                result = self.portfolio_manager.register_strategy(
-                    strategy_name='adaptive_str',
-                    strategy_instance=adaptive_str,
-                    initial_allocation=0.5  # %50
-                )
-                logger.info("    ✓ AdaptiveShortTheRip registered")
-                strategies_registered += 1
-
-            logger.info(f"  ✓ {strategies_registered} adaptive strategies registered")
+                # TEKRAR WebSocket başlatma! (coordinator içinde)
+                self.coordinator.skip_ws_init = True  # Flag ekle
+            else:
+                logger.warning("⚠️ WebSocket failed, using REST API mode")
+                self.coordinator = ProductionCoordinator()
+                # WebSocket başarısız, REST API modunda devam et
             
-            # Initialize strategy coordinator
-            self.strategy_coordinator = StrategyCoordinator(
-                portfolio_manager=self.portfolio_manager,
-                risk_manager=self.risk_manager
-            )
-            logger.info("  ✓ Strategy Coordinator initialized")
-            
-            # Initialize circuit breaker
-            self.circuit_breaker = CircuitBreakerSystem(
-                risk_manager=self.risk_manager,
-                websocket_manager=self.websocket_manager
-            )
-            logger.info("  ✓ Circuit Breaker System initialized")
-            
-            # Phase 3.4: Live trading activation
-            logger.info("\n[Phase 3.4] Initializing Live Trading Engine...")
-            self.trading_engine = LiveTradingEngine(
-                mode=mode,  # Dinamik mode
-                portfolio_manager=self.portfolio_manager,
-                risk_manager=self.risk_manager,
-                websocket_manager=self.websocket_manager,
-                exchange_clients=self.exchange_clients
-            )
-            logger.info(f"  ✓ Live Trading Engine initialized (mode: {mode})")
-            
-            self.is_initialized = True
-            
-            logger.info("\n" + "="*70)
-            logger.info("✓ PRODUCTION SYSTEM INITIALIZED SUCCESSFULLY")
-            logger.info("="*70)
-            
-            return {
-                'success': True,
-                'initialized': True,
-                'components': {
-                    'exchanges': len(self.exchange_clients),
-                    'websocket': self.websocket_manager is not None,
-                    'risk_manager': True,
-                    'portfolio_manager': True,
-                    'trading_engine': True,
-                    'circuit_breaker': True,
-                    'market_regime': True,
-                    'strategies': strategies_registered
-                }
+            # Portfolio configuration
+            portfolio_config = {
+                'equity_usd': self.CAPITAL_USDT,  # 100 USDT
+                'max_portfolio_risk': self.RISK_PARAMS['max_portfolio_risk'],
+                'max_position_size': self.RISK_PARAMS['max_position_size'],
+                'max_drawdown': self.RISK_PARAMS['max_drawdown']
             }
+            
+            # Production coordinator uses its own config loading internally
+            # Don't pass config as parameter!
+            init_result = await self.coordinator.initialize_production_system(
+                exchange_clients=self.exchange_clients,
+                portfolio_config=portfolio_config,
+                mode=self.mode
+                # REMOVED: config=self.config  ← This was causing the error!
+                # REMOVED: trading_symbols=self.trading_pairs  ← This too!
+            )
+            
+            if not init_result['success']:
+                logger.error(f"❌ Production system initialization failed: {init_result.get('reason')}")
+                return False
+            
+            # After initialization, manually set the active symbols if needed
+            if hasattr(self.coordinator, 'active_symbols'):
+                self.coordinator.active_symbols = self.trading_pairs
+                logger.info(f"✓ Coordinator configured with {len(self.trading_pairs)} symbols")
+            
+            logger.info("✓ Production system initialized successfully")
+            logger.info(f"  Components: {init_result['components']}")
+            
+            # Get WebSocket status
+            if self.ws_optimizer:
+                ws_status = await self.ws_optimizer.get_stream_status()
+                logger.info(f"✓ WebSocket Status: {ws_status}")
+            
+            return True
             
         except Exception as e:
-            logger.error(f"Error initializing production system: {e}", exc_info=True)
-            self.is_initialized = False
-            return {
-                'success': False,
-                'reason': str(e),
-                'initialized': False
-            }
-    
+            logger.error(f"❌ Failed to initialize production system: {e}")
+            return False
+            
     async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
                                   continuous: bool = False):
         """
