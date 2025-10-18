@@ -928,33 +928,23 @@ class LiveTradingLauncher:
             
             logger.info("✓ Production system initialized successfully")
             logger.info(f"  Components: {init_result['components']}")
-        
-        # Get WebSocket status
-        if self.ws_optimizer:
-            ws_status = await self.ws_optimizer.get_stream_status()
-            logger.info(f"✓ WebSocket Status: {ws_status}")
-        
-        return True
-        
-    except AttributeError as e:  # ← FIXED: Now properly indented with the try block
-        logger.error(f"❌ AttributeError in production system init: {e}")
-        logger.error("Check that ProductionCoordinator has initialize_production_system method")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
-    except Exception as e:  # ← FIXED: Now properly indented with the try block
-        logger.error(f"❌ Failed to initialize production system: {e}")
-        return False
-        
-    except AttributeError as e:
-        logger.error(f"❌ AttributeError in production system init: {e}")
-        logger.error("Check that ProductionCoordinator has initialize_production_system method")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize production system: {e}")
-        return False
+            
+            # Get WebSocket status
+            if self.ws_optimizer:
+                ws_status = await self.ws_optimizer.get_stream_status()
+                logger.info(f"✓ WebSocket Status: {ws_status}")
+            
+            return True
+            
+        except AttributeError as e:  # ← Only ONE set of except blocks
+            logger.error(f"❌ AttributeError in production system init: {e}")
+            logger.error("Check that ProductionCoordinator has initialize_production_system method")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+        except Exception as e:  # ← Only ONE set of except blocks
+            logger.error(f"❌ Failed to initialize production system: {e}")
+            return False
     
     async def _register_strategies(self) -> bool:
         """Initialize adaptive trading strategies."""
