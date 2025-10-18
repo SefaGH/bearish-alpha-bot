@@ -457,7 +457,6 @@ class LiveTradingLauncher:
         # Config ve trading pairs için instance variables
         self.config = None
         self.trading_pairs = []  # ← Config'den gelecek
-        self.TRADING_PAIRS = []  # For backward compatibility in logging
         self.mode = mode
         self.dry_run = dry_run
         self.infinite = infinite
@@ -486,6 +485,9 @@ class LiveTradingLauncher:
         # Debug logger
         self.debug_logger = None
         
+        # Get trading pairs FIRST, before logging
+        self.TRADING_PAIRS = self._get_trading_pairs()
+        
         logger.info("="*70)
         logger.info("BEARISH ALPHA BOT - LIVE TRADING LAUNCHER")
         logger.info("="*70)
@@ -493,7 +495,8 @@ class LiveTradingLauncher:
         logger.info(f"Capital: {self.CAPITAL_USDT} USDT")
         logger.info(f"Exchange: BingX")
         logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
-        logger.info(f"Symbols: {', '.join(self.trading_pairs[:3])}...")
+        if self.TRADING_PAIRS:
+            logger.info(f"Symbols: {', '.join(self.TRADING_PAIRS[:3])}...")
         logger.info(f"Dry Run: {dry_run}")
         
         # Debug mode indicator
@@ -632,7 +635,7 @@ class LiveTradingLauncher:
             }
             
             bingx_client = CcxtClient('bingx', bingx_creds)
-
+    
             # WebSocket optimization with CONFIG symbols
             bingx_client.set_required_symbols(trading_pairs)
             logger.info(f"✓ BingX client optimized for {len(trading_pairs)} symbols only")
@@ -663,11 +666,14 @@ class LiveTradingLauncher:
                 except Exception as e:
                     logger.warning(f"  ❌ {pair}: {e}")
             
-            if len(verified_pairs) >= 6:  # Allow for some pair failures
-                logger.info(f"✓ {len(verified_pairs)}/{len(self.TRADING_PAIRS)} trading pairs verified")
+            # Check if enough pairs were verified (allow some failures)
+            min_required = max(1, len(trading_pairs) // 2)  # At least half should work
+            
+            if len(verified_pairs) >= min_required:
+                logger.info(f"✓ {len(verified_pairs)}/{len(trading_pairs)} trading pairs verified")
                 return True
             else:
-                logger.error(f"Only {len(verified_pairs)}/{len(self.TRADING_PAIRS)} pairs verified")
+                logger.error(f"Only {len(verified_pairs)}/{len(trading_pairs)} pairs verified (minimum {min_required} required)")
                 return False
             
         except Exception as e:
