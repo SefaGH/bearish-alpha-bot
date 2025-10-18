@@ -853,7 +853,7 @@ class LiveTradingLauncher:
             logger.error(traceback.format_exc())
             return False
     
-    async def _initialize_production_system(self) -> bool:
+    async def initialize_production_system(self) -> bool:
         """Initialize Phase 3 production coordinator with all components."""
         logger.info("\n[6/8] Initializing Production Trading System...")
         
@@ -861,6 +861,12 @@ class LiveTradingLauncher:
             # Config ZATEN yüklü (self.config)
             if not self.config:
                 self._load_config()
+
+            # Import ProductionCoordinator explicitly to ensure correct import
+            from core.production_coordinator import ProductionCoordinator
+            
+            # Create coordinator instance
+            self.coordinator = ProductionCoordinator()
             
             # Setup WebSocket optimizer with CONFIG
             self.ws_optimizer.setup_from_config(self.config)
