@@ -11,13 +11,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
-class PerformanceMonitor:
-    """Alias for RealTimePerformanceMonitor for backward compatibility."""
-    pass
-
-
-class RealTimePerformanceMonitor(PerformanceMonitor):
+# ⬇️ ARTIK BOŞ DEĞİL, TÜM KODLAR BURADA!
+class PerformanceMonitor: # ← PerformanceMonitor artık ana sınıf
     """
     Real-time strategy performance monitoring and optimization.
     
@@ -454,3 +449,6 @@ class RealTimePerformanceMonitor(PerformanceMonitor):
         self.trades = [t for t in self.trades if t.get('timestamp', datetime.now(timezone.utc)) >= today_start]
         
         logger.info(f"Daily stats reset complete. Kept {len(self.trades)} trades from today")
+
+# ⬇️ EN SONDA, backward compatibility için alias ekle
+RealTimePerformanceMonitor = PerformanceMonitor
