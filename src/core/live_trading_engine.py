@@ -81,6 +81,10 @@ class LiveTradingEngine:
             websocket_manager: WebSocketManager from Phase 3.1
             exchange_clients: Dict of exchange client instances from Phase 1
         """
+        # VALIDATION EKLENDİ ✅
+        if exchange_clients is not None and not isinstance(exchange_clients, dict):
+            raise TypeError(f"exchange_clients must be a dict, got {type(exchange_clients).__name__}")
+            
         self.portfolio_manager = portfolio_manager
         self.risk_manager = risk_manager
         self.ws_manager = websocket_manager
@@ -152,7 +156,8 @@ class LiveTradingEngine:
         
         logger.info("LiveTradingEngine initialized")
         logger.info(f"  Mode: {mode}")
-        logger.info(f"  Exchange clients: {list(exchange_clients.keys())}")
+        exchange_client_names = list(self.exchange_clients.keys()) if self.exchange_clients else []
+        logger.info(f"  Exchange clients: {exchange_client_names}")
     
     async def start_live_trading(self, mode: str = 'paper') -> Dict[str, Any]:
         """
