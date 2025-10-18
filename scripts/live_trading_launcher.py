@@ -642,12 +642,12 @@ class LiveTradingLauncher:
             verified_pairs = []
         
             for pair in trading_pairs:  # ← CONFIG'DEN GELEN LİSTE
-            try:
-                ticker = bingx_client.fetch_ticker(pair)
-                verified_pairs.append(pair)
-                logger.info(f"  ✓ {pair}: ${ticker['last']:.2f}")
-            except Exception as e:
-                logger.warning(f"  ❌ {pair}: {e}")
+                try:
+                    ticker = bingx_client.fetch_ticker(pair)
+                    verified_pairs.append(pair)
+                    logger.info(f"  ✓ {pair}: ${ticker['last']:.2f}")
+                except Exception as e:
+                    logger.warning(f"  ❌ {pair}: {e}")
             
             if len(verified_pairs) >= 6:  # Allow for some pair failures
                 logger.info(f"✓ {len(verified_pairs)}/{len(self.TRADING_PAIRS)} trading pairs verified")
