@@ -90,19 +90,35 @@ indicators:
 
 # Adaptive strategies kontrolü
 adaptive_strategies:
-  enable: true  # true = adaptive, false = base strategies  
+  enable: true
+  
+  # Monitoring (YENİ)
+  monitoring:
+    enabled: true
+    report_interval: 300
+    track_performance: true
+  
+  # Performance tuning (YENİ)
+  performance:
+    min_volatility_for_adjustment: 0.02  # %2 volatilite
+    max_position_multiplier: 2.0
+    min_position_multiplier: 0.5
 
 signals:
   oversold_bounce:
     enable: true
-    ignore_regime: false
+    ignore_regime: false  # Adaptive'de regime dikkate alınıyor
     
-    # Base strategy için
+    # Base parameters (geriye uyumluluk)
     rsi_max: 45
     
     # Adaptive parameters
     adaptive_rsi_base: 45
     adaptive_rsi_range: 15
+    
+    # YENİ: Adaptive fine-tuning
+    adaptive_mode: "dynamic"  # "dynamic" | "conservative" | "aggressive"
+    volatility_sensitivity: "medium"  # "low" | "medium" | "high"
     
     tp_pct: 0.010
     sl_atr_mult: 1.0
@@ -111,12 +127,16 @@ signals:
     enable: true
     ignore_regime: false
     
-    # Base strategy için
+    # Base parameters
     rsi_min: 55
     
     # Adaptive parameters  
     adaptive_rsi_base: 55
     adaptive_rsi_range: 15
+    
+    # YENİ: Adaptive fine-tuning
+    adaptive_mode: "dynamic"
+    volatility_sensitivity: "medium"
     
     tp_pct: 0.008
     sl_atr_mult: 1.2
