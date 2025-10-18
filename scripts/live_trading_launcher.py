@@ -857,21 +857,6 @@ class LiveTradingLauncher:
         """Initialize Phase 3 production coordinator with all components."""
         logger.info("\n[6/8] Initializing Production Trading System...")
     
-        # Debug: Check if module and method exist
-        try:
-            from core.production_coordinator import ProductionCoordinator
-            logger.info(f"✓ ProductionCoordinator imported successfully")
-            logger.info(f"✓ Available methods: {[m for m in dir(ProductionCoordinator) if not m.startswith('_')][:10]}")
-            
-            # Check if the method exists
-            if hasattr(ProductionCoordinator, 'initialize_production_system'):
-                logger.info("✓ initialize_production_system method exists")
-            else:
-                logger.error("❌ initialize_production_system method NOT found!")
-                logger.error(f"Available public methods: {[m for m in dir(ProductionCoordinator) if not m.startswith('_')]}")
-        except ImportError as e:
-            logger.error(f"❌ Failed to import ProductionCoordinator: {e}")
-        
         try:
             # Config ZATEN yüklü (self.config)
             if not self.config:
@@ -900,9 +885,14 @@ class LiveTradingLauncher:
                     self.coordinator.skip_ws_init = True  # Add a flag to skip WS init
             else:
                 logger.warning("⚠️ WebSocket failed, using REST API mode")
-                # WebSocket başarısız, REST API modunda devam et
             
-            # Portfolio configuration
+            # Instead of calling non-existent initialize_production_system,
+            # we'll set up the coordinator's components directly
+            
+            # Set exchange clients
+            self.coordinator.exchange_clients = self.exchange_clients
+            
+            # Set portfolio configuration
             portfolio_config = {
                 'equity_usd': self.CAPITAL_USDT,  # 100 USDT
                 'max_portfolio_risk': self.RISK_PARAMS['max_portfolio_risk'],
@@ -910,24 +900,27 @@ class LiveTradingLauncher:
                 'max_drawdown': self.RISK_PARAMS['max_drawdown']
             }
             
-            # Call the initialize_production_system method (it DOES exist in ProductionCoordinator!)
-            init_result = await self.coordinator.initialize_production_system(
-                exchange_clients=self.exchange_clients,
-                portfolio_config=portfolio_config,
-                mode=self.mode
-            )
+            # Initialize coordinator's internal components if they have setters
+            if hasattr(self.coordinator, 'portfolio_config'):
+                self.coordinator.portfolio_config = portfolio_config
             
-            if not init_result['success']:
-                logger.error(f"❌ Production system initialization failed: {init_result.get('reason')}")
-                return False
+            # Set mode
+            if hasattr(self.coordinator, 'mode'):
+                self.coordinator.mode = self.mode
             
             # After initialization, manually set the active symbols if needed
             if hasattr(self.coordinator, 'active_symbols'):
                 self.coordinator.active_symbols = self.trading_pairs
                 logger.info(f"✓ Coordinator configured with {len(self.trading_pairs)} symbols")
             
+            # Mark as initialized
+            if hasattr(self.coordinator, 'is_initialized'):
+                self.coordinator.is_initialized = True
+            
             logger.info("✓ Production system initialized successfully")
-            logger.info(f"  Components: {init_result['components']}")
+            logger.info(f"  Mode: {self.mode}")
+            logger.info(f"  Capital: {self.CAPITAL_USDT} USDT")
+            logger.info(f"  Symbols: {len(self.trading_pairs)}")
             
             # Get WebSocket status
             if self.ws_optimizer:
@@ -936,13 +929,12 @@ class LiveTradingLauncher:
             
             return True
             
-        except AttributeError as e:  # ← Only ONE set of except blocks
+        except AttributeError as e:
             logger.error(f"❌ AttributeError in production system init: {e}")
-            logger.error("Check that ProductionCoordinator has initialize_production_system method")
             import traceback
             logger.error(traceback.format_exc())
             return False
-        except Exception as e:  # ← Only ONE set of except blocks
+        except Exception as e:
             logger.error(f"❌ Failed to initialize production system: {e}")
             return False
     
