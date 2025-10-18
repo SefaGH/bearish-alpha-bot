@@ -88,6 +88,10 @@ indicators:
   ema_mid: 50
   ema_slow: 200  # Restored to 200 with bulk fetch implementation
 
+# Adaptive strategies kontrolü
+adaptive_strategies:
+  enable: true  # true = adaptive, false = base strategies  
+
 signals:
   oversold_bounce:
     enable: true
