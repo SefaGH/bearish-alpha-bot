@@ -135,7 +135,11 @@ class TestAdaptiveStrategySignals:
         signal = strategy.signal(df, regime_data=regime_data)
         
         if signal:
-            expected_stop = 3855.0 - (15.0 * 1.0)  # entry - (atr * sl_mult)
+            # Use values from the test data setup
+            entry = 3855.0
+            atr = 15.0
+            sl_mult = 1.0
+            expected_stop = entry - (atr * sl_mult)  # entry - (atr * sl_mult)
             assert abs(signal['stop'] - expected_stop) < 0.01, f"Stop should be {expected_stop}, got {signal['stop']}"
 
 
