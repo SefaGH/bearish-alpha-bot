@@ -40,6 +40,7 @@ from core.notify import Telegram
 from core.state import load_state, save_state
 from core.market_regime import MarketRegimeAnalyzer
 from core.debug_logger import DebugLogger
+from core.system_info import SystemInfoCollector, format_startup_header
 from config.risk_config import RiskConfiguration
 from config.optimization_config import OptimizationConfiguration
 from ml.regime_predictor import MLRegimePredictor
@@ -1266,45 +1267,33 @@ class LiveTradingLauncher:
     def _print_configuration_summary(self):
         """
         Print comprehensive configuration summary at startup.
-        Issue #106: Show actual runtime values instead of placeholders.
+        Issue #119: Enhanced log header with complete system information.
         """
-        logger.info("\n" + "="*70)
-        logger.info("CONFIGURATION SUMMARY")
-        logger.info("="*70)
+        # Collect system information
+        system_info = SystemInfoCollector.get_system_info()
         
-        # Capital & Risk
-        logger.info(f"Capital: ${self.CAPITAL_USDT} USDT")
-        logger.info(f"Max Position Size: {self.RISK_PARAMS['max_position_size']:.1%}")
-        logger.info(f"Stop Loss: {self.RISK_PARAMS['stop_loss_pct']:.1%}")
-        logger.info(f"Take Profit: {self.RISK_PARAMS['take_profit_pct']:.1%}")
-        logger.info(f"Max Portfolio Risk: {self.RISK_PARAMS['max_portfolio_risk']:.1%}")
-        logger.info(f"Max Drawdown: {self.RISK_PARAMS['max_drawdown']:.1%}")
+        # Get risk manager from coordinator if available
+        risk_manager = None
+        if self.coordinator and hasattr(self.coordinator, 'risk_manager'):
+            risk_manager = self.coordinator.risk_manager
         
-        # Exchange & Pairs
-        logger.info(f"\nExchange: {', '.join(self.exchange_clients.keys())}")
-        logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
-        if self.TRADING_PAIRS:
-            logger.info(f"Symbols: {', '.join(self.TRADING_PAIRS[:5])}" + 
-                       (f" ... (+{len(self.TRADING_PAIRS)-5} more)" if len(self.TRADING_PAIRS) > 5 else ""))
+        # Format startup header with all parameters
+        header = format_startup_header(
+            system_info=system_info,
+            mode=self.mode,
+            dry_run=self.dry_run,
+            debug_mode=self.debug_mode,
+            exchange_clients=self.exchange_clients,
+            ws_manager=self.ws_optimizer if hasattr(self, 'ws_optimizer') else None,
+            capital=self.CAPITAL_USDT,
+            trading_pairs=self.TRADING_PAIRS,
+            strategies=self.strategies if hasattr(self, 'strategies') else {},
+            risk_params=self.RISK_PARAMS,
+            risk_manager=risk_manager
+        )
         
-        # Strategies
-        if self.strategies:
-            logger.info(f"\nActive Strategies: {len(self.strategies)}")
-            for strategy_name in self.strategies.keys():
-                logger.info(f"  - {strategy_name}")
-        
-        # Mode & Features
-        logger.info(f"\nMode: {self.mode.upper()}")
-        logger.info(f"Dry Run: {self.dry_run}")
-        logger.info(f"Debug Mode: {self.debug_mode}")
-        logger.info(f"Infinite Mode: {self.infinite}")
-        logger.info(f"Auto-Restart: {self.auto_restart}")
-        
-        # WebSocket
-        if self.ws_optimizer:
-            logger.info(f"\nWebSocket: {'Enabled' if self._is_ws_initialized() else 'Disabled (REST API)'}")
-        
-        logger.info("="*70 + "\n")
+        # Log formatted header
+        logger.info("\n" + header + "\n")
     
     def _generate_post_session_analysis(self, log_filename: str = None):
         """
