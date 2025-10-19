@@ -78,6 +78,30 @@ class RiskManager:
             entry_price = signal.get('entry', 0)
             stop_loss = signal.get('stop', 0)
             
+            # Fallback: Calculate stop if missing (same logic as calculate_position_size)
+            if not stop_loss and signal.get('sl_atr_mult') and signal.get('atr'):
+                atr = signal['atr']
+                sl_mult = signal['sl_atr_mult']
+                side = signal.get('side', 'buy')
+                
+                if side in ['buy', 'long']:
+                    stop_loss = entry_price - (atr * sl_mult)
+                else:
+                    stop_loss = entry_price + (atr * sl_mult)
+                
+                logger.info(f"📊 [RISK-VALIDATE] Calculated ATR-based stop: {stop_loss:.2f}")
+            
+            if not stop_loss and signal.get('sl_pct'):
+                sl_pct = signal['sl_pct']
+                side = signal.get('side', 'buy')
+                
+                if side in ['buy', 'long']:
+                    stop_loss = entry_price * (1 - sl_pct)
+                else:
+                    stop_loss = entry_price * (1 + sl_pct)
+                
+                logger.info(f"📊 [RISK-VALIDATE] Calculated percentage-based stop: {stop_loss:.2f}")
+            
             logger.debug(f"🛡️ [RISK-CALC] Validating position for {symbol}")
             logger.debug(f"🛡️ [RISK-CALC] Portfolio value: ${self.portfolio_value:.2f}")
             
@@ -264,8 +288,33 @@ class RiskManager:
             entry_price = signal.get('entry', 0)
             stop_loss = signal.get('stop', 0)
             
+            # Fallback 1: Calculate from ATR if stop missing
+            if not stop_loss and signal.get('sl_atr_mult') and signal.get('atr'):
+                atr = signal['atr']
+                sl_mult = signal['sl_atr_mult']
+                side = signal.get('side', 'buy')
+                
+                if side in ['buy', 'long']:
+                    stop_loss = entry_price - (atr * sl_mult)
+                else:  # sell/short
+                    stop_loss = entry_price + (atr * sl_mult)
+                
+                logger.info(f"📊 [RISK] Calculated ATR-based stop: {stop_loss:.2f} (ATR={atr:.2f}, mult={sl_mult})")
+            
+            # Fallback 2: Calculate from sl_pct if still missing
+            if not stop_loss and signal.get('sl_pct'):
+                sl_pct = signal['sl_pct']
+                side = signal.get('side', 'buy')
+                
+                if side in ['buy', 'long']:
+                    stop_loss = entry_price * (1 - sl_pct)
+                else:
+                    stop_loss = entry_price * (1 + sl_pct)
+                
+                logger.info(f"📊 [RISK] Calculated percentage-based stop: {stop_loss:.2f} (pct={sl_pct:.2%})")
+            
             if entry_price <= 0 or stop_loss <= 0:
-                logger.warning("Invalid entry or stop price")
+                logger.warning("Invalid entry or stop price after all fallbacks")
                 return 0.0
             
             # Base risk amount
