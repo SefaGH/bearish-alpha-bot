@@ -802,6 +802,9 @@ class ProductionCoordinator:
                 logger.warning(f"Signal rejected: {result.get('reason')}")
                 # For rejected signals, generate a temporary ID for tracking
                 signal_id = f"{signal.get('strategy', 'unknown')}_{signal.get('symbol', 'UNKNOWN')}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')}"
+                # [STAGE 1: GENERATED] Mark signal as generated for rejected signals
+                self._track_signal_lifecycle(signal_id, 'generated', {'symbol': signal.get('symbol'), 'strategy': signal.get('strategy')})
+                # [STAGE 2: REJECTED] Mark signal as rejected
                 self._track_signal_lifecycle(signal_id, 'rejected', {'reason': result.get('reason')})
                 return {'success': False, 'reason': result.get('reason')}
                 
