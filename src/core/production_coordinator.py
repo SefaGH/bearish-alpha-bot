@@ -337,13 +337,13 @@ class ProductionCoordinator:
             
             # Execute registered strategies
             count = len(self.strategies)
-            logger.debug(f"🎯 Registered strategies count: {count}")
+            logger.info(f"🎯 Registered strategies count: {count}")
             
             if count:
-                logger.debug(f"🔍 Executing {count} strategies for {symbol}")
+                logger.info(f"🔍 Executing {count} strategies for {symbol}")
                 
                 for strategy_name, strategy_instance in self.strategies.items():
-                    logger.debug("Calling %s...", strategy_name)
+                    logger.info(f"  → Calling {strategy_name}...")
                     try:
                         # Call strategy's signal method
                         strategy_signal = None
@@ -441,6 +441,8 @@ class ProductionCoordinator:
             if not self.active_symbols:
                 logger.warning("No active symbols to process")
                 return
+            
+            logger.info(f"🔄 Processing {len(self.active_symbols)} symbols: {self.active_symbols}")
                 
             # Process each active symbol
             for symbol in self.active_symbols:
@@ -457,9 +459,6 @@ class ProductionCoordinator:
                 except Exception as e:
                     logger.error(f"Error processing {symbol}: {e}")
                     continue
-            
-            # Sleep between iterations
-            await asyncio.sleep(self.loop_interval)
             
         except Exception as e:
             logger.error(f"Trading loop error: {e}")
