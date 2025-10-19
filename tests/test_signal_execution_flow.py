@@ -16,7 +16,7 @@ from unittest.mock import Mock, AsyncMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from core.production_coordinator import ProductionCoordinator
-from core.live_trading_engine import LiveTradingEngine, EngineState
+from core.live_trading_engine import LiveTradingEngine
 from core.strategy_coordinator import StrategyCoordinator
 from core.risk_manager import RiskManager
 from core.portfolio_manager import PortfolioManager
