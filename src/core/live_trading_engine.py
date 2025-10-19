@@ -882,34 +882,99 @@ class LiveTradingEngine:
         logger.warning(f"❌ Failed to fetch {symbol} {timeframe} from all exchanges")
         return None
     
+    async def _get_current_price(self, symbol: str) -> Optional[float]:
+        """
+        Get current price with WebSocket/REST fallback.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Current price or None if unavailable
+        """
+        # Try WebSocket first
+        if self.ws_manager:
+            try:
+                ws_data = self.ws_manager.get_latest_data(symbol, '1m')
+                if ws_data and ws_data.get('ohlcv'):
+                    latest_candle = ws_data['ohlcv'][-1]
+                    return float(latest_candle[4])  # Close price
+            except Exception as e:
+                logger.debug(f"WebSocket price fetch failed: {e}")
+        
+        # Fallback to REST API
+        for exchange_name, client in self.exchange_clients.items():
+            try:
+                ticker = client.fetch_ticker(symbol)
+                price = ticker.get('last', ticker.get('close', 0))
+                if price > 0:
+                    return float(price)
+            except Exception as e:
+                logger.debug(f"REST price fetch failed for {exchange_name}: {e}")
+        
+        logger.warning(f"Could not fetch price for {symbol}")
+        return None
+    
     async def _position_monitoring_loop(self):
-        """Background task for monitoring active positions."""
+        """Enhanced position monitoring with real-time P&L and exit checking."""
         logger.info("Position monitoring loop started")
         
-        # Default interval if not in config
-        interval = self.config.get('monitoring', {}).get('position_check_interval', 30)
+        # Reduce interval to 10 seconds for faster response
+        interval = 10
         
         try:
             while self.state == EngineState.RUNNING:
-                try:
-                    if self.active_positions:
-                        logger.debug(f"Monitoring {len(self.active_positions)} active positions")
+                if not self.active_positions:
+                    await asyncio.sleep(interval)
+                    continue
+                
+                logger.debug(f"Monitoring {len(self.active_positions)} active positions")
+                
+                for position_id in list(self.active_positions.keys()):
+                    try:
+                        position = self.active_positions.get(position_id)
+                        if not position:
+                            continue
                         
-                    for position_id in list(self.active_positions.keys()):
-                        # Check position status
+                        symbol = position.get('symbol')
+                        
+                        # Fetch current price
+                        current_price = await self._get_current_price(symbol)
+                        
+                        if not current_price or current_price <= 0:
+                            logger.warning(f"Invalid price for {symbol}, skipping")
+                            continue
+                        
+                        # Update P&L
+                        pnl_result = await self.position_manager.monitor_position_pnl(
+                            position_id,
+                            current_price
+                        )
+                        
+                        if pnl_result.get('success'):
+                            unrealized_pnl = pnl_result.get('unrealized_pnl', 0)
+                            pnl_pct = pnl_result.get('pnl_pct', 0)
+                            
+                            logger.info(
+                                f"[P&L] {position_id}: ${unrealized_pnl:.2f} ({pnl_pct:+.2f}%)"
+                            )
+                        
+                        # Check exit conditions
                         exit_check = await self.position_manager.manage_position_exits(position_id)
                         
                         if exit_check.get('should_exit'):
-                            logger.info(f"📤 Exit signal for {position_id}: {exit_check.get('exit_reason')}")
-                            # Handle position exit
+                            exit_reason = exit_check.get('exit_reason')
+                            logger.info(f"Exit signal for {position_id}: {exit_reason}")
+                            
+                            # Execute exit
                             await self._execute_position_exit(position_id, exit_check)
                     
-                    await asyncio.sleep(interval)
-                    
-                except Exception as e:
-                    logger.error(f"Error monitoring positions: {e}")
-                    await asyncio.sleep(interval)
-                    
+                    except Exception as e:
+                        logger.error(f"Error monitoring position {position_id}: {e}")
+                        continue
+                
+                await asyncio.sleep(interval)
+        
         except asyncio.CancelledError:
             logger.info("Position monitoring loop cancelled")
     

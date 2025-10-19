@@ -437,91 +437,69 @@ class AdvancedPositionManager:
     
     async def manage_position_exits(self, position_id: str) -> Dict[str, Any]:
         """
-        Intelligent position exit management with priority checks.
-        Phase 3.4 - Issue #100: Position Exit Monitoring
-        
-        Priority order: Stop Loss > Take Profit > Timeout
+        Check if position should exit based on stop loss or take profit.
         
         Args:
             position_id: Position identifier
             
         Returns:
-            Exit management result
+            Dict with should_exit (bool), exit_reason (str), exit_price (float)
         """
         try:
             if position_id not in self.positions:
-                return {'success': False, 'reason': 'Position not found'}
+                return {'should_exit': False, 'reason': 'Position not found'}
             
             position = self.positions[position_id]
+            current_price = position.get('current_price', 0)
             
-            # Get current price from WebSocket or API
-            current_price = await self._get_current_price_from_ws(position['symbol'])
+            if current_price <= 0:
+                return {'should_exit': False, 'reason': 'No current price'}
             
-            if current_price is None or current_price <= 0:
-                logger.warning(f"Could not get valid price for {position_id}, skipping exit check")
-                return {
-                    'success': True,
-                    'should_exit': False,
-                    'position_id': position_id,
-                    'reason': 'price_unavailable'
-                }
+            side = position.get('side', 'long')
+            stop_loss = position.get('stop_loss', 0)
+            take_profit = position.get('take_profit', 0)
             
-            # Update position's current price
-            position['current_price'] = current_price
+            # Check stop loss
+            if side in ['long', 'buy']:
+                if stop_loss > 0 and current_price <= stop_loss:
+                    logger.warning(f"Stop loss hit for {position_id}")
+                    return {
+                        'should_exit': True,
+                        'exit_reason': 'stop_loss',
+                        'exit_price': current_price
+                    }
+            else:  # short
+                if stop_loss > 0 and current_price >= stop_loss:
+                    logger.warning(f"Stop loss hit for {position_id}")
+                    return {
+                        'should_exit': True,
+                        'exit_reason': 'stop_loss',
+                        'exit_price': current_price
+                    }
             
-            # Priority 1: Check stop-loss
-            if self._check_stop_loss_hit(position, current_price):
-                logger.info(f"Stop-loss hit for {position_id} at {current_price}")
-                # Auto-close position
-                close_result = await self.close_position(position_id, current_price, ExitReason.STOP_LOSS.value)
-                return {
-                    'success': True,
-                    'should_exit': True,
-                    'position_id': position_id,
-                    'exit_reason': ExitReason.STOP_LOSS.value,
-                    'exit_price': current_price,
-                    'close_result': close_result
-                }
+            # Check take profit
+            if side in ['long', 'buy']:
+                if take_profit > 0 and current_price >= take_profit:
+                    logger.info(f"Take profit hit for {position_id}")
+                    return {
+                        'should_exit': True,
+                        'exit_reason': 'take_profit',
+                        'exit_price': current_price
+                    }
+            else:  # short
+                if take_profit > 0 and current_price <= take_profit:
+                    logger.info(f"Take profit hit for {position_id}")
+                    return {
+                        'should_exit': True,
+                        'exit_reason': 'take_profit',
+                        'exit_price': current_price
+                    }
             
-            # Priority 2: Check take-profit
-            if self._check_take_profit_hit(position, current_price):
-                logger.info(f"Take-profit hit for {position_id} at {current_price}")
-                # Auto-close position
-                close_result = await self.close_position(position_id, current_price, ExitReason.TAKE_PROFIT.value)
-                return {
-                    'success': True,
-                    'should_exit': True,
-                    'position_id': position_id,
-                    'exit_reason': ExitReason.TAKE_PROFIT.value,
-                    'exit_price': current_price,
-                    'close_result': close_result
-                }
-            
-            # Priority 3: Check timeout
-            if self._check_timeout_exit(position):
-                logger.info(f"Timeout exit for {position_id} at {current_price}")
-                # Auto-close position
-                close_result = await self.close_position(position_id, current_price, ExitReason.TIME_EXIT.value)
-                return {
-                    'success': True,
-                    'should_exit': True,
-                    'position_id': position_id,
-                    'exit_reason': ExitReason.TIME_EXIT.value,
-                    'exit_price': current_price,
-                    'close_result': close_result
-                }
-            
-            # No exit conditions met
-            return {
-                'success': True,
-                'should_exit': False,
-                'position_id': position_id,
-                'current_price': current_price
-            }
-            
+            return {'should_exit': False, 'reason': 'No exit conditions met'}
+        
         except Exception as e:
-            logger.error(f"Error managing position exit: {e}")
-            return {'success': False, 'reason': str(e)}
+            logger.error(f"Error checking exit for {position_id}: {e}")
+            return {'should_exit': False, 'reason': f'Error: {str(e)}'}
     
     def calculate_position_metrics(self, position_id: str) -> Dict[str, Any]:
         """
