@@ -9,11 +9,21 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from enum import Enum
 
-from ..utils.pnl_calculator import (
-    calculate_unrealized_pnl,
-    calculate_realized_pnl,
-    calculate_pnl_percentage
-)
+# Dual import strategy: supports both script and package execution
+try:
+    # Absolute import for script execution
+    from src.utils.pnl_calculator import (
+        calculate_unrealized_pnl,
+        calculate_realized_pnl,
+        calculate_pnl_percentage
+    )
+except ImportError:
+    # Relative import for package context
+    from ..utils.pnl_calculator import (
+        calculate_unrealized_pnl,
+        calculate_realized_pnl,
+        calculate_pnl_percentage
+    )
 
 logger = logging.getLogger(__name__)
 

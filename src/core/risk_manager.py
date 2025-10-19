@@ -8,7 +8,13 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 import numpy as np
 
-from ..utils.pnl_calculator import calculate_unrealized_pnl
+# Dual import strategy: supports both script and package execution
+try:
+    # Absolute import for script execution
+    from src.utils.pnl_calculator import calculate_unrealized_pnl
+except ImportError:
+    # Relative import for package context
+    from ..utils.pnl_calculator import calculate_unrealized_pnl
 
 logger = logging.getLogger(__name__)
 

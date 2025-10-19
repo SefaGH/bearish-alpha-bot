@@ -62,8 +62,13 @@ from .live_trading_engine import LiveTradingEngine
 from strategies.adaptive_ob import AdaptiveOversoldBounce
 from strategies.adaptive_str import AdaptiveShortTheRip
 
-# Utils
-from ..utils.pnl_calculator import calculate_unrealized_pnl, calculate_pnl_percentage
+# Utils - Dual import strategy: supports both script and package execution
+try:
+    # Absolute import for script execution
+    from src.utils.pnl_calculator import calculate_unrealized_pnl, calculate_pnl_percentage
+except ImportError:
+    # Relative import for package context
+    from ..utils.pnl_calculator import calculate_unrealized_pnl, calculate_pnl_percentage
 
 # Phase 4: ML Components (optional)
 try:
