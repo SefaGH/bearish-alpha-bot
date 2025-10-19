@@ -51,16 +51,91 @@ class StrategyCoordinator:
         # Conflict tracking
         self.conflict_history = []
         
+        # Duplicate prevention tracking (Phase 3.4 - Issue #103)
+        self.last_position_time = {}  # symbol -> timestamp
+        self.last_strategy_time = {}  # strategy_name -> timestamp
+        self.signal_price_history = defaultdict(list)  # symbol -> [(timestamp, price), ...]
+        
         # Signal processing stats
         self.processing_stats = {
             'total_signals': 0,
             'accepted_signals': 0,
             'rejected_signals': 0,
             'conflicted_signals': 0,
+            'duplicate_rejections': 0,
             'last_signal_time': None
         }
         
         logger.info("StrategyCoordinator initialized")
+    
+    def validate_duplicate(self, signal: Dict, strategy_name: str) -> Tuple[bool, str]:
+        """
+        Validate signal for duplicates using cooldown and price movement checks.
+        Phase 3.4 - Issue #103: Duplicate Position Prevention
+        
+        Args:
+            signal: Trading signal dictionary
+            strategy_name: Name of the strategy generating the signal
+            
+        Returns:
+            Tuple of (is_valid, rejection_reason)
+        """
+        import time
+        
+        # Get configuration with defaults
+        config = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
+        monitoring_config = config.get('monitoring', {}).get('duplicate_prevention', {})
+        
+        enabled = monitoring_config.get('enabled', True)
+        if not enabled:
+            return True, "OK"
+        
+        symbol = signal.get('symbol')
+        entry_price = signal.get('entry', 0)
+        current_time = time.time()
+        
+        # Configuration values
+        symbol_cooldown = float(monitoring_config.get('same_symbol_cooldown', 300))
+        strategy_cooldown = float(monitoring_config.get('same_strategy_cooldown', 180))
+        min_price_change = float(monitoring_config.get('min_price_change', 0.002))
+        
+        # Check symbol cooldown
+        if symbol in self.last_position_time:
+            elapsed = current_time - self.last_position_time[symbol]
+            if elapsed < symbol_cooldown:
+                remaining = symbol_cooldown - elapsed
+                return False, f"Symbol cooldown: {remaining:.0f}s remaining"
+        
+        # Check strategy cooldown
+        if strategy_name in self.last_strategy_time:
+            elapsed = current_time - self.last_strategy_time[strategy_name]
+            if elapsed < strategy_cooldown:
+                remaining = strategy_cooldown - elapsed
+                return False, f"Strategy cooldown: {remaining:.0f}s remaining"
+        
+        # Check price movement
+        if symbol in self.signal_price_history and entry_price > 0:
+            # Clean up old history (older than cooldown period)
+            self.signal_price_history[symbol] = [
+                (ts, price) for ts, price in self.signal_price_history[symbol]
+                if current_time - ts < symbol_cooldown
+            ]
+            
+            # Check if there are recent signals
+            if self.signal_price_history[symbol]:
+                last_timestamp, last_price = self.signal_price_history[symbol][-1]
+                price_change = abs(entry_price - last_price) / last_price
+                
+                if price_change < min_price_change:
+                    return False, f"Insufficient price movement: {price_change*100:.2f}% < {min_price_change*100:.2f}%"
+        
+        # Update tracking
+        self.last_position_time[symbol] = current_time
+        self.last_strategy_time[strategy_name] = current_time
+        if entry_price > 0:
+            self.signal_price_history[symbol].append((current_time, entry_price))
+        
+        return True, "OK"
     
     async def process_strategy_signal(self, strategy_name: str, signal: Dict) -> Dict[str, Any]:
         """
@@ -92,6 +167,18 @@ class StrategyCoordinator:
             
             # Step 2: Enrich signal with metadata
             enriched_signal = self._enrich_signal(strategy_name, signal)
+            
+            # Step 2.5: Validate for duplicates (Phase 3.4 - Issue #103)
+            is_valid_duplicate, duplicate_reason = self.validate_duplicate(enriched_signal, strategy_name)
+            if not is_valid_duplicate:
+                self.processing_stats['rejected_signals'] += 1
+                self.processing_stats['duplicate_rejections'] += 1
+                logger.info(f"Signal rejected due to duplicate prevention: {duplicate_reason}")
+                return {
+                    'status': 'rejected',
+                    'reason': f"Duplicate prevention: {duplicate_reason}",
+                    'stage': 'duplicate_validation'
+                }
             
             # Step 3: Check for conflicts with existing positions/signals
             conflict_check = await self._check_signal_conflicts(enriched_signal)

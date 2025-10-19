@@ -248,28 +248,50 @@ class AdaptiveShortTheRip(ShortTheRip):
             position_mult = self.calculate_dynamic_position_size(volatility)
             logger.debug(f"📊 [STRATEGY-AdaptiveSTR] Position multiplier: {position_mult:.2f} (volatility: {volatility})")
             
-            # ===== KRİTİK DÜZELTME: ENTRY FİYATI EKLE =====
+            # ===== ATR-BASED TP/SL CALCULATION FOR SHORT =====
             entry_price = float(last30['close'])
             atr_value = float(last30['atr']) if 'atr' in last30.index else entry_price * 0.02
             
-            # Calculate stop-loss from ATR (SHORT position - opposite direction)
-            sl_atr_mult = float(self.cfg.get("sl_atr_mult", 1.2))
+            # Get ATR multipliers from config
+            tp_atr_mult = float(self.cfg.get("tp_atr_mult", 3.0))
+            sl_atr_mult = float(self.cfg.get("sl_atr_mult", 1.5))
+            
+            # Calculate TP and SL from ATR (SHORT: TP below entry, SL above entry)
+            target_price = entry_price - (atr_value * tp_atr_mult)
             stop_price = entry_price + (atr_value * sl_atr_mult)
             
-            # Calculate target price from tp_pct
-            tp_pct = float(self.cfg.get("tp_pct", 0.012))
-            target_price = entry_price * (1 - tp_pct)
+            # Safety boundaries
+            min_tp_pct = float(self.cfg.get("min_tp_pct", 0.010))
+            max_sl_pct = float(self.cfg.get("max_sl_pct", 0.020))
             
-            # Build adaptive signal - TEK VE DÜZGÜN DICTIONARY
+            # Enforce minimum TP (for short, target is below entry)
+            if (entry_price - target_price) / entry_price < min_tp_pct:
+                target_price = entry_price * (1 - min_tp_pct)
+            
+            # Enforce maximum SL (for short, stop is above entry)
+            if (stop_price - entry_price) / entry_price > max_sl_pct:
+                stop_price = entry_price * (1 + max_sl_pct)
+            
+            # Calculate and validate R/R ratio
+            rr_ratio = abs(entry_price - target_price) / abs(stop_price - entry_price)
+            
+            # Calculate percentages for signal
+            tp_pct = (entry_price - target_price) / entry_price
+            sl_pct = (stop_price - entry_price) / entry_price
+            
+            # Build adaptive signal with ATR-based TP/SL
             signal = {
                 "side": "sell",
                 "entry": entry_price,
                 "stop": stop_price,
                 "target": target_price,
-                "reason": f"Adaptive RSI overbought {rsi_val:.1f} (threshold: {adaptive_rsi_threshold:.1f}, regime: {market_regime['trend']})",
+                "reason": f"Adaptive RSI overbought {rsi_val:.1f} (threshold: {adaptive_rsi_threshold:.1f}, regime: {market_regime['trend']}, R/R: {rr_ratio:.2f})",
                 "tp_pct": tp_pct,
+                "sl_pct": sl_pct,
+                "tp_atr_mult": tp_atr_mult,
                 "sl_atr_mult": sl_atr_mult,
                 "atr": atr_value,
+                "rr_ratio": rr_ratio,
                 "is_adaptive": True,
                 "adaptive_threshold": adaptive_rsi_threshold,
                 "position_multiplier": position_mult,
