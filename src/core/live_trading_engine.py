@@ -39,7 +39,7 @@ except ImportError:
 try:
     from .config_validator import ConfigValidator
 except ImportError:
-    from core.config_validator import ConfigValidator
+    from .config_validator import ConfigValidator
 
 # Core imports
 from .order_manager import SmartOrderManager
