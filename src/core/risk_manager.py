@@ -12,10 +12,12 @@ import numpy as np
 try:
     # Absolute import for script execution
     from src.utils.pnl_calculator import calculate_unrealized_pnl
-except ImportError:
-    # Relative import for package context
-    from ..utils.pnl_calculator import calculate_unrealized_pnl
-
+except ModuleNotFoundError as e:
+    # Only fallback if the missing module is src or src.utils.pnl_calculator
+    if e.name in ('src', 'src.utils', 'src.utils.pnl_calculator'):
+        from ..utils.pnl_calculator import calculate_unrealized_pnl
+    else:
+        raise
 logger = logging.getLogger(__name__)
 
 
