@@ -59,6 +59,25 @@ class RiskManager:
         logger.info(f"Config received: {portfolio_config}")  # Debug için
         logger.info(f"Risk limits: {self.risk_limits}")
     
+    def _calculate_total_portfolio_exposure(self) -> float:
+        """
+        Calculate total notional value of all open positions.
+        
+        Returns:
+            Total exposure in USDT
+        """
+        total_exposure = sum(
+            pos.get('size', 0) * pos.get('entry_price', 0) 
+            for pos in self.active_positions.values()
+        )
+        
+        active_count = len(self.active_positions)
+        capital_utilization = (total_exposure / self.portfolio_value * 100) if self.portfolio_value > 0 else 0
+        
+        logger.debug(f"📊 [EXPOSURE] Active positions: {active_count}, Total exposure: ${total_exposure:.2f}, Capital utilization: {capital_utilization:.1f}%")
+        
+        return total_exposure
+    
     def set_risk_limits(self, max_portfolio_risk: float = 0.02, max_position_size: float = 0.10,
                        max_drawdown: float = 0.15, max_correlation: float = 0.7):
         """
@@ -124,6 +143,40 @@ class RiskManager:
             logger.debug(f"🛡️ [RISK-CALC] Portfolio value: ${self.portfolio_value:.2f}")
             
             risk_metrics = {}
+            
+            # STEP 0: Portfolio exposure validation (capital limit enforcement)
+            current_exposure = self._calculate_total_portfolio_exposure()
+            new_position_value = position_size * entry_price
+            projected_exposure = current_exposure + new_position_value
+            
+            risk_metrics['current_exposure'] = current_exposure
+            risk_metrics['new_position_value'] = new_position_value
+            risk_metrics['projected_exposure'] = projected_exposure
+            risk_metrics['capital_limit'] = self.portfolio_value
+            
+            if projected_exposure > self.portfolio_value:
+                over_limit = projected_exposure - self.portfolio_value
+                over_limit_pct = (over_limit / self.portfolio_value) * 100
+                
+                logger.warning(f"🚫 [CAPITAL-LIMIT] PORTFOLIO EXPOSURE EXCEEDED")
+                logger.warning(f"   Symbol: {symbol}")
+                logger.warning(f"   Current Exposure: ${current_exposure:.2f}")
+                logger.warning(f"   New Position: ${new_position_value:.2f}")
+                logger.warning(f"   Projected Total: ${projected_exposure:.2f}")
+                logger.warning(f"   Capital Limit: ${self.portfolio_value:.2f}")
+                logger.warning(f"   Over Limit By: ${over_limit:.2f} ({over_limit_pct:.1f}%)")
+                logger.warning(f"   Active Positions: {len(self.active_positions)}")
+                logger.warning(f"   ❌ POSITION REJECTED")
+                
+                return (False, f"Portfolio exposure ${projected_exposure:.2f} would exceed capital limit ${self.portfolio_value:.2f}", risk_metrics)
+            
+            available_capital = self.portfolio_value - current_exposure
+            remaining_after = available_capital - new_position_value
+            
+            logger.info(f"✅ [CAPITAL-LIMIT] Exposure check PASSED")
+            logger.info(f"   Available Capital: ${available_capital:.2f}")
+            logger.info(f"   New Position: ${new_position_value:.2f}")
+            logger.info(f"   Remaining After: ${remaining_after:.2f}")
             
             # 1. Position size validation
             position_value = position_size * entry_price
@@ -440,6 +493,11 @@ class RiskManager:
             for pos in self.active_positions.values()
         )
         
+        # Calculate total exposure
+        total_exposure = self._calculate_total_portfolio_exposure()
+        available_capital = self.portfolio_value - total_exposure
+        capital_utilization = total_exposure / self.portfolio_value if self.portfolio_value > 0 else 0
+        
         return {
             'portfolio_value': self.portfolio_value,
             'peak_value': self.peak_portfolio_value,
@@ -448,5 +506,8 @@ class RiskManager:
             'total_unrealized_pnl': total_unrealized_pnl,
             'total_risk': total_risk,
             'portfolio_heat': total_risk / self.portfolio_value if self.portfolio_value > 0 else 0,
+            'total_exposure': total_exposure,
+            'available_capital': available_capital,
+            'capital_utilization': capital_utilization,
             'risk_limits': self.risk_limits
         }

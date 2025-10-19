@@ -360,10 +360,19 @@ class LiveTradingEngine:
             
             if not risk_validation[0]:  # is_valid
                 logger.warning(f"❌ Risk validation failed: {risk_validation[1]}")
+                risk_metrics = risk_validation[2]
+                
+                # Enhanced logging for capital limit failures
+                if 'current_exposure' in risk_metrics:
+                    logger.warning(f"   Current Exposure: ${risk_metrics.get('current_exposure', 0):.2f}")
+                    logger.warning(f"   Attempted Position Value: ${risk_metrics.get('new_position_value', 0):.2f}")
+                    logger.warning(f"   Capital Limit: ${risk_metrics.get('capital_limit', 0):.2f}")
+                
                 return {
                     'success': False,
                     'reason': f"Risk validation failed: {risk_validation[1]}",
-                    'stage': 'risk_validation'
+                    'stage': 'risk_validation',
+                    'risk_metrics': risk_metrics
                 }
             
             risk_metrics = risk_validation[2]
