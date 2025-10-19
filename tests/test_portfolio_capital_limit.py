@@ -162,18 +162,16 @@ class TestPortfolioCapitalLimit:
                 }
             )
         
-        # Now add position that brings total to exactly $100 (still within 15% position size limit)
+        # Now add 7th position that stays within both capital and position size limits
+        # 6 positions × $14 = $84, plus $14 = $98 (within $100 capital and 15% position size limit)
         signal_7 = {
             'symbol': 'SYMBOL7/USDT:USDT',
             'entry': 100,
             'stop': 98,
             'target': 105,
-            'position_size': 0.16,  # $16 position but keeps total at $100 (84 + 16 = 100) - wait, this exceeds position size limit
+            'position_size': 0.14,  # $14 position (within 15% limit)
             'side': 'long'
         }
-        
-        # Actually use $14 to stay within 15% individual position size limit
-        signal_7['position_size'] = 0.14  # $14 position
         
         is_valid, reason, metrics = await risk_manager.validate_new_position(signal_7, {})
         
@@ -229,9 +227,8 @@ class TestPortfolioCapitalLimit:
                 assert projected_value > 100, f"Position rejected before reaching limit. Cumulative: ${cumulative_value}, would be: ${projected_value}"
                 break
         
-        # With the values: 15+15+10+15+10+15+15+10 = 105
-        # Should accept first 6 positions ($95 total), reject 7th ($110 would exceed)
-        # Actually: 15+15+10+15+10+15 = 80, 7th would be 95, 8th would be 105 > 100
+        # Expected values: 15+15+10+15+10+15+15 = 95 (7 positions accepted)
+        # 8th position would be $10, making total $105 which exceeds $100 limit
         assert positions_accepted == 7, f"Should accept 7 positions (total $95), got {positions_accepted}"
         
         total_exposure = risk_manager._calculate_total_portfolio_exposure()
