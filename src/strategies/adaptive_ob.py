@@ -238,7 +238,13 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 stop_price = entry_price * (1 - max_sl_pct)
             
             # Calculate and validate R/R ratio
-            rr_ratio = abs(target_price - entry_price) / abs(entry_price - stop_price)
+            rr_numerator = target_price - entry_price
+            rr_denominator = entry_price - stop_price
+            if rr_numerator <= 0 or rr_denominator <= 0:
+                logging.error(f"Invalid R/R calculation: numerator={rr_numerator}, denominator={rr_denominator}, entry={entry_price}, target={target_price}, stop={stop_price}")
+                rr_ratio = float('nan')
+            else:
+                rr_ratio = rr_numerator / rr_denominator
             
             # Calculate percentages for signal
             tp_pct = (target_price - entry_price) / entry_price
