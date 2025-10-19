@@ -326,12 +326,7 @@ print(f"Return: {return_pct:+.2f}%")  # +3.00%
 
 If you encounter `ModuleNotFoundError: No module named 'utils'`:
 
-1. Ensure you're running from the `src` directory, or
-2. Add `src` to your Python path:
-   ```python
-   import sys
-   sys.path.insert(0, 'src')
-   ```
+1. **Install the project in editable mode** (recommended for development):
 
 ### Calculation Discrepancies
 
