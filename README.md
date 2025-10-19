@@ -104,7 +104,10 @@ from src.utils.pnl_calculator import calculate_unrealized_pnl
 ### Script-Style Execution (For Development/Scripts)
 ```bash
 # Add src to path (done automatically in scripts/)
-export PYTHONPATH=/path/to/bearish-alpha-bot/src:$PYTHONPATH
+# Using relative path:
+export PYTHONPATH="$(pwd)/src:$PYTHONPATH"
+# Or using absolute path:
+export PYTHONPATH="$PROJECT_ROOT/src:$PYTHONPATH"
 
 # Run scripts directly
 python scripts/live_trading_launcher.py
@@ -126,6 +129,8 @@ except ImportError:
 ```
 
 This ensures compatibility across different execution contexts without breaking existing workflows.
+
+**Note:** The try/except pattern has no runtime performance impact - the ImportError only occurs once during module import, and the correct import path is cached by Python's import system.
 
 ## Sıkça Sorulanlar
 - “Artefact yok uyarısı” → `RUN_SUMMARY.txt` her koşuda oluşturulur.  
