@@ -161,7 +161,7 @@ position_management:
     enabled: true
     check_frequency: 5               # Check exits every 5 seconds
   time_based_exit:
-    max_position_duration: 3600      # 1 hour max position duration
+    max_position_duration: 3600      # Maximum position duration in seconds (3600 = 1 hour)
 
 quarantine:
   enable: true
