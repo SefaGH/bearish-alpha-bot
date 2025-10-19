@@ -216,7 +216,16 @@ class StrategyCoordinator:
         Phase 3.4 - Issue #118: Enhanced statistics tracking
         
         Returns:
-            Dictionary with comprehensive duplicate prevention metrics
+            Dictionary with comprehensive duplicate prevention metrics:
+            - total_signals_processed: Total number of signals processed
+            - total_duplicate_rejections: Total signals rejected due to duplication
+            - cooldown_bypasses: Number of times cooldown was bypassed
+            - bypass_rate: Percentage of bypasses relative to total signals (e.g., 5.5 means 5.5%)
+            - avg_bypass_price_delta: Average price change for bypasses as percentage (e.g., 0.35 means 0.35%)
+            - rejected_by_cooldown: Signals rejected by cooldown (no price history)
+            - rejected_by_price_delta: Signals rejected due to insufficient price movement
+            - rejection_breakdown: Detailed breakdown of rejections
+            - last_bypass_time: Timestamp of last bypass event
         """
         total_signals = self.processing_stats.get('total_signals', 0)
         cooldown_bypasses = self.processing_stats.get('cooldown_bypasses', 0)
