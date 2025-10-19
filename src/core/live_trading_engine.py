@@ -21,9 +21,6 @@ except ImportError:
     # Fallback if adaptive strategies don't exist
     from strategies.oversold_bounce import OversoldBounce
     from strategies.short_the_rip import ShortTheRip
-
-    # Import config validator
-    from core.config_validator import ConfigValidator
     
     # Create adaptive wrappers
     class AdaptiveOversoldBounce(OversoldBounce):
@@ -37,6 +34,12 @@ except ImportError:
         def __init__(self, cfg, regime_analyzer=None):
             super().__init__(cfg)
             self.regime_analyzer = regime_analyzer  # ✅ 'p' kaldırıldı!
+
+# Import config validator (needed for signal processing loop)
+try:
+    from .config_validator import ConfigValidator
+except ImportError:
+    from .config_validator import ConfigValidator
 
 # Core imports
 from .order_manager import SmartOrderManager
@@ -187,7 +190,8 @@ class LiveTradingEngine:
         self._universe_built = False
         
         # Performance tracking
-        self._signal_count = 0
+        self._signal_count = 0  # Received from ProductionCoordinator
+        self._executed_count = 0  # Track executed signals
         self._last_signal_time = None
         
         logger.info("LiveTradingEngine initialized")
@@ -450,6 +454,9 @@ class LiveTradingEngine:
             # Store in active positions
             self.active_positions[position_id] = position_result['position']
             
+            # Increment executed count
+            self._executed_count += 1
+            
             # Record in trade history
             trade_record = {
                 'timestamp': datetime.now(timezone.utc),
@@ -461,6 +468,7 @@ class LiveTradingEngine:
             self.trade_history.append(trade_record)
             
             logger.info(f"✅ Signal execution completed for {symbol}")
+            logger.info(f"📊 Total executed: {self._executed_count}")
             logger.info("="*50)
             
             return {
@@ -514,9 +522,45 @@ class LiveTradingEngine:
         try:
             while self.state == EngineState.RUNNING:
                 try:
+                    # PRIORITY 1: Process queued signals FIRST
+                    # Check if there are signals waiting in the queue
+                    if not self.signal_queue.empty():
+                        try:
+                            signal = await asyncio.wait_for(
+                                self.signal_queue.get(),
+                                timeout=5.0  # ✅ Increased from 1.0s to 5.0s
+                            )
+                            
+                            # [STAGE 5: RECEIVED] Signal received from queue
+                            logger.info(f"[STAGE:RECEIVED] 📤 Signal received from queue: {signal.get('symbol', 'unknown')}")
+                            self._signal_count += 1
+                            self._last_signal_time = datetime.now(timezone.utc)
+                            
+                            # Execute signal
+                            result = await self.execute_signal(signal)
+                            
+                            if result['success']:
+                                # [STAGE 6: EXECUTED] Signal successfully executed
+                                logger.info(f"[STAGE:EXECUTED] ✅ Signal executed: {signal.get('symbol')} - Position opened")
+                            else:
+                                logger.warning(f"⚠️ Signal execution failed: {result.get('reason')}")
+                            
+                            # Monitor adaptive signals
+                            if signal and signal.get('is_adaptive'):
+                                adaptive_monitor.record_adaptive_signal(signal.get('symbol'), signal)
+                        
+                        except asyncio.TimeoutError:
+                            logger.warning("⚠️ Timeout getting signal from non-empty queue")
+                        except Exception as e:
+                            logger.error(f"Error executing signal: {e}", exc_info=True)
+                        
+                        # Continue to process all queued signals before scanning
+                        continue
+                    
+                    # PRIORITY 2: Market scan (if interval reached and queue is empty)
                     current_time = asyncio.get_event_loop().time()
                     
-                    # Market scanning phase (every 30 seconds)
+                    # Market scanning phase (every 10 seconds)
                     if current_time - last_scan_time >= scan_interval:
                         logger.debug("🔍 Market scan starting...")
                         last_scan_time = current_time
@@ -683,36 +727,8 @@ class LiveTradingEngine:
                         
                         logger.info(f"✓ Market scan completed. Signals in queue: {self.signal_queue.qsize()}")
                     
-                    # Signal processing phase (check queue with short timeout)
-                    try:
-                        # Check if there are signals in queue to process
-                        signal = await asyncio.wait_for(
-                            self.signal_queue.get(),
-                            timeout=1.0  # 1 second timeout
-                        )
-                        
-                        # [STAGE 5: RECEIVED] Signal received from queue
-                        logger.info(f"[STAGE:RECEIVED] 📤 Signal received from queue: {signal.get('symbol', 'unknown')}")
-                        self._signal_count += 1
-                        self._last_signal_time = datetime.now(timezone.utc)
-                        
-                        # Execute signal
-                        result = await self.execute_signal(signal)
-                        
-                        if result['success']:
-                            # [STAGE 6: EXECUTED] Signal successfully executed
-                            logger.info(f"[STAGE:EXECUTED] ✅ Signal executed: {signal.get('symbol')} - Position opened")
-                        else:
-                            logger.warning(f"⚠️ Signal execution failed: {result.get('reason')}")
-                        
-                        # Monitor adaptive signals
-                        if signal and signal.get('is_adaptive'):
-                            adaptive_monitor.record_adaptive_signal(signal.get('symbol'), signal)
-                    
-                    except asyncio.TimeoutError:
-                        # No signals in queue, continue scanning loop
-                        await asyncio.sleep(0.1)  # Small delay to prevent CPU spinning
-                        continue
+                    # Small sleep to prevent CPU spinning when queue is empty and scan interval not reached
+                    await asyncio.sleep(0.1)
                 
                 except asyncio.CancelledError:
                     logger.info("Signal processing loop cancelled")
@@ -1035,6 +1051,7 @@ class LiveTradingEngine:
             'active_orders': len(self.active_orders),
             'total_trades': len(self.trade_history),
             'signals_received': self._signal_count,  # Fixed: was 'total_signals', now correctly named
+            'signals_executed': self._executed_count,  # Track executed signals
             'total_signals': self._signal_count,  # Keep for backward compatibility
             'last_signal_time': self._last_signal_time.isoformat() if self._last_signal_time else None,
             'active_tasks': len([t for t in self.tasks if not t.done()]),
