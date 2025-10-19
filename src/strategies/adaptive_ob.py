@@ -213,29 +213,56 @@ class AdaptiveOversoldBounce(OversoldBounce):
             trend_strength = regime_data.get('micro_trend_strength', 0.5)
             ema_params = self.adapt_ema_distances(trend_strength)
             
-            # ===== KRİTİK DÜZELTME: ENTRY FİYATI EKLE =====
-            entry_price = float(last['close'])  # Son kapanış fiyatı
+            # ===== ATR-BASED TP/SL CALCULATION =====
+            entry_price = float(last['close'])
             atr_value = float(last['atr']) if 'atr' in last.index else entry_price * 0.02
             
-            # Calculate stop-loss from ATR
-            sl_atr_mult = float(self.cfg.get("sl_atr_mult", 1.0))
+            # Get ATR multipliers from config
+            tp_atr_mult = float(self.cfg.get("tp_atr_mult", 2.5))
+            sl_atr_mult = float(self.cfg.get("sl_atr_mult", 1.2))
+            
+            # Calculate TP and SL from ATR
+            target_price = entry_price + (atr_value * tp_atr_mult)
             stop_price = entry_price - (atr_value * sl_atr_mult)
             
-            # Calculate target price from tp_pct
-            tp_pct = float(self.cfg.get("tp_pct", 0.015))
-            target_price = entry_price * (1 + tp_pct)
+            # Safety boundaries
+            min_tp_pct = float(self.cfg.get("min_tp_pct", 0.008))
+            max_sl_pct = float(self.cfg.get("max_sl_pct", 0.015))
             
-            # Build adaptive signal - TEK VE DÜZGÜN DICTIONARY
+            # Enforce minimum TP
+            if (target_price - entry_price) / entry_price < min_tp_pct:
+                target_price = entry_price * (1 + min_tp_pct)
+            
+            # Enforce maximum SL
+            if (entry_price - stop_price) / entry_price > max_sl_pct:
+                stop_price = entry_price * (1 - max_sl_pct)
+            
+            # Calculate and validate R/R ratio
+            rr_numerator = target_price - entry_price
+            rr_denominator = entry_price - stop_price
+            if rr_numerator <= 0 or rr_denominator <= 0:
+                logging.error(f"Invalid R/R calculation: numerator={rr_numerator}, denominator={rr_denominator}, entry={entry_price}, target={target_price}, stop={stop_price}")
+                rr_ratio = float('nan')
+            else:
+                rr_ratio = rr_numerator / rr_denominator
+            
+            # Calculate percentages for signal
+            tp_pct = (target_price - entry_price) / entry_price
+            sl_pct = (entry_price - stop_price) / entry_price
+            
+            # Build adaptive signal with ATR-based TP/SL
             signal = {
                 "side": "buy",
                 "entry": entry_price,
                 "stop": stop_price,
                 "target": target_price,
-                "reason": f"Adaptive RSI oversold {rsi_val:.1f} (threshold: {adaptive_rsi_threshold:.1f}, regime: {market_regime['trend']})",
+                "reason": f"Adaptive RSI oversold {rsi_val:.1f} (threshold: {adaptive_rsi_threshold:.1f}, regime: {market_regime['trend']}, R/R: {rr_ratio:.2f})",
                 "tp_pct": tp_pct,
-                "sl_pct": float(self.cfg["sl_pct"]) if "sl_pct" in self.cfg else None,
+                "sl_pct": sl_pct,
+                "tp_atr_mult": tp_atr_mult,
                 "sl_atr_mult": sl_atr_mult,
                 "atr": atr_value,
+                "rr_ratio": rr_ratio,
                 "is_adaptive": True,
                 "adaptive_threshold": adaptive_rsi_threshold,
                 "position_multiplier": position_mult,

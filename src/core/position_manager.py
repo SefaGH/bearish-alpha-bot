@@ -329,9 +329,93 @@ class AdvancedPositionManager:
             logger.error(f"Error closing position: {e}")
             return {'success': False, 'reason': str(e)}
     
+    async def _get_current_price_from_ws(self, symbol: str) -> Optional[float]:
+        """
+        Get current price from WebSocket with API fallback.
+        Phase 3.4 - Issue #100: Exit Monitoring
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Current price or None
+        """
+        try:
+            # Try WebSocket first
+            if self.ws_manager:
+                try:
+                    ticker = self.ws_manager.get_latest_ticker(symbol)
+                    if ticker and 'last' in ticker:
+                        return float(ticker['last'])
+                except Exception as ws_error:
+                    logger.debug(f"WebSocket price fetch failed for {symbol}: {ws_error}")
+            
+            # Fallback to API
+            for ex_name, client in self.portfolio_manager.exchange_clients.items():
+                try:
+                    ticker = client.fetch_ticker(symbol)
+                    last_price = ticker.get('last', ticker.get('close', 0))
+                    if last_price > 0:
+                        return float(last_price)
+                except Exception as api_error:
+                    logger.debug(f"API price fetch failed for {symbol} on {ex_name}: {api_error}")
+            
+            logger.warning(f"Could not fetch current price for {symbol}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting current price for {symbol}: {e}")
+            return None
+    
+    def _check_stop_loss_hit(self, position: Dict, current_price: float) -> bool:
+        """Check if stop-loss is hit."""
+        if current_price <= 0:
+            logger.warning(f"_check_stop_loss_hit called with invalid current_price={current_price} for position_id={position.get('id', 'unknown')}. Data quality issue.")
+            return False
+        
+        side = position['side']
+        stop_loss = position['stop_loss']
+        
+        if side in ['long', 'buy']:
+            return current_price <= stop_loss
+        else:  # short
+            return current_price >= stop_loss
+    
+    def _check_take_profit_hit(self, position: Dict, current_price: float) -> bool:
+        """Check if take-profit is hit."""
+        if current_price <= 0:
+            return False
+        
+        side = position['side']
+        take_profit = position['take_profit']
+        
+        if side in ['long', 'buy']:
+            return current_price >= take_profit
+        else:  # short
+            return current_price <= take_profit
+    
+    def _check_timeout_exit(self, position: Dict) -> bool:
+        """Check if position should exit due to timeout."""
+        # Get configuration
+        config = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
+        position_config = config.get('position_management', {}).get('time_based_exit', {})
+        max_duration = position_config.get('max_position_duration', 3600)
+        
+        opened_at = position.get('opened_at')
+        if not opened_at:
+            return False
+        
+        current_time = datetime.now(timezone.utc)
+        duration = (current_time - opened_at).total_seconds()
+        
+        return duration >= max_duration
+    
     async def manage_position_exits(self, position_id: str) -> Dict[str, Any]:
         """
-        Intelligent position exit management.
+        Intelligent position exit management with priority checks.
+        Phase 3.4 - Issue #100: Position Exit Monitoring
+        
+        Priority order: Stop Loss > Take Profit > Timeout
         
         Args:
             position_id: Position identifier
@@ -345,25 +429,69 @@ class AdvancedPositionManager:
             
             position = self.positions[position_id]
             
-            # Check exit conditions
-            exit_signal = await self._check_exit_conditions(position)
+            # Get current price from WebSocket or API
+            current_price = await self._get_current_price_from_ws(position['symbol'])
             
-            if exit_signal and exit_signal.get('should_exit'):
-                logger.info(f"Exit signal triggered for {position_id}: {exit_signal['reason']}")
-                
-                # Return signal for execution by trading engine
+            if current_price is None or current_price <= 0:
+                logger.warning(f"Could not get valid price for {position_id}, skipping exit check")
+                return {
+                    'success': True,
+                    'should_exit': False,
+                    'position_id': position_id,
+                    'reason': 'price_unavailable'
+                }
+            
+            # Update position's current price
+            position['current_price'] = current_price
+            
+            # Priority 1: Check stop-loss
+            if self._check_stop_loss_hit(position, current_price):
+                logger.info(f"Stop-loss hit for {position_id} at {current_price}")
+                # Auto-close position
+                close_result = await self.close_position(position_id, current_price, ExitReason.STOP_LOSS.value)
                 return {
                     'success': True,
                     'should_exit': True,
                     'position_id': position_id,
-                    'exit_reason': exit_signal['reason'],
-                    'recommended_price': exit_signal['price']
+                    'exit_reason': ExitReason.STOP_LOSS.value,
+                    'exit_price': current_price,
+                    'close_result': close_result
                 }
             
+            # Priority 2: Check take-profit
+            if self._check_take_profit_hit(position, current_price):
+                logger.info(f"Take-profit hit for {position_id} at {current_price}")
+                # Auto-close position
+                close_result = await self.close_position(position_id, current_price, ExitReason.TAKE_PROFIT.value)
+                return {
+                    'success': True,
+                    'should_exit': True,
+                    'position_id': position_id,
+                    'exit_reason': ExitReason.TAKE_PROFIT.value,
+                    'exit_price': current_price,
+                    'close_result': close_result
+                }
+            
+            # Priority 3: Check timeout
+            if self._check_timeout_exit(position):
+                logger.info(f"Timeout exit for {position_id} at {current_price}")
+                # Auto-close position
+                close_result = await self.close_position(position_id, current_price, ExitReason.TIME_EXIT.value)
+                return {
+                    'success': True,
+                    'should_exit': True,
+                    'position_id': position_id,
+                    'exit_reason': ExitReason.TIME_EXIT.value,
+                    'exit_price': current_price,
+                    'close_result': close_result
+                }
+            
+            # No exit conditions met
             return {
                 'success': True,
                 'should_exit': False,
-                'position_id': position_id
+                'position_id': position_id,
+                'current_price': current_price
             }
             
         except Exception as e:
@@ -496,3 +624,71 @@ class AdvancedPositionManager:
             'total_realized_pnl': total_realized_pnl,
             'total_pnl': total_unrealized_pnl + total_realized_pnl
         }
+    
+    async def start_exit_monitoring(self):
+        """
+        Start continuous exit monitoring loop.
+        Phase 3.4 - Issue #100: Position Exit Monitoring
+        
+        Monitors all active positions every 5 seconds for exit conditions.
+        """
+        if self.monitoring_active:
+            logger.warning("Exit monitoring already active")
+            return
+        
+        # Get configuration
+        config = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
+        exit_config = config.get('position_management', {}).get('exit_monitoring', {})
+        
+        if not exit_config.get('enabled', True):
+            logger.info("Exit monitoring disabled in configuration")
+            return
+        
+        check_frequency = exit_config.get('check_frequency', 5)
+        
+        self.monitoring_active = True
+        logger.info(f"Starting exit monitoring (check every {check_frequency}s)")
+        
+        async def monitoring_loop():
+            while self.monitoring_active:
+                try:
+                    # Check all active positions
+                    position_ids = list(self.positions.keys())
+                    
+                    for position_id in position_ids:
+                        try:
+                            result = await self.manage_position_exits(position_id)
+                            
+                            if result.get('should_exit'):
+                                logger.info(f"Position {position_id} exited: {result.get('exit_reason')}")
+                        
+                        except Exception as e:
+                            logger.error(f"Error checking position {position_id}: {e}")
+                    
+                    # Wait before next check
+                    await asyncio.sleep(check_frequency)
+                    
+                except Exception as e:
+                    logger.error(f"Error in exit monitoring loop: {e}")
+                    await asyncio.sleep(check_frequency)
+        
+        # Start monitoring task
+        self.monitoring_task = asyncio.create_task(monitoring_loop())
+        logger.info("Exit monitoring task started")
+    
+    async def stop_exit_monitoring(self):
+        """Stop exit monitoring loop."""
+        if not self.monitoring_active:
+            logger.warning("Exit monitoring not active")
+            return
+        
+        self.monitoring_active = False
+        
+        if self.monitoring_task:
+            self.monitoring_task.cancel()
+            try:
+                await self.monitoring_task
+            except asyncio.CancelledError:
+                pass
+        
+        logger.info("Exit monitoring stopped")

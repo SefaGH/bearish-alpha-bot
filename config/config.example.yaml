@@ -120,8 +120,11 @@ signals:
     adaptive_mode: "dynamic"  # "dynamic" | "conservative" | "aggressive"
     volatility_sensitivity: "medium"  # "low" | "medium" | "high"
     
-    tp_pct: 0.006
-    sl_atr_mult: 1.5
+    # ATR-based TP/SL (Phase 3.4 - Issue #102)
+    tp_atr_mult: 2.5        # TP = entry + (ATR × 2.5)
+    sl_atr_mult: 1.2        # SL = entry - (ATR × 1.2)
+    min_tp_pct: 0.008       # Minimum 0.8% TP
+    max_sl_pct: 0.015       # Maximum 1.5% SL
 
   short_the_rip:
     enable: true
@@ -138,8 +141,27 @@ signals:
     adaptive_mode: "dynamic"
     volatility_sensitivity: "medium"
     
-    tp_pct: 0.006
-    sl_atr_mult: 1.2
+    # ATR-based TP/SL (Phase 3.4 - Issue #102)
+    tp_atr_mult: 3.0        # TP = entry - (ATR × 3.0) for shorts
+    sl_atr_mult: 1.5        # SL = entry + (ATR × 1.5) for shorts
+    min_tp_pct: 0.010       # Minimum 1.0% TP
+    max_sl_pct: 0.020       # Maximum 2.0% SL
+
+# Phase 3.4 Monitoring & Duplicate Prevention (Issue #103)
+monitoring:
+  duplicate_prevention:
+    enabled: true
+    same_symbol_cooldown: 300        # 5 minutes between same symbol trades
+    same_strategy_cooldown: 180      # 3 minutes between same strategy trades
+    min_price_change: 0.002          # 0.2% minimum price movement
+
+# Phase 3.4 Position Exit Management (Issue #100)
+position_management:
+  exit_monitoring:
+    enabled: true
+    check_frequency: 5               # Check exits every 5 seconds
+  time_based_exit:
+    max_position_duration: 3600      # Maximum position duration in seconds (3600 = 1 hour)
 
 quarantine:
   enable: true
