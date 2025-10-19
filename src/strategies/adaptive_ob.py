@@ -217,14 +217,24 @@ class AdaptiveOversoldBounce(OversoldBounce):
             entry_price = float(last['close'])  # Son kapanış fiyatı
             atr_value = float(last['atr']) if 'atr' in last.index else entry_price * 0.02
             
+            # Calculate stop-loss from ATR
+            sl_atr_mult = float(self.cfg.get("sl_atr_mult", 1.0))
+            stop_price = entry_price - (atr_value * sl_atr_mult)
+            
+            # Calculate target price from tp_pct
+            tp_pct = float(self.cfg.get("tp_pct", 0.015))
+            target_price = entry_price * (1 + tp_pct)
+            
             # Build adaptive signal - TEK VE DÜZGÜN DICTIONARY
             signal = {
                 "side": "buy",
                 "entry": entry_price,
+                "stop": stop_price,
+                "target": target_price,
                 "reason": f"Adaptive RSI oversold {rsi_val:.1f} (threshold: {adaptive_rsi_threshold:.1f}, regime: {market_regime['trend']})",
-                "tp_pct": float(self.cfg.get("tp_pct", 0.015)),
+                "tp_pct": tp_pct,
                 "sl_pct": float(self.cfg["sl_pct"]) if "sl_pct" in self.cfg else None,
-                "sl_atr_mult": float(self.cfg.get("sl_atr_mult", 1.0)),
+                "sl_atr_mult": sl_atr_mult,
                 "atr": atr_value,
                 "is_adaptive": True,
                 "adaptive_threshold": adaptive_rsi_threshold,

@@ -252,13 +252,23 @@ class AdaptiveShortTheRip(ShortTheRip):
             entry_price = float(last30['close'])
             atr_value = float(last30['atr']) if 'atr' in last30.index else entry_price * 0.02
             
+            # Calculate stop-loss from ATR (SHORT position - opposite direction)
+            sl_atr_mult = float(self.cfg.get("sl_atr_mult", 1.2))
+            stop_price = entry_price + (atr_value * sl_atr_mult)
+            
+            # Calculate target price from tp_pct
+            tp_pct = float(self.cfg.get("tp_pct", 0.012))
+            target_price = entry_price * (1 - tp_pct)
+            
             # Build adaptive signal - TEK VE DÜZGÜN DICTIONARY
             signal = {
                 "side": "sell",
                 "entry": entry_price,
+                "stop": stop_price,
+                "target": target_price,
                 "reason": f"Adaptive RSI overbought {rsi_val:.1f} (threshold: {adaptive_rsi_threshold:.1f}, regime: {market_regime['trend']})",
-                "tp_pct": float(self.cfg.get("tp_pct", 0.012)),
-                "sl_atr_mult": float(self.cfg.get("sl_atr_mult", 1.2)),
+                "tp_pct": tp_pct,
+                "sl_atr_mult": sl_atr_mult,
                 "atr": atr_value,
                 "is_adaptive": True,
                 "adaptive_threshold": adaptive_rsi_threshold,
