@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 import numpy as np
 
-from utils.pnl_calculator import calculate_unrealized_pnl
+from ..utils.pnl_calculator import calculate_unrealized_pnl
 
 logger = logging.getLogger(__name__)
 
