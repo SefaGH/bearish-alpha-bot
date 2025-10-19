@@ -356,7 +356,8 @@ class ProductionCoordinator:
                                 strategy_signal = strategy_instance.signal(df_30m, df_1h)
                         elif hasattr(strategy_instance, 'generate_signal'):
                             # Mock or test strategies - use cached async check
-                            if capabilities.get('is_async', False):
+                            # Use runtime check to verify if generate_signal is a coroutine function
+                            if inspect.iscoroutinefunction(strategy_instance.generate_signal):
                                 strategy_signal = await strategy_instance.generate_signal()
                             else:
                                 strategy_signal = strategy_instance.generate_signal()
