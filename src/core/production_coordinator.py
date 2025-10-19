@@ -342,15 +342,24 @@ class ProductionCoordinator:
                         
                         # Check if strategy has signal method
                         if hasattr(strategy_instance, 'signal'):
-                            # Adaptive strategies take regime_data parameter
-                            if 'adaptive' in strategy_name.lower():
+                            # Check if strategy supports regime_data parameter
+                            import inspect
+                            sig = inspect.signature(strategy_instance.signal)
+                            params = sig.parameters
+                            
+                            if 'regime_data' in params:
+                                # Adaptive strategies take regime_data parameter
                                 strategy_signal = strategy_instance.signal(df_30m, df_1h, regime_data=metadata.get('regime'))
                             else:
                                 # Standard strategies
                                 strategy_signal = strategy_instance.signal(df_30m, df_1h)
                         elif hasattr(strategy_instance, 'generate_signal'):
-                            # Mock or test strategies
-                            strategy_signal = await strategy_instance.generate_signal()
+                            # Mock or test strategies - check if async
+                            import inspect
+                            if inspect.iscoroutinefunction(strategy_instance.generate_signal):
+                                strategy_signal = await strategy_instance.generate_signal()
+                            else:
+                                strategy_signal = strategy_instance.generate_signal()
                         
                         if strategy_signal:
                             strategy_signal['strategy'] = strategy_name
