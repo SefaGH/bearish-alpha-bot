@@ -109,53 +109,116 @@ class ProductionCoordinator:
         
         logger.info("ProductionCoordinator created")
 
-    def _setup_websocket_connections(self):
-        """WebSocket bağlantılarını kur."""
-        # WebSocket manager yoksa oluştur
-        if not self.websocket_manager:
-            self.websocket_manager = WebSocketManager(exchanges=self.exchange_clients)
+    def _setup_websocket_connections(self) -> bool:
+        """
+        Setup WebSocket connections with proper validation and error handling.
         
-        # Config'den sabit sembolleri al  
+        Returns:
+            True if any streams were started successfully, False otherwise
+        """
+        # Step 1: Validate Prerequisites
+        if not self.exchange_clients:
+            logger.error("[WS] ERROR: No exchange clients available")
+            return False
+        
+        # Get symbols with fallback
         fixed_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
-        
         if not fixed_symbols:
-            logger.warning("[WS] No fixed symbols configured")
-            return
-            
-        logger.info(f"[WS] Setting up {len(fixed_symbols)} configured symbols")
+            # Fallback to default symbols
+            fixed_symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+            logger.warning(f"[WS] No symbols configured, using defaults: {fixed_symbols}")
         
-        # Config'den timeframe'leri al
+        logger.info(f"[WS] Setting up WebSocket streams for {len(fixed_symbols)} symbols")
+        
+        # Step 2: Initialize Manager
+        try:
+            if not self.websocket_manager:
+                self.websocket_manager = WebSocketManager(exchanges=self.exchange_clients)
+                logger.info("[WS] WebSocket manager created")
+        except Exception as e:
+            logger.error(f"[WS] ERROR: Failed to create WebSocket manager: {type(e).__name__}: {str(e)}")
+            return False
+        
+        # Get timeframes from config
         ws_config = self.config.get('websocket', {})
         timeframes = ws_config.get('stream_timeframes', ['1m', '5m'])
         
-        # Her exchange için stream limitleri kontrol et
+        # Step 3: Setup Streams with Limits
+        total_streams_started = 0
+        
         for exchange_name in self.exchange_clients.keys():
-            # Stream limit kontrolü
-            max_streams = 10  # Default limit
-            if hasattr(self.websocket_manager, '_stream_limits'):
-                max_streams = self.websocket_manager._stream_limits.get(exchange_name, 10)
+            # Get stream limit for this exchange
+            stream_limit = self._get_stream_limit(exchange_name)
+            logger.info(f"[WS] {exchange_name}: stream limit = {stream_limit}")
             
+            # Calculate required streams
             required_streams = len(fixed_symbols) * len(timeframes)
             
-            if required_streams > max_streams:
-                # Otomatik ayarlama
-                max_symbols = max_streams // len(timeframes)
+            # Determine symbols to use (respect limit)
+            if required_streams > stream_limit:
+                max_symbols = stream_limit // len(timeframes)
                 symbols_to_use = fixed_symbols[:max_symbols]
-                logger.warning(f"[WS] {exchange_name}: Required {required_streams} streams > limit {max_streams}")
-                logger.info(f"[WS] {exchange_name}: Using only first {max_symbols} symbols")
+                logger.warning(
+                    f"[WS] {exchange_name}: Required {required_streams} streams > limit {stream_limit}, "
+                    f"using only first {max_symbols} symbols"
+                )
             else:
                 symbols_to_use = fixed_symbols
             
-            # Stream'leri başlat
+            # Start streams for this exchange
+            exchange_streams_started = 0
             for symbol in symbols_to_use:
                 for tf in timeframes:
                     try:
                         self.websocket_manager.start_ohlcv_stream(exchange_name, symbol, tf)
+                        exchange_streams_started += 1
                     except Exception as e:
-                        logger.debug(f"[WS] Could not start stream for {symbol} {tf}: {e}")
+                        logger.error(f"[WS] ERROR: Failed to start stream {exchange_name}:{symbol}:{tf} - {str(e)}")
             
-            self.active_symbols = symbols_to_use
-            logger.info(f"[WS] {exchange_name}: {len(symbols_to_use)} symbols active")
+            total_streams_started += exchange_streams_started
+            
+            if exchange_streams_started > 0:
+                logger.info(f"[WS] {exchange_name}: Started {exchange_streams_started} streams successfully")
+                # Update active symbols for this exchange
+                if not hasattr(self, 'active_symbols') or not self.active_symbols:
+                    self.active_symbols = symbols_to_use
+            else:
+                logger.error(f"[WS] ERROR: {exchange_name}: No streams started")
+        
+        # Step 4: Return Status
+        if total_streams_started == 0:
+            logger.error("[WS] ERROR: No WebSocket streams were started")
+            return False
+        
+        logger.info(f"[WS] ✅ Setup complete: {total_streams_started} total streams started")
+        return True
+    
+    def _get_stream_limit(self, exchange_name: str) -> int:
+        """
+        Get stream limit for a specific exchange.
+        
+        Args:
+            exchange_name: Name of the exchange
+            
+        Returns:
+            Maximum number of streams allowed for this exchange
+        """
+        # Per-exchange stream limits
+        stream_limits = {
+            'bingx': 10,
+            'binance': 20,
+            'kucoinfutures': 15,
+        }
+        
+        # Try to get from config first
+        ws_config = self.config.get('websocket', {})
+        max_streams_config = ws_config.get('max_streams_per_exchange', {})
+        
+        # Return config value, then hardcoded limit, then default
+        return max_streams_config.get(
+            exchange_name,
+            stream_limits.get(exchange_name, 10)  # Default to 10
+        )
 
     def _get_top_volume_symbols(self, limit=20):
         """Get top volume symbols from exchanges."""

@@ -116,38 +116,71 @@ class LiveTradingEngine:
         # Load configuration
         self.config = LiveTradingConfiguration.get_all_configs()
 
-        # ✅ DÜZELTME 2: Universe config'i güvenli yükle
+        # Load symbol configuration with clear 3-step priority
+        # Priority: YAML Config > ENV Variables > Hard-coded Defaults
+        symbols_loaded = False
+        symbol_source = None
+        
+        # Step 1: Try YAML Config
         config_path = os.getenv("CONFIG_PATH", "config/config.example.yaml")
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 yaml_config = yaml.safe_load(f) or {}
                 
-            # Universe config'i güvenli yükle ve validate et
-            if 'universe' in yaml_config:
-                self.config['universe'] = yaml_config['universe']
+            if 'universe' in yaml_config and yaml_config['universe']:
+                universe_config = yaml_config['universe']
+                fixed_symbols = universe_config.get('fixed_symbols', [])
                 
-                # Type validation ve default değerler
-                if not isinstance(self.config['universe'].get('fixed_symbols'), list):
-                    self.config['universe']['fixed_symbols'] = []
-                
-                # auto_select default False olmalı
-                if 'auto_select' not in self.config['universe']:
-                    self.config['universe']['auto_select'] = False
-                    
-                logger.info(f"✅ Universe config loaded from YAML")
-                logger.info(f"   fixed_symbols: {len(self.config['universe'].get('fixed_symbols', []))} symbols")
-                logger.info(f"   auto_select: {self.config['universe'].get('auto_select')}")
-            else:
-                # Default universe config
-                self.config['universe'] = {
-                    'fixed_symbols': [],
-                    'auto_select': False
-                }
-                logger.info("ℹ️ Using default universe config (no fixed symbols)")
-                
+                # Validate that fixed_symbols is a list and not empty
+                if isinstance(fixed_symbols, list) and len(fixed_symbols) > 0:
+                    self.config['universe'] = {
+                        'fixed_symbols': fixed_symbols,
+                        'auto_select': universe_config.get('auto_select', False)
+                    }
+                    symbols_loaded = True
+                    symbol_source = 'YAML'
+                    logger.info(f"✅ Config loaded from YAML: {len(fixed_symbols)} symbols")
+                    logger.info(f"   Symbols: {fixed_symbols}")
+                else:
+                    logger.error(f"ERROR: YAML config has invalid fixed_symbols (must be non-empty list): {fixed_symbols}")
+        except FileNotFoundError:
+            logger.error(f"ERROR: Config file not found: {config_path}")
         except Exception as e:
-            logger.warning(f"Could not load universe from YAML: {e}, using defaults")
-            self.config['universe'] = {'fixed_symbols': [], 'auto_select': False}
+            logger.error(f"ERROR: Failed to load YAML config: {type(e).__name__}: {str(e)}")
+        
+        # Step 2: Try Environment Variables (if YAML failed)
+        if not symbols_loaded:
+            trading_symbols = os.getenv('TRADING_SYMBOLS', '').strip()
+            if trading_symbols:
+                # Parse comma-separated symbols
+                fixed_symbols = [s.strip() for s in trading_symbols.split(',') if s.strip()]
+                if fixed_symbols:
+                    self.config['universe'] = {
+                        'fixed_symbols': fixed_symbols,
+                        'auto_select': False
+                    }
+                    symbols_loaded = True
+                    symbol_source = 'ENV'
+                    logger.info(f"✅ Config loaded from ENV (TRADING_SYMBOLS): {len(fixed_symbols)} symbols")
+                    logger.info(f"   Symbols: {fixed_symbols}")
+                else:
+                    logger.error("ERROR: TRADING_SYMBOLS env var is set but empty after parsing")
+        
+        # Step 3: Hard-coded Defaults (if all else fails)
+        if not symbols_loaded:
+            default_symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+            self.config['universe'] = {
+                'fixed_symbols': default_symbols,
+                'auto_select': False
+            }
+            symbol_source = 'DEFAULTS'
+            logger.warning(f"⚠️  Using hard-coded defaults: {default_symbols}")
+            logger.warning("   Set CONFIG_PATH or TRADING_SYMBOLS env var for custom symbols")
+        
+        # Log final configuration
+        logger.info(f"Symbol configuration source: {symbol_source}")
+        logger.info(f"  fixed_symbols: {self.config['universe']['fixed_symbols']}")
+        logger.info(f"  auto_select: {self.config['universe'].get('auto_select', False)}")
         
         # Universe cache for optimization
         self._cached_symbols = None

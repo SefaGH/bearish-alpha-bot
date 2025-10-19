@@ -417,17 +417,111 @@ def run_once():
 
     return signals_out
 
+
+async def main_live_trading():
+    """
+    Main entry point for live trading mode using ProductionCoordinator.
+    Supports both paper trading and live trading based on TRADING_MODE env var.
+    """
+    from core.production_coordinator import ProductionCoordinator
+    
+    logger.info("="*70)
+    logger.info("LIVE TRADING MODE - Starting Production Coordinator")
+    logger.info("="*70)
+    
+    try:
+        # Initialize coordinator
+        coordinator = ProductionCoordinator()
+        
+        # Load exchange clients from environment
+        logger.info("Loading exchange clients from environment...")
+        exchange_clients = build_clients_from_env()
+        
+        if not exchange_clients:
+            raise SystemExit("ERROR: No exchange clients configured. Set EXCHANGES environment variable.")
+        
+        logger.info(f"Loaded exchanges: {list(exchange_clients.keys())}")
+        
+        # Portfolio configuration from environment
+        portfolio_config = {
+            'equity_usd': float(os.getenv('EQUITY_USD', '100'))
+        }
+        logger.info(f"Portfolio config: {portfolio_config}")
+        
+        # Initialize production system
+        logger.info("Initializing production system...")
+        await coordinator.initialize_production_system(
+            exchange_clients=exchange_clients,
+            portfolio_config=portfolio_config
+        )
+        
+        # Get trading mode and duration from environment
+        mode = os.getenv('TRADING_MODE', 'paper').lower()
+        duration = int(os.getenv('TRADING_DURATION', '0')) or None
+        
+        if mode == 'live':
+            logger.warning("⚠️  LIVE TRADING MODE - Real money at risk!")
+        else:
+            logger.info(f"📝 Paper trading mode - No real executions")
+        
+        if duration:
+            logger.info(f"Trading duration: {duration} seconds")
+        else:
+            logger.info("Trading duration: Unlimited (until manual stop)")
+        
+        # Run production loop
+        logger.info("Starting production trading loop...")
+        await coordinator.run_production_loop(mode=mode, duration=duration)
+        
+        logger.info("Production trading loop completed successfully")
+        
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt - shutting down gracefully")
+    except Exception as e:
+        logger.error(f"FATAL ERROR in live trading: {type(e).__name__}: {str(e)}")
+        traceback.print_exc()
+        
+        # Try to send notification
+        tg = build_tg()
+        if tg:
+            tg.send(f"🛑 FATAL ERROR in live trading: {type(e).__name__}: {str(e)[:200]}")
+        
+        raise
+
+
+async def run_with_pipeline():
+    """
+    Stub for pipeline mode - to be implemented.
+    This is a placeholder to prevent errors when --pipeline is used.
+    """
+    logger.error("Pipeline mode is not yet implemented")
+    raise NotImplementedError("Pipeline mode is not yet implemented. Use --live mode instead.")
+
+
 # ... rest of the file (async functions etc.) remains same ...
 
 if __name__ == "__main__":
     import sys
     import asyncio
+    import argparse
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Bearish Alpha Bot - Trading System')
+    parser.add_argument('--live', action='store_true', help='Run in live trading mode with ProductionCoordinator')
+    parser.add_argument('--paper', action='store_true', help='Run in paper trading mode (used with --live)')
+    parser.add_argument('--pipeline', action='store_true', help='Run with Market Data Pipeline mode')
+    
+    args = parser.parse_args()
     
     # Check for pipeline mode
-    if '--pipeline' in sys.argv:
+    if args.pipeline or '--pipeline' in sys.argv:
         logger.info("Starting with Market Data Pipeline mode")
         asyncio.run(run_with_pipeline())
-    elif len(sys.argv) > 1 and sys.argv[1] == '--live':
+    elif args.live or '--live' in sys.argv:
+        # Set TRADING_MODE based on --paper flag
+        if args.paper or '--paper' in sys.argv:
+            os.environ.setdefault('TRADING_MODE', 'paper')
+            logger.info("Using paper trading mode")
         asyncio.run(main_live_trading())
     else:
         # Run traditional one-shot mode
