@@ -118,19 +118,26 @@ from utils.pnl_calculator import calculate_unrealized_pnl
 ```
 
 ### Technical Details
-The core modules (`risk_manager.py`, `position_manager.py`, `realtime_risk.py`, `production_coordinator.py`) use a dual import strategy:
+The core modules (`risk_manager.py`, `position_manager.py`, `realtime_risk.py`, `production_coordinator.py`) use a triple-fallback import strategy:
 ```python
 try:
-    # Absolute import for script execution
-    from src.utils.pnl_calculator import calculate_unrealized_pnl
+    # Option 1: Direct import (scripts add src/ to sys.path)
+    from utils.pnl_calculator import calculate_unrealized_pnl
 except ModuleNotFoundError:
-    # Relative import for package context
-    from ..utils.pnl_calculator import calculate_unrealized_pnl
+    try:
+        # Option 2: Absolute import (repo root on sys.path)
+        from src.utils.pnl_calculator import calculate_unrealized_pnl
+    except ModuleNotFoundError as e:
+        # Option 3: Relative import (package context)
+        if e.name in ('src', 'src.utils', 'src.utils.pnl_calculator'):
+            from ..utils.pnl_calculator import calculate_unrealized_pnl
+        else:
+            raise
 ```
 
 This ensures compatibility across different execution contexts without breaking existing workflows.
 
-**Note:** The try/except pattern has no runtime performance impact - the ImportError only occurs once during module import, and the correct import path is cached by Python's import system.
+**Note:** The try/except pattern has no runtime performance impact - the ModuleNotFoundError only occurs once during module import, and the correct import path is cached by Python's import system.
 
 ## Sıkça Sorulanlar
 - “Artefact yok uyarısı” → `RUN_SUMMARY.txt` her koşuda oluşturulur.  

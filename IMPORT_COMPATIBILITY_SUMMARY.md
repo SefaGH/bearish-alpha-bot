@@ -11,7 +11,7 @@ After PR #113, the codebase needed to support multiple execution contexts:
 Previously, using only relative imports worked for package context but broke script execution.
 
 ## Solution Implemented
-Implemented **Option A: Dual Import Strategy** using try/except blocks in 4 core modules:
+Implemented **Triple-Fallback Import Strategy** using nested try/except blocks in 4 core modules:
 
 ### Modified Files
 1. `src/core/risk_manager.py` - Risk management engine
@@ -21,20 +21,34 @@ Implemented **Option A: Dual Import Strategy** using try/except blocks in 4 core
 
 ### Code Pattern
 ```python
+# Triple-fallback import strategy for maximum compatibility:
+# 1. Direct utils import (when src/ is on sys.path)
+# 2. Absolute src.utils import (when repo root is on sys.path)
+# 3. Relative import (when imported as package module)
+
 try:
-    # Absolute import for script execution (with src in PYTHONPATH)
-    from src.utils.pnl_calculator import calculate_unrealized_pnl
-except ImportError:
-    # Relative import for package context (python -m)
-    from ..utils.pnl_calculator import calculate_unrealized_pnl
+    # Option 1: Direct import (scripts add src/ to sys.path)
+    from utils.pnl_calculator import calculate_unrealized_pnl
+except ModuleNotFoundError:
+    try:
+        # Option 2: Absolute import (repo root on sys.path)
+        from src.utils.pnl_calculator import calculate_unrealized_pnl
+    except ModuleNotFoundError as e:
+        # Option 3: Relative import (package context)
+        if e.name in ('src', 'src.utils', 'src.utils.pnl_calculator'):
+            from ..utils.pnl_calculator import calculate_unrealized_pnl
+        else:
+            # Unknown module missing, re-raise
+            raise
 ```
 
 ## Benefits
 - ✅ **Backward Compatible**: No breaking changes to existing code
-- ✅ **Dual Context Support**: Works in both package and script execution
+- ✅ **Triple Context Support**: Works in script (src/ on path), package (repo root on path), and relative import contexts
 - ✅ **Minimal Changes**: Only import statements modified (4 files)
-- ✅ **No Runtime Overhead**: ImportError only occurs once during module load
+- ✅ **No Runtime Overhead**: ModuleNotFoundError only occurs once during module load
 - ✅ **Maintainable**: Clear pattern for future modules
+- ✅ **Robust Error Handling**: Only catches expected import errors, re-raises others
 
 ## Testing
 ### New Tests Added
@@ -97,21 +111,35 @@ No changes required! The dual import strategy is transparent to:
 - ✅ CI/CD workflows
 
 ### For New Modules
-When creating new modules that need to import from `src.utils.pnl_calculator`, use this pattern:
+When creating new modules that need to import from `src.utils.pnl_calculator`, use this triple-fallback pattern:
 
 ```python
 try:
-    from src.utils.pnl_calculator import (
+    # Option 1: Direct import (scripts add src/ to sys.path)
+    from utils.pnl_calculator import (
         calculate_unrealized_pnl,
         calculate_realized_pnl,
         # ... other imports
     )
-except ImportError:
-    from ..utils.pnl_calculator import (
-        calculate_unrealized_pnl,
-        calculate_realized_pnl,
-        # ... other imports
-    )
+except ModuleNotFoundError:
+    try:
+        # Option 2: Absolute import (repo root on sys.path)
+        from src.utils.pnl_calculator import (
+            calculate_unrealized_pnl,
+            calculate_realized_pnl,
+            # ... other imports
+        )
+    except ModuleNotFoundError as e:
+        # Option 3: Relative import (package context)
+        if e.name in ('src', 'src.utils', 'src.utils.pnl_calculator'):
+            from ..utils.pnl_calculator import (
+                calculate_unrealized_pnl,
+                calculate_realized_pnl,
+                # ... other imports
+            )
+        else:
+            # Unknown module missing, re-raise
+            raise
 ```
 
 ## References
@@ -120,10 +148,11 @@ except ImportError:
 - PEP 328: https://peps.python.org/pep-0328/ (Imports: Multi-Line and Absolute/Relative)
 
 ## Performance Notes
-The try/except import pattern has **zero runtime overhead**:
-- ImportError only happens once during module import
+The triple-fallback import pattern has **zero runtime overhead**:
+- ModuleNotFoundError only happens once during module import
 - Python's import system caches the successful import path
 - No performance impact during actual execution
+- The fallback logic is more precise than catching ImportError (only catches expected errors)
 
 ---
 
