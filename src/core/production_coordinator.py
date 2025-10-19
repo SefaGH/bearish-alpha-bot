@@ -336,8 +336,14 @@ class ProductionCoordinator:
             signal = None
             
             # Execute registered strategies
-            if self.strategies:
+            count = len(self.strategies)
+            logger.debug(f"🎯 Registered strategies count: {count}")
+            
+            if count:
+                logger.debug(f"🔍 Executing {count} strategies for {symbol}")
+                
                 for strategy_name, strategy_instance in self.strategies.items():
+                    logger.debug("Calling %s...", strategy_name)
                     try:
                         # Call strategy's signal method
                         strategy_signal = None
