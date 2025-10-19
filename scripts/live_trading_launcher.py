@@ -1253,12 +1253,120 @@ class LiveTradingLauncher:
                     msg += f"\nWebSocket streams: {ws_status['active_streams']}"
                 self.telegram.send(msg)
             
+            # Generate post-session analysis
+            self._generate_post_session_analysis()
+            
             logger.info("="*70)
             logger.info("SHUTDOWN COMPLETE")
             logger.info("="*70)
             
         except Exception as e:
             logger.error(f"Error during shutdown: {e}")
+    
+    def _print_configuration_summary(self):
+        """
+        Print comprehensive configuration summary at startup.
+        Issue #106: Show actual runtime values instead of placeholders.
+        """
+        logger.info("\n" + "="*70)
+        logger.info("CONFIGURATION SUMMARY")
+        logger.info("="*70)
+        
+        # Capital & Risk
+        logger.info(f"Capital: ${self.CAPITAL_USDT} USDT")
+        logger.info(f"Max Position Size: {self.RISK_PARAMS['max_position_size']:.1%}")
+        logger.info(f"Stop Loss: {self.RISK_PARAMS['stop_loss_pct']:.1%}")
+        logger.info(f"Take Profit: {self.RISK_PARAMS['take_profit_pct']:.1%}")
+        logger.info(f"Max Portfolio Risk: {self.RISK_PARAMS['max_portfolio_risk']:.1%}")
+        logger.info(f"Max Drawdown: {self.RISK_PARAMS['max_drawdown']:.1%}")
+        
+        # Exchange & Pairs
+        logger.info(f"\nExchange: {', '.join(self.exchange_clients.keys())}")
+        logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
+        if self.TRADING_PAIRS:
+            logger.info(f"Symbols: {', '.join(self.TRADING_PAIRS[:5])}" + 
+                       (f" ... (+{len(self.TRADING_PAIRS)-5} more)" if len(self.TRADING_PAIRS) > 5 else ""))
+        
+        # Strategies
+        if self.strategies:
+            logger.info(f"\nActive Strategies: {len(self.strategies)}")
+            for strategy_name in self.strategies.keys():
+                logger.info(f"  - {strategy_name}")
+        
+        # Mode & Features
+        logger.info(f"\nMode: {self.mode.upper()}")
+        logger.info(f"Dry Run: {self.dry_run}")
+        logger.info(f"Debug Mode: {self.debug_mode}")
+        logger.info(f"Infinite Mode: {self.infinite}")
+        logger.info(f"Auto-Restart: {self.auto_restart}")
+        
+        # WebSocket
+        if self.ws_optimizer:
+            logger.info(f"\nWebSocket: {'Enabled' if self._is_ws_initialized() else 'Disabled (REST API)'}")
+        
+        logger.info("="*70 + "\n")
+    
+    def _generate_post_session_analysis(self, log_filename: str = None):
+        """
+        Generate post-session analysis from log files.
+        Issue #106: Parse logs for errors, warnings, and trade statistics.
+        
+        Args:
+            log_filename: Log file to analyze (optional)
+        """
+        try:
+            logger.info("\n" + "="*70)
+            logger.info("POST-SESSION ANALYSIS")
+            logger.info("="*70)
+            
+            # Find log file
+            if not log_filename:
+                import glob
+                log_files = glob.glob('live_trading_*.log')
+                if log_files:
+                    log_filename = sorted(log_files)[-1]  # Most recent
+            
+            if not log_filename or not os.path.exists(log_filename):
+                logger.warning("No log file found for analysis")
+                return
+            
+            # Parse log file
+            error_count = 0
+            warning_count = 0
+            signal_count = 0
+            trade_count = 0
+            
+            with open(log_filename, 'r') as f:
+                for line in f:
+                    if 'ERROR' in line:
+                        error_count += 1
+                    elif 'WARNING' in line:
+                        warning_count += 1
+                    elif 'Signal submitted' in line or 'signal from' in line.lower():
+                        signal_count += 1
+                    elif 'Position opened' in line or 'Trade executed' in line:
+                        trade_count += 1
+            
+            # Summary
+            logger.info(f"Log File: {log_filename}")
+            logger.info(f"\nSession Statistics:")
+            logger.info(f"  Signals Generated: {signal_count}")
+            logger.info(f"  Trades Executed: {trade_count}")
+            logger.info(f"  Warnings: {warning_count}")
+            logger.info(f"  Errors: {error_count}")
+            
+            # Health assessment
+            if error_count > 50:
+                logger.warning("⚠️  High error count - system may need attention")
+            elif error_count > 10:
+                logger.info("ℹ️  Moderate error count - review logs")
+            else:
+                logger.info("✅ Low error count - system healthy")
+            
+            logger.info("="*70 + "\n")
+            
+        except Exception as e:
+            logger.error(f"Error generating post-session analysis: {e}")
     
     async def _emergency_shutdown(self, reason: str) -> None:
         """
@@ -1352,6 +1460,9 @@ class LiveTradingLauncher:
             if not await self._perform_preflight_checks():
                 logger.error("\n❌ Pre-flight checks failed - aborting launch")
                 return 1
+            
+            # Print configuration summary after initialization
+            self._print_configuration_summary()
             
             # If dry-run, stop here
             if self.dry_run:

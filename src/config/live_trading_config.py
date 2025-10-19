@@ -46,6 +46,12 @@ class LiveTradingConfiguration:
         'alert_thresholds': {
             'pnl_drop_pct': 0.05,  # Alert on 5% P&L drop
             'risk_breach': True,  # Alert on risk limit breach
+        },
+        'duplicate_prevention': {
+            'enabled': True,
+            'same_symbol_cooldown': 60,  # Reduced from 300s to 60s for testing
+            'same_strategy_cooldown': 60,  # Reduced from 180s to 60s (deprecated, uses same_symbol_cooldown)
+            'min_price_change': 0.002,  # 0.2% minimum price change
         }
     }
     

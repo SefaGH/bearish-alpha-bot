@@ -350,15 +350,16 @@ class AdvancedPositionManager:
                 except Exception as ws_error:
                     logger.debug(f"WebSocket price fetch failed for {symbol}: {ws_error}")
             
-            # Fallback to API
-            for ex_name, client in self.portfolio_manager.exchange_clients.items():
-                try:
-                    ticker = client.fetch_ticker(symbol)
-                    last_price = ticker.get('last', ticker.get('close', 0))
-                    if last_price > 0:
-                        return float(last_price)
-                except Exception as api_error:
-                    logger.debug(f"API price fetch failed for {symbol} on {ex_name}: {api_error}")
+            # Fallback to API - safely check if exchange_clients exists
+            if hasattr(self.portfolio_manager, 'exchange_clients') and self.portfolio_manager.exchange_clients:
+                for ex_name, client in self.portfolio_manager.exchange_clients.items():
+                    try:
+                        ticker = client.fetch_ticker(symbol)
+                        last_price = ticker.get('last', ticker.get('close', 0))
+                        if last_price > 0:
+                            return float(last_price)
+                    except Exception as api_error:
+                        logger.debug(f"API price fetch failed for {symbol} on {ex_name}: {api_error}")
             
             logger.warning(f"Could not fetch current price for {symbol}")
             return None

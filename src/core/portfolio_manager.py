@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class PortfolioManager:
     """Advanced multi-strategy portfolio optimization engine."""
     
-    def __init__(self, risk_manager, performance_monitor, websocket_manager=None):
+    def __init__(self, risk_manager, performance_monitor, websocket_manager=None, exchange_clients=None):
         """
         Initialize portfolio manager.
         
@@ -24,10 +24,13 @@ class PortfolioManager:
             risk_manager: RiskManager instance from Phase 3.2
             performance_monitor: RealTimePerformanceMonitor from Phase 2
             websocket_manager: WebSocketManager from Phase 3.1 (optional)
+            exchange_clients: Dictionary of exchange clients (optional)
         """
         self.risk_manager = risk_manager
         self.performance_monitor = performance_monitor
         self.ws_manager = websocket_manager
+        self.exchange_clients = exchange_clients or {}
+        self.cfg = {}
         
         # Strategy registry
         self.strategies = {}  # strategy_name -> strategy_instance
@@ -48,6 +51,17 @@ class PortfolioManager:
         self.optimization_history = []
         
         logger.info(f"PortfolioManager initialized with portfolio value: ${risk_manager.portfolio_value:.2f}")
+    
+    def add_exchange_client(self, exchange_name: str, client):
+        """
+        Add an exchange client dynamically.
+        
+        Args:
+            exchange_name: Name of the exchange
+            client: Exchange client instance
+        """
+        self.exchange_clients[exchange_name] = client
+        logger.info(f"Exchange client added: {exchange_name}")
     
     def register_strategy(self, strategy_name: str, strategy_instance: Any, 
                          initial_allocation: float = 0.25) -> Dict[str, Any]:
