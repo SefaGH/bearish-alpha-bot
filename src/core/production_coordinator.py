@@ -456,6 +456,10 @@ class ProductionCoordinator:
                         if result['success']:
                             logger.info(f"✅ Signal submitted: {symbol} {signal.get('strategy')}")
                     
+                    # Show position dashboard every 10 symbols
+                    if self.processed_symbols_count % 10 == 0:
+                        self._print_position_dashboard()
+                    
                 except Exception as e:
                     logger.error(f"Error processing {symbol}: {e}")
                     continue
@@ -529,8 +533,10 @@ class ProductionCoordinator:
             self.portfolio_manager = PortfolioManager(
                 risk_manager=self.risk_manager,
                 performance_monitor=self.performance_monitor,
-                websocket_manager=self.websocket_manager
+                websocket_manager=self.websocket_manager,
+                exchange_clients=self.exchange_clients
             )
+            self.portfolio_manager.cfg = self.config
             
             # Other components...
             self.strategy_coordinator = StrategyCoordinator(self.portfolio_manager, self.risk_manager)
@@ -967,6 +973,57 @@ class ProductionCoordinator:
             state['market_regime'] = self.market_regime_analyzer.get_current_regime()
         
         return state
+    
+    def _print_position_dashboard(self):
+        """
+        Display real-time position dashboard with P&L.
+        Phase 3.4 - Issue #105: Position Dashboard
+        """
+        try:
+            if not self.portfolio_manager or not hasattr(self.portfolio_manager, 'risk_manager'):
+                return
+            
+            risk_manager = self.portfolio_manager.risk_manager
+            active_positions = risk_manager.active_positions if hasattr(risk_manager, 'active_positions') else {}
+            
+            if not active_positions:
+                logger.info("\n📊 POSITION DASHBOARD: No open positions")
+                return
+            
+            logger.info("\n" + "="*70)
+            logger.info("📊 POSITION DASHBOARD")
+            logger.info("="*70)
+            
+            total_unrealized_pnl = 0.0
+            for position_id, position in active_positions.items():
+                symbol = position.get('symbol', 'UNKNOWN')
+                side = position.get('side', 'unknown')
+                entry_price = position.get('entry_price', 0)
+                current_price = position.get('current_price', entry_price)
+                amount = position.get('amount', 0)
+                
+                # Calculate unrealized P&L
+                if side in ['long', 'buy']:
+                    unrealized_pnl = (current_price - entry_price) * amount
+                else:
+                    unrealized_pnl = (entry_price - current_price) * amount
+                
+                pnl_pct = (unrealized_pnl / (entry_price * amount) * 100) if entry_price * amount > 0 else 0
+                total_unrealized_pnl += unrealized_pnl
+                
+                # Format output
+                pnl_symbol = "✅" if unrealized_pnl >= 0 else "❌"
+                logger.info(f"{pnl_symbol} {symbol} {side.upper()}")
+                logger.info(f"   Entry: ${entry_price:.4f} | Current: ${current_price:.4f}")
+                logger.info(f"   Amount: {amount:.4f} | P&L: ${unrealized_pnl:.2f} ({pnl_pct:+.2f}%)")
+            
+            logger.info("-"*70)
+            total_symbol = "✅" if total_unrealized_pnl >= 0 else "❌"
+            logger.info(f"{total_symbol} TOTAL UNREALIZED P&L: ${total_unrealized_pnl:.2f}")
+            logger.info("="*70 + "\n")
+            
+        except Exception as e:
+            logger.error(f"Error displaying position dashboard: {e}")
     
     def _ohlcv_to_dataframe(self, ohlcv_data: List) -> pd.DataFrame:
         """Convert OHLCV list data to DataFrame."""

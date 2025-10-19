@@ -51,9 +51,8 @@ class StrategyCoordinator:
         # Conflict tracking
         self.conflict_history = []
         
-        # Duplicate prevention tracking (Phase 3.4 - Issue #103)
-        self.last_position_time = {}  # symbol -> timestamp
-        self.last_strategy_time = {}  # strategy_name -> timestamp
+        # Duplicate prevention tracking (Phase 3.4 - Issue #104)
+        self.last_signal_time = {}  # "symbol:strategy" -> timestamp
         self.signal_price_history = defaultdict(list)  # symbol -> [(timestamp, price), ...]
         
         # Signal processing stats
@@ -71,7 +70,12 @@ class StrategyCoordinator:
     def validate_duplicate(self, signal: Dict, strategy_name: str) -> Tuple[bool, str]:
         """
         Validate signal for duplicates using cooldown and price movement checks.
-        Phase 3.4 - Issue #103: Duplicate Position Prevention
+        Phase 3.4 - Issue #104: Fixed Cooldown Logic
+        
+        Uses combined key "symbol:strategy" to allow:
+        - BTC+strategy1 → ETH+strategy1 ✅
+        - BTC+strategy1 → BTC+strategy2 ✅
+        - BTC+strategy1 → BTC+strategy1 ❌ (60s cooldown)
         
         Args:
             signal: Trading signal dictionary
@@ -94,31 +98,26 @@ class StrategyCoordinator:
         entry_price = signal.get('entry', 0)
         current_time = time.time()
         
-        # Configuration values
-        symbol_cooldown = float(monitoring_config.get('same_symbol_cooldown', 300))
-        strategy_cooldown = float(monitoring_config.get('same_strategy_cooldown', 180))
+        # Configuration values - now both use same cooldown
+        cooldown = float(monitoring_config.get('same_symbol_cooldown', 60))
         min_price_change = float(monitoring_config.get('min_price_change', 0.002))
         
-        # Check symbol cooldown
-        if symbol in self.last_position_time:
-            elapsed = current_time - self.last_position_time[symbol]
-            if elapsed < symbol_cooldown:
-                remaining = symbol_cooldown - elapsed
-                return False, f"Symbol cooldown: {remaining:.0f}s remaining"
+        # Create combined key: "symbol:strategy"
+        signal_key = f"{symbol}:{strategy_name}"
         
-        # Check strategy cooldown
-        if strategy_name in self.last_strategy_time:
-            elapsed = current_time - self.last_strategy_time[strategy_name]
-            if elapsed < strategy_cooldown:
-                remaining = strategy_cooldown - elapsed
-                return False, f"Strategy cooldown: {remaining:.0f}s remaining"
+        # Check cooldown for this specific symbol+strategy combination
+        if signal_key in self.last_signal_time:
+            elapsed = current_time - self.last_signal_time[signal_key]
+            if elapsed < cooldown:
+                remaining = cooldown - elapsed
+                return False, f"Signal cooldown: {remaining:.0f}s remaining (same symbol+strategy)"
         
-        # Check price movement
+        # Check price movement (per symbol, regardless of strategy)
         if symbol in self.signal_price_history and entry_price > 0:
             # Clean up old history (older than cooldown period)
             self.signal_price_history[symbol] = [
                 (ts, price) for ts, price in self.signal_price_history[symbol]
-                if current_time - ts < symbol_cooldown
+                if current_time - ts < cooldown
             ]
             
             # Check if there are recent signals
@@ -129,9 +128,8 @@ class StrategyCoordinator:
                 if price_change < min_price_change:
                     return False, f"Insufficient price movement: {price_change*100:.2f}% < {min_price_change*100:.2f}%"
         
-        # Update tracking
-        self.last_position_time[symbol] = current_time
-        self.last_strategy_time[strategy_name] = current_time
+        # Update tracking with combined key
+        self.last_signal_time[signal_key] = current_time
         if entry_price > 0:
             self.signal_price_history[symbol].append((current_time, entry_price))
         
