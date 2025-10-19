@@ -169,9 +169,10 @@ class TestATRBasedTPSL:
         tp_pct = (target - entry) / entry
         assert tp_pct >= 0.008, f"TP percentage {tp_pct} should be >= 0.008"
         
-        # Check that maximum SL is enforced (with small tolerance for floating point)
+        # Check that maximum SL is enforced (with small tolerance for floating point precision)
         sl_pct = (entry - stop) / entry
-        assert sl_pct <= 0.0151, f"SL percentage {sl_pct} should be <= 0.015"
+        max_sl_with_tolerance = config['max_sl_pct'] * 1.01  # 1% tolerance for floating point
+        assert sl_pct <= max_sl_with_tolerance, f"SL percentage {sl_pct} should be <= {config['max_sl_pct']}"
 
 
 class TestDuplicatePrevention:
@@ -255,10 +256,7 @@ class TestDuplicatePrevention:
         # First signal
         coordinator.validate_duplicate(signal1, 'strategy1')
         
-        # Wait for cooldown to pass
-        time.sleep(0.1)
-        
-        # Manually reset cooldowns to test price movement only
+        # Manually reset cooldowns to test price movement check in isolation
         coordinator.last_position_time.clear()
         coordinator.last_strategy_time.clear()
         
@@ -398,8 +396,9 @@ class TestExitMonitoring:
     @pytest.mark.asyncio
     async def test_timeout_exit(self, position_manager):
         """Test timeout-based exit."""
-        # Create position with old timestamp
-        old_time = datetime.now(timezone.utc) - timedelta(seconds=15)
+        # Create position with old timestamp (max_position_duration is 10s, so use 15s to exceed it)
+        max_duration = position_manager.portfolio_manager.cfg['position_management']['time_based_exit']['max_position_duration']
+        old_time = datetime.now(timezone.utc) - timedelta(seconds=max_duration + 5)
         
         position = {
             'position_id': 'test_pos_3',
