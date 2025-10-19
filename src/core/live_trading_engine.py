@@ -941,7 +941,7 @@ class LiveTradingEngine:
                         # Fetch current price
                         current_price = await self._get_current_price(symbol)
                         
-                        if not current_price or current_price <= 0:
+                        if current_price is None or current_price <= 0:
                             logger.warning(f"Invalid price for {symbol}, skipping")
                             continue
                         
