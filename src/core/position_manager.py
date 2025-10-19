@@ -9,6 +9,12 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from enum import Enum
 
+from utils.pnl_calculator import (
+    calculate_unrealized_pnl,
+    calculate_realized_pnl,
+    calculate_pnl_percentage
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -173,16 +179,12 @@ class AdvancedPositionManager:
             amount = position['amount']
             side = position['side']
             
-            if side in ['long', 'buy']:
-                unrealized_pnl = (position['current_price'] - entry_price) * amount
-            else:  # short
-                unrealized_pnl = (entry_price - position['current_price']) * amount
+            unrealized_pnl = calculate_unrealized_pnl(side, entry_price, position['current_price'], amount)
             
             position['unrealized_pnl'] = unrealized_pnl
             
             # Calculate P&L percentage
-            position_value = entry_price * amount
-            pnl_pct = (unrealized_pnl / position_value) * 100 if position_value > 0 else 0
+            pnl_pct = calculate_pnl_percentage(unrealized_pnl, entry_price, amount)
             
             # Update max adverse/favorable excursion
             if unrealized_pnl < 0 and abs(unrealized_pnl) > abs(position['max_adverse_excursion']):
@@ -289,10 +291,7 @@ class AdvancedPositionManager:
             amount = position['amount']
             side = position['side']
             
-            if side in ['long', 'buy']:
-                realized_pnl = (exit_price - entry_price) * amount
-            else:  # short
-                realized_pnl = (entry_price - exit_price) * amount
+            realized_pnl = calculate_realized_pnl(side, entry_price, exit_price, amount)
             
             position['realized_pnl'] = realized_pnl
             position['exit_price'] = exit_price
@@ -543,7 +542,7 @@ class AdvancedPositionManager:
                     metrics['holding_period_hours'] = holding_period.total_seconds() / 3600
             else:
                 metrics['unrealized_pnl'] = position['unrealized_pnl']
-                pnl_pct = (position['unrealized_pnl'] / (position['entry_price'] * position['amount'])) * 100
+                pnl_pct = calculate_pnl_percentage(position['unrealized_pnl'], position['entry_price'], position['amount'])
                 metrics['unrealized_pnl_pct'] = pnl_pct
             
             # Risk metrics
