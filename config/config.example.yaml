@@ -113,15 +113,15 @@ signals:
     rsi_max: 45
     
     # Adaptive parameters
-    adaptive_rsi_base: 35
-    adaptive_rsi_range: 25
+    adaptive_rsi_base: 45
+    adaptive_rsi_range: 10
     
     # YENİ: Adaptive fine-tuning
     adaptive_mode: "dynamic"  # "dynamic" | "conservative" | "aggressive"
     volatility_sensitivity: "medium"  # "low" | "medium" | "high"
     
-    tp_pct: 0.010
-    sl_atr_mult: 1.0
+    tp_pct: 0.006
+    sl_atr_mult: 1.5
 
   short_the_rip:
     enable: true
@@ -131,14 +131,14 @@ signals:
     rsi_min: 55
     
     # Adaptive parameters  
-    adaptive_rsi_base: 65
-    adaptive_rsi_range: 25
+    adaptive_rsi_base: 55
+    adaptive_rsi_range: 10
     
     # YENİ: Adaptive fine-tuning
     adaptive_mode: "dynamic"
     volatility_sensitivity: "medium"
     
-    tp_pct: 0.008
+    tp_pct: 0.006
     sl_atr_mult: 1.2
 
 quarantine:
