@@ -100,6 +100,9 @@ class ProductionCoordinator:
         self.active_symbols = []  # Takip edilen semboller
         self.processed_symbols_count = 0  # İşlenen sembol sayacı
         
+        # Signal lifecycle tracking
+        self.signal_lifecycle = {}  # signal_id -> {stage, timestamp, details}
+        
         # Configuration
         self.config = LiveTradingConfiguration.get_all_configs()
         
@@ -539,6 +542,9 @@ class ProductionCoordinator:
             
             self.is_running = True
             
+            # Start queue monitoring task
+            self._monitoring_task = asyncio.create_task(self._monitor_signal_queues())
+            
             logger.info("\n🚀 Production trading loop active")
             logger.info(f"   Mode: {mode}")
             logger.info(f"   Duration: {'Indefinite' if duration is None else f'{duration}s'}")
@@ -770,17 +776,67 @@ class ProductionCoordinator:
             )
             
             if result['status'] == 'accepted':
-                # Add to trading engine signal queue
-                await self.trading_engine.signal_queue.put(signal)
-                logger.info(f"Signal submitted for {signal.get('symbol')}")
-                return {'success': True, 'signal_id': signal.get('signal_id')}
+                # Get signal_id from coordinator result
+                signal_id = result.get('signal_id')
+                
+                # [STAGE 1: GENERATED] Mark signal as generated
+                self._track_signal_lifecycle(signal_id, 'generated', {'symbol': signal.get('symbol'), 'strategy': signal.get('strategy')})
+                logger.info(f"[STAGE:GENERATED] Signal {signal_id} for {signal.get('symbol')}")
+                
+                # [STAGE 2: VALIDATED] Signal passed validation
+                enriched_signal = result['enriched_signal']
+                self._track_signal_lifecycle(signal_id, 'validated', {'reason': 'passed_all_checks'})
+                logger.info(f"[STAGE:VALIDATED] Signal {signal_id} validated")
+                
+                # [STAGE 3: QUEUED] Signal added to StrategyCoordinator queue (already done in coordinator)
+                self._track_signal_lifecycle(signal_id, 'queued', {'queue': 'strategy_coordinator'})
+                logger.info(f"[STAGE:QUEUED] Signal {signal_id} in StrategyCoordinator queue")
+                
+                # [STAGE 4: FORWARDED] Forward enriched signal to LiveTradingEngine
+                await self.trading_engine.signal_queue.put(enriched_signal)
+                self._track_signal_lifecycle(signal_id, 'forwarded', {'queue': 'live_trading_engine'})
+                logger.info(f"[STAGE:FORWARDED] Signal {signal_id} forwarded to LiveTradingEngine queue")
+                
+                return {'success': True, 'signal_id': signal_id}
             else:
                 logger.warning(f"Signal rejected: {result.get('reason')}")
+                # For rejected signals, generate a temporary ID for tracking
+                signal_id = f"{signal.get('strategy', 'unknown')}_{signal.get('symbol', 'UNKNOWN')}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')}"
+                self._track_signal_lifecycle(signal_id, 'rejected', {'reason': result.get('reason')})
                 return {'success': False, 'reason': result.get('reason')}
                 
         except Exception as e:
             logger.error(f"Error submitting signal: {e}")
             return {'success': False, 'reason': str(e)}
+    
+    def _track_signal_lifecycle(self, signal_id: str, stage: str, details: Dict = None):
+        """
+        Track signal through its lifecycle stages.
+        
+        Stages: generated -> validated -> queued -> forwarded -> executed
+        
+        Args:
+            signal_id: Unique signal identifier
+            stage: Current stage
+            details: Additional details about this stage
+        """
+        if signal_id not in self.signal_lifecycle:
+            self.signal_lifecycle[signal_id] = {
+                'stages': [],
+                'created_at': datetime.now(timezone.utc)
+            }
+        
+        self.signal_lifecycle[signal_id]['stages'].append({
+            'stage': stage,
+            'timestamp': datetime.now(timezone.utc),
+            'details': details or {}
+        })
+        
+        # Keep only last 100 signals to avoid memory issues
+        if len(self.signal_lifecycle) > 100:
+            oldest_key = min(self.signal_lifecycle.keys(), 
+                           key=lambda k: self.signal_lifecycle[k]['created_at'])
+            del self.signal_lifecycle[oldest_key]
     
     def register_strategy(self, strategy_name: str, strategy_instance: Any, 
                          initial_allocation: float = 0.25) -> Dict[str, Any]:
@@ -869,10 +925,68 @@ class ProductionCoordinator:
             logger.error(f"Failed to fetch {symbol} {timeframe}: {e}")
             return None
     
+    async def _monitor_signal_queues(self):
+        """
+        Monitor signal queues and log their sizes periodically.
+        
+        Monitors:
+        - StrategyCoordinator signal queue
+        - LiveTradingEngine signal queue
+        """
+        logger.info("Queue monitoring task started")
+        
+        try:
+            while self.is_running:
+                try:
+                    # Get queue sizes
+                    coordinator_queue_size = 0
+                    engine_queue_size = 0
+                    
+                    if self.strategy_coordinator:
+                        coordinator_queue_size = self.strategy_coordinator.signal_queue.qsize()
+                    
+                    if self.trading_engine:
+                        engine_queue_size = self.trading_engine.signal_queue.qsize()
+                    
+                    # Log queue status
+                    logger.info(f"📊 [QUEUE-MONITOR] StrategyCoordinator: {coordinator_queue_size} signals | LiveTradingEngine: {engine_queue_size} signals")
+                    
+                    # Log lifecycle summary
+                    if self.signal_lifecycle:
+                        total_signals = len(self.signal_lifecycle)
+                        stage_counts = {}
+                        for signal_data in self.signal_lifecycle.values():
+                            if signal_data['stages']:
+                                last_stage = signal_data['stages'][-1]['stage']
+                                stage_counts[last_stage] = stage_counts.get(last_stage, 0) + 1
+                        
+                        logger.info(f"📊 [LIFECYCLE] Total tracked: {total_signals} | Stages: {stage_counts}")
+                    
+                    # Wait 30 seconds before next check
+                    await asyncio.sleep(30)
+                    
+                except asyncio.CancelledError:
+                    logger.info("Queue monitoring task cancelled")
+                    break
+                except Exception as e:
+                    logger.error(f"Error in queue monitoring: {e}")
+                    await asyncio.sleep(30)
+                    
+        except Exception as e:
+            logger.error(f"Fatal error in queue monitoring: {e}", exc_info=True)
+    
     async def stop_system(self):
         """Stop the production system gracefully."""
         logger.info("Stopping production system...")
         self.is_running = False
+        
+        # Cancel monitoring task
+        if hasattr(self, '_monitoring_task') and self._monitoring_task:
+            self._monitoring_task.cancel()
+            try:
+                await self._monitoring_task
+            except asyncio.CancelledError:
+                pass
         
         if self.trading_engine:
             await self.trading_engine.stop_live_trading()
