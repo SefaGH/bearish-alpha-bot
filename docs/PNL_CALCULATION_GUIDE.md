@@ -343,7 +343,7 @@ If you notice calculation differences:
 
 ## Version History
 
-- **v1.0.0** (2024-10-19): Initial release
+- **v1.0.0** (2025-10-19): Initial release
   - Extracted from 6 duplicated locations
   - Added comprehensive unit tests
   - Created documentation
@@ -357,6 +357,6 @@ For questions or issues:
 
 ---
 
-**Last Updated:** 2024-10-19  
+**Last Updated:** 2025-10-19  
 **Module:** `src/utils/pnl_calculator.py`  
 **Tests:** `tests/test_pnl_calculator.py`
