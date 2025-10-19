@@ -14,10 +14,13 @@ from collections import deque
 try:
     # Absolute import for script execution
     from src.utils.pnl_calculator import calculate_unrealized_pnl
-except ImportError:
-    # Relative import for package context
-    from ..utils.pnl_calculator import calculate_unrealized_pnl
-
+except ModuleNotFoundError as e:
+    # Only fallback if the missing module is one of the expected ones
+    if e.name in ('src', 'src.utils', 'src.utils.pnl_calculator'):
+        # Relative import for package context
+        from ..utils.pnl_calculator import calculate_unrealized_pnl
+    else:
+        raise
 logger = logging.getLogger(__name__)
 
 
