@@ -342,7 +342,7 @@ class ProductionCoordinator:
                 logger.debug(f"🔍 Executing {len(self.strategies)} strategies for {symbol}")
                 
                 for strategy_name, strategy_instance in self.strategies.items():
-                    logger.debug(f"  → Calling {strategy_name}...")
+                    logger.debug("Calling %s...", strategy_name)
                     try:
                         # Call strategy's signal method
                         strategy_signal = None
