@@ -62,6 +62,9 @@ from .live_trading_engine import LiveTradingEngine
 from strategies.adaptive_ob import AdaptiveOversoldBounce
 from strategies.adaptive_str import AdaptiveShortTheRip
 
+# Utils
+from utils.pnl_calculator import calculate_unrealized_pnl, calculate_pnl_percentage
+
 # Phase 4: ML Components (optional)
 try:
     from ml.regime_predictor import RegimePredictor
@@ -1003,12 +1006,9 @@ class ProductionCoordinator:
                 amount = position.get('amount', 0)
                 
                 # Calculate unrealized P&L
-                if side in ['long', 'buy']:
-                    unrealized_pnl = (current_price - entry_price) * amount
-                else:
-                    unrealized_pnl = (entry_price - current_price) * amount
+                unrealized_pnl = calculate_unrealized_pnl(side, entry_price, current_price, amount)
                 
-                pnl_pct = (unrealized_pnl / (entry_price * amount) * 100) if entry_price * amount > 0 else 0
+                pnl_pct = calculate_pnl_percentage(unrealized_pnl, entry_price, amount)
                 total_unrealized_pnl += unrealized_pnl
                 
                 # Format output

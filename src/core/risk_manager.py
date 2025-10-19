@@ -8,6 +8,8 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 import numpy as np
 
+from utils.pnl_calculator import calculate_unrealized_pnl
+
 logger = logging.getLogger(__name__)
 
 
@@ -216,10 +218,9 @@ class RiskManager:
             position_size = position.get('size', 0)
             
             # Calculate unrealized P&L
-            if position.get('side') == 'long':
-                unrealized_pnl = (current_price - entry_price) * position_size
-            else:
-                unrealized_pnl = (entry_price - current_price) * position_size
+            unrealized_pnl = calculate_unrealized_pnl(
+                position.get('side', 'long'), entry_price, current_price, position_size
+            )
             
             position['unrealized_pnl'] = unrealized_pnl
             

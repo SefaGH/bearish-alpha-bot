@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 import numpy as np
 from collections import deque
 
+from utils.pnl_calculator import calculate_unrealized_pnl
+
 logger = logging.getLogger(__name__)
 
 
@@ -172,10 +174,7 @@ class RealTimeRiskMonitor:
             side = position.get('side', 'long')
             
             # Calculate unrealized P&L
-            if side == 'long':
-                unrealized_pnl = (current_price - entry_price) * size
-            else:
-                unrealized_pnl = (entry_price - current_price) * size
+            unrealized_pnl = calculate_unrealized_pnl(side, entry_price, current_price, size)
             
             # Check against thresholds
             portfolio_value = self.risk_manager.portfolio_value
