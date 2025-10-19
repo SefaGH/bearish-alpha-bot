@@ -157,9 +157,9 @@ websocket:
 ## Testing
 
 ### Validation Script
-A comprehensive validation script is included at `/tmp/validate_fixes.py`:
+A comprehensive validation script is included at `scripts/validate_phase3_4_fixes.py`:
 ```bash
-python /tmp/validate_fixes.py
+python scripts/validate_phase3_4_fixes.py
 ```
 
 This verifies:
@@ -293,5 +293,5 @@ After deploying these fixes:
 For issues or questions:
 1. Check the logs for detailed error messages
 2. Verify environment variables are set correctly
-3. Run validation script: `python /tmp/validate_fixes.py`
+3. Run validation script: `python scripts/validate_phase3_4_fixes.py`
 4. Run unit tests: `pytest tests/test_phase3_4_critical_fixes.py -v`
