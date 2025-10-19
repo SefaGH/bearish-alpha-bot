@@ -252,15 +252,17 @@ class TestPositionManagerSafetyCheck:
         from src.core.position_manager import AdvancedPositionManager
         
         # Create mocks
-        portfolio_manager = Mock()
-        # Don't set exchange_clients attribute to test safety
+        portfolio_manager = Mock(spec=[])  # Explicitly create mock without exchange_clients attribute
         risk_manager = Mock()
         ws_manager = Mock()
         ws_manager.get_latest_ticker = Mock(return_value=None)
         
         pm = AdvancedPositionManager(portfolio_manager, risk_manager, ws_manager)
         
-        # This should not raise AttributeError
+        # Verify portfolio_manager doesn't have exchange_clients attribute
+        assert not hasattr(portfolio_manager, 'exchange_clients')
+        
+        # This should not raise AttributeError due to our safety check
         price = await pm._get_current_price_from_ws('BTC/USDT:USDT')
         
         # Price should be None since no exchange_clients or WS data
