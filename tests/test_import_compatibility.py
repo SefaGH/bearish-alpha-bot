@@ -7,7 +7,6 @@ for all four core modules that use pnl_calculator utilities.
 
 import pytest
 import sys
-import os
 from pathlib import Path
 
 
