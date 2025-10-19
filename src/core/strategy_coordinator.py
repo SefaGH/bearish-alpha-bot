@@ -62,7 +62,13 @@ class StrategyCoordinator:
             'rejected_signals': 0,
             'conflicted_signals': 0,
             'duplicate_rejections': 0,
-            'last_signal_time': None
+            'last_signal_time': None,
+            'cooldown_bypasses': 0,
+            'bypass_success_rate': 0.0,
+            'avg_bypass_price_delta': 0.0,
+            'last_bypass_time': None,
+            'rejected_cooldown': 0,
+            'rejected_price_delta': 0
         }
         
         logger.info("StrategyCoordinator initialized")
@@ -71,11 +77,12 @@ class StrategyCoordinator:
         """
         Validate signal for duplicates using cooldown and price movement checks.
         Phase 3.4 - Issue #104: Fixed Cooldown Logic
+        Phase 3.4 - Issue #118: Enhanced with Price Delta Bypass
         
         Uses combined key "symbol:strategy" to allow:
         - BTC+strategy1 → ETH+strategy1 ✅
         - BTC+strategy1 → BTC+strategy2 ✅
-        - BTC+strategy1 → BTC+strategy1 ❌ (60s cooldown)
+        - BTC+strategy1 → BTC+strategy1 ❌ (60s cooldown, unless price moved >0.15%)
         
         Args:
             signal: Trading signal dictionary
@@ -86,7 +93,7 @@ class StrategyCoordinator:
         """
         import time
         
-        # Get configuration with defaults
+        # Step 1: Check if duplicate prevention enabled
         config = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
         monitoring_config = config.get('monitoring', {}).get('duplicate_prevention', {})
         
@@ -98,42 +105,152 @@ class StrategyCoordinator:
         entry_price = signal.get('entry', 0)
         current_time = time.time()
         
-        # Configuration values - now both use same cooldown
+        # Configuration values
         cooldown = float(monitoring_config.get('same_symbol_cooldown', 60))
-        min_price_change = float(monitoring_config.get('min_price_change', 0.002))
+        price_delta_bypass_enabled = monitoring_config.get('price_delta_bypass_enabled', True)
+        price_delta_bypass_threshold = float(monitoring_config.get('price_delta_bypass_threshold', 0.0015))
         
         # Create combined key: "symbol:strategy"
         signal_key = f"{symbol}:{strategy_name}"
         
-        # Check cooldown for this specific symbol+strategy combination
+        # Step 2: Calculate cooldown status
+        within_cooldown = False
+        remaining = 0
+        
         if signal_key in self.last_signal_time:
             elapsed = current_time - self.last_signal_time[signal_key]
             if elapsed < cooldown:
+                within_cooldown = True
                 remaining = cooldown - elapsed
-                return False, f"Signal cooldown: {remaining:.0f}s remaining (same symbol+strategy)"
         
-        # Check price movement (per symbol, regardless of strategy)
-        if symbol in self.signal_price_history and entry_price > 0:
-            # Clean up old history (older than cooldown period)
-            self.signal_price_history[symbol] = [
-                (ts, price) for ts, price in self.signal_price_history[symbol]
-                if current_time - ts < cooldown
-            ]
+        # Step 3: IF within cooldown, check for price delta bypass
+        if within_cooldown:
+            # Step 3a: Get last price from history
+            if symbol in self.signal_price_history and entry_price > 0 and price_delta_bypass_enabled:
+                # Find last price for this symbol (from any recent signal)
+                if self.signal_price_history[symbol]:
+                    last_timestamp, last_price = self.signal_price_history[symbol][-1]
+                    
+                    # Step 3b: Calculate price_delta
+                    price_delta = abs(entry_price - last_price) / last_price
+                    
+                    # Step 3c: IF price_delta >= threshold, BYPASS
+                    if price_delta >= price_delta_bypass_threshold:
+                        # Log bypass event with details
+                        logger.info(
+                            f"[DUPLICATE-CHECK] Price Delta Check\n"
+                            f"   Symbol: {symbol}\n"
+                            f"   Last Price: ${last_price:.2f}\n"
+                            f"   New Price: ${entry_price:.2f}\n"
+                            f"   Delta: {price_delta:.4f} ({price_delta*100:.2f}%)\n"
+                            f"   Threshold: {price_delta_bypass_threshold:.4f} ({price_delta_bypass_threshold*100:.2f}%)"
+                        )
+                        logger.info(
+                            f"✅ [DUPLICATE-BYPASS] Cooldown bypassed due to significant price movement\n"
+                            f"   Symbol: {symbol}\n"
+                            f"   Strategy: {strategy_name}\n"
+                            f"   Price Change: {price_delta*100:.2f}% (>= {price_delta_bypass_threshold*100:.2f}%)\n"
+                            f"   Cooldown Remaining: {remaining:.1f}s\n"
+                            f"   ✅ SIGNAL ACCEPTED"
+                        )
+                        
+                        # Update statistics (cooldown_bypasses counter)
+                        self.processing_stats['cooldown_bypasses'] += 1
+                        self.processing_stats['last_bypass_time'] = current_time
+                        
+                        # Update running average for bypass price delta
+                        bypass_count = self.processing_stats['cooldown_bypasses']
+                        current_avg = self.processing_stats['avg_bypass_price_delta']
+                        new_avg = ((current_avg * (bypass_count - 1)) + (price_delta * 100)) / bypass_count
+                        self.processing_stats['avg_bypass_price_delta'] = new_avg
+                        
+                        # Update bypass success rate
+                        total_signals = self.processing_stats['total_signals']
+                        if total_signals > 0:
+                            self.processing_stats['bypass_success_rate'] = (bypass_count / total_signals) * 100
+                        
+                        # Update tracking (last_signal_time, price_history)
+                        self.last_signal_time[signal_key] = current_time
+                        self.signal_price_history[symbol].append((current_time, entry_price))
+                        
+                        return True, f"OK (price delta bypass: {price_delta*100:.2f}%)"
+                    
+                    # Step 3d: ELSE, reject with price delta info
+                    else:
+                        # Log rejection with price delta and threshold
+                        logger.warning(
+                            f"❌ [DUPLICATE-REJECT] Signal rejected - insufficient price movement\n"
+                            f"   Symbol: {symbol}\n"
+                            f"   Strategy: {strategy_name}\n"
+                            f"   Price Change: {price_delta*100:.2f}% (< {price_delta_bypass_threshold*100:.2f}%)\n"
+                            f"   Cooldown Remaining: {remaining:.1f}s\n"
+                            f"   ❌ SIGNAL REJECTED"
+                        )
+                        
+                        # Update statistics (rejected_price_delta counter)
+                        self.processing_stats['rejected_price_delta'] += 1
+                        
+                        return False, f"Signal cooldown: {remaining:.0f}s remaining (price change {price_delta*100:.2f}% < threshold)"
             
-            # Check if there are recent signals
-            if self.signal_price_history[symbol]:
-                last_timestamp, last_price = self.signal_price_history[symbol][-1]
-                price_change = abs(entry_price - last_price) / last_price
-                
-                if price_change < min_price_change:
-                    return False, f"Insufficient price movement: {price_change*100:.2f}% < {min_price_change*100:.2f}%"
+            # No price history available or bypass disabled - reject with cooldown
+            logger.warning(
+                f"❌ [DUPLICATE-REJECT] Signal rejected - cooldown active\n"
+                f"   Symbol: {symbol}\n"
+                f"   Strategy: {strategy_name}\n"
+                f"   Cooldown Remaining: {remaining:.1f}s\n"
+                f"   ❌ SIGNAL REJECTED"
+            )
+            self.processing_stats['rejected_cooldown'] += 1
+            return False, f"Signal cooldown: {remaining:.0f}s remaining (same symbol+strategy)"
         
-        # Update tracking with combined key
+        # Step 4: IF outside cooldown, accept and update tracking
         self.last_signal_time[signal_key] = current_time
         if entry_price > 0:
             self.signal_price_history[symbol].append((current_time, entry_price))
         
         return True, "OK"
+    
+    def get_duplicate_prevention_stats(self) -> Dict[str, Any]:
+        """
+        Get duplicate prevention statistics including bypass metrics.
+        Phase 3.4 - Issue #118: Enhanced statistics tracking
+        
+        Returns:
+            Dictionary with comprehensive duplicate prevention metrics:
+            - total_signals_processed: Total number of signals processed
+            - total_duplicate_rejections: Total signals rejected due to duplication
+            - cooldown_bypasses: Number of times cooldown was bypassed
+            - bypass_rate: Percentage of bypasses relative to total signals (e.g., 5.5 means 5.5%)
+            - avg_bypass_price_delta: Average price change for bypasses as percentage (e.g., 0.35 means 0.35%)
+            - rejected_by_cooldown: Signals rejected by cooldown (no price history)
+            - rejected_by_price_delta: Signals rejected due to insufficient price movement
+            - rejection_breakdown: Detailed breakdown of rejections
+            - last_bypass_time: Timestamp of last bypass event
+        """
+        total_signals = self.processing_stats.get('total_signals', 0)
+        cooldown_bypasses = self.processing_stats.get('cooldown_bypasses', 0)
+        rejected_cooldown = self.processing_stats.get('rejected_cooldown', 0)
+        rejected_price_delta = self.processing_stats.get('rejected_price_delta', 0)
+        duplicate_rejections = self.processing_stats.get('duplicate_rejections', 0)
+        
+        # Calculate rates
+        bypass_rate = (cooldown_bypasses / total_signals * 100) if total_signals > 0 else 0.0
+        
+        return {
+            'total_signals_processed': total_signals,
+            'total_duplicate_rejections': duplicate_rejections,
+            'cooldown_bypasses': cooldown_bypasses,
+            'bypass_rate': round(bypass_rate, 2),
+            'avg_bypass_price_delta': round(self.processing_stats.get('avg_bypass_price_delta', 0.0), 2),
+            'rejected_by_cooldown': rejected_cooldown,
+            'rejected_by_price_delta': rejected_price_delta,
+            'rejection_breakdown': {
+                'cooldown_only': rejected_cooldown,
+                'insufficient_price_delta': rejected_price_delta,
+                'total': rejected_cooldown + rejected_price_delta
+            },
+            'last_bypass_time': self.processing_stats.get('last_bypass_time')
+        }
     
     async def process_strategy_signal(self, strategy_name: str, signal: Dict) -> Dict[str, Any]:
         """

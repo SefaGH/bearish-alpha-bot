@@ -147,12 +147,23 @@ signals:
     min_tp_pct: 0.010       # Minimum 1.0% TP
     max_sl_pct: 0.020       # Maximum 2.0% SL
 
-# Phase 3.4 Monitoring & Duplicate Prevention (Issue #103)
+# Phase 3.4 Monitoring & Duplicate Prevention (Issue #103, Enhanced #118)
 monitoring:
   duplicate_prevention:
     enabled: true
-    same_symbol_cooldown: 300        # 5 minutes between same symbol trades
-    same_strategy_cooldown: 180      # 3 minutes between same strategy trades
+    same_symbol_cooldown: 60         # 60 seconds cooldown for same symbol+strategy
+    
+    # Price Delta Bypass Configuration (Issue #118)
+    # Allows signals to bypass cooldown when price movement is significant
+    price_delta_bypass_threshold: 0.0015  # 0.15% price change bypasses cooldown
+    price_delta_bypass_enabled: true      # Enable/disable bypass feature
+    
+    # Future Enhancement Placeholders (not yet implemented)
+    cooldown_volatility_multiplier: 1.5   # Future: adjust cooldown based on volatility
+    cooldown_min: 30                      # Future: minimum cooldown period in seconds
+    cooldown_max: 180                     # Future: maximum cooldown period in seconds
+    
+    # Legacy (kept for backward compatibility)
     min_price_change: 0.002          # 0.2% minimum price movement
 
 # Phase 3.4 Position Exit Management (Issue #100)
