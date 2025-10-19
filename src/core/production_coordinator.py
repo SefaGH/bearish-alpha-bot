@@ -336,10 +336,11 @@ class ProductionCoordinator:
             signal = None
             
             # Execute registered strategies
-            logger.debug(f"🎯 Registered strategies count: {len(self.strategies)}")
+            count = len(self.strategies)
+            logger.debug(f"🎯 Registered strategies count: {count}")
             
-            if self.strategies:
-                logger.debug(f"🔍 Executing {len(self.strategies)} strategies for {symbol}")
+            if count:
+                logger.debug(f"🔍 Executing {count} strategies for {symbol}")
                 
                 for strategy_name, strategy_instance in self.strategies.items():
                     logger.debug("Calling %s...", strategy_name)
