@@ -9,9 +9,8 @@ import sys
 import os
 import asyncio
 import pytest
-from datetime import datetime, timezone
-from unittest.mock import Mock, AsyncMock, patch
 
+from unittest.mock import Mock, AsyncMock
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
