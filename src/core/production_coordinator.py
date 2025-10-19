@@ -375,7 +375,7 @@ class ProductionCoordinator:
                             break  # Use first signal found
                             
                     except Exception as e:
-                        logger.debug(f"{strategy_name} error for {symbol}: {e}")
+                        logger.error(f"❌ {strategy_name} error for {symbol}: {e}", exc_info=True)
             else:
                 # Fallback: Use default strategies if none registered
                 signals_config = self.config.get('signals', {})
