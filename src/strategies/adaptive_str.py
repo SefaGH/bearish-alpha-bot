@@ -273,7 +273,7 @@ class AdaptiveShortTheRip(ShortTheRip):
                 stop_price = entry_price * (1 + max_sl_pct)
             
             # Calculate and validate R/R ratio
-            rr_ratio = abs(entry_price - target_price) / abs(stop_price - entry_price)
+            rr_ratio = (entry_price - target_price) / (stop_price - entry_price)
             
             # Calculate percentages for signal
             tp_pct = (entry_price - target_price) / entry_price
