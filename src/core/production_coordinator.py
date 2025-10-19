@@ -5,6 +5,7 @@ Manages the complete production trading system with all phases integrated.
 
 import logging
 import asyncio
+import inspect
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
 import os
@@ -91,6 +92,10 @@ class ProductionCoordinator:
         
         # Phase 1 components
         self.exchange_clients = {}          # Phase 1
+        
+        # Registered strategies
+        self.strategies = {}  # strategy_name -> strategy_instance
+        self.strategy_capabilities = {}  # strategy_name -> {supports_regime_data, is_async}
         
         # System state
         self.is_running = False
@@ -328,46 +333,84 @@ class ProductionCoordinator:
                     logger.debug(f"Regime analysis failed for {symbol}: {e}")
             
             # ===== STRATEGY SIGNALS =====
-            signals_config = self.config.get('signals', {})
             signal = None
             
-            # Check AdaptiveOversoldBounce
-            if signals_config.get('oversold_bounce', {}).get('enable', True):
-                # Sadece regime uygunsa veya ignore_regime true ise
-                ignore_regime = signals_config.get('oversold_bounce', {}).get('ignore_regime', False)
-                
-                if metadata.get('ob_favorable', True) or ignore_regime:
+            # Execute registered strategies
+            if self.strategies:
+                for strategy_name, strategy_instance in self.strategies.items():
                     try:
-                        ob_config = signals_config.get('oversold_bounce', {})
-                        ob = AdaptiveOversoldBounce(ob_config, self.market_regime_analyzer)
+                        # Call strategy's signal method
+                        strategy_signal = None
                         
-                        # Adaptive strateji farklı parametre alıyor
-                        signal = ob.signal(df_30m, df_1h, regime_data=metadata.get('regime'))
+                        # Get cached capabilities
+                        capabilities = self.strategy_capabilities.get(strategy_name, {})
                         
-                        if signal:
-                            signal['strategy'] = 'adaptive_ob'
-                            logger.info(f"📈 Adaptive OB signal for {symbol}: {signal}")
+                        # Check if strategy has signal method
+                        if hasattr(strategy_instance, 'signal'):
+                            # Use cached regime_data support check
+                            if capabilities.get('supports_regime_data', False):
+                                # Adaptive strategies take regime_data parameter
+                                strategy_signal = strategy_instance.signal(df_30m, df_1h, regime_data=metadata.get('regime'))
+                            else:
+                                # Standard strategies
+                                strategy_signal = strategy_instance.signal(df_30m, df_1h)
+                        elif hasattr(strategy_instance, 'generate_signal'):
+                            # Mock or test strategies - use cached async check
+                            # Use runtime check to verify if generate_signal is a coroutine function
+                            if inspect.iscoroutinefunction(strategy_instance.generate_signal):
+                                strategy_signal = await strategy_instance.generate_signal()
+                            else:
+                                strategy_signal = strategy_instance.generate_signal()
+                        
+                        if strategy_signal:
+                            strategy_signal['strategy'] = strategy_name
+                            logger.info(f"📊 Signal from {strategy_name} for {symbol}: {strategy_signal}")
+                            signal = strategy_signal
+                            break  # Use first signal found
                             
                     except Exception as e:
-                        logger.debug(f"AdaptiveOB error for {symbol}: {e}")
-            
-            # Check AdaptiveShortTheRip (sadece signal yoksa)
-            if not signal and signals_config.get('short_the_rip', {}).get('enable', True):
-                ignore_regime = signals_config.get('short_the_rip', {}).get('ignore_regime', False)
+                        logger.debug(f"{strategy_name} error for {symbol}: {e}")
+            else:
+                # Fallback: Use default strategies if none registered
+                signals_config = self.config.get('signals', {})
                 
-                if metadata.get('str_favorable', True) or ignore_regime:
-                    try:
-                        str_config = signals_config.get('short_the_rip', {})
-                        strp = AdaptiveShortTheRip(str_config, self.market_regime_analyzer)
-                        
-                        signal = strp.signal(df_30m, df_1h, regime_data=metadata.get('regime'))
-                        
-                        if signal:
-                            signal['strategy'] = 'adaptive_str'
-                            logger.info(f"📉 Adaptive STR signal for {symbol}: {signal}")
+                # Check AdaptiveOversoldBounce
+                if signals_config.get('oversold_bounce', {}).get('enable', True):
+                    # Sadece regime uygunsa veya ignore_regime true ise
+                    ignore_regime = signals_config.get('oversold_bounce', {}).get('ignore_regime', False)
+                    
+                    if metadata.get('ob_favorable', True) or ignore_regime:
+                        try:
+                            ob_config = signals_config.get('oversold_bounce', {})
+                            ob = AdaptiveOversoldBounce(ob_config, self.market_regime_analyzer)
                             
-                    except Exception as e:
-                        logger.debug(f"AdaptiveSTR error for {symbol}: {e}")
+                            # Adaptive strateji farklı parametre alıyor
+                            signal = ob.signal(df_30m, df_1h, regime_data=metadata.get('regime'))
+                            
+                            if signal:
+                                signal['strategy'] = 'adaptive_ob'
+                                logger.info(f"📈 Adaptive OB signal for {symbol}: {signal}")
+                                
+                        except Exception as e:
+                            logger.debug(f"AdaptiveOB error for {symbol}: {e}")
+                
+                # Check AdaptiveShortTheRip (sadece signal yoksa)
+                if not signal and signals_config.get('short_the_rip', {}).get('enable', True):
+                    ignore_regime = signals_config.get('short_the_rip', {}).get('ignore_regime', False)
+                    
+                    if metadata.get('str_favorable', True) or ignore_regime:
+                        try:
+                            str_config = signals_config.get('short_the_rip', {})
+                            strp = AdaptiveShortTheRip(str_config, self.market_regime_analyzer)
+                            
+                            signal = strp.signal(df_30m, df_1h, regime_data=metadata.get('regime'))
+                            
+                            if signal:
+                                signal['strategy'] = 'adaptive_str'
+                                logger.info(f"📉 Adaptive STR signal for {symbol}: {signal}")
+                                
+                        except Exception as e:
+                            logger.debug(f"AdaptiveSTR error for {symbol}: {e}")
             
             # Signal'e metadata ekle
             if signal:
@@ -860,6 +903,26 @@ class ProductionCoordinator:
                     'success': False,
                     'reason': 'System not initialized'
                 }
+            
+            # Store strategy reference in coordinator
+            self.strategies[strategy_name] = strategy_instance
+            
+            # Cache strategy capabilities to avoid repeated inspection
+            capabilities = {
+                'supports_regime_data': False,
+                'is_async': False
+            }
+            
+            # Check if strategy has signal method and supports regime_data
+            if hasattr(strategy_instance, 'signal'):
+                sig = inspect.signature(strategy_instance.signal)
+                capabilities['supports_regime_data'] = 'regime_data' in sig.parameters
+            
+            # Check if strategy has async generate_signal method
+            if hasattr(strategy_instance, 'generate_signal'):
+                capabilities['is_async'] = inspect.iscoroutinefunction(strategy_instance.generate_signal)
+            
+            self.strategy_capabilities[strategy_name] = capabilities
             
             result = self.portfolio_manager.register_strategy(
                 strategy_name=strategy_name,
