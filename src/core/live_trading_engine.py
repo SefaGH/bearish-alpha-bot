@@ -331,6 +331,9 @@ class LiveTradingEngine:
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
             
+            # [EXECUTION START] Log signal execution start
+            logger.info(f"[EXECUTION-START] Processing signal for {symbol}")
+            
             # Enhanced logging for adaptive signals
             if signal.get('is_adaptive'):
                 logger.info(f"🎯 Executing ADAPTIVE signal for {symbol}")
@@ -688,31 +691,23 @@ class LiveTradingEngine:
                             timeout=1.0  # 1 second timeout
                         )
                         
-                        # Process signal
-                        logger.info(f"📤 Processing signal from queue: {signal.get('symbol', 'unknown')}")
+                        # [STAGE 5: RECEIVED] Signal received from queue
+                        logger.info(f"[STAGE:RECEIVED] 📤 Signal received from queue: {signal.get('symbol', 'unknown')}")
+                        self._signal_count += 1
+                        self._last_signal_time = datetime.now(timezone.utc)
+                        
+                        # Execute signal
                         result = await self.execute_signal(signal)
                         
                         if result['success']:
-                            logger.info(f"✅ Signal processed successfully: {signal.get('symbol')}")
+                            # [STAGE 6: EXECUTED] Signal successfully executed
+                            logger.info(f"[STAGE:EXECUTED] ✅ Signal executed: {signal.get('symbol')} - Position opened")
                         else:
-                            logger.warning(f"⚠️ Signal processing failed: {result.get('reason')}")
-
-                        if signal:
-                            # Signal bulundu - queue'ya ekle!
-                            signal['symbol'] = symbol
-                            signal['exchange'] = exchange_name
-                            signal['timestamp'] = datetime.now(timezone.utc)
-                            
-                            # KRİTİK: Queue'ya ekle!
-                            await self.signal_queue.put(signal)
-                            self._signal_count += 1
-                            self._last_signal_time = datetime.now(timezone.utc)
-                            
-                            logger.info(f"✅ Signal queued for {symbol}: {signal.get('reason')}")
-
-                        # Her signal'de monitoring
+                            logger.warning(f"⚠️ Signal execution failed: {result.get('reason')}")
+                        
+                        # Monitor adaptive signals
                         if signal and signal.get('is_adaptive'):
-                            adaptive_monitor.record_adaptive_signal(symbol, signal)
+                            adaptive_monitor.record_adaptive_signal(signal.get('symbol'), signal)
                     
                     except asyncio.TimeoutError:
                         # No signals in queue, continue scanning loop
@@ -1039,9 +1034,11 @@ class LiveTradingEngine:
             'active_positions': len(self.active_positions),
             'active_orders': len(self.active_orders),
             'total_trades': len(self.trade_history),
-            'total_signals': self._signal_count,
+            'signals_received': self._signal_count,  # Fixed: was 'total_signals', now correctly named
+            'total_signals': self._signal_count,  # Keep for backward compatibility
             'last_signal_time': self._last_signal_time.isoformat() if self._last_signal_time else None,
             'active_tasks': len([t for t in self.tasks if not t.done()]),
+            'signal_queue_size': self.signal_queue.qsize(),
             'universe_size': len(self._cached_symbols) if self._cached_symbols else 0,
             'config': {
                 'fixed_symbols': len(self.config.get('universe', {}).get('fixed_symbols', [])),
