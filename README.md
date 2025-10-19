@@ -123,7 +123,7 @@ The core modules (`risk_manager.py`, `position_manager.py`, `realtime_risk.py`, 
 try:
     # Absolute import for script execution
     from src.utils.pnl_calculator import calculate_unrealized_pnl
-except ImportError:
+except ModuleNotFoundError:
     # Relative import for package context
     from ..utils.pnl_calculator import calculate_unrealized_pnl
 ```
