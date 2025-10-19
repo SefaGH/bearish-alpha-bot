@@ -66,10 +66,12 @@ from strategies.adaptive_str import AdaptiveShortTheRip
 try:
     # Absolute import for script execution
     from src.utils.pnl_calculator import calculate_unrealized_pnl, calculate_pnl_percentage
-except ImportError:
-    # Relative import for package context
-    from ..utils.pnl_calculator import calculate_unrealized_pnl, calculate_pnl_percentage
-
+except ModuleNotFoundError as e:
+    if e.name in ('src', 'src.utils', 'src.utils.pnl_calculator'):
+        # Relative import for package context
+        from ..utils.pnl_calculator import calculate_unrealized_pnl, calculate_pnl_percentage
+    else:
+        raise
 # Phase 4: ML Components (optional)
 try:
     from ml.regime_predictor import RegimePredictor
