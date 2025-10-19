@@ -21,9 +21,6 @@ except ImportError:
     # Fallback if adaptive strategies don't exist
     from strategies.oversold_bounce import OversoldBounce
     from strategies.short_the_rip import ShortTheRip
-
-    # Import config validator
-    from core.config_validator import ConfigValidator
     
     # Create adaptive wrappers
     class AdaptiveOversoldBounce(OversoldBounce):
@@ -37,6 +34,12 @@ except ImportError:
         def __init__(self, cfg, regime_analyzer=None):
             super().__init__(cfg)
             self.regime_analyzer = regime_analyzer  # ✅ 'p' kaldırıldı!
+
+# Import config validator (needed for signal processing loop)
+try:
+    from .config_validator import ConfigValidator
+except ImportError:
+    from core.config_validator import ConfigValidator
 
 # Core imports
 from .order_manager import SmartOrderManager
