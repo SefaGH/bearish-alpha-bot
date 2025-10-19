@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from enum import Enum
 
-from utils.pnl_calculator import (
+from ..utils.pnl_calculator import (
     calculate_unrealized_pnl,
     calculate_realized_pnl,
     calculate_pnl_percentage

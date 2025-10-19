@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import numpy as np
 from collections import deque
 
-from utils.pnl_calculator import calculate_unrealized_pnl
+from ..utils.pnl_calculator import calculate_unrealized_pnl
 
 logger = logging.getLogger(__name__)
 

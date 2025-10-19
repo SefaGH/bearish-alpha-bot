@@ -63,7 +63,7 @@ from strategies.adaptive_ob import AdaptiveOversoldBounce
 from strategies.adaptive_str import AdaptiveShortTheRip
 
 # Utils
-from utils.pnl_calculator import calculate_unrealized_pnl, calculate_pnl_percentage
+from ..utils.pnl_calculator import calculate_unrealized_pnl, calculate_pnl_percentage
 
 # Phase 4: ML Components (optional)
 try:
