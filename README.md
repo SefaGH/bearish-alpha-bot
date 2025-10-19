@@ -87,6 +87,58 @@ src/
 main.py                 # Orkestrasyon (RUN_SUMMARY yazıyor)
 ```
 
+## Import Patterns & Usage
+
+This project supports **both package-style and script-style execution** through a dual import strategy:
+
+### Package-Style Execution (Recommended for Production)
+```bash
+# Run as a package module
+python -m src.main
+
+# Import in Python/Jupyter
+import src.core.risk_manager
+from src.utils.pnl_calculator import calculate_unrealized_pnl
+```
+
+### Script-Style Execution (For Development/Scripts)
+```bash
+# Add src to path (done automatically in scripts/)
+# Using relative path:
+export PYTHONPATH="$(pwd)/src:$PYTHONPATH"
+# Or using absolute path:
+export PYTHONPATH="$PROJECT_ROOT/src:$PYTHONPATH"
+
+# Run scripts directly
+python scripts/live_trading_launcher.py
+
+# Import without src prefix
+from core.risk_manager import RiskManager
+from utils.pnl_calculator import calculate_unrealized_pnl
+```
+
+### Technical Details
+The core modules (`risk_manager.py`, `position_manager.py`, `realtime_risk.py`, `production_coordinator.py`) use a triple-fallback import strategy:
+```python
+try:
+    # Option 1: Direct import (scripts add src/ to sys.path)
+    from utils.pnl_calculator import calculate_unrealized_pnl
+except ModuleNotFoundError:
+    try:
+        # Option 2: Absolute import (repo root on sys.path)
+        from src.utils.pnl_calculator import calculate_unrealized_pnl
+    except ModuleNotFoundError as e:
+        # Option 3: Relative import (package context)
+        if e.name in ('src', 'src.utils', 'src.utils.pnl_calculator'):
+            from ..utils.pnl_calculator import calculate_unrealized_pnl
+        else:
+            raise
+```
+
+This ensures compatibility across different execution contexts without breaking existing workflows.
+
+**Note:** The try/except pattern has no runtime performance impact - the ModuleNotFoundError only occurs once during module import, and the correct import path is cached by Python's import system.
+
 ## Sıkça Sorulanlar
 - “Artefact yok uyarısı” → `RUN_SUMMARY.txt` her koşuda oluşturulur.  
 - “Sinyal yok” → test için `ignore_regime: true` ve RSI eşiklerini gevşet; EXCHANGES’i genişlet; `min_bars` eşiğini düşür.  

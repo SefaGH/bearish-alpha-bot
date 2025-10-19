@@ -9,11 +9,36 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from enum import Enum
 
-from ..utils.pnl_calculator import (
-    calculate_unrealized_pnl,
-    calculate_realized_pnl,
-    calculate_pnl_percentage
-)
+# Triple-fallback import strategy for maximum compatibility:
+# 1. Direct utils import (when src/ is on sys.path)
+# 2. Absolute src.utils import (when repo root is on sys.path)
+# 3. Relative import (when imported as package module)
+try:
+    # Option 1: Direct import (scripts add src/ to sys.path)
+    from utils.pnl_calculator import (
+        calculate_unrealized_pnl,
+        calculate_realized_pnl,
+        calculate_pnl_percentage
+    )
+except ModuleNotFoundError:
+    try:
+        # Option 2: Absolute import (repo root on sys.path)
+        from src.utils.pnl_calculator import (
+            calculate_unrealized_pnl,
+            calculate_realized_pnl,
+            calculate_pnl_percentage
+        )
+    except ModuleNotFoundError as e:
+        # Option 3: Relative import (package context)
+        if e.name in ('src', 'src.utils', 'src.utils.pnl_calculator'):
+            from ..utils.pnl_calculator import (
+                calculate_unrealized_pnl,
+                calculate_realized_pnl,
+                calculate_pnl_percentage
+            )
+        else:
+            # Unknown module missing, re-raise
+            raise
 
 logger = logging.getLogger(__name__)
 
