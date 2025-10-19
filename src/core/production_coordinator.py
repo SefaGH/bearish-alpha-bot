@@ -5,6 +5,7 @@ Manages the complete production trading system with all phases integrated.
 
 import logging
 import asyncio
+import inspect
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
 import os
@@ -94,6 +95,7 @@ class ProductionCoordinator:
         
         # Registered strategies
         self.strategies = {}  # strategy_name -> strategy_instance
+        self.strategy_capabilities = {}  # strategy_name -> {supports_regime_data, is_async}
         
         # System state
         self.is_running = False
@@ -340,23 +342,21 @@ class ProductionCoordinator:
                         # Call strategy's signal method
                         strategy_signal = None
                         
+                        # Get cached capabilities
+                        capabilities = self.strategy_capabilities.get(strategy_name, {})
+                        
                         # Check if strategy has signal method
                         if hasattr(strategy_instance, 'signal'):
-                            # Check if strategy supports regime_data parameter
-                            import inspect
-                            sig = inspect.signature(strategy_instance.signal)
-                            params = sig.parameters
-                            
-                            if 'regime_data' in params:
+                            # Use cached regime_data support check
+                            if capabilities.get('supports_regime_data', False):
                                 # Adaptive strategies take regime_data parameter
                                 strategy_signal = strategy_instance.signal(df_30m, df_1h, regime_data=metadata.get('regime'))
                             else:
                                 # Standard strategies
                                 strategy_signal = strategy_instance.signal(df_30m, df_1h)
                         elif hasattr(strategy_instance, 'generate_signal'):
-                            # Mock or test strategies - check if async
-                            import inspect
-                            if inspect.iscoroutinefunction(strategy_instance.generate_signal):
+                            # Mock or test strategies - use cached async check
+                            if capabilities.get('is_async', False):
                                 strategy_signal = await strategy_instance.generate_signal()
                             else:
                                 strategy_signal = strategy_instance.generate_signal()
@@ -905,6 +905,23 @@ class ProductionCoordinator:
             
             # Store strategy reference in coordinator
             self.strategies[strategy_name] = strategy_instance
+            
+            # Cache strategy capabilities to avoid repeated inspection
+            capabilities = {
+                'supports_regime_data': False,
+                'is_async': False
+            }
+            
+            # Check if strategy has signal method and supports regime_data
+            if hasattr(strategy_instance, 'signal'):
+                sig = inspect.signature(strategy_instance.signal)
+                capabilities['supports_regime_data'] = 'regime_data' in sig.parameters
+            
+            # Check if strategy has async generate_signal method
+            if hasattr(strategy_instance, 'generate_signal'):
+                capabilities['is_async'] = inspect.iscoroutinefunction(strategy_instance.generate_signal)
+            
+            self.strategy_capabilities[strategy_name] = capabilities
             
             result = self.portfolio_manager.register_strategy(
                 strategy_name=strategy_name,
