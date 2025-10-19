@@ -115,7 +115,7 @@ except ImportError:
 ```
 
 ## References
-- Original Issue: #[number] - Absolute vs relative import handling
+- Original Issue: #113 - Absolute vs relative import handling
 - Related PR: #113 - Critical import path fixes
 - PEP 328: https://peps.python.org/pep-0328/ (Imports: Multi-Line and Absolute/Relative)
 
