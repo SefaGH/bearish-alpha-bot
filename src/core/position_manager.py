@@ -370,6 +370,7 @@ class AdvancedPositionManager:
     def _check_stop_loss_hit(self, position: Dict, current_price: float) -> bool:
         """Check if stop-loss is hit."""
         if current_price <= 0:
+            logger.warning(f"_check_stop_loss_hit called with invalid current_price={current_price} for position_id={position.get('id', 'unknown')}. Data quality issue.")
             return False
         
         side = position['side']
