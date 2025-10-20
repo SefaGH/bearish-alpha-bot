@@ -315,6 +315,7 @@ class AdvancedPositionManager:
             entry_price = position['entry_price']
             amount = position['amount']
             side = position['side']
+            symbol = position.get('symbol', 'UNKNOWN')
             
             realized_pnl = calculate_realized_pnl(side, entry_price, exit_price, amount)
             
@@ -336,10 +337,16 @@ class AdvancedPositionManager:
             self.closed_positions.append(position)
             del self.positions[position_id]
             
-            logger.info(f"Position closed: {position_id}")
-            logger.info(f"  Entry: {entry_price:.4f}, Exit: {exit_price:.4f}")
-            logger.info(f"  P&L: ${realized_pnl:.2f} ({return_pct:.2f}%)")
-            logger.info(f"  Reason: {exit_reason}")
+            # Enhanced logging with emoji indicators based on exit reason and P&L
+            exit_emoji = '🛑' if exit_reason == 'stop_loss' else ('🎯' if exit_reason == 'take_profit' else ('🚦' if exit_reason == 'trailing_stop' else '🔄'))
+            
+            logger.info(
+                f"{exit_emoji} [{'STOP-LOSS-HIT' if exit_reason == 'stop_loss' else 'TAKE-PROFIT-HIT' if exit_reason == 'take_profit' else 'TRAILING-STOP-HIT' if exit_reason == 'trailing_stop' else 'POSITION-CLOSED'}] {position_id}\n"
+                f"   Symbol: {symbol}\n"
+                f"   Entry: ${entry_price:.2f}, Exit: ${exit_price:.2f}\n"
+                f"   P&L: ${realized_pnl:.2f} ({return_pct:+.2f}%)\n"
+                f"   Reason: {exit_reason.upper().replace('_', '-')}"
+            )
             
             return {
                 'success': True,
@@ -696,6 +703,99 @@ class AdvancedPositionManager:
             'total_realized_pnl': total_realized_pnl,
             'total_pnl': total_unrealized_pnl + total_realized_pnl
         }
+    
+    def get_exit_statistics(self) -> Dict[str, Any]:
+        """
+        Get comprehensive exit statistics for closed positions.
+        Issue #134: Validate exit logic with session summaries.
+        
+        Returns:
+            Dictionary with exit statistics including counts by type and win/loss breakdown
+        """
+        if not self.closed_positions:
+            return {
+                'total_exits': 0,
+                'exits_by_reason': {},
+                'winning_trades': 0,
+                'losing_trades': 0,
+                'win_rate': 0.0,
+                'total_pnl': 0.0,
+                'avg_win': 0.0,
+                'avg_loss': 0.0
+            }
+        
+        # Count exits by reason
+        exits_by_reason = {}
+        winning_trades = 0
+        losing_trades = 0
+        total_win_pnl = 0.0
+        total_loss_pnl = 0.0
+        
+        for position in self.closed_positions:
+            exit_reason = position.get('exit_reason', 'unknown')
+            exits_by_reason[exit_reason] = exits_by_reason.get(exit_reason, 0) + 1
+            
+            realized_pnl = position.get('realized_pnl', 0)
+            if realized_pnl > 0:
+                winning_trades += 1
+                total_win_pnl += realized_pnl
+            else:
+                losing_trades += 1
+                total_loss_pnl += realized_pnl
+        
+        total_exits = len(self.closed_positions)
+        win_rate = (winning_trades / total_exits * 100) if total_exits > 0 else 0.0
+        avg_win = (total_win_pnl / winning_trades) if winning_trades > 0 else 0.0
+        avg_loss = (total_loss_pnl / losing_trades) if losing_trades > 0 else 0.0
+        
+        return {
+            'total_exits': total_exits,
+            'exits_by_reason': exits_by_reason,
+            'stop_loss_count': exits_by_reason.get('stop_loss', 0),
+            'take_profit_count': exits_by_reason.get('take_profit', 0),
+            'trailing_stop_count': exits_by_reason.get('trailing_stop', 0),
+            'winning_trades': winning_trades,
+            'losing_trades': losing_trades,
+            'win_rate': win_rate,
+            'total_pnl': total_win_pnl + total_loss_pnl,
+            'total_win_pnl': total_win_pnl,
+            'total_loss_pnl': total_loss_pnl,
+            'avg_win': avg_win,
+            'avg_loss': avg_loss
+        }
+    
+    def log_exit_summary(self):
+        """
+        Log comprehensive exit summary for the session.
+        Issue #134: Enhanced exit logging for validation.
+        """
+        stats = self.get_exit_statistics()
+        
+        logger.info("\n" + "="*70)
+        logger.info("📊 EXIT SUMMARY - Session Statistics")
+        logger.info("="*70)
+        logger.info(f"Total Exits: {stats['total_exits']}")
+        logger.info(f"\nExits by Reason:")
+        logger.info(f"  🛑 Stop Loss:     {stats['stop_loss_count']}")
+        logger.info(f"  🎯 Take Profit:   {stats['take_profit_count']}")
+        logger.info(f"  🚦 Trailing Stop: {stats['trailing_stop_count']}")
+        
+        for reason, count in stats['exits_by_reason'].items():
+            if reason not in ['stop_loss', 'take_profit', 'trailing_stop']:
+                logger.info(f"  🔄 {reason.replace('_', ' ').title()}: {count}")
+        
+        logger.info(f"\nWin/Loss Breakdown:")
+        logger.info(f"  ✅ Winning Trades: {stats['winning_trades']}")
+        logger.info(f"  ❌ Losing Trades:  {stats['losing_trades']}")
+        logger.info(f"  📈 Win Rate:       {stats['win_rate']:.2f}%")
+        
+        logger.info(f"\nP&L Summary:")
+        logger.info(f"  Total P&L:    ${stats['total_pnl']:+.2f}")
+        logger.info(f"  Total Wins:   ${stats['total_win_pnl']:+.2f}")
+        logger.info(f"  Total Losses: ${stats['total_loss_pnl']:+.2f}")
+        logger.info(f"  Avg Win:      ${stats['avg_win']:+.2f}")
+        logger.info(f"  Avg Loss:     ${stats['avg_loss']:+.2f}")
+        logger.info("="*70 + "\n")
     
     async def start_exit_monitoring(self):
         """

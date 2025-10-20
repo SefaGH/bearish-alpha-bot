@@ -30,6 +30,87 @@ Bu bot ChatGPT ile oluşturulmuş, ancak önemli hatalar ve eksiklikler tespit e
   - Performance metrics (Sharpe ratio, win rate, drawdown, etc.)
   - 📊 [Monitoring System Documentation](docs/MONITORING_SYSTEM.md)
 
+## 📊 Exit Logic Validation & Session Summaries
+
+The bot provides comprehensive exit event logging to validate Stop Loss (SL), Take Profit (TP), and Trailing Stop functionality (Issue #134).
+
+### Exit Event Logging
+
+All position exits are logged with clear indicators and detailed P&L information:
+
+```
+🛑 [STOP-LOSS-HIT] pos_BTC_1234567890
+   Symbol: BTC/USDT:USDT
+   Entry: $110000.00, Exit: $109500.00
+   P&L: $-0.50 (-0.45%)
+   Reason: STOP-LOSS
+
+🎯 [TAKE-PROFIT-HIT] pos_ETH_1234567891
+   Symbol: ETH/USDT:USDT
+   Entry: $3500.00, Exit: $3552.50
+   P&L: $+1.20 (+1.50%)
+   Reason: TAKE-PROFIT
+
+🚦 [TRAILING-STOP-HIT] pos_SOL_1234567892
+   Symbol: SOL/USDT:USDT
+   Entry: $145.00, Exit: $148.15
+   P&L: $+0.70 (+2.17%)
+   Reason: TRAILING-STOP
+```
+
+### Session Summary
+
+At the end of each trading session, a comprehensive exit summary is logged:
+
+```
+======================================================================
+📊 EXIT SUMMARY - Session Statistics
+======================================================================
+Total Exits: 8
+
+Exits by Reason:
+  🛑 Stop Loss:     3
+  🎯 Take Profit:   4
+  🚦 Trailing Stop: 1
+
+Win/Loss Breakdown:
+  ✅ Winning Trades: 5
+  ❌ Losing Trades:  3
+  📈 Win Rate:       62.50%
+
+P&L Summary:
+  Total P&L:    $+125.50
+  Total Wins:   $+180.00
+  Total Losses: $-54.50
+  Avg Win:      $+36.00
+  Avg Loss:     $-18.17
+======================================================================
+```
+
+### Running Extended Sessions
+
+To validate exit logic, run extended paper trading sessions:
+
+```bash
+# 30-minute session (1800 seconds)
+python scripts/live_trading_launcher.py --paper --duration 1800
+
+# 60-minute session (3600 seconds)
+python scripts/live_trading_launcher.py --paper --duration 3600
+
+# Indefinite paper trading (until manually stopped)
+python scripts/live_trading_launcher.py --paper
+```
+
+### Validation Criteria
+
+The system validates that:
+- ✅ Stop Loss exits trigger when price reaches SL level
+- ✅ Take Profit exits trigger when price reaches TP level
+- ✅ Trailing Stop updates dynamically and triggers correctly
+- ✅ Exit events are logged with clear reasons and P&L
+- ✅ Session summaries provide win rate and overall statistics
+
 ## ⚙️ Duplicate Prevention Configuration
 
 The bot includes intelligent duplicate signal prevention to avoid spam trades while remaining responsive to market movements. 
