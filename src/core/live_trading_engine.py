@@ -7,6 +7,7 @@ import yaml
 import asyncio
 import logging
 import inspect
+import time
 import pandas as pd
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
@@ -118,6 +119,29 @@ class LiveTradingEngine:
         
         # Load configuration
         self.config = LiveTradingConfiguration.get_all_configs()
+        
+        # WebSocket integration configuration
+        cfg = self.config
+        self.ws_config = {
+            'priority_enabled': cfg.get('websocket', {}).get('priority_enabled', True),
+            'max_data_age_seconds': cfg.get('websocket', {}).get('max_data_age', 60),
+            'fallback_threshold': cfg.get('websocket', {}).get('fallback_threshold', 3)
+        }
+
+        # WebSocket usage statistics
+        self.ws_stats = {
+            'websocket_fetches': 0,
+            'rest_fetches': 0,
+            'websocket_failures': 0,
+            'total_latency_ws': 0.0,
+            'total_latency_rest': 0.0,
+            'avg_latency_ws': 0.0,
+            'avg_latency_rest': 0.0,
+            'websocket_success_rate': 0.0,
+            'last_ws_fetch_time': None,
+            'last_rest_fetch_time': None,
+            'consecutive_ws_failures': 0
+        }
 
         # Load symbol configuration with clear 3-step priority
         # Priority: YAML Config > ENV Variables > Hard-coded Defaults
@@ -582,10 +606,10 @@ class LiveTradingEngine:
                             try:
                                 logger.info(f"[PROCESSING] Symbol: {symbol}")
                                 
-                                # Fetch OHLCV data for multiple timeframes
-                                df_30m = await self._fetch_ohlcv(symbol, '30m', limit=200)
-                                df_1h = await self._fetch_ohlcv(symbol, '1h', limit=200)
-                                df_4h = await self._fetch_ohlcv(symbol, '4h', limit=200)
+                                # Fetch OHLCV data for multiple timeframes using WebSocket priority
+                                df_30m = self._get_ohlcv_with_priority(symbol, '30m', limit=200)
+                                df_1h = self._get_ohlcv_with_priority(symbol, '1h', limit=200)
+                                df_4h = self._get_ohlcv_with_priority(symbol, '4h', limit=200)
                                 
                                 if df_30m is None or len(df_30m) == 0:
                                     logger.debug(f"⚠️ No data for {symbol}, skipping")
@@ -835,6 +859,89 @@ class LiveTradingEngine:
         ]
         self._cached_symbols = default_symbols
         return default_symbols
+    
+    def _get_ohlcv_with_priority(self, symbol: str, timeframe: str, limit: int = 100):
+        """
+        Get OHLCV data with WebSocket priority and REST fallback.
+        
+        Logic:
+        1. Try WebSocket if enabled and available
+        2. Check data freshness via ws_manager.is_data_fresh()
+        3. Validate data has enough candles (>= limit)
+        4. Record metrics (latency, success)
+        5. Fallback to REST if WebSocket fails
+        6. Return pandas DataFrame with OHLCV
+        """
+        start_time = time.time()
+        
+        # Try WebSocket first
+        if self.ws_config['priority_enabled'] and self.ws_manager:
+            try:
+                if self.ws_manager.is_data_fresh(symbol, timeframe, self.ws_config['max_data_age_seconds']):
+                    ws_data = self.ws_manager.get_latest_data(symbol, timeframe)
+                    if ws_data and 'ohlcv' in ws_data and len(ws_data['ohlcv']) >= limit:
+                        latency = (time.time() - start_time) * 1000
+                        self._record_ws_fetch(latency, success=True)
+                        logger.debug(f"📡 [WS-DATA] {symbol} {timeframe} - {len(ws_data['ohlcv'])} candles, {latency:.1f}ms")
+                        return pd.DataFrame(ws_data['ohlcv'][-limit:], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            except Exception as e:
+                logger.debug(f"WebSocket fetch failed: {e}")
+                self._record_ws_fetch(0, success=False)
+        
+        # Fallback to REST
+        logger.debug(f"🌐 [REST-DATA] {symbol} {timeframe}")
+        return self._fetch_ohlcv_rest(symbol, timeframe, limit, start_time)
+
+    def _fetch_ohlcv_rest(self, symbol: str, timeframe: str, limit: int, start_time: float):
+        """Fetch OHLCV from REST with metrics."""
+        for exchange_name, client in self.exchange_clients.items():
+            try:
+                ohlcv = client.fetch_ohlcv(symbol, timeframe, limit=limit)
+                latency = (time.time() - start_time) * 1000
+                self._record_rest_fetch(latency, success=True)
+                logger.debug(f"🌐 [REST-SUCCESS] {symbol} - {latency:.1f}ms")
+                return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            except Exception as e:
+                logger.error(f"REST fetch failed: {e}")
+                self._record_rest_fetch(0, success=False)
+        return None
+
+    def _record_ws_fetch(self, latency_ms: float, success: bool):
+        """Record WebSocket fetch metrics."""
+        if success:
+            self.ws_stats['websocket_fetches'] += 1
+            self.ws_stats['total_latency_ws'] += latency_ms
+            self.ws_stats['avg_latency_ws'] = self.ws_stats['total_latency_ws'] / self.ws_stats['websocket_fetches']
+            self.ws_stats['last_ws_fetch_time'] = time.time()
+            self.ws_stats['consecutive_ws_failures'] = 0
+        else:
+            self.ws_stats['websocket_failures'] += 1
+            self.ws_stats['consecutive_ws_failures'] += 1
+        
+        total = self.ws_stats['websocket_fetches'] + self.ws_stats['websocket_failures']
+        if total > 0:
+            self.ws_stats['websocket_success_rate'] = (self.ws_stats['websocket_fetches'] / total * 100)
+
+    def _record_rest_fetch(self, latency_ms: float, success: bool):
+        """Record REST fetch metrics."""
+        if success:
+            self.ws_stats['rest_fetches'] += 1
+            self.ws_stats['total_latency_rest'] += latency_ms
+            self.ws_stats['avg_latency_rest'] = self.ws_stats['total_latency_rest'] / self.ws_stats['rest_fetches']
+            self.ws_stats['last_rest_fetch_time'] = time.time()
+
+    def get_websocket_stats(self):
+        """Get comprehensive WebSocket statistics."""
+        stats = self.ws_stats.copy()
+        if self.ws_manager:
+            stats['connection_health'] = self.ws_manager.get_connection_health()
+        total = stats['websocket_fetches'] + stats['rest_fetches']
+        stats['websocket_usage_ratio'] = (stats['websocket_fetches'] / total * 100) if total > 0 else 0.0
+        if stats['avg_latency_rest'] > 0 and stats['avg_latency_ws'] > 0:
+            stats['latency_improvement_pct'] = ((stats['avg_latency_rest'] - stats['avg_latency_ws']) / stats['avg_latency_rest'] * 100)
+        else:
+            stats['latency_improvement_pct'] = 0.0
+        return stats
     
     async def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         """
