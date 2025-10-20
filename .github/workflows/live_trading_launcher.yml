@@ -141,12 +141,43 @@ jobs:
 
       - name: Run Dry-Run Pre-Flight Checks
         env:
+          # ============= EXCHANGE CREDENTIALS =============
           BINGX_KEY: ${{ secrets.BINGX_KEY }}
           BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          
+          # ✅ NEW: TRADING CONFIGURATION FROM GITHUB VARIABLES
+          # ============= DUPLICATE PREVENTION =============
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
+          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
+          PRICE_DELTA_BYPASS_THRESHOLD: ${{ vars.PRICE_DELTA_BYPASS_THRESHOLD || '0.0015' }}
+          PRICE_DELTA_BYPASS_ENABLED: ${{ vars.PRICE_DELTA_BYPASS_ENABLED || 'true' }}
+          
+          # ============= TRADING SYMBOLS =============
+          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
+          
+          # ============= SYMBOL-SPECIFIC RSI =============
+          RSI_THRESHOLD_BTC: ${{ vars.RSI_THRESHOLD_BTC || '55' }}
+          RSI_THRESHOLD_ETH: ${{ vars.RSI_THRESHOLD_ETH || '50' }}
+          RSI_THRESHOLD_SOL: ${{ vars.RSI_THRESHOLD_SOL || '50' }}
+          
+          # ============= RISK MANAGEMENT =============
+          CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
+          DAILY_MAX_TRADES: ${{ vars.DAILY_MAX_TRADES || '5' }}
+          PER_TRADE_RISK_PCT: ${{ vars.PER_TRADE_RISK_PCT || '0.01' }}
+          
+          # ============= WEBSOCKET =============
+          WS_MAX_STREAMS_BINGX: ${{ vars.WS_MAX_STREAMS_BINGX || '6' }}
         run: |
           echo "🔍 Running pre-flight checks..."
+          echo "=================================="
+          echo "Environment Variables Loaded:"
+          echo "  DUPLICATE_PREVENTION_THRESHOLD: $DUPLICATE_PREVENTION_THRESHOLD"
+          echo "  DUPLICATE_PREVENTION_COOLDOWN: $DUPLICATE_PREVENTION_COOLDOWN"
+          echo "  TRADING_SYMBOLS: $TRADING_SYMBOLS"
+          echo "  RSI_THRESHOLD_BTC: $RSI_THRESHOLD_BTC"
+          echo "  CAPITAL_USDT: $CAPITAL_USDT"
           echo "=================================="
 
           python scripts/live_trading_launcher.py --dry-run --paper
@@ -189,6 +220,12 @@ jobs:
           pip install --no-cache-dir -r requirements.txt
 
       - name: Display Configuration
+        env:
+          # Load variables for display
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
+          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
+          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
+          CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
         run: |
           echo "🚀 BEARISH ALPHA BOT - LIVE TRADING LAUNCHER"
           echo "=============================================="
@@ -201,22 +238,100 @@ jobs:
           echo "Duration: ${{ github.event.inputs.duration || 'indefinite' }}"
           echo "Debug Mode: ${{ github.event.inputs.debug_mode }}"
           echo ""
-          echo "Configuration:"
-          echo "- Capital: 100 USDT"
+          echo "Configuration from GitHub Variables:"
+          echo "- Capital: ${CAPITAL_USDT} USDT"
           echo "- Exchange: BingX"
-          echo "- Trading Pairs: 3 (BTC, ETH, SOL)"
-          echo "- Max Position Size: 15%"
-          echo "- Stop Loss: 5%"
-          echo "- Take Profit: 10%"
+          echo "- Trading Pairs: ${TRADING_SYMBOLS}"
+          echo "- Duplicate Prevention: ${DUPLICATE_PREVENTION_THRESHOLD}% / ${DUPLICATE_PREVENTION_COOLDOWN}s"
           echo "=============================================="
 
       - name: Launch Trading Bot
         env:
+          # ============= EXCHANGE CREDENTIALS =============
           BINGX_KEY: ${{ secrets.BINGX_KEY }}
           BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          LOG_LEVEL: INFO  # DEBUG yerine INFO kullan
+          LOG_LEVEL: INFO
+          
+          # ✅ NEW: COMPLETE TRADING CONFIGURATION FROM GITHUB VARIABLES
+          # ============= DUPLICATE PREVENTION =============
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
+          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
+          PRICE_DELTA_BYPASS_THRESHOLD: ${{ vars.PRICE_DELTA_BYPASS_THRESHOLD || '0.0015' }}
+          PRICE_DELTA_BYPASS_ENABLED: ${{ vars.PRICE_DELTA_BYPASS_ENABLED || 'true' }}
+          
+          # ============= TRADING SYMBOLS =============
+          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
+          TRADING_SYMBOLS_PRIORITY: ${{ vars.TRADING_SYMBOLS_PRIORITY || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
+          UNIVERSE_AUTO_SELECT: ${{ vars.UNIVERSE_AUTO_SELECT || 'false' }}
+          
+          # ============= SYMBOL-SPECIFIC RSI =============
+          RSI_THRESHOLD_BTC: ${{ vars.RSI_THRESHOLD_BTC || '55' }}
+          RSI_THRESHOLD_ETH: ${{ vars.RSI_THRESHOLD_ETH || '50' }}
+          RSI_THRESHOLD_SOL: ${{ vars.RSI_THRESHOLD_SOL || '50' }}
+          
+          # ============= RISK MANAGEMENT =============
+          CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
+          PER_TRADE_RISK_PCT: ${{ vars.PER_TRADE_RISK_PCT || '0.01' }}
+          DAILY_LOSS_LIMIT_PCT: ${{ vars.DAILY_LOSS_LIMIT_PCT || '0.02' }}
+          RISK_USD_CAP: ${{ vars.RISK_USD_CAP || '5' }}
+          MAX_NOTIONAL_PER_TRADE: ${{ vars.MAX_NOTIONAL_PER_TRADE || '20' }}
+          MIN_STOP_PCT: ${{ vars.MIN_STOP_PCT || '0.003' }}
+          DAILY_MAX_TRADES: ${{ vars.DAILY_MAX_TRADES || '5' }}
+          
+          # ============= STRATEGIES =============
+          STRATEGY_OB_ENABLED: ${{ vars.STRATEGY_OB_ENABLED || 'true' }}
+          STRATEGY_OB_IGNORE_REGIME: ${{ vars.STRATEGY_OB_IGNORE_REGIME || 'true' }}
+          RSI_BASE_OB: ${{ vars.RSI_BASE_OB || '45' }}
+          RSI_RANGE_OB: ${{ vars.RSI_RANGE_OB || '10' }}
+          TP_ATR_MULT_OB: ${{ vars.TP_ATR_MULT_OB || '2.5' }}
+          SL_ATR_MULT_OB: ${{ vars.SL_ATR_MULT_OB || '1.2' }}
+          MIN_TP_PCT_OB: ${{ vars.MIN_TP_PCT_OB || '0.008' }}
+          MAX_SL_PCT_OB: ${{ vars.MAX_SL_PCT_OB || '0.015' }}
+          
+          STRATEGY_STR_ENABLED: ${{ vars.STRATEGY_STR_ENABLED || 'true' }}
+          STRATEGY_STR_IGNORE_REGIME: ${{ vars.STRATEGY_STR_IGNORE_REGIME || 'true' }}
+          RSI_BASE_STR: ${{ vars.RSI_BASE_STR || '55' }}
+          RSI_RANGE_STR: ${{ vars.RSI_RANGE_STR || '10' }}
+          TP_ATR_MULT_STR: ${{ vars.TP_ATR_MULT_STR || '3.0' }}
+          SL_ATR_MULT_STR: ${{ vars.SL_ATR_MULT_STR || '1.5' }}
+          MIN_TP_PCT_STR: ${{ vars.MIN_TP_PCT_STR || '0.010' }}
+          MAX_SL_PCT_STR: ${{ vars.MAX_SL_PCT_STR || '0.020' }}
+          
+          # ============= WEBSOCKET =============
+          WEBSOCKET_ENABLED: ${{ vars.WEBSOCKET_ENABLED || 'true' }}
+          WEBSOCKET_PRIORITY_ENABLED: ${{ vars.WEBSOCKET_PRIORITY_ENABLED || 'true' }}
+          WEBSOCKET_MAX_DATA_AGE: ${{ vars.WEBSOCKET_MAX_DATA_AGE || '60' }}
+          WEBSOCKET_FALLBACK_THRESHOLD: ${{ vars.WEBSOCKET_FALLBACK_THRESHOLD || '3' }}
+          WS_MAX_STREAMS_BINGX: ${{ vars.WS_MAX_STREAMS_BINGX || '6' }}
+          WS_MAX_STREAMS_BINANCE: ${{ vars.WS_MAX_STREAMS_BINANCE || '20' }}
+          WS_MAX_STREAMS_KUCOIN: ${{ vars.WS_MAX_STREAMS_KUCOIN || '15' }}
+          WS_MAX_STREAMS_DEFAULT: ${{ vars.WS_MAX_STREAMS_DEFAULT || '10' }}
+          WS_STREAM_TIMEFRAMES: ${{ vars.WS_STREAM_TIMEFRAMES || '1m' }}
+          WS_RECONNECT_DELAY: ${{ vars.WS_RECONNECT_DELAY || '5' }}
+          WS_MAX_RECONNECT_ATTEMPTS: ${{ vars.WS_MAX_RECONNECT_ATTEMPTS || '3' }}
+          
+          # ============= EXECUTION =============
+          ENABLE_LIVE_TRADING: ${{ vars.ENABLE_LIVE_TRADING || 'true' }}
+          ORDER_TYPE: ${{ vars.ORDER_TYPE || 'market' }}
+          TIME_IN_FORCE: ${{ vars.TIME_IN_FORCE || 'IOC' }}
+          FEE_PCT: ${{ vars.FEE_PCT || '0.0006' }}
+          MAX_SLIPPAGE_PCT: ${{ vars.MAX_SLIPPAGE_PCT || '0.001' }}
+          LEVERAGE_DEFAULT: ${{ vars.LEVERAGE_DEFAULT || '5' }}
+          
+          # ============= INDICATORS =============
+          INDICATOR_RSI_PERIOD: ${{ vars.INDICATOR_RSI_PERIOD || '14' }}
+          INDICATOR_ATR_PERIOD: ${{ vars.INDICATOR_ATR_PERIOD || '14' }}
+          INDICATOR_EMA_FAST: ${{ vars.INDICATOR_EMA_FAST || '21' }}
+          INDICATOR_EMA_MID: ${{ vars.INDICATOR_EMA_MID || '50' }}
+          INDICATOR_EMA_SLOW: ${{ vars.INDICATOR_EMA_SLOW || '200' }}
+          
+          # ============= ADAPTIVE MODES =============
+          ADAPTIVE_MODE_OB: ${{ vars.ADAPTIVE_MODE_OB || 'dynamic' }}
+          VOLATILITY_SENSITIVITY_OB: ${{ vars.VOLATILITY_SENSITIVITY_OB || 'medium' }}
+          ADAPTIVE_MODE_STR: ${{ vars.ADAPTIVE_MODE_STR || 'dynamic' }}
+          VOLATILITY_SENSITIVITY_STR: ${{ vars.VOLATILITY_SENSITIVITY_STR || 'medium' }}
         run: |
           # Build command dynamically
           CMD="python scripts/live_trading_launcher.py"
@@ -263,6 +378,17 @@ jobs:
 
           echo "🚀 Executing command:"
           echo "$CMD"
+          echo ""
+          
+          echo "📊 Environment Variables Summary:"
+          echo "  DUPLICATE_PREVENTION_THRESHOLD: $DUPLICATE_PREVENTION_THRESHOLD"
+          echo "  DUPLICATE_PREVENTION_COOLDOWN: $DUPLICATE_PREVENTION_COOLDOWN"
+          echo "  TRADING_SYMBOLS: $TRADING_SYMBOLS"
+          echo "  RSI_THRESHOLD_BTC: $RSI_THRESHOLD_BTC"
+          echo "  RSI_THRESHOLD_ETH: $RSI_THRESHOLD_ETH"
+          echo "  RSI_THRESHOLD_SOL: $RSI_THRESHOLD_SOL"
+          echo "  CAPITAL_USDT: $CAPITAL_USDT"
+          echo "  WS_MAX_STREAMS_BINGX: $WS_MAX_STREAMS_BINGX"
           echo ""
 
           # Execute
@@ -353,15 +479,21 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
+          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
         run: |
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-            MESSAGE="✅ Live Trading Session Completed Successfully%0A%0A"
+            MESSAGE="✅ <b>Live Trading Session Completed</b>%0A%0A"
+            MESSAGE="${MESSAGE}<b>Configuration:</b>%0A"
             MESSAGE="${MESSAGE}Mode: ${{ github.event.inputs.mode }}%0A"
             MESSAGE="${MESSAGE}Duration: ${{ github.event.inputs.duration || 'indefinite' }}%0A"
             MESSAGE="${MESSAGE}Infinite: ${{ github.event.inputs.infinite }}%0A"
             MESSAGE="${MESSAGE}Auto-Restart: ${{ github.event.inputs.auto_restart }}%0A"
-            MESSAGE="${MESSAGE}%0AWorkflow: ${{ github.workflow }}%0A"
-            MESSAGE="${MESSAGE}Run: ${{ github.run_number }}"
+            MESSAGE="${MESSAGE}%0A<b>Trading Config:</b>%0A"
+            MESSAGE="${MESSAGE}Symbols: ${TRADING_SYMBOLS}%0A"
+            MESSAGE="${MESSAGE}Dup Prevention: ${DUPLICATE_PREVENTION_THRESHOLD}%%0A"
+            MESSAGE="${MESSAGE}%0A<b>Workflow:</b> ${{ github.workflow }}%0A"
+            MESSAGE="${MESSAGE}<b>Run:</b> #${{ github.run_number }}"
 
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
               -d "chat_id=${TELEGRAM_CHAT_ID}" \
@@ -376,13 +508,13 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-            MESSAGE="❌ Live Trading Session Failed%0A%0A"
+            MESSAGE="❌ <b>Live Trading Session Failed</b>%0A%0A"
             MESSAGE="${MESSAGE}Mode: ${{ github.event.inputs.mode }}%0A"
             MESSAGE="${MESSAGE}Duration: ${{ github.event.inputs.duration || 'indefinite' }}%0A"
             MESSAGE="${MESSAGE}Infinite: ${{ github.event.inputs.infinite }}%0A"
             MESSAGE="${MESSAGE}Auto-Restart: ${{ github.event.inputs.auto_restart }}%0A"
             MESSAGE="${MESSAGE}%0AWorkflow: ${{ github.workflow }}%0A"
-            MESSAGE="${MESSAGE}Run: ${{ github.run_number }}%0A"
+            MESSAGE="${MESSAGE}Run: #${{ github.run_number }}%0A"
             MESSAGE="${MESSAGE}%0ACheck logs for details."
 
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
@@ -399,10 +531,15 @@ jobs:
 
     steps:
       - name: Generate Workflow Summary
+        env:
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
+          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
+          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
+          CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
         run: |
           echo "# 🤖 Bearish Alpha Bot - Trading Session Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "## Workflow Configuration" >> $GITHUB_STEP_SUMMARY
           echo "- **Mode**: ${{ github.event.inputs.mode }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Dry Run**: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Layer 1 (Infinite)**: ${{ github.event.inputs.infinite }}" >> $GITHUB_STEP_SUMMARY
@@ -412,13 +549,11 @@ jobs:
           echo "- **Duration**: ${{ github.event.inputs.duration || 'indefinite' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Debug Mode**: ${{ github.event.inputs.debug_mode }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Trading Configuration" >> $GITHUB_STEP_SUMMARY
-          echo "- **Capital**: 100 USDT" >> $GITHUB_STEP_SUMMARY
+          echo "## Trading Configuration (from GitHub Variables)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Capital**: ${CAPITAL_USDT} USDT" >> $GITHUB_STEP_SUMMARY
           echo "- **Exchange**: BingX" >> $GITHUB_STEP_SUMMARY
-          echo "- **Trading Pairs**: 3 (BTC, ETH, SOL)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Max Position Size**: 15%" >> $GITHUB_STEP_SUMMARY
-          echo "- **Stop Loss**: 5%" >> $GITHUB_STEP_SUMMARY
-          echo "- **Take Profit**: 10%" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trading Pairs**: ${TRADING_SYMBOLS}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duplicate Prevention**: ${DUPLICATE_PREVENTION_THRESHOLD}% threshold, ${DUPLICATE_PREVENTION_COOLDOWN}s cooldown" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Job Status" >> $GITHUB_STEP_SUMMARY
           echo "- **Validation**: ${{ needs.validate-inputs.result }}" >> $GITHUB_STEP_SUMMARY
@@ -433,3 +568,4 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "*Workflow run: #${{ github.run_number }}*" >> $GITHUB_STEP_SUMMARY
+          echo "*Config source: GitHub Variables + config.example.yaml*" >> $GITHUB_STEP_SUMMARY
