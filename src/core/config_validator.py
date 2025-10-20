@@ -1,4 +1,6 @@
-# src/core/config_validator.py - Yeni dosya
+"""
+src/core/config_validator.py - FIXED VERSION
+"""
 import logging
 from typing import Dict, List, Any
 
@@ -7,11 +9,18 @@ logger = logging.getLogger(__name__)
 class ConfigValidator:
     """Validate and fix configuration at startup."""
     
+    # ✅ FIXED: Use ATR-based fields, not tp_pct
     REQUIRED_KEYS = {
-        'signals.oversold_bounce': ['enable', 'tp_pct', 'sl_atr_mult'],
-        'signals.short_the_rip': ['enable', 'tp_pct', 'sl_atr_mult'],
+        'signals.oversold_bounce': ['enable', 'tp_atr_mult', 'sl_atr_mult'],  # ✅ Changed
+        'signals.short_the_rip': ['enable', 'tp_atr_mult', 'sl_atr_mult'],   # ✅ Changed
         'risk': ['equity_usd', 'per_trade_risk_pct'],
         'universe': ['fixed_symbols', 'auto_select']
+    }
+    
+    # ✅ NEW: Optional keys for backward compatibility
+    OPTIONAL_KEYS = {
+        'signals.oversold_bounce': ['tp_pct', 'min_tp_pct', 'max_sl_pct'],
+        'signals.short_the_rip': ['tp_pct', 'min_tp_pct', 'max_sl_pct']
     }
     
     ADAPTIVE_KEYS = {
@@ -22,7 +31,7 @@ class ConfigValidator:
         },
         'signals.short_the_rip': {
             'adaptive_rsi_base': 55,
-            'adaptive_rsi_range': 15,
+            'adaptive_rsi_range': 10,  # ✅ Changed from 15 to 10
             'rsi_min': 55  # Backwards compat
         }
     }
@@ -61,6 +70,8 @@ class ConfigValidator:
         
         if issues:
             logger.warning(f"Config validation issues: {issues}")
+            # ✅ NEW: Don't crash, just warn
+            logger.info("✓ Proceeding with available configuration")
         else:
             logger.info("✅ Config validation passed")
             
