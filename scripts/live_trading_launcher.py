@@ -16,18 +16,8 @@ import yaml  # ← Add this import
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
-# Production için sadece WARNING ve üstü
-if os.getenv('PRODUCTION', 'false').lower() == 'true':
-    logging.basicConfig(
-        level=logging.WARNING,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-else:
-    # Development/test için INFO
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+# Note: Logging configuration is handled by setup_logger() and setup_debug_logger()
+# Do not use logging.basicConfig() here as it interferes with file logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
@@ -54,16 +44,11 @@ from ml.strategy_optimizer import StrategyOptimizer
 from strategies.adaptive_ob import AdaptiveOversoldBounce
 from strategies.adaptive_str import AdaptiveShortTheRip
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(f'live_trading_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# Import logger setup from core
+from core.logger import setup_logger
+
+# Configure logging with file support
+logger = setup_logger(name=__name__, log_to_file=True)
 
 
 # ============= WebSocket Optimization Manager =============
