@@ -8,6 +8,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+import inspect
 import pytest
 import pandas as pd
 from typing import Dict, Optional
@@ -38,8 +39,6 @@ class TestSignalKwargsRefactor:
     
     def test_signal_with_all_params(self):
         """Test signal call with all parameters (df_1h, regime_data, symbol)."""
-        import inspect
-        
         # Create mock strategy
         strategy = MockStrategy('test', {})
         
@@ -77,8 +76,6 @@ class TestSignalKwargsRefactor:
     
     def test_signal_with_only_regime_data(self):
         """Test signal call with only regime_data parameter."""
-        import inspect
-        
         strategy = MockStrategy('test', {})
         df_30m = pd.DataFrame({'close': [100, 101, 102]})
         regime_data = {'trend': 'bullish', 'volatility': 'normal'}
@@ -90,11 +87,13 @@ class TestSignalKwargsRefactor:
         has_df_1h_param = 'df_1h' in params
         has_symbol_param = 'symbol' in params
         
+        df_1h = None  # df_1h is None in this test case
+        
         kwargs = {}
         if has_regime_param:
             kwargs['regime_data'] = regime_data
-        if has_df_1h_param and None is not None:  # df_1h is None
-            kwargs['df_1h'] = None
+        if has_df_1h_param and df_1h is not None:
+            kwargs['df_1h'] = df_1h
         if has_symbol_param:
             kwargs['symbol'] = None
         
@@ -108,8 +107,6 @@ class TestSignalKwargsRefactor:
     
     def test_signal_with_df_1h_and_regime(self):
         """Test signal call with df_1h and regime_data but no symbol."""
-        import inspect
-        
         strategy = MockStrategy('test', {})
         df_30m = pd.DataFrame({'close': [100, 101, 102]})
         df_1h = pd.DataFrame({'close': [100, 105]})
@@ -140,8 +137,6 @@ class TestSignalKwargsRefactor:
     
     def test_signal_with_only_df_30m(self):
         """Test signal call with only df_30m (base strategy)."""
-        import inspect
-        
         strategy = MockStrategy('test', {})
         df_30m = pd.DataFrame({'close': [100, 101, 102]})
         
@@ -152,12 +147,13 @@ class TestSignalKwargsRefactor:
         has_regime_param = False  # Not in params
         has_df_1h_param = False  # Not in params
         has_symbol_param = False  # Not in params
+        df_1h = None
         
         kwargs = {}
         if has_regime_param:
             kwargs['regime_data'] = None
-        if has_df_1h_param and None is not None:
-            kwargs['df_1h'] = None
+        if has_df_1h_param and df_1h is not None:
+            kwargs['df_1h'] = df_1h
         if has_symbol_param:
             kwargs['symbol'] = None
         
@@ -171,8 +167,6 @@ class TestSignalKwargsRefactor:
     
     def test_signal_with_symbol_only(self):
         """Test signal call with only symbol parameter (besides df_30m)."""
-        import inspect
-        
         strategy = MockStrategy('test', {})
         df_30m = pd.DataFrame({'close': [100, 101, 102]})
         symbol = 'BTC/USDT:USDT'
@@ -183,12 +177,13 @@ class TestSignalKwargsRefactor:
         has_regime_param = 'regime_data' in params
         has_df_1h_param = 'df_1h' in params
         has_symbol_param = 'symbol' in params
+        df_1h = None  # df_1h is None in this test case
         
         kwargs = {}
         if has_regime_param:
             kwargs['regime_data'] = None
-        if has_df_1h_param and None is not None:
-            kwargs['df_1h'] = None
+        if has_df_1h_param and df_1h is not None:
+            kwargs['df_1h'] = df_1h
         if has_symbol_param:
             kwargs['symbol'] = symbol
         
