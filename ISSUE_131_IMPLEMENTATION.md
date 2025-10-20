@@ -178,7 +178,7 @@ signals:
 ### RSI Threshold Recommendations by Asset Type
 
 | Asset Type | Short Strategy | Long Strategy | Reasoning |
-|-----------|---------------|---------------|-----------|
+|------------|----------------|---------------|-----------|
 | **Large Cap** (BTC) | 55-60 | 40-45 | More selective, wait for stronger signals |
 | **Mid Cap** (ETH) | 50-55 | 35-40 | Balanced approach |
 | **Small Cap** (SOL, MATIC) | 45-50 | 30-35 | More sensitive, catch earlier moves |
