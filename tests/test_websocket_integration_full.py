@@ -75,7 +75,7 @@ class TestWebSocketPriority:
         
         # Create mock exchange client with REST data
         mock_client = Mock()
-        mock_client.fetch_ohlcv.return_value = [
+        mock_client.ohlcv.return_value = [
             [1234567890000, 50000, 51000, 49000, 50500, 100]
         ] * 100
         
@@ -94,7 +94,7 @@ class TestWebSocketPriority:
         df = engine._get_ohlcv_with_priority('BTC/USDT:USDT', '1m', limit=100)
         
         # Verify REST was called
-        mock_client.fetch_ohlcv.assert_called_once()
+        mock_client.ohlcv.assert_called_once()
         
         # Verify stats recorded REST fetch
         assert engine.ws_stats['websocket_fetches'] == 0
@@ -110,7 +110,7 @@ class TestWebSocketPriority:
         
         # Create mock exchange client
         mock_client = Mock()
-        mock_client.fetch_ohlcv.return_value = [
+        mock_client.ohlcv.return_value = [
             [1234567890000, 50000, 51000, 49000, 50500, 100]
         ] * 100
         
