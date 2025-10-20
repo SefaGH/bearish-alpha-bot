@@ -590,14 +590,7 @@ class ProductionCoordinator:
             
     async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
                                   continuous: bool = False):
-        """
-        Main production trading loop.
-        
-        Args:
-            mode: Trading mode ('paper', 'live', 'simulation')
-            duration: Optional duration in seconds (None = run indefinitely)
-            continuous: If True, enable TRUE CONTINUOUS mode (never stops, auto-recovers)
-        """
+        """Main production trading loop."""
         try:
             if not self.is_initialized:
                 raise RuntimeError("Production system not initialized. Call initialize_production_system() first.")
@@ -605,6 +598,34 @@ class ProductionCoordinator:
             logger.info("="*70)
             logger.info("STARTING PRODUCTION TRADING LOOP")
             logger.info("="*70)
+            
+            # ✅ DEBUG KODU BAŞLANGIÇ - Line 643
+            logger.info("🔍 [DEBUG] About to call start_live_trading()")
+            logger.info(f"🔍 [DEBUG] Engine: {self.trading_engine}")
+            logger.info(f"🔍 [DEBUG] Engine type: {type(self.trading_engine)}")
+            logger.info(f"🔍 [DEBUG] Mode: {mode}")
+            
+            try:
+                logger.info("🔍 [DEBUG] Calling start_live_trading()...")
+                
+                # Timeout eklenmiş await
+                start_result = await asyncio.wait_for(
+                    self.trading_engine.start_live_trading(mode=mode),
+                    timeout=10  # 10 second timeout
+                )
+                
+                logger.info(f"🔍 [DEBUG] start_live_trading() returned: {start_result}")
+                
+            except asyncio.TimeoutError:
+                logger.critical("❌ TIMEOUT: start_live_trading() took > 10s!")
+                logger.critical("Method was called but never returned!")
+                raise
+            except Exception as e:
+                logger.critical(f"❌ EXCEPTION in start_live_trading(): {e}")
+                import traceback
+                logger.critical(traceback.format_exc())
+                raise
+            # ✅ DEBUG KODU BİTİŞ
             
             # Start live trading engine
             start_result = await self.trading_engine.start_live_trading(mode=mode)
