@@ -57,13 +57,13 @@ class TestDuplicatePreventionIntegration:
             {'symbol': 'BTC/USDT:USDT', 'entry': 50000, 'side': 'long'},   # Signal 1: $50,000 → Accept (first)
             {'symbol': 'BTC/USDT:USDT', 'entry': 50030, 'side': 'long'},   # Signal 2: +0.06% from S1 → Accept (> 0.05%)
             {'symbol': 'BTC/USDT:USDT', 'entry': 50055, 'side': 'long'},   # Signal 3: +0.05% from S2 → Edge case (may reject due to rounding)
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50070, 'side': 'long'},   # Signal 4: +~0.08% from S2 (if S3 rejected) → Accept
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50070, 'side': 'long'},   # Signal 4: +0.08% from S2 (if S3 rejected) → Accept
             {'symbol': 'BTC/USDT:USDT', 'entry': 50100, 'side': 'long'},   # Signal 5: +0.06% from S4 → Accept
             {'symbol': 'BTC/USDT:USDT', 'entry': 50125, 'side': 'long'},   # Signal 6: +0.05% from S5 → Edge case
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50140, 'side': 'long'},   # Signal 7: +~0.08% from S5 (if S6 rejected) → Accept
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50140, 'side': 'long'},   # Signal 7: +0.08% from S5 (if S6 rejected) → Accept
             {'symbol': 'BTC/USDT:USDT', 'entry': 50170, 'side': 'long'},   # Signal 8: +0.06% from S7 → Accept
             {'symbol': 'BTC/USDT:USDT', 'entry': 50195, 'side': 'long'},   # Signal 9: +0.05% from S8 → Edge case
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50210, 'side': 'long'},   # Signal 10: +~0.08% from S8 (if S9 rejected) → Accept
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50210, 'side': 'long'},   # Signal 10: +0.08% from S8 (if S9 rejected) → Accept
         ]
         
         accepted = 0
