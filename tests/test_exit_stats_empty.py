@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 Test exit statistics with no closed positions.
 Issue #136: Fix KeyError when no positions have been closed.

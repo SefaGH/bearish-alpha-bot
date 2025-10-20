@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 Test shutdown scenario without KeyError.
 Issue #136: Verify bot can shutdown gracefully even with no closed positions.
