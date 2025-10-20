@@ -70,6 +70,72 @@ Check duplicate prevention statistics in logs:
 - Bypass events (when price movement triggers bypass)
 - Rejection reasons (cooldown vs. insufficient price delta)
 
+## 🎯 Symbol-Specific Configuration
+
+The bot supports **symbol-specific RSI thresholds** to optimize signal generation for different assets (Issue #131).
+
+### Configuration
+
+Add symbol-specific overrides in `config/config.example.yaml`:
+
+```yaml
+signals:
+  short_the_rip:
+    # Default parameters
+    adaptive_rsi_base: 55
+    adaptive_rsi_range: 10
+    
+    # Symbol-specific RSI threshold overrides
+    symbols:
+      "BTC/USDT:USDT":
+        rsi_threshold: 55  # BTC: More selective
+      "ETH/USDT:USDT":
+        rsi_threshold: 50  # ETH: More sensitive
+      "SOL/USDT:USDT":
+        rsi_threshold: 50  # SOL: More sensitive
+```
+
+### How It Works
+
+1. **Default Behavior**: All symbols use `adaptive_rsi_base` (e.g., 55 for shorts)
+2. **Symbol Override**: If a symbol is configured in `symbols`, its specific threshold is used instead
+3. **Debug Logging**: The bot logs which threshold is being applied for each symbol
+
+### Tuning Guidelines
+
+| Asset Type | Recommended RSI Threshold (Short) | Reasoning |
+|-----------|-----------------------------------|-----------|
+| **Large Cap** (BTC) | 55-60 | More selective, wait for stronger overbought signals |
+| **Mid Cap** (ETH) | 50-55 | Balanced approach |
+| **Small Cap** (SOL, etc.) | 45-50 | More sensitive, catch earlier moves |
+
+**For Long Strategies** (OversoldBounce): Use inverse logic (lower threshold = more selective)
+
+### Debug Mode
+
+Enable comprehensive debug logging to see why signals are/aren't generated:
+
+```bash
+# The bot automatically logs for each symbol:
+[STR-DEBUG] ETH/USDT:USDT
+  RSI: 52.3 (threshold: 50.0)
+  ✅ RSI check passed: 52.3 >= 50.0
+  EMA Align: ✅ (21=3890.45, 50=3905.23, 200=3920.12)
+  Volume: 125430.50
+  ATR: 45.2300
+  ✅ Signal: SELL (RSI 52.3 >= 50.0, regime=neutral)
+  Entry: $3895.20, Target: $3759.64, Stop: $3963.05, R/R: 2.00
+```
+
+### Troubleshooting
+
+If a symbol is not generating signals:
+
+1. **Check RSI values**: Look at debug logs to see current RSI vs. threshold
+2. **Adjust threshold**: Lower for shorts (more signals), higher for longs
+3. **Check EMA alignment**: Ensure EMA filters aren't too strict
+4. **Verify data**: Ensure the symbol has sufficient historical data (120+ bars)
+
 ## Hızlı Başlangıç (sadece GitHub)
 1. **Secrets ayarla** (Repo → Settings → Secrets and variables → Actions)
    - `EXCHANGES`: örn. `bingx,binance,kucoinfutures`
