@@ -552,7 +552,12 @@ class AdvancedPositionManager:
                     trailing_stop_level = lowest_price * (1 + trailing_distance)
                     
                     if current_price >= trailing_stop_level:
-                        logger.info(f"📈 [TRAILING-STOP-HIT] {position_id}")
+                        logger.info(
+                            f"📈 [TRAILING-STOP-HIT] {position_id}\n"
+                            f"   Lowest Price: ${lowest_price:.2f}\n"
+                            f"   Current Price: ${current_price:.2f}\n"
+                            f"   Trailing Stop: ${trailing_stop_level:.2f}"
+                        )
                         return {
                             'should_exit': True,
                             'exit_reason': 'trailing_stop',

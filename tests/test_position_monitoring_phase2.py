@@ -36,7 +36,7 @@ class TestPositionMonitoringPhase2:
         
         exit_check = await position_manager.manage_position_exits(position_id)
         
-        assert exit_check['should_exit'] == True
+        assert exit_check['should_exit'] is True
         assert exit_check['exit_reason'] == 'stop_loss'
         assert exit_check['exit_price'] == 51500
     
@@ -62,7 +62,7 @@ class TestPositionMonitoringPhase2:
         
         # First check: price at $52,000 (no exit, update highest)
         exit_check = await position_manager.manage_position_exits(position_id)
-        assert exit_check['should_exit'] == False
+        assert exit_check['should_exit'] is False
         assert position_manager.positions[position_id]['highest_price'] == 52000
         
         # Price pulls back to $50,960 (2% below $52,000 peak)
@@ -78,7 +78,7 @@ class TestPositionMonitoringPhase2:
         
         # Third check: should exit (trailing stop hit)
         exit_check = await position_manager.manage_position_exits(position_id)
-        assert exit_check['should_exit'] == True
+        assert exit_check['should_exit'] is True
         assert exit_check['exit_reason'] == 'trailing_stop'
 
 
