@@ -144,9 +144,32 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 'require_ema_separation': False
             }
     
+    def get_symbol_specific_threshold(self, symbol: str) -> Optional[float]:
+        """
+        Get symbol-specific RSI threshold override if configured.
+        
+        Args:
+            symbol: Trading symbol (e.g., 'BTC/USDT:USDT')
+            
+        Returns:
+            Symbol-specific threshold or None
+        """
+        if not symbol:
+            return None
+        
+        # Check if symbol-specific config exists
+        symbols_cfg = self.base_cfg.get('symbols', {})
+        if symbol in symbols_cfg:
+            symbol_cfg = symbols_cfg[symbol]
+            if 'rsi_threshold' in symbol_cfg:
+                return float(symbol_cfg['rsi_threshold'])
+        
+        return None
+    
     def signal(self, df_30m: pd.DataFrame, 
                df_1h: pd.DataFrame = None,
-               regime_data: Optional[Dict] = None) -> Optional[Dict]:
+               regime_data: Optional[Dict] = None,
+               symbol: str = None) -> Optional[Dict]:
         """
         Generate adaptive trading signal based on market regime.
         
@@ -155,19 +178,25 @@ class AdaptiveOversoldBounce(OversoldBounce):
             df_1h: Optional 1-hour OHLCV dataframe (for compatibility)
             regime_data: Optional market regime data for adaptation
                         If None, creates default regime data with neutral settings
+            symbol: Symbol name for debug logging
         
         Returns:
             Signal dictionary or None
         """
+        # Log symbol for debugging multi-symbol trading
+        symbol_display = symbol or "UNKNOWN"
+        logger.info(f"[OB-DEBUG] {symbol_display}")
+        
         # Data validation
         if df_30m is None or df_30m.empty:
+            logger.info(f"  ❌ No data available")
             return None
         
         # Safely get last row
         try:
             last = df_30m.dropna().iloc[-1]
         except IndexError:
-            logger.warning(f"[STRATEGY-AdaptiveOB] Insufficient 30m data")
+            logger.info(f"  ❌ Insufficient 30m data")
             return None
         
         # If no regime data provided, use default neutral regime
@@ -175,16 +204,14 @@ class AdaptiveOversoldBounce(OversoldBounce):
             regime_data = DEFAULT_MARKET_REGIME.copy()
         
         try:
-            # Debug: Market analysis started
-            logger.debug("🎯 [STRATEGY-AdaptiveOB] Market analysis started")
-            
             # Ensure we have valid data with critical columns
             if 'rsi' not in last.index or 'close' not in last.index:
-                logger.debug("🎯 [STRATEGY-AdaptiveOB] Missing required columns, no signal")
+                logger.info(f"  ❌ Missing required columns (RSI or close)")
                 return None
             
-            # Debug: Price data
-            logger.debug(f"📊 [STRATEGY-AdaptiveOB] Price data: close=${last['close']:.2f}, RSI={last['rsi']:.2f}")
+            # Get price and RSI data
+            close_price = float(last['close'])
+            rsi_val = float(last['rsi'])
             
             # Get adaptive RSI threshold
             market_regime = {
@@ -193,21 +220,41 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 'volatility': regime_data.get('volatility', 'normal')
             }
             
-            logger.debug(f"📊 [STRATEGY-AdaptiveOB] Market regime: {market_regime}")
-            
             adaptive_rsi_threshold = self.get_adaptive_rsi_threshold(market_regime)
-            logger.debug(f"📊 [STRATEGY-AdaptiveOB] Adaptive RSI threshold: {adaptive_rsi_threshold:.2f}")
             
-            # Check RSI condition
-            rsi_val = float(last['rsi'])
+            # Get symbol-specific threshold override if available
+            symbol_specific_threshold = self.get_symbol_specific_threshold(symbol_display)
+            if symbol_specific_threshold is not None:
+                adaptive_rsi_threshold = symbol_specific_threshold
+                logger.info(f"  📌 Using symbol-specific RSI threshold: {adaptive_rsi_threshold:.2f}")
+            
+            # Log current state
+            logger.info(f"  RSI: {rsi_val:.2f} (threshold: {adaptive_rsi_threshold:.2f})")
+            
+            # Check RSI condition (for oversold: RSI should be BELOW threshold)
             if rsi_val > adaptive_rsi_threshold:
-                logger.debug(f"❌ [STRATEGY-AdaptiveOB] Signal result: No signal - RSI {rsi_val:.2f} > {adaptive_rsi_threshold:.2f}")
+                logger.info(f"  ❌ Signal: NONE - RSI {rsi_val:.2f} > threshold {adaptive_rsi_threshold:.2f}")
+                return None
+            else:
+                logger.info(f"  ✅ RSI check passed: {rsi_val:.2f} <= {adaptive_rsi_threshold:.2f}")
+            
+            # Check volume if available
+            volume_ok = True
+            if 'volume' in last.index:
+                volume_val = float(last['volume'])
+                logger.info(f"  Volume: {volume_val:.2f}")
+                # Volume check can be added here if needed
+                volume_ok = volume_val > 0
+            else:
+                logger.info(f"  Volume: N/A")
+            
+            if not volume_ok:
+                logger.info(f"  ❌ Signal: NONE - Volume check failed")
                 return None
             
             # Calculate position size adjustment
             volatility = regime_data.get('volatility', 'normal')
             position_mult = self.calculate_dynamic_position_size(volatility)
-            logger.debug(f"📊 [STRATEGY-AdaptiveOB] Position multiplier: {position_mult:.2f} (volatility: {volatility})")
             
             # Get trend strength for EMA adaptation
             trend_strength = regime_data.get('micro_trend_strength', 0.5)
@@ -216,6 +263,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
             # ===== ATR-BASED TP/SL CALCULATION =====
             entry_price = float(last['close'])
             atr_value = float(last['atr']) if 'atr' in last.index else entry_price * 0.02
+            logger.info(f"  ATR: {atr_value:.4f}")
             
             # Get ATR multipliers from config
             tp_atr_mult = float(self.cfg.get("tp_atr_mult", 2.5))
@@ -270,10 +318,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 "ema_params": ema_params
             }
             
-            logger.debug(f"✅ [STRATEGY-AdaptiveOB] Signal result: BUY signal generated")
-            logger.debug(f"📈 [STRATEGY-AdaptiveOB] Signal strength: RSI {rsi_val:.1f} <= {adaptive_rsi_threshold:.1f}")
-            logger.info(f"Adaptive OB signal: RSI {rsi_val:.1f} <= {adaptive_rsi_threshold:.1f}, "
-                       f"regime={market_regime['trend']}, pos_mult={position_mult:.2f}")
+            logger.info(f"  ✅ Signal: BUY (RSI {rsi_val:.1f} <= {adaptive_rsi_threshold:.1f}, regime={market_regime['trend']})")
+            logger.info(f"  Entry: ${entry_price:.2f}, Target: ${target_price:.2f}, Stop: ${stop_price:.2f}, R/R: {rr_ratio:.2f}")
             
             # Strategy type ekle ve signal'i döndür
             signal['strategy_type'] = 'adaptive'

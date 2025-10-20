@@ -307,7 +307,7 @@ def run_once():
                     if s_cfg.get("oversold_bounce", {}).get("enable", True):
                         adaptive_ob = AdaptiveOversoldBounce(s_cfg.get("oversold_bounce"))
                         if len(df_30i) >= 50:
-                            out_sig = out_sig or adaptive_ob.signal(df_30i, df_1hi)
+                            out_sig = out_sig or adaptive_ob.signal(df_30i, df_1hi, symbol=sym)
                             
                             # Monitor'e kaydet
                             if out_sig and out_sig.get('is_adaptive'):
@@ -318,7 +318,7 @@ def run_once():
                     if not out_sig and s_cfg.get("short_the_rip", {}).get("enable", True):
                         adaptive_str = AdaptiveShortTheRip(s_cfg.get("short_the_rip"))
                         if len(df_30i) >= 50 and len(df_1hi) >= 50:
-                            out_sig = out_sig or adaptive_str.signal(df_30i, df_1hi)
+                            out_sig = out_sig or adaptive_str.signal(df_30i, df_1hi, symbol=sym)
                             
                             # Monitor'e kaydet
                             if out_sig and out_sig.get('is_adaptive'):
