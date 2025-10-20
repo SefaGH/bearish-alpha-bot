@@ -3,8 +3,6 @@
 Test symbol-specific RSI threshold configuration
 """
 
-import pandas as pd
-import numpy as np
 import sys
 import os
 
@@ -13,45 +11,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from strategies.adaptive_str import AdaptiveShortTheRip
 from strategies.adaptive_ob import AdaptiveOversoldBounce
-
-
-def create_test_dataframe(rsi_value=60.0):
-    """Create a minimal test dataframe with required columns"""
-    data = {
-        'close': [100.0] * 50,
-        'open': [99.0] * 50,
-        'high': [101.0] * 50,
-        'low': [98.0] * 50,
-        'volume': [1000.0] * 50,
-        'rsi': [rsi_value] * 50,
-        'atr': [2.0] * 50,
-        'ema21': [99.0] * 50,
-        'ema50': [100.0] * 50,
-        'ema200': [101.0] * 50,
-    }
-    df = pd.DataFrame(data)
-    return df
+from test_utils import create_test_dataframe, get_default_strategy_config
 
 
 def test_symbol_specific_threshold_str():
     """Test symbol-specific threshold for ShortTheRip strategy"""
     print("\n=== Testing Symbol-Specific Thresholds for ShortTheRip ===\n")
     
-    # Config with symbol-specific thresholds
-    config = {
-        'adaptive_rsi_base': 55,
-        'adaptive_rsi_range': 10,
-        'tp_atr_mult': 3.0,
-        'sl_atr_mult': 1.5,
-        'min_tp_pct': 0.01,
-        'max_sl_pct': 0.02,
-        'symbols': {
-            'BTC/USDT:USDT': {'rsi_threshold': 55},
-            'ETH/USDT:USDT': {'rsi_threshold': 50},
-            'SOL/USDT:USDT': {'rsi_threshold': 50},
-        }
-    }
-    
+    config = get_default_strategy_config()
     strategy = AdaptiveShortTheRip(config)
     
     # Test 1: RSI 52 should trigger signal for ETH (threshold 50) but not BTC (threshold 55)
@@ -91,22 +58,11 @@ def test_default_threshold_fallback():
     """Test that default threshold is used when no symbol-specific config exists"""
     print("\n=== Testing Default Threshold Fallback ===\n")
     
-    config = {
-        'adaptive_rsi_base': 55,
-        'adaptive_rsi_range': 10,
-        'tp_atr_mult': 3.0,
-        'sl_atr_mult': 1.5,
-        'min_tp_pct': 0.01,
-        'max_sl_pct': 0.02,
-        'symbols': {
-            'BTC/USDT:USDT': {'rsi_threshold': 55},
-        }
-    }
+    config = get_default_strategy_config()
+    # Remove some symbols to test fallback
+    config['symbols'] = {'BTC/USDT:USDT': {'rsi_threshold': 55}}
     
     strategy = AdaptiveShortTheRip(config)
-    
-    # Test with symbol not in config - should use default adaptive threshold
-    df = create_test_dataframe(rsi_value=52.0)
     
     # Get the threshold for a symbol not in config
     threshold = strategy.get_symbol_specific_threshold('MATIC/USDT:USDT')
@@ -120,13 +76,7 @@ def test_get_symbol_specific_threshold():
     """Test the get_symbol_specific_threshold method directly"""
     print("\n=== Testing get_symbol_specific_threshold Method ===\n")
     
-    config = {
-        'adaptive_rsi_base': 55,
-        'symbols': {
-            'BTC/USDT:USDT': {'rsi_threshold': 55},
-            'ETH/USDT:USDT': {'rsi_threshold': 50},
-        }
-    }
+    config = get_default_strategy_config()
     
     strategy = AdaptiveShortTheRip(config)
     
@@ -139,10 +89,15 @@ def test_get_symbol_specific_threshold():
     print(f"ETH threshold: {eth_threshold}")
     assert eth_threshold == 50, "ETH threshold should be 50"
     
-    # Test unconfigured symbol
+    # Test configured SOL
     sol_threshold = strategy.get_symbol_specific_threshold('SOL/USDT:USDT')
     print(f"SOL threshold: {sol_threshold}")
-    assert sol_threshold is None, "SOL should have no specific threshold"
+    assert sol_threshold == 50, "SOL threshold should be 50"
+    
+    # Test unconfigured symbol
+    matic_threshold = strategy.get_symbol_specific_threshold('MATIC/USDT:USDT')
+    print(f"MATIC threshold: {matic_threshold}")
+    assert matic_threshold is None, "MATIC should have no specific threshold"
     
     # Test None symbol
     none_threshold = strategy.get_symbol_specific_threshold(None)
