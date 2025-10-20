@@ -569,10 +569,11 @@ class LiveTradingEngine:
                     # PRIORITY 1: Process queued signals FIRST
                     # Check if there are signals waiting in the queue
                     if not self.signal_queue.empty():
+                        # ✅ FIXED: Don't check empty(), just try to get with timeout
                         try:
                             signal = await asyncio.wait_for(
                                 self.signal_queue.get(),
-                                timeout=5.0  # ✅ Increased from 1.0s to 5.0s
+                                timeout=0.5  # ✅ Short timeout (0.5s) to quickly move to market scan
                             )
                             
                             # [STAGE 5: RECEIVED] Signal received from queue
@@ -592,14 +593,15 @@ class LiveTradingEngine:
                             # Monitor adaptive signals
                             if signal and signal.get('is_adaptive'):
                                 adaptive_monitor.record_adaptive_signal(signal.get('symbol'), signal)
-                        
+                            
+                            # Continue immediately to process next signal if available
+                            continue
+                            
                         except asyncio.TimeoutError:
-                            logger.warning("⚠️ Timeout getting signal from non-empty queue")
+                            # ✅ Normal: Queue is empty, continue to market scan
+                            pass
                         except Exception as e:
                             logger.error(f"Error executing signal: {e}", exc_info=True)
-                        
-                        # Continue to process all queued signals before scanning
-                        continue
                     
                     # PRIORITY 2: Market scan (if interval reached and queue is empty)
                     current_time = asyncio.get_event_loop().time()
