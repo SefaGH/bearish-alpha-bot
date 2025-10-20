@@ -127,7 +127,7 @@ class ProductionCoordinator:
         self.signal_lifecycle = {}  # signal_id -> {stage, timestamp, details}
         
         # Configuration
-        self.config = LiveTradingConfiguration.get_all_configs()
+        self.config = LiveTradingConfiguration.load()
         
         # Market regime analyzer başlat
         self.market_regime_analyzer = MarketRegimeAnalyzer()
