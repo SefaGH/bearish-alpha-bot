@@ -318,6 +318,7 @@ class LiveTradingEngine:
     async def stop_live_trading(self) -> Dict[str, Any]:
         """
         Stop live trading gracefully.
+        Issue #134: Enhanced with exit summary logging.
         
         Returns:
             Shutdown result
@@ -338,13 +339,19 @@ class LiveTradingEngine:
             self.tasks.clear()
             self.state = EngineState.STOPPED
             
+            # Log exit summary statistics
+            if self.position_manager:
+                self.position_manager.log_exit_summary()
+            
             logger.info("Live trading engine stopped")
             logger.info(f"  Total signals generated: {self._signal_count}")
+            logger.info(f"  Total signals executed: {self._executed_count}")
             
             return {
                 'success': True,
                 'state': self.state.value,
-                'total_signals': self._signal_count
+                'total_signals': self._signal_count,
+                'total_executed': self._executed_count
             }
             
         except Exception as e:
