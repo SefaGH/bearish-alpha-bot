@@ -155,6 +155,17 @@ signals:
     sl_atr_mult: 1.5        # SL = entry + (ATR × 1.5) for shorts
     min_tp_pct: 0.010       # Minimum 1.0% TP
     max_sl_pct: 0.020       # Maximum 2.0% SL
+    
+    # Symbol-specific RSI threshold overrides (Issue #131)
+    # Allows different RSI thresholds per symbol for better signal generation
+    # Format: "SYMBOL": { "rsi_threshold": value }
+    symbols:
+      "BTC/USDT:USDT":
+        rsi_threshold: 55  # BTC: More selective (higher threshold for shorts)
+      "ETH/USDT:USDT":
+        rsi_threshold: 50  # ETH: More sensitive (lower threshold)
+      "SOL/USDT:USDT":
+        rsi_threshold: 50  # SOL: More sensitive (lower threshold)
 
 # Phase 3.4 Monitoring & Duplicate Prevention (Issue #103, Enhanced #118)
 monitoring:

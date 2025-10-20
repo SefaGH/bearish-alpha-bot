@@ -44,6 +44,28 @@ class AdaptiveShortTheRip(ShortTheRip):
         self.regime_analyzer = regime_analyzer
         self.base_cfg = cfg.copy()
         
+    def get_symbol_specific_threshold(self, symbol: str) -> Optional[float]:
+        """
+        Get symbol-specific RSI threshold override if configured.
+        
+        Args:
+            symbol: Trading symbol (e.g., 'BTC/USDT:USDT')
+            
+        Returns:
+            Symbol-specific threshold or None
+        """
+        if not symbol:
+            return None
+        
+        # Check if symbol-specific config exists
+        symbols_cfg = self.base_cfg.get('symbols', {})
+        if symbol in symbols_cfg:
+            symbol_cfg = symbols_cfg[symbol]
+            if 'rsi_threshold' in symbol_cfg:
+                return float(symbol_cfg['rsi_threshold'])
+        
+        return None
+    
     def get_adaptive_rsi_threshold(self, market_regime: Dict) -> float:
         """
         Dynamic RSI thresholds based on market conditions.
@@ -147,7 +169,8 @@ class AdaptiveShortTheRip(ShortTheRip):
     
     def signal(self, df_30m: pd.DataFrame, 
                df_1h: pd.DataFrame = None,
-               regime_data: Optional[Dict] = None) -> Optional[Dict]:
+               regime_data: Optional[Dict] = None,
+               symbol: str = None) -> Optional[Dict]:
         """
         Generate adaptive trading signal based on market regime.
         
@@ -156,19 +179,25 @@ class AdaptiveShortTheRip(ShortTheRip):
             df_1h: Optional 1-hour OHLCV dataframe with indicators
             regime_data: Optional market regime data for adaptation
                         If None, falls back to base strategy
+            symbol: Symbol name for debug logging
         
         Returns:
             Signal dictionary or None
         """
+        # Log symbol for debugging multi-symbol trading
+        symbol_display = symbol or "UNKNOWN"
+        logger.info(f"[STR-DEBUG] {symbol_display}")
+        
         # Data validation
         if df_30m is None or df_30m.empty:
+            logger.info(f"  ❌ No data available")
             return None
         
         # Safely get last row
         try:
             last30 = df_30m.dropna().iloc[-1]
         except IndexError:
-            logger.warning(f"[STRATEGY-AdaptiveSTR] Insufficient 30m data")
+            logger.info(f"  ❌ Insufficient 30m data")
             return None
         
         # 1h data is optional for adaptive strategy
@@ -198,11 +227,12 @@ class AdaptiveShortTheRip(ShortTheRip):
         try:
             # Ensure we have valid data with critical columns
             if 'rsi' not in last30.index or 'close' not in last30.index:
-                logger.debug("🎯 [STRATEGY-AdaptiveSTR] Missing required columns, no signal")
+                logger.info(f"  ❌ Missing required columns (RSI or close)")
                 return None
             
-            # Debug: Price data
-            logger.debug(f"📊 [STRATEGY-AdaptiveSTR] Price data: close=${last30['close']:.2f}, RSI={last30['rsi']:.2f}")
+            # Get price and RSI data
+            close_price = float(last30['close'])
+            rsi_val = float(last30['rsi'])
             
             # Get adaptive RSI threshold
             market_regime = {
@@ -211,16 +241,23 @@ class AdaptiveShortTheRip(ShortTheRip):
                 'volatility': regime_data.get('volatility', 'normal')
             }
             
-            logger.debug(f"📊 [STRATEGY-AdaptiveSTR] Market regime: {market_regime}")
-            
             adaptive_rsi_threshold = self.get_adaptive_rsi_threshold(market_regime)
-            logger.debug(f"📊 [STRATEGY-AdaptiveSTR] Adaptive RSI threshold: {adaptive_rsi_threshold:.2f}")
+            
+            # Get symbol-specific threshold override if available
+            symbol_specific_threshold = self.get_symbol_specific_threshold(symbol_display)
+            if symbol_specific_threshold is not None:
+                adaptive_rsi_threshold = symbol_specific_threshold
+                logger.info(f"  📌 Using symbol-specific RSI threshold: {adaptive_rsi_threshold:.2f}")
+            
+            # Log current state
+            logger.info(f"  RSI: {rsi_val:.2f} (threshold: {adaptive_rsi_threshold:.2f})")
             
             # Check RSI condition
-            rsi_val = float(last30['rsi'])
             if rsi_val < adaptive_rsi_threshold:
-                logger.debug(f"❌ [STRATEGY-AdaptiveSTR] Signal result: No signal - RSI {rsi_val:.2f} < {adaptive_rsi_threshold:.2f}")
+                logger.info(f"  ❌ Signal: NONE - RSI {rsi_val:.2f} < threshold {adaptive_rsi_threshold:.2f}")
                 return None
+            else:
+                logger.info(f"  ✅ RSI check passed: {rsi_val:.2f} >= {adaptive_rsi_threshold:.2f}")
             
             # Get trend strength for EMA adaptation
             trend_strength = regime_data.get('micro_trend_strength', 0.5)
@@ -235,22 +272,40 @@ class AdaptiveShortTheRip(ShortTheRip):
                     ema200 = float(last30['ema200'])
                     # Strict alignment: 21 < 50 <= 200 (bearish alignment)
                     ema_ok = ema21 < ema50 <= ema200
-                    logger.debug(f"📊 [STRATEGY-AdaptiveSTR] EMA alignment check: {ema_ok} (21={ema21:.2f}, 50={ema50:.2f}, 200={ema200:.2f})")
+                    ema_status = "✅" if ema_ok else "❌"
+                    logger.info(f"  EMA Align: {ema_status} (21={ema21:.2f}, 50={ema50:.2f}, 200={ema200:.2f})")
                 else:
-                    logger.warning("Missing EMA columns for strict alignment check")
+                    logger.info(f"  ⚠️ EMA Align: Missing EMA columns")
+                    ema_ok = False
+            else:
+                logger.info(f"  EMA Align: ✅ (not required for this regime)")
             
             if not ema_ok:
-                logger.debug(f"❌ [STRATEGY-AdaptiveSTR] Signal result: No signal - EMA alignment check failed")
+                logger.info(f"  ❌ Signal: NONE - EMA alignment check failed")
+                return None
+            
+            # Check volume if available
+            volume_ok = True
+            if 'volume' in last30.index:
+                volume_val = float(last30['volume'])
+                logger.info(f"  Volume: {volume_val:.2f}")
+                # Volume check can be added here if needed
+                volume_ok = volume_val > 0
+            else:
+                logger.info(f"  Volume: N/A")
+            
+            if not volume_ok:
+                logger.info(f"  ❌ Signal: NONE - Volume check failed")
                 return None
             
             # Calculate position size adjustment
             volatility = regime_data.get('volatility', 'normal')
             position_mult = self.calculate_dynamic_position_size(volatility)
-            logger.debug(f"📊 [STRATEGY-AdaptiveSTR] Position multiplier: {position_mult:.2f} (volatility: {volatility})")
             
             # ===== ATR-BASED TP/SL CALCULATION FOR SHORT =====
             entry_price = float(last30['close'])
             atr_value = float(last30['atr']) if 'atr' in last30.index else entry_price * 0.02
+            logger.info(f"  ATR: {atr_value:.4f}")
             
             # Get ATR multipliers from config
             tp_atr_mult = float(self.cfg.get("tp_atr_mult", 3.0))
@@ -299,10 +354,8 @@ class AdaptiveShortTheRip(ShortTheRip):
                 "ema_params": ema_params
             }
             
-            logger.debug(f"✅ [STRATEGY-AdaptiveSTR] Signal result: SELL signal generated")
-            logger.debug(f"📈 [STRATEGY-AdaptiveSTR] Signal strength: RSI {rsi_val:.1f} >= {adaptive_rsi_threshold:.1f}")
-            logger.info(f"Adaptive STR signal: RSI {rsi_val:.1f} >= {adaptive_rsi_threshold:.1f}, "
-                       f"regime={market_regime['trend']}, pos_mult={position_mult:.2f}")
+            logger.info(f"  ✅ Signal: SELL (RSI {rsi_val:.1f} >= {adaptive_rsi_threshold:.1f}, regime={market_regime['trend']})")
+            logger.info(f"  Entry: ${entry_price:.2f}, Target: ${target_price:.2f}, Stop: ${stop_price:.2f}, R/R: {rr_ratio:.2f}")
             
             # Strategy type ekle ve signal'i döndür
             signal['strategy_type'] = 'adaptive'
