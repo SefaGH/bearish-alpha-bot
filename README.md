@@ -129,6 +129,25 @@ The system validates that:
 - ✅ Exit events are logged with clear reasons and P&L
 - ✅ Session summaries provide win rate and overall statistics
 
+### Testing Exit Logic
+
+Comprehensive unit tests are available to validate exit logic:
+
+```bash
+# Run exit logic tests
+python -m pytest tests/test_phase3_low_priority.py::TestExitLogicValidation -v
+
+# Run all Phase 3 tests (exit logic + WebSocket performance)
+python -m pytest tests/test_phase3_low_priority.py -v
+```
+
+**Tests Include:**
+- Stop Loss hit detection and logging
+- Take Profit hit detection and logging
+- Trailing Stop exit detection
+- Exit statistics calculation (win rate, P&L breakdown)
+- Session summary generation
+
 ## 📡 WebSocket Performance Monitoring
 
 The bot continuously monitors WebSocket performance and logs metrics every 60 seconds during trading sessions (Issue #135).
@@ -152,6 +171,23 @@ Real-time WebSocket performance is logged with the following metrics:
 - **Improvement**: Performance improvement percentage of WebSocket over REST API
 
 These metrics help validate that WebSocket optimization is working correctly and providing expected performance gains during live trading sessions.
+
+### Testing WebSocket Performance
+
+Unit tests verify WebSocket performance metrics:
+
+```bash
+# Run WebSocket performance tests
+python -m pytest tests/test_phase3_low_priority.py::TestWebSocketPerformanceLogging -v
+```
+
+**Tests Include:**
+- WebSocket fetch success/failure tracking
+- REST API fallback tracking
+- Latency metrics calculation
+- Usage ratio calculation
+- Performance improvement percentage
+- Log format validation
 
 ## ⚙️ Duplicate Prevention Configuration
 
