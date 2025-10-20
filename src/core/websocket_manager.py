@@ -5,6 +5,7 @@ Coordinates WebSocket connections across multiple exchanges.
 
 import asyncio
 import logging
+import time
 from typing import Dict, List, Any, Optional, Callable, Union, Set
 from datetime import datetime, timezone
 from collections import defaultdict
@@ -54,7 +55,6 @@ class WebSocketManager:
         self._stream_limits: Dict[str, int] = {}
         
         # Health monitoring attributes
-        import time
         self.start_time = time.time()
         self.last_message_time = {}
         self.message_count = 0
@@ -422,7 +422,6 @@ class WebSocketManager:
     
     def get_connection_health(self):
         """Get WebSocket connection health."""
-        import time
         uptime = time.time() - self.start_time
         if not self.streams:
             status = 'disconnected'
@@ -444,7 +443,6 @@ class WebSocketManager:
     
     def is_data_fresh(self, symbol: str, timeframe: str, max_age_seconds: int = 60):
         """Check if data is fresh enough."""
-        import time
         data = self.get_latest_data(symbol, timeframe)
         if not data or 'ohlcv' not in data or not data['ohlcv']:
             return False
@@ -455,7 +453,6 @@ class WebSocketManager:
     
     def get_data_quality_score(self, symbol: str, timeframe: str):
         """Calculate data quality score (0-100)."""
-        import time
         data = self.get_latest_data(symbol, timeframe)
         if not data or 'ohlcv' not in data:
             return 0.0

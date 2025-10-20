@@ -3,13 +3,22 @@ Comprehensive tests for WebSocket Data Integration (Issue #120).
 Tests WebSocket priority, REST fallback, metrics tracking, and health monitoring.
 """
 
+import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
 import pytest
 import asyncio
 import time
 import logging
 from unittest.mock import Mock, patch, MagicMock
-from src.core.live_trading_engine import LiveTradingEngine
-from src.core.websocket_manager import WebSocketManager
+
+# Mock ccxt before importing modules that need it
+sys.modules['ccxt.pro'] = MagicMock()
+sys.modules['ccxt'] = MagicMock()
+
+from core.live_trading_engine import LiveTradingEngine
+from core.websocket_manager import WebSocketManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -235,7 +244,7 @@ class TestDataFreshness:
         is_fresh = manager.is_data_fresh('BTC/USDT:USDT', '1m', max_age_seconds=60)
         
         # Data should be fresh (just created)
-        assert is_fresh == True
+        assert is_fresh
         
         logger.info("✓ Data freshness validation working")
     
@@ -256,7 +265,7 @@ class TestDataFreshness:
         is_fresh = manager.is_data_fresh('BTC/USDT:USDT', '1m', max_age_seconds=60)
         
         # Data should be stale
-        assert is_fresh == False
+        assert not is_fresh
         
         logger.info("✓ Stale data detection working")
 

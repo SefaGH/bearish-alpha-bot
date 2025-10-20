@@ -7,6 +7,7 @@ import yaml
 import asyncio
 import logging
 import inspect
+import time
 import pandas as pd
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
@@ -871,9 +872,6 @@ class LiveTradingEngine:
         5. Fallback to REST if WebSocket fails
         6. Return pandas DataFrame with OHLCV
         """
-        import time
-        import pandas as pd
-        
         start_time = time.time()
         
         # Try WebSocket first
@@ -896,9 +894,6 @@ class LiveTradingEngine:
 
     def _fetch_ohlcv_rest(self, symbol: str, timeframe: str, limit: int, start_time: float):
         """Fetch OHLCV from REST with metrics."""
-        import pandas as pd
-        import time
-        
         for exchange_name, client in self.exchange_clients.items():
             try:
                 ohlcv = client.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -913,7 +908,6 @@ class LiveTradingEngine:
 
     def _record_ws_fetch(self, latency_ms: float, success: bool):
         """Record WebSocket fetch metrics."""
-        import time
         if success:
             self.ws_stats['websocket_fetches'] += 1
             self.ws_stats['total_latency_ws'] += latency_ms
@@ -930,7 +924,6 @@ class LiveTradingEngine:
 
     def _record_rest_fetch(self, latency_ms: float, success: bool):
         """Record REST fetch metrics."""
-        import time
         if success:
             self.ws_stats['rest_fetches'] += 1
             self.ws_stats['total_latency_rest'] += latency_ms
