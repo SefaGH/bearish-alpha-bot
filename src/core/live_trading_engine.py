@@ -559,6 +559,10 @@ class LiveTradingEngine:
         last_scan_time = 0
         scan_interval = 10  # 10 seconds between market scans
         
+        # Track last WebSocket performance log time
+        last_ws_perf_log_time = 0
+        ws_perf_log_interval = 60  # 60 seconds between WebSocket performance logs
+        
         try:
             while self.state == EngineState.RUNNING:
                 try:
@@ -599,6 +603,11 @@ class LiveTradingEngine:
                     
                     # PRIORITY 2: Market scan (if interval reached and queue is empty)
                     current_time = asyncio.get_event_loop().time()
+                    
+                    # WebSocket performance logging (every 60 seconds)
+                    if current_time - last_ws_perf_log_time >= ws_perf_log_interval:
+                        last_ws_perf_log_time = current_time
+                        self._log_websocket_performance()
                     
                     # Market scanning phase (every 10 seconds)
                     if current_time - last_scan_time >= scan_interval:
@@ -948,6 +957,20 @@ class LiveTradingEngine:
         else:
             stats['latency_improvement_pct'] = 0.0
         return stats
+    
+    def _log_websocket_performance(self):
+        """
+        Log WebSocket performance metrics.
+        Displays usage ratio, latencies, and performance improvement.
+        """
+        stats = self.get_websocket_stats()
+        logger.info(
+            f"[WS-PERFORMANCE]\n"
+            f"  Usage Ratio: {stats['websocket_usage_ratio']:.1f}%\n"
+            f"  WS Latency: {stats['avg_latency_ws']:.1f}ms\n"
+            f"  REST Latency: {stats['avg_latency_rest']:.1f}ms\n"
+            f"  Improvement: {stats['latency_improvement_pct']:.1f}%"
+        )
     
     async def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         """

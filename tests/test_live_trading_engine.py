@@ -516,5 +516,87 @@ class TestProductionCoordinator:
         assert coordinator.portfolio_manager is not None
 
 
+class TestWebSocketPerformanceLogging:
+    """Test WebSocket performance logging functionality."""
+    
+    def test_websocket_stats_calculation(self):
+        """Test WebSocket statistics calculation."""
+        portfolio_config = {'equity_usd': 10000}
+        risk_manager = RiskManager(portfolio_config)
+        performance_monitor = RealTimePerformanceMonitor()
+        portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
+        
+        exchange_clients = {
+            'kucoinfutures': MockExchangeClient('kucoinfutures')
+        }
+        
+        engine = LiveTradingEngine(
+            mode='paper',
+            portfolio_manager=portfolio_manager,
+            risk_manager=risk_manager,
+            websocket_manager=None,
+            exchange_clients=exchange_clients
+        )
+        
+        # Simulate some WebSocket and REST fetches
+        engine._record_ws_fetch(15.0, success=True)
+        engine._record_ws_fetch(20.0, success=True)
+        engine._record_ws_fetch(18.0, success=True)
+        
+        engine._record_rest_fetch(250.0, success=True)
+        engine._record_rest_fetch(230.0, success=True)
+        
+        # Get stats
+        stats = engine.get_websocket_stats()
+        
+        # Verify calculations
+        assert stats['websocket_fetches'] == 3
+        assert stats['rest_fetches'] == 2
+        assert stats['websocket_usage_ratio'] == pytest.approx(60.0, abs=0.1)  # 3/(3+2) * 100 = 60%
+        assert stats['avg_latency_ws'] == pytest.approx(17.67, abs=0.1)  # (15+20+18)/3
+        assert stats['avg_latency_rest'] == pytest.approx(240.0, abs=0.1)  # (250+230)/2
+        
+        # Verify improvement calculation
+        expected_improvement = ((240.0 - 17.67) / 240.0) * 100  # ~92.6%
+        assert stats['latency_improvement_pct'] == pytest.approx(expected_improvement, abs=0.1)
+    
+    def test_log_websocket_performance(self, caplog):
+        """Test WebSocket performance logging output."""
+        import logging
+        
+        portfolio_config = {'equity_usd': 10000}
+        risk_manager = RiskManager(portfolio_config)
+        performance_monitor = RealTimePerformanceMonitor()
+        portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
+        
+        exchange_clients = {
+            'kucoinfutures': MockExchangeClient('kucoinfutures')
+        }
+        
+        engine = LiveTradingEngine(
+            mode='paper',
+            portfolio_manager=portfolio_manager,
+            risk_manager=risk_manager,
+            websocket_manager=None,
+            exchange_clients=exchange_clients
+        )
+        
+        # Simulate some WebSocket and REST fetches
+        engine._record_ws_fetch(18.3, success=True)
+        engine._record_rest_fetch(234.7, success=True)
+        
+        # Log performance
+        with caplog.at_level(logging.INFO):
+            engine._log_websocket_performance()
+        
+        # Check log output contains expected elements
+        log_text = caplog.text
+        assert '[WS-PERFORMANCE]' in log_text
+        assert 'Usage Ratio:' in log_text
+        assert 'WS Latency:' in log_text
+        assert 'REST Latency:' in log_text
+        assert 'Improvement:' in log_text
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
