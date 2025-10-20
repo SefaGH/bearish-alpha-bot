@@ -104,7 +104,7 @@ signals:
 ### Tuning Guidelines
 
 | Asset Type | Recommended RSI Threshold (Short) | Reasoning |
-|-----------|-----------------------------------|-----------|
+|------------|-----------------------------------|-----------|
 | **Large Cap** (BTC) | 55-60 | More selective, wait for stronger overbought signals |
 | **Mid Cap** (ETH) | 50-55 | Balanced approach |
 | **Small Cap** (SOL, etc.) | 45-50 | More sensitive, catch earlier moves |
