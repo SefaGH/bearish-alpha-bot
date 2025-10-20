@@ -76,14 +76,14 @@ def main():
         print(f"   ❌ Signal with 0.06% price change rejected (unexpected): {reason}")
         return 1
     
-    # Test with signal that has 0.03% price change (should be rejected)
-    signal3 = {'symbol': 'BTC/USDT:USDT', 'entry': 50045, 'side': 'long'}
+    # Test with signal that has 0.03% price change from last accepted (should be rejected)
+    signal3 = {'symbol': 'BTC/USDT:USDT', 'entry': 50045, 'side': 'long'}  # 0.03% from signal2
     is_valid, reason = coordinator.validate_duplicate(signal3, 'test_strategy')
     
     if not is_valid and 'cooldown' in reason.lower():
-        print(f"   ✅ Signal with 0.03% price change rejected (expected)")
+        print(f"   ✅ Signal with small price change rejected (expected)")
     elif is_valid:
-        print(f"   ❌ Signal with 0.03% price change accepted (unexpected): {reason}")
+        print(f"   ❌ Signal with small price change accepted (unexpected): {reason}")
         return 1
     
     # Check statistics

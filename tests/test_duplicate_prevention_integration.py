@@ -50,19 +50,20 @@ class TestDuplicatePreventionIntegration:
         Test that optimized config achieves >70% signal acceptance rate.
         Simulates 10 signals with realistic price movements in a low-volatility market.
         """
-        # Simulate 10 signals with small price movements (0.01-0.10%)
+        # Simulate 10 signals with varied price movements in a low-volatility market
+        # Note: Price changes are calculated from the last ACCEPTED signal price
         # Base price: $50,000
         signals = [
             {'symbol': 'BTC/USDT:USDT', 'entry': 50000, 'side': 'long'},   # Signal 1: $50,000 → Accept (first)
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50030, 'side': 'long'},   # Signal 2: +0.06% → Accept (> 0.05%)
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50055, 'side': 'long'},   # Signal 3: +0.05% → Accept (>= 0.05%)
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50070, 'side': 'long'},   # Signal 4: +0.03% → Reject (< 0.05%)
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50100, 'side': 'long'},   # Signal 5: +0.06% → Accept (> 0.05%)
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50125, 'side': 'long'},   # Signal 6: +0.05% → Accept (>= 0.05%)
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50140, 'side': 'long'},   # Signal 7: +0.03% → Reject (< 0.05%)
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50170, 'side': 'long'},   # Signal 8: +0.06% → Accept (> 0.05%)
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50195, 'side': 'long'},   # Signal 9: +0.05% → Accept (>= 0.05%)
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50210, 'side': 'long'},   # Signal 10: +0.03% → Reject (< 0.05%)
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50030, 'side': 'long'},   # Signal 2: +0.06% from S1 → Accept (> 0.05%)
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50055, 'side': 'long'},   # Signal 3: +0.05% from S2 → Edge case (may reject due to rounding)
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50070, 'side': 'long'},   # Signal 4: +~0.08% from S2 (if S3 rejected) → Accept
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50100, 'side': 'long'},   # Signal 5: +0.06% from S4 → Accept
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50125, 'side': 'long'},   # Signal 6: +0.05% from S5 → Edge case
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50140, 'side': 'long'},   # Signal 7: +~0.08% from S5 (if S6 rejected) → Accept
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50170, 'side': 'long'},   # Signal 8: +0.06% from S7 → Accept
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50195, 'side': 'long'},   # Signal 9: +0.05% from S8 → Edge case
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50210, 'side': 'long'},   # Signal 10: +~0.08% from S8 (if S9 rejected) → Accept
         ]
         
         accepted = 0
@@ -141,11 +142,12 @@ class TestDuplicatePreventionIntegration:
         Even with lower threshold, duplicate signals should still be blocked.
         """
         # Try to spam same price multiple times - should be rejected after first
+        # Note: Small price movements (< 0.05% from last accepted) should be rejected
         signals = [
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50000, 'side': 'long'},  # Accept
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50000, 'side': 'long'},  # Accept (first)
             {'symbol': 'BTC/USDT:USDT', 'entry': 50005, 'side': 'long'},  # Reject (0.01% < 0.05%)
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50010, 'side': 'long'},  # Reject (0.01% < 0.05% from last accepted)
-            {'symbol': 'BTC/USDT:USDT', 'entry': 50015, 'side': 'long'},  # Reject (0.01% < 0.05%)
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50010, 'side': 'long'},  # Reject (0.02% < 0.05% from S1)
+            {'symbol': 'BTC/USDT:USDT', 'entry': 50015, 'side': 'long'},  # Reject (0.03% < 0.05%)
             {'symbol': 'BTC/USDT:USDT', 'entry': 50020, 'side': 'long'},  # Reject (0.04% < 0.05%)
         ]
         
