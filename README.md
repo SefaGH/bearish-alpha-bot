@@ -111,6 +111,30 @@ The system validates that:
 - ✅ Exit events are logged with clear reasons and P&L
 - ✅ Session summaries provide win rate and overall statistics
 
+## 📡 WebSocket Performance Monitoring
+
+The bot continuously monitors WebSocket performance and logs metrics every 60 seconds during trading sessions (Issue #135).
+
+### Performance Logging
+
+Real-time WebSocket performance is logged with the following metrics:
+
+```
+[WS-PERFORMANCE]
+  Usage Ratio: 97.8%
+  WS Latency: 18.3ms
+  REST Latency: 234.7ms
+  Improvement: 92.2%
+```
+
+**Metrics Explained:**
+- **Usage Ratio**: Percentage of market data fetches served by WebSocket vs REST API
+- **WS Latency**: Average latency for WebSocket data fetches in milliseconds
+- **REST Latency**: Average latency for REST API data fetches in milliseconds
+- **Improvement**: Performance improvement percentage of WebSocket over REST API
+
+These metrics help validate that WebSocket optimization is working correctly and providing expected performance gains during live trading sessions.
+
 ## ⚙️ Duplicate Prevention Configuration
 
 The bot includes intelligent duplicate signal prevention to avoid spam trades while remaining responsive to market movements. 
