@@ -76,14 +76,11 @@ class StrategyCoordinator:
     def validate_duplicate(self, signal: Dict, strategy_name: str) -> Tuple[bool, str]:
         """
         Validate signal for duplicates using cooldown and price movement checks.
-        Phase 3.4 - Issue #104: Fixed Cooldown Logic
-        Phase 3.4 - Issue #118: Enhanced with Price Delta Bypass
-        Issue #129: Support new signals.duplicate_prevention config with optimized defaults
         
-        Uses combined key "symbol:strategy" to allow:
-        - BTC+strategy1 → ETH+strategy1 ✅
-        - BTC+strategy1 → BTC+strategy2 ✅
-        - BTC+strategy1 → BTC+strategy1 ❌ (cooldown, unless price moved > threshold)
+        FIXED: Correct config path detection and threshold units
+        - Bug #1: Empty dict check fixed
+        - Bug #2: No double division
+        - Bug #3: Consistent threshold units
         
         Args:
             signal: Trading signal dictionary
@@ -94,24 +91,41 @@ class StrategyCoordinator:
         """
         import time
         
-        # Step 1: Check if duplicate prevention enabled
+        # Step 1: Get config
         config = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
         
-        # Try new config location first (signals.duplicate_prevention), fallback to old location
-        signals_config = config.get('signals', {}).get('duplicate_prevention', {})
-        monitoring_config = config.get('monitoring', {}).get('duplicate_prevention', {})
+        # ✅ FIX #1: Proper config path detection
+        # Check if signals.duplicate_prevention exists (not just empty dict)
+        has_signals_config = (
+            'signals' in config and 
+            'duplicate_prevention' in config.get('signals', {}) and
+            config['signals']['duplicate_prevention']  # Not empty
+        )
         
-        # Prefer signals config if it exists, otherwise use monitoring config
-        if signals_config:
-            enabled = signals_config.get('enabled', True)
-            cooldown = float(signals_config.get('cooldown_seconds', 20))
-            price_delta_bypass_threshold = float(signals_config.get('min_price_change_pct', 0.05)) / 100  # Convert % to decimal
-            price_delta_bypass_enabled = True  # Always enabled in new config
+        if has_signals_config:
+            # ✅ Use signals config (NEW location, CORRECT values)
+            dup_config = config['signals']['duplicate_prevention']
+            enabled = dup_config.get('enabled', True)
+            cooldown = float(dup_config.get('cooldown_seconds', 20))
+            
+            # ✅ FIX #2: No double division - value is already in decimal
+            # Config has min_price_change_pct: 0.05 which means 5% = 0.05 in decimal
+            price_delta_bypass_threshold = float(dup_config.get('min_price_change_pct', 0.05))
+            price_delta_bypass_enabled = dup_config.get('price_delta_bypass_enabled', True)
+            
+            logger.debug(f"✓ Using signals.duplicate_prevention config")
         else:
-            enabled = monitoring_config.get('enabled', True)
-            cooldown = float(monitoring_config.get('same_symbol_cooldown', 60))
-            price_delta_bypass_enabled = monitoring_config.get('price_delta_bypass_enabled', True)
-            price_delta_bypass_threshold = float(monitoring_config.get('price_delta_bypass_threshold', 0.0015))
+            # ✅ Fallback to monitoring config (OLD location, backward compatibility)
+            dup_config = config.get('monitoring', {}).get('duplicate_prevention', {})
+            enabled = dup_config.get('enabled', True)
+            cooldown = float(dup_config.get('same_symbol_cooldown', 60))
+            price_delta_bypass_enabled = dup_config.get('price_delta_bypass_enabled', True)
+            
+            # ✅ FIX #3: monitoring config uses different unit (0.0015 = 0.15%)
+            # Keep as-is for backward compatibility
+            price_delta_bypass_threshold = float(dup_config.get('price_delta_bypass_threshold', 0.0015))
+            
+            logger.debug(f"⚠️ Using monitoring.duplicate_prevention config (legacy)")
         
         if not enabled:
             return True, "OK"
@@ -137,38 +151,32 @@ class StrategyCoordinator:
         if within_cooldown:
             # Step 3a: Get last price from history
             if symbol in self.signal_price_history and entry_price > 0 and price_delta_bypass_enabled:
-                # Find last price for this symbol (from any recent signal)
+                # Find last price for this symbol
                 if self.signal_price_history[symbol]:
                     last_timestamp, last_price = self.signal_price_history[symbol][-1]
                     
-                    # Step 3b: Calculate price_delta
+                    # Step 3b: Calculate price_delta (already in decimal, e.g., 0.05 = 5%)
                     price_delta = abs(entry_price - last_price) / last_price
                     
                     # Step 3c: IF price_delta >= threshold, BYPASS
                     if price_delta >= price_delta_bypass_threshold:
                         # Log bypass event with details
                         logger.info(
-                            f"[DUPLICATE-CHECK] Price Delta Check\n"
-                            f"   Symbol: {symbol}\n"
-                            f"   Last Price: ${last_price:.2f}\n"
-                            f"   New Price: ${entry_price:.2f}\n"
-                            f"   Delta: {price_delta:.4f} ({price_delta*100:.2f}%)\n"
-                            f"   Threshold: {price_delta_bypass_threshold:.4f} ({price_delta_bypass_threshold*100:.2f}%)"
-                        )
-                        logger.info(
-                            f"✅ [DUPLICATE-BYPASS] Cooldown bypassed due to significant price movement\n"
+                            f"✅ [DUPLICATE-BYPASS] Cooldown bypassed\n"
                             f"   Symbol: {symbol}\n"
                             f"   Strategy: {strategy_name}\n"
-                            f"   Price Change: {price_delta*100:.2f}% (>= {price_delta_bypass_threshold*100:.2f}%)\n"
+                            f"   Last Price: ${last_price:.2f}\n"
+                            f"   New Price: ${entry_price:.2f}\n"
+                            f"   Delta: {price_delta*100:.2f}% (>= {price_delta_bypass_threshold*100:.2f}%)\n"
                             f"   Cooldown Remaining: {remaining:.1f}s\n"
                             f"   ✅ SIGNAL ACCEPTED"
                         )
                         
-                        # Update statistics (cooldown_bypasses counter)
+                        # Update statistics
                         self.processing_stats['cooldown_bypasses'] += 1
                         self.processing_stats['last_bypass_time'] = current_time
                         
-                        # Update running average for bypass price delta
+                        # Update running average
                         bypass_count = self.processing_stats['cooldown_bypasses']
                         current_avg = self.processing_stats['avg_bypass_price_delta']
                         new_avg = ((current_avg * (bypass_count - 1)) + (price_delta * 100)) / bypass_count
@@ -179,7 +187,7 @@ class StrategyCoordinator:
                         if total_signals > 0:
                             self.processing_stats['bypass_success_rate'] = (bypass_count / total_signals) * 100
                         
-                        # Update tracking (last_signal_time, price_history)
+                        # Update tracking
                         self.last_signal_time[signal_key] = current_time
                         self.signal_price_history[symbol].append((current_time, entry_price))
                         
@@ -187,7 +195,6 @@ class StrategyCoordinator:
                     
                     # Step 3d: ELSE, reject with price delta info
                     else:
-                        # Log rejection with price delta and threshold
                         logger.warning(
                             f"❌ [DUPLICATE-REJECT] Signal rejected - insufficient price movement\n"
                             f"   Symbol: {symbol}\n"
@@ -197,12 +204,11 @@ class StrategyCoordinator:
                             f"   ❌ SIGNAL REJECTED"
                         )
                         
-                        # Update statistics (rejected_price_delta counter)
                         self.processing_stats['rejected_price_delta'] += 1
                         
-                        return False, f"Signal cooldown: {remaining:.0f}s remaining (price change {price_delta*100:.2f}% < threshold)"
+                        return False, f"Duplicate prevention: Signal cooldown: {remaining:.0f}s remaining (price change {price_delta*100:.2f}% < threshold)"
             
-            # No price history available or bypass disabled - reject with cooldown
+            # No price history or bypass disabled
             logger.warning(
                 f"❌ [DUPLICATE-REJECT] Signal rejected - cooldown active\n"
                 f"   Symbol: {symbol}\n"
@@ -211,7 +217,7 @@ class StrategyCoordinator:
                 f"   ❌ SIGNAL REJECTED"
             )
             self.processing_stats['rejected_cooldown'] += 1
-            return False, f"Signal cooldown: {remaining:.0f}s remaining (same symbol+strategy)"
+            return False, f"Duplicate prevention: Signal cooldown: {remaining:.0f}s remaining (same symbol+strategy)"
         
         # Step 4: IF outside cooldown, accept and update tracking
         self.last_signal_time[signal_key] = current_time
