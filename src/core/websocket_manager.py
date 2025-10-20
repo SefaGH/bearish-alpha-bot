@@ -53,6 +53,14 @@ class WebSocketManager:
         self._active_streams: Dict[str, Set[str]] = defaultdict(set)
         self._stream_limits: Dict[str, int] = {}
         
+        # Health monitoring attributes
+        import time
+        self.start_time = time.time()
+        self.last_message_time = {}
+        self.message_count = 0
+        self.reconnection_count = 0
+        self.streams = {}  # Track active streams for health monitoring
+        
         # Detect if we're using CcxtClient instances or credentials
         self._use_ccxt_clients = False
         if exchanges:
@@ -411,6 +419,65 @@ class WebSocketManager:
         # No cached data available
         logger.debug(f"No cached data for {symbol} {timeframe}")
         return None
+    
+    def get_connection_health(self):
+        """Get WebSocket connection health."""
+        import time
+        uptime = time.time() - self.start_time
+        if not self.streams:
+            status = 'disconnected'
+        elif self.message_count == 0:
+            status = 'connecting'
+        elif self.message_count < 10:
+            status = 'warming_up'
+        else:
+            status = 'healthy'
+        
+        return {
+            'status': status,
+            'active_streams': len(self.streams),
+            'symbols': list(self.streams.keys()),
+            'total_messages': self.message_count,
+            'uptime_seconds': uptime,
+            'reconnection_count': self.reconnection_count
+        }
+    
+    def is_data_fresh(self, symbol: str, timeframe: str, max_age_seconds: int = 60):
+        """Check if data is fresh enough."""
+        import time
+        data = self.get_latest_data(symbol, timeframe)
+        if not data or 'ohlcv' not in data or not data['ohlcv']:
+            return False
+        last_candle_time = data['ohlcv'][-1][0]
+        current_time = time.time() * 1000
+        age = (current_time - last_candle_time) / 1000
+        return age < max_age_seconds
+    
+    def get_data_quality_score(self, symbol: str, timeframe: str):
+        """Calculate data quality score (0-100)."""
+        import time
+        data = self.get_latest_data(symbol, timeframe)
+        if not data or 'ohlcv' not in data:
+            return 0.0
+        
+        score = 0.0
+        # Freshness (40%)
+        if self.is_data_fresh(symbol, timeframe, 60):
+            score += 40
+        elif self.is_data_fresh(symbol, timeframe, 120):
+            score += 20
+        # Completeness (30%)
+        if len(data['ohlcv']) >= 100:
+            score += 30
+        elif len(data['ohlcv']) >= 50:
+            score += 15
+        # Update frequency (30%)
+        if symbol in self.last_message_time:
+            if time.time() - self.last_message_time[symbol] < 5:
+                score += 30
+            elif time.time() - self.last_message_time[symbol] < 15:
+                score += 15
+        return score
     
     async def subscribe_tickers(self, symbols: List[str], callback=None):
         """

@@ -43,6 +43,9 @@ regime:
 # WebSocket Optimization Settings
 websocket:
   enabled: true
+  priority_enabled: true  # Enable WebSocket priority for data fetching
+  max_data_age: 60  # Maximum age in seconds for WebSocket data to be considered fresh
+  fallback_threshold: 3  # Number of consecutive failures before fallback to REST
   max_streams_per_exchange: 
     bingx: 6        # BingX için max 10 stream (conservative)
     binance: 20      # Binance daha fazla destekler
