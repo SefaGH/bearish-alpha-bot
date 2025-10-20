@@ -896,7 +896,7 @@ class LiveTradingEngine:
         """Fetch OHLCV from REST with metrics."""
         for exchange_name, client in self.exchange_clients.items():
             try:
-                ohlcv = client.fetch_ohlcv(symbol, timeframe, limit=limit)
+                ohlcv = client.ohlcv(symbol, timeframe, limit=limit)
                 latency = (time.time() - start_time) * 1000
                 self._record_rest_fetch(latency, success=True)
                 logger.debug(f"🌐 [REST-SUCCESS] {symbol} - {latency:.1f}ms")
