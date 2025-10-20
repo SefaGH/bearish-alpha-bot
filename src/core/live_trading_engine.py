@@ -930,6 +930,10 @@ class LiveTradingEngine:
                 
                 logger.debug(f"Monitoring {len(self.active_positions)} active positions")
                 
+                # Track summary statistics
+                total_unrealized_pnl = 0.0
+                positions_closed_count = 0
+                
                 for position_id in list(self.active_positions.keys()):
                     try:
                         position = self.active_positions.get(position_id)
@@ -937,6 +941,7 @@ class LiveTradingEngine:
                             continue
                         
                         symbol = position.get('symbol')
+                        entry_price = position.get('entry_price', 0)
                         
                         # Fetch current price
                         current_price = await self._get_current_price(symbol)
@@ -955,23 +960,51 @@ class LiveTradingEngine:
                             unrealized_pnl = pnl_result.get('unrealized_pnl', 0)
                             pnl_pct = pnl_result.get('pnl_pct', 0)
                             
+                            # Enhanced P&L logging
                             logger.info(
-                                f"[P&L] {position_id}: ${unrealized_pnl:.2f} ({pnl_pct:+.2f}%)"
+                                f"💰 [P&L-UPDATE] {position_id}\n"
+                                f"   Symbol: {symbol}\n"
+                                f"   Entry: ${entry_price:.2f}\n"
+                                f"   Current: ${current_price:.2f}\n"
+                                f"   Unrealized P&L: ${unrealized_pnl:.2f} ({pnl_pct:+.2f}%)"
                             )
+                            
+                            # Track total unrealized P&L
+                            total_unrealized_pnl += unrealized_pnl
                         
                         # Check exit conditions
                         exit_check = await self.position_manager.manage_position_exits(position_id)
                         
                         if exit_check.get('should_exit'):
                             exit_reason = exit_check.get('exit_reason')
-                            logger.info(f"Exit signal for {position_id}: {exit_reason}")
+                            exit_emoji = '🛑' if exit_reason == 'stop_loss' else '🎯'
+                            
+                            # Enhanced exit logging
+                            logger.warning(
+                                f"{exit_emoji} [EXIT-SIGNAL] {position_id}\n"
+                                f"   Symbol: {symbol}\n"
+                                f"   Reason: {exit_reason.upper()}\n"
+                                f"   Entry: ${entry_price:.2f}\n"
+                                f"   Exit: ${current_price:.2f}\n"
+                                f"   P&L: ${unrealized_pnl:.2f} ({pnl_pct:+.2f}%)"
+                            )
                             
                             # Execute exit
                             await self._execute_position_exit(position_id, exit_check)
+                            positions_closed_count += 1
                     
                     except Exception as e:
                         logger.error(f"Error monitoring position {position_id}: {e}")
                         continue
+                
+                # Summary logging at end of monitoring loop
+                if self.active_positions:
+                    logger.info(
+                        f"📊 [MONITORING-SUMMARY]\n"
+                        f"   Active Positions: {len(self.active_positions)}\n"
+                        f"   Total Unrealized P&L: ${total_unrealized_pnl:.2f}\n"
+                        f"   Positions Closed This Cycle: {positions_closed_count}"
+                    )
                 
                 await asyncio.sleep(interval)
         

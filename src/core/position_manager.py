@@ -437,7 +437,7 @@ class AdvancedPositionManager:
     
     async def manage_position_exits(self, position_id: str) -> Dict[str, Any]:
         """
-        Check if position should exit based on stop loss or take profit.
+        Check if position should exit based on stop loss, take profit, or trailing stop.
         
         Args:
             position_id: Position identifier
@@ -458,11 +458,17 @@ class AdvancedPositionManager:
             side = position.get('side', 'long')
             stop_loss = position.get('stop_loss', 0)
             take_profit = position.get('take_profit', 0)
+            entry_price = position.get('entry_price', 0)
             
             # Check stop loss
             if side in ['long', 'buy']:
                 if stop_loss > 0 and current_price <= stop_loss:
-                    logger.warning(f"Stop loss hit for {position_id}")
+                    logger.warning(
+                        f"🛑 [STOP-LOSS-HIT] {position_id}\n"
+                        f"   Current Price: ${current_price:.2f}\n"
+                        f"   Stop Loss: ${stop_loss:.2f}\n"
+                        f"   Loss: {((current_price - entry_price) / entry_price * 100):+.2f}%"
+                    )
                     return {
                         'should_exit': True,
                         'exit_reason': 'stop_loss',
@@ -470,7 +476,12 @@ class AdvancedPositionManager:
                     }
             else:  # short
                 if stop_loss > 0 and current_price >= stop_loss:
-                    logger.warning(f"Stop loss hit for {position_id}")
+                    logger.warning(
+                        f"🛑 [STOP-LOSS-HIT] {position_id}\n"
+                        f"   Current Price: ${current_price:.2f}\n"
+                        f"   Stop Loss: ${stop_loss:.2f}\n"
+                        f"   Loss: {((entry_price - current_price) / entry_price * 100):+.2f}%"
+                    )
                     return {
                         'should_exit': True,
                         'exit_reason': 'stop_loss',
@@ -480,7 +491,12 @@ class AdvancedPositionManager:
             # Check take profit
             if side in ['long', 'buy']:
                 if take_profit > 0 and current_price >= take_profit:
-                    logger.info(f"Take profit hit for {position_id}")
+                    logger.info(
+                        f"🎯 [TAKE-PROFIT-HIT] {position_id}\n"
+                        f"   Current Price: ${current_price:.2f}\n"
+                        f"   Take Profit: ${take_profit:.2f}\n"
+                        f"   Profit: {((current_price - entry_price) / entry_price * 100):+.2f}%"
+                    )
                     return {
                         'should_exit': True,
                         'exit_reason': 'take_profit',
@@ -488,12 +504,65 @@ class AdvancedPositionManager:
                     }
             else:  # short
                 if take_profit > 0 and current_price <= take_profit:
-                    logger.info(f"Take profit hit for {position_id}")
+                    logger.info(
+                        f"🎯 [TAKE-PROFIT-HIT] {position_id}\n"
+                        f"   Current Price: ${current_price:.2f}\n"
+                        f"   Take Profit: ${take_profit:.2f}\n"
+                        f"   Profit: {((entry_price - current_price) / entry_price * 100):+.2f}%"
+                    )
                     return {
                         'should_exit': True,
                         'exit_reason': 'take_profit',
                         'exit_price': current_price
                     }
+            
+            # Check trailing stop (if enabled)
+            if position.get('trailing_stop_enabled', False):
+                trailing_distance = position.get('trailing_stop_distance', 0.02)  # 2% default
+                highest_price = position.get('highest_price', entry_price)
+                
+                # Update highest price if current price is higher (for long positions)
+                if side in ['long', 'buy']:
+                    if current_price > highest_price:
+                        position['highest_price'] = current_price
+                        highest_price = current_price
+                    
+                    # Calculate trailing stop level
+                    trailing_stop_level = highest_price * (1 - trailing_distance)
+                    
+                    if current_price <= trailing_stop_level:
+                        logger.info(
+                            f"📉 [TRAILING-STOP-HIT] {position_id}\n"
+                            f"   Highest Price: ${highest_price:.2f}\n"
+                            f"   Current Price: ${current_price:.2f}\n"
+                            f"   Trailing Stop: ${trailing_stop_level:.2f}"
+                        )
+                        return {
+                            'should_exit': True,
+                            'exit_reason': 'trailing_stop',
+                            'exit_price': current_price
+                        }
+                else:  # short position
+                    # For short, track lowest price
+                    lowest_price = position.get('lowest_price', entry_price)
+                    if current_price < lowest_price:
+                        position['lowest_price'] = current_price
+                        lowest_price = current_price
+                    
+                    trailing_stop_level = lowest_price * (1 + trailing_distance)
+                    
+                    if current_price >= trailing_stop_level:
+                        logger.info(
+                            f"📈 [TRAILING-STOP-HIT] {position_id}\n"
+                            f"   Lowest Price: ${lowest_price:.2f}\n"
+                            f"   Current Price: ${current_price:.2f}\n"
+                            f"   Trailing Stop: ${trailing_stop_level:.2f}"
+                        )
+                        return {
+                            'should_exit': True,
+                            'exit_reason': 'trailing_stop',
+                            'exit_price': current_price
+                        }
             
             return {'should_exit': False, 'reason': 'No exit conditions met'}
         
