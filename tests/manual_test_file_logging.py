@@ -12,6 +12,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from core.logger import setup_logger
 from core.debug_logger import setup_debug_logger, DebugLogger
 
+# Log file patterns
+LOG_FILE_PATTERN = 'logs/bearish_alpha_bot_*.log'
+DEBUG_LOG_FILE_PATTERN = 'logs/bearish_alpha_bot_debug_*.log'
+
 def test_basic_logger():
     """Test basic logger setup."""
     print("="*70)
@@ -27,7 +31,7 @@ def test_basic_logger():
     logger.error("This is an ERROR message")
     
     # Find log file
-    log_files = glob.glob('logs/bearish_alpha_bot_*.log')
+    log_files = glob.glob(LOG_FILE_PATTERN)
     if log_files:
         latest = max(log_files, key=os.path.getctime)
         size = os.path.getsize(latest)
@@ -64,7 +68,7 @@ def test_debug_logger():
     debug_logger.info("Info message in debug mode")
     
     # Find debug log file
-    log_files = glob.glob('logs/bearish_alpha_bot_debug_*.log')
+    log_files = glob.glob(DEBUG_LOG_FILE_PATTERN)
     if log_files:
         latest = max(log_files, key=os.path.getctime)
         size = os.path.getsize(latest)
