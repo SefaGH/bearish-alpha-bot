@@ -14,16 +14,34 @@ Bu bot ChatGPT ile oluşturulmuş, ancak önemli hatalar ve eksiklikler tespit e
 
 **📖 Detaylı değişiklikler için:** [docs/IYILESTIRMELER.md](docs/IYILESTIRMELER.md)
 
+### 🆕 Phase 2: Multi-Symbol Trading & Signal Acceptance Enhancement (2025-10-20)
+
+Phase 2 introduces major improvements to signal generation and multi-symbol support:
+
+- ✅ **Optimized Duplicate Prevention**: Reduced thresholds (0.05%, 20s) for >70% signal acceptance
+- ✅ **Multi-Symbol Trading**: BTC, ETH, SOL with symbol-specific RSI thresholds
+- ✅ **Enhanced Debug Logging**: Comprehensive [STR-DEBUG] format for all symbols
+- ✅ **Symbol Independence**: Each symbol has independent duplicate prevention tracking
+- ✅ **Price Delta Bypass**: Signals bypass cooldown when price moves >0.05%
+
+**📖 Complete Phase 2 Documentation:** [docs/PHASE2_MULTI_SYMBOL_TRADING.md](docs/PHASE2_MULTI_SYMBOL_TRADING.md)
+
 ## Özellikler
 - **Çoklu borsa**: BingX, Binance, KuCoin Futures, Bitget (CCXT)
 - **Sinyaller**:
   - Oversold Bounce (30m)
   - Short The Rip (30m + 1h bağlam)
+  - **🆕 Symbol-Specific Thresholds**: BTC/ETH/SOL with custom RSI levels
 - **Rejim filtresi** (4h bearish) – test amaçlı kapatılıp açılabilir
 - **Telegram bildirimi**
 - **CSV çıktı** (artefact)
 - **Backtest & Param tarama**: OB ve STR için Actions ile tek tık
 - **Nightly raporlama**: OB+STR sweep + Markdown rapor + (opsiyonel) Telegram özet
+- **🆕 Multi-Symbol Trading**: Trade BTC, ETH, SOL simultaneously with optimized signal acceptance
+  - Symbol-independent duplicate prevention
+  - Strategy-independent tracking
+  - Price delta bypass (0.05% threshold)
+  - 📊 [Phase 2 Documentation](docs/PHASE2_MULTI_SYMBOL_TRADING.md)
 - **🆕 Monitoring & Alerting**: Real-time web dashboard, multi-channel alerts, performance analytics
   - Web-based dashboard with live WebSocket updates
   - Advanced alert management (Telegram, Discord, Webhook)
