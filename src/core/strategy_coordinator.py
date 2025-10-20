@@ -78,11 +78,12 @@ class StrategyCoordinator:
         Validate signal for duplicates using cooldown and price movement checks.
         Phase 3.4 - Issue #104: Fixed Cooldown Logic
         Phase 3.4 - Issue #118: Enhanced with Price Delta Bypass
+        Issue #129: Support new signals.duplicate_prevention config with optimized defaults
         
         Uses combined key "symbol:strategy" to allow:
         - BTC+strategy1 → ETH+strategy1 ✅
         - BTC+strategy1 → BTC+strategy2 ✅
-        - BTC+strategy1 → BTC+strategy1 ❌ (60s cooldown, unless price moved >0.15%)
+        - BTC+strategy1 → BTC+strategy1 ❌ (cooldown, unless price moved > threshold)
         
         Args:
             signal: Trading signal dictionary
@@ -95,20 +96,29 @@ class StrategyCoordinator:
         
         # Step 1: Check if duplicate prevention enabled
         config = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
+        
+        # Try new config location first (signals.duplicate_prevention), fallback to old location
+        signals_config = config.get('signals', {}).get('duplicate_prevention', {})
         monitoring_config = config.get('monitoring', {}).get('duplicate_prevention', {})
         
-        enabled = monitoring_config.get('enabled', True)
+        # Prefer signals config if it exists, otherwise use monitoring config
+        if signals_config:
+            enabled = signals_config.get('enabled', True)
+            cooldown = float(signals_config.get('cooldown_seconds', 20))
+            price_delta_bypass_threshold = float(signals_config.get('min_price_change_pct', 0.05)) / 100  # Convert % to decimal
+            price_delta_bypass_enabled = True  # Always enabled in new config
+        else:
+            enabled = monitoring_config.get('enabled', True)
+            cooldown = float(monitoring_config.get('same_symbol_cooldown', 60))
+            price_delta_bypass_enabled = monitoring_config.get('price_delta_bypass_enabled', True)
+            price_delta_bypass_threshold = float(monitoring_config.get('price_delta_bypass_threshold', 0.0015))
+        
         if not enabled:
             return True, "OK"
         
         symbol = signal.get('symbol')
         entry_price = signal.get('entry', 0)
         current_time = time.time()
-        
-        # Configuration values
-        cooldown = float(monitoring_config.get('same_symbol_cooldown', 60))
-        price_delta_bypass_enabled = monitoring_config.get('price_delta_bypass_enabled', True)
-        price_delta_bypass_threshold = float(monitoring_config.get('price_delta_bypass_threshold', 0.0015))
         
         # Create combined key: "symbol:strategy"
         signal_key = f"{symbol}:{strategy_name}"

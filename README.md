@@ -30,6 +30,46 @@ Bu bot ChatGPT ile oluşturulmuş, ancak önemli hatalar ve eksiklikler tespit e
   - Performance metrics (Sharpe ratio, win rate, drawdown, etc.)
   - 📊 [Monitoring System Documentation](docs/MONITORING_SYSTEM.md)
 
+## ⚙️ Duplicate Prevention Configuration
+
+The bot includes intelligent duplicate signal prevention to avoid spam trades while remaining responsive to market movements. 
+
+### Configuration (config/config.example.yaml)
+
+```yaml
+signals:
+  duplicate_prevention:
+    min_price_change_pct: 0.05  # Accept signals when price moves ≥0.05% (more sensitive)
+    cooldown_seconds: 20        # Minimum 20s between signals for same symbol+strategy
+```
+
+### How It Works
+
+The duplicate prevention system uses a **combined key approach** (`symbol:strategy`) that:
+
+✅ **Allows**: Different strategies on same symbol (BTC+strategy1 → BTC+strategy2)  
+✅ **Allows**: Same strategy on different symbols (BTC+strategy1 → ETH+strategy1)  
+❌ **Blocks**: Repeated signals for same symbol+strategy within cooldown period
+
+**Price-Based Bypass**: If price moves ≥ threshold (0.05%), the cooldown is bypassed automatically.
+
+### Tuning Recommendations
+
+| Trading Style | `min_price_change_pct` | `cooldown_seconds` | Description |
+|--------------|----------------------|-------------------|-------------|
+| **Scalping** (current) | 0.05 | 20 | Fast reaction, catches small moves |
+| **Conservative** | 0.15 | 30 | Less noise, only significant moves |
+| **Aggressive** | 0.03 | 15 | Maximum sensitivity, more signals |
+
+**Current Setting (Issue #129)**: Optimized for better signal acceptance (70%+ acceptance rate) while preventing spam trades.
+
+### Monitoring
+
+Check duplicate prevention statistics in logs:
+- Signal acceptance rate
+- Bypass events (when price movement triggers bypass)
+- Rejection reasons (cooldown vs. insufficient price delta)
+
 ## Hızlı Başlangıç (sadece GitHub)
 1. **Secrets ayarla** (Repo → Settings → Secrets and variables → Actions)
    - `EXCHANGES`: örn. `bingx,binance,kucoinfutures`
