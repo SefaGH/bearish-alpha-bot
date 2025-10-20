@@ -1,24 +1,45 @@
+# ==============================================================================
+# BEARISH ALPHA BOT - Configuration File
+# ==============================================================================
+# This file serves as a template and fallback for environment variables.
+# 
+# Priority Order:
+# 1. Environment Variables (GitHub Secrets/Variables) - HIGHEST
+# 2. This file (config.example.yaml) - MIDDLE  
+# 3. Hardcoded defaults in live_trading_config.py - LOWEST
+#
+# For production deployment, override these values using GitHub Variables:
+# Repository → Settings → Secrets and variables → Actions → Variables
+# ==============================================================================
+
+# ==============================================================================
+# EXECUTION SETTINGS
+# ==============================================================================
 execution:
-  enable_live: true  # LIVE MODE AKTİF
-  order_type: market
-  time_in_force: IOC
-  fee_pct: 0.0006
-  max_slippage_pct: 0.001
+  enable_live: true              # Enable live trading (can override with ENABLE_LIVE_TRADING env var)
+  order_type: market             # Order type: market, limit (override with ORDER_TYPE)
+  time_in_force: IOC             # Time in force: IOC, GTC, FOK (override with TIME_IN_FORCE)
+  fee_pct: 0.0006                # Trading fee percentage (override with FEE_PCT)
+  max_slippage_pct: 0.001        # Maximum slippage tolerance (override with MAX_SLIPPAGE_PCT)
   leverage:
-    default: 5
-    overrides: {}
+    default: 5                   # Default leverage (override with LEVERAGE_DEFAULT)
+    overrides: {}                # Symbol-specific leverage overrides
 
+# ==============================================================================
+# RISK MANAGEMENT
+# ==============================================================================
 risk:
-  equity_usd: 100  # 100 USDT capital
-  per_trade_risk_pct: 0.01  # %1 risk per trade
-  daily_loss_limit_pct: 0.02
-  risk_usd_cap: 5  # Max 5 USDT risk
-  max_notional_per_trade: 20
-  min_stop_pct: 0.003
-  min_amount_behavior: skip
-  min_notional_behavior: skip
-  daily_max_trades: 5  # Günlük max 5 işlem
+  equity_usd: 100                     # Total capital in USDT (override with CAPITAL_USDT)
+  per_trade_risk_pct: 0.01            # Risk per trade: 1% (override with PER_TRADE_RISK_PCT)
+  daily_loss_limit_pct: 0.02          # Daily loss limit: 2% (override with DAILY_LOSS_LIMIT_PCT)
+  risk_usd_cap: 5                     # Max risk per trade in USDT (override with RISK_USD_CAP)
+  max_notional_per_trade: 20          # Max position size in USDT (override with MAX_NOTIONAL_PER_TRADE)
+  min_stop_pct: 0.003                 # Minimum stop loss: 0.3% (override with MIN_STOP_PCT)
+  min_amount_behavior: skip           # Behavior for minimum amount violations
+  min_notional_behavior: skip         # Behavior for minimum notional violations
+  daily_max_trades: 5                 # Maximum trades per day (override with DAILY_MAX_TRADES)
 
+# Asset class-specific risk limits (optional, not commonly overridden)
 class_limits:
   meme:
     max_notional_per_trade: 10
@@ -30,171 +51,320 @@ class_limits:
     max_notional_per_trade: 25
     risk_usd_cap: 1.0
 
+# ==============================================================================
+# NOTIFICATIONS
+# ==============================================================================
 notify:
-  send_all: true
-  push_no_signal: true
-  push_debug: true         # 🧪 near-miss debug aktif
-  min_cooldown_sec: 300
-  push_trail_updates: false
+  send_all: true                      # Send all notifications
+  push_no_signal: true                # Notify when no signals generated
+  push_debug: true                    # Send debug notifications
+  min_cooldown_sec: 300               # Minimum time between notifications
+  push_trail_updates: false           # Notify on trailing stop updates
 
+# ==============================================================================
+# MARKET REGIME
+# ==============================================================================
 regime:
-  min_slow_candles: 90     # daha az eleme
+  min_slow_candles: 90                # Minimum candles for regime analysis
 
-# WebSocket Optimization Settings
+# ==============================================================================
+# WEBSOCKET OPTIMIZATION
+# ==============================================================================
 websocket:
-  enabled: true
-  priority_enabled: true  # Enable WebSocket priority for data fetching
-  max_data_age: 60  # Maximum age in seconds for WebSocket data to be considered fresh
-  fallback_threshold: 3  # Number of consecutive failures before fallback to REST
-  max_streams_per_exchange: 
-    bingx: 6        # BingX için max 10 stream (conservative)
-    binance: 20      # Binance daha fazla destekler
-    kucoinfutures: 15
-    default: 10      # Diğerleri için
+  enabled: true                       # Enable WebSocket (override with WEBSOCKET_ENABLED)
+  priority_enabled: true              # Enable WebSocket priority (override with WEBSOCKET_PRIORITY_ENABLED)
+  max_data_age: 60                    # Max data age in seconds (override with WEBSOCKET_MAX_DATA_AGE)
+  fallback_threshold: 3               # Failures before REST fallback (override with WEBSOCKET_FALLBACK_THRESHOLD)
+  
+  # Maximum streams per exchange (override with WS_MAX_STREAMS_*)
+  max_streams_per_exchange:
+    bingx: 6                          # BingX max streams (conservative) - WS_MAX_STREAMS_BINGX
+    binance: 20                       # Binance supports more - WS_MAX_STREAMS_BINANCE
+    kucoinfutures: 15                 # KuCoin Futures - WS_MAX_STREAMS_KUCOIN
+    default: 10                       # Default for other exchanges - WS_MAX_STREAMS_DEFAULT
   
   stream_timeframes:
-    - 1m             # Sadece gerekli timeframe'ler
+    - 1m                              # Only essential timeframes (override with WS_STREAM_TIMEFRAMES)
   
-  reconnect_delay: 5  # Saniye
-  max_reconnect_attempts: 3
+  reconnect_delay: 5                  # Reconnection delay in seconds (override with WS_RECONNECT_DELAY)
+  max_reconnect_attempts: 3           # Max reconnection attempts (override with WS_MAX_RECONNECT_ATTEMPTS)
 
-# Universe Settings (KRITIK!)
+# ==============================================================================
+# TRADING UNIVERSE
+# ==============================================================================
 universe:
-  # Sabit sembol listesi - SADECE BUNLAR KULLANILACAK
+  # Fixed symbol list - ONLY THESE WILL BE TRADED
+  # Override with TRADING_SYMBOLS environment variable (comma-separated)
   fixed_symbols:
-    # 5 sembol × 2 timeframe = 10 stream (tam limit!)
-    - BTC/USDT:USDT
-    - ETH/USDT:USDT
-    - SOL/USDT:USDT
-    # Yedekler kaldırıldı
+    - BTC/USDT:USDT                   # Bitcoin
+    - ETH/USDT:USDT                   # Ethereum  
+    - SOL/USDT:USDT                   # Solana
   
-  # AUTO SELECT KAPALI!
-  auto_select: false  # ← KRİTİK: FALSE OLMALI!
+  # Auto-select MUST be false for fixed symbols
+  auto_select: false                  # Override with UNIVERSE_AUTO_SELECT (should be false)
   
-  # WebSocket için öncelik sırası (opsiyonel)
+  # Priority order for WebSocket subscriptions
+  # Override with TRADING_SYMBOLS_PRIORITY (comma-separated)
   priority_order:
-    - BTC/USDT:USDT  # En önemli
+    - BTC/USDT:USDT                   # Highest priority
     - ETH/USDT:USDT
     - SOL/USDT:USDT
   
-  # Eski parametreler (auto_select=false ise kullanılmaz)
+  # Legacy parameters (not used when auto_select=false)
   min_quote_volume_usdt: 1000000
   prefer_perps: true
   max_symbols_per_exchange: 80
   top_n_per_exchange: 15
   only_linear: true
 
+# ==============================================================================
+# TECHNICAL INDICATORS
+# ==============================================================================
 indicators:
-  rsi_period: 14
-  atr_period: 14
-  ema_fast: 21
-  ema_mid: 50
-  ema_slow: 200  # Restored to 200 with bulk fetch implementation
+  rsi_period: 14                      # RSI period (override with INDICATOR_RSI_PERIOD)
+  atr_period: 14                      # ATR period (override with INDICATOR_ATR_PERIOD)
+  ema_fast: 21                        # Fast EMA period (override with INDICATOR_EMA_FAST)
+  ema_mid: 50                         # Mid EMA period (override with INDICATOR_EMA_MID)
+  ema_slow: 200                       # Slow EMA period (override with INDICATOR_EMA_SLOW)
 
-# Adaptive strategies kontrolü
+# ==============================================================================
+# ADAPTIVE STRATEGIES CONTROL
+# ==============================================================================
 adaptive_strategies:
-  enable: true
+  enable: true                        # Enable adaptive strategy features
   
-  # Monitoring (YENİ)
+  # Monitoring configuration
   monitoring:
     enabled: true
-    report_interval: 300
+    report_interval: 300              # Report every 5 minutes
     track_performance: true
   
-  # Performance tuning (YENİ)
+  # Performance tuning
   performance:
-    min_volatility_for_adjustment: 0.02  # %2 volatilite
+    min_volatility_for_adjustment: 0.02    # 2% volatility threshold
     max_position_multiplier: 2.0
     min_position_multiplier: 0.5
 
+# ==============================================================================
+# SIGNAL GENERATION & DUPLICATE PREVENTION
+# ==============================================================================
 signals:
-  # Duplicate Prevention Configuration (Issue #129)
+  # ============================================================================
+  # DUPLICATE PREVENTION (CRITICAL - Issue #129, #130)
+  # ============================================================================
   # Controls how aggressively signals are filtered to prevent duplicates
+  # Override with environment variables for production tuning:
+  #   DUPLICATE_PREVENTION_THRESHOLD - min_price_change_pct
+  #   DUPLICATE_PREVENTION_COOLDOWN - cooldown_seconds
+  #   PRICE_DELTA_BYPASS_THRESHOLD - price_delta_bypass_threshold
+  #   PRICE_DELTA_BYPASS_ENABLED - price_delta_bypass_enabled
+  # ============================================================================
   duplicate_prevention:
-    min_price_change_pct: 0.05  # Minimum price change (%) to accept new signal (reduced from 0.15 for better sensitivity)
-    cooldown_seconds: 20        # Cooldown period (s) between signals for same symbol+strategy (reduced from 30 for faster reaction)
+    min_price_change_pct: 0.05        # 5% min price change to accept signal (was 0.15%)
+    cooldown_seconds: 20              # 20s cooldown between signals (was 30s)
+    price_delta_bypass_threshold: 0.0015   # 0.15% bypass threshold
+    price_delta_bypass_enabled: true  # Enable bypass feature
   
+  # ============================================================================
+  # OVERSOLD BOUNCE STRATEGY (LONG)
+  # ============================================================================
+  # Override with environment variables:
+  #   STRATEGY_OB_ENABLED - enable
+  #   STRATEGY_OB_IGNORE_REGIME - ignore_regime
+  #   RSI_BASE_OB - adaptive_rsi_base
+  #   RSI_RANGE_OB - adaptive_rsi_range
+  #   ... (see live_trading_config.py for full list)
+  # ============================================================================
   oversold_bounce:
-    enable: true
-    ignore_regime: true  # Adaptive'de regime dikkate alınıyor
+    enable: true                      # Enable strategy
+    ignore_regime: true               # Ignore market regime (adaptive handles it)
     
-    # Base parameters (geriye uyumluluk)
-    rsi_max: 45
+    # Base parameters (backward compatibility)
+    rsi_max: 45                       # Maximum RSI for entry
     
     # Adaptive parameters
-    adaptive_rsi_base: 45
-    adaptive_rsi_range: 10
+    adaptive_rsi_base: 45             # Base RSI threshold
+    adaptive_rsi_range: 10            # Adjustment range (±10)
     
-    # YENİ: Adaptive fine-tuning
-    adaptive_mode: "dynamic"  # "dynamic" | "conservative" | "aggressive"
-    volatility_sensitivity: "medium"  # "low" | "medium" | "high"
+    # Adaptive fine-tuning
+    adaptive_mode: "dynamic"          # Options: dynamic, conservative, aggressive
+    volatility_sensitivity: "medium"  # Options: low, medium, high
     
     # ATR-based TP/SL (Phase 3.4 - Issue #102)
-    tp_atr_mult: 2.5        # TP = entry + (ATR × 2.5)
-    sl_atr_mult: 1.2        # SL = entry - (ATR × 1.2)
-    min_tp_pct: 0.008       # Minimum 0.8% TP
-    max_sl_pct: 0.015       # Maximum 1.5% SL
+    tp_atr_mult: 2.5                  # TP = entry + (ATR × 2.5)
+    sl_atr_mult: 1.2                  # SL = entry - (ATR × 1.2)
+    min_tp_pct: 0.008                 # Minimum 0.8% TP
+    max_sl_pct: 0.015                 # Maximum 1.5% SL
 
+  # ============================================================================
+  # SHORT THE RIP STRATEGY (SHORT)
+  # ============================================================================
+  # Override with environment variables:
+  #   STRATEGY_STR_ENABLED - enable
+  #   STRATEGY_STR_IGNORE_REGIME - ignore_regime
+  #   RSI_BASE_STR - adaptive_rsi_base
+  #   RSI_RANGE_STR - adaptive_rsi_range
+  #   RSI_THRESHOLD_BTC - BTC symbol-specific threshold
+  #   RSI_THRESHOLD_ETH - ETH symbol-specific threshold
+  #   RSI_THRESHOLD_SOL - SOL symbol-specific threshold
+  # ============================================================================
   short_the_rip:
-    enable: true
-    ignore_regime: true
+    enable: true                      # Enable strategy
+    ignore_regime: true               # Ignore market regime
     
-    # Base parameters
-    rsi_min: 55
+    # Base parameters (backward compatibility)
+    rsi_min: 55                       # Minimum RSI for entry
     
     # Adaptive parameters  
-    adaptive_rsi_base: 55
-    adaptive_rsi_range: 10
+    adaptive_rsi_base: 55             # Base RSI threshold
+    adaptive_rsi_range: 10            # Adjustment range (±10)
     
-    # YENİ: Adaptive fine-tuning
-    adaptive_mode: "dynamic"
-    volatility_sensitivity: "medium"
+    # Adaptive fine-tuning
+    adaptive_mode: "dynamic"          # Options: dynamic, conservative, aggressive
+    volatility_sensitivity: "medium"  # Options: low, medium, high
     
     # ATR-based TP/SL (Phase 3.4 - Issue #102)
-    tp_atr_mult: 3.0        # TP = entry - (ATR × 3.0) for shorts
-    sl_atr_mult: 1.5        # SL = entry + (ATR × 1.5) for shorts
-    min_tp_pct: 0.010       # Minimum 1.0% TP
-    max_sl_pct: 0.020       # Maximum 2.0% SL
+    tp_atr_mult: 3.0                  # TP = entry - (ATR × 3.0) for shorts
+    sl_atr_mult: 1.5                  # SL = entry + (ATR × 1.5) for shorts
+    min_tp_pct: 0.010                 # Minimum 1.0% TP
+    max_sl_pct: 0.020                 # Maximum 2.0% SL
     
-    # Symbol-specific RSI threshold overrides (Issue #131)
+    # Symbol-specific RSI threshold overrides (Issue #131, #133)
     # Allows different RSI thresholds per symbol for better signal generation
-    # Format: "SYMBOL": { "rsi_threshold": value }
+    # Override with RSI_THRESHOLD_* environment variables
     symbols:
       "BTC/USDT:USDT":
-        rsi_threshold: 55  # BTC: More selective (higher threshold for shorts)
+        rsi_threshold: 55             # BTC: More selective (higher threshold)
       "ETH/USDT:USDT":
-        rsi_threshold: 50  # ETH: More sensitive (lower threshold)
+        rsi_threshold: 50             # ETH: More sensitive (lower threshold)
       "SOL/USDT:USDT":
-        rsi_threshold: 50  # SOL: More sensitive (lower threshold)
+        rsi_threshold: 50             # SOL: More sensitive (lower threshold)
 
-# Phase 3.4 Monitoring & Duplicate Prevention (Issue #103, Enhanced #118)
+# ==============================================================================
+# MONITORING & DUPLICATE PREVENTION (Phase 3.4 - Issues #103, #118)
+# ==============================================================================
+# NOTE: This section is for backward compatibility.
+# New code should use signals.duplicate_prevention above.
+# ==============================================================================
 monitoring:
   duplicate_prevention:
-    enabled: true
-    same_symbol_cooldown: 60         # 60 seconds cooldown for same symbol+strategy
+    enabled: true                     # Enable duplicate prevention
+    same_symbol_cooldown: 60          # Cooldown for same symbol+strategy (60s)
     
     # Price Delta Bypass Configuration (Issue #118)
-    # Allows signals to bypass cooldown when price movement is significant
-    price_delta_bypass_threshold: 0.0015  # 0.15% price change bypasses cooldown
-    price_delta_bypass_enabled: true      # Enable/disable bypass feature
+    price_delta_bypass_threshold: 0.0015    # 0.15% price change bypasses cooldown
+    price_delta_bypass_enabled: true        # Enable bypass feature
     
     # Future Enhancement Placeholders (not yet implemented)
-    cooldown_volatility_multiplier: 1.5   # Future: adjust cooldown based on volatility
-    cooldown_min: 30                      # Future: minimum cooldown period in seconds
-    cooldown_max: 180                     # Future: maximum cooldown period in seconds
+    cooldown_volatility_multiplier: 1.5     # Adjust cooldown based on volatility
+    cooldown_min: 30                        # Minimum cooldown period
+    cooldown_max: 180                       # Maximum cooldown period
     
-    # Legacy (kept for backward compatibility)
-    min_price_change: 0.002          # 0.2% minimum price movement
+    # Legacy (backward compatibility)
+    min_price_change: 0.002                 # 0.2% minimum price movement
 
-# Phase 3.4 Position Exit Management (Issue #100)
+# ==============================================================================
+# POSITION EXIT MANAGEMENT (Phase 3.4 - Issue #100)
+# ==============================================================================
 position_management:
   exit_monitoring:
-    enabled: true
-    check_frequency: 5               # Check exits every 5 seconds
+    enabled: true                     # Enable exit monitoring
+    check_frequency: 5                # Check exits every 5 seconds
+  
   time_based_exit:
-    max_position_duration: 3600      # Maximum position duration in seconds (3600 = 1 hour)
+    max_position_duration: 3600       # Max position duration: 1 hour (3600s)
 
+# ==============================================================================
+# QUARANTINE SYSTEM
+# ==============================================================================
 quarantine:
-  enable: true
-  days: 7
-  file: data/quarantine.json  
+  enable: true                        # Enable quarantine for problematic symbols
+  days: 7                             # Quarantine duration in days
+  file: data/quarantine.json          # Quarantine data file path
+
+# ==============================================================================
+# ENVIRONMENT VARIABLE REFERENCE
+# ==============================================================================
+# Below is a complete list of environment variables that override this config.
+# Set these in GitHub Repository → Settings → Secrets and variables → Actions
+#
+# CRITICAL TRADING PARAMETERS:
+#   DUPLICATE_PREVENTION_THRESHOLD=0.05
+#   DUPLICATE_PREVENTION_COOLDOWN=20
+#   PRICE_DELTA_BYPASS_THRESHOLD=0.0015
+#   PRICE_DELTA_BYPASS_ENABLED=true
+#
+# TRADING SYMBOLS:
+#   TRADING_SYMBOLS=BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT
+#   TRADING_SYMBOLS_PRIORITY=BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT
+#
+# SYMBOL-SPECIFIC RSI:
+#   RSI_THRESHOLD_BTC=55
+#   RSI_THRESHOLD_ETH=50
+#   RSI_THRESHOLD_SOL=50
+#
+# RISK MANAGEMENT:
+#   CAPITAL_USDT=100
+#   PER_TRADE_RISK_PCT=0.01
+#   DAILY_LOSS_LIMIT_PCT=0.02
+#   RISK_USD_CAP=5
+#   MAX_NOTIONAL_PER_TRADE=20
+#   MIN_STOP_PCT=0.003
+#   DAILY_MAX_TRADES=5
+#
+# STRATEGY SETTINGS:
+#   STRATEGY_OB_ENABLED=true
+#   STRATEGY_OB_IGNORE_REGIME=true
+#   RSI_BASE_OB=45
+#   RSI_RANGE_OB=10
+#   TP_ATR_MULT_OB=2.5
+#   SL_ATR_MULT_OB=1.2
+#   MIN_TP_PCT_OB=0.008
+#   MAX_SL_PCT_OB=0.015
+#
+#   STRATEGY_STR_ENABLED=true
+#   STRATEGY_STR_IGNORE_REGIME=true
+#   RSI_BASE_STR=55
+#   RSI_RANGE_STR=10
+#   TP_ATR_MULT_STR=3.0
+#   SL_ATR_MULT_STR=1.5
+#   MIN_TP_PCT_STR=0.010
+#   MAX_SL_PCT_STR=0.020
+#
+# WEBSOCKET:
+#   WEBSOCKET_ENABLED=true
+#   WEBSOCKET_PRIORITY_ENABLED=true
+#   WEBSOCKET_MAX_DATA_AGE=60
+#   WEBSOCKET_FALLBACK_THRESHOLD=3
+#   WS_MAX_STREAMS_BINGX=6
+#   WS_MAX_STREAMS_BINANCE=20
+#   WS_MAX_STREAMS_KUCOIN=15
+#   WS_MAX_STREAMS_DEFAULT=10
+#   WS_STREAM_TIMEFRAMES=1m
+#   WS_RECONNECT_DELAY=5
+#   WS_MAX_RECONNECT_ATTEMPTS=3
+#
+# EXECUTION:
+#   ENABLE_LIVE_TRADING=true
+#   ORDER_TYPE=market
+#   TIME_IN_FORCE=IOC
+#   FEE_PCT=0.0006
+#   MAX_SLIPPAGE_PCT=0.001
+#   LEVERAGE_DEFAULT=5
+#
+# INDICATORS:
+#   INDICATOR_RSI_PERIOD=14
+#   INDICATOR_ATR_PERIOD=14
+#   INDICATOR_EMA_FAST=21
+#   INDICATOR_EMA_MID=50
+#   INDICATOR_EMA_SLOW=200
+#
+# ADAPTIVE MODES:
+#   ADAPTIVE_MODE_OB=dynamic
+#   VOLATILITY_SENSITIVITY_OB=medium
+#   ADAPTIVE_MODE_STR=dynamic
+#   VOLATILITY_SENSITIVITY_STR=medium
+#
+# OTHER:
+#   UNIVERSE_AUTO_SELECT=false
+# ==============================================================================
