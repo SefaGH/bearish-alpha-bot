@@ -108,6 +108,12 @@ adaptive_strategies:
     min_position_multiplier: 0.5
 
 signals:
+  # Duplicate Prevention Configuration (Issue #129)
+  # Controls how aggressively signals are filtered to prevent duplicates
+  duplicate_prevention:
+    min_price_change_pct: 0.05  # Minimum price change (%) to accept new signal (reduced from 0.15 for better sensitivity)
+    cooldown_seconds: 20        # Cooldown period (s) between signals for same symbol+strategy (reduced from 30 for faster reaction)
+  
   oversold_bounce:
     enable: true
     ignore_regime: true  # Adaptive'de regime dikkate alınıyor
