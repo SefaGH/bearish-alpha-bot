@@ -708,6 +708,7 @@ class AdvancedPositionManager:
         """
         Get comprehensive exit statistics for closed positions.
         Issue #134: Validate exit logic with session summaries.
+        Issue #136: Fix KeyError by always including all exit stat keys.
         
         Returns:
             Dictionary with exit statistics including counts by type and win/loss breakdown
@@ -716,10 +717,17 @@ class AdvancedPositionManager:
             return {
                 'total_exits': 0,
                 'exits_by_reason': {},
+                'stop_loss_count': 0,
+                'take_profit_count': 0,
+                'trailing_stop_count': 0,
+                'manual_close_count': 0,
+                'liquidation_count': 0,
                 'winning_trades': 0,
                 'losing_trades': 0,
                 'win_rate': 0.0,
                 'total_pnl': 0.0,
+                'total_win_pnl': 0.0,
+                'total_loss_pnl': 0.0,
                 'avg_win': 0.0,
                 'avg_loss': 0.0
             }
@@ -754,6 +762,8 @@ class AdvancedPositionManager:
             'stop_loss_count': exits_by_reason.get('stop_loss', 0),
             'take_profit_count': exits_by_reason.get('take_profit', 0),
             'trailing_stop_count': exits_by_reason.get('trailing_stop', 0),
+            'manual_close_count': exits_by_reason.get('manual', 0),
+            'liquidation_count': exits_by_reason.get('emergency', 0),
             'winning_trades': winning_trades,
             'losing_trades': losing_trades,
             'win_rate': win_rate,
@@ -768,33 +778,34 @@ class AdvancedPositionManager:
         """
         Log comprehensive exit summary for the session.
         Issue #134: Enhanced exit logging for validation.
+        Issue #136: Use safe dictionary access to prevent KeyError.
         """
         stats = self.get_exit_statistics()
         
         logger.info("\n" + "="*70)
         logger.info("📊 EXIT SUMMARY - Session Statistics")
         logger.info("="*70)
-        logger.info(f"Total Exits: {stats['total_exits']}")
+        logger.info(f"Total Exits: {stats.get('total_exits', 0)}")
         logger.info(f"\nExits by Reason:")
-        logger.info(f"  🛑 Stop Loss:     {stats['stop_loss_count']}")
-        logger.info(f"  🎯 Take Profit:   {stats['take_profit_count']}")
-        logger.info(f"  🚦 Trailing Stop: {stats['trailing_stop_count']}")
+        logger.info(f"  🛑 Stop Loss:     {stats.get('stop_loss_count', 0)}")
+        logger.info(f"  🎯 Take Profit:   {stats.get('take_profit_count', 0)}")
+        logger.info(f"  🚦 Trailing Stop: {stats.get('trailing_stop_count', 0)}")
         
-        for reason, count in stats['exits_by_reason'].items():
+        for reason, count in stats.get('exits_by_reason', {}).items():
             if reason not in ['stop_loss', 'take_profit', 'trailing_stop']:
                 logger.info(f"  🔄 {reason.replace('_', ' ').title()}: {count}")
         
         logger.info(f"\nWin/Loss Breakdown:")
-        logger.info(f"  ✅ Winning Trades: {stats['winning_trades']}")
-        logger.info(f"  ❌ Losing Trades:  {stats['losing_trades']}")
-        logger.info(f"  📈 Win Rate:       {stats['win_rate']:.2f}%")
+        logger.info(f"  ✅ Winning Trades: {stats.get('winning_trades', 0)}")
+        logger.info(f"  ❌ Losing Trades:  {stats.get('losing_trades', 0)}")
+        logger.info(f"  📈 Win Rate:       {stats.get('win_rate', 0.0):.2f}%")
         
         logger.info(f"\nP&L Summary:")
-        logger.info(f"  Total P&L:    ${stats['total_pnl']:+.2f}")
-        logger.info(f"  Total Wins:   ${stats['total_win_pnl']:+.2f}")
-        logger.info(f"  Total Losses: ${stats['total_loss_pnl']:+.2f}")
-        logger.info(f"  Avg Win:      ${stats['avg_win']:+.2f}")
-        logger.info(f"  Avg Loss:     ${stats['avg_loss']:+.2f}")
+        logger.info(f"  Total P&L:    ${stats.get('total_pnl', 0.0):+.2f}")
+        logger.info(f"  Total Wins:   ${stats.get('total_win_pnl', 0.0):+.2f}")
+        logger.info(f"  Total Losses: ${stats.get('total_loss_pnl', 0.0):+.2f}")
+        logger.info(f"  Avg Win:      ${stats.get('avg_win', 0.0):+.2f}")
+        logger.info(f"  Avg Loss:     ${stats.get('avg_loss', 0.0):+.2f}")
         logger.info("="*70 + "\n")
     
     async def start_exit_monitoring(self):
