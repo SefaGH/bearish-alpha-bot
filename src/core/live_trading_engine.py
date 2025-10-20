@@ -118,7 +118,7 @@ class LiveTradingEngine:
         self.tasks = []
         
         # Load configuration
-        self.config = LiveTradingConfiguration.get_all_configs()
+        self.config = LiveTradingConfiguration.load()
         
         # WebSocket integration configuration
         cfg = self.config
