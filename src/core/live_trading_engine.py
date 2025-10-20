@@ -725,24 +725,16 @@ class LiveTradingEngine:
                                             
                                             # Call strategy with appropriate parameters
                                             try:
+                                                # Build kwargs dynamically based on strategy requirements
+                                                kwargs = {}
                                                 if has_regime_param:
-                                                    # Adaptive strategy with regime awareness
-                                                    if has_df_1h_param and df_1h is not None:
-                                                        if has_symbol_param:
-                                                            signal = strategy.signal(df_30m, df_1h, regime_data, symbol=symbol)
-                                                        else:
-                                                            signal = strategy.signal(df_30m, df_1h, regime_data)
-                                                    else:
-                                                        if has_symbol_param:
-                                                            signal = strategy.signal(df_30m, regime_data, symbol=symbol)
-                                                        else:
-                                                            signal = strategy.signal(df_30m, regime_data)
-                                                else:
-                                                    # Base strategy without regime awareness
-                                                    if has_df_1h_param and df_1h is not None:
-                                                        signal = strategy.signal(df_30m, df_1h)
-                                                    else:
-                                                        signal = strategy.signal(df_30m)
+                                                    kwargs['regime_data'] = regime_data
+                                                if has_df_1h_param and df_1h is not None:
+                                                    kwargs['df_1h'] = df_1h
+                                                if has_symbol_param:
+                                                    kwargs['symbol'] = symbol
+                                                
+                                                signal = strategy.signal(df_30m, **kwargs)
                                             except TypeError as te:
                                                 # Fallback: try calling with just df_30m
                                                 logger.warning(f"Strategy {strategy_name} parameter mismatch: {te}")
