@@ -590,7 +590,14 @@ class ProductionCoordinator:
             
     async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
                                   continuous: bool = False):
-        """Main production trading loop."""
+        """
+        Main production trading loop.
+        
+        Args:
+            mode: Trading mode ('paper', 'live', 'simulation')
+            duration: Optional duration in seconds (None = run indefinitely)
+            continuous: If True, enable TRUE CONTINUOUS mode (never stops, auto-recovers)
+        """
         try:
             if not self.is_initialized:
                 raise RuntimeError("Production system not initialized. Call initialize_production_system() first.")
@@ -599,7 +606,9 @@ class ProductionCoordinator:
             logger.info("STARTING PRODUCTION TRADING LOOP")
             logger.info("="*70)
             
-            # ✅ DEBUG KODU BAŞLANGIÇ - Line 643
+            # ================================
+            # DEBUG KODU BAŞLANGIÇ
+            # ================================
             logger.info("🔍 [DEBUG] About to call start_live_trading()")
             logger.info(f"🔍 [DEBUG] Engine: {self.trading_engine}")
             logger.info(f"🔍 [DEBUG] Engine type: {type(self.trading_engine)}")
@@ -625,13 +634,17 @@ class ProductionCoordinator:
                 import traceback
                 logger.critical(traceback.format_exc())
                 raise
-            # ✅ DEBUG KODU BİTİŞ
+            # ================================
+            # DEBUG KODU BİTİŞ
+            # ================================
             
-            # Start live trading engine
-            start_result = await self.trading_engine.start_live_trading(mode=mode)
-            
+            # ✅ BU SATIR SADECE BİR KEZ OLMALI:
             if not start_result['success']:
                 raise RuntimeError(f"Failed to start trading engine: {start_result.get('reason')}")
+            
+            # ❌ BU SATIRI SİL (duplicate):
+            # if not start_result['success']:
+            #     raise RuntimeError(f"Failed to start trading engine: {start_result.get('reason')}")
             
             self.is_running = True
             
