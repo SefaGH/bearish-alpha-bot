@@ -721,15 +721,22 @@ class LiveTradingEngine:
                                             # Check for specific parameter names
                                             has_regime_param = 'regime_data' in params
                                             has_df_1h_param = 'df_1h' in params
+                                            has_symbol_param = 'symbol' in params
                                             
                                             # Call strategy with appropriate parameters
                                             try:
                                                 if has_regime_param:
                                                     # Adaptive strategy with regime awareness
                                                     if has_df_1h_param and df_1h is not None:
-                                                        signal = strategy.signal(df_30m, df_1h, regime_data)
+                                                        if has_symbol_param:
+                                                            signal = strategy.signal(df_30m, df_1h, regime_data, symbol=symbol)
+                                                        else:
+                                                            signal = strategy.signal(df_30m, df_1h, regime_data)
                                                     else:
-                                                        signal = strategy.signal(df_30m, regime_data)
+                                                        if has_symbol_param:
+                                                            signal = strategy.signal(df_30m, regime_data, symbol=symbol)
+                                                        else:
+                                                            signal = strategy.signal(df_30m, regime_data)
                                                 else:
                                                     # Base strategy without regime awareness
                                                     if has_df_1h_param and df_1h is not None:

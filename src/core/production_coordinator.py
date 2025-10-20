@@ -374,7 +374,7 @@ class ProductionCoordinator:
                             # Use cached regime_data support check
                             if capabilities.get('supports_regime_data', False):
                                 # Adaptive strategies take regime_data parameter
-                                strategy_signal = strategy_instance.signal(df_30m, df_1h, regime_data=metadata.get('regime'))
+                                strategy_signal = strategy_instance.signal(df_30m, df_1h, regime_data=metadata.get('regime'), symbol=symbol)
                             else:
                                 # Standard strategies
                                 strategy_signal = strategy_instance.signal(df_30m, df_1h)
@@ -409,7 +409,7 @@ class ProductionCoordinator:
                             ob = AdaptiveOversoldBounce(ob_config, self.market_regime_analyzer)
                             
                             # Adaptive strateji farklı parametre alıyor
-                            signal = ob.signal(df_30m, df_1h, regime_data=metadata.get('regime'))
+                            signal = ob.signal(df_30m, df_1h, regime_data=metadata.get('regime'), symbol=symbol)
                             
                             if signal:
                                 signal['strategy'] = 'adaptive_ob'
@@ -427,7 +427,7 @@ class ProductionCoordinator:
                             str_config = signals_config.get('short_the_rip', {})
                             strp = AdaptiveShortTheRip(str_config, self.market_regime_analyzer)
                             
-                            signal = strp.signal(df_30m, df_1h, regime_data=metadata.get('regime'))
+                            signal = strp.signal(df_30m, df_1h, regime_data=metadata.get('regime'), symbol=symbol)
                             
                             if signal:
                                 signal['strategy'] = 'adaptive_str'
