@@ -139,6 +139,6 @@ def setup_debug_logger(name: str = "bearish_alpha_bot", debug_mode: bool = False
         file_handler.setFormatter(formatter)
         log.addHandler(file_handler)
         
-        logger.info(f"Debug file logging enabled: {log_file}")
+        log.info(f"Debug file logging enabled: {log_file}")
     
     return log
