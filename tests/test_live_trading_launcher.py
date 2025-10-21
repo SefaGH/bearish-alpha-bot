@@ -156,5 +156,203 @@ class TestLauncherIntegration:
         assert exit_code == 0
 
 
+class TestWebSocketConnectionLogic:
+    """Test suite for WebSocket connection timeout and retry logic."""
+    
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {
+        'BINGX_KEY': 'test_key',
+        'BINGX_SECRET': 'test_secret'
+    })
+    async def test_wait_for_connection_success(self):
+        """Test _wait_for_websocket_connection returns True when connected."""
+        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher._load_environment()
+        
+        # Mock ws_optimizer with connection status
+        launcher.ws_optimizer = MagicMock()
+        launcher.ws_optimizer.get_connection_status.return_value = {
+            'connected': True,
+            'error': None,
+            'exchanges': {'bingx': {'connected': True}}
+        }
+        
+        # Should return True immediately
+        result = await launcher._wait_for_websocket_connection(timeout=5)
+        assert result == True
+    
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {
+        'BINGX_KEY': 'test_key',
+        'BINGX_SECRET': 'test_secret'
+    })
+    async def test_wait_for_connection_timeout(self):
+        """Test _wait_for_websocket_connection returns False on timeout."""
+        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher._load_environment()
+        
+        # Mock ws_optimizer with never-connecting status
+        launcher.ws_optimizer = MagicMock()
+        launcher.ws_optimizer.get_connection_status.return_value = {
+            'connected': False,
+            'error': None,
+            'exchanges': {}
+        }
+        
+        # Should timeout after 2 seconds
+        result = await launcher._wait_for_websocket_connection(timeout=2, check_interval=1)
+        assert result == False
+    
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {
+        'BINGX_KEY': 'test_key',
+        'BINGX_SECRET': 'test_secret'
+    })
+    async def test_wait_for_connection_with_error(self):
+        """Test _wait_for_websocket_connection returns False on error."""
+        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher._load_environment()
+        
+        # Mock ws_optimizer with error status
+        launcher.ws_optimizer = MagicMock()
+        launcher.ws_optimizer.get_connection_status.return_value = {
+            'connected': False,
+            'error': 'Connection refused',
+            'exchanges': {}
+        }
+        
+        # Should return False immediately due to error
+        result = await launcher._wait_for_websocket_connection(timeout=5)
+        assert result == False
+    
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {
+        'BINGX_KEY': 'test_key',
+        'BINGX_SECRET': 'test_secret'
+    })
+    async def test_establish_connection_success_first_attempt(self):
+        """Test _establish_websocket_connection succeeds on first attempt."""
+        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher._load_environment()
+        
+        # Mock ws_optimizer
+        launcher.ws_optimizer = MagicMock()
+        launcher.ws_optimizer.is_initialized = True
+        launcher.ws_optimizer._connection_status = {'connecting': False, 'error': None}
+        launcher.ws_optimizer.initialize_websockets = asyncio.coroutine(
+            lambda clients: [MagicMock()]  # Return mock tasks
+        )
+        launcher.ws_optimizer.get_connection_status.return_value = {
+            'connected': True,
+            'error': None
+        }
+        
+        # Mock exchange clients
+        launcher.exchange_clients = {'bingx': MagicMock()}
+        
+        # Should succeed on first attempt
+        result = await launcher._establish_websocket_connection(max_retries=3, timeout=5)
+        assert result == True
+    
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {
+        'BINGX_KEY': 'test_key',
+        'BINGX_SECRET': 'test_secret'
+    })
+    async def test_establish_connection_retry_logic(self):
+        """Test _establish_websocket_connection retries with exponential backoff."""
+        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher._load_environment()
+        
+        # Mock ws_optimizer
+        launcher.ws_optimizer = MagicMock()
+        launcher.ws_optimizer.is_initialized = True
+        launcher.ws_optimizer._connection_status = {'connecting': False, 'error': None}
+        
+        # Mock initialize_websockets to return tasks
+        launcher.ws_optimizer.initialize_websockets = asyncio.coroutine(
+            lambda clients: [MagicMock()]
+        )
+        
+        # Mock stop_streaming
+        launcher.ws_optimizer.stop_streaming = asyncio.coroutine(lambda: None)
+        
+        # Mock exchange clients
+        launcher.exchange_clients = {'bingx': MagicMock()}
+        
+        # First two attempts fail (timeout), third succeeds
+        call_count = {'count': 0}
+        
+        def get_status_side_effect():
+            call_count['count'] += 1
+            if call_count['count'] <= 4:  # First 2 attempts timeout (2 checks each)
+                return {'connected': False, 'error': None}
+            else:  # Third attempt succeeds
+                return {'connected': True, 'error': None}
+        
+        launcher.ws_optimizer.get_connection_status.side_effect = get_status_side_effect
+        
+        # Should succeed on third attempt after retries
+        result = await launcher._establish_websocket_connection(max_retries=3, timeout=2)
+        assert result == True
+        
+        # Verify retries occurred (at least 2 stops should have been called)
+        assert launcher.ws_optimizer.stop_streaming.call_count >= 2
+    
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {
+        'BINGX_KEY': 'test_key',
+        'BINGX_SECRET': 'test_secret'
+    })
+    async def test_establish_connection_all_retries_fail(self):
+        """Test _establish_websocket_connection returns False after all retries fail."""
+        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher._load_environment()
+        
+        # Mock ws_optimizer
+        launcher.ws_optimizer = MagicMock()
+        launcher.ws_optimizer.is_initialized = True
+        launcher.ws_optimizer._connection_status = {'connecting': False, 'error': None}
+        
+        # Mock initialize_websockets to return tasks
+        launcher.ws_optimizer.initialize_websockets = asyncio.coroutine(
+            lambda clients: [MagicMock()]
+        )
+        
+        # Mock stop_streaming
+        launcher.ws_optimizer.stop_streaming = asyncio.coroutine(lambda: None)
+        
+        # Mock exchange clients
+        launcher.exchange_clients = {'bingx': MagicMock()}
+        
+        # All attempts fail (never connects)
+        launcher.ws_optimizer.get_connection_status.return_value = {
+            'connected': False,
+            'error': None
+        }
+        
+        # Should fail after all retries
+        result = await launcher._establish_websocket_connection(max_retries=2, timeout=1)
+        assert result == False
+    
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {
+        'BINGX_KEY': 'test_key',
+        'BINGX_SECRET': 'test_secret'
+    })
+    async def test_connection_status_tracking(self):
+        """Test OptimizedWebSocketManager tracks connection status."""
+        from live_trading_launcher import OptimizedWebSocketManager
+        
+        ws_manager = OptimizedWebSocketManager()
+        
+        # Initial status should show not connected
+        status = ws_manager.get_connection_status()
+        assert status['connected'] == False
+        assert status['connecting'] == False
+        assert 'last_check' in status
+        assert 'exchanges' in status
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

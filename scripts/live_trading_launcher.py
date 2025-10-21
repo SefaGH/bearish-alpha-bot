@@ -81,6 +81,15 @@ class OptimizedWebSocketManager:
         self.max_streams_config = {}
         self.is_initialized = False
         
+        # Connection status tracking
+        self._connection_status = {
+            'connected': False,
+            'connecting': False,
+            'error': None,
+            'last_check': None,
+            'exchanges': {}
+        }
+        
         logger.info("[WS-OPT] Optimized WebSocket Manager initialized")
     
     def setup_from_config(self, config: Dict[str, Any]) -> None:
@@ -204,6 +213,55 @@ class OptimizedWebSocketManager:
         
         logger.info(f"[WS-OPT] Total streams: {sum(stream_count.values())}")
         return tasks
+    
+    def get_connection_status(self) -> Dict[str, Any]:
+        """
+        Get current WebSocket connection status.
+        
+        Returns:
+            dict: Connection status including:
+                - connected: bool (True if any exchange connected)
+                - connecting: bool (True if connection in progress)
+                - error: str or None (last error message)
+                - last_check: float or None (timestamp of last check)
+                - exchanges: dict (per-exchange status)
+        """
+        # Update status
+        self._connection_status['last_check'] = time.time()
+        
+        # Check each exchange
+        all_connected = True
+        any_connected = False
+        
+        if self.ws_manager and hasattr(self.ws_manager, 'clients'):
+            for exchange_name, client in self.ws_manager.clients.items():
+                try:
+                    # Check if client has connection status
+                    is_connected = getattr(client, '_is_connected', False)
+                    
+                    self._connection_status['exchanges'][exchange_name] = {
+                        'connected': is_connected,
+                        'last_message': getattr(client, '_last_message_time', None)
+                    }
+                    
+                    if is_connected:
+                        any_connected = True
+                    else:
+                        all_connected = False
+                
+                except Exception as e:
+                    logger.debug(f"[WS-OPT] Status check failed for {exchange_name}: {e}")
+                    self._connection_status['exchanges'][exchange_name] = {
+                        'connected': False,
+                        'error': str(e)
+                    }
+                    all_connected = False
+        
+        # Update overall status
+        self._connection_status['connected'] = any_connected
+        self._connection_status['all_connected'] = all_connected
+        
+        return self._connection_status.copy()
     
     async def get_stream_status(self) -> Dict[str, Any]:
         """
@@ -1204,9 +1262,142 @@ class LiveTradingLauncher:
             logger.error(f"❌ Pre-flight checks failed: {e}")
             return False
     
+    async def _wait_for_websocket_connection(self, timeout: int = 30, check_interval: int = 1) -> bool:
+        """
+        Wait for WebSocket connection to establish with timeout.
+        
+        Args:
+            timeout: Max seconds to wait (default: 30s)
+            check_interval: Seconds between checks (default: 1s)
+        
+        Returns:
+            bool: True if connected, False if timeout
+        """
+        logger.info(f"[CONNECTION] Waiting for WebSocket connection (timeout: {timeout}s)...")
+        
+        start_time = asyncio.get_event_loop().time()
+        
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            
+            # Check timeout
+            if elapsed >= timeout:
+                logger.error(f"❌ WebSocket connection TIMEOUT after {elapsed:.1f}s")
+                return False
+            
+            # Check connection status
+            try:
+                status = self.ws_optimizer.get_connection_status()
+                
+                # Log status periodically
+                if int(elapsed) % 5 == 0 and int(elapsed) > 0:  # Every 5 seconds (after first second)
+                    logger.info(f"[CONNECTION] Status check ({elapsed:.0f}s): connected={status.get('connected')}, exchanges={len(status.get('exchanges', {}))}")
+                
+                # Check if connected
+                if status.get('connected'):
+                    logger.info(f"✅ WebSocket CONNECTED after {elapsed:.1f}s")
+                    return True
+                
+                # Check for errors
+                if status.get('error'):
+                    logger.error(f"❌ WebSocket error: {status['error']}")
+                    return False
+            
+            except Exception as e:
+                logger.error(f"⚠️ Status check failed: {e}")
+            
+            # Wait before next check
+            await asyncio.sleep(check_interval)
+    
+    async def _establish_websocket_connection(self, max_retries: int = 3, timeout: int = 30) -> bool:
+        """
+        Establish WebSocket connection with retry logic.
+        
+        Args:
+            max_retries: Maximum retry attempts (default: 3)
+            timeout: Timeout per attempt in seconds (default: 30s)
+        
+        Returns:
+            bool: True if connection established, False otherwise
+        """
+        logger.info("=" * 70)
+        logger.info("ESTABLISHING WEBSOCKET CONNECTION")
+        logger.info("=" * 70)
+        
+        for attempt in range(1, max_retries + 1):
+            logger.info(f"[ATTEMPT {attempt}/{max_retries}] Starting WebSocket streams...")
+            
+            try:
+                # Mark as connecting
+                if self.ws_optimizer:
+                    self.ws_optimizer._connection_status['connecting'] = True
+                    self.ws_optimizer._connection_status['error'] = None
+                
+                # Start streaming (initialize_websockets already starts tasks)
+                streaming_tasks = await self.ws_optimizer.initialize_websockets(
+                    self.exchange_clients
+                )
+                
+                if not streaming_tasks:
+                    logger.warning(f"⚠️ No streaming tasks created on attempt {attempt}/{max_retries}")
+                    if attempt < max_retries:
+                        retry_delay = 5 * attempt
+                        logger.info(f"Waiting {retry_delay}s before retry...")
+                        await asyncio.sleep(retry_delay)
+                    continue
+                
+                # Wait for connection with timeout
+                connected = await self._wait_for_websocket_connection(timeout=timeout)
+                
+                if connected:
+                    logger.info(f"✅ Connection established on attempt {attempt}/{max_retries}")
+                    if self.ws_optimizer:
+                        self.ws_optimizer._connection_status['connecting'] = False
+                    return True
+                else:
+                    logger.warning(f"⚠️ Connection timeout on attempt {attempt}/{max_retries}")
+                    
+                    # Stop current attempt before retry
+                    if attempt < max_retries:
+                        logger.info("Stopping current streams before retry...")
+                        try:
+                            await asyncio.wait_for(
+                                self.ws_optimizer.stop_streaming(),
+                                timeout=10.0
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning("⚠️ Timeout stopping streams")
+                        
+                        # Wait before retry (exponential backoff)
+                        retry_delay = 5 * attempt  # 5s, 10s, 15s
+                        logger.info(f"Waiting {retry_delay}s before retry...")
+                        await asyncio.sleep(retry_delay)
+            
+            except asyncio.TimeoutError:
+                logger.error(f"❌ Timeout on attempt {attempt}/{max_retries}")
+                if attempt < max_retries:
+                    await asyncio.sleep(5 * attempt)
+            
+            except Exception as e:
+                logger.error(f"❌ Error on attempt {attempt}/{max_retries}: {e}")
+                if self.ws_optimizer:
+                    self.ws_optimizer._connection_status['error'] = str(e)
+                if attempt < max_retries:
+                    await asyncio.sleep(5 * attempt)
+        
+        # All attempts failed
+        logger.error("=" * 70)
+        logger.error(f"❌ WEBSOCKET CONNECTION FAILED AFTER {max_retries} ATTEMPTS")
+        logger.error("=" * 70)
+        
+        if self.ws_optimizer:
+            self.ws_optimizer._connection_status['connecting'] = False
+        
+        return False
+    
     async def _start_trading_loop(self, duration: Optional[float] = None) -> None:
         """
-        Start the main trading loop with WebSocket optimization.
+        Start the main trading loop with WebSocket optimization and connection retry.
         
         Args:
             duration: Optional duration in seconds (None for indefinite)
@@ -1218,56 +1409,46 @@ class LiveTradingLauncher:
         logger.info(f"Duration: {'Indefinite' if duration is None else f'{duration}s'}")
         logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
         
-        # Capture WebSocket tasks and track streaming status
-        ws_tasks = []
-        ws_streaming = False
-        
         # Store health task for cleanup
         _health_task = None
         
         try:
-            # Initialize and schedule WebSocket streams
+            # Establish WebSocket connection with retry logic
+            ws_connected = False
             if self.ws_optimizer and self._is_ws_initialized():
-                logger.info("Starting WebSocket streams...")
-                
-                # Get streaming tasks
-                streaming_tasks = await self.ws_optimizer.initialize_websockets(
-                    self.exchange_clients
+                ws_connected = await self._establish_websocket_connection(
+                    max_retries=3,
+                    timeout=30
                 )
                 
-                if streaming_tasks:
-                    # Tasks are already created by stream_ohlcv, just track them
-                    ws_tasks = streaming_tasks
-                    ws_streaming = True
-                    logger.info(f"✅ {len(ws_tasks)} WebSocket streams running in background")
+                if not ws_connected:
+                    logger.warning("=" * 70)
+                    logger.warning("⚠️ WebSocket connection failed after multiple attempts")
+                    logger.warning("⚠️ Continuing with REST API mode (reduced real-time data)")
+                    logger.warning("=" * 70)
                     
-                    # Check actual connection state after a brief moment
-                    await asyncio.sleep(0.5)
-                    any_connected = False
-                    if self.ws_optimizer.ws_manager:
-                        any_connected = any(
-                            client.is_connected()
-                            for client in self.ws_optimizer.ws_manager.clients.values()
+                    # Send Telegram notification
+                    if self.telegram:
+                        self.telegram.send(
+                            "⚠️ <b>WebSocket Connection Failed</b>\n"
+                            "Trading will continue using REST API\n"
+                            "Real-time data may be limited"
                         )
-                    
-                    if any_connected:
-                        logger.info("WebSocket: ✅ CONNECTED and STREAMING")
-                    else:
-                        logger.info("WebSocket: ⚠️ STREAMS STARTED (waiting for connection...)")
                 else:
-                    logger.warning("⚠️ No WebSocket streams started")
-                    logger.info("WebSocket: ⚠️ INITIALIZED but NOT STREAMING")
+                    logger.info("=" * 70)
+                    logger.info("✅ WEBSOCKET CONNECTED - REAL-TIME DATA STREAMING")
+                    logger.info("=" * 70)
             else:
-                logger.info("WebSocket: ❌ DISABLED")
+                logger.info("WebSocket: ❌ DISABLED or NOT INITIALIZED")
             
             logger.info("="*70)
             
             # Send Telegram notification
             if self.telegram:
-                if ws_streaming:
-                    ws_info = f"WebSocket STREAMING ✅ ({len(ws_tasks)} streams)"
+                if ws_connected:
+                    ws_info = "WebSocket CONNECTED ✅"
                 else:
-                    ws_info = "REST API mode"
+                    ws_info = "REST API mode (WebSocket unavailable)"
                 
                 self.telegram.send(
                     f"🚀 <b>LIVE TRADING STARTED</b>\n"
@@ -1326,8 +1507,8 @@ class LiveTradingLauncher:
         Enhanced WebSocket health monitor with error recovery.
         
         This method monitors WebSocket stream health and attempts automatic recovery
-        when issues are detected. Moved to class-level to be accessible as a proper method.
-        Includes consecutive error tracking, parse frame error detection, and exponential backoff.
+        when issues are detected. Includes connection status checking, consecutive 
+        error tracking, parse frame error detection, and exponential backoff.
         """
         logger.info("Starting WebSocket health monitor...")
         
@@ -1337,56 +1518,48 @@ class LiveTradingLauncher:
         # Use helper method to safely check WebSocket initialization
         while self._is_ws_initialized():
             try:
-                await asyncio.sleep(300)  # Check every 5 minutes
+                await asyncio.sleep(60)  # Check every minute
                 
-                status = await self.ws_optimizer.get_stream_status()
+                # Get connection status using new method
+                status = self.ws_optimizer.get_connection_status()
                 
-                # Parse frame errors - special check for critical errors
-                error_count = status.get('error_count', 0)
-                if error_count > 0:
-                    logger.warning(f"⚠️ WebSocket errors detected: {error_count}")
-                    
-                    # If parse_frame errors detected, attempt immediate recovery
-                    if status.get('parse_frame_errors', 0) > 0:
-                        logger.error("❌ parse_frame errors detected! Attempting recovery...")
-                        
-                        # Restart WebSockets with exponential backoff
-                        await self._restart_websockets_with_backoff()
-                        consecutive_errors = 0
-                        continue
-                
-                # Normal health check
-                if status.get('active_streams', 0) > 50:
-                    logger.warning(f"⚠️ Too many WebSocket streams: {status['active_streams']}")
-                    if self.telegram:
-                        self.telegram.send(
-                            f"⚠️ <b>WebSocket Warning</b>\n"
-                            f"Active streams: {status['active_streams']}\n"
-                            f"Consider reducing symbols"
-                        )
-                
-                elif status.get('active_streams', 0) == 0:
+                # Check connection status
+                if not status.get('connected'):
                     consecutive_errors += 1
-                    logger.error(f"❌ No active WebSocket streams! (attempt {consecutive_errors}/{max_consecutive_errors})")
+                    logger.error(f"❌ No active WebSocket connection! (attempt {consecutive_errors}/{max_consecutive_errors})")
                     
                     if consecutive_errors >= max_consecutive_errors:
-                        logger.critical("❌ WebSocket completely failed after multiple attempts!")
+                        logger.critical("❌ WebSocket completely failed after multiple checks!")
                         if self.telegram:
                             self.telegram.send(
                                 "🛑 <b>CRITICAL</b>\n"
                                 "WebSocket system failure!\n"
-                                "Manual intervention required."
+                                "Trading continues with REST API.\n"
+                                "Manual intervention may be required."
                             )
-                        # System may need to shutdown
-                        await self._emergency_shutdown("WebSocket system failure")
+                        # Don't shutdown - continue with REST API
+                        logger.warning("⚠️ Continuing with REST API mode")
+                        break
                     else:
                         # Attempt restart with exponential backoff
+                        logger.warning(f"Attempting WebSocket recovery ({consecutive_errors}/{max_consecutive_errors})...")
                         await self._restart_websockets_with_backoff()
                 
                 else:
-                    # Everything is normal
+                    # Connection is healthy
                     consecutive_errors = 0
-                    logger.info(f"✅ WebSocket healthy: {status['active_streams']} streams active")
+                    
+                    # Check for errors in status
+                    error_msg = status.get('error')
+                    if error_msg:
+                        logger.warning(f"⚠️ WebSocket error detected: {error_msg}")
+                    
+                    # Log healthy status periodically
+                    connected_exchanges = [
+                        ex for ex, st in status.get('exchanges', {}).items() 
+                        if st.get('connected')
+                    ]
+                    logger.info(f"✅ WebSocket healthy: {len(connected_exchanges)} exchange(s) connected")
                 
             except Exception as e:
                 logger.error(f"WebSocket monitor error: {e}")
