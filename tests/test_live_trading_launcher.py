@@ -15,6 +15,9 @@ from unittest.mock import Mock, patch, MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 
+# Set env var to skip Python version check for testing
+os.environ['SKIP_PYTHON_VERSION_CHECK'] = '1'
+
 from live_trading_launcher import LiveTradingLauncher
 
 
