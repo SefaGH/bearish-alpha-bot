@@ -625,14 +625,7 @@ class ProductionCoordinator:
             
     async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
                                   continuous: bool = False):
-        """
-        Main production trading loop.
-        
-        Args:
-            mode: Trading mode ('paper', 'live', 'simulation')
-            duration: Optional duration in seconds (None = run indefinitely)
-            continuous: If True, enable TRUE CONTINUOUS mode (never stops, auto-recovers)
-        """
+        """Main production trading loop."""
         try:
             if not self.is_initialized:
                 raise RuntimeError("Production system not initialized. Call initialize_production_system() first.")
@@ -664,10 +657,25 @@ class ProductionCoordinator:
             recommendation_interval = 300  # Her 5 dakikada bir recommendations
             loop_iteration = 0
             
+            # ✅ EKLE: Trading loop başlangıç logu
+            logger.info("")
+            logger.info("="*70)
+            logger.info("🔄 STARTING TRADING LOOP ITERATIONS")
+            logger.info("="*70)
+            logger.info(f"   Loop interval: {self.loop_interval}s")
+            logger.info(f"   Symbols to process: {len(self.active_symbols)}")
+            if duration:
+                logger.info(f"   Will run for: {duration}s")
+            else:
+                logger.info(f"   Will run: Indefinitely")
+            logger.info("="*70)
+            logger.info("")
+            
             while self.is_running:
                 try:
                     loop_iteration += 1
-                    logger.debug(f"🔁 Trading loop iteration {loop_iteration} started")
+                    # ✅ DEĞİŞTİR: logger.debug → logger.info
+                    logger.info(f"🔁 [ITERATION {loop_iteration}] Processing {len(self.active_symbols)} symbols...")
                     
                     # Check emergency conditions
                     if self.emergency_stop_triggered:
