@@ -54,8 +54,15 @@ async def test_launcher_runs_without_freeze(integration_env, cleanup_tasks):
     freeze_detected = False
     
     try:
-        # Import launcher after env setup
-        from live_trading_launcher import LiveTradingLauncher
+        # Mock heavy dependencies before import
+        with patch.dict('sys.modules', {
+            'ccxt': MagicMock(),
+            'torch': MagicMock(),
+            'torchvision': MagicMock(),
+            'sklearn': MagicMock(),
+        }):
+            # Import launcher after env setup
+            from live_trading_launcher import LiveTradingLauncher
         
         print("\n[Step 1] Creating launcher instance...")
         
