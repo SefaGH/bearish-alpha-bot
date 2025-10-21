@@ -569,9 +569,33 @@ class ProductionCoordinator:
                 exchange_clients=self.exchange_clients
             )
             
-            # Set active symbols
+            # Set active symbols with multi-tier fallback
             if trading_symbols:
                 self.active_symbols = trading_symbols
+                logger.info(f"✓ Active symbols set from parameter: {len(trading_symbols)} symbols")
+            else:
+                # Fallback 1: Try loading from config
+                config_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
+                if config_symbols and isinstance(config_symbols, list):
+                    self.active_symbols = config_symbols
+                    logger.info(f"✓ Active symbols loaded from config: {len(config_symbols)} symbols")
+                # Fallback 2: Try getting from engine (if already created)
+                elif self.trading_engine:
+                    try:
+                        self.active_symbols = self.trading_engine._get_scan_symbols()
+                        logger.info(f"✓ Active symbols loaded from engine: {len(self.active_symbols)} symbols")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to get symbols from engine: {e}")
+                        self.active_symbols = []
+                else:
+                    logger.warning("⚠️ No active symbols configured! Trading loop will be idle.")
+                    self.active_symbols = []
+            
+            # Log final result
+            if self.active_symbols:
+                logger.info(f"📊 Final active symbols ({len(self.active_symbols)}): {self.active_symbols[:3]}...")
+            else:
+                logger.error("❌ CRITICAL: No active symbols! Bot cannot trade!")
             
             self.is_initialized = True
             
