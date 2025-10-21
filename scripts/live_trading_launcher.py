@@ -877,17 +877,19 @@ class LiveTradingLauncher:
             init_result = await self.coordinator.initialize_production_system(
                 exchange_clients=self.exchange_clients,
                 portfolio_config=portfolio_config,
-                mode=self.mode
+                mode=self.mode,
+                trading_symbols=self.TRADING_PAIRS  # ← FIX: Pass symbols
             )
             
             if not init_result['success']:
                 logger.error(f"❌ Failed: {init_result.get('reason')}")
                 return False
             
-            # Active symbols'ı ayarla
+            # Active symbols'ı ayarla (fallback for edge cases)
             if hasattr(self.coordinator, 'active_symbols'):
-                self.coordinator.active_symbols = self.trading_pairs
-                logger.info(f"✓ Configured with {len(self.trading_pairs)} symbols")
+                if not self.coordinator.active_symbols:  # Only if still empty
+                    self.coordinator.active_symbols = self.trading_pairs
+                    logger.info(f"✓ Fallback: Configured with {len(self.trading_pairs)} symbols")
             
             logger.info("✓ Production system initialized")
             logger.info(f"  Components: {init_result['components']}")
