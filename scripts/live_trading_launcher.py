@@ -9,8 +9,9 @@ import sys
 import os
 
 # Check Python version at startup (before any other imports)
+# Can be bypassed for testing by setting SKIP_PYTHON_VERSION_CHECK=1
 REQUIRED_PYTHON = (3, 11)
-if sys.version_info[:2] != REQUIRED_PYTHON:
+if sys.version_info[:2] != REQUIRED_PYTHON and not os.environ.get('SKIP_PYTHON_VERSION_CHECK'):
     raise RuntimeError(
         f"❌ Python {REQUIRED_PYTHON[0]}.{REQUIRED_PYTHON[1]} is required!\n"
         f"   Current: Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n"

@@ -30,7 +30,8 @@ def integration_env() -> Generator[None, None, None]:
         'TRADING_MODE',
         'CAPITAL_USDT',
         'RSI_THRESHOLD_BTC',
-        'CONFIG_PATH'
+        'CONFIG_PATH',
+        'SKIP_PYTHON_VERSION_CHECK'
     ]
     
     for key in test_env_keys:
@@ -41,6 +42,8 @@ def integration_env() -> Generator[None, None, None]:
     os.environ['TRADING_MODE'] = 'paper'
     os.environ['CAPITAL_USDT'] = '100'
     os.environ['CONFIG_PATH'] = 'config/config.example.yaml'
+    # Allow tests to run even if Python version doesn't match exactly
+    os.environ['SKIP_PYTHON_VERSION_CHECK'] = '1'
     
     yield
     

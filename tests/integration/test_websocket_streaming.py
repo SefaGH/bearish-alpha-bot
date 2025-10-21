@@ -46,11 +46,12 @@ async def test_websocket_streams_deliver_data(integration_env, cleanup_tasks):
     data_received = []
     
     try:
-        from live_trading_launcher import LiveTradingLauncher
-        
-        # Mock external dependencies
+        # Mock external dependencies before import
         with patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram:
+            
+            # Import launcher after patching
+            from live_trading_launcher import LiveTradingLauncher
             
             # Setup mock exchange
             mock_exchange = MagicMock()
@@ -149,11 +150,12 @@ async def test_websocket_connection_state_tracking(integration_env, cleanup_task
     os.environ['TRADING_MODE'] = 'paper'
     
     try:
-        from live_trading_launcher import LiveTradingLauncher
-        
-        # Mock external dependencies
+        # Mock external dependencies before import
         with patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram:
+            
+            # Import launcher after patching
+            from live_trading_launcher import LiveTradingLauncher
             
             # Setup mock exchange
             mock_exchange = MagicMock()
@@ -248,11 +250,12 @@ async def test_websocket_error_handling(integration_env, cleanup_tasks):
     os.environ['TRADING_MODE'] = 'paper'
     
     try:
-        from live_trading_launcher import LiveTradingLauncher
-        
-        # Mock external dependencies
+        # Mock external dependencies before import
         with patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram:
+            
+            # Import launcher after patching
+            from live_trading_launcher import LiveTradingLauncher
             
             # Setup mock exchange that simulates connection issues
             mock_exchange = MagicMock()

@@ -54,19 +54,18 @@ async def test_launcher_runs_without_freeze(integration_env, cleanup_tasks):
     freeze_detected = False
     
     try:
-        # Mock heavy dependencies before import (but not ccxt - we need real ccxt.pro)
+        # Mock heavy dependencies and external APIs before import
         with patch.dict('sys.modules', {
             'torch': MagicMock(),
             'torchvision': MagicMock(),
-        }):
-            # Import launcher after env setup
-            from live_trading_launcher import LiveTradingLauncher
-        
-        print("\n[Step 1] Creating launcher instance...")
-        
-        # Mock external dependencies to avoid real API calls
-        with patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
+        }), \
+             patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram:
+            
+            print("\n[Step 1] Creating launcher instance...")
+            
+            # Import launcher after patching
+            from live_trading_launcher import LiveTradingLauncher
             
             # Setup mock exchange client
             mock_exchange = MagicMock()
@@ -172,11 +171,12 @@ async def test_async_tasks_properly_scheduled(integration_env, cleanup_tasks):
     os.environ['TRADING_MODE'] = 'paper'
     
     try:
-        from live_trading_launcher import LiveTradingLauncher
-        
-        # Mock external dependencies
+        # Mock external dependencies before import
         with patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram:
+            
+            # Import launcher after patching
+            from live_trading_launcher import LiveTradingLauncher
             
             # Setup mock exchange
             mock_exchange = MagicMock()
@@ -264,11 +264,12 @@ async def test_launcher_initialization_phases(integration_env, cleanup_tasks):
     os.environ['TRADING_MODE'] = 'paper'
     
     try:
-        from live_trading_launcher import LiveTradingLauncher
-        
-        # Mock external dependencies
+        # Mock external dependencies before import
         with patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram:
+            
+            # Import launcher after patching
+            from live_trading_launcher import LiveTradingLauncher
             
             # Setup mock exchange
             mock_exchange = MagicMock()

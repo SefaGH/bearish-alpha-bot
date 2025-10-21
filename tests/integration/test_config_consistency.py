@@ -64,11 +64,12 @@ async def test_config_consistency_across_all_modules(integration_env, cleanup_ta
         
         # Try to test launcher if dependencies available
         try:
-            from live_trading_launcher import LiveTradingLauncher
-            
-            # Mock external dependencies
+            # Mock external dependencies before import
             with patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
                  patch('core.notify.Telegram') as mock_telegram:
+                
+                # Import launcher after patching
+                from live_trading_launcher import LiveTradingLauncher
                 
                 # Setup mock exchange
                 mock_exchange = MagicMock()
@@ -290,11 +291,12 @@ async def test_runtime_config_consistency(integration_env, cleanup_tasks):
         
         # Try launcher test if available
         try:
-            from live_trading_launcher import LiveTradingLauncher
-            
-            # Mock external dependencies
+            # Mock external dependencies before import
             with patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
                  patch('core.notify.Telegram') as mock_telegram:
+                
+                # Import launcher after patching
+                from live_trading_launcher import LiveTradingLauncher
                 
                 # Setup mock exchange
                 mock_exchange = MagicMock()
