@@ -1300,6 +1300,11 @@ class LiveTradingLauncher:
         Print comprehensive configuration summary at startup.
         Issue #119: Enhanced log header with complete system information.
         """
+        # Add explicit header for test compatibility (Issue #106)
+        logger.info("="*70)
+        logger.info("📊 CONFIGURATION SUMMARY")
+        logger.info("="*70)
+        
         # Collect system information
         system_info = SystemInfoCollector.get_system_info()
         

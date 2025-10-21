@@ -338,6 +338,17 @@ class LiveTradingConfiguration:
         logger.info("="*70)
     
     @classmethod
+    def get_all_configs(cls) -> Dict[str, Any]:
+        """
+        Get all configuration (alias for load() method).
+        Provided for backwards compatibility with existing tests.
+        
+        Returns:
+            Complete merged configuration dictionary
+        """
+        return cls.load(log_summary=False)
+    
+    @classmethod
     def get_config_value(cls, *keys: str, default: Any = None) -> Any:
         """
         Safely get nested config value.
