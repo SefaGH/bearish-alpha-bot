@@ -900,7 +900,7 @@ class LiveTradingEngine:
                 if config.get('price_delta_bypass_enabled', True) and entry_price:
                     history = self._local_signal_price_history.get(symbol)
                     if history:
-                        _, last_price = history[-1]
+                        last_price = history[-1][1]
                         if last_price:
                             price_delta = abs(entry_price - last_price) / last_price
                             threshold = config.get('price_delta_threshold', 0.05)
