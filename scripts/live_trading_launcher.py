@@ -539,16 +539,11 @@ class LiveTradingLauncher:
         logger.info("="*70)
 
     def _load_config(self) -> Dict[str, Any]:
-        """Load and cache configuration."""
+        """Load and cache configuration using unified loader."""
         if self.config is None:
-            config_path = os.getenv('CONFIG_PATH', 'config/config.example.yaml')
-            try:
-                with open(config_path, 'r') as f:
-                    self.config = yaml.safe_load(f)
-                logger.info(f"✓ Config loaded from {config_path}")
-            except Exception as e:
-                logger.error(f"❌ Failed to load config: {e}")
-                self.config = {}
+            from config.live_trading_config import LiveTradingConfiguration
+            self.config = LiveTradingConfiguration.load(log_summary=False)
+            logger.info("✓ Config loaded (ENV > YAML > Defaults)")
         return self.config
     
     def _get_trading_pairs(self) -> List[str]:
