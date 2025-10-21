@@ -53,12 +53,21 @@ class WebSocketClient:
         self._running = False
         self._tasks = []
         
+        # Connection state tracking
+        self._is_connected = False
+        self._first_message_received = False
+        self._last_message_time = None
+        
         # Error tracking for parse_frame issues
         self.parse_frame_errors = {}  # Symbol-based error counter
         self.max_parse_frame_retries = 3
         self.reconnect_delay = 5  # seconds
         self.last_reconnect = None
         self.reconnect_count = 0
+        
+        # Error history tracking
+        self.error_history = []
+        self.max_error_history = 100
         
         logger.info(f"WebSocketClient initialized for {ex_name}")
     
@@ -88,6 +97,14 @@ class WebSocketClient:
             logger.debug(f"Watching OHLCV for {symbol} {timeframe} on {self.name}")
             ohlcv = await self.ex.watch_ohlcv(symbol, timeframe)
             
+            # Track connection state
+            if not self._first_message_received:
+                logger.info(f"✅ WebSocket connected and streaming for {self.name}")
+                self._first_message_received = True
+            
+            self._is_connected = True
+            self._last_message_time = datetime.now()
+            
             # Success - reset error counter
             if self.parse_frame_errors[retry_key] > 0:
                 logger.info(f"✅ WebSocket recovered for {symbol} {timeframe}")
@@ -102,7 +119,11 @@ class WebSocketClient:
         except AttributeError as e:
             if 'parse_frame' in str(e):
                 # Handle parse_frame error
+                self._is_connected = False
                 self.parse_frame_errors[retry_key] += 1
+                
+                # Log error to history
+                self._log_error('parse_frame', str(e))
                 
                 logger.warning(f"⚠️ parse_frame error for {symbol} "
                              f"(attempt {self.parse_frame_errors[retry_key]}/{self.max_parse_frame_retries})")
@@ -116,10 +137,14 @@ class WebSocketClient:
                 return None
             else:
                 # Other AttributeError
+                self._is_connected = False
+                self._log_error('AttributeError', str(e))
                 logger.error(f"AttributeError (non-parse_frame) for {symbol}: {e}")
                 raise
                 
         except Exception as e:
+            self._is_connected = False
+            self._log_error(type(e).__name__, str(e))
             logger.error(f"Error watching OHLCV for {symbol} on {self.name}: {e}")
             raise
     
@@ -142,6 +167,14 @@ class WebSocketClient:
             logger.debug(f"Watching ticker for {symbol} on {self.name}")
             ticker = await self.ex.watch_ticker(symbol)
             
+            # Track connection state
+            if not self._first_message_received:
+                logger.info(f"✅ WebSocket connected and streaming for {self.name}")
+                self._first_message_received = True
+            
+            self._is_connected = True
+            self._last_message_time = datetime.now()
+            
             if callback:
                 await callback(symbol, ticker)
             
@@ -150,12 +183,18 @@ class WebSocketClient:
             
         except AttributeError as e:
             if 'parse_frame' in str(e):
+                self._is_connected = False
+                self._log_error('parse_frame', str(e))
                 logger.warning(f"⚠️ parse_frame error for ticker {symbol}")
                 return None
             else:
+                self._is_connected = False
+                self._log_error('AttributeError', str(e))
                 raise
                 
         except Exception as e:
+            self._is_connected = False
+            self._log_error(type(e).__name__, str(e))
             logger.error(f"Error watching ticker for {symbol} on {self.name}: {e}")
             raise
     
@@ -310,6 +349,7 @@ class WebSocketClient:
     async def close(self):
         """Close the WebSocket connection and cleanup resources."""
         self._running = False
+        self._is_connected = False
         
         # Cancel all running tasks
         for task in self._tasks:
@@ -332,18 +372,68 @@ class WebSocketClient:
         self._running = False
         logger.info(f"Stopping all watch loops for {self.name}")
     
-    def get_health_status(self) -> Dict[str, Any]:
+    def is_connected(self) -> bool:
         """
-        Get WebSocket health status.
+        Check if WebSocket is actually connected and streaming data.
         
         Returns:
-            Dictionary with health metrics
+            True if WebSocket is connected, running, and has received at least one message
+        """
+        return self._is_connected and self._running and self._first_message_received
+    
+    def _log_error(self, error_type: str, error_msg: str):
+        """
+        Log error to history for debugging.
+        
+        Args:
+            error_type: Type of error (e.g., 'parse_frame', 'AttributeError')
+            error_msg: Error message
+        """
+        error_entry = {
+            'timestamp': datetime.now(),
+            'type': error_type,
+            'message': error_msg[:200]  # Limit message length
+        }
+        
+        self.error_history.append(error_entry)
+        
+        # Keep only recent errors
+        if len(self.error_history) > self.max_error_history:
+            self.error_history = self.error_history[-self.max_error_history:]
+    
+    def _get_recent_error_count(self, seconds: int) -> int:
+        """
+        Get error count in last N seconds.
+        
+        Args:
+            seconds: Time window in seconds
+            
+        Returns:
+            Number of errors in the time window
+        """
+        if not self.error_history:
+            return 0
+        
+        cutoff_time = datetime.now() - timedelta(seconds=seconds)
+        return sum(1 for e in self.error_history if e['timestamp'] > cutoff_time)
+    
+    def get_health_status(self) -> Dict[str, Any]:
+        """
+        Get WebSocket health status with enhanced connection info.
+        
+        Returns:
+            Dictionary with health metrics including connection state
         """
         total_errors = sum(self.parse_frame_errors.values())
         max_errors = max(self.parse_frame_errors.values()) if self.parse_frame_errors else 0
         
+        # Enhanced health calculation
         health = 'healthy'
-        if total_errors > 50:
+        if not self._is_connected:
+            health = 'disconnected'
+        elif not self._first_message_received:
+            health = 'connecting'
+        elif total_errors > 50:
             health = 'critical'
         elif total_errors > 20:
             health = 'degraded'
@@ -353,10 +443,14 @@ class WebSocketClient:
         return {
             'exchange': self.name,
             'status': health,
+            'connected': self._is_connected,
+            'streaming': self._first_message_received,
             'running': self._running,
+            'last_message_time': self._last_message_time.isoformat() if self._last_message_time else None,
             'total_parse_frame_errors': total_errors,
             'max_errors_per_stream': max_errors,
             'reconnect_count': self.reconnect_count,
             'last_reconnect': self.last_reconnect.isoformat() if self.last_reconnect else None,
-            'error_streams': {k: v for k, v in self.parse_frame_errors.items() if v > 0}
+            'error_streams': {k: v for k, v in self.parse_frame_errors.items() if v > 0},
+            'recent_errors_5min': self._get_recent_error_count(300)
         }
