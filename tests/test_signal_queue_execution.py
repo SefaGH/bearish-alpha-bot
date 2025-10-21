@@ -25,7 +25,7 @@ def _ensure_test_dependencies() -> None:
         class _DummyRow(dict):
             """Simple row wrapper returned by iloc access."""
 
-            def get(self, key, default=None):  # pragma: no cover - compatibility
+            def get(self, key, default=None):  # pragma: no cover - compatibility shim for pandas.DataFrame row; not called in tests, present only to satisfy interface
                 return super().get(key, default)
 
         class _DummyILoc:
