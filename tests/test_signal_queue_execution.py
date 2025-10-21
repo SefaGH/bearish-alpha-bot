@@ -91,7 +91,7 @@ def _ensure_test_dependencies() -> None:
 
         numpy_stub = types.ModuleType('numpy')
 
-        def _array(values, dtype=None):  # pylint: disable=unused-argument
+        def _array(values, dtype=None):  # pylint: disable=unused-argument  # for API compatibility with numpy
             return list(values)
 
         def _mean(values):
