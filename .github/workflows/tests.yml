@@ -1,20 +1,31 @@
-name: Run Tests
+# .github/workflows/tests.yml
+name: Tests
 
 on: [push, pull_request]
 
 jobs:
-  test:
+  test-with-docker:
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - name: Checkout
+        uses: actions/checkout@v3
       
-      - name: Install deps
-        run: |
-          pip install -r requirements.txt
+      # ✅ DOCKERFILE KULLAN
+      - name: Build Docker image
+        run: docker build -t bearish-alpha-bot:test -f docker/Dockerfile .
       
-      - name: Run tests
+      - name: Verify Python version in container
         run: |
-          pytest tests/ -v --tb=short
+          docker run --rm bearish-alpha-bot:test python --version
+          # Expected: Python 3.11.13
+      
+      - name: Test dependencies in container
+        run: |
+          docker run --rm bearish-alpha-bot:test python -c "import aiohttp; print('✅ aiohttp OK')"
+      
+      - name: Run tests in container
+        run: |
+          docker run --rm bearish-alpha-bot:test pytest tests/ -v
+        env:
+          PYTHONPATH: /app/src:/app/scripts
