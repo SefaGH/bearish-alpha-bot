@@ -37,33 +37,41 @@ python src/main.py --live --paper
 
 **Problem**: Config loading in live_trading_engine.py had complex try-except blocks that failed silently, leading to wrong symbols, empty lists, and incorrect risk parameters.
 
-**Solution**: Implemented clear 3-step priority system with proper validation and error messages:
+**Solution**: Implemented unified configuration loader with clear 3-step priority system:
 
-1. **YAML Config** (highest priority)
+1. **Environment Variables** (highest priority)
+   - Uses TRADING_SYMBOLS, CAPITAL_USDT, and other ENV variables
+   - Allows runtime configuration without file changes
+   - Perfect for production deployments and GitHub Actions
+
+2. **YAML Config** (middle priority)
    - Loads from CONFIG_PATH environment variable or default path
+   - Provides baseline configuration for development
    - Validates that fixed_symbols is a list and not empty
-   - Logs success with symbol count
 
-2. **Environment Variables** (fallback)
-   - Uses TRADING_SYMBOLS environment variable (comma-separated)
-   - Creates config from parsed symbols
-   - Logs fallback to ENV
-
-3. **Hard-coded Defaults** (last resort)
+3. **Hard-coded Defaults** (last resort/fallback)
    - BTC/USDT:USDT, ETH/USDT:USDT, SOL/USDT:USDT
+   - Only used when both ENV and YAML are missing/empty
    - Logs warning about using defaults
 
 **Usage**:
 ```bash
-# Method 1: Using YAML config (recommended)
+# Method 1: Using environment variables (HIGHEST priority - recommended for production)
+export TRADING_SYMBOLS="BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT,BNB/USDT:USDT"
+export CAPITAL_USDT="500"
+python src/main.py --live
+
+# Method 2: Using YAML config (good for development)
+# ENV vars will still override YAML values
 export CONFIG_PATH=config/config.example.yaml
 python src/main.py --live
 
-# Method 2: Using environment variables
-export TRADING_SYMBOLS="BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT,BNB/USDT:USDT"
+# Method 3: Combine both (ENV overrides YAML for specific values)
+export CONFIG_PATH=config/config.example.yaml
+export TRADING_SYMBOLS="XRP/USDT:USDT"  # Overrides YAML symbols
 python src/main.py --live
 
-# Method 3: Use defaults (automatic fallback)
+# Method 4: Use defaults (automatic fallback)
 python src/main.py --live
 ```
 
@@ -129,9 +137,10 @@ websocket:
 - Modified main block to handle --live and --paper flags
 
 ### 2. src/core/live_trading_engine.py
-- Replaced lines 119-157 with new config loading logic
-- Implemented 3-step priority system (YAML > ENV > defaults)
-- Added comprehensive validation and error logging
+- Refactored to use unified config loader (LiveTradingConfiguration.load())
+- Implemented correct 3-step priority system (ENV > YAML > defaults)
+- Removed manual YAML/ENV parsing to prevent config mismatches
+- Reduced code complexity from 59 lines to 17 lines (73% reduction)
 - No breaking changes to existing APIs
 
 ### 3. src/core/production_coordinator.py
