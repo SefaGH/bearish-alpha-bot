@@ -54,12 +54,10 @@ async def test_launcher_runs_without_freeze(integration_env, cleanup_tasks):
     freeze_detected = False
     
     try:
-        # Mock heavy dependencies before import
+        # Mock heavy dependencies before import (but not ccxt - we need real ccxt.pro)
         with patch.dict('sys.modules', {
-            'ccxt': MagicMock(),
             'torch': MagicMock(),
             'torchvision': MagicMock(),
-            'sklearn': MagicMock(),
         }):
             # Import launcher after env setup
             from live_trading_launcher import LiveTradingLauncher
