@@ -31,6 +31,8 @@ multidict<7.0             # Required for aiohttp 3.8.x
 # === DEVELOPMENT & TESTING ===
 pytest>=7.0.0             # Testing framework
 pytest-asyncio>=0.21.0    # Async test support
+pytest-timeout>=2.1.0     # Test timeout support
+pytest-mock>=3.11.0       # Mock support for pytest
 
 # === MACHINE LEARNING (Optional) ===
 torch>=2.0.0              # PyTorch for neural networks

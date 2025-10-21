@@ -1,0 +1,100 @@
+name: Integration Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'tests/integration/**'
+      - 'config/**'
+      - 'requirements.txt'
+  push:
+    branches: [main, develop]
+  schedule:
+    - cron: '0 2 * * *'  # Nightly at 2 AM UTC
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run integration tests
+        run: |
+          pytest tests/integration/ -v -s \
+            --timeout=300 \
+            --tb=short \
+            -m integration \
+            --junitxml=integration-test-results.xml
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src:${{ github.workspace }}/scripts
+          TRADING_SYMBOLS: 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT'
+          TRADING_MODE: 'paper'
+          CAPITAL_USDT: '100'
+          CONFIG_PATH: 'config/config.example.yaml'
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: integration-test-results
+          path: integration-test-results.xml
+      
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: integration-test-logs
+          path: logs/
+      
+      - name: Comment test results on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const testResults = fs.existsSync('integration-test-results.xml');
+            
+            if (testResults) {
+              const body = `## Integration Test Results
+              
+              ✅ Integration tests completed. Check the workflow logs for details.
+              
+              **Tests include:**
+              - Bot freeze detection (30s runtime test)
+              - WebSocket streaming verification
+              - Config consistency across modules
+              - Async task management
+              - Connection state tracking
+              `;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            }
