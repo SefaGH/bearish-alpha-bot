@@ -1,5 +1,7 @@
 # Bot İyileştirme Raporu
 
+> **📝 Note (2025-10):** This project now standardizes on **Python 3.11**. While this document mentions Python 3.12 improvements, the project has moved to Python 3.11 due to `aiohttp 3.8.6` compatibility requirements. See README.md for details.
+
 Bu dokuman, Bearish Alpha Bot'ta yapılan analiz ve iyileştirmeleri özetlemektedir.
 
 ## Tespit Edilen Kritik Hatalar

@@ -295,6 +295,124 @@ If a symbol is not generating signals:
 3. **Check EMA alignment**: Ensure EMA filters aren't too strict
 4. **Verify data**: Ensure the symbol has sufficient historical data (120+ bars)
 
+---
+
+## 📋 Requirements
+
+### Python Version: 3.11 (REQUIRED)
+
+**⚠️ CRITICAL:** This project **requires Python 3.11**. Python 3.12+ is **NOT supported**.
+
+#### Why Python 3.11?
+
+The project uses `aiohttp==3.8.6` for WebSocket connectivity via `ccxt.pro`, which is incompatible with Python 3.12 due to internal API changes:
+
+```bash
+# Python 3.12 compilation error:
+aiohttp/_websocket.c:3744:45: error: 'PyLongObject' has no member named 'ob_digit'
+error: command '/usr/bin/x86_64-linux-gnu-gcc' failed with exit code 1
+```
+
+**Root cause:** Python 3.12 removed the internal `PyLongObject.ob_digit` API that `aiohttp 3.8.6` depends on.
+
+Additionally, some project dependencies require Python 3.11 for stability.
+
+### Installation Options
+
+#### Option 1: Using pyenv (Recommended)
+
+```bash
+# Install pyenv (if not already installed)
+curl https://pyenv.run | bash
+
+# Install Python 3.11
+pyenv install 3.11.9
+
+# Set Python 3.11 for this project
+cd /path/to/bearish-alpha-bot
+pyenv local 3.11.9
+
+# Verify
+python --version  # Should show: Python 3.11.9
+```
+
+#### Option 2: System Python
+
+Make sure you have Python 3.11 installed:
+
+```bash
+# Check current version
+python --version
+
+# If not 3.11, install it:
+# Ubuntu/Debian
+sudo apt update
+sudo apt install python3.11 python3.11-venv python3.11-dev
+
+# macOS
+brew install python@3.11
+
+# Windows
+# Download from https://www.python.org/downloads/
+```
+
+### Installing Dependencies
+
+```bash
+# Verify Python version first
+python --version  # Must be 3.11.x
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Or install the project (uses pyproject.toml constraint)
+pip install .
+```
+
+### Verification
+
+```bash
+# Check Python version
+python --version
+# Expected: Python 3.11.x
+
+# Check aiohttp can be imported
+python -c "import aiohttp; print(f'aiohttp {aiohttp.__version__}')"
+# Expected: aiohttp 3.8.6
+
+# Run tests
+pytest tests/ -v
+```
+
+### Troubleshooting Python Version Issues
+
+If you encounter Python version errors:
+
+1. **Check active Python version:**
+   ```bash
+   python --version
+   which python
+   ```
+
+2. **If using wrong version:**
+   ```bash
+   # Use pyenv
+   pyenv local 3.11.9
+   
+   # Or use python3.11 explicitly
+   python3.11 -m pip install -r requirements.txt
+   python3.11 scripts/live_trading_launcher.py
+   ```
+
+3. **Create virtual environment with Python 3.11:**
+   ```bash
+   python3.11 -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+
+---
+
 ## Hızlı Başlangıç (sadece GitHub)
 1. **Secrets ayarla** (Repo → Settings → Secrets and variables → Actions)
    - `EXCHANGES`: örn. `bingx,binance,kucoinfutures`

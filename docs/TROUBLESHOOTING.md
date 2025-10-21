@@ -421,7 +421,7 @@ datetime.now(timezone.utc)
   - (Opsiyonel) TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 **b) Python version:**
-Tüm workflow'larda `python-version: "3.12"` olmalı.
+Tüm workflow'larda `python-version: "3.11"` olmalı. Python 3.12+ desteklenmez (aiohttp 3.8.6 uyumsuzluğu).
 
 **c) Artifacts:**
 "No files found" hatası normaldir eğer sinyal yoksa.
@@ -477,7 +477,7 @@ print(data)
 
 Sorun yaşıyorsanız sırayla kontrol edin:
 
-- [ ] Python 3.12 kullanıyor musunuz? `python --version`
+- [ ] Python 3.11 kullanıyor musunuz? `python --version` (3.12+ desteklenmez!)
 - [ ] Requirements yüklü mü? `pip install -r requirements.txt`
 - [ ] EXCHANGES set edilmiş mi? `echo $EXCHANGES`
 - [ ] API credentials doğru mu? `echo $BINANCE_KEY`
