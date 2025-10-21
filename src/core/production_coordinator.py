@@ -297,9 +297,9 @@ class ProductionCoordinator:
                 # İlk mevcut exchange'i kullan
                 for exchange_name, client in self.exchange_clients.items():
                     try:
-                        df_30m = self._fetch_ohlcv(client, symbol, '30m')
-                        df_1h = self._fetch_ohlcv(client, symbol, '1h')
-                        df_4h = self._fetch_ohlcv(client, symbol, '4h')
+                        df_30m = await self._fetch_ohlcv(client, symbol, '30m')
+                        df_1h = await self._fetch_ohlcv(client, symbol, '1h')
+                        df_4h = await self._fetch_ohlcv(client, symbol, '4h')
                         break
                     except Exception as e:
                         logger.debug(f"REST API fetch failed for {symbol} on {exchange_name}: {e}")
@@ -454,7 +454,7 @@ class ProductionCoordinator:
             return None 
 
     async def _process_trading_loop(self):
-        """Main trading loop processing."""
+        """Main trading loop processing with timeout protection."""
         try:
             if not self.active_symbols:
                 logger.warning("No active symbols to process")
@@ -462,11 +462,16 @@ class ProductionCoordinator:
             
             logger.info(f"🔄 Processing {len(self.active_symbols)} symbols: {self.active_symbols}")
                 
-            # Process each active symbol
+            # Process each active symbol with timeout
             for symbol in self.active_symbols:
                 try:
-                    # Process symbol - AWAIT KULLAN!
-                    signal = await self.process_symbol(symbol)
+                    logger.debug(f"Processing symbol: {symbol}")
+                    
+                    # Add timeout to prevent indefinite blocking (30 seconds per symbol)
+                    signal = await asyncio.wait_for(
+                        self.process_symbol(symbol),
+                        timeout=30.0
+                    )
                     
                     if signal:
                         # Submit signal to trading engine
@@ -478,12 +483,18 @@ class ProductionCoordinator:
                     if self.processed_symbols_count % 10 == 0:
                         self._print_position_dashboard()
                     
+                except asyncio.TimeoutError:
+                    logger.error(f"⏱️ Timeout processing {symbol} (>30s) - skipping")
+                    continue
                 except Exception as e:
                     logger.error(f"Error processing {symbol}: {e}")
                     continue
             
+            logger.debug(f"✓ Completed processing {len(self.active_symbols)} symbols")
+            
         except Exception as e:
             logger.error(f"Trading loop error: {e}")
+
 
     async def _initialize_production_system(self) -> bool:
         """Legacy wrapper - just calls the public method."""
@@ -685,9 +696,13 @@ class ProductionCoordinator:
             start_time = datetime.now(timezone.utc)
             last_recommendation_time = start_time
             recommendation_interval = 300  # Her 5 dakikada bir recommendations
+            loop_iteration = 0
             
             while self.is_running:
                 try:
+                    loop_iteration += 1
+                    logger.debug(f"🔁 Trading loop iteration {loop_iteration} started")
+                    
                     # Check emergency conditions
                     if self.emergency_stop_triggered:
                         logger.critical("Emergency stop triggered - shutting down")
@@ -751,6 +766,7 @@ class ProductionCoordinator:
                                 logger.debug(f"Could not get recommendations: {e}")
                     
                     # Sleep between iterations
+                    logger.debug(f"🔁 Trading loop iteration {loop_iteration} completed, sleeping {self.loop_interval}s")
                     await asyncio.sleep(self.loop_interval)
                     
                 except KeyboardInterrupt:
@@ -1117,10 +1133,16 @@ class ProductionCoordinator:
         
         return df
     
-    def _fetch_ohlcv(self, client, symbol: str, timeframe: str) -> pd.DataFrame:
-        """Helper method to fetch OHLCV data via REST API."""
+    async def _fetch_ohlcv(self, client, symbol: str, timeframe: str) -> pd.DataFrame:
+        """
+        Helper method to fetch OHLCV data via REST API.
+        
+        This method runs the blocking client.ohlcv() call in a thread pool to prevent
+        blocking the async event loop, which was causing the bot to freeze.
+        """
         try:
-            rows = client.ohlcv(symbol, timeframe, limit=200)
+            # Run blocking I/O in thread pool to prevent event loop blocking
+            rows = await asyncio.to_thread(client.ohlcv, symbol, timeframe, limit=200)
             return self._ohlcv_to_dataframe(rows)
         except Exception as e:
             logger.error(f"Failed to fetch {symbol} {timeframe}: {e}")
