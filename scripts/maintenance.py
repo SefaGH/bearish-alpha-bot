@@ -56,7 +56,8 @@ def patch_docker_python_312():
     txt = read(df)
     if not txt:
         return changed
-    new = re.sub(r"FROM\s+python:3\.\d+-slim", "FROM python:3.12-slim", txt)
+    # Update to Python 3.11 (standardized version)
+    new = re.sub(r"FROM\s+python:3\.\d+-slim", "FROM python:3.11-slim", txt)
     if write_if_changed(df, new) and new != txt:
         changed.append(df)
     return changed

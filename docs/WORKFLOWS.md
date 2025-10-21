@@ -5,7 +5,7 @@ Tüm job’larda:
 ```yaml
 - uses: actions/setup-python@v5
   with:
-    python-version: "3.12"
+    python-version: "3.11"
 
 - name: Install deps
   run: |

@@ -7,6 +7,18 @@ Live Trading Launcher for Bearish Alpha Bot
 
 import sys
 import os
+
+# Check Python version at startup (before any other imports)
+REQUIRED_PYTHON = (3, 11)
+if sys.version_info[:2] != REQUIRED_PYTHON:
+    raise RuntimeError(
+        f"❌ Python {REQUIRED_PYTHON[0]}.{REQUIRED_PYTHON[1]} is required!\n"
+        f"   Current: Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n"
+        f"   Please install Python 3.11 and try again.\n"
+        f"   Recommended: Use pyenv to manage Python versions.\n"
+        f"   See README.md for installation instructions."
+    )
+
 import asyncio
 import logging
 import argparse

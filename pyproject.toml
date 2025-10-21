@@ -1,0 +1,45 @@
+[project]
+name = "bearish-alpha-bot"
+version = "1.0.0"
+description = "Bearish Alpha Trading Bot - Crypto derivatives trading focused on bearish market opportunities"
+requires-python = ">=3.11,<3.12"
+readme = "README.md"
+license = {text = "MIT"}
+
+authors = [
+    {name = "SefaGH"}
+]
+
+dependencies = [
+    "ccxt>=4.0.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
+    "requests>=2.32.0",
+    "python-telegram-bot>=21.0",
+    "aiohttp==3.8.6",
+    "yarl<2.0",
+    "multidict<7.0",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+
+markers = [
+    "integration: mark test as integration test (slow, needs all dependencies)",
+    "unit: mark test as unit test (fast, can use mocks)",
+    "asyncio: mark test as async test",
+    "phase3: ML/AI features (Phase 3 - Advanced ML models)",
+    "slow: Tests that take more than 5 seconds",
+]
