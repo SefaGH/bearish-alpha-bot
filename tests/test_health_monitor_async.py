@@ -203,7 +203,7 @@ class TestHealthMonitorAsync:
         
         finally:
             # Clean up environment
-            del os.environ['HEALTH_CHECK_INTERVAL']
+            os.environ.pop('HEALTH_CHECK_INTERVAL', None)
     
     @pytest.mark.asyncio
     async def test_health_monitor_stop_event(self):
