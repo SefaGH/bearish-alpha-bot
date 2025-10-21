@@ -12,6 +12,7 @@ Date: 2025-10-20
 """
 
 import os
+import re
 import yaml
 from typing import Dict, List, Any, Optional
 import logging
@@ -73,9 +74,56 @@ class LiveTradingConfiguration:
         value = os.getenv(key)
         if value:
             result = [s.strip() for s in value.split(',') if s.strip()]
+            
+            # Validate symbols if this is TRADING_SYMBOLS
+            if key == 'TRADING_SYMBOLS' and result:
+                valid_symbols = cls._validate_trading_symbols(result)
+                
+                if not valid_symbols:
+                    logger.warning(f"⚠️ All symbols in {key} are invalid, using defaults: {default}")
+                    return default
+                elif len(valid_symbols) < len(result):
+                    invalid = set(result) - set(valid_symbols)
+                    logger.warning(f"⚠️ Invalid symbols filtered from {key}: {invalid}")
+                    result = valid_symbols
+            
             logger.debug(f"✓ ENV: {key} = {result}")
             return result
         return default
+    
+    @classmethod
+    def _validate_trading_symbols(cls, symbols: List[str]) -> List[str]:
+        """
+        Validate trading symbol format.
+        
+        Valid formats:
+        - BTC/USDT:USDT (perpetual futures)
+        - BTC/USDT (spot)
+        - ETH-PERP (some exchanges)
+        
+        Args:
+            symbols: List of symbol strings to validate
+            
+        Returns:
+            List of valid symbols only
+        """
+        valid_symbols = []
+        
+        # Common trading pair patterns
+        patterns = [
+            r'^[A-Z0-9]{2,10}/[A-Z]{3,5}:[A-Z]{3,5}$',  # BTC/USDT:USDT
+            r'^[A-Z0-9]{2,10}/[A-Z]{3,5}$',              # BTC/USDT
+            r'^[A-Z0-9]{2,10}-PERP$',                    # BTC-PERP
+        ]
+        
+        for symbol in symbols:
+            # Check if matches any valid pattern (case-insensitive)
+            if any(re.match(pattern, symbol.upper()) for pattern in patterns):
+                valid_symbols.append(symbol)
+            else:
+                logger.warning(f"⚠️ Invalid symbol format: {symbol}")
+        
+        return valid_symbols
     
     # ============= CONFIG LOADERS =============
     
