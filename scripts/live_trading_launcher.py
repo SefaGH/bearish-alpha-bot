@@ -225,9 +225,10 @@ class HealthMonitor:
     """
     HEALTH MONITORING SYSTEM (Layer 3 Guardian)
     
-    [... mevcut kod ...]
+    Non-blocking health monitoring system that runs in the background
+    and provides periodic health checks and alerts.
     """
-    # Mevcut HealthMonitor sınıfı aynen kalıyor
+    
     def __init__(self, telegram: Optional[Telegram] = None):
         """
         Initialize health monitor.
@@ -238,7 +239,7 @@ class HealthMonitor:
         self.telegram = telegram
         self.start_time = datetime.now(timezone.utc)
         self.last_heartbeat = datetime.now(timezone.utc)
-        self.heartbeat_interval = 300  # 5 minutes
+        self.heartbeat_interval = int(os.getenv('HEALTH_CHECK_INTERVAL', '300'))  # 5 minutes default
         
         # Performance metrics
         self.metrics = {
@@ -251,8 +252,8 @@ class HealthMonitor:
         
         # Health status
         self.health_status = 'healthy'
-        self.monitoring_active = False
-        self.monitor_task = None
+        self._task: Optional[asyncio.Task] = None
+        self._stop_event = asyncio.Event()
         
         logger.info("="*70)
         logger.info("HEALTH MONITORING SYSTEM INITIALIZED (Layer 3 Guardian)")
@@ -260,33 +261,58 @@ class HealthMonitor:
         logger.info(f"Heartbeat Interval: {self.heartbeat_interval}s")
         logger.info("="*70)
     
-    async def start_monitoring(self):
-        """Start health monitoring task."""
-        if not self.monitoring_active:
-            self.monitoring_active = True
-            self.monitor_task = asyncio.create_task(self._monitor_loop())
-            logger.info("✓ Health monitoring started")
+    async def start_monitoring(self) -> asyncio.Task:
+        """
+        Start monitoring in background (idempotent, non-blocking).
+        
+        Returns:
+            The asyncio task running the monitoring loop
+        """
+        if self._task and not self._task.done():
+            logger.warning("Health monitor already running")
+            return self._task
+        
+        self._stop_event.clear()
+        self._task = asyncio.create_task(self._monitoring_loop())
+        logger.info("Health monitor loop started in background")
+        return self._task
     
     async def stop_monitoring(self):
-        """Stop health monitoring task."""
-        self.monitoring_active = False
-        if self.monitor_task and not self.monitor_task.done():
-            self.monitor_task.cancel()
+        """Stop monitoring gracefully."""
+        if not self._task:
+            return
+        
+        logger.info("Stopping health monitor...")
+        self._stop_event.set()
+        
+        if self._task and not self._task.done():
+            self._task.cancel()
             try:
-                await self.monitor_task
+                await self._task
             except asyncio.CancelledError:
                 pass
-        logger.info("✓ Health monitoring stopped")
+        
+        logger.info("Health monitor stopped")
     
-    async def _monitor_loop(self):
-        """Main health monitoring loop."""
+    async def _monitoring_loop(self):
+        """Internal loop - runs in background."""
+        logger.info("Health monitor loop started")
+        
         try:
-            while self.monitoring_active:
-                await asyncio.sleep(self.heartbeat_interval)
+            while not self._stop_event.is_set():
+                # Wait for heartbeat interval or stop event
+                try:
+                    await asyncio.wait_for(
+                        self._stop_event.wait(),
+                        timeout=self.heartbeat_interval
+                    )
+                    break  # Stop event was set
+                except asyncio.TimeoutError:
+                    # Normal timeout - perform health check
+                    pass
                 
-                # Send heartbeat
+                # Perform health checks
                 uptime = (datetime.now(timezone.utc) - self.start_time).total_seconds()
-                time_since_last = (datetime.now(timezone.utc) - self.last_heartbeat).total_seconds()
                 
                 logger.info(f"💓 Heartbeat - Uptime: {uptime/3600:.1f}h, Status: {self.health_status}")
                 
@@ -303,11 +329,12 @@ class HealthMonitor:
                         f"Loops: {self.metrics['loops_completed']}\n"
                         f"Errors: {self.metrics['errors_caught']}"
                     )
-                    
+        
         except asyncio.CancelledError:
-            logger.info("Health monitoring cancelled")
-        except Exception as e:
-            logger.error(f"Error in health monitor: {e}")
+            logger.info("Health monitor loop cancelled")
+            raise
+        finally:
+            logger.info("Health monitor loop exited")
     
     def record_error(self, error: str):
         """Record an error in the metrics."""
@@ -1048,12 +1075,18 @@ class LiveTradingLauncher:
                 f"Take Profit: {self.RISK_PARAMS['take_profit_pct']:.1%}"
             )
         
+        # Store health task for cleanup
+        _health_task = None
+        
         try:
-            # Start health monitoring if enabled
+            # Start health monitoring in background (non-blocking)
             if self.health_monitor:
-                await self.health_monitor.start_monitoring()
+                _health_task = asyncio.create_task(
+                    self.health_monitor.start_monitoring()
+                )
+                logger.info("✓ Health monitor started in background")
             
-            # Start production trading loop with continuous mode if enabled
+            # Now main flow can proceed!
             await self.coordinator.run_production_loop(
                 mode=self.mode,
                 duration=duration,
@@ -1071,9 +1104,20 @@ class LiveTradingLauncher:
             await self._emergency_shutdown(f"Critical error: {e}")
         
         finally:
-            # Stop health monitoring
+            # Gracefully stop health monitor
             if self.health_monitor:
-                await self.health_monitor.stop_monitoring()
+                try:
+                    await self.health_monitor.stop_monitoring()
+                except Exception as e:
+                    logger.error(f"Error stopping health monitor: {e}")
+            
+            # Cancel background task if still running
+            if _health_task and not _health_task.done():
+                _health_task.cancel()
+                try:
+                    await _health_task
+                except asyncio.CancelledError:
+                    pass
             
             # Shutdown WebSocket connections
             if self.ws_optimizer:
