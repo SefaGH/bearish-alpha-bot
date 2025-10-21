@@ -803,43 +803,85 @@ class LiveTradingEngine:
             logger.error(f"Fatal error in signal processing loop: {e}", exc_info=True)
     
     def _get_scan_symbols(self) -> List[str]:
-        """Get symbols to scan - optimized for fixed symbols mode."""
+        """Get symbols to scan with support for fixed list and auto-select modes."""
 
-        # Cache kontrolü
         if self._cached_symbols:
             return self._cached_symbols
-        
-        # Config'den direkt oku
+
         cfg = self.config
         universe_cfg = cfg.get('universe', {})
-        
-        # Sabit liste var mı?
+
         fixed_symbols = universe_cfg.get('fixed_symbols', [])
         auto_select = universe_cfg.get('auto_select', False)
-        
-        # ✅ DÜZELTME 8: Güvenli kontrol ve type checking
+
         if fixed_symbols and isinstance(fixed_symbols, list) and not auto_select:
-            # Direkt kullan, market yükleme YOK!
             logger.info(f"[UNIVERSE] ✅ Using {len(fixed_symbols)} FIXED symbols (no market loading)")
-            
-            # Validate symbols
+
             valid_symbols = []
             for symbol in fixed_symbols:
                 if isinstance(symbol, str) and '/' in symbol:
                     valid_symbols.append(symbol)
                 else:
                     logger.warning(f"[UNIVERSE] Invalid symbol format: {symbol}")
-            
+
             self._cached_symbols = valid_symbols
-            
-            # Exchange client'lara bildir (eğer varsa)
+
             if self.exchange_clients:
                 for client in self.exchange_clients.values():
                     if hasattr(client, 'set_required_symbols'):
                         client.set_required_symbols(valid_symbols)
-            
-            logger.info(f"[UNIVERSE] Symbols: {', '.join(valid_symbols[:5])}..." if valid_symbols else "No symbols")
+
+            if valid_symbols:
+                preview = ', '.join(valid_symbols[:5])
+                logger.info(f"[UNIVERSE] Symbols: {preview}...")
+            else:
+                logger.warning("[UNIVERSE] No valid fixed symbols provided")
+
             return valid_symbols
+
+        if auto_select:
+            logger.warning("[UNIVERSE] Auto-select mode enabled (will load all markets)")
+
+            try:
+                from universe import build_universe
+
+                universe_dict = build_universe(self.exchange_clients, cfg)
+
+                all_symbols: List[str] = []
+                for exchange_symbols in universe_dict.values():
+                    all_symbols.extend(exchange_symbols)
+
+                unique_symbols = sorted(set(all_symbols))
+
+                if self.exchange_clients:
+                    for client in self.exchange_clients.values():
+                        if hasattr(client, 'set_required_symbols'):
+                            client.set_required_symbols(unique_symbols)
+
+                self._cached_symbols = unique_symbols
+                logger.info(f"[UNIVERSE] Auto-selected {len(unique_symbols)} symbols")
+                return unique_symbols
+
+            except ImportError:
+                logger.error("[UNIVERSE] Universe builder not available")
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error(f"[UNIVERSE] Error building universe: {exc}")
+
+        logger.warning("[UNIVERSE] Using default symbols (config not properly set)")
+        default_symbols = [
+            'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT',
+            'BNB/USDT:USDT', 'ADA/USDT:USDT', 'DOT/USDT:USDT',
+            'LTC/USDT:USDT', 'AVAX/USDT:USDT'
+        ]
+
+        self._cached_symbols = default_symbols
+
+        if self.exchange_clients:
+            for client in self.exchange_clients.values():
+                if hasattr(client, 'set_required_symbols'):
+                    client.set_required_symbols(default_symbols)
+
+        return default_symbols
 
     def _load_duplicate_prevention_config(self) -> Dict[str, Any]:
         """Load duplicate prevention configuration with fallbacks."""
@@ -921,52 +963,6 @@ class LiveTradingEngine:
         if entry_price and entry_price > 0:
             price_history = self._local_signal_price_history[symbol]
             price_history.append((timestamp, entry_price))
-
-        # Auto-select mode (önerilmez)
-        if auto_select:
-            logger.warning("[UNIVERSE] Auto-select mode enabled (will load all markets)")
-            
-            # Import universe builder
-            try:
-                from universe import build_universe
-                
-                # Build universe using exchange clients
-                universe_dict = build_universe(self.exchange_clients, cfg)
-                
-                # Flatten all symbols from all exchanges
-                all_symbols = []
-                for exchange_symbols in universe_dict.values():
-                    all_symbols.extend(exchange_symbols)
-                
-                # Remove duplicates
-                unique_symbols = list(set(all_symbols))
-                
-                # Set required symbols on all clients
-                if self.exchange_clients:
-                    for client in self.exchange_clients.values():
-                        if hasattr(client, 'set_required_symbols'):
-                            client.set_required_symbols(unique_symbols)
-                
-                # Cache the result
-                self._cached_symbols = unique_symbols
-                
-                logger.info(f"[UNIVERSE] Auto-selected {len(unique_symbols)} symbols")
-                return unique_symbols
-                
-            except ImportError:
-                logger.error("[UNIVERSE] Universe builder not available")
-            except Exception as e:
-                logger.error(f"[UNIVERSE] Error building universe: {e}")
-        
-        # Fallback to default symbols
-        logger.warning("[UNIVERSE] Using default symbols (config not properly set)")
-        default_symbols = [
-            'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT',
-            'BNB/USDT:USDT', 'ADA/USDT:USDT', 'DOT/USDT:USDT',
-            'LTC/USDT:USDT', 'AVAX/USDT:USDT'
-        ]
-        self._cached_symbols = default_symbols
-        return default_symbols
     
     def _get_ohlcv_with_priority(self, symbol: str, timeframe: str, limit: int = 100):
         """

@@ -159,6 +159,46 @@ class TestSignalQueueExecution:
     def test_queue_priority_over_scanning(self):
         asyncio.run(self._queue_priority_over_scanning())
 
+    def test_record_local_signal_duplicate_tracking(self):
+        """Ensure duplicate prevention bookkeeping remains functional."""
+
+        mock_risk_manager = Mock(spec=RiskManager)
+        mock_risk_manager.calculate_position_size = AsyncMock(return_value=0.01)
+        mock_risk_manager.validate_new_position = AsyncMock(return_value=(True, "Valid", {}))
+        mock_risk_manager.active_positions = {}
+
+        mock_portfolio_manager = Mock(spec=PortfolioManager)
+        mock_portfolio_manager.strategies = {}
+        mock_portfolio_manager.get_strategy_allocation = Mock(return_value=0.25)
+        mock_portfolio_manager.performance_monitor = None
+        mock_portfolio_manager.exchange_clients = {}
+
+        engine = LiveTradingEngine(
+            mode='paper',
+            portfolio_manager=mock_portfolio_manager,
+            risk_manager=mock_risk_manager,
+            exchange_clients={}
+        )
+
+        signal = {
+            'symbol': 'BTC/USDT:USDT',
+            'side': 'long',
+            'entry': 50000.0,
+            'stop': 49000.0,
+            'target': 52000.0,
+            'strategy': 'test_strategy',
+            'reason': 'duplicate-check'
+        }
+
+        allowed, reason = engine._should_queue_local_signal('test_strategy', signal)
+        assert allowed, reason
+
+        allowed_again, reason_again = engine._should_queue_local_signal('test_strategy', signal)
+        assert not allowed_again
+        assert 'cooldown' in reason_again.lower()
+        assert engine._local_last_signal_time
+        assert engine._local_signal_price_history['BTC/USDT:USDT']
+
     async def _queue_priority_over_scanning(self):
         """
         Test that signals in queue are processed BEFORE market scanning.
