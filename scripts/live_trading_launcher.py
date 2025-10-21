@@ -225,11 +225,37 @@ class OptimizedWebSocketManager:
         
         return status
     
+    async def stop_streaming(self) -> None:
+        """
+        Stop all WebSocket streams properly.
+        
+        CRITICAL: Must be called on shutdown to close connections!
+        This method ensures all WebSocket streams are properly terminated and
+        prevents resource leaks that can cause subsequent runs to hang.
+        """
+        if not self.ws_manager:
+            logger.info("[WS-OPT] No WebSocket manager to stop")
+            return
+        
+        logger.info("[WS-OPT] Stopping WebSocket streams...")
+        
+        try:
+            # Use the existing close method which handles task cancellation
+            await asyncio.wait_for(
+                self.ws_manager.close(),
+                timeout=10.0
+            )
+            logger.info("[WS-OPT] ✅ WebSocket streams stopped")
+            self.is_initialized = False
+            
+        except asyncio.TimeoutError:
+            logger.warning("[WS-OPT] ⚠️ WebSocket stop timeout (10s)")
+        except Exception as e:
+            logger.error(f"[WS-OPT] ⚠️ Error stopping WebSocket: {e}")
+    
     async def shutdown(self) -> None:
         """Shutdown WebSocket connections."""
-        if self.ws_manager:
-            await self.ws_manager.close()
-            logger.info("[WS-OPT] WebSocket connections closed")
+        await self.stop_streaming()
 
 # ============= End of WebSocket Optimization Manager =============
 
@@ -495,6 +521,10 @@ class LiveTradingLauncher:
         self.restart_manager = None
         self.health_monitor = None
         
+        # Cleanup tracking
+        self._cleanup_done = False
+        self._shutdown_event = asyncio.Event()
+        
         # WebSocket optimization manager
         self.ws_optimizer = None
         
@@ -588,6 +618,129 @@ class LiveTradingLauncher:
             logger.info(f"✓ Using default {len(self.trading_pairs)} symbols")
         
         return self.trading_pairs
+    
+    async def cleanup(self):
+        """
+        Properly cleanup all resources.
+        
+        CRITICAL: Must be called before exit to prevent resource leaks!
+        This method is idempotent - safe to call multiple times.
+        
+        Cleans up:
+        - WebSocket streams
+        - Exchange connections (ccxt clients)
+        - Production system components
+        - Async tasks
+        - Log handlers
+        """
+        if self._cleanup_done:
+            logger.info("Cleanup already completed, skipping")
+            return
+        
+        logger.info("=" * 70)
+        logger.info("🧹 STARTING CLEANUP")
+        logger.info("=" * 70)
+        
+        cleanup_errors = []
+        
+        try:
+            # 1. Stop WebSocket streams
+            if self.ws_optimizer:
+                logger.info("Stopping WebSocket streams...")
+                try:
+                    await asyncio.wait_for(
+                        self.ws_optimizer.stop_streaming(),
+                        timeout=10.0
+                    )
+                    logger.info("✅ WebSocket streams stopped")
+                except asyncio.TimeoutError:
+                    logger.error("⚠️ WebSocket stop timeout (10s)")
+                    cleanup_errors.append("WebSocket stop timeout")
+                except Exception as e:
+                    logger.error(f"⚠️ WebSocket stop failed: {e}")
+                    cleanup_errors.append(f"WebSocket: {e}")
+            
+            # 2. Close production system components
+            if self.coordinator:
+                logger.info("Closing production system...")
+                try:
+                    await asyncio.wait_for(
+                        self.coordinator.stop_system(),
+                        timeout=10.0
+                    )
+                    logger.info("✅ Production system stopped")
+                except asyncio.TimeoutError:
+                    logger.error("⚠️ Production system stop timeout (10s)")
+                    cleanup_errors.append("Production system timeout")
+                except Exception as e:
+                    logger.error(f"⚠️ Production system stop failed: {e}")
+                    cleanup_errors.append(f"Production system: {e}")
+            
+            # 3. Close exchange clients (CRITICAL!)
+            if self.exchange_clients:
+                logger.info("Closing exchange connections...")
+                for exchange_name, client in self.exchange_clients.items():
+                    try:
+                        await asyncio.wait_for(
+                            client.close(),
+                            timeout=5.0
+                        )
+                        logger.info(f"✅ {exchange_name} connection closed")
+                    except asyncio.TimeoutError:
+                        logger.error(f"⚠️ {exchange_name} close timeout (5s)")
+                        cleanup_errors.append(f"{exchange_name} close timeout")
+                    except Exception as e:
+                        logger.error(f"⚠️ {exchange_name} close failed: {e}")
+                        cleanup_errors.append(f"{exchange_name}: {e}")
+            
+            # 4. Cancel pending async tasks
+            logger.info("Cancelling pending tasks...")
+            pending = [t for t in asyncio.all_tasks() if not t.done() and t is not asyncio.current_task()]
+            
+            if pending:
+                logger.info(f"⚠️ Found {len(pending)} pending tasks")
+                
+                for task in pending:
+                    task.cancel()
+                    logger.debug(f"Cancelled task: {task.get_name()}")
+                
+                # Wait for cancellation with timeout
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*pending, return_exceptions=True),
+                        timeout=5.0
+                    )
+                    logger.info("✅ All pending tasks cancelled")
+                except asyncio.TimeoutError:
+                    logger.warning("⚠️ Some tasks did not cancel in time")
+                    cleanup_errors.append("Task cancellation timeout")
+            else:
+                logger.info("✅ No pending tasks")
+            
+            # 5. Flush logs
+            logger.info("Flushing logs...")
+            for handler in logger.handlers:
+                try:
+                    handler.flush()
+                except Exception as e:
+                    logger.error(f"⚠️ Log flush failed: {e}")
+            
+            self._cleanup_done = True
+            
+            logger.info("=" * 70)
+            if cleanup_errors:
+                logger.warning(f"⚠️ CLEANUP COMPLETED WITH {len(cleanup_errors)} ERRORS:")
+                for error in cleanup_errors:
+                    logger.warning(f"  - {error}")
+            else:
+                logger.info("✅ CLEANUP COMPLETED SUCCESSFULLY")
+            logger.info("=" * 70)
+            
+        except Exception as e:
+            logger.error(f"❌ Cleanup fatal error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
     
     def _load_environment(self) -> bool:
         """
@@ -1144,27 +1297,16 @@ class LiveTradingLauncher:
             
         except KeyboardInterrupt:
             logger.info("\n⚠ Keyboard interrupt received - initiating shutdown...")
-            await self._shutdown()
+            raise  # Re-raise to be caught by main()
             
         except Exception as e:
             logger.error(f"❌ Critical error in trading loop: {e}")
             if self.health_monitor:
                 self.health_monitor.record_error(str(e))
-            await self._emergency_shutdown(f"Critical error: {e}")
+            raise  # Re-raise to be caught by main()
         
         finally:
-            # Cleanup WebSocket tasks
-            if ws_tasks:
-                logger.info(f"Cancelling {len(ws_tasks)} WebSocket streams...")
-                for task in ws_tasks:
-                    if not task.done():
-                        task.cancel()
-                
-                # Wait for cancellation
-                await asyncio.gather(*ws_tasks, return_exceptions=True)
-                logger.info("✓ All WebSocket streams cancelled")
-            
-            # Gracefully stop health monitor
+            # Stop health monitor first
             if self.health_monitor:
                 try:
                     await self.health_monitor.stop_monitoring()
@@ -1178,10 +1320,6 @@ class LiveTradingLauncher:
                     await _health_task
                 except asyncio.CancelledError:
                     pass
-            
-            # Shutdown WebSocket connections
-            if self.ws_optimizer:
-                await self.ws_optimizer.shutdown()
     
     async def _monitor_websocket_health(self):
         """
@@ -1559,10 +1697,23 @@ class LiveTradingLauncher:
             
             return 0
             
+        except KeyboardInterrupt:
+            logger.warning("⚠️ Interrupted by user (Ctrl+C)")
+            return 130  # Standard exit code for Ctrl+C
+            
         except Exception as e:
             logger.critical(f"❌ Fatal error: {e}")
-            await self._emergency_shutdown(f"Fatal error: {e}")
+            import traceback
+            traceback.print_exc()
             return 1
+        
+        finally:
+            # ✅ ALWAYS cleanup, even on error!
+            logger.info("Performing cleanup...")
+            try:
+                await self.cleanup()
+            except Exception as e:
+                logger.error(f"❌ Cleanup failed: {e}")
     
     async def _run_with_auto_restart(self, duration: Optional[float] = None) -> int:
         """
@@ -1733,20 +1884,58 @@ Examples:
     # Determine mode
     mode = 'paper' if args.paper else 'live'
     
-    # Create and run launcher
-    launcher = LiveTradingLauncher(
-        mode=mode, 
-        dry_run=args.dry_run,
-        infinite=args.infinite,
-        auto_restart=args.auto_restart,
-        max_restarts=args.max_restarts,
-        restart_delay=args.restart_delay,
-        debug_mode=args.debug
-    )
-    exit_code = await launcher.run(duration=args.duration)
+    launcher = None
+    exit_code = 0
     
-    sys.exit(exit_code)
+    try:
+        logger.info("=" * 70)
+        logger.info("BEARISH ALPHA BOT - STARTING")
+        logger.info("=" * 70)
+        
+        # Create launcher
+        launcher = LiveTradingLauncher(
+            mode=mode, 
+            dry_run=args.dry_run,
+            infinite=args.infinite,
+            auto_restart=args.auto_restart,
+            max_restarts=args.max_restarts,
+            restart_delay=args.restart_delay,
+            debug_mode=args.debug
+        )
+        
+        # Run launcher
+        exit_code = await launcher.run(duration=args.duration)
+        
+        logger.info("✅ Trading completed successfully")
+    
+    except KeyboardInterrupt:
+        logger.warning("⚠️ Interrupted by user (Ctrl+C)")
+        exit_code = 130  # Standard exit code for Ctrl+C
+    
+    except Exception as e:
+        logger.error(f"❌ Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
+        exit_code = 1
+    
+    finally:
+        # ✅ ALWAYS cleanup, even on error!
+        if launcher:
+            logger.info("Performing final cleanup...")
+            try:
+                await launcher.cleanup()
+            except Exception as e:
+                logger.error(f"❌ Final cleanup failed: {e}")
+                if exit_code == 0:
+                    exit_code = 1
+        
+        logger.info("=" * 70)
+        logger.info(f"👋 Bot shutdown complete (exit code: {exit_code})")
+        logger.info("=" * 70)
+    
+    return exit_code
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    exit_code = asyncio.run(main())
+    sys.exit(exit_code)
