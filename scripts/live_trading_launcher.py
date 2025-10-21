@@ -252,8 +252,8 @@ class HealthMonitor:
         
         # Health status
         self.health_status = 'healthy'
-        self._task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
+        self._task: Optional[asyncio.Task] = None
         
         logger.info("="*70)
         logger.info("HEALTH MONITORING SYSTEM INITIALIZED (Layer 3 Guardian)")
