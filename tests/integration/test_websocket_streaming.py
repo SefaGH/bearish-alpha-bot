@@ -98,7 +98,7 @@ async def test_websocket_streams_deliver_data(integration_env, cleanup_tasks):
             # Run for 10 seconds
             print("\n[Step 3] Running launcher (10s runtime)...")
             await asyncio.wait_for(
-                launcher._start_trading_loop(duration=10),
+                launcher.run(duration=10),
                 timeout=20
             )
             
@@ -191,7 +191,7 @@ async def test_websocket_connection_state_tracking(integration_env, cleanup_task
             # Start launcher
             print("\n[Step 3] Starting launcher (10s runtime)...")
             launcher_task = asyncio.create_task(
-                launcher._start_trading_loop(duration=10)
+                launcher.run(duration=10)
             )
             
             # Wait for initialization
@@ -271,7 +271,7 @@ async def test_websocket_error_handling(integration_env, cleanup_tasks):
             
             # Run launcher - it should complete despite mocked WebSocket issues
             await asyncio.wait_for(
-                launcher._start_trading_loop(duration=10),
+                launcher.run(duration=10),
                 timeout=20
             )
             
