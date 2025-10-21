@@ -887,7 +887,11 @@ class LiveTradingEngine:
         if not symbol:
             return False, "missing symbol"
 
-        entry_price = signal.get('entry', 0) or signal.get('price')
+        entry_price = signal.get('entry')
+        if entry_price is None:
+            entry_price = signal.get('price')
+        if entry_price is None:
+            entry_price = 0
         now_ts = time.time()
         key = f"{symbol}:{strategy_name}"
         cooldown = config.get('cooldown_seconds', 20.0)
