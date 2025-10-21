@@ -197,7 +197,8 @@ class TestSignalQueueExecution:
         assert not allowed_again
         assert 'cooldown' in reason_again.lower()
         assert engine._local_last_signal_time
-        assert engine._local_signal_price_history['BTC/USDT:USDT']
+        history_key = 'BTC/USDT:USDT:test_strategy'
+        assert engine._local_signal_price_history[history_key]
 
     async def _queue_priority_over_scanning(self):
         """

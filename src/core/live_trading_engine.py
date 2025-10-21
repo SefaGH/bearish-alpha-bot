@@ -169,6 +169,7 @@ class LiveTradingEngine:
         # Local duplicate-prevention tracking for engine-generated signals
         self._local_duplicate_config = self._load_duplicate_prevention_config()
         self._local_last_signal_time: Dict[str, float] = {}
+        # Track recent prices per (symbol, strategy) combination for duplicate bypass decisions
         self._local_signal_price_history: defaultdict = defaultdict(lambda: deque(maxlen=10))
 
         logger.info("LiveTradingEngine initialized")
@@ -928,7 +929,9 @@ class LiveTradingEngine:
         if not symbol:
             return False, "missing symbol"
 
-        entry_price = signal.get('entry', 0) or signal.get('price')
+        entry_price = self._normalize_entry_price(signal.get('entry'))
+        if entry_price is None:
+            entry_price = self._normalize_entry_price(signal.get('price'))
         now_ts = time.time()
         key = f"{symbol}:{strategy_name}"
         cooldown = config.get('cooldown_seconds', 20.0)
@@ -939,11 +942,15 @@ class LiveTradingEngine:
             if elapsed < cooldown:
                 remaining = cooldown - elapsed
                 if config.get('price_delta_bypass_enabled', True) and entry_price:
-                    history = self._local_signal_price_history.get(symbol)
+                    history = self._local_signal_price_history.get(key)
                     if history:
                         _, last_price = history[-1]
                         if last_price:
-                            price_delta = abs(entry_price - last_price) / last_price
+                            try:
+                                price_delta = abs(entry_price - last_price) / last_price
+                            except ZeroDivisionError:
+                                price_delta = float('inf')
+
                             threshold = config.get('price_delta_threshold', 0.05)
                             if price_delta >= threshold:
                                 self._record_local_signal(symbol, strategy_name, entry_price, now_ts)
@@ -960,9 +967,25 @@ class LiveTradingEngine:
         key = f"{symbol}:{strategy_name}"
         self._local_last_signal_time[key] = timestamp
 
-        if entry_price and entry_price > 0:
-            price_history = self._local_signal_price_history[symbol]
-            price_history.append((timestamp, entry_price))
+        normalized_price = self._normalize_entry_price(entry_price)
+        if normalized_price and normalized_price > 0:
+            price_history = self._local_signal_price_history[key]
+            price_history.append((timestamp, normalized_price))
+
+    @staticmethod
+    def _normalize_entry_price(value: Optional[Any]) -> Optional[float]:
+        """Normalize raw entry price inputs to a float for duplicate checks."""
+
+        if value is None:
+            return None
+
+        if isinstance(value, (int, float)):
+            return float(value)
+
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
     
     def _get_ohlcv_with_priority(self, symbol: str, timeframe: str, limit: int = 100):
         """
