@@ -732,3 +732,26 @@ class CcxtClient:
             Ticker data dictionary
         """
         return self.ex.fetch_ticker(symbol)
+    
+    async def close(self):
+        """
+        Close the exchange connection and release all resources.
+        
+        CRITICAL: Must be called before application exit to prevent resource leaks!
+        This method properly closes the ccxt exchange connection, including:
+        - aiohttp ClientSession objects
+        - WebSocket connections
+        - Network sockets
+        
+        This prevents the "Unclosed client session" and "requires to release all 
+        resources" warnings that cause subsequent runs to hang.
+        """
+        if self.ex and hasattr(self.ex, 'close'):
+            try:
+                # ccxt.close() is async, so we await it
+                await self.ex.close()
+                logger.info(f"✅ [{self.name}] Exchange connection closed")
+            except Exception as e:
+                logger.error(f"⚠️ [{self.name}] Error closing exchange: {e}")
+        else:
+            logger.debug(f"[{self.name}] Exchange does not have close method or already closed")
