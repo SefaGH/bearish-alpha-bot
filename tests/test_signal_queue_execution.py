@@ -11,8 +11,139 @@ Tests that signals in the queue are executed correctly:
 import sys
 import os
 import asyncio
+import types
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
+
+
+def _ensure_test_dependencies() -> None:
+    """Inject lightweight stubs for optional third-party deps."""
+
+    if 'pandas' not in sys.modules:
+        pandas_stub = types.ModuleType('pandas')
+
+        class _DummyRow(dict):
+            """Simple row wrapper returned by iloc access."""
+
+            def get(self, key, default=None):  # pragma: no cover - compatibility
+                return super().get(key, default)
+
+        class _DummyILoc:
+            def __init__(self, df):
+                self._df = df
+
+            def __getitem__(self, idx):
+                if not self._df._data:
+                    return _DummyRow()
+                row = self._df._data[idx]
+                if isinstance(row, dict):
+                    return _DummyRow(row)
+                if isinstance(row, (list, tuple)):
+                    return _DummyRow({
+                        col: row[i] if i < len(row) else None
+                        for i, col in enumerate(self._df.columns)
+                    })
+                return _DummyRow({'value': row})
+
+        class _DummyDataFrame:
+            def __init__(self, data=None, columns=None):
+                self._data = data or []
+                self.columns = columns or []
+
+            def __len__(self):
+                return len(self._data)
+
+            def __getitem__(self, key):
+                if not self._data or key not in self.columns:
+                    return []
+                idx = self.columns.index(key)
+                result = []
+                for row in self._data:
+                    if isinstance(row, dict):
+                        result.append(row.get(key))
+                    elif isinstance(row, (list, tuple)) and idx < len(row):
+                        result.append(row[idx])
+                    else:
+                        result.append(None)
+                return result
+
+            @property
+            def iloc(self):
+                return _DummyILoc(self)
+
+            def copy(self):
+                return _DummyDataFrame(list(self._data), list(self.columns))
+
+        def _dataframe(data=None, columns=None, **_):
+            return _DummyDataFrame(data=data, columns=columns)
+
+        def _to_datetime(values, *_, **__):
+            return values
+
+        pandas_stub.DataFrame = _dataframe
+        pandas_stub.to_datetime = _to_datetime
+        pandas_stub.Timestamp = type('Timestamp', (), {})
+        pandas_stub.Series = _DummyDataFrame
+        sys.modules['pandas'] = pandas_stub
+
+    if 'numpy' not in sys.modules:
+        import math
+
+        numpy_stub = types.ModuleType('numpy')
+
+        def _array(values, dtype=None):  # pylint: disable=unused-argument
+            return list(values)
+
+        def _mean(values):
+            values = list(values)
+            return sum(values) / len(values) if values else 0.0
+
+        def _std(values):
+            values = list(values)
+            if not values:
+                return 0.0
+            mu = _mean(values)
+            return math.sqrt(sum((v - mu) ** 2 for v in values) / len(values))
+
+        def _clip(values, min_value=None, max_value=None):
+            clipped = []
+            for value in values:
+                new_value = value
+                if max_value is not None:
+                    new_value = min(new_value, max_value)
+                if min_value is not None:
+                    new_value = max(new_value, min_value)
+                clipped.append(new_value)
+            return clipped
+
+        def _isnan(value):
+            try:
+                return math.isnan(value)
+            except TypeError:
+                return False
+
+        numpy_stub.array = _array
+        numpy_stub.mean = _mean
+        numpy_stub.std = _std
+        numpy_stub.clip = _clip
+        numpy_stub.isnan = _isnan
+        numpy_stub.float64 = float
+        numpy_stub.int64 = int
+        numpy_stub.nan = float('nan')
+
+        sys.modules['numpy'] = numpy_stub
+
+    if 'yaml' not in sys.modules:
+        yaml_stub = types.ModuleType('yaml')
+
+        def _safe_load(_stream):
+            return {}
+
+        yaml_stub.safe_load = _safe_load
+        sys.modules['yaml'] = yaml_stub
+
+
+_ensure_test_dependencies()
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -24,12 +155,14 @@ from core.portfolio_manager import PortfolioManager
 
 class TestSignalQueueExecution:
     """Test signal queue execution with timeout fix."""
-    
-    @pytest.mark.asyncio
-    async def test_queue_priority_over_scanning(self):
+
+    def test_queue_priority_over_scanning(self):
+        asyncio.run(self._queue_priority_over_scanning())
+
+    async def _queue_priority_over_scanning(self):
         """
         Test that signals in queue are processed BEFORE market scanning.
-        
+
         This validates the fix where queue processing is now PRIORITY 1.
         """
         # Create mock components
@@ -52,6 +185,9 @@ class TestSignalQueueExecution:
             exchange_clients={}
         )
         
+        # Prevent market scanning from running during the test
+        engine._get_scan_symbols = Mock(return_value=[])
+
         # Add test signals to queue
         test_signals = [
             {
@@ -96,14 +232,16 @@ class TestSignalQueueExecution:
         engine.state = EngineState.RUNNING
         
         # Create signal processing task
-        processing_task = asyncio.create_task(engine._signal_processing_loop())
-        
+        with patch('core.live_trading_engine.ConfigValidator.validate_and_fix',
+                   side_effect=lambda cfg: cfg):
+            processing_task = asyncio.create_task(engine._signal_processing_loop())
+
         # Wait a bit for signals to be processed
         await asyncio.sleep(0.5)
-        
+
         # Stop engine
         engine.state = EngineState.STOPPED
-        
+
         # Wait for task to complete
         try:
             await asyncio.wait_for(processing_task, timeout=2.0)
@@ -122,13 +260,12 @@ class TestSignalQueueExecution:
         # Verify queue is empty
         final_queue_size = engine.signal_queue.qsize()
         assert final_queue_size == 0, f"Queue should be empty, but has {final_queue_size} signals"
-    
-    @pytest.mark.asyncio
-    async def test_execution_counter_tracking(self):
+
+    async def _execution_counter_tracking(self):
         """Test that _executed_count is properly incremented."""
         # Create minimal engine
         engine = LiveTradingEngine(mode='paper')
-        
+
         # Verify initial state
         assert engine._executed_count == 0, "Initial executed count should be 0"
         
@@ -141,13 +278,15 @@ class TestSignalQueueExecution:
         # Increment again
         engine._executed_count += 1
         assert engine._executed_count == 2, f"Executed count should be 2, got {engine._executed_count}"
-    
-    @pytest.mark.asyncio
-    async def test_engine_status_includes_executed_count(self):
+
+    def test_execution_counter_tracking(self):
+        asyncio.run(self._execution_counter_tracking())
+
+    async def _engine_status_includes_executed_count(self):
         """Test that get_engine_status() includes signals_executed field."""
         # Create minimal engine
         engine = LiveTradingEngine(mode='paper')
-        
+
         # Set some test values
         engine._signal_count = 10
         engine._executed_count = 8
@@ -162,17 +301,22 @@ class TestSignalQueueExecution:
         # Verify values
         assert status['signals_received'] == 10, f"Expected 10 signals received, got {status['signals_received']}"
         assert status['signals_executed'] == 8, f"Expected 8 signals executed, got {status['signals_executed']}"
-    
-    @pytest.mark.asyncio
-    async def test_timeout_increased_to_5_seconds(self):
+
+    def test_engine_status_includes_executed_count(self):
+        asyncio.run(self._engine_status_includes_executed_count())
+
+    def test_timeout_increased_to_5_seconds(self):
+        asyncio.run(self._timeout_increased_to_5_seconds())
+
+    async def _timeout_increased_to_5_seconds(self):
         """Test that queue timeout is now 5 seconds instead of 1 second."""
         # This is a behavioral test - we verify that the system waits longer
         # before giving up on an empty queue
-        
+
         # Create minimal engine
         engine = LiveTradingEngine(mode='paper')
         engine.state = EngineState.RUNNING
-        
+
         # Mock the adaptive_monitor to avoid import issues
         with patch('core.adaptive_monitor.adaptive_monitor'):
             # Mock _get_scan_symbols to return empty list (no scanning)

@@ -117,7 +117,22 @@ The integration tests have some issues that need addressing:
 #### 1. Test Mocking Strategy
 The tests mock `CcxtClient` but the launcher requires a fully initialized production coordinator which needs:
 - Exchange client with proper attributes
-- WebSocket manager properly initialized  
+- WebSocket manager properly initialized
+- Risk manager + portfolio integration
+- Engine task orchestration and async scheduling
+
+## 2025-10-21 Regression Check (Python 3.11.12)
+
+Following review feedback, the focused regression suite was re-run explicitly with `pyenv` pinned to **Python 3.11.12**:
+
+```bash
+$ PYENV_VERSION=3.11.12 pyenv exec pytest tests/test_signal_queue_execution.py
+```
+
+- ✅ Python interpreter resolved correctly to 3.11.12 via `pyenv`.
+- ❌ Test collection halted because the isolated environment lacked the wheel dependencies (`ModuleNotFoundError: No module named 'pandas'`).
+
+> ℹ️ Dependency installation (`pip install -r requirements.txt`) was attempted first but failed: the container cannot reach the upstream index through the enforced proxy (`Tunnel connection failed: 403 Forbidden`). Until network access is restored or wheels are vendored locally, the regression test cannot complete on this runner.
 - Risk manager components
 
 **Error seen:**
