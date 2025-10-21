@@ -641,45 +641,11 @@ class ProductionCoordinator:
             logger.info("STARTING PRODUCTION TRADING LOOP")
             logger.info("="*70)
             
-            # ================================
-            # DEBUG KODU BAŞLANGIÇ
-            # ================================
-            logger.info("🔍 [DEBUG] About to call start_live_trading()")
-            logger.info(f"🔍 [DEBUG] Engine: {self.trading_engine}")
-            logger.info(f"🔍 [DEBUG] Engine type: {type(self.trading_engine)}")
-            logger.info(f"🔍 [DEBUG] Mode: {mode}")
+            # Start the live trading engine
+            start_result = await self.trading_engine.start_live_trading(mode=mode)
             
-            try:
-                logger.info("🔍 [DEBUG] Calling start_live_trading()...")
-                
-                # Timeout eklenmiş await
-                start_result = await asyncio.wait_for(
-                    self.trading_engine.start_live_trading(mode=mode),
-                    timeout=10  # 10 second timeout
-                )
-                
-                logger.info(f"🔍 [DEBUG] start_live_trading() returned: {start_result}")
-                
-            except asyncio.TimeoutError:
-                logger.critical("❌ TIMEOUT: start_live_trading() took > 10s!")
-                logger.critical("Method was called but never returned!")
-                raise
-            except Exception as e:
-                logger.critical(f"❌ EXCEPTION in start_live_trading(): {e}")
-                import traceback
-                logger.critical(traceback.format_exc())
-                raise
-            # ================================
-            # DEBUG KODU BİTİŞ
-            # ================================
-            
-            # ✅ BU SATIR SADECE BİR KEZ OLMALI:
             if not start_result['success']:
                 raise RuntimeError(f"Failed to start trading engine: {start_result.get('reason')}")
-            
-            # ❌ BU SATIRI SİL (duplicate):
-            # if not start_result['success']:
-            #     raise RuntimeError(f"Failed to start trading engine: {start_result.get('reason')}")
             
             self.is_running = True
             
