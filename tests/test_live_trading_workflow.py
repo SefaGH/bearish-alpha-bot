@@ -285,7 +285,7 @@ class TestLiveTradingWorkflow:
         assert job['timeout-minutes'] == 720  # 12 hours = 720 minutes
 
     def test_python_version(self, workflow_config):
-        """Test Python 3.12 is used."""
+        """Test Python 3.11 is used."""
         job = workflow_config['jobs']['live-trading']
         steps = job['steps']
 
@@ -294,7 +294,7 @@ class TestLiveTradingWorkflow:
         assert len(python_steps) > 0
 
         python_step = python_steps[0]
-        assert python_step['with']['python-version'] == '3.12'
+        assert python_step['with']['python-version'] == '3.11'
 
     def test_configuration_display(self, workflow_config):
         """Test configuration is displayed before execution."""

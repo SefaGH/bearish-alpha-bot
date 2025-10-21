@@ -1,5 +1,16 @@
+# ============================================================================
 # Bearish Alpha Bot Requirements
-# Python 3.11 required (ccxt.pro incompatible with Python 3.12)
+# ============================================================================
+# 
+# IMPORTANT: This project requires Python 3.11
+# Python 3.12+ is NOT supported due to aiohttp 3.8.6 compatibility issues
+# 
+# aiohttp 3.8.6 is required for ccxt.pro WebSocket functionality, but does
+# not compile on Python 3.12 due to internal API changes (PyLongObject.ob_digit).
+# 
+# Install with: pip install -r requirements.txt
+# Verify version: python --version (should show Python 3.11.x)
+# ============================================================================
 
 # === CORE DEPENDENCIES ===
 ccxt==4.3.88              # Exchange APIs (REQUIRED)
