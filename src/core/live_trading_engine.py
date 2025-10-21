@@ -9,7 +9,8 @@ import logging
 import inspect
 import time
 import pandas as pd
-from typing import Dict, List, Optional, Any
+from collections import defaultdict, deque
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -165,7 +166,12 @@ class LiveTradingEngine:
         self._signal_count = 0  # Received from ProductionCoordinator
         self._executed_count = 0  # Track executed signals
         self._last_signal_time = None
-        
+
+        # Local duplicate-prevention tracking for engine-generated signals
+        self._local_duplicate_config = self._load_duplicate_prevention_config()
+        self._local_last_signal_time: Dict[str, float] = {}
+        self._local_signal_price_history: defaultdict = defaultdict(lambda: deque(maxlen=10))
+
         logger.info("LiveTradingEngine initialized")
         logger.info(f"  Mode: {mode}")
         exchange_client_names = list(self.exchange_clients.keys()) if self.exchange_clients else []
@@ -699,7 +705,7 @@ class LiveTradingEngine:
                                                     kwargs['df_1h'] = df_1h
                                                 if has_symbol_param:
                                                     kwargs['symbol'] = symbol
-                                                
+
                                                 signal = strategy.signal(df_30m, **kwargs)
                                             except TypeError as te:
                                                 # Fallback: try calling with just df_30m
@@ -709,16 +715,73 @@ class LiveTradingEngine:
                                                 except Exception as e2:
                                                     logger.error(f"Strategy {strategy_name} failed: {e2}")
                                                     continue
-                                            
+
                                             # Rest of the signal processing code...
                                             if signal:
-                                                # Signal processing continues as before
-                                                pass
-                                        
+                                                original_signal = signal if isinstance(signal, dict) else {}
+                                                enriched_signal = original_signal.copy()
+
+                                                # Ensure mandatory fields
+                                                enriched_signal.setdefault('symbol', symbol)
+                                                enriched_signal.setdefault('strategy', strategy_name)
+                                                default_side = original_signal.get('side', 'buy') if original_signal else 'buy'
+                                                enriched_signal.setdefault('side', default_side)
+
+                                                # Timestamp metadata
+                                                generated_at = datetime.now(timezone.utc)
+                                                enriched_signal.setdefault('generated_at', generated_at)
+
+                                                # Adaptive metadata
+                                                if is_adaptive or (original_signal and original_signal.get('is_adaptive')):
+                                                    enriched_signal['is_adaptive'] = True
+                                                    if adaptive_threshold is not None:
+                                                        enriched_signal.setdefault('adaptive_threshold', adaptive_threshold)
+                                                    if position_multiplier is not None:
+                                                        enriched_signal.setdefault('position_multiplier', position_multiplier)
+
+                                                # Attach regime/indicator context
+                                                enriched_signal.setdefault('metadata', {})
+                                                enriched_signal['metadata'].update({
+                                                    'source': 'live_trading_engine_scan',
+                                                    'scan_timestamp': generated_at.isoformat(),
+                                                    'regime_snapshot': regime_data,
+                                                    'ema_context': original_signal.get('ema_params') if original_signal else None
+                                                })
+
+                                                # Attach allocation information if available
+                                                if self.portfolio_manager and hasattr(self.portfolio_manager, 'get_strategy_allocation'):
+                                                    allocation = self.portfolio_manager.get_strategy_allocation(strategy_name)
+                                                    enriched_signal.setdefault('strategy_allocation', allocation)
+
+                                                # Ensure exchange is set
+                                                if 'exchange' not in enriched_signal or not enriched_signal['exchange']:
+                                                    enriched_signal['exchange'] = self._determine_default_exchange(symbol)
+
+                                                # Duplicate prevention check for engine-generated signals
+                                                can_queue, reason = self._should_queue_local_signal(
+                                                    strategy_name,
+                                                    enriched_signal
+                                                )
+
+                                                if not can_queue:
+                                                    logger.info(
+                                                        f"[DUPLICATE-BLOCK] Skipping signal for {symbol} "
+                                                        f"from {strategy_name}: {reason}"
+                                                    )
+                                                    continue
+
+                                                await self.signal_queue.put(enriched_signal)
+                                                queue_size = self.signal_queue.qsize()
+                                                logger.info(
+                                                    f"[STAGE:QUEUED] 📨 Signal queued from engine scan: {symbol} "
+                                                    f"via {strategy_name} | Queue size: {queue_size}"
+                                                )
+                                                continue
+
                                         except Exception as e:
                                             logger.error(f"Error running strategy {strategy_name} for {symbol}: {e}", exc_info=True)
                                             continue
-                                
+
                             except Exception as e:
                                 logger.error(f"Error scanning {symbol}: {e}")
                                 continue
@@ -742,7 +805,7 @@ class LiveTradingEngine:
     
     def _get_scan_symbols(self) -> List[str]:
         """Get symbols to scan - optimized for fixed symbols mode."""
-        
+
         # Cache kontrolü
         if self._cached_symbols:
             return self._cached_symbols
@@ -778,7 +841,88 @@ class LiveTradingEngine:
             
             logger.info(f"[UNIVERSE] Symbols: {', '.join(valid_symbols[:5])}..." if valid_symbols else "No symbols")
             return valid_symbols
-        
+
+    def _load_duplicate_prevention_config(self) -> Dict[str, Any]:
+        """Load duplicate prevention configuration with fallbacks."""
+
+        signals_cfg = self.config.get('signals', {}).get('duplicate_prevention', {})
+        monitoring_cfg = self.config.get('monitoring', {}).get('duplicate_prevention', {})
+
+        if signals_cfg:
+            return {
+                'enabled': signals_cfg.get('enabled', True),
+                'cooldown_seconds': float(signals_cfg.get('cooldown_seconds', 20)),
+                'price_delta_threshold': float(signals_cfg.get('min_price_change_pct', 0.05)),
+                'price_delta_bypass_enabled': signals_cfg.get('price_delta_bypass_enabled', True)
+            }
+
+        return {
+            'enabled': monitoring_cfg.get('enabled', True),
+            'cooldown_seconds': float(monitoring_cfg.get('same_symbol_cooldown', 60)),
+            'price_delta_threshold': float(monitoring_cfg.get('price_delta_bypass_threshold', 0.0015)),
+            'price_delta_bypass_enabled': monitoring_cfg.get('price_delta_bypass_enabled', True)
+        }
+
+    def _determine_default_exchange(self, symbol: str) -> Optional[str]:
+        """Determine default exchange for a generated signal."""
+
+        if symbol and ':' in symbol:
+            exchange_hint = symbol.split(':')[-1].lower()
+            if exchange_hint in self.exchange_clients:
+                return exchange_hint
+
+        if self.exchange_clients:
+            return next(iter(self.exchange_clients.keys()))
+
+        return self.config.get('execution', {}).get('default_exchange')
+
+    def _should_queue_local_signal(self, strategy_name: str, signal: Dict[str, Any]) -> Tuple[bool, str]:
+        """Check duplicate prevention rules for engine-generated signals."""
+
+        config = self._local_duplicate_config
+        if not config.get('enabled', True):
+            return True, "duplicate prevention disabled"
+
+        symbol = signal.get('symbol')
+        if not symbol:
+            return False, "missing symbol"
+
+        entry_price = signal.get('entry', 0) or signal.get('price')
+        now_ts = time.time()
+        key = f"{symbol}:{strategy_name}"
+        cooldown = config.get('cooldown_seconds', 20.0)
+
+        last_time = self._local_last_signal_time.get(key)
+        if last_time:
+            elapsed = now_ts - last_time
+            if elapsed < cooldown:
+                remaining = cooldown - elapsed
+                if config.get('price_delta_bypass_enabled', True) and entry_price:
+                    history = self._local_signal_price_history.get(symbol)
+                    if history:
+                        _, last_price = history[-1]
+                        if last_price:
+                            price_delta = abs(entry_price - last_price) / last_price
+                            threshold = config.get('price_delta_threshold', 0.05)
+                            if price_delta >= threshold:
+                                self._record_local_signal(symbol, strategy_name, entry_price, now_ts)
+                                return True, f"price delta bypass {price_delta*100:.2f}%"
+
+                return False, f"cooldown active ({remaining:.1f}s remaining)"
+
+        self._record_local_signal(symbol, strategy_name, entry_price, now_ts)
+        return True, "OK"
+
+    def _record_local_signal(self, symbol: str, strategy_name: str, entry_price: Optional[float], timestamp: float) -> None:
+        """Record signal metadata for local duplicate prevention tracking."""
+
+        key = f"{symbol}:{strategy_name}"
+        self._local_last_signal_time[key] = timestamp
+
+        if entry_price and entry_price > 0:
+            price_history = self._local_signal_price_history[symbol]
+            price_history.append((timestamp, entry_price))
+
         # Auto-select mode (önerilmez)
         if auto_select:
             logger.warning("[UNIVERSE] Auto-select mode enabled (will load all markets)")
