@@ -271,7 +271,7 @@ class SystemInfoCollector:
             Dictionary containing:
             - enabled: bool - Whether WebSocket is enabled
             - status_emoji: str - Status emoji (✅/⚠️)
-            - status_text: str - Status text (OPTIMIZED/DISCONNECTED/REST MODE)
+            - status_text: str - Status text (CONNECTED/STREAMING/INITIALIZED/DISCONNECTED/REST MODE)
             - stream_count: int - Number of active streams
             - mode: str - Mode (websocket/rest/rest_fallback)
         """
@@ -286,41 +286,73 @@ class SystemInfoCollector:
                     'mode': 'rest'
                 }
             
-            # Check if connected
-            is_connected = False
-            if hasattr(ws_manager, 'is_connected'):
+            # Check if this is OptimizedWebSocketManager with ws_manager attribute
+            actual_ws_manager = ws_manager
+            if hasattr(ws_manager, 'ws_manager') and ws_manager.ws_manager:
+                actual_ws_manager = ws_manager.ws_manager
+            
+            # Check actual connection state using is_connected() on clients
+            connected_clients = []
+            streaming_clients = []
+            
+            if hasattr(actual_ws_manager, 'clients'):
                 try:
-                    is_connected = ws_manager.is_connected()
+                    clients = actual_ws_manager.clients
+                    for client in clients.values():
+                        if hasattr(client, 'is_connected'):
+                            try:
+                                if client.is_connected():
+                                    connected_clients.append(client)
+                                    # Check if actually streaming (received messages)
+                                    if hasattr(client, '_first_message_received') and client._first_message_received:
+                                        streaming_clients.append(client)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
             
             # Count active streams
             stream_count = 0
-            if hasattr(ws_manager, 'streams'):
+            if hasattr(actual_ws_manager, '_tasks'):
                 try:
-                    streams = ws_manager.streams
-                    if isinstance(streams, dict):
-                        stream_count = len(streams)
-                    elif isinstance(streams, list):
-                        stream_count = len(streams)
+                    # Count running tasks
+                    tasks = actual_ws_manager._tasks
+                    stream_count = sum(1 for t in tasks if not t.done())
                 except Exception:
                     pass
             
-            if is_connected and stream_count > 0:
+            # Determine status based on actual connection state
+            if streaming_clients and stream_count > 0:
                 return {
                     'enabled': True,
                     'status_emoji': '✅',
-                    'status_text': 'OPTIMIZED',
+                    'status_text': 'CONNECTED and STREAMING',
                     'stream_count': stream_count,
                     'mode': 'websocket'
                 }
-            elif is_connected:
+            elif connected_clients and stream_count > 0:
                 return {
                     'enabled': True,
                     'status_emoji': '✅',
-                    'status_text': 'CONNECTED',
+                    'status_text': 'STREAMING (connecting...)',
                     'stream_count': stream_count,
                     'mode': 'websocket'
+                }
+            elif stream_count > 0:
+                return {
+                    'enabled': True,
+                    'status_emoji': '⚠️',
+                    'status_text': 'INITIALIZED (not streaming)',
+                    'stream_count': stream_count,
+                    'mode': 'rest_fallback'
+                }
+            elif hasattr(ws_manager, 'is_initialized') and ws_manager.is_initialized:
+                return {
+                    'enabled': True,
+                    'status_emoji': '⚠️',
+                    'status_text': 'INITIALIZED (no streams)',
+                    'stream_count': 0,
+                    'mode': 'rest_fallback'
                 }
             else:
                 return {

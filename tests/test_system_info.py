@@ -133,19 +133,29 @@ class TestSystemInfoCollector:
     
     def test_get_websocket_status_with_manager(self):
         """Test WebSocket status with connected manager."""
-        # Create mock WebSocket manager
+        # Create mock client with proper connection state
+        mock_client = Mock()
+        mock_client.is_connected = Mock(return_value=True)
+        mock_client._first_message_received = True
+        
+        # Create mock tasks
+        mock_task1 = Mock()
+        mock_task1.done = Mock(return_value=False)
+        mock_task2 = Mock()
+        mock_task2.done = Mock(return_value=False)
+        
+        # Create mock WebSocket manager with clients and tasks
         mock_ws = Mock()
-        mock_ws.is_connected = Mock(return_value=True)
-        mock_ws.streams = {
-            'BTC/USDT': Mock(),
-            'ETH/USDT': Mock()
-        }
+        mock_ws.ws_manager = None  # Not an OptimizedWebSocketManager wrapper
+        mock_ws.clients = {'bingx': mock_client}
+        mock_ws._tasks = [mock_task1, mock_task2]
         
         result = SystemInfoCollector.get_websocket_status(mock_ws)
         
         assert result['enabled'] is True, "Should be enabled with connected manager"
         assert result['status_emoji'] == '✅', "Should show success emoji"
-        assert result['status_text'] == 'OPTIMIZED', "Should show OPTIMIZED status"
+        assert 'CONNECTED' in result['status_text'] or 'STREAMING' in result['status_text'], \
+            f"Should show CONNECTED or STREAMING status, got: {result['status_text']}"
         assert result['stream_count'] == 2, "Should have 2 streams"
         assert result['mode'] == 'websocket', "Should be in websocket mode"
 

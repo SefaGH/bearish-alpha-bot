@@ -98,7 +98,7 @@ class OptimizedWebSocketManager:
         if not self.fixed_symbols:
             logger.warning("[WS-OPT] No fixed symbols configured!")
     
-    async def initialize_websockets(self, exchange_clients: Dict[str, Any]) -> bool:
+    async def initialize_websockets(self, exchange_clients: Dict[str, Any]) -> List[asyncio.Task]:
         """
         Initialize WebSocket connections with optimization.
         
@@ -106,13 +106,13 @@ class OptimizedWebSocketManager:
             exchange_clients: Dictionary of exchange clients
             
         Returns:
-            True if initialization successful
+            List of streaming tasks (empty list if initialization fails)
         """
         try:
             # Check if we have fixed symbols
             if not self.fixed_symbols:
                 logger.warning("[WS-OPT] No fixed symbols, WebSocket disabled")
-                return False
+                return []
             
             # Import WebSocketManager lazily
             from core.websocket_manager import WebSocketManager
@@ -137,14 +137,14 @@ class OptimizedWebSocketManager:
             if tasks:
                 logger.info(f"[WS-OPT] ✅ WebSocket initialized with {len(tasks)} streams")
                 self.is_initialized = True
-                return True
+                return tasks
             else:
                 logger.warning("[WS-OPT] No WebSocket streams started")
-                return False
+                return []
                 
         except Exception as e:
             logger.error(f"[WS-OPT] Failed to initialize WebSocket: {e}")
-            return False
+            return []
     
     async def _subscribe_optimized(self) -> List[asyncio.Task]:
         """
@@ -1051,29 +1051,70 @@ class LiveTradingLauncher:
         logger.info(f"Mode: {self.mode.upper()}")
         logger.info(f"Duration: {'Indefinite' if duration is None else f'{duration}s'}")
         logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
-        # Use helper method to safely check WebSocket initialization
-        logger.info(f"WebSocket: {'OPTIMIZED' if self._is_ws_initialized() else 'DISABLED'}")
-        logger.info("="*70)
         
-        # Send Telegram notification
-        if self.telegram:
-            ws_info = "WebSocket OPTIMIZED ✅" if self._is_ws_initialized() else "REST API mode"
-            self.telegram.send(
-                f"🚀 <b>LIVE TRADING STARTED</b>\n"
-                f"Mode: {self.mode.upper()}\n"
-                f"Capital: {self.CAPITAL_USDT} USDT\n"
-                f"Exchange: BingX\n"
-                f"Pairs: {len(self.TRADING_PAIRS)}\n"
-                f"Data: {ws_info}\n"
-                f"Max Position: {self.RISK_PARAMS['max_position_size']:.1%}\n"
-                f"Stop Loss: {self.RISK_PARAMS['stop_loss_pct']:.1%}\n"
-                f"Take Profit: {self.RISK_PARAMS['take_profit_pct']:.1%}"
-            )
+        # Capture WebSocket tasks and track streaming status
+        ws_tasks = []
+        ws_streaming = False
         
         # Store health task for cleanup
         _health_task = None
         
         try:
+            # Initialize and schedule WebSocket streams
+            if self.ws_optimizer and self._is_ws_initialized():
+                logger.info("Starting WebSocket streams...")
+                
+                # Get streaming tasks
+                streaming_tasks = await self.ws_optimizer.initialize_websockets(
+                    self.exchange_clients
+                )
+                
+                if streaming_tasks:
+                    # Tasks are already created by stream_ohlcv, just track them
+                    ws_tasks = streaming_tasks
+                    ws_streaming = True
+                    logger.info(f"✅ {len(ws_tasks)} WebSocket streams running in background")
+                    
+                    # Check actual connection state after a brief moment
+                    await asyncio.sleep(0.5)
+                    any_connected = False
+                    if self.ws_optimizer.ws_manager:
+                        any_connected = any(
+                            client.is_connected()
+                            for client in self.ws_optimizer.ws_manager.clients.values()
+                        )
+                    
+                    if any_connected:
+                        logger.info("WebSocket: ✅ CONNECTED and STREAMING")
+                    else:
+                        logger.info("WebSocket: ⚠️ STREAMS STARTED (waiting for connection...)")
+                else:
+                    logger.warning("⚠️ No WebSocket streams started")
+                    logger.info("WebSocket: ⚠️ INITIALIZED but NOT STREAMING")
+            else:
+                logger.info("WebSocket: ❌ DISABLED")
+            
+            logger.info("="*70)
+            
+            # Send Telegram notification
+            if self.telegram:
+                if ws_streaming:
+                    ws_info = f"WebSocket STREAMING ✅ ({len(ws_tasks)} streams)"
+                else:
+                    ws_info = "REST API mode"
+                
+                self.telegram.send(
+                    f"🚀 <b>LIVE TRADING STARTED</b>\n"
+                    f"Mode: {self.mode.upper()}\n"
+                    f"Capital: {self.CAPITAL_USDT} USDT\n"
+                    f"Exchange: BingX\n"
+                    f"Pairs: {len(self.TRADING_PAIRS)}\n"
+                    f"Data: {ws_info}\n"
+                    f"Max Position: {self.RISK_PARAMS['max_position_size']:.1%}\n"
+                    f"Stop Loss: {self.RISK_PARAMS['stop_loss_pct']:.1%}\n"
+                    f"Take Profit: {self.RISK_PARAMS['take_profit_pct']:.1%}"
+                )
+            
             # Start health monitoring in background (non-blocking)
             if self.health_monitor:
                 _health_task = asyncio.create_task(
@@ -1099,6 +1140,17 @@ class LiveTradingLauncher:
             await self._emergency_shutdown(f"Critical error: {e}")
         
         finally:
+            # Cleanup WebSocket tasks
+            if ws_tasks:
+                logger.info(f"Cancelling {len(ws_tasks)} WebSocket streams...")
+                for task in ws_tasks:
+                    if not task.done():
+                        task.cancel()
+                
+                # Wait for cancellation
+                await asyncio.gather(*ws_tasks, return_exceptions=True)
+                logger.info("✓ All WebSocket streams cancelled")
+            
             # Gracefully stop health monitor
             if self.health_monitor:
                 try:
