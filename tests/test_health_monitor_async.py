@@ -37,8 +37,8 @@ class HealthMonitor:
         }
         
         self.health_status = 'healthy'
-        self._task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
+        self._task: Optional[asyncio.Task] = None
     
     async def start_monitoring(self) -> asyncio.Task:
         """Start monitoring in background (idempotent, non-blocking)."""
