@@ -55,6 +55,8 @@ jobs:
           TRADING_MODE: 'paper'
           CAPITAL_USDT: '100'
           CONFIG_PATH: 'config/config.example.yaml'
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
       
       - name: Upload test results
         if: always()
