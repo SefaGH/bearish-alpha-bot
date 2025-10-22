@@ -26,6 +26,7 @@ import argparse
 import time
 import signal
 import yaml  # ← Add this import
+import inspect
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
@@ -131,6 +132,51 @@ class OptimizedWebSocketManager:
             List of streaming tasks (empty list if initialization fails)
         """
         try:
+            # Defensive config sanitation to avoid passing malformed types
+            safe_config = {} if self.config is None else dict(self.config)
+            # Ensure websocket config is dict
+            ws_cfg = safe_config.get('websocket', {})
+            if not isinstance(ws_cfg, dict):
+                logger.warning("[WS-OPT] websocket config not a dict, coercing to defaults")
+                ws_cfg = {
+                    'enabled': True,
+                    'max_streams_per_exchange': {
+                        'bingx': 10,
+                        'binance': 20,
+                        'kucoinfutures': 15,
+                        'default': 10
+                    }
+                }
+
+            # sanitize max_streams_per_exchange
+            max_streams = ws_cfg.get('max_streams_per_exchange', {})
+            if not isinstance(max_streams, dict):
+                logger.warning("[WS-OPT] max_streams_per_exchange invalid; replacing with defaults")
+                max_streams = {'default': 10}
+
+            for k, v in list(max_streams.items()):
+                try:
+                    max_streams[k] = int(v)
+                except Exception:
+                    logger.warning(f"[WS-OPT] Invalid max_streams value for {k}: {v} -> using default 10")
+                    max_streams[k] = 10
+
+            ws_cfg['max_streams_per_exchange'] = max_streams
+            safe_config['websocket'] = ws_cfg
+
+            # Ensure universe.fixed_symbols is list
+            universe = safe_config.get('universe', {}) or {}
+            fixed_syms = universe.get('fixed_symbols', [])
+            if isinstance(fixed_syms, str):
+                fixed_syms = [fixed_syms]
+            if not isinstance(fixed_syms, (list, tuple)):
+                logger.warning("[WS-OPT] fixed_symbols not list/tuple; coercing to empty list")
+                fixed_syms = []
+            safe_config.setdefault('universe', {})['fixed_symbols'] = list(fixed_syms)
+
+            # assign sanitized config for downstream use
+            self.config = safe_config
+            
             # Check if we have fixed symbols
             if not self.fixed_symbols:
                 logger.warning("[WS-OPT] No fixed symbols, WebSocket disabled")
@@ -164,6 +210,14 @@ class OptimizedWebSocketManager:
                 logger.warning("[WS-OPT] No WebSocket streams started")
                 return []
                 
+        except TypeError as e:
+            # This often arises from an invalid second arg to isinstance somewhere downstream
+            try:
+                type_map = {k: type(v).__name__ for k, v in (self.config or {}).items()}
+            except Exception:
+                type_map = str(self.config)
+            logger.error(f"[WS-OPT] TypeError during WebSocket init: {e} - config types: {type_map}")
+            return []
         except Exception as e:
             logger.error(f"[WS-OPT] Failed to initialize WebSocket: {e}")
             return []
@@ -213,6 +267,18 @@ class OptimizedWebSocketManager:
         
         logger.info(f"[WS-OPT] Total streams: {sum(stream_count.values())}")
         return tasks
+    
+    def _ensure_awaitable(self, maybe_awaitable, coro_callable=None):
+        """Return an awaitable for maybe_awaitable. If it's awaitable, return it.
+        If it's a synchronous callable (coro_callable provided or a function), run it in a thread.
+        """
+        if inspect.isawaitable(maybe_awaitable):
+            return maybe_awaitable
+        if coro_callable:
+            # assume coro_callable is a synchronous function to run in a thread
+            return asyncio.to_thread(coro_callable)
+        # If it's not awaitable and no callable provided, wrap a no-op
+        return asyncio.sleep(0)
     
     def get_connection_status(self) -> Dict[str, Any]:
         """
@@ -298,11 +364,12 @@ class OptimizedWebSocketManager:
         logger.info("[WS-OPT] Stopping WebSocket streams...")
         
         try:
-            # Use the existing close method which handles task cancellation
-            await asyncio.wait_for(
-                self.ws_manager.close(),
-                timeout=10.0
-            )
+            close_ret = self.ws_manager.close()
+            if inspect.isawaitable(close_ret):
+                await asyncio.wait_for(close_ret, timeout=10.0)
+            else:
+                # run blocking close in a thread
+                await asyncio.to_thread(self.ws_manager.close)
             logger.info("[WS-OPT] ✅ WebSocket streams stopped")
             self.is_initialized = False
             
@@ -739,10 +806,11 @@ class LiveTradingLauncher:
                 logger.info("Closing exchange connections...")
                 for exchange_name, client in self.exchange_clients.items():
                     try:
-                        await asyncio.wait_for(
-                            client.close(),
-                            timeout=5.0
-                        )
+                        close_ret = client.close()
+                        if inspect.isawaitable(close_ret):
+                            await asyncio.wait_for(close_ret, timeout=5.0)
+                        else:
+                            await asyncio.to_thread(client.close)
                         logger.info(f"✅ {exchange_name} connection closed")
                     except asyncio.TimeoutError:
                         logger.error(f"⚠️ {exchange_name} close timeout (5s)")
