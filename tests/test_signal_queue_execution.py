@@ -13,6 +13,7 @@ import os
 import asyncio
 import types
 import math
+import time
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
 
@@ -240,6 +241,48 @@ class TestSignalQueueExecution:
         allowed_again, reason_again = engine._should_queue_local_signal('string_strategy', signal)
         assert not allowed_again
         assert 'cooldown' in reason_again.lower()
+
+    def test_record_local_signal_cleans_existing_history(self):
+        """Sanitize legacy history entries when recording new local signals."""
+
+        mock_risk_manager = Mock(spec=RiskManager)
+        mock_risk_manager.calculate_position_size = AsyncMock(return_value=0.01)
+        mock_risk_manager.validate_new_position = AsyncMock(return_value=(True, "Valid", {}))
+        mock_risk_manager.active_positions = {}
+
+        mock_portfolio_manager = Mock(spec=PortfolioManager)
+        mock_portfolio_manager.strategies = {}
+        mock_portfolio_manager.get_strategy_allocation = Mock(return_value=0.25)
+        mock_portfolio_manager.performance_monitor = None
+        mock_portfolio_manager.exchange_clients = {}
+
+        engine = LiveTradingEngine(
+            mode='paper',
+            portfolio_manager=mock_portfolio_manager,
+            risk_manager=mock_risk_manager,
+            exchange_clients={},
+        )
+
+        symbol = 'BTC/USDT:USDT'
+        history = engine._local_signal_price_history[symbol]
+        now = time.time()
+        history.append((now - 120, ' 50,000.00 '))
+        history.append((now - 60, 'bad-value'))
+        history.append((now - 30, None))
+
+        engine._record_local_signal(symbol, 'cleanup_strategy', '50,500.25', now)
+
+        sanitized_history = engine._local_signal_price_history[symbol]
+        assert len(sanitized_history) == 2
+        first_timestamp, first_price = sanitized_history[0]
+        assert first_timestamp <= now
+        assert isinstance(first_price, float)
+        assert math.isclose(first_price, 50000.00, rel_tol=1e-9)
+
+        latest_timestamp, latest_price = sanitized_history[-1]
+        assert math.isclose(latest_price, 50500.25, rel_tol=1e-9)
+        assert latest_timestamp == now
+        assert isinstance(latest_price, float)
 
     async def _queue_priority_over_scanning(self):
         """

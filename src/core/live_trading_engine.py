@@ -966,6 +966,18 @@ class LiveTradingEngine:
         normalized_price = self._normalize_price(entry_price)
         if normalized_price and normalized_price > 0:
             price_history = self._local_signal_price_history[symbol]
+
+            if price_history:
+                cleaned_entries = []
+                for existing_timestamp, existing_price in price_history:
+                    normalized_existing = self._normalize_price(existing_price)
+                    if normalized_existing and normalized_existing > 0:
+                        cleaned_entries.append((existing_timestamp, normalized_existing))
+
+                if len(cleaned_entries) != len(price_history):
+                    price_history.clear()
+                    price_history.extend(cleaned_entries)
+
             price_history.append((timestamp, normalized_price))
 
     @staticmethod
