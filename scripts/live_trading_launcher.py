@@ -231,22 +231,22 @@ class OptimizedWebSocketManager:
                 logger.debug("[WS-OPT] core.websocket_manager not available in test env; skipping WebSocket setup")
                 return []
     
-                        try:
-                            self.ws_manager = WebSocketManager(
-                                exchanges=exchange_clients,
-                                config=self.config
-                            )
-                        except TypeError as e:
-                            # Compute a safe map of config value types first, then log it.
-                            try:
-                                type_map = {k: type(v).__name__ for k, v in (self.config or {}).items()}
-                            except Exception:
-                                type_map = str(self.config)
-                            logger.error(f"[WS-OPT] WebSocketManager init TypeError: {e}; config types: {type_map}")
-                            return []
-                        except Exception as e:
-                            logger.error(f"[WS-OPT] WebSocketManager init failed: {e}")
-                            return []
+            try:
+                self.ws_manager = WebSocketManager(
+                    exchanges=exchange_clients,
+                    config=self.config
+                )
+            except TypeError as e:
+                # Compute a safe map of config value types first, then log it.
+                try:
+                    type_map = {k: type(v).__name__ for k, v in (self.config or {}).items()}
+                except Exception:
+                    type_map = str(self.config)
+                logger.error(f"[WS-OPT] WebSocketManager init TypeError: {e}; config types: {type_map}")
+                return []
+            except Exception as e:
+                logger.error(f"[WS-OPT] WebSocketManager init failed: {e}")
+                return []
     
             # Setup stream limits per exchange
             for exchange_name in exchange_clients.keys():
