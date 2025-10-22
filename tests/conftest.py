@@ -96,6 +96,8 @@ def clean_env() -> Generator[None, None, None]:
         'TRADING_SYMBOLS': 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT',
         'CONFIG_PATH': 'config/config.example.yaml',
         'SKIP_PYTHON_VERSION_CHECK': '1',  # Allow tests to run on any Python version
+        'BINGX_KEY': 'test-key',
+        'BINGX_SECRET': 'test-secret',
     }
     
     for key, value in test_env.items():

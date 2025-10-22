@@ -169,22 +169,6 @@ class FakeOptimizedWebSocketManager:
         self._connection_status["connected"] = False
 
 
-class _StubLiveTradingLauncher:
-    """Minimal launcher used for integration tests."""
-
-    def __init__(self, mode: str = "paper", **_: Any) -> None:
-        self.mode = mode
-        self.ws_optimizer = FakeOptimizedWebSocketManager()
-        self.coordinator = FakeProductionCoordinator()
-
-    async def run(self, duration: Optional[float] = None) -> int:
-        await asyncio.sleep(min(duration or 0.1, 0.5))
-        return 0
-
-    async def cleanup(self) -> None:
-        await asyncio.sleep(0)
-
-
 def _make_module(name: str, **attrs: Any) -> ModuleType:
     module = ModuleType(name)
     for attr, value in attrs.items():
@@ -235,17 +219,10 @@ def build_launcher_module_stubs() -> Dict[str, ModuleType]:
     """Return lightweight module stubs required by ``LiveTradingLauncher``."""
 
     return {
-        "yaml": _make_module("yaml", safe_load=lambda *args, **kwargs: {}, load=lambda *args, **kwargs: {}),
         "core.ccxt_client": _make_module("core.ccxt_client", CcxtClient=MagicMock()),
         "core.notify": _make_module("core.notify", Telegram=MagicMock()),
         "core.production_coordinator": _make_module(
             "core.production_coordinator",
-            ProductionCoordinator=FakeProductionCoordinator,
-        ),
-        "live_trading_launcher": _make_module(
-            "live_trading_launcher",
-            LiveTradingLauncher=_StubLiveTradingLauncher,
-            OptimizedWebSocketManager=FakeOptimizedWebSocketManager,
             ProductionCoordinator=FakeProductionCoordinator,
         ),
         "core.state": _make_module(
@@ -288,6 +265,5 @@ def build_launcher_module_stubs() -> Dict[str, ModuleType]:
 __all__ = [
     "FakeProductionCoordinator",
     "FakeOptimizedWebSocketManager",
-    "_StubLiveTradingLauncher",
     "build_launcher_module_stubs",
 ]

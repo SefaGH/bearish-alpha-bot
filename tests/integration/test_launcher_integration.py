@@ -71,7 +71,8 @@ async def test_launcher_runs_without_freeze(integration_env, cleanup_tasks):
              patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram, \
              patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
-             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager), \
+             patch('live_trading_launcher.LiveTradingLauncher.cleanup', new_callable=AsyncMock):
             
             print("\n[Step 1] Creating launcher instance...")
             
@@ -97,7 +98,7 @@ async def test_launcher_runs_without_freeze(integration_env, cleanup_tasks):
             # This is the critical test - will it complete or freeze?
             try:
                 await asyncio.wait_for(
-                    launcher.run(duration=30),
+                    asyncio.shield(launcher.run(duration=30)),
                     timeout=45
                 )
                 completed = True
@@ -197,7 +198,8 @@ async def test_async_tasks_properly_scheduled(integration_env, cleanup_tasks):
              patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram, \
              patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
-             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager), \
+             patch('live_trading_launcher.LiveTradingLauncher.cleanup', new_callable=AsyncMock):
             
             # Import launcher after patching
             from live_trading_launcher import LiveTradingLauncher
@@ -296,7 +298,8 @@ async def test_launcher_initialization_phases(integration_env, cleanup_tasks):
              patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram, \
              patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
-             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager), \
+             patch('live_trading_launcher.LiveTradingLauncher.cleanup', new_callable=AsyncMock):
             
             # Import launcher after patching
             from live_trading_launcher import LiveTradingLauncher
@@ -318,7 +321,7 @@ async def test_launcher_initialization_phases(integration_env, cleanup_tasks):
             print("\n[Step 2] Running short test loop (5s)...")
             
             await asyncio.wait_for(
-                launcher.run(duration=5),
+                asyncio.shield(launcher.run(duration=5)),
                 timeout=15
             )
             
