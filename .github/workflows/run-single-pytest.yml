@@ -1,0 +1,35 @@
+name: Run single pytest
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_path:
+        description: 'pytest target (e.g. tests/unit/test_ws_config_sanitizer.py -v)'
+        required: true
+        default: 'tests/unit/test_ws_config_sanitizer.py -v'
+      python_version:
+        description: 'Python version'
+        required: true
+        default: '3.11'
+
+jobs:
+  run-pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ github.event.inputs.python_version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Eğer requirements.txt yoksa hata verebilir; hata kabul et ve yine pytest kur
+          pip install -r requirements.txt || true
+          pip install pytest
+
+      - name: Run pytest target
+        run: pytest ${{ github.event.inputs.test_path }}
