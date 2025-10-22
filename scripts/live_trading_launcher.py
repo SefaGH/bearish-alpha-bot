@@ -93,33 +93,43 @@ class OptimizedWebSocketManager:
         
         logger.info("[WS-OPT] Optimized WebSocket Manager initialized")
 
-    def _coerce_config_types(self, obj):
-        """Recursively coerce placeholder type-name strings to safe runtime values.
+        def _coerce_config_types(self, obj):
+            """Recursively coerce placeholder type-name strings to safe runtime values.
     
-        Converts common placeholder strings into harmless defaults so downstream
-        code won't receive bad types like the string 'dict' where a dict is
-        expected. Traverses dicts, lists and tuples and preserves other values.
-        """
-        if isinstance(obj, dict):
-            return {k: self._coerce_config_types(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [self._coerce_config_types(v) for v in obj]
-        if isinstance(obj, tuple):
-            return tuple(self._coerce_config_types(v) for v in obj)
-        if isinstance(obj, str):
-            lower = obj.strip().lower()
-            if lower == 'dict':
-                return {}
-            if lower == 'list':
-                return []
-            if lower == 'int':
-                return 0
-            if lower == 'float':
-                return 0.0
-            if lower == 'bool':
-                return False
+            Two improvements:
+             - If the config contains placeholder type names (e.g. 'dict', 'list', 'int'),
+               return the actual Python type object (dict, list, int, ...) so downstream
+               isinstance(x, SOME_CONFIG_VALUE) works.
+             - Still recurse into dict/list/tuple to sanitize nested placeholders.
+            """
+            if isinstance(obj, dict):
+                return {k: self._coerce_config_types(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [self._coerce_config_types(v) for v in obj]
+            if isinstance(obj, tuple):
+                return tuple(self._coerce_config_types(v) for v in obj)
+            if isinstance(obj, str):
+                lower = obj.strip().lower()
+                # Map placeholder names to Python *types* (NOT instances)
+                if lower == 'dict':
+                    return dict
+                if lower == 'list':
+                    return list
+                if lower == 'tuple':
+                    return tuple
+                if lower == 'set':
+                    return set
+                if lower == 'int':
+                    return int
+                if lower == 'float':
+                    return float
+                if lower == 'bool':
+                    return bool
+                if lower == 'str':
+                    return str
+                # keep other strings as-is
+                return obj
             return obj
-        return obj
     
     def setup_from_config(self, config: Dict[str, Any]) -> None:
         """
