@@ -56,19 +56,6 @@ def integration_env() -> Generator[None, None, None]:
 
 
 @pytest.fixture(scope="function")
-async def cleanup_tasks():
-    """
-    Fixture to ensure all async tasks are cleaned up after test.
-    
-    This prevents task leaks between tests.
-    """
+def cleanup_tasks():
+    """Placeholder fixture retained for backwards compatibility."""
     yield
-    
-    # Cancel any remaining tasks
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    for task in tasks:
-        if not task.done():
-            task.cancel()
-    
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
