@@ -455,45 +455,19 @@ class ProductionCoordinator:
 
     async def _process_trading_loop(self):
         """Main trading loop processing with timeout protection."""
-        try:
-            if not self.active_symbols:
-                logger.warning("No active symbols to process")
-                return
-            
-            logger.info(f"🔄 Processing {len(self.active_symbols)} symbols: {self.active_symbols}")
-                
-            # Process each active symbol with timeout
-            for symbol in self.active_symbols:
-                try:
-                    logger.debug(f"Processing symbol: {symbol}")
-                    
-                    # Add timeout to prevent indefinite blocking (30 seconds per symbol)
-                    signal = await asyncio.wait_for(
-                        self.process_symbol(symbol),
-                        timeout=30.0
-                    )
-                    
-                    if signal:
-                        # Submit signal to trading engine
-                        result = await self.submit_signal(signal)
-                        if result['success']:
-                            logger.info(f"✅ Signal submitted: {symbol} {signal.get('strategy')}")
-                    
-                    # Show position dashboard every 10 symbols
-                    if self.processed_symbols_count % 10 == 0:
-                        self._print_position_dashboard()
-                    
-                except asyncio.TimeoutError:
-                    logger.error(f"⏱️ Timeout processing {symbol} (>30s) - skipping")
-                    continue
-                except Exception as e:
-                    logger.error(f"Error processing {symbol}: {e}")
-                    continue
-            
-            logger.debug(f"✓ Completed processing {len(self.active_symbols)} symbols")
-            
-        except Exception as e:
-            logger.error(f"Trading loop error: {e}")
+        for symbol in self.active_symbols:
+            try:
+                # Add timeout protection
+                await asyncio.wait_for(
+                    self.process_symbol(symbol),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"⏱️ Timeout processing {symbol} - skipping")
+                continue
+            except Exception as e:
+                logger.error(f"Error processing {symbol}: {e}")
+                continue
 
 
     async def _initialize_production_system(self) -> bool:
