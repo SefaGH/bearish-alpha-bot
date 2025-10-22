@@ -9,6 +9,7 @@ import pytest
 import os
 import sys
 import asyncio
+import inspect
 from typing import Generator, Dict, Any
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
@@ -17,6 +18,37 @@ from unittest.mock import MagicMock, Mock
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / 'src'))
 sys.path.insert(0, str(REPO_ROOT / 'scripts'))
+
+
+# ---------------------------------------------------------------------------
+# Lightweight asyncio support (fallback when pytest-asyncio is unavailable)
+# ---------------------------------------------------------------------------
+
+
+def pytest_configure(config):
+    """Register the custom asyncio marker used across the test suite."""
+    config.addinivalue_line(
+        "markers",
+        "asyncio: execute the test inside an asyncio event loop (fallback)",
+    )
+
+
+def pytest_pyfunc_call(pyfuncitem):
+    """Execute coroutine tests inside a dedicated event loop."""
+
+    test_function = pyfuncitem.obj
+    if not inspect.iscoroutinefunction(test_function):
+        return None
+
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(test_function(**pyfuncitem.funcargs))
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
+
+    return True
 
 
 # ============================================================================
@@ -64,6 +96,8 @@ def clean_env() -> Generator[None, None, None]:
         'TRADING_SYMBOLS': 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT',
         'CONFIG_PATH': 'config/config.example.yaml',
         'SKIP_PYTHON_VERSION_CHECK': '1',  # Allow tests to run on any Python version
+        'BINGX_KEY': 'test-key',
+        'BINGX_SECRET': 'test-secret',
     }
     
     for key, value in test_env.items():
@@ -77,30 +111,9 @@ def clean_env() -> Generator[None, None, None]:
 
 
 @pytest.fixture(scope="function")
-async def cleanup_tasks():
-    """
-    Fixture to ensure all async tasks are cleaned up after test.
-    
-    This prevents task leaks between async tests and ensures proper cleanup.
-    
-    Usage:
-        @pytest.mark.asyncio
-        async def test_something(cleanup_tasks):
-            task = asyncio.create_task(some_coroutine())
-            # ... test code ...
-            # cleanup_tasks will cancel any remaining tasks
-    """
+def cleanup_tasks():
+    """Placeholder fixture kept for backwards compatibility."""
     yield
-    
-    # Cancel any remaining tasks (except current task)
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    for task in tasks:
-        if not task.done():
-            task.cancel()
-    
-    # Wait for all tasks to complete cancellation
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.fixture

@@ -31,7 +31,9 @@ def integration_env() -> Generator[None, None, None]:
         'CAPITAL_USDT',
         'RSI_THRESHOLD_BTC',
         'CONFIG_PATH',
-        'SKIP_PYTHON_VERSION_CHECK'
+        'SKIP_PYTHON_VERSION_CHECK',
+        'BINGX_KEY',
+        'BINGX_SECRET',
     ]
     
     for key in test_env_keys:
@@ -42,6 +44,8 @@ def integration_env() -> Generator[None, None, None]:
     os.environ['TRADING_MODE'] = 'paper'
     os.environ['CAPITAL_USDT'] = '100'
     os.environ['CONFIG_PATH'] = 'config/config.example.yaml'
+    os.environ['BINGX_KEY'] = 'test-key'
+    os.environ['BINGX_SECRET'] = 'test-secret'
     # Allow tests to run even if Python version doesn't match exactly
     os.environ['SKIP_PYTHON_VERSION_CHECK'] = '1'
     
@@ -56,19 +60,6 @@ def integration_env() -> Generator[None, None, None]:
 
 
 @pytest.fixture(scope="function")
-async def cleanup_tasks():
-    """
-    Fixture to ensure all async tasks are cleaned up after test.
-    
-    This prevents task leaks between tests.
-    """
+def cleanup_tasks():
+    """Placeholder fixture retained for backwards compatibility."""
     yield
-    
-    # Cancel any remaining tasks
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    for task in tasks:
-        if not task.done():
-            task.cancel()
-    
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)

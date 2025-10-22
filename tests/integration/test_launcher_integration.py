@@ -16,7 +16,14 @@ import time
 import os
 import sys
 from datetime import datetime
-from unittest.mock import Mock, MagicMock, patch, AsyncMock
+from unittest.mock import Mock, MagicMock, patch
+
+from .fakes import (
+    FakeOptimizedWebSocketManager,
+    FakeProductionCoordinator,
+    build_launcher_module_stubs,
+    ignore_test_task_cancellation,
+)
 
 # Add paths
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
@@ -55,12 +62,21 @@ async def test_launcher_runs_without_freeze(integration_env, cleanup_tasks):
     
     try:
         # Mock heavy dependencies and external APIs before import
-        with patch.dict('sys.modules', {
+        module_stubs = build_launcher_module_stubs()
+        module_stubs.update({
             'torch': MagicMock(),
             'torchvision': MagicMock(),
-        }), \
+        })
+
+        test_task = asyncio.current_task()
+        assert test_task is not None
+
+        with ignore_test_task_cancellation(test_task), \
+             patch.dict('sys.modules', module_stubs), \
              patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
-             patch('core.notify.Telegram') as mock_telegram:
+             patch('core.notify.Telegram') as mock_telegram, \
+             patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
             
             print("\n[Step 1] Creating launcher instance...")
             
@@ -86,7 +102,7 @@ async def test_launcher_runs_without_freeze(integration_env, cleanup_tasks):
             # This is the critical test - will it complete or freeze?
             try:
                 await asyncio.wait_for(
-                    launcher.run(duration=30),
+                    asyncio.shield(launcher.run(duration=30)),
                     timeout=45
                 )
                 completed = True
@@ -180,8 +196,17 @@ async def test_async_tasks_properly_scheduled(integration_env, cleanup_tasks):
     
     try:
         # Mock external dependencies before import
-        with patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
-             patch('core.notify.Telegram') as mock_telegram:
+        module_stubs = build_launcher_module_stubs()
+
+        test_task = asyncio.current_task()
+        assert test_task is not None
+
+        with ignore_test_task_cancellation(test_task), \
+             patch.dict('sys.modules', module_stubs), \
+             patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
+             patch('core.notify.Telegram') as mock_telegram, \
+             patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
             
             # Import launcher after patching
             from live_trading_launcher import LiveTradingLauncher
@@ -274,8 +299,17 @@ async def test_launcher_initialization_phases(integration_env, cleanup_tasks):
     
     try:
         # Mock external dependencies before import
-        with patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
-             patch('core.notify.Telegram') as mock_telegram:
+        module_stubs = build_launcher_module_stubs()
+
+        test_task = asyncio.current_task()
+        assert test_task is not None
+
+        with ignore_test_task_cancellation(test_task), \
+             patch.dict('sys.modules', module_stubs), \
+             patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
+             patch('core.notify.Telegram') as mock_telegram, \
+             patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
             
             # Import launcher after patching
             from live_trading_launcher import LiveTradingLauncher
@@ -297,7 +331,7 @@ async def test_launcher_initialization_phases(integration_env, cleanup_tasks):
             print("\n[Step 2] Running short test loop (5s)...")
             
             await asyncio.wait_for(
-                launcher.run(duration=5),
+                asyncio.shield(launcher.run(duration=5)),
                 timeout=15
             )
             

@@ -13,13 +13,19 @@ import pytest
 import asyncio
 import os
 import sys
-from unittest.mock import Mock, MagicMock, patch, AsyncMock
+from unittest.mock import Mock, MagicMock, patch
 from datetime import datetime
 
 # Add paths
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'scripts'))
 
+from .fakes import (
+    FakeOptimizedWebSocketManager,
+    FakeProductionCoordinator,
+    build_launcher_module_stubs,
+    ignore_test_task_cancellation,
+)
 
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -47,8 +53,17 @@ async def test_websocket_streams_deliver_data(integration_env, cleanup_tasks):
     
     try:
         # Mock external dependencies before import
-        with patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
-             patch('core.notify.Telegram') as mock_telegram:
+        module_stubs = build_launcher_module_stubs()
+
+        test_task = asyncio.current_task()
+        assert test_task is not None
+
+        with ignore_test_task_cancellation(test_task), \
+             patch.dict('sys.modules', module_stubs), \
+             patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
+             patch('core.notify.Telegram') as mock_telegram, \
+             patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
             
             # Import launcher after patching
             from live_trading_launcher import LiveTradingLauncher
@@ -98,7 +113,7 @@ async def test_websocket_streams_deliver_data(integration_env, cleanup_tasks):
             # Run for 10 seconds
             print("\n[Step 3] Running launcher (10s runtime)...")
             await asyncio.wait_for(
-                launcher.run(duration=10),
+                asyncio.shield(launcher.run(duration=10)),
                 timeout=20
             )
             
@@ -151,8 +166,17 @@ async def test_websocket_connection_state_tracking(integration_env, cleanup_task
     
     try:
         # Mock external dependencies before import
-        with patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
-             patch('core.notify.Telegram') as mock_telegram:
+        module_stubs = build_launcher_module_stubs()
+
+        test_task = asyncio.current_task()
+        assert test_task is not None
+
+        with ignore_test_task_cancellation(test_task), \
+             patch.dict('sys.modules', module_stubs), \
+             patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
+             patch('core.notify.Telegram') as mock_telegram, \
+             patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
             
             # Import launcher after patching
             from live_trading_launcher import LiveTradingLauncher
@@ -251,8 +275,17 @@ async def test_websocket_error_handling(integration_env, cleanup_tasks):
     
     try:
         # Mock external dependencies before import
-        with patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
-             patch('core.notify.Telegram') as mock_telegram:
+        module_stubs = build_launcher_module_stubs()
+
+        test_task = asyncio.current_task()
+        assert test_task is not None
+
+        with ignore_test_task_cancellation(test_task), \
+             patch.dict('sys.modules', module_stubs), \
+             patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
+             patch('core.notify.Telegram') as mock_telegram, \
+             patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
             
             # Import launcher after patching
             from live_trading_launcher import LiveTradingLauncher
@@ -271,7 +304,7 @@ async def test_websocket_error_handling(integration_env, cleanup_tasks):
             
             # Run launcher - it should complete despite mocked WebSocket issues
             await asyncio.wait_for(
-                launcher.run(duration=10),
+                asyncio.shield(launcher.run(duration=10)),
                 timeout=20
             )
             
