@@ -19,6 +19,13 @@ from unittest.mock import Mock, MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'scripts'))
 
+from .fakes import (
+    FakeProductionCoordinator,
+    FakeOptimizedWebSocketManager,
+    build_launcher_module_stubs,
+    ignore_test_task_cancellation,
+)
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -99,13 +106,10 @@ async def test_config_consistency_across_all_modules(integration_env, cleanup_ta
                 # ENV variable CAPITAL_USDT is launcher-specific, not part of unified config
                 capital = launcher.CAPITAL_USDT
                 print(f"\n[Step 5] Checking launcher capital: {capital} USDT")
-                print(f"   Launcher CAPITAL_USDT is currently hardcoded to 100")
-                print(f"   (ENV CAPITAL_USDT not read by launcher.__init__ currently)")
-                
-                # The key test is config consistency (symbols), not capital
-                # Capital handling is a known limitation
-                print("  ⚠️  Note: CAPITAL_USDT from ENV not used by launcher (known limitation)")
-                
+                assert capital == 500.0
+                assert launcher.capital_source == 'env'
+                print("  ✓ Launcher capital reflects ENV override")
+
                 print(f"\n{'='*70}")
                 print("Config Consistency Verification (Full):")
                 print(f"{'='*70}")
@@ -193,13 +197,73 @@ async def test_env_priority_over_yaml(integration_env, cleanup_tasks):
         print(f"{'='*70}\n")
         
         print("✅ TEST PASSED: ENV priority over YAML verified")
-        
+
     except Exception as e:
         print(f"\n❌ Test failed: {e}")
         import traceback
         traceback.print_exc()
         pytest.fail(f"ENV priority test failed: {e}")
 
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_launcher_capital_source_priority(integration_env, cleanup_tasks):
+    """Ensure launcher capital uses ENV first, then config."""
+
+    from config.live_trading_config import LiveTradingConfiguration
+
+    os.environ.pop('CAPITAL_USDT', None)
+
+    module_stubs = build_launcher_module_stubs()
+    module_stubs.pop('config.live_trading_config', None)
+    test_task = asyncio.current_task()
+    assert test_task is not None
+
+    with patch.object(LiveTradingConfiguration, 'load_from_yaml', return_value={'risk': {'equity_usd': 750}}), \
+         ignore_test_task_cancellation(test_task), \
+         patch.dict('sys.modules', module_stubs), \
+         patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
+         patch('core.notify.Telegram') as mock_telegram, \
+         patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
+         patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
+
+        from live_trading_launcher import LiveTradingLauncher
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
+        mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
+        mock_exchange.ticker.return_value = {'last': 50000.0}
+        mock_ccxt.return_value = mock_exchange
+
+        launcher = LiveTradingLauncher(mode='paper')
+
+        assert launcher.CAPITAL_USDT == 750.0
+        assert launcher.capital_source == 'config'
+
+    os.environ['CAPITAL_USDT'] = '1200'
+
+    with patch.object(LiveTradingConfiguration, 'load_from_yaml', return_value={'risk': {'equity_usd': 750}}), \
+         ignore_test_task_cancellation(test_task), \
+         patch.dict('sys.modules', module_stubs), \
+         patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
+         patch('core.notify.Telegram') as mock_telegram, \
+         patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
+         patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
+
+        from live_trading_launcher import LiveTradingLauncher
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
+        mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
+        mock_exchange.ticker.return_value = {'last': 50000.0}
+        mock_ccxt.return_value = mock_exchange
+
+        launcher = LiveTradingLauncher(mode='paper')
+
+        assert launcher.CAPITAL_USDT == 1200.0
+        assert launcher.capital_source == 'env'
+
+    os.environ.pop('CAPITAL_USDT', None)
 
 @pytest.mark.integration
 @pytest.mark.asyncio

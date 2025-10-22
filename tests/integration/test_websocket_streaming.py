@@ -48,9 +48,6 @@ async def test_websocket_streams_deliver_data(integration_env, cleanup_tasks):
     os.environ['TRADING_SYMBOLS'] = 'BTC/USDT:USDT'
     os.environ['TRADING_MODE'] = 'paper'
     
-    # Track data reception
-    data_received = []
-    
     try:
         # Mock external dependencies before import
         module_stubs = build_launcher_module_stubs()
@@ -78,68 +75,90 @@ async def test_websocket_streams_deliver_data(integration_env, cleanup_tasks):
             print("\n[Step 1] Creating launcher...")
             launcher = LiveTradingLauncher(mode='paper')
             
-            # Hook into data delivery if WebSocket is available
-            print("\n[Step 2] Setting up data tracking...")
-            
-            # Mock WebSocket manager to track data flow
-            if hasattr(launcher, 'ws_optimizer') and launcher.ws_optimizer:
-                print("  - WebSocket optimizer detected")
-                
-                # Create a mock that simulates data delivery
-                async def mock_stream_ohlcv(*args, **kwargs):
-                    """Mock stream that simulates data delivery."""
-                    # Record that data would be delivered
-                    for i in range(3):  # Simulate 3 data updates
-                        await asyncio.sleep(1)
-                        data_received.append({
-                            'timestamp': asyncio.get_event_loop().time(),
-                            'symbol': 'BTC/USDT:USDT',
-                            'data': f'update_{i}'
-                        })
-                    return []  # Return empty task list
-                
-                # Patch the stream method if WebSocket manager exists
-                if hasattr(launcher.ws_optimizer, 'ws_manager'):
-                    original_method = getattr(
-                        launcher.ws_optimizer.ws_manager, 
-                        'stream_ohlcv', 
-                        None
-                    )
-                    if original_method:
-                        launcher.ws_optimizer.ws_manager.stream_ohlcv = mock_stream_ohlcv
-            else:
-                print("  - WebSocket optimizer not available (OK for this test)")
-            
+            print("\n[Step 2] Running launcher with synthetic streams...")
+
             # Run for 10 seconds
             print("\n[Step 3] Running launcher (10s runtime)...")
             await asyncio.wait_for(
                 asyncio.shield(launcher.run(duration=10)),
                 timeout=20
             )
-            
+
             print(f"\n{'='*70}")
             print(f"Data Reception Report:")
             print(f"{'='*70}")
-            print(f"Data updates received: {len(data_received)}")
-            
-            if data_received:
-                print(f"First update:          {data_received[0]}")
-                print(f"Last update:           {data_received[-1]}")
-            else:
-                print("Status:                No WebSocket data tracked (mocked)")
-            
+            optimizer = launcher.ws_optimizer
+            assert optimizer is not None, "Launcher did not configure WebSocket optimizer"
+            total_messages = sum(len(v) for v in optimizer.message_log.values())
+            print(f"Data updates received: {total_messages}")
+            for stream_id, payloads in optimizer.message_log.items():
+                print(f"  - {stream_id}: {len(payloads)} messages")
+
+            assert total_messages >= 5, "Expected at least 5 WebSocket messages during run"
             print(f"{'='*70}\n")
-            
-            # Note: In a fully mocked test, we may not receive actual data
-            # The key is that the launcher completes without errors
+
             print("✅ TEST PASSED: Launcher runs with WebSocket infrastructure")
-            print("   (Data delivery verified through mock simulation)")
-            
+            print("   (Synthetic data delivery verified)")
+
     except Exception as e:
         print(f"\n❌ Test failed: {e}")
         import traceback
         traceback.print_exc()
         pytest.fail(f"WebSocket data test failed: {e}")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.timeout(45)
+async def test_websocket_real_data_flow(integration_env, cleanup_tasks):
+    """Verify that synthetic WebSocket streams produce real message payloads."""
+
+    os.environ['TRADING_SYMBOLS'] = 'BTC/USDT:USDT,ETH/USDT:USDT'
+    os.environ['TRADING_MODE'] = 'paper'
+
+    module_stubs = build_launcher_module_stubs()
+    test_task = asyncio.current_task()
+    assert test_task is not None
+
+    with ignore_test_task_cancellation(test_task), \
+         patch.dict('sys.modules', module_stubs), \
+         patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
+         patch('core.notify.Telegram') as mock_telegram, \
+         patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
+         patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
+
+        from live_trading_launcher import LiveTradingLauncher
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
+        mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
+        mock_exchange.ticker.return_value = {'last': 50000.0}
+        mock_ccxt.return_value = mock_exchange
+
+        launcher = LiveTradingLauncher(mode='paper')
+
+        await asyncio.wait_for(
+            asyncio.shield(launcher.run(duration=8)),
+            timeout=20
+        )
+
+        optimizer = launcher.ws_optimizer
+        assert optimizer is not None, "WebSocket optimizer missing"
+        total_messages = sum(len(v) for v in optimizer.message_log.values())
+        assert total_messages >= 10, "Expected multiple WebSocket updates across streams"
+
+        for stream_id, payloads in optimizer.message_log.items():
+            assert payloads, f"Stream {stream_id} produced no payloads"
+            sequences = [p['sequence'] for p in payloads]
+            unique_sequences = sorted(set(sequences))
+            assert unique_sequences == list(range(len(unique_sequences))), (
+                f"Stream {stream_id} produced unexpected sequences: {sequences}"
+            )
+
+        status = await optimizer.get_stream_status()
+        assert status['messages'] >= total_messages
+        assert status['active_streams'] >= 1
+        assert status['status'] == 'running'
 
 
 @pytest.mark.integration
@@ -226,20 +245,18 @@ async def test_websocket_connection_state_tracking(integration_env, cleanup_task
             # Check state after startup
             if hasattr(launcher, 'ws_optimizer') and launcher.ws_optimizer:
                 # Try to get stream status
-                try:
-                    status = await launcher.ws_optimizer.get_stream_status()
-                    print(f"\n  WebSocket Status:")
-                    print(f"    Initialized: {status.get('initialized', False)}")
-                    print(f"    Running:     {status.get('running', False)}")
-                    print(f"    Streams:     {status.get('streams', 0)}")
-                    
-                    # In mocked environment, these might be False/0, which is OK
-                    print("\n  ✓ WebSocket state tracking is functional")
-                    
-                except Exception as e:
-                    print(f"  - Could not get WebSocket status: {e}")
-                    print("  - This is OK in a mocked environment")
-            
+                status = await launcher.ws_optimizer.get_stream_status()
+                print(f"\n  WebSocket Status:")
+                print(f"    Active Streams: {status.get('active_streams')}")
+                print(f"    Status:         {status.get('status')}")
+                print(f"    Messages:       {status.get('messages')}")
+
+                assert status.get('status') == 'running', "WebSocket manager not running"
+                assert status.get('active_streams', 0) >= 1, "Expected at least one active stream"
+                assert status.get('messages', 0) >= 5, "Expected WebSocket messages to be recorded"
+
+                print("\n  ✓ WebSocket state tracking is functional")
+
             # Wait for completion
             await launcher_task
             

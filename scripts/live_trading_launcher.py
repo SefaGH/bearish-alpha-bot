@@ -721,6 +721,7 @@ class LiveTradingLauncher:
         """
                      
         # Define capital and risk parameters FIRST
+        self._capital_source = "default"
         self.CAPITAL_USDT = 100  # Default capital in USDT
         self.RISK_PARAMS = {
             'max_position_size': 0.20,  # 20% max position
@@ -767,12 +768,17 @@ class LiveTradingLauncher:
         
         # Get trading pairs FIRST, before logging
         self.TRADING_PAIRS = self._get_trading_pairs()
+        self.CAPITAL_USDT = self._resolve_initial_capital()
         
         logger.info("="*70)
         logger.info("BEARISH ALPHA BOT - LIVE TRADING LAUNCHER")
         logger.info("="*70)
         logger.info(f"Mode: {mode.upper()}")
-        logger.info(f"Capital: {self.CAPITAL_USDT} USDT")
+        logger.info(
+            "Capital: %s USDT (source: %s)",
+            self.CAPITAL_USDT,
+            self._capital_source.upper(),
+        )
         logger.info(f"Exchange: BingX")
         logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
         if self.TRADING_PAIRS:
@@ -812,6 +818,59 @@ class LiveTradingLauncher:
             self.config = LiveTradingConfiguration.load(log_summary=False)
             logger.info("✓ Config loaded (ENV > YAML > Defaults)")
         return self.config
+
+    def _resolve_initial_capital(self) -> float:
+        """Determine initial capital from ENV, config and defaults."""
+
+        env_value = os.getenv("CAPITAL_USDT")
+        if env_value is not None:
+            try:
+                capital = float(env_value)
+            except ValueError:
+                logger.warning(
+                    "Invalid CAPITAL_USDT environment value '%s' – falling back to config",
+                    env_value,
+                )
+            else:
+                self._capital_source = "env"
+                return max(capital, 0.0)
+
+        config = self._load_config() or {}
+        risk_section: Dict[str, Any] = {}
+
+        if os.getenv("CAPITAL_USDT") is None:
+            try:
+                from config.live_trading_config import LiveTradingConfiguration
+
+                yaml_config = LiveTradingConfiguration.load_from_yaml()
+            except Exception:
+                yaml_config = None
+            if isinstance(yaml_config, dict):
+                risk_section = yaml_config.get("risk", {}) or {}
+
+        if not risk_section:
+            risk_section = config.get("risk", {}) if isinstance(config, dict) else {}
+        capital_cfg = risk_section.get("equity_usd")
+        if capital_cfg is not None:
+            try:
+                capital = float(capital_cfg)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid equity_usd in config (%s) – reverting to default capital",
+                    capital_cfg,
+                )
+            else:
+                self._capital_source = "config"
+                return max(capital, 0.0)
+
+        self._capital_source = "default"
+        return float(self.CAPITAL_USDT)
+
+    @property
+    def capital_source(self) -> str:
+        """Return the source used for resolving capital."""
+
+        return self._capital_source
     
     def _get_trading_pairs(self) -> List[str]:
         """Get trading pairs from config, not hardcoded!"""
