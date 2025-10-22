@@ -1694,19 +1694,20 @@ class LiveTradingLauncher:
             logger.info("="*70)
             logger.info(f"Scan Interval: 60 seconds")
             logger.info(f"Symbols: {', '.join(self.TRADING_PAIRS)}")
+            logger.info(f"Duration: {duration if duration else 'indefinite'} seconds")
             logger.info("="*70)
             
-            # 1. LiveTradingEngine'in signal processing loop'unu başlat
-            if self.coordinator and self.coordinator.trading_engine:
-                signal_task = asyncio.create_task(
-                    self.coordinator.trading_engine._signal_processing_loop()
-                )
-                logger.info("✅ Signal processing loop started")
-            else:
+            # 1. LiveTradingEngine'in signal processing loop'unu başlat (background task)
+            if not self.coordinator or not self.coordinator.trading_engine:
                 logger.error("❌ Trading engine not available")
                 return
             
-            # 2. Ana trading loop
+            signal_task = asyncio.create_task(
+                self.coordinator.trading_engine._signal_processing_loop()
+            )
+            logger.info("✅ Signal processing background task started")
+            
+            # 2. Ana trading loop (duration kontrolü ile)
             start_time = time.time()
             scan_interval = 60  # 60 saniyede bir market scan
             loop_count = 0
@@ -1722,22 +1723,24 @@ class LiveTradingLauncher:
                         logger.info("\n" + "="*70)
                         logger.info(f"⏱️ DURATION LIMIT REACHED ({duration}s)")
                         logger.info(f"📊 Completed {loop_count} scan cycles")
+                        logger.info(f"⏱️ Total runtime: {elapsed:.1f}s")
                         logger.info("="*70)
                         break
                     
-                    # Kalan süre hesapla
+                    # Kalan süre hesapla ve logla
                     if duration:
                         remaining = duration - elapsed
-                        logger.info(f"\n⏱️ Time remaining: {remaining:.0f}s")
+                        logger.info(f"\n⏱️ Time remaining: {remaining:.0f}s / {duration}s")
                     
                     logger.info(f"\n{'='*70}")
                     logger.info(f"🔍 MARKET SCAN CYCLE #{loop_count}")
                     logger.info(f"{'='*70}")
                     
                     # 3. Production coordinator'ın trading loop'unu çağır
+                    # Bu metod tüm sembolleri tarar ve signal üretir
                     try:
                         await self.coordinator._process_trading_loop()
-                        logger.info(f"✅ Scan cycle #{loop_count} completed")
+                        logger.info(f"✅ Scan cycle #{loop_count} completed successfully")
                     except Exception as e:
                         logger.error(f"❌ Error in scan cycle #{loop_count}: {e}", exc_info=True)
                     
@@ -1746,19 +1749,20 @@ class LiveTradingLauncher:
                     await asyncio.sleep(scan_interval)
                     
             except KeyboardInterrupt:
-                logger.info("\n⚠️ Keyboard interrupt received - shutting down...")
+                logger.info("\n⚠️ Keyboard interrupt received - initiating graceful shutdown...")
             except Exception as e:
                 logger.error(f"\n❌ Fatal error in trading loop: {e}", exc_info=True)
             finally:
-                # Signal processing task'ını iptal et
+                # Signal processing task'ını temiz şekilde durdur
                 if 'signal_task' in locals() and not signal_task.done():
+                    logger.info("Cancelling signal processing task...")
                     signal_task.cancel()
                     try:
                         await signal_task
                     except asyncio.CancelledError:
-                        pass
+                        logger.info("✓ Signal processing task cancelled")
                 
-                # Cleanup
+                # Graceful shutdown
                 logger.info("\n" + "="*70)
                 logger.info("INITIATING GRACEFUL SHUTDOWN")
                 logger.info("="*70)
