@@ -1778,31 +1778,31 @@ class LiveTradingLauncher:
                 continuous=self.infinite
             )
             
-            except KeyboardInterrupt:
-                logger.info("\n⚠ Keyboard interrupt received - initiating shutdown...")
-                raise  # Re-raise to be caught by main()
-                
-            except Exception as e:
-                logger.error(f"❌ Critical error in trading loop: {e}")
-                if self.health_monitor:
-                    self.health_monitor.record_error(str(e))
-                raise  # Re-raise to be caught by main()
+        except KeyboardInterrupt:
+            logger.info("\n⚠ Keyboard interrupt received - initiating shutdown...")
+            raise  # Re-raise to be caught by main()
             
-            finally:
-                # Stop health monitor first
-                if self.health_monitor:
-                    try:
-                        await self.health_monitor.stop_monitoring()
-                    except Exception as e:
-                        logger.error(f"Error stopping health monitor: {e}")
-                
-                # Cancel background task if still running
-                if _health_task and not _health_task.done():
-                    _health_task.cancel()
-                    try:
-                        await _health_task
-                    except asyncio.CancelledError:
-                        pass
+        except Exception as e:
+            logger.error(f"❌ Critical error in trading loop: {e}")
+            if self.health_monitor:
+                self.health_monitor.record_error(str(e))
+            raise  # Re-raise to be caught by main()
+        
+        finally:
+            # Stop health monitor first
+            if self.health_monitor:
+                try:
+                    await self.health_monitor.stop_monitoring()
+                except Exception as e:
+                    logger.error(f"Error stopping health monitor: {e}")
+            
+            # Cancel background task if still running
+            if _health_task and not _health_task.done():
+                _health_task.cancel()
+                try:
+                    await _health_task
+                except asyncio.CancelledError:
+                    pass
     
     async def _monitor_websocket_health(self):
         """
