@@ -272,15 +272,18 @@ class OptimizedWebSocketManager:
                 try:
                     from core.websocket_manager import WebSocketManager
                 except Exception:
+                    # If the import fails in a test environment, return empty list gracefully
                     logger.debug("[WS-OPT] core.websocket_manager not available in test env; skipping WebSocket setup")
                     return []
     
+                # Create the WebSocketManager instance inside its own try/except (aligned with the import try/except)
                 try:
                     self.ws_manager = WebSocketManager(
                         exchanges=exchange_clients,
                         config=self.config
                     )
                 except TypeError as e:
+                    # Compute a safe map of config value types first, then log it.
                     try:
                         type_map = {k: type(v).__name__ for k, v in (self.config or {}).items()}
                     except Exception:
