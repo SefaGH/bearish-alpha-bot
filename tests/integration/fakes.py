@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
 from types import ModuleType
 from unittest.mock import MagicMock
 
@@ -262,8 +263,34 @@ def build_launcher_module_stubs() -> Dict[str, ModuleType]:
     }
 
 
+@contextmanager
+def ignore_test_task_cancellation(task: asyncio.Task) -> None:
+    """Temporarily filter ``asyncio.all_tasks`` to exclude the test coroutine.
+
+    ``LiveTradingLauncher.cleanup`` cancels every pending task on the event loop,
+    which includes the coroutine executing the integration test.  When that test
+    coroutine is cancelled ``asyncio.wait_for`` raises ``CancelledError`` even
+    though the launcher exited cleanly.  This context manager hides the provided
+    test task from ``asyncio.all_tasks`` during cleanup so the launcher can
+    cancel its own internal tasks without touching the test harness.
+    """
+
+    original_all_tasks = asyncio.all_tasks
+
+    def _filtered_all_tasks(loop: asyncio.AbstractEventLoop | None = None):
+        tasks = original_all_tasks(loop)
+        return [t for t in tasks if t is not task]
+
+    asyncio.all_tasks = _filtered_all_tasks  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        asyncio.all_tasks = original_all_tasks  # type: ignore[assignment]
+
+
 __all__ = [
     "FakeProductionCoordinator",
     "FakeOptimizedWebSocketManager",
     "build_launcher_module_stubs",
+    "ignore_test_task_cancellation",
 ]

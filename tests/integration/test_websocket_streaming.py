@@ -13,7 +13,7 @@ import pytest
 import asyncio
 import os
 import sys
-from unittest.mock import Mock, MagicMock, patch, AsyncMock
+from unittest.mock import Mock, MagicMock, patch
 from datetime import datetime
 
 # Add paths
@@ -24,6 +24,7 @@ from .fakes import (
     FakeOptimizedWebSocketManager,
     FakeProductionCoordinator,
     build_launcher_module_stubs,
+    ignore_test_task_cancellation,
 )
 
 @pytest.mark.integration
@@ -54,12 +55,15 @@ async def test_websocket_streams_deliver_data(integration_env, cleanup_tasks):
         # Mock external dependencies before import
         module_stubs = build_launcher_module_stubs()
 
-        with patch.dict('sys.modules', module_stubs), \
+        test_task = asyncio.current_task()
+        assert test_task is not None
+
+        with ignore_test_task_cancellation(test_task), \
+             patch.dict('sys.modules', module_stubs), \
              patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram, \
              patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
-             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager), \
-             patch('live_trading_launcher.LiveTradingLauncher.cleanup', new_callable=AsyncMock):
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
             
             # Import launcher after patching
             from live_trading_launcher import LiveTradingLauncher
@@ -164,12 +168,15 @@ async def test_websocket_connection_state_tracking(integration_env, cleanup_task
         # Mock external dependencies before import
         module_stubs = build_launcher_module_stubs()
 
-        with patch.dict('sys.modules', module_stubs), \
+        test_task = asyncio.current_task()
+        assert test_task is not None
+
+        with ignore_test_task_cancellation(test_task), \
+             patch.dict('sys.modules', module_stubs), \
              patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram, \
              patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
-             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager), \
-             patch('live_trading_launcher.LiveTradingLauncher.cleanup', new_callable=AsyncMock):
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
             
             # Import launcher after patching
             from live_trading_launcher import LiveTradingLauncher
@@ -270,10 +277,15 @@ async def test_websocket_error_handling(integration_env, cleanup_tasks):
         # Mock external dependencies before import
         module_stubs = build_launcher_module_stubs()
 
-        with patch.dict('sys.modules', module_stubs), \
+        test_task = asyncio.current_task()
+        assert test_task is not None
+
+        with ignore_test_task_cancellation(test_task), \
+             patch.dict('sys.modules', module_stubs), \
              patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram, \
-             patch('live_trading_launcher.LiveTradingLauncher.cleanup', new_callable=AsyncMock):
+             patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
             
             # Import launcher after patching
             from live_trading_launcher import LiveTradingLauncher

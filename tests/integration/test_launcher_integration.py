@@ -16,12 +16,13 @@ import time
 import os
 import sys
 from datetime import datetime
-from unittest.mock import Mock, MagicMock, patch, AsyncMock
+from unittest.mock import Mock, MagicMock, patch
 
 from .fakes import (
     FakeOptimizedWebSocketManager,
     FakeProductionCoordinator,
     build_launcher_module_stubs,
+    ignore_test_task_cancellation,
 )
 
 # Add paths
@@ -67,12 +68,15 @@ async def test_launcher_runs_without_freeze(integration_env, cleanup_tasks):
             'torchvision': MagicMock(),
         })
 
-        with patch.dict('sys.modules', module_stubs), \
+        test_task = asyncio.current_task()
+        assert test_task is not None
+
+        with ignore_test_task_cancellation(test_task), \
+             patch.dict('sys.modules', module_stubs), \
              patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram, \
              patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
-             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager), \
-             patch('live_trading_launcher.LiveTradingLauncher.cleanup', new_callable=AsyncMock):
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
             
             print("\n[Step 1] Creating launcher instance...")
             
@@ -194,12 +198,15 @@ async def test_async_tasks_properly_scheduled(integration_env, cleanup_tasks):
         # Mock external dependencies before import
         module_stubs = build_launcher_module_stubs()
 
-        with patch.dict('sys.modules', module_stubs), \
+        test_task = asyncio.current_task()
+        assert test_task is not None
+
+        with ignore_test_task_cancellation(test_task), \
+             patch.dict('sys.modules', module_stubs), \
              patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram, \
              patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
-             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager), \
-             patch('live_trading_launcher.LiveTradingLauncher.cleanup', new_callable=AsyncMock):
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
             
             # Import launcher after patching
             from live_trading_launcher import LiveTradingLauncher
@@ -294,12 +301,15 @@ async def test_launcher_initialization_phases(integration_env, cleanup_tasks):
         # Mock external dependencies before import
         module_stubs = build_launcher_module_stubs()
 
-        with patch.dict('sys.modules', module_stubs), \
+        test_task = asyncio.current_task()
+        assert test_task is not None
+
+        with ignore_test_task_cancellation(test_task), \
+             patch.dict('sys.modules', module_stubs), \
              patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
              patch('core.notify.Telegram') as mock_telegram, \
              patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
-             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager), \
-             patch('live_trading_launcher.LiveTradingLauncher.cleanup', new_callable=AsyncMock):
+             patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
             
             # Import launcher after patching
             from live_trading_launcher import LiveTradingLauncher
