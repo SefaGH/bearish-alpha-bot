@@ -47,6 +47,7 @@ class StrategyCoordinator:
         self.active_signals = {}  # signal_id -> signal_data
         self.signal_queue = asyncio.Queue()
         self.signal_history = []
+        self._signal_history_lookup: Dict[str, Dict[str, Any]] = {}
         
         # Conflict tracking
         self.conflict_history = []
@@ -371,17 +372,13 @@ class StrategyCoordinator:
             self.processing_stats['accepted_signals'] += 1
             
             # Record in history
-            self.signal_history.append({
+            self._add_signal_history_entry({
                 'signal_id': signal_id,
                 'strategy_name': strategy_name,
                 'symbol': enriched_signal.get('symbol'),
                 'timestamp': datetime.now(timezone.utc),
                 'status': 'accepted'
             })
-            
-            # Keep last 500 signals
-            if len(self.signal_history) > 500:
-                self.signal_history = self.signal_history[-500:]
             
             logger.info(f"Signal accepted and queued: {signal_id}")
             
@@ -859,14 +856,84 @@ class StrategyCoordinator:
     
     def mark_signal_executed(self, signal_id: str, execution_result: Dict):
         """Mark signal as executed and remove from active signals."""
-        if signal_id in self.active_signals:
-            self.active_signals[signal_id]['status'] = 'executed'
-            self.active_signals[signal_id]['execution_result'] = execution_result
-            self.active_signals[signal_id]['execution_time'] = datetime.now(timezone.utc)
-            
-            # Move to history after short delay
-            # In production, clean up periodically
-            logger.info(f"Signal {signal_id} marked as executed")
+        if not signal_id:
+            logger.warning("Attempted to mark execution with empty signal_id")
+            return
+
+        if signal_id not in self.active_signals:
+            logger.debug(f"Signal {signal_id} not found in active signals during execution mark")
+            return
+
+        signal_entry = self.active_signals[signal_id]
+        signal_entry['status'] = 'executed'
+        signal_entry['execution_result'] = execution_result
+        signal_entry['execution_time'] = datetime.now(timezone.utc)
+
+        # Update history entry if present to reflect execution
+        history_entry = self._signal_history_lookup.get(signal_id)
+
+        if history_entry:
+            history_entry.update({
+                'status': 'executed',
+                'execution_time': signal_entry['execution_time'],
+                'execution_result': execution_result
+            })
+        else:
+            self._add_signal_history_entry({
+                'signal_id': signal_id,
+                'strategy_name': signal_entry['signal'].get('strategy') or signal_entry['signal'].get('strategy_name'),
+                'symbol': signal_entry['signal'].get('symbol'),
+                'timestamp': signal_entry.get('timestamp', datetime.now(timezone.utc)),
+                'status': 'executed',
+                'execution_time': signal_entry['execution_time'],
+                'execution_result': execution_result
+            })
+
+        # Remove from active signals to prevent conflicts and unbounded growth
+        self.active_signals.pop(signal_id, None)
+
+        logger.info(f"Signal {signal_id} marked as executed and removed from active registry")
+
+    def discard_active_signal(self, signal_id: str) -> None:
+        """Remove a signal from the active registry without raising errors."""
+        if not signal_id:
+            return
+
+        removed = self.active_signals.pop(signal_id, None)
+
+        if removed:
+            logger.warning(
+                "Signal %s discarded from active registry after lifecycle callback failure",
+                signal_id
+            )
+        else:
+            logger.debug(
+                "Attempted to discard signal %s from active registry but it was not present",
+                signal_id
+            )
+
+    def _add_signal_history_entry(self, entry: Dict[str, Any]) -> None:
+        """Add or replace a signal history entry while maintaining lookup cache."""
+        signal_id = entry.get('signal_id')
+        if not signal_id:
+            logger.debug("Attempted to add history entry without signal_id; skipping")
+            return
+
+        existing_entry = self._signal_history_lookup.get(signal_id)
+        if existing_entry:
+            existing_entry.update(entry)
+        else:
+            self.signal_history.append(entry)
+            self._signal_history_lookup[signal_id] = entry
+
+        if len(self.signal_history) > 500:
+            # Retain only the most recent 500 entries and rebuild lookup map accordingly
+            self.signal_history = self.signal_history[-500:]
+            self._signal_history_lookup = {
+                item.get('signal_id'): item
+                for item in self.signal_history
+                if item.get('signal_id')
+            }
     
     def get_processing_stats(self) -> Dict[str, Any]:
         """Get signal processing statistics."""

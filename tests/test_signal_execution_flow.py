@@ -9,9 +9,120 @@ Strategy → Coordinator → Engine → Execution → Position
 import sys
 import os
 import asyncio
+import types
 import pytest
 
 from unittest.mock import Mock, AsyncMock
+
+# Provide lightweight stubs for optional dependencies when not installed
+try:  # pragma: no cover - import guard
+    import yaml  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - executed only without dependency
+    yaml_stub = types.ModuleType('yaml')
+    yaml_stub.safe_load = lambda *args, **kwargs: {}
+    yaml_stub.safe_dump = lambda *args, **kwargs: ''
+    yaml_stub.dump = lambda *args, **kwargs: ''
+    sys.modules.setdefault('yaml', yaml_stub)
+
+try:  # pragma: no cover - import guard
+    import pandas  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - executed only without dependency
+    pandas_stub = types.ModuleType('pandas')
+
+    class _StubDataFrame:
+        def __init__(self, data=None, columns=None):
+            self._data = data or []
+            self.columns = columns or []
+
+        def __getitem__(self, item):
+            return []
+
+        def __setitem__(self, key, value):
+            # Stub ignores all assignments
+            return None
+
+    pandas_stub.DataFrame = _StubDataFrame
+    pandas_stub.Series = _StubDataFrame
+    pandas_stub.to_datetime = lambda *args, **kwargs: []
+    pandas_stub.concat = lambda *args, **kwargs: _StubDataFrame()
+    pandas_stub.isna = lambda *args, **kwargs: False
+    sys.modules.setdefault('pandas', pandas_stub)
+
+try:  # pragma: no cover - import guard
+    import ccxt  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - executed only without dependency
+    ccxt_stub = types.ModuleType('ccxt')
+
+    class _StubExchange:
+        def __init__(self, params=None):
+            self.params = params or {}
+
+        def fetch_ohlcv(self, *args, **kwargs):
+            return []
+
+        def fetch_ticker(self, *args, **kwargs):
+            return {}
+
+        def fetch_tickers(self, *args, **kwargs):
+            return {}
+
+    class AuthenticationError(Exception):
+        pass
+
+    ccxt_stub.AuthenticationError = AuthenticationError
+
+    def _create_exchange(name):
+        class _DynamicExchange(_StubExchange):
+            exchange_name = name
+
+        return _DynamicExchange
+
+    def _ccxt_getattr(attr):
+        exchange_cls = _create_exchange(attr)
+        setattr(ccxt_stub, attr, exchange_cls)
+        return exchange_cls
+
+    ccxt_stub.__getattr__ = _ccxt_getattr
+    sys.modules.setdefault('ccxt', ccxt_stub)
+
+    # Provide minimal ccxt.pro compatibility layer
+    ccxt_pro_stub = types.ModuleType('ccxt.pro')
+    ccxt_pro_stub.__getattr__ = _ccxt_getattr
+    ccxt_stub.pro = ccxt_pro_stub
+    sys.modules.setdefault('ccxt.pro', ccxt_pro_stub)
+
+try:  # pragma: no cover - import guard
+    import requests  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - executed only without dependency
+    requests_stub = types.ModuleType('requests')
+
+    class _StubResponse:
+        status_code = 200
+
+        def json(self):
+            return {}
+
+        def raise_for_status(self):
+            return None
+
+    requests_stub.get = lambda *args, **kwargs: _StubResponse()
+    sys.modules.setdefault('requests', requests_stub)
+
+try:  # pragma: no cover - import guard
+    import numpy  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - executed only without dependency
+    numpy_stub = types.ModuleType('numpy')
+    numpy_stub.array = lambda *args, **kwargs: []
+    numpy_stub.isnan = lambda x: False
+    numpy_stub.nan = float('nan')
+
+    class _StubNdArray(list):
+        pass
+
+    numpy_stub.ndarray = _StubNdArray
+    numpy_stub.mean = lambda *args, **kwargs: 0
+    sys.modules.setdefault('numpy', numpy_stub)
+
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
@@ -56,7 +167,8 @@ class TestSignalExecutionFlow:
             mode='paper',
             portfolio_manager=mock_portfolio_manager,
             risk_manager=mock_risk_manager,
-            exchange_clients={}
+            exchange_clients={},
+            strategy_coordinator=coordinator.strategy_coordinator
         )
         coordinator.is_running = True
         
@@ -117,7 +229,8 @@ class TestSignalExecutionFlow:
             mode='paper',
             portfolio_manager=mock_portfolio_manager,
             risk_manager=mock_risk_manager,
-            exchange_clients={}
+            exchange_clients={},
+            strategy_coordinator=coordinator.strategy_coordinator
         )
         coordinator.is_running = True
         
@@ -169,7 +282,8 @@ class TestSignalExecutionFlow:
             mode='paper',
             portfolio_manager=mock_portfolio_manager,
             risk_manager=mock_risk_manager,
-            exchange_clients={}
+            exchange_clients={},
+            strategy_coordinator=coordinator.strategy_coordinator
         )
         coordinator.is_running = True
         
@@ -215,7 +329,8 @@ class TestSignalExecutionFlow:
             mode='paper',
             portfolio_manager=mock_portfolio_manager,
             risk_manager=mock_risk_manager,
-            exchange_clients={}
+            exchange_clients={},
+            strategy_coordinator=coordinator.strategy_coordinator
         )
         coordinator.is_running = True
         
@@ -238,7 +353,164 @@ class TestSignalExecutionFlow:
             if any(stage['stage'] == 'rejected' for stage in data['stages'])
         ]
         assert len(rejected_signals) > 0, "Should track rejected signals"
-    
+
+    @pytest.mark.asyncio
+    async def test_multiple_signals_same_symbol_execute(self):
+        """Signals for the same symbol should execute sequentially in paper mode."""
+
+        mock_risk_manager = Mock(spec=RiskManager)
+        mock_risk_manager.calculate_position_size = AsyncMock(return_value=0.02)
+        mock_risk_manager.validate_new_position = AsyncMock(return_value=(True, "Valid", {}))
+        mock_risk_manager.active_positions = {}
+
+        mock_portfolio_manager = Mock(spec=PortfolioManager)
+        mock_portfolio_manager.strategies = {}
+        mock_portfolio_manager.get_strategy_allocation = Mock(return_value=0.5)
+        mock_portfolio_manager.performance_monitor = None
+        mock_portfolio_manager.exchange_clients = {}
+        mock_portfolio_manager.portfolio_state = {}
+
+        coordinator = ProductionCoordinator()
+        coordinator.strategy_coordinator = StrategyCoordinator(
+            mock_portfolio_manager,
+            mock_risk_manager
+        )
+        coordinator.trading_engine = LiveTradingEngine(
+            mode='paper',
+            portfolio_manager=mock_portfolio_manager,
+            risk_manager=mock_risk_manager,
+            exchange_clients={},
+            strategy_coordinator=coordinator.strategy_coordinator
+        )
+        coordinator.is_running = True
+
+        # Stub execution components to simulate successful orders and positions
+        coordinator.trading_engine.order_manager.place_order = AsyncMock(side_effect=[
+            {'success': True, 'order_id': 'order-1'},
+            {'success': True, 'order_id': 'order-2'}
+        ])
+        coordinator.trading_engine.position_manager.open_position = AsyncMock(side_effect=[
+            {'success': True, 'position_id': 'pos-1', 'position': {'symbol': 'BTC/USDT:USDT'}},
+            {'success': True, 'position_id': 'pos-2', 'position': {'symbol': 'BTC/USDT:USDT'}},
+        ])
+
+        first_signal = {
+            'symbol': 'BTC/USDT:USDT',
+            'side': 'long',
+            'entry': 50000.0,
+            'stop': 49000.0,
+            'target': 52000.0,
+            'strategy': 'test_strategy',
+            'reason': 'first-signal',
+            'exchange': 'paper'
+        }
+
+        first_submission = await coordinator.submit_signal(first_signal)
+        assert first_submission['success'], "First signal should be accepted"
+        first_payload = await coordinator.trading_engine.signal_queue.get()
+        coordinator.trading_engine.exchange_clients = {'paper': object()}
+        if 'exchange' not in first_payload:
+            first_payload['exchange'] = 'paper'
+        first_result = await coordinator.trading_engine.execute_signal(first_payload)
+        assert first_result['success'], "First signal should execute successfully"
+        assert first_submission['signal_id'] not in coordinator.strategy_coordinator.active_signals
+
+        second_signal = {
+            **first_signal,
+            'entry': first_signal['entry'] * 1.01,
+            'target': first_signal['target'] * 1.01,
+            'stop': first_signal['stop'] * 1.01,
+            'reason': 'second-signal'
+        }
+
+        second_submission = await coordinator.submit_signal(second_signal)
+        assert second_submission['success'], "Second signal should be accepted after first execution"
+        second_payload = await coordinator.trading_engine.signal_queue.get()
+        coordinator.trading_engine.exchange_clients = {'paper': object()}
+        if 'exchange' not in second_payload:
+            second_payload['exchange'] = 'paper'
+        second_result = await coordinator.trading_engine.execute_signal(second_payload)
+        assert second_result['success'], "Second signal should execute successfully"
+        assert second_submission['signal_id'] not in coordinator.strategy_coordinator.active_signals
+
+        # Order manager should be invoked twice (once per signal)
+        assert coordinator.trading_engine.order_manager.place_order.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_signal_cleanup_after_lifecycle_callback_failure(self):
+        """Engine should discard coordinator state when lifecycle callback raises."""
+
+        mock_risk_manager = Mock(spec=RiskManager)
+        mock_risk_manager.calculate_position_size = AsyncMock(return_value=0.01)
+        mock_risk_manager.validate_new_position = AsyncMock(return_value=(True, "Valid", {}))
+        mock_risk_manager.active_positions = {}
+
+        mock_portfolio_manager = Mock(spec=PortfolioManager)
+        mock_portfolio_manager.strategies = {}
+        mock_portfolio_manager.get_strategy_allocation = Mock(return_value=0.25)
+        mock_portfolio_manager.performance_monitor = None
+        mock_portfolio_manager.exchange_clients = {}
+        mock_portfolio_manager.portfolio_state = {}
+
+        coordinator = ProductionCoordinator()
+        coordinator.strategy_coordinator = StrategyCoordinator(
+            mock_portfolio_manager,
+            mock_risk_manager
+        )
+
+        trading_engine = LiveTradingEngine(
+            mode='paper',
+            portfolio_manager=mock_portfolio_manager,
+            risk_manager=mock_risk_manager,
+            exchange_clients={'paper': object()},
+            strategy_coordinator=coordinator.strategy_coordinator
+        )
+
+        # Replace execution dependencies with lightweight stubs
+        trading_engine.order_manager.place_order = AsyncMock(return_value={'success': True, 'order_id': 'order-1'})
+        trading_engine.position_manager.open_position = AsyncMock(return_value={
+            'success': True,
+            'position_id': 'pos-1',
+            'position': {'symbol': 'BTC/USDT:USDT'}
+        })
+        trading_engine.execution_analytics.get_best_execution_algorithm = Mock(return_value='direct')
+
+        coordinator.strategy_coordinator.mark_signal_executed = Mock(side_effect=RuntimeError('mark failure'))
+        coordinator.strategy_coordinator.discard_active_signal = Mock(side_effect=RuntimeError('discard failure'))
+
+        signal_id = 'test-signal-id'
+        coordinator.strategy_coordinator.active_signals[signal_id] = {
+            'signal': {
+                'symbol': 'BTC/USDT:USDT',
+                'strategy': 'test_strategy'
+            },
+            'status': 'accepted'
+        }
+
+        signal_payload = {
+            'signal_id': signal_id,
+            'symbol': 'BTC/USDT:USDT',
+            'side': 'long',
+            'entry': 50000.0,
+            'strategy': 'test_strategy',
+            'reason': 'unit-test',
+            'exchange': 'paper'
+        }
+
+        result = await trading_engine.execute_signal(signal_payload)
+
+        assert result['success'] is True, "Trade should still be reported as successful"
+        assert 'lifecycle_error' in result, "Lifecycle error metadata should be included"
+        assert result['lifecycle_error']['cleanup'] == 'discarded', "Cleanup should report discarded state"
+
+        cleanup_error = result['lifecycle_error'].get('cleanup_error')
+        if isinstance(cleanup_error, list):
+            assert any('discard failure' in err for err in cleanup_error)
+        else:
+            assert 'discard failure' in cleanup_error
+
+        assert signal_id not in coordinator.strategy_coordinator.active_signals, "Signal should be removed from coordinator"
+
     @pytest.mark.asyncio
     async def test_engine_status_shows_signals_received(self):
         """Test that engine status correctly shows signals_received counter."""
@@ -289,7 +561,8 @@ class TestSignalExecutionFlow:
             mode='paper',
             portfolio_manager=mock_portfolio_manager,
             risk_manager=mock_risk_manager,
-            exchange_clients={}
+            exchange_clients={},
+            strategy_coordinator=coordinator.strategy_coordinator
         )
         coordinator.is_running = True
         

@@ -10,7 +10,7 @@ import time
 import math
 import pandas as pd
 from collections import defaultdict, deque
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -54,6 +54,9 @@ try:
 except ImportError:
     from config.live_trading_config import LiveTradingConfiguration
 
+if TYPE_CHECKING:
+    from .strategy_coordinator import StrategyCoordinator
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,8 +80,8 @@ class EngineState(Enum):
 class LiveTradingEngine:
     """Production-ready live trading execution engine with enhanced debugging."""
     
-    def __init__(self, mode='paper', portfolio_manager=None, risk_manager=None, 
-                 websocket_manager=None, exchange_clients=None):
+    def __init__(self, mode='paper', portfolio_manager=None, risk_manager=None,
+                 websocket_manager=None, exchange_clients=None, strategy_coordinator: Optional['StrategyCoordinator'] = None):
         """
         Initialize live trading engine.
         
@@ -97,6 +100,9 @@ class LiveTradingEngine:
         self.risk_manager = risk_manager
         self.ws_manager = websocket_manager
         self.exchange_clients = exchange_clients or {}
+
+        # Coordinator reference (assigned lazily when running under ProductionCoordinator)
+        self.strategy_coordinator: Optional['StrategyCoordinator'] = strategy_coordinator
         
         # Initialize sub-managers
         self.order_manager = SmartOrderManager(risk_manager, exchange_clients)
@@ -176,6 +182,10 @@ class LiveTradingEngine:
         logger.info(f"  Mode: {mode}")
         exchange_client_names = list(self.exchange_clients.keys()) if self.exchange_clients else []
         logger.info(f"  Exchange clients: {exchange_client_names}")
+
+    def set_strategy_coordinator(self, coordinator: Optional['StrategyCoordinator']) -> None:
+        """Attach StrategyCoordinator reference for execution callbacks."""
+        self.strategy_coordinator = coordinator
     
     async def start_live_trading(self, mode: str = 'paper') -> Dict[str, Any]:
         """
@@ -324,6 +334,7 @@ class LiveTradingEngine:
         """Execute trading signal with full pipeline integration."""
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
+            signal_id = signal.get('signal_id')
             
             # [EXECUTION START] Log signal execution start
             logger.info(f"[EXECUTION-START] Processing signal for {symbol}")
@@ -469,14 +480,95 @@ class LiveTradingEngine:
             logger.info(f"✅ Signal execution completed for {symbol}")
             logger.info(f"📊 Total executed: {self._executed_count}")
             logger.info("="*50)
-            
-            return {
+
+            lifecycle_error = None
+
+            # Notify strategy coordinator for lifecycle tracking
+            if signal_id and self.strategy_coordinator:
+                execution_summary = {
+                    'order': execution_result,
+                    'position': position_result,
+                    'mode': self.mode.value,
+                    'completed_at': datetime.now(timezone.utc)
+                }
+                try:
+                    self.strategy_coordinator.mark_signal_executed(signal_id, execution_summary)
+                except Exception as callback_error:
+                    cleanup_state = 'pending'
+                    cleanup_method = None
+                    cleanup_errors: List[str] = []
+
+                    lifecycle_error = {
+                        'error': str(callback_error),
+                        'stage': 'lifecycle_callback'
+                    }
+
+                    logger.error(
+                        f"Failed to mark signal {signal_id} as executed: {callback_error}",
+                        exc_info=True
+                    )
+
+                    discard_method = getattr(self.strategy_coordinator, 'discard_active_signal', None)
+
+                    if callable(discard_method):
+                        try:
+                            discard_method(signal_id)
+                            cleanup_state = 'discarded'
+                            cleanup_method = 'discard_active_signal'
+                        except Exception as cleanup_error:
+                            cleanup_errors.append(str(cleanup_error))
+                            logger.error(
+                                "Failed to discard active signal %s after callback error: %s",
+                                signal_id,
+                                cleanup_error,
+                                exc_info=True
+                            )
+                    else:
+                        cleanup_errors.append('discard_active_signal_unavailable')
+
+                    if cleanup_state != 'discarded':
+                        try:
+                            active_signals = getattr(self.strategy_coordinator, 'active_signals', None)
+                            if isinstance(active_signals, dict) and signal_id in active_signals:
+                                active_signals.pop(signal_id, None)
+                                cleanup_state = 'discarded'
+                                cleanup_method = 'direct_active_signals_pop'
+                                logger.warning(
+                                    "Signal %s removed from coordinator via direct fallback after lifecycle callback failure",
+                                    signal_id
+                                )
+                            elif cleanup_state == 'pending':
+                                cleanup_state = 'not_found'
+                        except Exception as fallback_error:
+                            cleanup_errors.append(str(fallback_error))
+                            logger.error(
+                                "Fallback removal failed for signal %s after lifecycle callback error: %s",
+                                signal_id,
+                                fallback_error,
+                                exc_info=True
+                            )
+                            cleanup_state = 'failed'
+
+                    lifecycle_error['cleanup'] = cleanup_state
+
+                    if cleanup_method:
+                        lifecycle_error['cleanup_method'] = cleanup_method
+
+                    if cleanup_errors:
+                        lifecycle_error['cleanup_error'] = cleanup_errors if len(cleanup_errors) > 1 else cleanup_errors[0]
+
+            result = {
                 'success': True,
                 'position_id': position_id,
                 'order_id': execution_result.get('order_id'),
                 'execution_result': execution_result,
                 'position_result': position_result
             }
+
+            if lifecycle_error:
+                result['lifecycle_error'] = lifecycle_error
+
+            return result
             
         except Exception as e:
             logger.error(f"Error executing signal: {e}", exc_info=True)
