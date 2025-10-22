@@ -859,14 +859,43 @@ class StrategyCoordinator:
     
     def mark_signal_executed(self, signal_id: str, execution_result: Dict):
         """Mark signal as executed and remove from active signals."""
-        if signal_id in self.active_signals:
-            self.active_signals[signal_id]['status'] = 'executed'
-            self.active_signals[signal_id]['execution_result'] = execution_result
-            self.active_signals[signal_id]['execution_time'] = datetime.now(timezone.utc)
-            
-            # Move to history after short delay
-            # In production, clean up periodically
-            logger.info(f"Signal {signal_id} marked as executed")
+        if not signal_id:
+            logger.warning("Attempted to mark execution with empty signal_id")
+            return
+
+        if signal_id not in self.active_signals:
+            logger.debug(f"Signal {signal_id} not found in active signals during execution mark")
+            return
+
+        signal_entry = self.active_signals[signal_id]
+        signal_entry['status'] = 'executed'
+        signal_entry['execution_result'] = execution_result
+        signal_entry['execution_time'] = datetime.now(timezone.utc)
+
+        # Update history entry if present to reflect execution
+        for history_entry in reversed(self.signal_history):
+            if history_entry.get('signal_id') == signal_id:
+                history_entry.update({
+                    'status': 'executed',
+                    'execution_time': signal_entry['execution_time'],
+                    'execution_result': execution_result
+                })
+                break
+        else:
+            self.signal_history.append({
+                'signal_id': signal_id,
+                'strategy_name': signal_entry['signal'].get('strategy') or signal_entry['signal'].get('strategy_name'),
+                'symbol': signal_entry['signal'].get('symbol'),
+                'timestamp': signal_entry.get('timestamp', datetime.now(timezone.utc)),
+                'status': 'executed',
+                'execution_time': signal_entry['execution_time'],
+                'execution_result': execution_result
+            })
+
+        # Remove from active signals to prevent conflicts and unbounded growth
+        self.active_signals.pop(signal_id, None)
+
+        logger.info(f"Signal {signal_id} marked as executed and removed from active registry")
     
     def get_processing_stats(self) -> Dict[str, Any]:
         """Get signal processing statistics."""

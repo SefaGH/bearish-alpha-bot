@@ -577,7 +577,8 @@ class ProductionCoordinator:
                 portfolio_manager=self.portfolio_manager,
                 risk_manager=self.risk_manager,
                 websocket_manager=self.websocket_manager,
-                exchange_clients=self.exchange_clients
+                exchange_clients=self.exchange_clients,
+                strategy_coordinator=self.strategy_coordinator
             )
             
             # Set active symbols with multi-tier fallback
@@ -912,6 +913,16 @@ class ProductionCoordinator:
                 self._track_signal_lifecycle(signal_id, 'queued', {'queue': 'strategy_coordinator'})
                 logger.info(f"[STAGE:QUEUED] Signal {signal_id} in StrategyCoordinator queue")
                 
+                # Ensure trading engine is aware of the strategy coordinator for execution callbacks
+                if self.trading_engine and hasattr(self.trading_engine, 'set_strategy_coordinator'):
+                    current_coordinator = getattr(self.trading_engine, 'strategy_coordinator', None)
+                    if current_coordinator is None and self.strategy_coordinator:
+                        self.trading_engine.set_strategy_coordinator(self.strategy_coordinator)
+
+                # Attach signal identifier so execution layer can report completion
+                if signal_id and isinstance(enriched_signal, dict):
+                    enriched_signal['signal_id'] = signal_id
+
                 # [STAGE 4: FORWARDED] Forward enriched signal to LiveTradingEngine
                 await self.trading_engine.signal_queue.put(enriched_signal)
                 self._track_signal_lifecycle(signal_id, 'forwarded', {'queue': 'live_trading_engine'})

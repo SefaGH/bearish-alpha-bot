@@ -10,7 +10,7 @@ import time
 import math
 import pandas as pd
 from collections import defaultdict, deque
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -54,6 +54,9 @@ try:
 except ImportError:
     from config.live_trading_config import LiveTradingConfiguration
 
+if TYPE_CHECKING:
+    from .strategy_coordinator import StrategyCoordinator
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,8 +80,8 @@ class EngineState(Enum):
 class LiveTradingEngine:
     """Production-ready live trading execution engine with enhanced debugging."""
     
-    def __init__(self, mode='paper', portfolio_manager=None, risk_manager=None, 
-                 websocket_manager=None, exchange_clients=None):
+    def __init__(self, mode='paper', portfolio_manager=None, risk_manager=None,
+                 websocket_manager=None, exchange_clients=None, strategy_coordinator: Optional['StrategyCoordinator'] = None):
         """
         Initialize live trading engine.
         
@@ -97,6 +100,9 @@ class LiveTradingEngine:
         self.risk_manager = risk_manager
         self.ws_manager = websocket_manager
         self.exchange_clients = exchange_clients or {}
+
+        # Coordinator reference (assigned lazily when running under ProductionCoordinator)
+        self.strategy_coordinator: Optional['StrategyCoordinator'] = strategy_coordinator
         
         # Initialize sub-managers
         self.order_manager = SmartOrderManager(risk_manager, exchange_clients)
@@ -176,6 +182,10 @@ class LiveTradingEngine:
         logger.info(f"  Mode: {mode}")
         exchange_client_names = list(self.exchange_clients.keys()) if self.exchange_clients else []
         logger.info(f"  Exchange clients: {exchange_client_names}")
+
+    def set_strategy_coordinator(self, coordinator: Optional['StrategyCoordinator']) -> None:
+        """Attach StrategyCoordinator reference for execution callbacks."""
+        self.strategy_coordinator = coordinator
     
     async def start_live_trading(self, mode: str = 'paper') -> Dict[str, Any]:
         """
@@ -324,6 +334,7 @@ class LiveTradingEngine:
         """Execute trading signal with full pipeline integration."""
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
+            signal_id = signal.get('signal_id')
             
             # [EXECUTION START] Log signal execution start
             logger.info(f"[EXECUTION-START] Processing signal for {symbol}")
@@ -469,7 +480,23 @@ class LiveTradingEngine:
             logger.info(f"✅ Signal execution completed for {symbol}")
             logger.info(f"📊 Total executed: {self._executed_count}")
             logger.info("="*50)
-            
+
+            # Notify strategy coordinator for lifecycle tracking
+            if signal_id and self.strategy_coordinator:
+                execution_summary = {
+                    'order': execution_result,
+                    'position': position_result,
+                    'mode': self.mode.value,
+                    'completed_at': datetime.now(timezone.utc)
+                }
+                try:
+                    self.strategy_coordinator.mark_signal_executed(signal_id, execution_summary)
+                except Exception as callback_error:
+                    logger.error(
+                        f"Failed to mark signal {signal_id} as executed: {callback_error}",
+                        exc_info=True
+                    )
+
             return {
                 'success': True,
                 'position_id': position_id,
