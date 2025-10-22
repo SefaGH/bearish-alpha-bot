@@ -12,6 +12,7 @@ import sys
 import os
 import asyncio
 import types
+import math
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
 
@@ -198,6 +199,47 @@ class TestSignalQueueExecution:
         assert 'cooldown' in reason_again.lower()
         assert engine._local_last_signal_time
         assert engine._local_signal_price_history['BTC/USDT:USDT']
+
+    def test_record_local_signal_accepts_string_prices(self):
+        """String based price inputs should not break duplicate tracking."""
+
+        mock_risk_manager = Mock(spec=RiskManager)
+        mock_risk_manager.calculate_position_size = AsyncMock(return_value=0.01)
+        mock_risk_manager.validate_new_position = AsyncMock(return_value=(True, "Valid", {}))
+        mock_risk_manager.active_positions = {}
+
+        mock_portfolio_manager = Mock(spec=PortfolioManager)
+        mock_portfolio_manager.strategies = {}
+        mock_portfolio_manager.get_strategy_allocation = Mock(return_value=0.25)
+        mock_portfolio_manager.performance_monitor = None
+        mock_portfolio_manager.exchange_clients = {}
+
+        engine = LiveTradingEngine(
+            mode='paper',
+            portfolio_manager=mock_portfolio_manager,
+            risk_manager=mock_risk_manager,
+            exchange_clients={}
+        )
+
+        signal = {
+            'symbol': 'ETH/USDT:USDT',
+            'side': 'long',
+            'entry': '3500.50',
+            'stop': '3400.00',
+            'target': '3700.00',
+            'strategy': 'string_strategy',
+            'reason': 'string-price'
+        }
+
+        allowed, reason = engine._should_queue_local_signal('string_strategy', signal)
+        assert allowed, reason
+        history = engine._local_signal_price_history['ETH/USDT:USDT']
+        assert history
+        assert math.isclose(history[-1][1], 3500.50)
+
+        allowed_again, reason_again = engine._should_queue_local_signal('string_strategy', signal)
+        assert not allowed_again
+        assert 'cooldown' in reason_again.lower()
 
     async def _queue_priority_over_scanning(self):
         """
