@@ -47,6 +47,7 @@ class StrategyCoordinator:
         self.active_signals = {}  # signal_id -> signal_data
         self.signal_queue = asyncio.Queue()
         self.signal_history = []
+        self._signal_history_lookup: Dict[str, Dict[str, Any]] = {}
         
         # Conflict tracking
         self.conflict_history = []
@@ -371,17 +372,13 @@ class StrategyCoordinator:
             self.processing_stats['accepted_signals'] += 1
             
             # Record in history
-            self.signal_history.append({
+            self._add_signal_history_entry({
                 'signal_id': signal_id,
                 'strategy_name': strategy_name,
                 'symbol': enriched_signal.get('symbol'),
                 'timestamp': datetime.now(timezone.utc),
                 'status': 'accepted'
             })
-            
-            # Keep last 500 signals
-            if len(self.signal_history) > 500:
-                self.signal_history = self.signal_history[-500:]
             
             logger.info(f"Signal accepted and queued: {signal_id}")
             
@@ -873,16 +870,16 @@ class StrategyCoordinator:
         signal_entry['execution_time'] = datetime.now(timezone.utc)
 
         # Update history entry if present to reflect execution
-        for history_entry in reversed(self.signal_history):
-            if history_entry.get('signal_id') == signal_id:
-                history_entry.update({
-                    'status': 'executed',
-                    'execution_time': signal_entry['execution_time'],
-                    'execution_result': execution_result
-                })
-                break
+        history_entry = self._signal_history_lookup.get(signal_id)
+
+        if history_entry:
+            history_entry.update({
+                'status': 'executed',
+                'execution_time': signal_entry['execution_time'],
+                'execution_result': execution_result
+            })
         else:
-            self.signal_history.append({
+            self._add_signal_history_entry({
                 'signal_id': signal_id,
                 'strategy_name': signal_entry['signal'].get('strategy') or signal_entry['signal'].get('strategy_name'),
                 'symbol': signal_entry['signal'].get('symbol'),
@@ -896,6 +893,29 @@ class StrategyCoordinator:
         self.active_signals.pop(signal_id, None)
 
         logger.info(f"Signal {signal_id} marked as executed and removed from active registry")
+
+    def _add_signal_history_entry(self, entry: Dict[str, Any]) -> None:
+        """Add or replace a signal history entry while maintaining lookup cache."""
+        signal_id = entry.get('signal_id')
+        if not signal_id:
+            logger.debug("Attempted to add history entry without signal_id; skipping")
+            return
+
+        existing_entry = self._signal_history_lookup.get(signal_id)
+        if existing_entry:
+            existing_entry.update(entry)
+        else:
+            self.signal_history.append(entry)
+            self._signal_history_lookup[signal_id] = entry
+
+        if len(self.signal_history) > 500:
+            # Retain only the most recent 500 entries and rebuild lookup map accordingly
+            self.signal_history = self.signal_history[-500:]
+            self._signal_history_lookup = {
+                item.get('signal_id'): item
+                for item in self.signal_history
+                if item.get('signal_id')
+            }
     
     def get_processing_stats(self) -> Dict[str, Any]:
         """Get signal processing statistics."""

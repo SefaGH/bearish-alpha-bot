@@ -15,14 +15,18 @@ import pytest
 from unittest.mock import Mock, AsyncMock
 
 # Provide lightweight stubs for optional dependencies when not installed
-if 'yaml' not in sys.modules:
+try:  # pragma: no cover - import guard
+    import yaml  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - executed only without dependency
     yaml_stub = types.ModuleType('yaml')
     yaml_stub.safe_load = lambda *args, **kwargs: {}
     yaml_stub.safe_dump = lambda *args, **kwargs: ''
     yaml_stub.dump = lambda *args, **kwargs: ''
-    sys.modules['yaml'] = yaml_stub
+    sys.modules.setdefault('yaml', yaml_stub)
 
-if 'pandas' not in sys.modules:
+try:  # pragma: no cover - import guard
+    import pandas  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - executed only without dependency
     pandas_stub = types.ModuleType('pandas')
 
     class _StubDataFrame:
@@ -34,7 +38,7 @@ if 'pandas' not in sys.modules:
             return []
 
         def __setitem__(self, key, value):
-            # Ignore assignments in stub context
+            # Stub ignores all assignments
             return None
 
     pandas_stub.DataFrame = _StubDataFrame
@@ -42,9 +46,11 @@ if 'pandas' not in sys.modules:
     pandas_stub.to_datetime = lambda *args, **kwargs: []
     pandas_stub.concat = lambda *args, **kwargs: _StubDataFrame()
     pandas_stub.isna = lambda *args, **kwargs: False
-    sys.modules['pandas'] = pandas_stub
+    sys.modules.setdefault('pandas', pandas_stub)
 
-if 'ccxt' not in sys.modules:
+try:  # pragma: no cover - import guard
+    import ccxt  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - executed only without dependency
     ccxt_stub = types.ModuleType('ccxt')
 
     class _StubExchange:
@@ -77,15 +83,17 @@ if 'ccxt' not in sys.modules:
         return exchange_cls
 
     ccxt_stub.__getattr__ = _ccxt_getattr
-    sys.modules['ccxt'] = ccxt_stub
+    sys.modules.setdefault('ccxt', ccxt_stub)
 
     # Provide minimal ccxt.pro compatibility layer
     ccxt_pro_stub = types.ModuleType('ccxt.pro')
     ccxt_pro_stub.__getattr__ = _ccxt_getattr
     ccxt_stub.pro = ccxt_pro_stub
-    sys.modules['ccxt.pro'] = ccxt_pro_stub
+    sys.modules.setdefault('ccxt.pro', ccxt_pro_stub)
 
-if 'requests' not in sys.modules:
+try:  # pragma: no cover - import guard
+    import requests  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - executed only without dependency
     requests_stub = types.ModuleType('requests')
 
     class _StubResponse:
@@ -98,19 +106,22 @@ if 'requests' not in sys.modules:
             return None
 
     requests_stub.get = lambda *args, **kwargs: _StubResponse()
-    sys.modules['requests'] = requests_stub
+    sys.modules.setdefault('requests', requests_stub)
 
-if 'numpy' not in sys.modules:
+try:  # pragma: no cover - import guard
+    import numpy  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - executed only without dependency
     numpy_stub = types.ModuleType('numpy')
     numpy_stub.array = lambda *args, **kwargs: []
     numpy_stub.isnan = lambda x: False
     numpy_stub.nan = float('nan')
+
     class _StubNdArray(list):
         pass
 
     numpy_stub.ndarray = _StubNdArray
     numpy_stub.mean = lambda *args, **kwargs: 0
-    sys.modules['numpy'] = numpy_stub
+    sys.modules.setdefault('numpy', numpy_stub)
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -156,7 +167,8 @@ class TestSignalExecutionFlow:
             mode='paper',
             portfolio_manager=mock_portfolio_manager,
             risk_manager=mock_risk_manager,
-            exchange_clients={}
+            exchange_clients={},
+            strategy_coordinator=coordinator.strategy_coordinator
         )
         coordinator.is_running = True
         
@@ -217,7 +229,8 @@ class TestSignalExecutionFlow:
             mode='paper',
             portfolio_manager=mock_portfolio_manager,
             risk_manager=mock_risk_manager,
-            exchange_clients={}
+            exchange_clients={},
+            strategy_coordinator=coordinator.strategy_coordinator
         )
         coordinator.is_running = True
         
@@ -269,7 +282,8 @@ class TestSignalExecutionFlow:
             mode='paper',
             portfolio_manager=mock_portfolio_manager,
             risk_manager=mock_risk_manager,
-            exchange_clients={}
+            exchange_clients={},
+            strategy_coordinator=coordinator.strategy_coordinator
         )
         coordinator.is_running = True
         
@@ -315,7 +329,8 @@ class TestSignalExecutionFlow:
             mode='paper',
             portfolio_manager=mock_portfolio_manager,
             risk_manager=mock_risk_manager,
-            exchange_clients={}
+            exchange_clients={},
+            strategy_coordinator=coordinator.strategy_coordinator
         )
         coordinator.is_running = True
         
@@ -364,7 +379,8 @@ class TestSignalExecutionFlow:
             mode='paper',
             portfolio_manager=mock_portfolio_manager,
             risk_manager=mock_risk_manager,
-            exchange_clients={}
+            exchange_clients={},
+            strategy_coordinator=coordinator.strategy_coordinator
         )
         coordinator.is_running = True
 
@@ -470,7 +486,8 @@ class TestSignalExecutionFlow:
             mode='paper',
             portfolio_manager=mock_portfolio_manager,
             risk_manager=mock_risk_manager,
-            exchange_clients={}
+            exchange_clients={},
+            strategy_coordinator=coordinator.strategy_coordinator
         )
         coordinator.is_running = True
         

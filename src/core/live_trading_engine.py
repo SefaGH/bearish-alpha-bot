@@ -496,6 +496,16 @@ class LiveTradingEngine:
                         f"Failed to mark signal {signal_id} as executed: {callback_error}",
                         exc_info=True
                     )
+                    return {
+                        'success': False,
+                        'reason': 'Signal lifecycle update failed',
+                        'stage': 'lifecycle_callback',
+                        'error': str(callback_error),
+                        'position_id': position_id,
+                        'order_id': execution_result.get('order_id'),
+                        'execution_result': execution_result,
+                        'position_result': position_result
+                    }
 
             return {
                 'success': True,
