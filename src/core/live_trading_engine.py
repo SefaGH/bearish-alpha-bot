@@ -873,7 +873,7 @@ class LiveTradingEngine:
                     logger.error(f"  ❌ {symbol}: Prefetch failed - {e}")
                 
                 # Small delay to avoid rate limiting
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
             
             logger.info("")
             logger.info(f"[PREFETCH] Complete: {prefetch_count} success, {failed_count} failed out of {len(symbols)} symbols")
