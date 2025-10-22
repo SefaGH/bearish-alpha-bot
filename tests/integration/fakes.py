@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, Dict, List, Optional
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from types import ModuleType
 from unittest.mock import MagicMock
+from unittest.mock import patch
+import sys
 
 
 class FakeRiskManager:
@@ -281,11 +283,16 @@ def ignore_test_task_cancellation(task: asyncio.Task) -> None:
         tasks = original_all_tasks(loop)
         return [t for t in tasks if t is not task]
 
-    asyncio.all_tasks = _filtered_all_tasks  # type: ignore[assignment]
-    try:
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(asyncio, "all_tasks", _filtered_all_tasks))
+
+        launcher_module = sys.modules.get("live_trading_launcher")
+        if launcher_module is not None and hasattr(launcher_module, "asyncio"):
+            stack.enter_context(
+                patch.object(launcher_module.asyncio, "all_tasks", _filtered_all_tasks)
+            )
+
         yield
-    finally:
-        asyncio.all_tasks = original_all_tasks  # type: ignore[assignment]
 
 
 __all__ = [
