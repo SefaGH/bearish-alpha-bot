@@ -226,6 +226,11 @@ class LiveTradingEngine:
             
             logger.info("\n[Phase 3.4] Starting Live Trading Components...")
             
+            # [Phase 3.4.1] Prefetch historical data for indicator warmup
+            logger.info("\n[Phase 3.4.1] Prefetching historical data for indicator warmup...")
+            await self._prefetch_historical_data()
+            logger.info("  ✓ Historical data prefetch complete")
+            
             # Start signal processing
             signal_task = asyncio.create_task(self._signal_processing_loop())
             self.tasks.append(signal_task)
@@ -511,7 +516,7 @@ class LiveTradingEngine:
         
         # Track last scan time to avoid too frequent scans
         last_scan_time = 0
-        scan_interval = 10  # 10 seconds between market scans
+        scan_interval = 60  # 60 seconds between market scans (more reasonable for 30m timeframe)
         
         # Track last WebSocket performance log time
         last_ws_perf_log_time = 0
@@ -572,7 +577,7 @@ class LiveTradingEngine:
                         
                         # Get symbols to scan
                         symbols = self._get_scan_symbols()
-                        logger.info(f"🔍 Scanning {len(symbols)} symbols")
+                        logger.info(f"🔍 Scanning {len(symbols)} symbols: {', '.join(symbols)}")
                         
                         for symbol in symbols:
                             try:
@@ -600,6 +605,15 @@ class LiveTradingEngine:
                                 if df_4h is not None and len(df_4h) > 0:
                                     df_4h = add_indicators(df_4h, indicator_config)
                                 
+                                # Check indicator readiness before proceeding
+                                if 'rsi' not in df_30m.columns or pd.isna(df_30m['rsi'].iloc[-1]):
+                                    logger.debug(f"[WARMUP] {symbol}: RSI not ready yet (need more bars)")
+                                    continue  # Skip this symbol for now
+                                
+                                if 'atr' not in df_30m.columns or pd.isna(df_30m['atr'].iloc[-1]):
+                                    logger.debug(f"[WARMUP] {symbol}: ATR not ready yet (need more bars)")
+                                    continue  # Skip this symbol for now
+                                
                                 # Enhanced indicator logging
                                 if 'rsi' in df_30m.columns and len(df_30m) > 0:
                                     last_rsi = df_30m['rsi'].iloc[-1]
@@ -609,6 +623,7 @@ class LiveTradingEngine:
                                     
                                     logger.info(f"[INDICATORS] {symbol}: RSI={last_rsi:.1f}, ATR=${last_atr:.2f}, "
                                               f"EMA21=${last_ema21:.2f}, EMA50=${last_ema50:.2f}")
+                                    logger.info(f"[READY] {symbol}: Indicators warmed up and ready for signal generation")
                                 
                                 # Perform market regime analysis if we have all timeframes
                                 regime_data = None
@@ -802,6 +817,78 @@ class LiveTradingEngine:
             logger.info("Signal processing loop cancelled")
         except Exception as e:
             logger.error(f"Fatal error in signal processing loop: {e}", exc_info=True)
+    
+    async def _prefetch_historical_data(self):
+        """
+        Prefetch historical OHLCV data for all symbols before starting signal generation.
+        
+        This ensures indicators have sufficient data for calculation from the start,
+        preventing the "cold start" problem where no signals are generated due to
+        insufficient bars for RSI/ATR/EMA calculations.
+        
+        Critical for short sessions (<30 min) where WebSocket accumulation is too slow.
+        """
+        try:
+            symbols = self._get_scan_symbols()
+            
+            if not symbols:
+                logger.warning("[PREFETCH] No symbols to prefetch")
+                return
+            
+            logger.info(f"[PREFETCH] Fetching historical data for {len(symbols)} symbols...")
+            logger.info(f"[PREFETCH] Symbols: {', '.join(symbols)}")
+            
+            prefetch_count = 0
+            failed_count = 0
+            
+            for symbol in symbols:
+                try:
+                    logger.debug(f"[PREFETCH] Fetching {symbol}...")
+                    
+                    # Fetch historical data for all required timeframes
+                    # Using 200 bars to ensure sufficient data for all indicators
+                    df_30m = self._get_ohlcv_with_priority(symbol, '30m', limit=200)
+                    df_1h = self._get_ohlcv_with_priority(symbol, '1h', limit=200)
+                    df_4h = self._get_ohlcv_with_priority(symbol, '4h', limit=200)
+                    
+                    # Check if we got sufficient data
+                    if df_30m is not None and len(df_30m) >= 14:
+                        prefetch_count += 1
+                        bars_30m = len(df_30m)
+                        bars_1h = len(df_1h) if df_1h is not None else 0
+                        bars_4h = len(df_4h) if df_4h is not None else 0
+                        
+                        logger.info(f"  ✓ {symbol}: {bars_30m} bars (30m), {bars_1h} bars (1h), {bars_4h} bars (4h)")
+                        
+                        # Verify indicators can be calculated
+                        if bars_30m < 14:
+                            logger.warning(f"  ⚠️ {symbol}: Insufficient bars for RSI/ATR ({bars_30m} < 14)")
+                    else:
+                        failed_count += 1
+                        bar_count = len(df_30m) if df_30m is not None else 0
+                        logger.warning(f"  ❌ {symbol}: Insufficient data - only {bar_count} bars")
+                
+                except Exception as e:
+                    failed_count += 1
+                    logger.error(f"  ❌ {symbol}: Prefetch failed - {e}")
+                
+                # Small delay to avoid rate limiting
+                await asyncio.sleep(0.05)
+            
+            logger.info("")
+            logger.info(f"[PREFETCH] Complete: {prefetch_count} success, {failed_count} failed out of {len(symbols)} symbols")
+            
+            if prefetch_count == 0:
+                logger.error("[PREFETCH] ⚠️ WARNING: No symbols have sufficient historical data!")
+                logger.error("[PREFETCH] Signal generation may be delayed or impossible in short sessions.")
+            elif failed_count > 0:
+                logger.warning(f"[PREFETCH] ⚠️ {failed_count} symbols failed to prefetch - may have delayed signal generation")
+            else:
+                logger.info("[PREFETCH] ✅ All symbols ready for signal generation with full indicator data")
+        
+        except Exception as e:
+            logger.error(f"[PREFETCH] Fatal error during historical data prefetch: {e}", exc_info=True)
+            logger.warning("[PREFETCH] Continuing anyway - signal generation may be delayed")
     
     def _get_scan_symbols(self) -> List[str]:
         """Get symbols to scan with support for fixed list and auto-select modes."""
