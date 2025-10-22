@@ -964,14 +964,14 @@ class LiveTradingEngine:
         self._local_last_signal_time[key] = timestamp
 
         normalized_price = self._normalize_price(entry_price)
-        if normalized_price and normalized_price > 0:
+        if normalized_price is not None:
             price_history = self._local_signal_price_history[symbol]
 
             if price_history:
                 cleaned_entries = [
                     (existing_timestamp, normalized_existing)
                     for existing_timestamp, existing_price in price_history
-                    if (normalized_existing := self._normalize_price(existing_price)) and normalized_existing > 0
+                    if (normalized_existing := self._normalize_price(existing_price)) is not None
                 ]
 
                 if cleaned_entries != list(price_history):
