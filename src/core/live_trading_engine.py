@@ -7,6 +7,7 @@ import asyncio
 import logging
 import inspect
 import time
+import math
 import pandas as pd
 from collections import defaultdict, deque
 from typing import Dict, List, Optional, Any, Tuple
@@ -928,7 +929,8 @@ class LiveTradingEngine:
         if not symbol:
             return False, "missing symbol"
 
-        entry_price = signal.get('entry', 0) or signal.get('price')
+        raw_entry_price = signal.get('entry', 0) or signal.get('price')
+        entry_price = self._normalize_price(raw_entry_price)
         now_ts = time.time()
         key = f"{symbol}:{strategy_name}"
         cooldown = config.get('cooldown_seconds', 20.0)
@@ -941,7 +943,8 @@ class LiveTradingEngine:
                 if config.get('price_delta_bypass_enabled', True) and entry_price:
                     history = self._local_signal_price_history.get(symbol)
                     if history:
-                        _, last_price = history[-1]
+                        _, last_price_raw = history[-1]
+                        last_price = self._normalize_price(last_price_raw)
                         if last_price:
                             price_delta = abs(entry_price - last_price) / last_price
                             threshold = config.get('price_delta_threshold', 0.05)
@@ -960,9 +963,45 @@ class LiveTradingEngine:
         key = f"{symbol}:{strategy_name}"
         self._local_last_signal_time[key] = timestamp
 
-        if entry_price and entry_price > 0:
+        normalized_price = self._normalize_price(entry_price)
+        if normalized_price and normalized_price > 0:
             price_history = self._local_signal_price_history[symbol]
-            price_history.append((timestamp, entry_price))
+
+            if price_history:
+                cleaned_entries = []
+                for existing_timestamp, existing_price in price_history:
+                    normalized_existing = self._normalize_price(existing_price)
+                    if normalized_existing and normalized_existing > 0:
+                        cleaned_entries.append((existing_timestamp, normalized_existing))
+
+                if len(cleaned_entries) != len(price_history):
+                    price_history.clear()
+                    price_history.extend(cleaned_entries)
+
+            price_history.append((timestamp, normalized_price))
+
+    @staticmethod
+    def _normalize_price(value: Any) -> Optional[float]:
+        """Safely convert incoming price values to positive floats for duplicate tracking."""
+
+        if value is None:
+            return None
+
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+            value = value.replace(',', '')
+
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+
+        if not math.isfinite(numeric) or numeric <= 0:
+            return None
+
+        return numeric
     
     def _get_ohlcv_with_priority(self, symbol: str, timeframe: str, limit: int = 100):
         """
