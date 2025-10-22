@@ -496,7 +496,8 @@ class LiveTradingEngine:
                 except Exception as callback_error:
                     lifecycle_error = {
                         'error': str(callback_error),
-                        'stage': 'lifecycle_callback'
+                        'stage': 'lifecycle_callback',
+                        'cleanup': 'pending'
                     }
                     logger.error(
                         f"Failed to mark signal {signal_id} as executed: {callback_error}",
@@ -504,6 +505,7 @@ class LiveTradingEngine:
                     )
                     try:
                         self.strategy_coordinator.discard_active_signal(signal_id)
+                        lifecycle_error['cleanup'] = 'discarded'
                     except Exception as cleanup_error:
                         logger.error(
                             "Failed to discard active signal %s after callback error: %s",
@@ -511,6 +513,7 @@ class LiveTradingEngine:
                             cleanup_error,
                             exc_info=True
                         )
+                        lifecycle_error['cleanup_error'] = str(cleanup_error)
 
             result = {
                 'success': True,
