@@ -457,18 +457,25 @@ class ProductionCoordinator:
         """Main trading loop processing with timeout protection."""
         for symbol in self.active_symbols:
             try:
-                # Add timeout protection
-                await asyncio.wait_for(
+                # Add timeout protection and capture the returned signal
+                signal = await asyncio.wait_for(
                     self.process_symbol(symbol),
                     timeout=30.0
                 )
+    
+                # If a signal was generated, submit it for execution
+                if signal:
+                    logger.info(f"Submitting signal for {symbol} to execution engine.")
+                    submission_result = await self.submit_signal(signal)
+                    if not submission_result.get('success'):
+                        logger.warning(f"Failed to submit signal for {symbol}: {submission_result.get('reason')}")
+    
             except asyncio.TimeoutError:
                 logger.error(f"⏱️ Timeout processing {symbol} - skipping")
                 continue
             except Exception as e:
                 logger.error(f"Error processing {symbol}: {e}")
                 continue
-
 
     async def _initialize_production_system(self) -> bool:
         """Legacy wrapper - just calls the public method."""
