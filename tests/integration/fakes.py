@@ -43,7 +43,7 @@ class FakeCircuitBreaker:
 
 
 class FakeProductionCoordinator:
-    """Async test double for the production coordinator."""
+    """Async test double for the production coordinator with real task flow."""
 
     def __init__(self) -> None:
         self.risk_manager = FakeRiskManager()
@@ -53,6 +53,11 @@ class FakeProductionCoordinator:
         self.active_symbols: List[str] = []
         self.is_initialized: bool = False
         self._running: bool = False
+        self._background_tasks: set[asyncio.Task] = set()
+        self._loop_start: float | None = None
+        self.runtime_seconds: float = 0.0
+        self.spawned_task_count: int = 0
+        self.strategy_cycles: int = 0
 
     async def initialize_production_system(
         self,
@@ -98,18 +103,37 @@ class FakeProductionCoordinator:
         continuous: bool = False,
     ) -> None:
         self._running = True
+        loop = asyncio.get_running_loop()
+        self._loop_start = loop.time()
+        target = self._loop_start + (duration or 5.0)
+
         try:
-            sleep_for = 0.1
-            if duration:
-                sleep_for = min(duration, 1.0)
-            await asyncio.sleep(sleep_for)
+            while loop.time() < target:
+                task = loop.create_task(self._simulate_strategy_cycle())
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+                self.spawned_task_count += 1
+
+                # Sleep until next cycle but do not overshoot the target
+                remaining = target - loop.time()
+                await asyncio.sleep(min(1.0, max(remaining, 0)))
+
+            if self._background_tasks:
+                await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
         finally:
+            self.runtime_seconds = loop.time() - (self._loop_start or loop.time())
             self._running = False
 
     async def stop_system(self) -> Dict[str, Any]:
         self._running = False
+        for task in list(self._background_tasks):
+            task.cancel()
         await asyncio.sleep(0)
         return {"status": "stopped"}
+
+    async def _simulate_strategy_cycle(self) -> None:
+        await asyncio.sleep(0.5)
+        self.strategy_cycles += 1
 
 
 class FakeWebSocketManager:
@@ -117,10 +141,31 @@ class FakeWebSocketManager:
 
     def __init__(self) -> None:
         self.clients: Dict[str, Any] = {}
+        self._stream_tasks: set[asyncio.Task] = set()
+        self.message_counts: Dict[str, int] = {}
 
-    async def stream_ohlcv(self, *args: Any, **kwargs: Any) -> List[Any]:
+    def start_ohlcv_stream(self, exchange: str, symbol: str, timeframe: str) -> bool:
+        stream_id = f"{exchange}:{symbol}:{timeframe}"
+        if stream_id in self.message_counts:
+            return True
+
+        loop = asyncio.get_running_loop()
+
+        async def _simulate_stream() -> None:
+            for i in range(10):
+                await asyncio.sleep(0.5)
+                self.message_counts[stream_id] = self.message_counts.get(stream_id, 0) + 1
+
+        task = loop.create_task(_simulate_stream())
+        self._stream_tasks.add(task)
+        task.add_done_callback(self._stream_tasks.discard)
+        self.message_counts[stream_id] = 0
+        return True
+
+    async def stop_streams(self) -> None:
+        for task in list(self._stream_tasks):
+            task.cancel()
         await asyncio.sleep(0)
-        return []
 
 
 class FakeOptimizedWebSocketManager:
@@ -136,6 +181,8 @@ class FakeOptimizedWebSocketManager:
             "error": None,
             "exchanges": {},
         }
+        self._stream_tasks: set[asyncio.Task] = set()
+        self.message_log: Dict[str, List[Dict[str, Any]]] = {}
 
     def setup_from_config(self, config: Optional[Dict[str, Any]]) -> None:
         self.config = config or {}
@@ -152,13 +199,44 @@ class FakeOptimizedWebSocketManager:
         )
         if not self.ws_manager.clients:
             self.ws_manager.clients = {"bingx": object()}
-        return [object()]
+
+        universe = self.config.get("universe", {})
+        symbols = universe.get("fixed_symbols", ["BTC/USDT:USDT"])
+        timeframes = (self.config.get("websocket", {}) or {}).get("stream_timeframes", ["1m"])
+
+        loop = asyncio.get_running_loop()
+
+        async def _generate_stream(exchange: str, symbol: str, timeframe: str) -> None:
+            stream_id = f"{exchange}:{symbol}:{timeframe}"
+            self.message_log.setdefault(stream_id, [])
+            for i in range(10):
+                await asyncio.sleep(0.5)
+                payload = {
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "sequence": i,
+                }
+                self.ws_manager.message_counts[stream_id] = self.ws_manager.message_counts.get(stream_id, 0) + 1
+                self.message_log[stream_id].append(payload)
+
+        for exchange in exchange_clients or {"bingx": object()}:
+            for symbol in symbols:
+                for timeframe in timeframes:
+                    self.ws_manager.start_ohlcv_stream(exchange, symbol, timeframe)
+                    task = loop.create_task(_generate_stream(exchange, symbol, timeframe))
+                    self._stream_tasks.add(task)
+                    task.add_done_callback(self._stream_tasks.discard)
+
+        return list(self._stream_tasks)
 
     async def get_stream_status(self) -> Dict[str, Any]:
         active_streams = len(self.ws_manager.clients)
+        total_messages = sum(self.ws_manager.message_counts.values())
         return {
             "active_streams": active_streams,
             "status": "running" if active_streams else "stopped",
+            "messages": total_messages,
         }
 
     def get_connection_status(self) -> Dict[str, Any]:
@@ -166,10 +244,14 @@ class FakeOptimizedWebSocketManager:
 
     async def stop_streaming(self) -> List[Any]:
         self._connection_status["connected"] = False
+        for task in list(self._stream_tasks):
+            task.cancel()
+        await self.ws_manager.stop_streams()
         return []
 
     async def shutdown(self) -> None:
         self._connection_status["connected"] = False
+        await self.stop_streaming()
 
 
 def _make_module(name: str, **attrs: Any) -> ModuleType:

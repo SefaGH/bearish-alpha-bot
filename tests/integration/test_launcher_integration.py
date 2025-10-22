@@ -107,7 +107,7 @@ async def test_launcher_runs_without_freeze(integration_env, cleanup_tasks):
                 )
                 completed = True
                 print("  ✓ Trading loop completed successfully")
-                
+
             except asyncio.TimeoutError:
                 freeze_detected = True
                 elapsed = time.time() - start_time
@@ -154,22 +154,26 @@ async def test_launcher_runs_without_freeze(integration_env, cleanup_tasks):
     # If initialization fails, it will be short (< 5s)
     # If successful and runs for 30s, it should be 25-40s
     # The key test is: did it NOT freeze (complete within timeout)?
+    assert elapsed >= 25, f"Launcher runtime too short: {elapsed:.2f}s (expected ~30s)"
     assert elapsed < 50, (
         f"Execution took too long: {elapsed:.1f}s "
         f"(may indicate freeze or hang)"
     )
-    
+
     # Verify no freeze detected
     assert not freeze_detected, "Bot froze during execution"
     assert completed, "Trading loop did not complete"
-    
-    # Log whether it was a short fail or full run
-    if elapsed < 10:
-        print(f"\n⚠️  NOTE: Test completed quickly ({elapsed:.1f}s)")
-        print("   This may indicate early initialization failure")
-        print("   But no freeze was detected - test PASSED")
-    
-    print("\n✅ TEST PASSED: Bot runs without freezing")
+
+    # Inspect coordinator metrics to ensure real async workload
+    coordinator = getattr(launcher, 'coordinator', None)
+    assert coordinator is not None, "Launcher did not expose coordinator"
+    assert coordinator.runtime_seconds >= 25, (
+        f"Production loop runtime too short: {coordinator.runtime_seconds:.2f}s"
+    )
+    assert coordinator.spawned_task_count >= 5, "No background tasks spawned by coordinator"
+    assert coordinator.strategy_cycles >= 5, "Strategy cycles did not execute"
+
+    print("\n✅ TEST PASSED: Bot runs without freezing and executes real tasks")
 
 
 @pytest.mark.integration
@@ -250,17 +254,12 @@ async def test_async_tasks_properly_scheduled(integration_env, cleanup_tasks):
             print("[Step 4] Waiting for launcher to complete...")
             await launcher_task
             
-            # Verify tasks behavior
-            # Note: With mocked dependencies, initialization may fail early
-            # If new_tasks == 0, it means launcher exited quickly (initialization failure)
-            # This is acceptable in a mocked test environment
-            if new_tasks >= 1:
-                print(f"  ✓ {new_tasks} async task(s) were created")
-                print("  ✓ Tasks properly scheduled and executed")
-            else:
-                print("  ⚠️  No new tasks created (early exit due to mocked dependencies)")
-                print("  ✓ But launcher completed without hanging/freezing")
-            
+            coordinator = getattr(launcher, 'coordinator', None)
+            assert coordinator is not None, "Launcher did not expose coordinator"
+            assert coordinator.spawned_task_count >= 5, "Expected coordinator to spawn background tasks"
+            assert coordinator.strategy_cycles >= 5, "Strategy cycles did not run"
+            assert coordinator.runtime_seconds >= 8, "Coordinator runtime too short for 10s run"
+
             print("\n✅ TEST PASSED: Async tasks properly scheduled and executed")
             
     except Exception as e:
