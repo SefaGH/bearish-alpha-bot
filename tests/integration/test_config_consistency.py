@@ -219,7 +219,32 @@ async def test_launcher_capital_source_priority(integration_env, cleanup_tasks):
     test_task = asyncio.current_task()
     assert test_task is not None
 
-    with patch.object(LiveTradingConfiguration, 'load_from_yaml', return_value={'risk': {'equity_usd': 750}}), \
+    with patch.object(LiveTradingConfiguration, 'load', return_value={'universe': {'fixed_symbols': []}}), \
+         patch.object(LiveTradingConfiguration, 'load_from_yaml', return_value={}), \
+         ignore_test_task_cancellation(test_task), \
+         patch.dict('sys.modules', module_stubs), \
+         patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
+         patch('core.notify.Telegram') as mock_telegram, \
+         patch('core.production_coordinator.ProductionCoordinator', FakeProductionCoordinator), \
+         patch('live_trading_launcher.OptimizedWebSocketManager', FakeOptimizedWebSocketManager):
+
+        from live_trading_launcher import LiveTradingLauncher
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
+        mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
+        mock_exchange.ticker.return_value = {'last': 50000.0}
+        mock_ccxt.return_value = mock_exchange
+
+        launcher = LiveTradingLauncher(mode='paper')
+
+        assert launcher.CAPITAL_USDT == 100.0
+        assert launcher.capital_source == 'default'
+
+    os.environ.pop('CAPITAL_USDT', None)
+
+    with patch.object(LiveTradingConfiguration, 'load', return_value={'risk': {'equity_usd': 750}, 'universe': {'fixed_symbols': []}}), \
+         patch.object(LiveTradingConfiguration, 'load_from_yaml', return_value={'risk': {'equity_usd': 750}}), \
          ignore_test_task_cancellation(test_task), \
          patch.dict('sys.modules', module_stubs), \
          patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
@@ -242,7 +267,8 @@ async def test_launcher_capital_source_priority(integration_env, cleanup_tasks):
 
     os.environ['CAPITAL_USDT'] = '1200'
 
-    with patch.object(LiveTradingConfiguration, 'load_from_yaml', return_value={'risk': {'equity_usd': 750}}), \
+    with patch.object(LiveTradingConfiguration, 'load', return_value={'risk': {'equity_usd': 750}, 'universe': {'fixed_symbols': []}}), \
+         patch.object(LiveTradingConfiguration, 'load_from_yaml', return_value={'risk': {'equity_usd': 750}}), \
          ignore_test_task_cancellation(test_task), \
          patch.dict('sys.modules', module_stubs), \
          patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
