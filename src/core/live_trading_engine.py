@@ -481,6 +481,8 @@ class LiveTradingEngine:
             logger.info(f"📊 Total executed: {self._executed_count}")
             logger.info("="*50)
 
+            lifecycle_error = None
+
             # Notify strategy coordinator for lifecycle tracking
             if signal_id and self.strategy_coordinator:
                 execution_summary = {
@@ -492,28 +494,36 @@ class LiveTradingEngine:
                 try:
                     self.strategy_coordinator.mark_signal_executed(signal_id, execution_summary)
                 except Exception as callback_error:
+                    lifecycle_error = {
+                        'error': str(callback_error),
+                        'stage': 'lifecycle_callback'
+                    }
                     logger.error(
                         f"Failed to mark signal {signal_id} as executed: {callback_error}",
                         exc_info=True
                     )
-                    return {
-                        'success': False,
-                        'reason': 'Signal lifecycle update failed',
-                        'stage': 'lifecycle_callback',
-                        'error': str(callback_error),
-                        'position_id': position_id,
-                        'order_id': execution_result.get('order_id'),
-                        'execution_result': execution_result,
-                        'position_result': position_result
-                    }
+                    try:
+                        self.strategy_coordinator.discard_active_signal(signal_id)
+                    except Exception as cleanup_error:
+                        logger.error(
+                            "Failed to discard active signal %s after callback error: %s",
+                            signal_id,
+                            cleanup_error,
+                            exc_info=True
+                        )
 
-            return {
+            result = {
                 'success': True,
                 'position_id': position_id,
                 'order_id': execution_result.get('order_id'),
                 'execution_result': execution_result,
                 'position_result': position_result
             }
+
+            if lifecycle_error:
+                result['lifecycle_error'] = lifecycle_error
+
+            return result
             
         except Exception as e:
             logger.error(f"Error executing signal: {e}", exc_info=True)

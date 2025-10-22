@@ -894,6 +894,24 @@ class StrategyCoordinator:
 
         logger.info(f"Signal {signal_id} marked as executed and removed from active registry")
 
+    def discard_active_signal(self, signal_id: str) -> None:
+        """Remove a signal from the active registry without raising errors."""
+        if not signal_id:
+            return
+
+        removed = self.active_signals.pop(signal_id, None)
+
+        if removed:
+            logger.warning(
+                "Signal %s discarded from active registry after lifecycle callback failure",
+                signal_id
+            )
+        else:
+            logger.debug(
+                "Attempted to discard signal %s from active registry but it was not present",
+                signal_id
+            )
+
     def _add_signal_history_entry(self, entry: Dict[str, Any]) -> None:
         """Add or replace a signal history entry while maintaining lookup cache."""
         signal_id = entry.get('signal_id')
