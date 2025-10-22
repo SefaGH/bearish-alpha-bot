@@ -24,12 +24,17 @@ jobs:
         with:
           python-version: ${{ github.event.inputs.python_version }}
 
+      - name: Ensure PYTHONPATH includes repo root
+        run: |
+          echo "PYTHONPATH=${{ github.workspace }}:${PYTHONPATH:-}" >> $GITHUB_ENV
+          echo "PYTHONPATH set to: ${{ github.workspace }}"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Eğer requirements.txt yoksa hata verebilir; hata kabul et ve yine pytest kur
           pip install -r requirements.txt || true
-          pip install pytest
+          # Ensure pytest and pytest-asyncio are available for async tests
+          pip install pytest pytest-asyncio
 
       - name: Run pytest target
         run: pytest ${{ github.event.inputs.test_path }}
