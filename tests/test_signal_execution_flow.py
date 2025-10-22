@@ -435,7 +435,82 @@ class TestSignalExecutionFlow:
 
         # Order manager should be invoked twice (once per signal)
         assert coordinator.trading_engine.order_manager.place_order.await_count == 2
-    
+
+    @pytest.mark.asyncio
+    async def test_signal_cleanup_after_lifecycle_callback_failure(self):
+        """Engine should discard coordinator state when lifecycle callback raises."""
+
+        mock_risk_manager = Mock(spec=RiskManager)
+        mock_risk_manager.calculate_position_size = AsyncMock(return_value=0.01)
+        mock_risk_manager.validate_new_position = AsyncMock(return_value=(True, "Valid", {}))
+        mock_risk_manager.active_positions = {}
+
+        mock_portfolio_manager = Mock(spec=PortfolioManager)
+        mock_portfolio_manager.strategies = {}
+        mock_portfolio_manager.get_strategy_allocation = Mock(return_value=0.25)
+        mock_portfolio_manager.performance_monitor = None
+        mock_portfolio_manager.exchange_clients = {}
+        mock_portfolio_manager.portfolio_state = {}
+
+        coordinator = ProductionCoordinator()
+        coordinator.strategy_coordinator = StrategyCoordinator(
+            mock_portfolio_manager,
+            mock_risk_manager
+        )
+
+        trading_engine = LiveTradingEngine(
+            mode='paper',
+            portfolio_manager=mock_portfolio_manager,
+            risk_manager=mock_risk_manager,
+            exchange_clients={'paper': object()},
+            strategy_coordinator=coordinator.strategy_coordinator
+        )
+
+        # Replace execution dependencies with lightweight stubs
+        trading_engine.order_manager.place_order = AsyncMock(return_value={'success': True, 'order_id': 'order-1'})
+        trading_engine.position_manager.open_position = AsyncMock(return_value={
+            'success': True,
+            'position_id': 'pos-1',
+            'position': {'symbol': 'BTC/USDT:USDT'}
+        })
+        trading_engine.execution_analytics.get_best_execution_algorithm = Mock(return_value='direct')
+
+        coordinator.strategy_coordinator.mark_signal_executed = Mock(side_effect=RuntimeError('mark failure'))
+        coordinator.strategy_coordinator.discard_active_signal = Mock(side_effect=RuntimeError('discard failure'))
+
+        signal_id = 'test-signal-id'
+        coordinator.strategy_coordinator.active_signals[signal_id] = {
+            'signal': {
+                'symbol': 'BTC/USDT:USDT',
+                'strategy': 'test_strategy'
+            },
+            'status': 'accepted'
+        }
+
+        signal_payload = {
+            'signal_id': signal_id,
+            'symbol': 'BTC/USDT:USDT',
+            'side': 'long',
+            'entry': 50000.0,
+            'strategy': 'test_strategy',
+            'reason': 'unit-test',
+            'exchange': 'paper'
+        }
+
+        result = await trading_engine.execute_signal(signal_payload)
+
+        assert result['success'] is True, "Trade should still be reported as successful"
+        assert 'lifecycle_error' in result, "Lifecycle error metadata should be included"
+        assert result['lifecycle_error']['cleanup'] == 'discarded', "Cleanup should report discarded state"
+
+        cleanup_error = result['lifecycle_error'].get('cleanup_error')
+        if isinstance(cleanup_error, list):
+            assert any('discard failure' in err for err in cleanup_error)
+        else:
+            assert 'discard failure' in cleanup_error
+
+        assert signal_id not in coordinator.strategy_coordinator.active_signals, "Signal should be removed from coordinator"
+
     @pytest.mark.asyncio
     async def test_engine_status_shows_signals_received(self):
         """Test that engine status correctly shows signals_received counter."""

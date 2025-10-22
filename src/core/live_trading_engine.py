@@ -494,26 +494,68 @@ class LiveTradingEngine:
                 try:
                     self.strategy_coordinator.mark_signal_executed(signal_id, execution_summary)
                 except Exception as callback_error:
+                    cleanup_state = 'pending'
+                    cleanup_method = None
+                    cleanup_errors: List[str] = []
+
                     lifecycle_error = {
                         'error': str(callback_error),
-                        'stage': 'lifecycle_callback',
-                        'cleanup': 'pending'
+                        'stage': 'lifecycle_callback'
                     }
+
                     logger.error(
                         f"Failed to mark signal {signal_id} as executed: {callback_error}",
                         exc_info=True
                     )
-                    try:
-                        self.strategy_coordinator.discard_active_signal(signal_id)
-                        lifecycle_error['cleanup'] = 'discarded'
-                    except Exception as cleanup_error:
-                        logger.error(
-                            "Failed to discard active signal %s after callback error: %s",
-                            signal_id,
-                            cleanup_error,
-                            exc_info=True
-                        )
-                        lifecycle_error['cleanup_error'] = str(cleanup_error)
+
+                    discard_method = getattr(self.strategy_coordinator, 'discard_active_signal', None)
+
+                    if callable(discard_method):
+                        try:
+                            discard_method(signal_id)
+                            cleanup_state = 'discarded'
+                            cleanup_method = 'discard_active_signal'
+                        except Exception as cleanup_error:
+                            cleanup_errors.append(str(cleanup_error))
+                            logger.error(
+                                "Failed to discard active signal %s after callback error: %s",
+                                signal_id,
+                                cleanup_error,
+                                exc_info=True
+                            )
+                    else:
+                        cleanup_errors.append('discard_active_signal_unavailable')
+
+                    if cleanup_state != 'discarded':
+                        try:
+                            active_signals = getattr(self.strategy_coordinator, 'active_signals', None)
+                            if isinstance(active_signals, dict) and signal_id in active_signals:
+                                active_signals.pop(signal_id, None)
+                                cleanup_state = 'discarded'
+                                cleanup_method = 'direct_active_signals_pop'
+                                logger.warning(
+                                    "Signal %s removed from coordinator via direct fallback after lifecycle callback failure",
+                                    signal_id
+                                )
+                            elif cleanup_state == 'pending':
+                                cleanup_state = 'not_found'
+                        except Exception as fallback_error:
+                            cleanup_errors.append(str(fallback_error))
+                            logger.error(
+                                "Fallback removal failed for signal %s after lifecycle callback error: %s",
+                                signal_id,
+                                fallback_error,
+                                exc_info=True
+                            )
+                            cleanup_state = 'failed'
+
+                    lifecycle_error['cleanup'] = cleanup_state
+
+                    if cleanup_method:
+                        lifecycle_error['cleanup_method'] = cleanup_method
+
+                    if cleanup_errors:
+                        lifecycle_error['cleanup_error'] = cleanup_errors if len(cleanup_errors) > 1 else cleanup_errors[0]
 
             result = {
                 'success': True,
