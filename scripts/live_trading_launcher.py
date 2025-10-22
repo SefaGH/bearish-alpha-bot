@@ -1653,6 +1653,34 @@ class LiveTradingLauncher:
                     logger.warning("⚠️ WebSocket connection failed after multiple attempts")
                     logger.warning("⚠️ Continuing with REST API mode (reduced real-time data)")
                     logger.warning("=" * 70)
+
+                    # Start signal processing background task
+                    signal_task = asyncio.create_task(
+                        self.trading_engine._signal_processing_loop()
+                    )
+                    
+                    # Main trading loop
+                    start_time = time.time()
+                    scan_interval = 30  # 30 saniyede bir symbol taraması
+                    
+                    try:
+                        while True:
+                            # Check duration
+                            if duration and (time.time() - start_time) >= duration:
+                                logger.info(f"⏱️ Duration limit reached ({duration}s)")
+                                break
+                            
+                            # Process trading loop
+                            await self.coordinator._process_trading_loop()
+                            
+                            # Wait before next cycle
+                            await asyncio.sleep(scan_interval)
+                            
+                    except KeyboardInterrupt:
+                        logger.info("⚠️ Keyboard interrupt - shutting down...")
+                    finally:
+                        signal_task.cancel()
+                        await self.stop()
                     
                     # Send Telegram notification
                     if self.telegram:
