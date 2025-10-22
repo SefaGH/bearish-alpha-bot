@@ -1653,34 +1653,6 @@ class LiveTradingLauncher:
                     logger.warning("⚠️ WebSocket connection failed after multiple attempts")
                     logger.warning("⚠️ Continuing with REST API mode (reduced real-time data)")
                     logger.warning("=" * 70)
-
-                    # Start signal processing background task
-                    signal_task = asyncio.create_task(
-                        self.trading_engine._signal_processing_loop()
-                    )
-                    
-                    # Main trading loop
-                    start_time = time.time()
-                    scan_interval = 30  # 30 saniyede bir symbol taraması
-                    
-                    try:
-                        while True:
-                            # Check duration
-                            if duration and (time.time() - start_time) >= duration:
-                                logger.info(f"⏱️ Duration limit reached ({duration}s)")
-                                break
-                            
-                            # Process trading loop
-                            await self.coordinator._process_trading_loop()
-                            
-                            # Wait before next cycle
-                            await asyncio.sleep(scan_interval)
-                            
-                    except KeyboardInterrupt:
-                        logger.info("⚠️ Keyboard interrupt - shutting down...")
-                    finally:
-                        signal_task.cancel()
-                        await self.stop()
                     
                     # Send Telegram notification
                     if self.telegram:
@@ -1716,6 +1688,81 @@ class LiveTradingLauncher:
                     f"Stop Loss: {self.RISK_PARAMS['stop_loss_pct']:.1%}\n"
                     f"Take Profit: {self.RISK_PARAMS['take_profit_pct']:.1%}"
                 )
+
+            logger.info("\n" + "="*70)
+            logger.info("🚀 STARTING MAIN TRADING LOOP")
+            logger.info("="*70)
+            logger.info(f"Scan Interval: 60 seconds")
+            logger.info(f"Symbols: {', '.join(self.TRADING_PAIRS)}")
+            logger.info("="*70)
+            
+            # 1. LiveTradingEngine'in signal processing loop'unu başlat
+            if self.coordinator and self.coordinator.trading_engine:
+                signal_task = asyncio.create_task(
+                    self.coordinator.trading_engine._signal_processing_loop()
+                )
+                logger.info("✅ Signal processing loop started")
+            else:
+                logger.error("❌ Trading engine not available")
+                return
+            
+            # 2. Ana trading loop
+            start_time = time.time()
+            scan_interval = 60  # 60 saniyede bir market scan
+            loop_count = 0
+            
+            try:
+                while True:
+                    loop_count += 1
+                    current_time = time.time()
+                    elapsed = current_time - start_time
+                    
+                    # Duration kontrolü
+                    if duration and elapsed >= duration:
+                        logger.info("\n" + "="*70)
+                        logger.info(f"⏱️ DURATION LIMIT REACHED ({duration}s)")
+                        logger.info(f"📊 Completed {loop_count} scan cycles")
+                        logger.info("="*70)
+                        break
+                    
+                    # Kalan süre hesapla
+                    if duration:
+                        remaining = duration - elapsed
+                        logger.info(f"\n⏱️ Time remaining: {remaining:.0f}s")
+                    
+                    logger.info(f"\n{'='*70}")
+                    logger.info(f"🔍 MARKET SCAN CYCLE #{loop_count}")
+                    logger.info(f"{'='*70}")
+                    
+                    # 3. Production coordinator'ın trading loop'unu çağır
+                    try:
+                        await self.coordinator._process_trading_loop()
+                        logger.info(f"✅ Scan cycle #{loop_count} completed")
+                    except Exception as e:
+                        logger.error(f"❌ Error in scan cycle #{loop_count}: {e}", exc_info=True)
+                    
+                    # Sonraki scan'e kadar bekle
+                    logger.info(f"⏳ Waiting {scan_interval}s before next scan...\n")
+                    await asyncio.sleep(scan_interval)
+                    
+            except KeyboardInterrupt:
+                logger.info("\n⚠️ Keyboard interrupt received - shutting down...")
+            except Exception as e:
+                logger.error(f"\n❌ Fatal error in trading loop: {e}", exc_info=True)
+            finally:
+                # Signal processing task'ını iptal et
+                if 'signal_task' in locals() and not signal_task.done():
+                    signal_task.cancel()
+                    try:
+                        await signal_task
+                    except asyncio.CancelledError:
+                        pass
+                
+                # Cleanup
+                logger.info("\n" + "="*70)
+                logger.info("INITIATING GRACEFUL SHUTDOWN")
+                logger.info("="*70)
+                await self.stop()
             
             # Start health monitoring in background (non-blocking)
             if self.health_monitor:
@@ -1731,31 +1778,31 @@ class LiveTradingLauncher:
                 continuous=self.infinite
             )
             
-        except KeyboardInterrupt:
-            logger.info("\n⚠ Keyboard interrupt received - initiating shutdown...")
-            raise  # Re-raise to be caught by main()
+            except KeyboardInterrupt:
+                logger.info("\n⚠ Keyboard interrupt received - initiating shutdown...")
+                raise  # Re-raise to be caught by main()
+                
+            except Exception as e:
+                logger.error(f"❌ Critical error in trading loop: {e}")
+                if self.health_monitor:
+                    self.health_monitor.record_error(str(e))
+                raise  # Re-raise to be caught by main()
             
-        except Exception as e:
-            logger.error(f"❌ Critical error in trading loop: {e}")
-            if self.health_monitor:
-                self.health_monitor.record_error(str(e))
-            raise  # Re-raise to be caught by main()
-        
-        finally:
-            # Stop health monitor first
-            if self.health_monitor:
-                try:
-                    await self.health_monitor.stop_monitoring()
-                except Exception as e:
-                    logger.error(f"Error stopping health monitor: {e}")
-            
-            # Cancel background task if still running
-            if _health_task and not _health_task.done():
-                _health_task.cancel()
-                try:
-                    await _health_task
-                except asyncio.CancelledError:
-                    pass
+            finally:
+                # Stop health monitor first
+                if self.health_monitor:
+                    try:
+                        await self.health_monitor.stop_monitoring()
+                    except Exception as e:
+                        logger.error(f"Error stopping health monitor: {e}")
+                
+                # Cancel background task if still running
+                if _health_task and not _health_task.done():
+                    _health_task.cancel()
+                    try:
+                        await _health_task
+                    except asyncio.CancelledError:
+                        pass
     
     async def _monitor_websocket_health(self):
         """
