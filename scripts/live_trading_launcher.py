@@ -68,11 +68,11 @@ logger = setup_logger(name=__name__, log_to_file=True)
 # ============= WebSocket Optimization Manager =============
 class OptimizedWebSocketManager:
     """Production-optimized WebSocket Manager for fixed symbol list"""
-    
+
     def __init__(self, config: Dict[str, Any] = None):
         """
         Initialize optimized WebSocket manager.
-        
+
         Args:
             config: Configuration dictionary
         """
@@ -81,7 +81,7 @@ class OptimizedWebSocketManager:
         self.fixed_symbols = []
         self.max_streams_config = {}
         self.is_initialized = False
-        
+
         # Connection status tracking
         self._connection_status = {
             'connected': False,
@@ -90,47 +90,45 @@ class OptimizedWebSocketManager:
             'last_check': None,
             'exchanges': {}
         }
-        
+
         logger.info("[WS-OPT] Optimized WebSocket Manager initialized")
 
-        def _coerce_config_types(self, obj):
-            """Recursively coerce placeholder type-name strings to safe runtime values.
-    
-            Two improvements:
-             - If the config contains placeholder type names (e.g. 'dict', 'list', 'int'),
-               return the actual Python type object (dict, list, int, ...) so downstream
-               isinstance(x, SOME_CONFIG_VALUE) works.
-             - Still recurse into dict/list/tuple to sanitize nested placeholders.
-            """
-            if isinstance(obj, dict):
-                return {k: self._coerce_config_types(v) for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [self._coerce_config_types(v) for v in obj]
-            if isinstance(obj, tuple):
-                return tuple(self._coerce_config_types(v) for v in obj)
-            if isinstance(obj, str):
-                lower = obj.strip().lower()
-                # Map placeholder names to Python *types* (NOT instances)
-                if lower == 'dict':
-                    return dict
-                if lower == 'list':
-                    return list
-                if lower == 'tuple':
-                    return tuple
-                if lower == 'set':
-                    return set
-                if lower == 'int':
-                    return int
-                if lower == 'float':
-                    return float
-                if lower == 'bool':
-                    return bool
-                if lower == 'str':
-                    return str
-                # keep other strings as-is
-                return obj
+    def _coerce_config_types(self, obj):
+        """Recursively coerce placeholder type-name strings to safe Python types.
+
+        If the configuration contains placeholder names like 'dict'/'list' etc,
+        return the Python type object (dict, list, int ...) so downstream
+        isinstance(x, config_value) uses a valid type as the second arg.
+        """
+        if isinstance(obj, dict):
+            return {k: self._coerce_config_types(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self._coerce_config_types(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(self._coerce_config_types(v) for v in obj)
+        if isinstance(obj, str):
+            lower = obj.strip().lower()
+            # Map placeholder names to Python *types* (NOT instances)
+            if lower == 'dict':
+                return dict
+            if lower == 'list':
+                return list
+            if lower == 'tuple':
+                return tuple
+            if lower == 'set':
+                return set
+            if lower == 'int':
+                return int
+            if lower == 'float':
+                return float
+            if lower == 'bool':
+                return bool
+            if lower == 'str':
+                return str
+            # keep other strings as-is
             return obj
-    
+        return obj
+
     def setup_from_config(self, config: Dict[str, Any]) -> None:
         """
         Setup WebSocket configuration from config.
@@ -141,7 +139,7 @@ class OptimizedWebSocketManager:
         except Exception:
             # Fallback to a shallow copy if something unexpected occurs
             safe_config = dict(config or {})
-    
+
         universe_cfg = safe_config.get('universe', {}) or {}
         fixed_symbols = universe_cfg.get('fixed_symbols', [])
         if isinstance(fixed_symbols, str):
@@ -149,19 +147,19 @@ class OptimizedWebSocketManager:
         if not isinstance(fixed_symbols, (list, tuple)):
             logger.warning("[WS-OPT] fixed_symbols not list/tuple; coercing to empty list")
             fixed_symbols = []
-    
+
         ws_cfg = safe_config.get('websocket', {}) or {}
         if not isinstance(ws_cfg, dict):
             ws_cfg = {
                 'enabled': True,
                 'max_streams_per_exchange': {'default': 10}
             }
-    
+
         # Coerce max_streams_per_exchange entries to ints where possible
         max_streams = ws_cfg.get('max_streams_per_exchange', {}) or {}
         if not isinstance(max_streams, dict):
             max_streams = {'default': 10}
-    
+
         coerced_max_streams = {}
         for k, v in list(max_streams.items()):
             try:
@@ -169,131 +167,131 @@ class OptimizedWebSocketManager:
             except Exception:
                 logger.warning(f"[WS-OPT] Invalid max_streams value for {k}: {v} -> using default 10")
                 coerced_max_streams[k] = 10
-    
+
         ws_cfg['max_streams_per_exchange'] = coerced_max_streams
-    
+
         # Assign sanitized values
         safe_config['websocket'] = ws_cfg
         safe_config.setdefault('universe', {})['fixed_symbols'] = list(fixed_symbols)
-    
+
         self.config = safe_config
         self.fixed_symbols = list(fixed_symbols)
         self.max_streams_config = ws_cfg.get('max_streams_per_exchange', {})
-    
+
         logger.info(f"[WS-OPT] Configured with {len(self.fixed_symbols)} fixed symbols")
         if not self.fixed_symbols:
             logger.warning("[WS-OPT] No fixed symbols configured!")
-    
-        async def initialize_websockets(self, exchange_clients: Dict[str, Any]) -> List[asyncio.Task]:
-            """
-            Initialize WebSocket connections with optimization.
-            Returns empty list on failure without raising TypeError.
-            """
-            try:
-                # Use instance method if available, otherwise use fallback sanitizer
-                coerce_fn = getattr(self, '_coerce_config_types', None)
-    
-                if callable(coerce_fn):
-                    safe_config = coerce_fn(self.config or {})
-                else:
-                    # Fallback coerce function (keeps behavior consistent with expected mapping to types)
-                    def _fallback_coerce(obj):
-                        if isinstance(obj, dict):
-                            return {k: _fallback_coerce(v) for k, v in obj.items()}
-                        if isinstance(obj, list):
-                            return [_fallback_coerce(v) for v in obj]
-                        if isinstance(obj, tuple):
-                            return tuple(_fallback_coerce(v) for v in obj)
-                        if isinstance(obj, str):
-                            lower = obj.strip().lower()
-                            if lower == 'dict':
-                                return dict
-                            if lower == 'list':
-                                return list
-                            if lower == 'tuple':
-                                return tuple
-                            if lower == 'set':
-                                return set
-                            if lower == 'int':
-                                return int
-                            if lower == 'float':
-                                return float
-                            if lower == 'bool':
-                                return bool
-                            if lower == 'str':
-                                return str
-                            return obj
+
+    async def initialize_websockets(self, exchange_clients: Dict[str, Any]) -> List[asyncio.Task]:
+        """
+        Initialize WebSocket connections with optimization.
+        Returns empty list on failure without raising TypeError.
+        """
+        try:
+            # Use instance method if available, otherwise use fallback sanitizer
+            coerce_fn = getattr(self, '_coerce_config_types', None)
+
+            if callable(coerce_fn):
+                safe_config = coerce_fn(self.config or {})
+            else:
+                # Fallback coerce function mapping placeholders to types
+                def _fallback_coerce(obj):
+                    if isinstance(obj, dict):
+                        return {k: _fallback_coerce(v) for k, v in obj.items()}
+                    if isinstance(obj, list):
+                        return [_fallback_coerce(v) for v in obj]
+                    if isinstance(obj, tuple):
+                        return tuple(_fallback_coerce(v) for v in obj)
+                    if isinstance(obj, str):
+                        lower = obj.strip().lower()
+                        if lower == 'dict':
+                            return dict
+                        if lower == 'list':
+                            return list
+                        if lower == 'tuple':
+                            return tuple
+                        if lower == 'set':
+                            return set
+                        if lower == 'int':
+                            return int
+                        if lower == 'float':
+                            return float
+                        if lower == 'bool':
+                            return bool
+                        if lower == 'str':
+                            return str
                         return obj
-    
-                    safe_config = _fallback_coerce(self.config or {})
-    
-                # Ensure websocket config is dict
-                ws_cfg = safe_config.get('websocket', {}) or {}
-                if not isinstance(ws_cfg, dict):
-                    logger.warning("[WS-OPT] websocket config not a dict, coercing to defaults")
-                    ws_cfg = {'enabled': True, 'max_streams_per_exchange': {'default': 10}}
-    
-                # sanitize max_streams_per_exchange
-                max_streams = ws_cfg.get('max_streams_per_exchange', {}) or {}
-                if not isinstance(max_streams, dict):
-                    logger.warning("[WS-OPT] max_streams_per_exchange invalid; replacing with defaults")
-                    max_streams = {'default': 10}
-    
-                for k, v in list(max_streams.items()):
-                    try:
-                        max_streams[k] = int(v)
-                    except Exception:
-                        logger.warning(f"[WS-OPT] Invalid max_streams value for {k}: {v} -> using default 10")
-                        max_streams[k] = 10
-    
-                ws_cfg['max_streams_per_exchange'] = max_streams
-                safe_config['websocket'] = ws_cfg
-    
-                # Ensure universe.fixed_symbols is list
-                universe = safe_config.get('universe', {}) or {}
-                fixed_syms = universe.get('fixed_symbols', [])
-                if isinstance(fixed_syms, str):
-                    fixed_syms = [fixed_syms]
-                if not isinstance(fixed_syms, (list, tuple)):
-                    logger.warning("[WS-OPT] fixed_symbols not list/tuple; coercing to empty list")
-                    fixed_syms = []
-                safe_config.setdefault('universe', {})['fixed_symbols'] = list(fixed_syms)
-    
-                # assign sanitized config
-                self.config = safe_config
-                self.fixed_symbols = list(safe_config['universe']['fixed_symbols'])
-                self.max_streams_config = ws_cfg.get('max_streams_per_exchange', {})
-    
-                if not self.fixed_symbols:
-                    logger.warning("[WS-OPT] No fixed symbols, WebSocket disabled")
-                    return []
-    
-                # Import WebSocketManager lazily and protect against TypeError
+                    return obj
+
+                safe_config = _fallback_coerce(self.config or {})
+
+            # Ensure websocket config is dict
+            ws_cfg = safe_config.get('websocket', {}) or {}
+            if not isinstance(ws_cfg, dict):
+                logger.warning("[WS-OPT] websocket config not a dict, coercing to defaults")
+                ws_cfg = {'enabled': True, 'max_streams_per_exchange': {'default': 10}}
+
+            # sanitize max_streams_per_exchange
+            max_streams = ws_cfg.get('max_streams_per_exchange', {}) or {}
+            if not isinstance(max_streams, dict):
+                logger.warning("[WS-OPT] max_streams_per_exchange invalid; replacing with defaults")
+                max_streams = {'default': 10}
+
+            for k, v in list(max_streams.items()):
                 try:
-                    from core.websocket_manager import WebSocketManager
+                    max_streams[k] = int(v)
                 except Exception:
-                    # If the import fails in a test environment, return empty list gracefully
-                    logger.debug("[WS-OPT] core.websocket_manager not available in test env; skipping WebSocket setup")
-                    return []
-    
-                # Create the WebSocketManager instance inside its own try/except (aligned with the import try/except)
+                    logger.warning(f"[WS-OPT] Invalid max_streams value for {k}: {v} -> using default 10")
+                    max_streams[k] = 10
+
+            ws_cfg['max_streams_per_exchange'] = max_streams
+            safe_config['websocket'] = ws_cfg
+
+            # Ensure universe.fixed_symbols is list
+            universe = safe_config.get('universe', {}) or {}
+            fixed_syms = universe.get('fixed_symbols', [])
+            if isinstance(fixed_syms, str):
+                fixed_syms = [fixed_syms]
+            if not isinstance(fixed_syms, (list, tuple)):
+                logger.warning("[WS-OPT] fixed_symbols not list/tuple; coercing to empty list")
+                fixed_syms = []
+            safe_config.setdefault('universe', {})['fixed_symbols'] = list(fixed_syms)
+
+            # assign sanitized config
+            self.config = safe_config
+            self.fixed_symbols = list(safe_config['universe']['fixed_symbols'])
+            self.max_streams_config = ws_cfg.get('max_streams_per_exchange', {})
+
+            if not self.fixed_symbols:
+                logger.warning("[WS-OPT] No fixed symbols, WebSocket disabled")
+                return []
+
+            # Import WebSocketManager lazily and protect against TypeError
+            try:
+                from core.websocket_manager import WebSocketManager
+            except Exception:
+                # If the import fails in a test environment, return empty list gracefully
+                logger.debug("[WS-OPT] core.websocket_manager not available in test env; skipping WebSocket setup")
+                return []
+
+            # Create the WebSocketManager instance inside its own try/except
+            try:
+                self.ws_manager = WebSocketManager(
+                    exchanges=exchange_clients,
+                    config=self.config
+                )
+            except TypeError as e:
+                # Compute a safe map of config value types first, then log it.
                 try:
-                    self.ws_manager = WebSocketManager(
-                        exchanges=exchange_clients,
-                        config=self.config
-                    )
-                except TypeError as e:
-                    # Compute a safe map of config value types first, then log it.
-                    try:
-                        type_map = {k: type(v).__name__ for k, v in (self.config or {}).items()}
-                    except Exception:
-                        type_map = str(self.config)
-                    logger.error(f"[WS-OPT] WebSocketManager init TypeError: {e}; config types: {type_map}")
-                    return []
-                except Exception as e:
-                    logger.error(f"[WS-OPT] WebSocketManager init failed: {e}")
-                    return []
-    
+                    type_map = {k: type(v).__name__ for k, v in (self.config or {}).items()}
+                except Exception:
+                    type_map = str(self.config)
+                logger.error(f"[WS-OPT] WebSocketManager init TypeError: {e}; config types: {type_map}")
+                return []
+            except Exception as e:
+                logger.error(f"[WS-OPT] WebSocketManager init failed: {e}")
+                return []
+
             # Setup stream limits per exchange
             for exchange_name in exchange_clients.keys():
                 max_streams = self.max_streams_config.get(
@@ -301,9 +299,9 @@ class OptimizedWebSocketManager:
                     self.max_streams_config.get('default', 10)
                 )
                 logger.info(f"[WS-OPT] {exchange_name}: Max streams set to {max_streams}")
-    
+
             tasks = await self._subscribe_optimized()
-    
+
             if tasks:
                 logger.info(f"[WS-OPT] ✅ WebSocket initialized with {len(tasks)} streams")
                 self.is_initialized = True
@@ -311,7 +309,7 @@ class OptimizedWebSocketManager:
             else:
                 logger.warning("[WS-OPT] No WebSocket streams started")
                 return []
-    
+
         except TypeError as e:
             try:
                 type_map = {k: type(v).__name__ for k, v in (self.config or {}).items()}
