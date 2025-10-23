@@ -478,81 +478,152 @@ class ProductionCoordinator:
                 continue
 
     async def _initialize_production_system(self) -> bool:
-        """Legacy wrapper - just calls the public method."""
-        # Public metodu çağır ve sonucunu döndür
+        """
+        Legacy wrapper for backwards compatibility.
+        
+        This method wraps the public initialize_production_system() method
+        and returns a boolean instead of a dict for legacy code compatibility.
+        
+        Returns:
+            bool: True if initialization succeeded, False otherwise
+        """
         result = await self.initialize_production_system()
         return result.get('success', False)
-
+    
     async def initialize_production_system(self, 
                                           exchange_clients: Optional[Dict] = None,
                                           portfolio_config: Optional[Dict] = None,
                                           mode: str = 'paper',
                                           trading_symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         """
-        Initialize production system with all components.
+        Initialize production system with all Phase 3 components.
+        
+        This is the main initialization method that sets up:
+        - WebSocket connections (Phase 3.1)
+        - Risk Management (Phase 3.2)
+        - Portfolio Management (Phase 3.3)
+        - Trading Engine (Phase 3.4)
+        - Strategy Coordinator
+        - Circuit Breaker System
+        
+        Args:
+            exchange_clients: Dict of exchange client instances {exchange_name: client}
+            portfolio_config: Portfolio configuration dict with 'equity_usd' etc.
+            mode: Trading mode ('paper', 'live', 'simulation')
+            trading_symbols: List of symbols to trade (e.g., ['BTC/USDT:USDT'])
+        
+        Returns:
+            Dict with 'success', 'components', and optional 'reason' keys
         """
-        logger.info("Initializing Production Trading System...")
+        logger.info("="*70)
+        logger.info("INITIALIZING PRODUCTION SYSTEM")
+        logger.info("="*70)
         
         try:
-            # Store provided configuration
+            # ========================================
+            # STEP 1: STORE PROVIDED CONFIGURATION
+            # ========================================
             if exchange_clients:
                 self.exchange_clients = exchange_clients
+                logger.info(f"✓ Received {len(exchange_clients)} exchange client(s)")
             
-            # Skip WebSocket init if already provided externally
+            # ========================================
+            # STEP 2: INITIALIZE WEBSOCKET MANAGER
+            # ========================================
             if not self.websocket_manager and not hasattr(self, 'skip_ws_init'):
-                self.websocket_manager = WebSocketManager(exchanges=self.exchange_clients)
+                try:
+                    self.websocket_manager = WebSocketManager(exchanges=self.exchange_clients)
+                    logger.info("✓ WebSocket manager initialized")
+                except Exception as e:
+                    logger.warning(f"⚠️ WebSocket manager initialization failed: {e}")
+                    logger.warning("⚠️ Continuing without WebSocket (will use REST API)")
+                    self.websocket_manager = None
+            else:
+                if self.websocket_manager:
+                    logger.info("✓ WebSocket manager already initialized (external)")
+                else:
+                    logger.info("ℹ️ WebSocket initialization skipped (skip_ws_init flag)")
             
-            # Initialize components with graceful fallbacks
+            # ========================================
+            # STEP 3: INITIALIZE PERFORMANCE MONITOR
+            # ========================================
             try:
                 self.performance_monitor = PerformanceMonitor()
-            except:
+                logger.info("✓ Performance monitor initialized")
+            except Exception as e:
+                logger.warning(f"⚠️ PerformanceMonitor not available: {e}")
+                logger.info("✓ Using fallback RealTimePerformanceMonitor")
                 self.performance_monitor = RealTimePerformanceMonitor()
             
-            # ÇÖZÜM: portfolio_config'i doğrudan RiskManager'a geç!
+            # ========================================
+            # STEP 4: PREPARE RISK MANAGER CONFIG
+            # ========================================
             portfolio_config = portfolio_config or {}
-            
-            # Config'den risk parametrelerini al ve birleştir
             config = self.config
             risk_config = config.get('risk', {})
             
-            # RiskManager için portfolio_config hazırla
+            # Merge portfolio_config with config file settings
             risk_manager_config = {
                 'equity_usd': float(
                     portfolio_config.get('equity_usd') or 
-                    risk_config.get('equity_usd', 100)  # Config'den veya default 100
+                    risk_config.get('equity_usd', 100)
                 ),
                 'per_trade_risk_pct': float(risk_config.get('per_trade_risk_pct', 0.01)),
                 'daily_loss_limit_pct': float(risk_config.get('daily_loss_limit_pct', 0.02)),
                 'risk_usd_cap': float(risk_config.get('risk_usd_cap', 5)),
                 'max_notional_per_trade': float(risk_config.get('max_notional_per_trade', 20)),
-                'max_portfolio_risk': 0.02,  # RiskManager defaults
-                'max_position_size': 0.10,
-                'max_drawdown': 0.15,
-                'max_correlation': 0.70
+                'max_portfolio_risk': float(risk_config.get('max_portfolio_risk', 0.02)),
+                'max_position_size': float(risk_config.get('max_position_size', 0.10)),
+                'max_drawdown': float(risk_config.get('max_drawdown', 0.15)),
+                'max_correlation': float(risk_config.get('max_correlation', 0.70))
             }
             
-            # Risk Manager - DOĞRU PARAMETRELERLE
-            logger.info(f"Initializing RiskManager with equity_usd: ${risk_manager_config['equity_usd']}")
+            logger.info(f"✓ Risk config prepared: ${risk_manager_config['equity_usd']} equity")
+            
+            # ========================================
+            # STEP 5: INITIALIZE RISK MANAGER
+            # ========================================
             self.risk_manager = RiskManager(
-                portfolio_config=risk_manager_config,  # Artık doğru format!
+                portfolio_config=risk_manager_config,
                 websocket_manager=self.websocket_manager,
                 performance_monitor=self.performance_monitor
             )
+            logger.info(f"✓ Risk manager initialized (portfolio value: ${self.risk_manager.portfolio_value:.2f})")
             
-            # Portfolio Manager
+            # ========================================
+            # STEP 6: INITIALIZE PORTFOLIO MANAGER
+            # ========================================
             self.portfolio_manager = PortfolioManager(
                 risk_manager=self.risk_manager,
                 performance_monitor=self.performance_monitor,
                 websocket_manager=self.websocket_manager,
                 exchange_clients=self.exchange_clients
             )
+            # Attach full config to portfolio manager
             self.portfolio_manager.cfg = self.config
+            logger.info("✓ Portfolio manager initialized")
             
-            # Other components...
-            self.strategy_coordinator = StrategyCoordinator(self.portfolio_manager, self.risk_manager)
-            self.circuit_breaker = CircuitBreakerSystem(self.portfolio_manager, self.risk_manager)
+            # ========================================
+            # STEP 7: INITIALIZE STRATEGY COORDINATOR
+            # ========================================
+            self.strategy_coordinator = StrategyCoordinator(
+                self.portfolio_manager,
+                self.risk_manager
+            )
+            logger.info("✓ Strategy coordinator initialized")
             
-            # LiveTradingEngine
+            # ========================================
+            # STEP 8: INITIALIZE CIRCUIT BREAKER
+            # ========================================
+            self.circuit_breaker = CircuitBreakerSystem(
+                self.portfolio_manager,
+                self.risk_manager
+            )
+            logger.info("✓ Circuit breaker system initialized")
+            
+            # ========================================
+            # STEP 9: INITIALIZE LIVE TRADING ENGINE
+            # ========================================
             self.trading_engine = LiveTradingEngine(
                 mode=mode,
                 portfolio_manager=self.portfolio_manager,
@@ -561,49 +632,105 @@ class ProductionCoordinator:
                 exchange_clients=self.exchange_clients,
                 strategy_coordinator=self.strategy_coordinator
             )
+            logger.info(f"✓ Live trading engine initialized (mode: {mode})")
             
-            # Set active symbols with multi-tier fallback
+            # ========================================
+            # STEP 10: SET ACTIVE SYMBOLS (CRITICAL!)
+            # ========================================
             if trading_symbols:
+                # Priority 1: Use provided parameter
                 self.active_symbols = trading_symbols
                 logger.info(f"✓ Active symbols set from parameter: {len(trading_symbols)} symbols")
+                logger.info(f"  Symbols: {', '.join(trading_symbols)}")
             else:
-                # Fallback 1: Try loading from config
+                # Priority 2: Load from config file
                 config_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
-                if config_symbols and isinstance(config_symbols, list):
+                if config_symbols and isinstance(config_symbols, list) and len(config_symbols) > 0:
                     self.active_symbols = config_symbols
                     logger.info(f"✓ Active symbols loaded from config: {len(config_symbols)} symbols")
-                # Fallback 2: Try getting from engine (if already created)
-                elif self.trading_engine:
-                    try:
-                        self.active_symbols = self.trading_engine._get_scan_symbols()
-                        logger.info(f"✓ Active symbols loaded from engine: {len(self.active_symbols)} symbols")
-                    except Exception as e:
-                        logger.error(f"❌ Failed to get symbols from engine: {e}")
-                        self.active_symbols = []
+                    logger.info(f"  Symbols: {', '.join(config_symbols)}")
                 else:
-                    logger.warning("⚠️ No active symbols configured! Trading loop will be idle.")
-                    self.active_symbols = []
+                    # Priority 3: Try getting from trading engine
+                    if self.trading_engine and hasattr(self.trading_engine, '_get_scan_symbols'):
+                        try:
+                            self.active_symbols = self.trading_engine._get_scan_symbols()
+                            if self.active_symbols:
+                                logger.info(f"✓ Active symbols loaded from engine: {len(self.active_symbols)} symbols")
+                                logger.info(f"  Symbols: {', '.join(self.active_symbols)}")
+                            else:
+                                logger.error("❌ Engine returned empty symbol list!")
+                                self.active_symbols = []
+                        except Exception as e:
+                            logger.error(f"❌ Failed to get symbols from engine: {e}")
+                            self.active_symbols = []
+                    else:
+                        logger.error("❌ No symbols configured and engine cannot provide symbols!")
+                        self.active_symbols = []
             
-            # Log final result
-            if self.active_symbols:
-                logger.info(f"📊 Final active symbols ({len(self.active_symbols)}): {self.active_symbols[:3]}...")
+            # ========================================
+            # STEP 11: VALIDATE ACTIVE SYMBOLS
+            # ========================================
+            if not self.active_symbols:
+                logger.error("="*70)
+                logger.error("❌ CRITICAL: NO ACTIVE SYMBOLS CONFIGURED!")
+                logger.error("="*70)
+                logger.error("The bot cannot trade without active symbols.")
+                logger.error("Please provide trading_symbols parameter or configure fixed_symbols in config.")
+                logger.error("="*70)
+                # Don't fail initialization, but warn heavily
             else:
-                logger.error("❌ CRITICAL: No active symbols! Bot cannot trade!")
+                logger.info("="*70)
+                logger.info(f"✅ ACTIVE SYMBOLS CONFIGURED: {len(self.active_symbols)} symbols")
+                logger.info("="*70)
+                for idx, symbol in enumerate(self.active_symbols, 1):
+                    logger.info(f"  {idx}. {symbol}")
+                logger.info("="*70)
             
+            # ========================================
+            # STEP 12: MARK AS INITIALIZED
+            # ========================================
             self.is_initialized = True
             
-            # SUCCESS LOG
-            logger.info(f"✅ System initialized with portfolio value: ${self.risk_manager.portfolio_value:.2f}")
+            components = [
+                'websocket_manager',
+                'performance_monitor',
+                'risk_manager',
+                'portfolio_manager',
+                'strategy_coordinator',
+                'circuit_breaker',
+                'trading_engine'
+            ]
             
-            components = ['websocket_manager', 'performance_monitor', 'risk_manager', 
-                         'portfolio_manager', 'strategy_coordinator', 'circuit_breaker', 
-                         'trading_engine']
+            logger.info("="*70)
+            logger.info("✅ PRODUCTION SYSTEM INITIALIZATION COMPLETE")
+            logger.info("="*70)
+            logger.info(f"Components initialized: {len(components)}")
+            logger.info(f"Portfolio value: ${self.risk_manager.portfolio_value:.2f}")
+            logger.info(f"Active symbols: {len(self.active_symbols)}")
+            logger.info(f"Mode: {mode}")
+            logger.info("="*70)
             
-            return {'success': True, 'components': components}
+            return {
+                'success': True,
+                'components': components,
+                'is_initialized': True,
+                'active_symbols_count': len(self.active_symbols)
+            }
             
         except Exception as e:
-            logger.error(f"Failed to initialize: {e}")
-            return {'success': False, 'reason': str(e)}
+            logger.error("="*70)
+            logger.error("❌ PRODUCTION SYSTEM INITIALIZATION FAILED")
+            logger.error("="*70)
+            logger.error(f"Error: {e}", exc_info=True)
+            logger.error("="*70)
+            
+            self.is_initialized = False
+            
+            return {
+                'success': False,
+                'reason': str(e),
+                'is_initialized': False
+            }
             
     async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
                                   continuous: bool = False):
