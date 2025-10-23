@@ -1,13 +1,21 @@
 """
 Live Trading Engine.
-Production-ready live trading execution engine with enhanced debugging and adaptive strategies.
+Production-ready live trading EXECUTION engine (execution-only mode).
+
+✅ PURE EXECUTION MODE:
+- Processes signals from ProductionCoordinator's queue
+- Executes orders via OrderManager
+- Manages positions via PositionManager
+- NO active market scanning (delegated to ProductionCoordinator)
+
+Architecture:
+    ProductionCoordinator → StrategyCoordinator → LiveTradingEngine
+    (Scanning + Signals)    (Validation + Queue)   (Execution Only)
 """
 import os
 import asyncio
 import logging
-import inspect
 import time
-import math
 import pandas as pd
 from collections import defaultdict, deque
 from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
@@ -173,11 +181,6 @@ class LiveTradingEngine:
         self._executed_count = 0  # Track executed signals
         self._last_signal_time = None
 
-        # Local duplicate-prevention tracking for engine-generated signals
-        self._local_duplicate_config = self._load_duplicate_prevention_config()
-        self._local_last_signal_time: Dict[str, float] = {}
-        self._local_signal_price_history: defaultdict = defaultdict(lambda: deque(maxlen=10))
-
         logger.info("LiveTradingEngine initialized")
         logger.info(f"  Mode: {mode}")
         exchange_client_names = list(self.exchange_clients.keys()) if self.exchange_clients else []
@@ -272,7 +275,8 @@ class LiveTradingEngine:
                 'state': self.state.value,
                 'mode': self.mode.value,
                 'active_tasks': len(self.tasks),
-                'universe_size': len(self._get_scan_symbols())
+                'execution_mode': 'passive',  # Changed from universe_size
+                'signal_source': 'ProductionCoordinator'
             }
             
         except Exception as e:
@@ -579,331 +583,47 @@ class LiveTradingEngine:
             }
     
     async def _signal_processing_loop(self):
-        """Background task for processing signals from queue and generating new signals."""
-        logger.info("Signal processing loop started")
-
-        """Enhanced signal processing with validation and monitoring."""
-    
-        # Validate config at startup
-        validated_config = ConfigValidator.validate_and_fix(self.config)
-        self.config = validated_config
+        """Background task for processing signals from queue ONLY - Pure execution mode."""
+        logger.info("Signal processing loop started (execution-only mode)")
+        logger.info("  Market scanning: DISABLED")
+        logger.info("  Signal source: ProductionCoordinator only")
         
-        # Import monitor
+        # Import monitor for adaptive signals
         from core.adaptive_monitor import adaptive_monitor
-        
-        # Import indicators
-        try:
-            from ..core.indicators import add_indicators
-        except ImportError:
-            from core.indicators import add_indicators
-        
-        # Import market regime analyzer
-        try:
-            from ..core.market_regime import MarketRegimeAnalyzer
-        except ImportError:
-            from core.market_regime import MarketRegimeAnalyzer
-        
-        # Initialize regime analyzer
-        regime_analyzer = MarketRegimeAnalyzer()
-        
-        # Track last scan time to avoid too frequent scans
-        last_scan_time = 0
-        scan_interval = 60  # 60 seconds between market scans (more reasonable for 30m timeframe)
-        
-        # Track last WebSocket performance log time
-        last_ws_perf_log_time = 0
-        ws_perf_log_interval = 60  # 60 seconds between WebSocket performance logs
         
         try:
             while self.state == EngineState.RUNNING:
                 try:
-                    # PRIORITY 1: Process queued signals FIRST
-                    # Check if there are signals waiting in the queue
-                    if not self.signal_queue.empty():
-                        # ✅ FIXED: Don't check empty(), just try to get with timeout
-                        try:
-                            signal = await asyncio.wait_for(
-                                self.signal_queue.get(),
-                                timeout=0.5  # ✅ Short timeout (0.5s) to quickly move to market scan
-                            )
-                            
-                            # [STAGE 5: RECEIVED] Signal received from queue
-                            logger.info(f"[STAGE:RECEIVED] 📤 Signal received from queue: {signal.get('symbol', 'unknown')}")
-                            self._signal_count += 1
-                            self._last_signal_time = datetime.now(timezone.utc)
-                            
-                            # Execute signal
-                            result = await self.execute_signal(signal)
-                            
-                            if result['success']:
-                                # [STAGE 6: EXECUTED] Signal successfully executed
-                                logger.info(f"[STAGE:EXECUTED] ✅ Signal executed: {signal.get('symbol')} - Position opened")
-                            else:
-                                logger.warning(f"⚠️ Signal execution failed: {result.get('reason')}")
-                            
-                            # Monitor adaptive signals
-                            if signal and signal.get('is_adaptive'):
-                                adaptive_monitor.record_adaptive_signal(signal.get('symbol'), signal)
-                            
-                            # Continue immediately to process next signal if available
-                            continue
-                            
-                        except asyncio.TimeoutError:
-                            # ✅ Normal: Queue is empty, continue to market scan
-                            pass
-                        except Exception as e:
-                            logger.error(f"Error executing signal: {e}", exc_info=True)
+                    # ✅ ONLY: Process queued signals
+                    signal = await asyncio.wait_for(
+                        self.signal_queue.get(),
+                        timeout=1.0
+                    )
                     
-                    # PRIORITY 2: Market scan (if interval reached and queue is empty)
-                    current_time = asyncio.get_event_loop().time()
+                    # [STAGE: RECEIVED] Signal received from queue
+                    logger.info(f"[STAGE:RECEIVED] 📤 Signal received from queue: {signal.get('symbol', 'unknown')}")
+                    self._signal_count += 1
+                    self._last_signal_time = datetime.now(timezone.utc)
                     
-                    # WebSocket performance logging (every 60 seconds)
-                    if current_time - last_ws_perf_log_time >= ws_perf_log_interval:
-                        last_ws_perf_log_time = current_time
-                        self._log_websocket_performance()
+                    # Execute signal
+                    result = await self.execute_signal(signal)
                     
-                    # Market scanning phase (every 10 seconds)
-                    if current_time - last_scan_time >= scan_interval:
-                        logger.debug("🔍 Market scan starting...")
-                        last_scan_time = current_time
+                    if result['success']:
+                        # [STAGE: EXECUTED] Signal successfully executed
+                        logger.info(f"[STAGE:EXECUTED] ✅ Signal executed: {signal.get('symbol')} - Position opened")
+                    else:
+                        logger.warning(f"⚠️ Signal execution failed: {result.get('reason')}")
+                    
+                    # Monitor adaptive signals
+                    if signal and signal.get('is_adaptive'):
+                        adaptive_monitor.record_adaptive_signal(signal.get('symbol'), signal)
                         
-                        # Get symbols to scan
-                        symbols = self._get_scan_symbols()
-                        logger.info(f"🔍 Scanning {len(symbols)} symbols: {', '.join(symbols)}")
-                        
-                        for symbol in symbols:
-                            try:
-                                logger.info(f"[PROCESSING] Symbol: {symbol}")
-                                
-                                # Fetch OHLCV data for multiple timeframes using WebSocket priority
-                                df_30m = self._get_ohlcv_with_priority(symbol, '30m', limit=200)
-                                df_1h = self._get_ohlcv_with_priority(symbol, '1h', limit=200)
-                                df_4h = self._get_ohlcv_with_priority(symbol, '4h', limit=200)
-                                
-                                if df_30m is None or len(df_30m) == 0:
-                                    logger.debug(f"⚠️ No data for {symbol}, skipping")
-                                    continue
-                                
-                                # Log data fetching result
-                                last_close = df_30m['close'].iloc[-1] if len(df_30m) > 0 else 0
-                                logger.info(f"[DATA] {symbol}: 30m={len(df_30m)} bars, last_close=${last_close:.2f}")
-                                
-                                # Add technical indicators
-                                indicator_config = self.config.get('indicators', {})
-                                df_30m = add_indicators(df_30m, indicator_config)
-                                
-                                if df_1h is not None and len(df_1h) > 0:
-                                    df_1h = add_indicators(df_1h, indicator_config)
-                                if df_4h is not None and len(df_4h) > 0:
-                                    df_4h = add_indicators(df_4h, indicator_config)
-                                
-                                # Check indicator readiness before proceeding
-                                if 'rsi' not in df_30m.columns or pd.isna(df_30m['rsi'].iloc[-1]):
-                                    logger.debug(f"[WARMUP] {symbol}: RSI not ready yet (need more bars)")
-                                    continue  # Skip this symbol for now
-                                
-                                if 'atr' not in df_30m.columns or pd.isna(df_30m['atr'].iloc[-1]):
-                                    logger.debug(f"[WARMUP] {symbol}: ATR not ready yet (need more bars)")
-                                    continue  # Skip this symbol for now
-                                
-                                # Enhanced indicator logging
-                                if 'rsi' in df_30m.columns and len(df_30m) > 0:
-                                    last_rsi = df_30m['rsi'].iloc[-1]
-                                    last_atr = df_30m['atr'].iloc[-1] if 'atr' in df_30m.columns else 0
-                                    last_ema21 = df_30m['ema21'].iloc[-1] if 'ema21' in df_30m.columns else 0
-                                    last_ema50 = df_30m['ema50'].iloc[-1] if 'ema50' in df_30m.columns else 0
-                                    
-                                    logger.info(f"[INDICATORS] {symbol}: RSI={last_rsi:.1f}, ATR=${last_atr:.2f}, "
-                                              f"EMA21=${last_ema21:.2f}, EMA50=${last_ema50:.2f}")
-                                    logger.info(f"[READY] {symbol}: Indicators warmed up and ready for signal generation")
-                                
-                                # Perform market regime analysis if we have all timeframes
-                                regime_data = None
-                                if df_1h is not None and df_4h is not None and len(df_1h) > 0 and len(df_4h) > 0:
-                                    regime_data = regime_analyzer.analyze_market_regime(df_30m, df_1h, df_4h)
-                                    logger.info(f"📊 {symbol} Regime Analysis:")
-                                    logger.info(f"   Trend: {regime_data.get('trend', 'unknown')}")
-                                    logger.info(f"   Momentum: {regime_data.get('momentum', 'unknown')}")
-                                    logger.info(f"   Volatility: {regime_data.get('volatility', 'unknown')}")
-                                
-                                # ✅ DÜZELTME: Config'den ignore_regime oku
-                                ob_cfg = self.config.get('signals', {}).get('oversold_bounce', {})
-                                str_cfg = self.config.get('signals', {}).get('short_the_rip', {})
-                                ignore_regime_ob = ob_cfg.get('ignore_regime', False)
-                                ignore_regime_str = str_cfg.get('ignore_regime', False)
-                                
-                                # ✅ DÜZELTME: Regime filter kontrolü
-                                if regime_data and not ignore_regime_ob:
-                                    trend = regime_data.get('trend', 'unknown')
-                                    if trend not in ['bearish', 'neutral', 'unknown']:
-                                        logger.info(f"[REGIME-FILTER] {symbol} skipped - not bearish (trend={trend}, ignore_regime=False)")
-                                        continue  # ← KRİTİK: Symbol'ü tamamen atla!
-                                
-                                # Run strategies registered in portfolio manager
-                                if self.portfolio_manager and hasattr(self.portfolio_manager, 'strategies'):
-                                    for strategy_name, strategy in self.portfolio_manager.strategies.items():
-                                        try:
-                                            # ✅ DÜZELTME: Strategy-specific ignore_regime check
-                                            if 'oversold' in strategy_name.lower() and not ignore_regime_ob:
-                                                if regime_data and regime_data.get('trend') not in ['bearish', 'neutral', 'unknown']:
-                                                    logger.debug(f"[STRATEGY-SKIP] {strategy_name} skipped for {symbol} (non-bearish regime)")
-                                                    continue
-                                            
-                                            if 'short' in strategy_name.lower() and not ignore_regime_str:
-                                                if regime_data and regime_data.get('trend') not in ['bearish', 'neutral', 'unknown']:
-                                                    logger.debug(f"[STRATEGY-SKIP] {strategy_name} skipped for {symbol} (non-bearish regime)")
-                                                    continue
-                                            
-                                            logger.info(f"[STRATEGY-CHECK] Running {strategy_name} for {symbol}")
-                                            
-                                            # Enhanced adaptive detection and logging
-                                            is_adaptive = False
-                                            adaptive_info = ""
-                                            adaptive_threshold = None
-                                            position_multiplier = 1.0
-                                            
-                                            # Check if this is an adaptive strategy
-                                            if 'adaptive' in strategy_name.lower() or hasattr(strategy, 'get_adaptive_rsi_threshold'):
-                                                is_adaptive = True
-                                                
-                                                # Get adaptive parameters if available
-                                                if regime_data and hasattr(strategy, 'get_adaptive_rsi_threshold'):
-                                                    adaptive_threshold = strategy.get_adaptive_rsi_threshold(regime_data)
-                                                    adaptive_info = f" (adaptive RSI: {adaptive_threshold:.1f})"
-                                                    logger.info(f"🎯 [ADAPTIVE] {strategy_name} using dynamic RSI threshold: {adaptive_threshold:.1f}")
-                                                    
-                                                    # Get position size multiplier if available
-                                                    if hasattr(strategy, 'calculate_dynamic_position_size'):
-                                                        volatility = regime_data.get('volatility', 'normal')
-                                                        position_multiplier = strategy.calculate_dynamic_position_size(volatility)
-                                                        logger.info(f"   Position multiplier: {position_multiplier:.2f} (volatility: {volatility})")
-                                            
-                                            # Debug log BEFORE strategy call
-                                            if len(df_30m) > 0:
-                                                last_30m_row = df_30m.iloc[-1]
-                                                logger.info(f"[DEBUG-PRE] Calling {strategy_name} for {symbol}")
-                                                logger.info(f"[DEBUG-PRE] Data: RSI={last_30m_row.get('rsi', 0):.2f}, "
-                                                          f"Close=${last_30m_row.get('close', 0):.2f}, "
-                                                          f"ATR=${last_30m_row.get('atr', 0):.4f}")
-                                            
-                                            signal = None
-                                            
-                                            # Check if strategy has signal method
-                                            if not hasattr(strategy, 'signal'):
-                                                logger.debug(f"Strategy {strategy_name} has no signal method, skipping")
-                                                continue
-                                            
-                                            # Determine strategy requirements by inspecting method signature
-                                            sig = inspect.signature(strategy.signal)
-                                            params = list(sig.parameters.keys())
-                                            
-                                            # Check for specific parameter names
-                                            has_regime_param = 'regime_data' in params
-                                            has_df_1h_param = 'df_1h' in params
-                                            has_symbol_param = 'symbol' in params
-                                            
-                                            # Call strategy with appropriate parameters
-                                            try:
-                                                # Build kwargs dynamically based on strategy requirements
-                                                kwargs = {}
-                                                if has_regime_param:
-                                                    kwargs['regime_data'] = regime_data
-                                                if has_df_1h_param and df_1h is not None:
-                                                    kwargs['df_1h'] = df_1h
-                                                if has_symbol_param:
-                                                    kwargs['symbol'] = symbol
-
-                                                signal = strategy.signal(df_30m, **kwargs)
-                                            except TypeError as te:
-                                                # Fallback: try calling with just df_30m
-                                                logger.warning(f"Strategy {strategy_name} parameter mismatch: {te}")
-                                                try:
-                                                    signal = strategy.signal(df_30m)
-                                                except Exception as e2:
-                                                    logger.error(f"Strategy {strategy_name} failed: {e2}")
-                                                    continue
-
-                                            # Rest of the signal processing code...
-                                            if signal:
-                                                original_signal = signal if isinstance(signal, dict) else {}
-                                                enriched_signal = original_signal.copy()
-
-                                                # Ensure mandatory fields
-                                                enriched_signal.setdefault('symbol', symbol)
-                                                enriched_signal.setdefault('strategy', strategy_name)
-                                                default_side = original_signal.get('side', 'buy') if original_signal else 'buy'
-                                                enriched_signal.setdefault('side', default_side)
-
-                                                # Timestamp metadata
-                                                generated_at = datetime.now(timezone.utc)
-                                                enriched_signal.setdefault('generated_at', generated_at)
-
-                                                # Adaptive metadata
-                                                if is_adaptive or (original_signal and original_signal.get('is_adaptive')):
-                                                    enriched_signal['is_adaptive'] = True
-                                                    if adaptive_threshold is not None:
-                                                        enriched_signal.setdefault('adaptive_threshold', adaptive_threshold)
-                                                    if position_multiplier is not None:
-                                                        enriched_signal.setdefault('position_multiplier', position_multiplier)
-
-                                                # Attach regime/indicator context
-                                                enriched_signal.setdefault('metadata', {})
-                                                enriched_signal['metadata'].update({
-                                                    'source': 'live_trading_engine_scan',
-                                                    'scan_timestamp': generated_at.isoformat(),
-                                                    'regime_snapshot': regime_data,
-                                                    'ema_context': original_signal.get('ema_params') if original_signal else None
-                                                })
-
-                                                # Attach allocation information if available
-                                                if self.portfolio_manager and hasattr(self.portfolio_manager, 'get_strategy_allocation'):
-                                                    allocation = self.portfolio_manager.get_strategy_allocation(strategy_name)
-                                                    enriched_signal.setdefault('strategy_allocation', allocation)
-
-                                                # Ensure exchange is set
-                                                if 'exchange' not in enriched_signal or not enriched_signal['exchange']:
-                                                    enriched_signal['exchange'] = self._determine_default_exchange(symbol)
-
-                                                # Duplicate prevention check for engine-generated signals
-                                                can_queue, reason = self._should_queue_local_signal(
-                                                    strategy_name,
-                                                    enriched_signal
-                                                )
-
-                                                if not can_queue:
-                                                    logger.info(
-                                                        f"[DUPLICATE-BLOCK] Skipping signal for {symbol} "
-                                                        f"from {strategy_name}: {reason}"
-                                                    )
-                                                    continue
-
-                                                await self.signal_queue.put(enriched_signal)
-                                                queue_size = self.signal_queue.qsize()
-                                                logger.info(
-                                                    f"[STAGE:QUEUED] 📨 Signal queued from engine scan: {symbol} "
-                                                    f"via {strategy_name} | Queue size: {queue_size}"
-                                                )
-                                                continue
-
-                                        except Exception as e:
-                                            logger.error(f"Error running strategy {strategy_name} for {symbol}: {e}", exc_info=True)
-                                            continue
-
-                            except Exception as e:
-                                logger.error(f"Error scanning {symbol}: {e}")
-                                continue
-                        
-                        logger.info(f"✓ Market scan completed. Signals in queue: {self.signal_queue.qsize()}")
-                    
-                    # Small sleep to prevent CPU spinning when queue is empty and scan interval not reached
-                    await asyncio.sleep(0.1)
-                
-                except asyncio.CancelledError:
-                    logger.info("Signal processing loop cancelled")
-                    raise
+                except asyncio.TimeoutError:
+                    # Normal: Queue is empty, continue waiting
+                    continue
                 except Exception as e:
-                    logger.error(f"Error in signal processing loop: {e}", exc_info=True)
-                    await asyncio.sleep(5)  # Wait before retrying after error
+                    logger.error(f"Error executing signal: {e}", exc_info=True)
+                    await asyncio.sleep(1)
                     
         except asyncio.CancelledError:
             logger.info("Signal processing loop cancelled")
@@ -983,8 +703,18 @@ class LiveTradingEngine:
             logger.warning("[PREFETCH] Continuing anyway - signal generation may be delayed")
     
     def _get_scan_symbols(self) -> List[str]:
-        """Get symbols to scan with support for fixed list and auto-select modes."""
-
+        """
+        Get symbols to scan with support for fixed list and auto-select modes.
+        
+        DEPRECATED: This method is deprecated as LiveTradingEngine no longer performs
+        market scanning. Symbol discovery is now handled by ProductionCoordinator.
+        This method is kept only for backward compatibility and testing purposes.
+        """
+        logger.warning(
+            "⚠️ DEPRECATED: _get_scan_symbols() called on LiveTradingEngine. "
+            "This engine no longer scans markets. Use ProductionCoordinator for signal generation."
+        )
+        
         if self._cached_symbols:
             return self._cached_symbols
 
@@ -1063,27 +793,6 @@ class LiveTradingEngine:
 
         return default_symbols
 
-    def _load_duplicate_prevention_config(self) -> Dict[str, Any]:
-        """Load duplicate prevention configuration with fallbacks."""
-
-        signals_cfg = self.config.get('signals', {}).get('duplicate_prevention', {})
-        monitoring_cfg = self.config.get('monitoring', {}).get('duplicate_prevention', {})
-
-        if signals_cfg:
-            return {
-                'enabled': signals_cfg.get('enabled', True),
-                'cooldown_seconds': float(signals_cfg.get('cooldown_seconds', 20)),
-                'price_delta_threshold': float(signals_cfg.get('min_price_change_pct', 0.05)),
-                'price_delta_bypass_enabled': signals_cfg.get('price_delta_bypass_enabled', True)
-            }
-
-        return {
-            'enabled': monitoring_cfg.get('enabled', True),
-            'cooldown_seconds': float(monitoring_cfg.get('same_symbol_cooldown', 60)),
-            'price_delta_threshold': float(monitoring_cfg.get('price_delta_bypass_threshold', 0.0015)),
-            'price_delta_bypass_enabled': monitoring_cfg.get('price_delta_bypass_enabled', True)
-        }
-
     def _determine_default_exchange(self, symbol: str) -> Optional[str]:
         """Determine default exchange for a generated signal."""
 
@@ -1097,91 +806,6 @@ class LiveTradingEngine:
 
         return self.config.get('execution', {}).get('default_exchange')
 
-    def _should_queue_local_signal(self, strategy_name: str, signal: Dict[str, Any]) -> Tuple[bool, str]:
-        """Check duplicate prevention rules for engine-generated signals."""
-
-        config = self._local_duplicate_config
-        if not config.get('enabled', True):
-            return True, "duplicate prevention disabled"
-
-        symbol = signal.get('symbol')
-        if not symbol:
-            return False, "missing symbol"
-
-        raw_entry_price = signal.get('entry', 0) or signal.get('price')
-        entry_price = self._normalize_price(raw_entry_price)
-        now_ts = time.time()
-        key = f"{symbol}:{strategy_name}"
-        cooldown = config.get('cooldown_seconds', 20.0)
-
-        last_time = self._local_last_signal_time.get(key)
-        if last_time:
-            elapsed = now_ts - last_time
-            if elapsed < cooldown:
-                remaining = cooldown - elapsed
-                if config.get('price_delta_bypass_enabled', True) and entry_price:
-                    history = self._local_signal_price_history.get(symbol)
-                    if history:
-                        _, last_price_raw = history[-1]
-                        last_price = self._normalize_price(last_price_raw)
-                        if last_price:
-                            price_delta = abs(entry_price - last_price) / last_price
-                            threshold = config.get('price_delta_threshold', 0.05)
-                            if price_delta >= threshold:
-                                self._record_local_signal(symbol, strategy_name, entry_price, now_ts)
-                                return True, f"price delta bypass {price_delta*100:.2f}%"
-
-                return False, f"cooldown active ({remaining:.1f}s remaining)"
-
-        self._record_local_signal(symbol, strategy_name, entry_price, now_ts)
-        return True, "OK"
-
-    def _record_local_signal(self, symbol: str, strategy_name: str, entry_price: Optional[float], timestamp: float) -> None:
-        """Record signal metadata for local duplicate prevention tracking."""
-
-        key = f"{symbol}:{strategy_name}"
-        self._local_last_signal_time[key] = timestamp
-
-        normalized_price = self._normalize_price(entry_price)
-        if normalized_price is not None:
-            price_history = self._local_signal_price_history[symbol]
-
-            if price_history:
-                cleaned_entries = [
-                    (existing_timestamp, normalized_existing)
-                    for existing_timestamp, existing_price in price_history
-                    if (normalized_existing := self._normalize_price(existing_price)) is not None
-                ]
-
-                if cleaned_entries != list(price_history):
-                    price_history.clear()
-                    price_history.extend(cleaned_entries)
-
-            price_history.append((timestamp, normalized_price))
-
-    @staticmethod
-    def _normalize_price(value: Any) -> Optional[float]:
-        """Safely convert incoming price values to positive floats for duplicate tracking."""
-
-        if value is None:
-            return None
-
-        if isinstance(value, str):
-            value = value.strip()
-            if not value:
-                return None
-            value = value.replace(',', '')
-
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError):
-            return None
-
-        if not math.isfinite(numeric) or numeric <= 0:
-            return None
-
-        return numeric
-    
     def _get_ohlcv_with_priority(self, symbol: str, timeframe: str, limit: int = 100):
         """
         Get OHLCV data with WebSocket priority and REST fallback.
