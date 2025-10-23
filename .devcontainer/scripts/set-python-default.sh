@@ -6,30 +6,59 @@ PYTHON_VERSION="3.11"
 resolve_python_path() {
   local exe="$1"
   if ! command -v "$exe" >/dev/null 2>&1; then
-    echo "ERROR:command_not_found"
     return 1
   fi
   "$exe" -c 'import sys; print(sys.executable)'
 }
 
-PYTHON_TARGET_OUTPUT="$(resolve_python_path "python${PYTHON_VERSION}")"
-PYTHON_TARGET_STATUS=$?
-if [[ ${PYTHON_TARGET_STATUS} -ne 0 ]]; then
-  if [[ "${PYTHON_TARGET_OUTPUT}" == ERROR:* ]]; then
-    echo "Unable to locate python${PYTHON_VERSION}: command not found." >&2
-  else
-    echo "Failed to resolve python${PYTHON_VERSION}: ${PYTHON_TARGET_OUTPUT}" >&2
-  fi
+PYTHON_TARGET="$(resolve_python_path "python${PYTHON_VERSION}")"
+if [[ -z "${PYTHON_TARGET}" ]]; then
+  echo "Unable to locate python${PYTHON_VERSION}." >&2
   exit 1
 fi
 
-PYTHON_TARGET="${PYTHON_TARGET_OUTPUT}"
+configure_pyenv() {
+  if ! command -v pyenv >/dev/null 2>&1; then
+    echo "pyenv not found; skipping shim configuration."
+    return
+  fi
 
-if command -v python3 >/dev/null 2>&1; then
-  CURRENT_PYTHON3="$(python3 -c 'import sys; print(sys.executable)')"
-else
-  CURRENT_PYTHON3=""
-fi
+  local pyenv_root
+  pyenv_root="$(pyenv root)"
+  local versions_dir="${pyenv_root}/versions"
+
+  if [[ ! -d "${versions_dir}" ]]; then
+    echo "pyenv versions directory does not exist; skipping shim configuration." >&2
+    return
+  fi
+  local candidate_dir
+  candidate_dir="$(find "${versions_dir}" -maxdepth 1 -mindepth 1 -type d -name "${PYTHON_VERSION}*" | sort -V | tail -n1)"
+
+  if [[ -z "${candidate_dir}" ]]; then
+    echo "pyenv does not have a python${PYTHON_VERSION} installation; skipping shim configuration." >&2
+    return
+  fi
+
+  local version_name
+  version_name="$(basename "${candidate_dir}")"
+
+  if [[ "$(pyenv global)" != "${version_name}" ]]; then
+    pyenv global "${version_name}"
+  fi
+
+  pyenv rehash
+
+  cat <<MSG
+Configured pyenv global version to ${version_name}.
+pyenv shim verification:
+MSG
+  pyenv exec python --version
+  pyenv exec python3 --version
+}
+
+configure_pyenv
+
+CURRENT_PYTHON3="$(resolve_python_path "python3" || true)"
 
 sudo update-alternatives --install /usr/bin/python python "${PYTHON_TARGET}" 1
 sudo update-alternatives --install /usr/bin/python3 python3 "${PYTHON_TARGET}" 1
@@ -45,4 +74,4 @@ MSG
 
 python --version
 python3 --version
-"python${PYTHON_VERSION}" --version
+python${PYTHON_VERSION} --version
