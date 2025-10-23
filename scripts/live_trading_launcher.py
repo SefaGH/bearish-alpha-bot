@@ -1045,8 +1045,7 @@ class LiveTradingLauncher:
         logger.info("\n[1/8] Loading Environment Configuration...")
         
         required_vars = ['BINGX_KEY', 'BINGX_SECRET']
-        env_values = {var: os.getenv(var) for var in required_vars}
-        missing_vars = [var for var, value in env_values.items() if not value]
+        missing_vars = [var for var in required_vars if not os.getenv(var)]
 
         credentials_required = self.mode == 'live' and not self.dry_run
         self._has_bingx_credentials = not missing_vars
@@ -1058,7 +1057,7 @@ class LiveTradingLauncher:
             logger.info("✓ BingX credentials found")
         else:
             if missing_vars:
-                logger.info("ℹ BingX credentials not provided – proceeding without authentication")
+                logger.info("ℹ️  BingX credentials not provided – proceeding without authentication")
             else:
                 logger.info("✓ BingX credentials loaded (optional)")
 
@@ -1070,7 +1069,7 @@ class LiveTradingLauncher:
             self.telegram = Telegram(tg_token, tg_chat)
             logger.info("✓ Telegram notifications enabled")
         else:
-            logger.info("ℹ Telegram notifications disabled (optional)")
+            logger.info("ℹ️  Telegram notifications disabled (optional)")
         
         # Initialize debug logger if debug mode is enabled
         if self.debug_mode:
@@ -1134,7 +1133,7 @@ class LiveTradingLauncher:
                 except Exception as e:
                     logger.warning(f"⚠️  BingX authentication test failed: {e}")
             else:
-                logger.info("ℹ Skipping BingX authentication check (no credentials)")
+                logger.info("ℹ️  Skipping BingX authentication check (no credentials)")
             
             # Verify ONLY configured pairs
             logger.info(f"Verifying {len(trading_pairs)} trading pairs...")
