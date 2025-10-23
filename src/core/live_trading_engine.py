@@ -644,7 +644,10 @@ class LiveTradingEngine:
         
         Critical for short sessions (<30 min) where WebSocket accumulation is too slow.
         
-        Note: Symbols must be set via _cached_symbols before calling this method.
+        Note: Symbols must be set via _cached_symbols by ProductionCoordinator before
+        calling this method. This dependency is established during the initialization
+        of the production system when ProductionCoordinator creates the engine and
+        sets active_symbols.
         """
         try:
             # Use cached symbols that should be set by ProductionCoordinator
@@ -652,6 +655,7 @@ class LiveTradingEngine:
             
             if not symbols:
                 logger.warning("[PREFETCH] No symbols to prefetch (no symbols configured)")
+                logger.warning("[PREFETCH] Symbols should be set by ProductionCoordinator via _cached_symbols")
                 return
             
             logger.info(f"[PREFETCH] Fetching historical data for {len(symbols)} symbols...")
