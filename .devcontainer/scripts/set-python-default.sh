@@ -5,20 +5,19 @@ PYTHON_VERSION="3.11"
 
 resolve_python_path() {
   local exe="$1"
-  if ! command -v "$exe" >/dev/null 2>&1; then
+  if ! command -v "$exe" &>/dev/null; then
     return 1
   fi
   "$exe" -c 'import sys; print(sys.executable)'
 }
 
-PYTHON_TARGET="$(resolve_python_path "python${PYTHON_VERSION}")"
-if [[ -z "${PYTHON_TARGET}" ]]; then
+if ! PYTHON_TARGET="$(resolve_python_path "python${PYTHON_VERSION}")"; then
   echo "Unable to locate python${PYTHON_VERSION}." >&2
   exit 1
 fi
 
 configure_pyenv() {
-  if ! command -v pyenv >/dev/null 2>&1; then
+  if ! command -v pyenv &>/dev/null; then
     echo "pyenv not found; skipping shim configuration."
     return
   fi
