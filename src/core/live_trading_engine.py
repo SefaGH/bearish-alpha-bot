@@ -263,7 +263,10 @@ class LiveTradingEngine:
             perf_task = asyncio.create_task(self._performance_reporting_loop())
             self.tasks.append(perf_task)
             logger.info("  ✓ Performance reporting started")
-            
+
+            # Yield control so newly created tasks can progress before we mark the engine as running.
+            await asyncio.sleep(0)
+
             self.state = EngineState.RUNNING
             
             logger.info("\n" + "="*70)
