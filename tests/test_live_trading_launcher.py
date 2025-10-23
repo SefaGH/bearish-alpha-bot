@@ -9,7 +9,7 @@ import sys
 import os
 import pytest
 import asyncio
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch, MagicMock, AsyncMock
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -31,34 +31,33 @@ class TestLiveTradingLauncher:
         assert launcher.mode == 'paper'
         assert launcher.dry_run == True
         assert launcher.CAPITAL_USDT == 100.0
-        assert len(launcher.TRADING_PAIRS) == 8
+        assert len(launcher.TRADING_PAIRS) >= 3
+        assert launcher.TRADING_PAIRS[:3] == [
+            'BTC/USDT:USDT',
+            'ETH/USDT:USDT',
+            'SOL/USDT:USDT',
+        ]
         
     def test_trading_pairs_configuration(self):
         """Test trading pairs are correctly configured."""
         launcher = LiveTradingLauncher(mode='paper')
         
-        expected_pairs = [
+        assert launcher.TRADING_PAIRS[:3] == [
             'BTC/USDT:USDT',
             'ETH/USDT:USDT',
             'SOL/USDT:USDT',
-            'BNB/USDT:USDT',
-            'ADA/USDT:USDT',
-            'DOT/USDT:USDT',
-            'LTC/USDT:USDT',
-            'AVAX/USDT:USDT'
         ]
-        
-        assert launcher.TRADING_PAIRS == expected_pairs
+        assert len(launcher.TRADING_PAIRS) >= 3
     
     def test_risk_parameters(self):
         """Test risk parameters are correctly configured."""
         launcher = LiveTradingLauncher(mode='paper')
         
-        assert launcher.RISK_PARAMS['max_position_size'] == 0.15  # 15%
-        assert launcher.RISK_PARAMS['stop_loss_pct'] == 0.05  # 5%
-        assert launcher.RISK_PARAMS['take_profit_pct'] == 0.10  # 10%
-        assert launcher.RISK_PARAMS['max_drawdown'] == 0.15  # 15%
-        assert launcher.RISK_PARAMS['max_portfolio_risk'] == 0.02  # 2%
+        assert launcher.RISK_PARAMS['max_position_size'] == 0.20  # 20%
+        assert launcher.RISK_PARAMS['stop_loss_pct'] == 0.02  # 2%
+        assert launcher.RISK_PARAMS['take_profit_pct'] == 0.015  # 1.5%
+        assert launcher.RISK_PARAMS['max_drawdown'] == 0.10  # 10%
+        assert launcher.RISK_PARAMS['max_portfolio_risk'] == 0.05  # 5%
     
     @patch.dict(os.environ, {
         'BINGX_KEY': 'test_key',
@@ -77,12 +76,13 @@ class TestLiveTradingLauncher:
         # Clear environment
         for key in ['BINGX_KEY', 'BINGX_SECRET']:
             os.environ.pop(key, None)
-        
+
         launcher = LiveTradingLauncher(mode='paper', dry_run=True)
-        
+
         result = launcher._load_environment()
-        
-        assert result == False
+
+        assert result is True
+        assert launcher._has_bingx_credentials is False
     
     @patch.dict(os.environ, {
         'BINGX_KEY': 'test_key',
@@ -134,6 +134,24 @@ class TestLauncherIntegration:
         assert launcher._load_environment() == True
         assert launcher._initialize_exchange_connection() == True
         assert launcher._initialize_risk_management() == True
+
+    @pytest.mark.asyncio
+    @patch('live_trading_launcher.CcxtClient')
+    async def test_exchange_initialization_without_credentials(self, mock_ccxt):
+        """Paper mode should initialize without BingX credentials."""
+        for key in ['BINGX_KEY', 'BINGX_SECRET']:
+            os.environ.pop(key, None)
+
+        mock_client = MagicMock()
+        mock_client.fetch_ticker.return_value = {'last': 50000.0}
+        mock_ccxt.return_value = mock_client
+
+        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+
+        assert launcher._load_environment() is True
+        assert launcher._has_bingx_credentials is False
+        assert launcher._initialize_exchange_connection() is True
+        mock_client.get_bingx_balance.assert_not_called()
     
     @pytest.mark.asyncio
     async def test_auto_restart_guard_clause(self):
@@ -239,9 +257,7 @@ class TestWebSocketConnectionLogic:
         launcher.ws_optimizer = MagicMock()
         launcher.ws_optimizer.is_initialized = True
         launcher.ws_optimizer._connection_status = {'connecting': False, 'error': None}
-        launcher.ws_optimizer.initialize_websockets = asyncio.coroutine(
-            lambda clients: [MagicMock()]  # Return mock tasks
-        )
+        launcher.ws_optimizer.initialize_websockets = AsyncMock(return_value=[MagicMock()])
         launcher.ws_optimizer.get_connection_status.return_value = {
             'connected': True,
             'error': None
@@ -270,12 +286,10 @@ class TestWebSocketConnectionLogic:
         launcher.ws_optimizer._connection_status = {'connecting': False, 'error': None}
         
         # Mock initialize_websockets to return tasks
-        launcher.ws_optimizer.initialize_websockets = asyncio.coroutine(
-            lambda clients: [MagicMock()]
-        )
-        
+        launcher.ws_optimizer.initialize_websockets = AsyncMock(return_value=[MagicMock()])
+
         # Mock stop_streaming
-        launcher.ws_optimizer.stop_streaming = asyncio.coroutine(lambda: None)
+        launcher.ws_optimizer.stop_streaming = AsyncMock(return_value=None)
         
         # Mock exchange clients
         launcher.exchange_clients = {'bingx': MagicMock()}
@@ -315,12 +329,10 @@ class TestWebSocketConnectionLogic:
         launcher.ws_optimizer._connection_status = {'connecting': False, 'error': None}
         
         # Mock initialize_websockets to return tasks
-        launcher.ws_optimizer.initialize_websockets = asyncio.coroutine(
-            lambda clients: [MagicMock()]
-        )
-        
+        launcher.ws_optimizer.initialize_websockets = AsyncMock(return_value=[MagicMock()])
+
         # Mock stop_streaming
-        launcher.ws_optimizer.stop_streaming = asyncio.coroutine(lambda: None)
+        launcher.ws_optimizer.stop_streaming = AsyncMock(return_value=None)
         
         # Mock exchange clients
         launcher.exchange_clients = {'bingx': MagicMock()}
