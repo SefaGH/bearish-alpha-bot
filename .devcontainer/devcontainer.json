@@ -1,0 +1,9 @@
+{
+  "name": "Bearish Alpha Bot",
+  "features": {
+    "ghcr.io/devcontainers/features/python": {
+      "version": "3.11"
+    }
+  },
+  "postCreateCommand": ".devcontainer/scripts/set-python-default.sh"
+}
