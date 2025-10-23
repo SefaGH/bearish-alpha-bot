@@ -1242,14 +1242,13 @@ class ProductionCoordinator:
                 self._track_signal_lifecycle(signal_id, 'queued', {'queue': 'strategy_coordinator'})
                 logger.info(f"[STAGE:QUEUED] Signal {signal_id} in StrategyCoordinator queue")
                 
-                # Attach signal identifier so execution layer can report completion
-                if signal_id and isinstance(enriched_signal, dict):
-                    enriched_signal['signal_id'] = signal_id
-
-                # [STAGE 4: FORWARDED] Forward enriched signal to LiveTradingEngine
-                await self.trading_engine.signal_queue.put(enriched_signal)
-                self._track_signal_lifecycle(signal_id, 'forwarded', {'queue': 'live_trading_engine'})
-                logger.info(f"[STAGE:FORWARDED] Signal {signal_id} forwarded to LiveTradingEngine queue")
+                # Signal is now queued in StrategyCoordinator, will be bridged to LiveTradingEngine
+                logger.info(f"✅ [SIGNAL-ACCEPTED] Signal {signal_id} accepted by StrategyCoordinator")
+                logger.info(f"💡 [SIGNAL-QUEUED] {signal.get('strategy', 'unknown').upper()} signal for {signal.get('symbol')} queued in StrategyCoordinator")
+                
+                # Log queue state for monitoring
+                coordinator_queue_size = self.strategy_coordinator.signal_queue.qsize()
+                logger.info(f"📊 [QUEUE-STATE] StrategyCoordinator queue size: {coordinator_queue_size}")
                 
                 return {'success': True, 'signal_id': signal_id}
             else:
@@ -1500,6 +1499,8 @@ class ProductionCoordinator:
         Monitors:
         - StrategyCoordinator signal queue
         - LiveTradingEngine signal queue
+        - Engine state
+        - Execution statistics
         """
         logger.info("Queue monitoring task started")
         
@@ -1509,15 +1510,37 @@ class ProductionCoordinator:
                     # Get queue sizes
                     coordinator_queue_size = 0
                     engine_queue_size = 0
+                    engine_state = 'not_initialized'
                     
                     if self.strategy_coordinator:
                         coordinator_queue_size = self.strategy_coordinator.signal_queue.qsize()
                     
                     if self.trading_engine:
                         engine_queue_size = self.trading_engine.signal_queue.qsize()
+                        engine_state = self.trading_engine.state.value if hasattr(self.trading_engine, 'state') else 'unknown'
                     
                     # Log queue status
-                    logger.info(f"📊 [QUEUE-MONITOR] StrategyCoordinator: {coordinator_queue_size} signals | LiveTradingEngine: {engine_queue_size} signals")
+                    logger.info(f"📊 [QUEUE-MONITOR] Pipeline Status:")
+                    logger.info(f"   StrategyCoordinator Queue: {coordinator_queue_size} signals")
+                    logger.info(f"   LiveTradingEngine Queue: {engine_queue_size} signals")
+                    logger.info(f"   LiveTradingEngine State: {engine_state}")
+                    
+                    # Get engine status if available
+                    if self.trading_engine:
+                        engine_status = self.trading_engine.get_engine_status()
+                        logger.info(f"   Signals Received: {engine_status.get('signals_received', 0)}")
+                        logger.info(f"   Signals Executed: {engine_status.get('signals_executed', 0)}")
+                        logger.info(f"   Active Positions: {engine_status.get('active_positions', 0)}")
+                    
+                    # Alert if signals are stuck
+                    if coordinator_queue_size > 5:
+                        logger.warning(f"⚠️ [QUEUE-ALERT] {coordinator_queue_size} signals stuck in StrategyCoordinator queue!")
+                        
+                    if engine_queue_size > 5:
+                        logger.warning(f"⚠️ [QUEUE-ALERT] {engine_queue_size} signals stuck in LiveTradingEngine queue!")
+                        
+                    if coordinator_queue_size > 0 and engine_queue_size == 0 and engine_state != 'running':
+                        logger.critical(f"❌ [PIPELINE-BROKEN] Signals in coordinator but engine not running! State: {engine_state}")
                     
                     # Log lifecycle summary
                     if self.signal_lifecycle:
@@ -1530,15 +1553,15 @@ class ProductionCoordinator:
                         
                         logger.info(f"📊 [LIFECYCLE] Total tracked: {total_signals} | Stages: {stage_counts}")
                     
-                    # Wait 30 seconds before next check
-                    await asyncio.sleep(30)
+                    # Wait 60 seconds before next check
+                    await asyncio.sleep(60)
                     
                 except asyncio.CancelledError:
                     logger.info("Queue monitoring task cancelled")
                     break
                 except Exception as e:
                     logger.error(f"Error in queue monitoring: {e}")
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(60)
                     
         except Exception as e:
             logger.error(f"Fatal error in queue monitoring: {e}", exc_info=True)
