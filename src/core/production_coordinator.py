@@ -804,9 +804,13 @@ class ProductionCoordinator:
                 await asyncio.sleep(0)
 
                 if self.trading_engine.state.value != 'running':
-                    logger.warning(
-                        "⚠️ Engine state still '%s' after yield; proceeding with production loop anyway.",
+                    logger.error(
+                        "❌ Engine state still '%s' after yield; aborting production loop.",
                         self.trading_engine.state.value
+                    )
+                    raise RuntimeError(
+                        "Trading engine not running after synchronization yield "
+                        f"(state={self.trading_engine.state.value})"
                     )
                 else:
                     logger.info("✅ Trading engine reached running state after synchronization yield")
