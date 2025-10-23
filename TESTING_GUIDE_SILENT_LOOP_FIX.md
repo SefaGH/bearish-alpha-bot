@@ -38,7 +38,7 @@ pytest tests/test_silent_loop_fix.py -v
 # Test without debug flag (previously failing)
 python scripts/live_trading_launcher.py --paper --duration 60 --dry-run
 
-# Expected logs:
+# Expected logs (emojis may render differently across environments):
 # ✓ WebSocket manager initialized
 # ✓ Trading engine started (state = RUNNING)
 # 🐕 [WATCHDOG-1] Heartbeat - is_running=True
@@ -47,6 +47,7 @@ python scripts/live_trading_launcher.py --paper --duration 60 --dry-run
 # [PROCESSING] BTC/USDT:USDT completed in 2.5s
 # ✅ [PROCESSING] Completed processing loop in 7.5s
 # 🐕 [WATCHDOG-2] Heartbeat - is_running=True
+# Note: Emojis (🐕✅🔁) may not render in some log viewers/terminals
 ```
 
 ### 3. Integration Test (Local - Full Run)
@@ -175,26 +176,30 @@ mock_method = AsyncMock(return_value={'success': True})
 
 ### After Fix
 - **Loop Start**: ~6 seconds (includes 1.0s sync delay)
-- **Per-Symbol**: 2-5 seconds (with timeout protection)
-- **Per-Iteration**: 7-15 seconds (3 symbols)
-- **Max Timeout**: 60 seconds per symbol (3 × 20s)
+- **Per-Symbol**: 2-5 seconds typical (with timeout protection)
+- **Per-Iteration**: 7-15 seconds typical (3 symbols × 2-5s)
+- **Max Per-Symbol**: 60 seconds worst-case (3 timeframes × 20s timeout each)
+- **Max Per-Iteration**: ~180 seconds worst-case (3 symbols × 60s max)
 
 ### Expected Timings (GitHub Actions)
 
 ```
 Startup:           0-10s     (initialization)
 First Watchdog:    10s       (after startup)
-First Iteration:   10-15s    (starts immediately)
-Iteration Period:  30s       (loop_interval)
+First Iteration:   10-15s    (starts after startup, completes within this time)
+Iteration Period:  30s       (loop_interval between iterations)
 Shutdown:          <5s       (cleanup)
+
+Note: "First Iteration: 10-15s" means it starts immediately after startup 
+      completes and takes 10-15s to process all symbols and return.
 ```
 
 ## Common Issues and Solutions
 
 ### Issue: Python 3.12 Instead of 3.11
 
-**Error**: `aiohttp==3.8.6` fails to install
-**Solution**: Install Python 3.11
+**Error**: `aiohttp==3.8.6 fails to install on Python 3.12 due to incompatible internal API changes (PyLongObject.ob_digit)`
+**Solution**: Install Python 3.11 (required version)
 
 ```bash
 # Using pyenv
@@ -243,8 +248,8 @@ pytest tests/test_silent_loop_fix.py -v
 # Full integration test
 python scripts/live_trading_launcher.py --paper --duration 60 --dry-run
 
-# Verify watchdog logs appear
-grep "WATCHDOG" live_trading_*.log | head -10
+# Verify watchdog logs appear (log files follow pattern: live_trading_YYYYMMDD_HHMMSS.log)
+grep "WATCHDOG" live_trading_*.log 2>/dev/null | head -10 || echo "No log files found matching live_trading_*.log"
 ```
 
 ## Test Reports
