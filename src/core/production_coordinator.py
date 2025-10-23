@@ -607,7 +607,6 @@ class ProductionCoordinator:
             
     async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
                                   continuous: bool = False):
-        """Main production trading loop."""
         try:
             if not self.is_initialized:
                 raise RuntimeError("Production system not initialized. Call initialize_production_system() first.")
@@ -616,13 +615,22 @@ class ProductionCoordinator:
             logger.info("STARTING PRODUCTION TRADING LOOP")
             logger.info("="*70)
             
-            # Start the live trading engine
-            start_result = await self.trading_engine.start_live_trading(mode=mode)
+            # ✅ YENİ: Engine'in çalıştığını kontrol et (ikinci kez başlatma!)
+            if not self.trading_engine:
+                raise RuntimeError("Trading engine not initialized!")
             
-            if not start_result['success']:
-                raise RuntimeError(f"Failed to start trading engine: {start_result.get('reason')}")
+            if self.trading_engine.state.value != 'running':
+                raise RuntimeError(
+                    f"Trading engine not running (state={self.trading_engine.state.value})! "
+                    "Call trading_engine.start_live_trading() before run_production_loop()"
+                )
             
-            self.is_running = True
+            logger.info(f"✅ Trading engine already running (state={self.trading_engine.state.value})")
+            
+            # Ensure is_running is True
+            if not self.is_running:
+                logger.warning("⚠️ is_running was False, setting to True")
+                self.is_running = True
             
             # Start queue monitoring task
             self._monitoring_task = asyncio.create_task(self._monitor_signal_queues())
@@ -632,6 +640,11 @@ class ProductionCoordinator:
             logger.info(f"   Duration: {'Indefinite' if duration is None else f'{duration}s'}")
             logger.info(f"   Continuous Mode: {'ENABLED (Never stops, auto-recovers)' if continuous else 'DISABLED'}")
             logger.info(f"   Active Symbols: {len(self.active_symbols)}")
+            
+            # ✅ EKLE: active_symbols kontrolü
+            if not self.active_symbols:
+                logger.error("❌ No active symbols configured!")
+                raise RuntimeError("active_symbols is empty! Cannot process any symbols.")
             
             # Main loop
             start_time = datetime.now(timezone.utc)
