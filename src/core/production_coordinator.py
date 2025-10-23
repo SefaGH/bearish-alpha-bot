@@ -793,16 +793,30 @@ class ProductionCoordinator:
                 raise RuntimeError("Trading engine not initialized!")
             
             logger.info(f"🔍 [DEBUG] trading_engine exists, state={self.trading_engine.state.value}")
-            
+
             if self.trading_engine.state.value != 'running':
-                logger.error(f"🔍 [DEBUG] Engine state is {self.trading_engine.state.value}, not 'running'!")
-                raise RuntimeError(
-                    f"Trading engine not running (state={self.trading_engine.state.value})! "
-                    "Call trading_engine.start_live_trading() before run_production_loop()"
+                logger.warning(
+                    "⚠️ Trading engine reported state '%s' while entering production loop; "
+                    "awaiting event loop turn for synchronization...",
+                    self.trading_engine.state.value
                 )
-            
-            logger.info(f"✅ Trading engine already running (state={self.trading_engine.state.value})")
-            
+                # Give the event loop a chance to schedule engine startup tasks before continuing.
+                await asyncio.sleep(0)
+
+                if self.trading_engine.state.value != 'running':
+                    logger.error(
+                        "❌ Engine state still '%s' after yield; aborting production loop.",
+                        self.trading_engine.state.value
+                    )
+                    raise RuntimeError(
+                        "Trading engine not running after synchronization yield "
+                        f"(state={self.trading_engine.state.value})"
+                    )
+                else:
+                    logger.info("✅ Trading engine reached running state after synchronization yield")
+            else:
+                logger.info(f"✅ Trading engine already running (state={self.trading_engine.state.value})")
+
             # Ensure is_running is True
             logger.info(f"🔍 [DEBUG] Current is_running = {self.is_running}")
             if not self.is_running:

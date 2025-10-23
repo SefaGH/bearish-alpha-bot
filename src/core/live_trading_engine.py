@@ -244,27 +244,31 @@ class LiveTradingEngine:
             await self._prefetch_historical_data()
             logger.info("  ✓ Historical data prefetch complete")
             
+            # Transition the engine state before background loops execute so they observe RUNNING.
+            self.state = EngineState.RUNNING
+
             # Start signal processing
             signal_task = asyncio.create_task(self._signal_processing_loop())
             self.tasks.append(signal_task)
             logger.info("  ✓ Signal processing started")
-            
+
             # Start position monitoring
             position_task = asyncio.create_task(self._position_monitoring_loop())
             self.tasks.append(position_task)
             logger.info("  ✓ Position monitoring started")
-            
+
             # Start order management
             order_task = asyncio.create_task(self._order_management_loop())
             self.tasks.append(order_task)
             logger.info("  ✓ Order management started")
-            
+
             # Start performance reporting
             perf_task = asyncio.create_task(self._performance_reporting_loop())
             self.tasks.append(perf_task)
             logger.info("  ✓ Performance reporting started")
-            
-            self.state = EngineState.RUNNING
+
+            # Yield control so newly created tasks can progress before we return.
+            await asyncio.sleep(0)
             
             logger.info("\n" + "="*70)
             logger.info("✓ LIVE TRADING ENGINE STARTED SUCCESSFULLY")

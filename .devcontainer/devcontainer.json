@@ -2,8 +2,8 @@
   "name": "Bearish Alpha Bot",
   "features": {
     "ghcr.io/devcontainers/features/python": {
-      "version": "3.11"
+      "version": "~3.11.0"
     }
   },
-  "postCreateCommand": ".devcontainer/scripts/set-python-default.sh"
+  "postCreateCommand": "python --version && python -c 'import sys; assert sys.version_info[:2] == (3, 11), \"Python 3.11 required\"' && if [ -f requirements.txt ]; then pip install -r requirements.txt; fi"
 }
