@@ -89,6 +89,8 @@ except ImportError:
     ML_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+# ✅ EKLE: Logger seviyesini zorla INFO yap
+logger.setLevel(logging.INFO)
 
 
 class ProductionCoordinator:
@@ -828,15 +830,25 @@ class ProductionCoordinator:
             
     async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
                                   continuous: bool = False):
-        # ✅ CRITICAL DEBUG: Log method entry IMMEDIATELY
-        logger.info("🔍 [DEBUG] run_production_loop() method ENTERED")
-        logger.info(f"🔍 [DEBUG] Parameters: mode={mode}, duration={duration}, continuous={continuous}")
-        logger.info(f"🔍 [DEBUG] self.is_initialized = {self.is_initialized}")
-        # ✅ FORCE LOG FLUSH for GitHub Actions visibility
-        import sys
-        sys.stdout.flush()
-        sys.stderr.flush()
+        # ✅ EMERGENCY DEBUG with print()
+        print(f"\n{'='*70}")
+        print(f"🚨 EMERGENCY: run_production_loop() CALLED")
+        print(f"   Time: {datetime.now(timezone.utc)}")
+        print(f"   Mode: {mode}")
+        print(f"   Duration: {duration}")
+        print(f"   Continuous: {continuous}")
+        print(f"   is_initialized: {self.is_initialized}")
+        print(f"   is_running: {self.is_running}")
+        print(f"   active_symbols: {self.active_symbols}")
+        print(f"{'='*70}\n")
         
+        import sys                              
+        sys.stdout.flush()
+        
+        # Now try logger
+        logger.warning("🔥 [WARNING-LEVEL] run_production_loop() ENTERED")  # Use WARNING to ensure visibility
+        logger.info("🔍 [INFO-LEVEL] run_production_loop() method ENTERED")
+            
         try:
             logger.info("🔍 [DEBUG] Inside try block")
             
@@ -941,6 +953,7 @@ class ProductionCoordinator:
             # ✅ FORCE FLUSH before loop entry
             import sys
             sys.stdout.flush()
+            print(f"🚨 [BEFORE-WHILE] About to enter while loop, is_running={self.is_running}")
             sys.stderr.flush()
             
             logger.info(f"🔍 [DEBUG] About to enter while loop. is_running={self.is_running}")
@@ -956,7 +969,7 @@ class ProductionCoordinator:
                 if loop_iteration == 0:
                     logger.info("🔄 [LOOP-START] Main trading loop entered successfully")
                 
-                logger.info(f"🔁 [ITERATION {loop_iteration + 1}] Processing symbols...")
+                print(f"🚨 [IN-WHILE] Loop iteration {loop_iteration + 1} Processing symbols...")
                 
                 # Watchdog: Log heartbeat every 5 iterations
                 if loop_iteration > 0 and loop_iteration % 5 == 0:
