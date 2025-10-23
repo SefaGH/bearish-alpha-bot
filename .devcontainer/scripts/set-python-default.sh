@@ -11,8 +11,7 @@ resolve_python_path() {
   "$exe" -c 'import sys; print(sys.executable)'
 }
 
-PYTHON_TARGET="$(resolve_python_path "python${PYTHON_VERSION}")"
-if [[ -z "${PYTHON_TARGET}" ]]; then
+if ! PYTHON_TARGET="$(resolve_python_path "python${PYTHON_VERSION}")"; then
   echo "Unable to locate python${PYTHON_VERSION}." >&2
   exit 1
 fi
@@ -25,12 +24,14 @@ configure_pyenv() {
 
   local pyenv_root
   pyenv_root="$(pyenv root)"
-  if [[ ! -d "${pyenv_root}/versions" ]]; then
+  local versions_dir="${pyenv_root}/versions"
+
+  if [[ ! -d "${versions_dir}" ]]; then
     echo "pyenv versions directory does not exist; skipping shim configuration." >&2
     return
   fi
   local candidate_dir
-  candidate_dir="$(find "${pyenv_root}/versions" -maxdepth 1 -mindepth 1 -type d -name "${PYTHON_VERSION}*" | sort -V | tail -n1)"
+  candidate_dir="$(find "${versions_dir}" -maxdepth 1 -mindepth 1 -type d -name "${PYTHON_VERSION}*" | sort -V | tail -n1)"
 
   if [[ -z "${candidate_dir}" ]]; then
     echo "pyenv does not have a python${PYTHON_VERSION} installation; skipping shim configuration." >&2
