@@ -305,34 +305,42 @@ class ProductionCoordinator:
                 for exchange_name, client in self.exchange_clients.items():
                     try:
                         # Fetch all timeframes with overall 45s timeout (3 x 15s individual timeouts)
-                        df_30m = await asyncio.wait_for(
-                            self._fetch_ohlcv(client, symbol, '30m'),
-                            timeout=20.0
+                        fetch_tasks = [
+                            asyncio.create_task(asyncio.wait_for(
+                                self._fetch_ohlcv(client, symbol, '30m'), 
+                                timeout=10.0
+                            )),
+                            asyncio.create_task(asyncio.wait_for(
+                                self._fetch_ohlcv(client, symbol, '1h'), 
+                                timeout=10.0
+                            )),
+                            asyncio.create_task(asyncio.wait_for(
+                                self._fetch_ohlcv(client, symbol, '4h'), 
+                                timeout=10.0
+                            ))
+                        ]
+                        
+                        # Wait for all with overall timeout
+                        results = await asyncio.wait_for(
+                            asyncio.gather(*fetch_tasks, return_exceptions=True),
+                            timeout=15.0
                         )
-                        df_1h = await asyncio.wait_for(
-                            self._fetch_ohlcv(client, symbol, '1h'),
-                            timeout=20.0
-                        )
-                        df_4h = await asyncio.wait_for(
-                            self._fetch_ohlcv(client, symbol, '4h'),
-                            timeout=20.0
-                        )
-                        logger.info(f"[DATA-FETCH] ✅ REST API data retrieved for {symbol} from {exchange_name}")
-                        break
+                        
+                        # Process results
+                        df_30m = results[0] if not isinstance(results[0], Exception) else None
+                        df_1h = results[1] if not isinstance(results[1], Exception) else None
+                        df_4h = results[2] if not isinstance(results[2], Exception) else None
+                        
+                        if df_30m is not None:
+                            logger.info(f"[DATA-FETCH] ✅ REST API data retrieved for {symbol}")
+                            break
+                            
                     except asyncio.TimeoutError:
-                        logger.warning(f"[DATA-FETCH] ⏱️ REST API timeout for {symbol} on {exchange_name} (60s limit)")
+                        logger.warning(f"[DATA-FETCH] ⏱️ REST API timeout for {symbol} (15s limit)")
                         continue
                     except Exception as e:
-                        logger.warning(f"[DATA-FETCH] REST API fetch failed for {symbol} on {exchange_name}: {e}")
+                        logger.warning(f"[DATA-FETCH] REST API failed: {e}")
                         continue
-            
-            # Veri yoksa skip
-            if df_30m is None or df_1h is None or df_4h is None:
-                logger.warning(f"[DATA-FETCH] ❌ Insufficient data for {symbol} - skipping (30m={df_30m is not None}, 1h={df_1h is not None}, 4h={df_4h is not None})")
-                return None
-            
-            # Log data bars retrieved
-            logger.info(f"[DATA] {symbol}: 30m={len(df_30m)} bars, 1h={len(df_1h)} bars, 4h={len(df_4h)} bars")
             
             # ===== MARKET REGIME ANALYSIS =====
             metadata = {}
@@ -947,8 +955,8 @@ class ProductionCoordinator:
                 # ✅ ENHANCED: Always log loop entry at INFO level for visibility
                 if loop_iteration == 0:
                     logger.info("🔄 [LOOP-START] Main trading loop entered successfully")
-                logger.info(f"🔍 [DEBUG] INSIDE WHILE LOOP - Iteration starting")
-                logger.info(f"🔍 [DEBUG] Loop iteration: {loop_iteration + 1}, is_running: {self.is_running}")
+                
+                logger.info(f"🔁 [ITERATION {loop_iteration + 1}] Processing symbols...")
                 
                 # Watchdog: Log heartbeat every 5 iterations
                 if loop_iteration > 0 and loop_iteration % 5 == 0:
@@ -1433,14 +1441,11 @@ class ProductionCoordinator:
             # Run blocking I/O in thread pool with timeout to prevent indefinite blocking
             rows = await asyncio.wait_for(
                 asyncio.to_thread(client.ohlcv, symbol, timeframe, limit=200),
-                timeout=15.0
+                timeout=10.0
             )
             return self._ohlcv_to_dataframe(rows)
         except asyncio.TimeoutError:
-            logger.warning(f"⏱️ Timeout fetching {symbol} {timeframe} (15s limit)")
-            return None
-        except Exception as e:
-            logger.error(f"Failed to fetch {symbol} {timeframe}: {e}")
+            logger.warning(f"⏱️ Timeout fetching {symbol} {timeframe} (10s limit)")
             return None
     
     async def _watchdog_loop(self):
