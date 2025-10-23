@@ -852,8 +852,15 @@ class ProductionCoordinator:
             
             logger.info(f"🔍 [DEBUG] About to enter while loop. is_running={self.is_running}")
             
+            # ✅ CRITICAL CHECK: Verify is_running is True before loop
+            if not self.is_running:
+                logger.critical("❌ [CRITICAL] is_running is FALSE before loop entry!")
+                logger.critical(f"   This should never happen - is_running was just set to True at line 791")
+                raise RuntimeError("is_running unexpectedly False before loop entry")
+            
             while self.is_running:
                 logger.info(f"🔍 [DEBUG] INSIDE WHILE LOOP - Iteration starting")
+                logger.info(f"🔍 [DEBUG] Loop iteration: {loop_iteration + 1}, is_running: {self.is_running}")
                 try:
                     loop_iteration += 1
                     # ✅ DEĞİŞTİR: logger.debug → logger.info
@@ -882,12 +889,17 @@ class ProductionCoordinator:
                     # Check duration
                     if duration and not continuous:
                         elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+                        logger.info(f"🔍 [DEBUG] Duration check: elapsed={elapsed:.1f}s, duration={duration}s")
                         if elapsed >= duration:
-                            logger.info(f"Duration {duration}s reached - stopping")
+                            logger.info(f"⏱️ Duration {duration}s reached - stopping (elapsed: {elapsed:.1f}s)")
                             break
+                        else:
+                            logger.info(f"🔍 [DEBUG] Duration check passed - continuing loop")
                     
                     # Process trading loop with WebSocket data
+                    logger.info("🔍 [DEBUG] About to call _process_trading_loop()...")
                     await self._process_trading_loop()
+                    logger.info("🔍 [DEBUG] _process_trading_loop() completed")
                     
                     # Market regime recommendations (periyodik)
                     current_time = datetime.now(timezone.utc)
