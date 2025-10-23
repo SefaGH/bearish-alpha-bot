@@ -25,6 +25,10 @@ configure_pyenv() {
 
   local pyenv_root
   pyenv_root="$(pyenv root)"
+  if [[ ! -d "${pyenv_root}/versions" ]]; then
+    echo "pyenv versions directory does not exist; skipping shim configuration." >&2
+    return
+  fi
   local candidate_dir
   candidate_dir="$(find "${pyenv_root}/versions" -maxdepth 1 -mindepth 1 -type d -name "${PYTHON_VERSION}*" | sort -V | tail -n1)"
 
@@ -52,21 +56,16 @@ MSG
 
 configure_pyenv
 
-PYTHON3_TARGET="${PYTHON_TARGET}"
-if command -v python3 >/dev/null 2>&1; then
-  CURRENT_PYTHON3="$(python3 -c 'import sys; print(sys.executable)')"
-else
-  CURRENT_PYTHON3=""
-fi
+CURRENT_PYTHON3="$(resolve_python_path "python3" || true)"
 
 sudo update-alternatives --install /usr/bin/python python "${PYTHON_TARGET}" 1
-sudo update-alternatives --install /usr/bin/python3 python3 "${PYTHON3_TARGET}" 1
+sudo update-alternatives --install /usr/bin/python3 python3 "${PYTHON_TARGET}" 1
 sudo update-alternatives --set python "${PYTHON_TARGET}"
-sudo update-alternatives --set python3 "${PYTHON3_TARGET}"
+sudo update-alternatives --set python3 "${PYTHON_TARGET}"
 
 cat <<MSG
 Configured system python symlinks to ${PYTHON_TARGET}.
-Configured system python3 symlinks to ${PYTHON3_TARGET}.
+Configured system python3 symlinks to ${PYTHON_TARGET}.
 Previously active python3 interpreter: ${CURRENT_PYTHON3:-"(none)"}
 Verification of selected interpreters:
 MSG
