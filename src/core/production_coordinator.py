@@ -267,6 +267,7 @@ class ProductionCoordinator:
         """
         try:
             self.processed_symbols_count += 1
+            logger.info(f"[DATA-FETCH] Fetching market data for {symbol}")
             
             # WebSocket'ten veri almayı dene
             df_30m = None
@@ -287,28 +288,38 @@ class ProductionCoordinator:
                         df_1h = self._ohlcv_to_dataframe(data_1h['ohlcv'])
                     if data_4h and 'ohlcv' in data_4h:
                         df_4h = self._ohlcv_to_dataframe(data_4h['ohlcv'])
+                    
+                    if df_30m is not None and df_1h is not None and df_4h is not None:
+                        logger.info(f"[DATA-FETCH] ✅ WebSocket data retrieved for {symbol}")
+                    else:
+                        logger.info(f"[DATA-FETCH] ⚠️ Incomplete WebSocket data for {symbol}, will try REST API")
                         
-                except AttributeError:
-                    logger.debug(f"WebSocketManager missing get_latest_data method")
+                except AttributeError as e:
+                    logger.warning(f"[DATA-FETCH] WebSocketManager missing get_latest_data method: {e}")
                     pass
             
             # REST API fallback
             if df_30m is None and self.exchange_clients:
+                logger.info(f"[DATA-FETCH] Using REST API fallback for {symbol}")
                 # İlk mevcut exchange'i kullan
                 for exchange_name, client in self.exchange_clients.items():
                     try:
                         df_30m = await self._fetch_ohlcv(client, symbol, '30m')
                         df_1h = await self._fetch_ohlcv(client, symbol, '1h')
                         df_4h = await self._fetch_ohlcv(client, symbol, '4h')
+                        logger.info(f"[DATA-FETCH] ✅ REST API data retrieved for {symbol} from {exchange_name}")
                         break
                     except Exception as e:
-                        logger.debug(f"REST API fetch failed for {symbol} on {exchange_name}: {e}")
+                        logger.warning(f"[DATA-FETCH] REST API fetch failed for {symbol} on {exchange_name}: {e}")
                         continue
             
             # Veri yoksa skip
             if df_30m is None or df_1h is None or df_4h is None:
-                logger.debug(f"Insufficient data for {symbol}")
+                logger.warning(f"[DATA-FETCH] ❌ Insufficient data for {symbol} - skipping (30m={df_30m is not None}, 1h={df_1h is not None}, 4h={df_4h is not None})")
                 return None
+            
+            # Log data bars retrieved
+            logger.info(f"[DATA] {symbol}: 30m={len(df_30m)} bars, 1h={len(df_1h)} bars, 4h={len(df_4h)} bars")
             
             # ===== MARKET REGIME ANALYSIS =====
             metadata = {}
@@ -348,20 +359,20 @@ class ProductionCoordinator:
                     }
                     
                 except Exception as e:
-                    logger.debug(f"Regime analysis failed for {symbol}: {e}")
+                    logger.warning(f"[REGIME] Regime analysis failed for {symbol}: {e}")
             
             # ===== STRATEGY SIGNALS =====
             signal = None
             
             # Execute registered strategies
             count = len(self.strategies)
-            logger.info(f"🎯 Registered strategies count: {count}")
+            logger.info(f"[STRATEGY-CHECK] {count} registered strategies available")
             
             if count:
-                logger.info(f"🔍 Executing {count} strategies for {symbol}")
+                logger.info(f"[STRATEGY-CHECK] Executing {count} strategies for {symbol}")
                 
                 for strategy_name, strategy_instance in self.strategies.items():
-                    logger.info(f"  → Calling {strategy_name}...")
+                    logger.info(f"[STRATEGY-CHECK] Running {strategy_name} for {symbol}...")
                     try:
                         # Call strategy's signal method
                         strategy_signal = None
@@ -396,10 +407,12 @@ class ProductionCoordinator:
                         logger.error(f"❌ {strategy_name} error for {symbol}: {e}", exc_info=True)
             else:
                 # Fallback: Use default strategies if none registered
+                logger.info(f"[STRATEGY-CHECK] No registered strategies, using fallback strategies for {symbol}")
                 signals_config = self.config.get('signals', {})
                 
                 # Check AdaptiveOversoldBounce
                 if signals_config.get('oversold_bounce', {}).get('enable', True):
+                    logger.info(f"[STRATEGY-CHECK] Checking AdaptiveOversoldBounce (adaptive_ob) for {symbol}")
                     # Sadece regime uygunsa veya ignore_regime true ise
                     ignore_regime = signals_config.get('oversold_bounce', {}).get('ignore_regime', False)
                     
@@ -413,13 +426,18 @@ class ProductionCoordinator:
                             
                             if signal:
                                 signal['strategy'] = 'adaptive_ob'
-                                logger.info(f"📈 Adaptive OB signal for {symbol}: {signal}")
+                                logger.info(f"📊 Signal from adaptive_ob for {symbol}: {signal}")
+                            else:
+                                logger.info(f"[STRATEGY-CHECK] adaptive_ob: No signal for {symbol}")
                                 
                         except Exception as e:
-                            logger.debug(f"AdaptiveOB error for {symbol}: {e}")
+                            logger.warning(f"[STRATEGY-CHECK] AdaptiveOB error for {symbol}: {e}", exc_info=True)
+                    else:
+                        logger.info(f"[STRATEGY-CHECK] adaptive_ob: Regime not favorable for {symbol}, skipping")
                 
                 # Check AdaptiveShortTheRip (sadece signal yoksa)
                 if not signal and signals_config.get('short_the_rip', {}).get('enable', True):
+                    logger.info(f"[STRATEGY-CHECK] Checking AdaptiveShortTheRip (adaptive_str) for {symbol}")
                     ignore_regime = signals_config.get('short_the_rip', {}).get('ignore_regime', False)
                     
                     if metadata.get('str_favorable', True) or ignore_regime:
@@ -431,10 +449,14 @@ class ProductionCoordinator:
                             
                             if signal:
                                 signal['strategy'] = 'adaptive_str'
-                                logger.info(f"📉 Adaptive STR signal for {symbol}: {signal}")
+                                logger.info(f"📊 Signal from adaptive_str for {symbol}: {signal}")
+                            else:
+                                logger.info(f"[STRATEGY-CHECK] adaptive_str: No signal for {symbol}")
                                 
                         except Exception as e:
-                            logger.debug(f"AdaptiveSTR error for {symbol}: {e}")
+                            logger.warning(f"[STRATEGY-CHECK] AdaptiveSTR error for {symbol}: {e}", exc_info=True)
+                    else:
+                        logger.info(f"[STRATEGY-CHECK] adaptive_str: Regime not favorable for {symbol}, skipping")
             
             # Signal'e metadata ekle
             if signal:
@@ -450,13 +472,18 @@ class ProductionCoordinator:
             return signal
             
         except Exception as e:
-            logger.error(f"Error processing {symbol}: {e}")
+            logger.error(f"❌ Critical error processing {symbol}: {e}", exc_info=True)
             return None 
 
     async def _process_trading_loop(self):
         """Main trading loop processing with timeout protection."""
+        # Log entry to confirm loop is executing
+        logger.info(f"📋 [PROCESSING] Starting processing loop for {len(self.active_symbols)} symbols")
+        
         for symbol in self.active_symbols:
             try:
+                logger.info(f"[PROCESSING] Symbol: {symbol}")
+                
                 # Add timeout protection and capture the returned signal
                 signal = await asyncio.wait_for(
                     self.process_symbol(symbol),
@@ -465,17 +492,21 @@ class ProductionCoordinator:
     
                 # If a signal was generated, submit it for execution
                 if signal:
-                    logger.info(f"Submitting signal for {symbol} to execution engine.")
+                    logger.info(f"✅ Signal generated for {symbol}, submitting to execution engine")
                     submission_result = await self.submit_signal(signal)
                     if not submission_result.get('success'):
                         logger.warning(f"Failed to submit signal for {symbol}: {submission_result.get('reason')}")
+                else:
+                    logger.info(f"ℹ️ No signal generated for {symbol}")
     
             except asyncio.TimeoutError:
                 logger.error(f"⏱️ Timeout processing {symbol} - skipping")
                 continue
             except Exception as e:
-                logger.error(f"Error processing {symbol}: {e}")
+                logger.error(f"❌ Error processing {symbol}: {e}", exc_info=True)
                 continue
+        
+        logger.info(f"✅ [PROCESSING] Completed processing loop for {len(self.active_symbols)} symbols")
 
     async def _initialize_production_system(self) -> bool:
         """
