@@ -769,6 +769,10 @@ class ProductionCoordinator:
         logger.info("🔍 [DEBUG] run_production_loop() method ENTERED")
         logger.info(f"🔍 [DEBUG] Parameters: mode={mode}, duration={duration}, continuous={continuous}")
         logger.info(f"🔍 [DEBUG] self.is_initialized = {self.is_initialized}")
+        # ✅ FORCE LOG FLUSH for GitHub Actions visibility
+        import sys
+        sys.stdout.flush()
+        sys.stderr.flush()
         
         try:
             logger.info("🔍 [DEBUG] Inside try block")
@@ -849,6 +853,11 @@ class ProductionCoordinator:
                 logger.info(f"   Will run: Indefinitely")
             logger.info("="*70)
             logger.info("")
+            
+            # ✅ FORCE FLUSH before loop entry
+            import sys
+            sys.stdout.flush()
+            sys.stderr.flush()
             
             logger.info(f"🔍 [DEBUG] About to enter while loop. is_running={self.is_running}")
             
