@@ -570,8 +570,9 @@ class ProductionCoordinator:
         
         # Priority 3: Use hardcoded defaults
         # Note: Using 3 major symbols as per issue requirements for cleaner default set.
-        # Original implementation had 8 symbols, but 3 major pairs provide sufficient
-        # fallback coverage while keeping the default set minimal and maintainable.
+        # Previous implementation had 8 symbols: BTC, ETH, SOL, BNB, ADA, DOT, LTC, AVAX
+        # New default uses 3 major pairs (BTC, ETH, SOL) for sufficient fallback coverage
+        # while keeping the default set minimal and maintainable.
         default_symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
         logger.info(f"[SYMBOL_DISCOVERY] Using {len(default_symbols)} hardcoded default symbols")
         return default_symbols
