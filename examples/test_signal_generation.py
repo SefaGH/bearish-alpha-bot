@@ -66,8 +66,12 @@ async def test_signal_generation():
     
     logger.info("✓ Engine initialized")
     
-    # Show configuration
-    symbols = engine._get_scan_symbols()
+    # Show configuration - get symbols from config
+    symbols = engine.config.get('universe', {}).get('fixed_symbols', [])
+    if not symbols:
+        # Fallback to defaults if not configured
+        symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+    
     logger.info(f"\nConfiguration:")
     logger.info(f"  Symbols to scan: {len(symbols)}")
     for i, symbol in enumerate(symbols, 1):

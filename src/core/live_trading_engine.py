@@ -244,27 +244,31 @@ class LiveTradingEngine:
             await self._prefetch_historical_data()
             logger.info("  ✓ Historical data prefetch complete")
             
+            # Transition the engine state before background loops execute so they observe RUNNING.
+            self.state = EngineState.RUNNING
+
             # Start signal processing
             signal_task = asyncio.create_task(self._signal_processing_loop())
             self.tasks.append(signal_task)
             logger.info("  ✓ Signal processing started")
-            
+
             # Start position monitoring
             position_task = asyncio.create_task(self._position_monitoring_loop())
             self.tasks.append(position_task)
             logger.info("  ✓ Position monitoring started")
-            
+
             # Start order management
             order_task = asyncio.create_task(self._order_management_loop())
             self.tasks.append(order_task)
             logger.info("  ✓ Order management started")
-            
+
             # Start performance reporting
             perf_task = asyncio.create_task(self._performance_reporting_loop())
             self.tasks.append(perf_task)
             logger.info("  ✓ Performance reporting started")
-            
-            self.state = EngineState.RUNNING
+
+            # Yield control so newly created tasks can progress before we return.
+            await asyncio.sleep(0)
             
             logger.info("\n" + "="*70)
             logger.info("✓ LIVE TRADING ENGINE STARTED SUCCESSFULLY")
@@ -639,12 +643,19 @@ class LiveTradingEngine:
         insufficient bars for RSI/ATR/EMA calculations.
         
         Critical for short sessions (<30 min) where WebSocket accumulation is too slow.
+        
+        Note: Symbols must be set via _cached_symbols by ProductionCoordinator before
+        calling this method. This dependency is established during the initialization
+        of the production system when ProductionCoordinator.initialize_production_system()
+        creates the engine and directly assigns active_symbols to engine._cached_symbols.
         """
         try:
-            symbols = self._get_scan_symbols()
+            # Use cached symbols that should be set by ProductionCoordinator
+            symbols = self._cached_symbols or []
             
             if not symbols:
-                logger.warning("[PREFETCH] No symbols to prefetch")
+                logger.warning("[PREFETCH] No symbols to prefetch (no symbols configured)")
+                logger.warning("[PREFETCH] Symbols should be set by ProductionCoordinator via _cached_symbols")
                 return
             
             logger.info(f"[PREFETCH] Fetching historical data for {len(symbols)} symbols...")
@@ -702,97 +713,6 @@ class LiveTradingEngine:
             logger.error(f"[PREFETCH] Fatal error during historical data prefetch: {e}", exc_info=True)
             logger.warning("[PREFETCH] Continuing anyway - signal generation may be delayed")
     
-    def _get_scan_symbols(self) -> List[str]:
-        """
-        Get symbols to scan with support for fixed list and auto-select modes.
-        
-        DEPRECATED: This method is deprecated as LiveTradingEngine no longer performs
-        market scanning. Symbol discovery is now handled by ProductionCoordinator.
-        This method is kept only for backward compatibility and testing purposes.
-        """
-        logger.warning(
-            "⚠️ DEPRECATED: _get_scan_symbols() called on LiveTradingEngine. "
-            "This engine no longer scans markets. Use ProductionCoordinator for signal generation."
-        )
-        
-        if self._cached_symbols:
-            return self._cached_symbols
-
-        cfg = self.config
-        universe_cfg = cfg.get('universe', {})
-
-        fixed_symbols = universe_cfg.get('fixed_symbols', [])
-        auto_select = universe_cfg.get('auto_select', False)
-
-        if fixed_symbols and isinstance(fixed_symbols, list) and not auto_select:
-            logger.info(f"[UNIVERSE] ✅ Using {len(fixed_symbols)} FIXED symbols (no market loading)")
-
-            valid_symbols = []
-            for symbol in fixed_symbols:
-                if isinstance(symbol, str) and '/' in symbol:
-                    valid_symbols.append(symbol)
-                else:
-                    logger.warning(f"[UNIVERSE] Invalid symbol format: {symbol}")
-
-            self._cached_symbols = valid_symbols
-
-            if self.exchange_clients:
-                for client in self.exchange_clients.values():
-                    if hasattr(client, 'set_required_symbols'):
-                        client.set_required_symbols(valid_symbols)
-
-            if valid_symbols:
-                preview = ', '.join(valid_symbols[:5])
-                logger.info(f"[UNIVERSE] Symbols: {preview}...")
-            else:
-                logger.warning("[UNIVERSE] No valid fixed symbols provided")
-
-            return valid_symbols
-
-        if auto_select:
-            logger.warning("[UNIVERSE] Auto-select mode enabled (will load all markets)")
-
-            try:
-                from universe import build_universe
-
-                universe_dict = build_universe(self.exchange_clients, cfg)
-
-                all_symbols: List[str] = []
-                for exchange_symbols in universe_dict.values():
-                    all_symbols.extend(exchange_symbols)
-
-                unique_symbols = sorted(set(all_symbols))
-
-                if self.exchange_clients:
-                    for client in self.exchange_clients.values():
-                        if hasattr(client, 'set_required_symbols'):
-                            client.set_required_symbols(unique_symbols)
-
-                self._cached_symbols = unique_symbols
-                logger.info(f"[UNIVERSE] Auto-selected {len(unique_symbols)} symbols")
-                return unique_symbols
-
-            except ImportError:
-                logger.error("[UNIVERSE] Universe builder not available")
-            except Exception as exc:  # pragma: no cover - defensive logging
-                logger.error(f"[UNIVERSE] Error building universe: {exc}")
-
-        logger.warning("[UNIVERSE] Using default symbols (config not properly set)")
-        default_symbols = [
-            'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT',
-            'BNB/USDT:USDT', 'ADA/USDT:USDT', 'DOT/USDT:USDT',
-            'LTC/USDT:USDT', 'AVAX/USDT:USDT'
-        ]
-
-        self._cached_symbols = default_symbols
-
-        if self.exchange_clients:
-            for client in self.exchange_clients.values():
-                if hasattr(client, 'set_required_symbols'):
-                    client.set_required_symbols(default_symbols)
-
-        return default_symbols
-
     def _determine_default_exchange(self, symbol: str) -> Optional[str]:
         """Determine default exchange for a generated signal."""
 
