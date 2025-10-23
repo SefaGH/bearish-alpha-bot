@@ -54,14 +54,28 @@ async def test_end_to_end_paper_mode():
     mock_client = MagicMock(spec=CcxtClient)
     
     # Mock OHLCV data that will generate signals
+    # Constants for timestamp generation
+    BASE_TIMESTAMP = 1000000
+    MINUTE_IN_MS = 60000
+    
     def generate_ohlcv(symbol, timeframe, limit=100):
-        """Generate mock OHLCV with RSI patterns."""
+        """
+        Generate mock OHLCV with RSI patterns.
+        
+        Args:
+            symbol: Trading symbol (e.g., 'BTC/USDT:USDT')
+            timeframe: Timeframe string (e.g., '30m', '1h')
+            limit: Number of candles to generate
+            
+        Returns:
+            List of OHLCV candles [timestamp, open, high, low, close, volume]
+        """
         # Simulate oversold condition (RSI < 30) for last few candles
         data = []
         base_price = 30000 if 'BTC' in symbol else 2000
         
         for i in range(limit):
-            timestamp = 1000000 + (i * 60000)
+            timestamp = BASE_TIMESTAMP + (i * MINUTE_IN_MS)
             if i < limit - 5:
                 # Normal prices
                 open_price = base_price + (i % 10) * 10
@@ -80,7 +94,7 @@ async def test_end_to_end_paper_mode():
         
         return data
     
-    mock_client.ohlcv = generate_ohlcv
+    mock_client.ohlcv.side_effect = generate_ohlcv
     mock_client.fetch_ticker = MagicMock(return_value={'last': 30000, 'close': 30000})
     
     exchange_clients = {'bingx': mock_client}
