@@ -433,10 +433,34 @@ class TestLiveTradingEngine:
         
         # Stop engine
         stop_result = await trading_engine.stop_live_trading()
-        
+
         assert stop_result['success'] is True
         assert trading_engine.state == EngineState.STOPPED
-    
+
+    @pytest.mark.asyncio
+    async def test_start_live_trading_reports_running_state(self):
+        """Ensure start_live_trading returns a running state immediately."""
+        portfolio_config = {'equity_usd': 10000}
+        risk_manager = RiskManager(portfolio_config)
+        performance_monitor = RealTimePerformanceMonitor()
+        portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
+        exchange_clients = {'kucoinfutures': MockExchangeClient('kucoinfutures')}
+
+        trading_engine = LiveTradingEngine(
+            portfolio_manager=portfolio_manager,
+            risk_manager=risk_manager,
+            websocket_manager=None,
+            exchange_clients=exchange_clients
+        )
+
+        start_result = await trading_engine.start_live_trading(mode='paper')
+
+        assert start_result['success'] is True
+        assert start_result['state'] == EngineState.RUNNING.value
+        assert trading_engine.state == EngineState.RUNNING
+
+        await trading_engine.stop_live_trading()
+
     @pytest.mark.asyncio
     async def test_execute_signal(self):
         """Test signal execution through trading engine."""
