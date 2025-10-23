@@ -310,8 +310,8 @@ class TestSignalQueueExecution:
             exchange_clients={}
         )
         
-        # Prevent market scanning from running during the test
-        engine._get_scan_symbols = Mock(return_value=[])
+        # Prevent market scanning from running during the test by setting empty symbols
+        engine._cached_symbols = []
 
         # Add test signals to queue
         test_signals = [
@@ -444,8 +444,8 @@ class TestSignalQueueExecution:
 
         # Mock the adaptive_monitor to avoid import issues
         with patch('core.adaptive_monitor.adaptive_monitor'):
-            # Mock _get_scan_symbols to return empty list (no scanning)
-            engine._get_scan_symbols = Mock(return_value=[])
+            # Prevent market scanning from running during the test by setting empty symbols
+            engine._cached_symbols = []
             
             # Create a task that will add a signal after 2 seconds
             async def delayed_signal_add():

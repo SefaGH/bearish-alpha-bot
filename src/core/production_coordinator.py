@@ -539,6 +539,44 @@ class ProductionCoordinator:
         logger.info(f"   Processed: {processed_count}/{len(self.active_symbols)} symbols")
         logger.info(f"   Signals: {signal_count} | Errors: {error_count}")
 
+    def _get_default_symbols(self) -> List[str]:
+        """
+        Get default symbols with proper fallback logic.
+        
+        This is the single source of truth for symbol discovery when
+        symbols are not explicitly provided via parameter.
+        
+        Fallback order:
+        1. Config file: config['universe']['fixed_symbols']
+        2. Environment variable: TRADING_SYMBOLS (comma-separated)
+        3. Hardcoded defaults: BTC/USDT:USDT, ETH/USDT:USDT, SOL/USDT:USDT
+        
+        Returns:
+            List of trading symbols
+        """
+        # Priority 1: Check config file
+        config_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
+        if config_symbols and isinstance(config_symbols, list) and len(config_symbols) > 0:
+            logger.info(f"[SYMBOL_DISCOVERY] Using {len(config_symbols)} symbols from config")
+            return config_symbols
+        
+        # Priority 2: Check environment variable
+        env_symbols = os.environ.get('TRADING_SYMBOLS', '').strip()
+        if env_symbols:
+            symbols = [s.strip() for s in env_symbols.split(',') if s.strip()]
+            if symbols:
+                logger.info(f"[SYMBOL_DISCOVERY] Using {len(symbols)} symbols from TRADING_SYMBOLS env var")
+                return symbols
+        
+        # Priority 3: Use hardcoded defaults
+        # Note: Using 3 major symbols as per issue requirements for cleaner default set.
+        # Previous implementation had 8 symbols: BTC, ETH, SOL, BNB, ADA, DOT, LTC, AVAX
+        # New default uses 3 major pairs (BTC, ETH, SOL) for sufficient fallback coverage
+        # while keeping the default set minimal and maintainable.
+        default_symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+        logger.info(f"[SYMBOL_DISCOVERY] Using {len(default_symbols)} hardcoded default symbols")
+        return default_symbols
+    
     async def _initialize_production_system(self) -> bool:
         """
         Legacy wrapper for backwards compatibility.
@@ -705,29 +743,15 @@ class ProductionCoordinator:
                 logger.info(f"✓ Active symbols set from parameter: {len(trading_symbols)} symbols")
                 logger.info(f"  Symbols: {', '.join(trading_symbols)}")
             else:
-                # Priority 2: Load from config file
-                config_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
-                if config_symbols and isinstance(config_symbols, list) and len(config_symbols) > 0:
-                    self.active_symbols = config_symbols
-                    logger.info(f"✓ Active symbols loaded from config: {len(config_symbols)} symbols")
-                    logger.info(f"  Symbols: {', '.join(config_symbols)}")
-                else:
-                    # Priority 3: Try getting from trading engine
-                    if self.trading_engine and hasattr(self.trading_engine, '_get_scan_symbols'):
-                        try:
-                            self.active_symbols = self.trading_engine._get_scan_symbols()
-                            if self.active_symbols:
-                                logger.info(f"✓ Active symbols loaded from engine: {len(self.active_symbols)} symbols")
-                                logger.info(f"  Symbols: {', '.join(self.active_symbols)}")
-                            else:
-                                logger.error("❌ Engine returned empty symbol list!")
-                                self.active_symbols = []
-                        except Exception as e:
-                            logger.error(f"❌ Failed to get symbols from engine: {e}")
-                            self.active_symbols = []
-                    else:
-                        logger.error("❌ No symbols configured and engine cannot provide symbols!")
-                        self.active_symbols = []
+                # Priority 2+: Use default symbol discovery
+                self.active_symbols = self._get_default_symbols()
+                logger.info(f"✓ Active symbols discovered: {len(self.active_symbols)} symbols")
+                logger.info(f"  Symbols: {', '.join(self.active_symbols)}")
+            
+            # Set symbols on trading engine for prefetch and other operations
+            if self.trading_engine and self.active_symbols:
+                self.trading_engine._cached_symbols = self.active_symbols
+                logger.info(f"✓ Trading engine symbols cache set: {len(self.active_symbols)} symbols")
             
             # ========================================
             # STEP 11: VALIDATE ACTIVE SYMBOLS
