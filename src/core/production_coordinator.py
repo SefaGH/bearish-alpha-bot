@@ -944,6 +944,9 @@ class ProductionCoordinator:
                 raise RuntimeError("is_running unexpectedly False before loop entry")
             
             while self.is_running:
+                # ✅ ENHANCED: Always log loop entry at INFO level for visibility
+                if loop_iteration == 0:
+                    logger.info("🔄 [LOOP-START] Main trading loop entered successfully")
                 logger.info(f"🔍 [DEBUG] INSIDE WHILE LOOP - Iteration starting")
                 logger.info(f"🔍 [DEBUG] Loop iteration: {loop_iteration + 1}, is_running: {self.is_running}")
                 
@@ -1031,9 +1034,23 @@ class ProductionCoordinator:
                             except Exception as e:
                                 logger.debug(f"Could not get recommendations: {e}")
                     
-                    # Sleep between iterations
+                    # Sleep between iterations, but check duration first
                     logger.debug(f"🔁 Trading loop iteration {loop_iteration} completed, sleeping {self.loop_interval}s")
-                    await asyncio.sleep(self.loop_interval)
+                    
+                    # If duration is set, calculate remaining time and don't sleep longer than needed
+                    if duration and not continuous:
+                        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+                        remaining = duration - elapsed
+                        if remaining <= 0:
+                            logger.info(f"⏱️ Duration {duration}s reached after processing - stopping")
+                            break
+                        # Sleep for minimum of loop_interval or remaining time
+                        sleep_time = min(self.loop_interval, remaining)
+                        logger.debug(f"Sleeping for {sleep_time:.1f}s (remaining: {remaining:.1f}s)")
+                        await asyncio.sleep(sleep_time)
+                    else:
+                        # No duration limit or continuous mode - use full loop_interval
+                        await asyncio.sleep(self.loop_interval)
                     
                 except KeyboardInterrupt:
                     logger.info("Keyboard interrupt received - stopping gracefully")
