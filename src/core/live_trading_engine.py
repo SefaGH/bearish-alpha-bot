@@ -646,9 +646,8 @@ class LiveTradingEngine:
         
         Note: Symbols must be set via _cached_symbols by ProductionCoordinator before
         calling this method. This dependency is established during the initialization
-        of the production system when ProductionCoordinator creates the engine and
-        directly assigns active_symbols to engine._cached_symbols (see production_coordinator.py
-        line ~750).
+        of the production system when ProductionCoordinator.initialize_production_system()
+        creates the engine and directly assigns active_symbols to engine._cached_symbols.
         """
         try:
             # Use cached symbols that should be set by ProductionCoordinator
