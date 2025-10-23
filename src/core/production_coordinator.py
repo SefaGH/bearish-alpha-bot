@@ -944,6 +944,9 @@ class ProductionCoordinator:
                 raise RuntimeError("is_running unexpectedly False before loop entry")
             
             while self.is_running:
+                # ✅ ENHANCED: Always log loop entry at INFO level for visibility
+                if loop_iteration == 0:
+                    logger.info("🔄 [LOOP-START] Main trading loop entered successfully")
                 logger.info(f"🔍 [DEBUG] INSIDE WHILE LOOP - Iteration starting")
                 logger.info(f"🔍 [DEBUG] Loop iteration: {loop_iteration + 1}, is_running: {self.is_running}")
                 
