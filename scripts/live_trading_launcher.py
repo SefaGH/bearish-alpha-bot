@@ -1732,12 +1732,33 @@ class LiveTradingLauncher:
             logger.info("🚀 STARTING PRODUCTION LOOP")
             logger.info("="*70)
             
+            # ✅ DEBUG: Log before calling run_production_loop
+            logger.info(f"🔍 [LAUNCHER-DEBUG] About to call coordinator.run_production_loop()")
+            
+            # Check if coordinator exists
+            if self.coordinator is None:
+                logger.critical("❌ [LAUNCHER-DEBUG] coordinator is None! Cannot proceed!")
+                raise RuntimeError("Coordinator is None - initialization failed")
+            
+            logger.info(f"🔍 [LAUNCHER-DEBUG] coordinator type: {type(self.coordinator)}")
+            logger.info(f"🔍 [LAUNCHER-DEBUG] coordinator.is_running: {self.coordinator.is_running}")
+            logger.info(f"🔍 [LAUNCHER-DEBUG] coordinator.is_initialized: {self.coordinator.is_initialized}")
+            logger.info(f"🔍 [LAUNCHER-DEBUG] Parameters: mode={self.mode}, duration={duration}, continuous={self.infinite}")
+            
             # Use coordinator's production loop (handles duration internally)
+            logger.info("🔍 [LAUNCHER-DEBUG] Calling await coordinator.run_production_loop()...")
+            
+            # ✅ CRITICAL: Ensure we're calling the right method
+            if not hasattr(self.coordinator, 'run_production_loop'):
+                logger.critical("❌ [LAUNCHER-DEBUG] coordinator has no run_production_loop method!")
+                raise RuntimeError("Coordinator missing run_production_loop method")
+            
             await self.coordinator.run_production_loop(
                 mode=self.mode,
                 duration=duration,
                 continuous=self.infinite
             )
+            logger.info("🔍 [LAUNCHER-DEBUG] coordinator.run_production_loop() RETURNED")
             
         except KeyboardInterrupt:
             logger.info("\n⚠️ Keyboard interrupt received - initiating shutdown...")

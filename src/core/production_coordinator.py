@@ -765,19 +765,37 @@ class ProductionCoordinator:
             
     async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
                                   continuous: bool = False):
+        # ✅ CRITICAL DEBUG: Log method entry IMMEDIATELY
+        logger.info("🔍 [DEBUG] run_production_loop() method ENTERED")
+        logger.info(f"🔍 [DEBUG] Parameters: mode={mode}, duration={duration}, continuous={continuous}")
+        logger.info(f"🔍 [DEBUG] self.is_initialized = {self.is_initialized}")
+        # ✅ FORCE LOG FLUSH for GitHub Actions visibility
+        import sys
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         try:
+            logger.info("🔍 [DEBUG] Inside try block")
+            
             if not self.is_initialized:
+                logger.error("🔍 [DEBUG] NOT INITIALIZED - raising RuntimeError")
                 raise RuntimeError("Production system not initialized. Call initialize_production_system() first.")
             
+            logger.info("🔍 [DEBUG] Passed initialization check")
             logger.info("="*70)
             logger.info("STARTING PRODUCTION TRADING LOOP")
             logger.info("="*70)
             
             # ✅ YENİ: Engine'in çalıştığını kontrol et (ikinci kez başlatma!)
+            logger.info("🔍 [DEBUG] Checking trading engine...")
             if not self.trading_engine:
+                logger.error("🔍 [DEBUG] trading_engine is None!")
                 raise RuntimeError("Trading engine not initialized!")
             
+            logger.info(f"🔍 [DEBUG] trading_engine exists, state={self.trading_engine.state.value}")
+            
             if self.trading_engine.state.value != 'running':
+                logger.error(f"🔍 [DEBUG] Engine state is {self.trading_engine.state.value}, not 'running'!")
                 raise RuntimeError(
                     f"Trading engine not running (state={self.trading_engine.state.value})! "
                     "Call trading_engine.start_live_trading() before run_production_loop()"
@@ -786,13 +804,19 @@ class ProductionCoordinator:
             logger.info(f"✅ Trading engine already running (state={self.trading_engine.state.value})")
             
             # Ensure is_running is True
+            logger.info(f"🔍 [DEBUG] Current is_running = {self.is_running}")
             if not self.is_running:
                 logger.warning("⚠️ is_running was False, setting to True")
                 self.is_running = True
             
-            # Start queue monitoring task
-            self._monitoring_task = asyncio.create_task(self._monitor_signal_queues())
+            logger.info(f"🔍 [DEBUG] is_running now = {self.is_running}")
             
+            # Start queue monitoring task
+            logger.info("🔍 [DEBUG] Creating queue monitoring task...")
+            self._monitoring_task = asyncio.create_task(self._monitor_signal_queues())
+            logger.info("🔍 [DEBUG] Queue monitoring task created")
+            
+            logger.info("🔍 [DEBUG] About to print production loop info...")
             logger.info("\n🚀 Production trading loop active")
             logger.info(f"   Mode: {mode}")
             logger.info(f"   Duration: {'Indefinite' if duration is None else f'{duration}s'}")
@@ -800,15 +824,21 @@ class ProductionCoordinator:
             logger.info(f"   Active Symbols: {len(self.active_symbols)}")
             
             # ✅ EKLE: active_symbols kontrolü
+            logger.info(f"🔍 [DEBUG] Checking active_symbols: {self.active_symbols}")
             if not self.active_symbols:
                 logger.error("❌ No active symbols configured!")
                 raise RuntimeError("active_symbols is empty! Cannot process any symbols.")
             
+            logger.info("🔍 [DEBUG] active_symbols check passed")
+            
             # Main loop
+            logger.info("🔍 [DEBUG] Initializing loop variables...")
             start_time = datetime.now(timezone.utc)
             last_recommendation_time = start_time
             recommendation_interval = 300  # Her 5 dakikada bir recommendations
             loop_iteration = 0
+            
+            logger.info(f"🔍 [DEBUG] Loop variables initialized: start_time={start_time}, loop_iteration={loop_iteration}")
             
             # ✅ EKLE: Trading loop başlangıç logu
             logger.info("")
@@ -824,7 +854,22 @@ class ProductionCoordinator:
             logger.info("="*70)
             logger.info("")
             
+            # ✅ FORCE FLUSH before loop entry
+            import sys
+            sys.stdout.flush()
+            sys.stderr.flush()
+            
+            logger.info(f"🔍 [DEBUG] About to enter while loop. is_running={self.is_running}")
+            
+            # ✅ CRITICAL CHECK: Verify is_running is True before loop
+            if not self.is_running:
+                logger.critical("❌ [CRITICAL] is_running is FALSE before loop entry!")
+                logger.critical(f"   This should never happen - is_running was just set to True at line 791")
+                raise RuntimeError("is_running unexpectedly False before loop entry")
+            
             while self.is_running:
+                logger.info(f"🔍 [DEBUG] INSIDE WHILE LOOP - Iteration starting")
+                logger.info(f"🔍 [DEBUG] Loop iteration: {loop_iteration + 1}, is_running: {self.is_running}")
                 try:
                     loop_iteration += 1
                     # ✅ DEĞİŞTİR: logger.debug → logger.info
@@ -853,12 +898,17 @@ class ProductionCoordinator:
                     # Check duration
                     if duration and not continuous:
                         elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+                        logger.info(f"🔍 [DEBUG] Duration check: elapsed={elapsed:.1f}s, duration={duration}s")
                         if elapsed >= duration:
-                            logger.info(f"Duration {duration}s reached - stopping")
+                            logger.info(f"⏱️ Duration {duration}s reached - stopping (elapsed: {elapsed:.1f}s)")
                             break
+                        else:
+                            logger.info(f"🔍 [DEBUG] Duration check passed - continuing loop")
                     
                     # Process trading loop with WebSocket data
+                    logger.info("🔍 [DEBUG] About to call _process_trading_loop()...")
                     await self._process_trading_loop()
+                    logger.info("🔍 [DEBUG] _process_trading_loop() completed")
                     
                     # Market regime recommendations (periyodik)
                     current_time = datetime.now(timezone.utc)
