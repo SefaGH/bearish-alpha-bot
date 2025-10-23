@@ -924,6 +924,11 @@ class LiveTradingLauncher:
         logger.info("=" * 70)
         logger.info("🧹 STARTING CLEANUP")
         logger.info("=" * 70)
+
+        # 🆕 1. Production coordinator'ı durdur
+        if self.coordinator:
+            self.coordinator.is_running = False
+            logger.info("✅ Production coordinator stopped")
         
         cleanup_errors = []
         
@@ -1635,12 +1640,15 @@ class LiveTradingLauncher:
         logger.info(f"Mode: {self.mode.upper()}")
         logger.info(f"Duration: {'Indefinite' if duration is None else f'{duration}s'}")
         logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
+        logger.info("="*70)
         
         # Store health task for cleanup
         _health_task = None
         
         try:
-            # Establish WebSocket connection with retry logic
+            # ========================================
+            # STEP 1: ESTABLISH WEBSOCKET CONNECTION
+            # ========================================
             ws_connected = False
             if self.ws_optimizer and self._is_ws_initialized():
                 ws_connected = await self._establish_websocket_connection(
@@ -1668,14 +1676,11 @@ class LiveTradingLauncher:
             else:
                 logger.info("WebSocket: ❌ DISABLED or NOT INITIALIZED")
             
-            logger.info("="*70)
-            
-            # Send Telegram notification
+            # ========================================
+            # STEP 2: SEND STARTUP NOTIFICATION
+            # ========================================
             if self.telegram:
-                if ws_connected:
-                    ws_info = "WebSocket CONNECTED ✅"
-                else:
-                    ws_info = "REST API mode (WebSocket unavailable)"
+                ws_info = "WebSocket CONNECTED ✅" if ws_connected else "REST API mode (WebSocket unavailable)"
                 
                 self.telegram.send(
                     f"🚀 <b>LIVE TRADING STARTED</b>\n"
@@ -1688,94 +1693,46 @@ class LiveTradingLauncher:
                     f"Stop Loss: {self.RISK_PARAMS['stop_loss_pct']:.1%}\n"
                     f"Take Profit: {self.RISK_PARAMS['take_profit_pct']:.1%}"
                 )
-
+            
+            # ========================================
+            # STEP 3: ACTIVATE TRADING SYSTEMS
+            # ========================================
             logger.info("\n" + "="*70)
-            logger.info("🚀 STARTING MAIN TRADING LOOP")
-            logger.info("="*70)
-            logger.info(f"Scan Interval: 60 seconds")
-            logger.info(f"Symbols: {', '.join(self.TRADING_PAIRS)}")
-            logger.info(f"Duration: {duration if duration else 'indefinite'} seconds")
+            logger.info("🚀 ACTIVATING TRADING SYSTEMS")
             logger.info("="*70)
             
-            # 1. LiveTradingEngine'in signal processing loop'unu başlat (background task)
-            if not self.coordinator or not self.coordinator.trading_engine:
+            # 3.1: Activate Production Coordinator
+            self.coordinator.is_running = True
+            logger.info("✅ Production coordinator activated (is_running = True)")
+            
+            # 3.2: Start LiveTradingEngine (sets state = RUNNING)
+            if self.coordinator.trading_engine:
+                start_result = await self.coordinator.trading_engine.start_live_trading(mode=self.mode)
+                if not start_result.get('success'):
+                    logger.error(f"❌ Failed to start trading engine: {start_result.get('reason')}")
+                    return
+                logger.info("✅ Trading engine started (state = RUNNING)")
+                logger.info(f"   - Active tasks: {start_result.get('active_tasks', 0)}")
+                logger.info(f"   - Mode: {start_result.get('mode', 'unknown')}")
+            else:
                 logger.error("❌ Trading engine not available")
                 return
             
-            signal_task = asyncio.create_task(
-                self.coordinator.trading_engine._signal_processing_loop()
-            )
-            logger.info("✅ Signal processing background task started")
-            
-            # 2. Ana trading loop (duration kontrolü ile)
-            start_time = time.time()
-            scan_interval = 60  # 60 saniyede bir market scan
-            loop_count = 0
-            
-            try:
-                while True:
-                    loop_count += 1
-                    current_time = time.time()
-                    elapsed = current_time - start_time
-                    
-                    # Duration kontrolü
-                    if duration and elapsed >= duration:
-                        logger.info("\n" + "="*70)
-                        logger.info(f"⏱️ DURATION LIMIT REACHED ({duration}s)")
-                        logger.info(f"📊 Completed {loop_count} scan cycles")
-                        logger.info(f"⏱️ Total runtime: {elapsed:.1f}s")
-                        logger.info("="*70)
-                        break
-                    
-                    # Kalan süre hesapla ve logla
-                    if duration:
-                        remaining = duration - elapsed
-                        logger.info(f"\n⏱️ Time remaining: {remaining:.0f}s / {duration}s")
-                    
-                    logger.info(f"\n{'='*70}")
-                    logger.info(f"🔍 MARKET SCAN CYCLE #{loop_count}")
-                    logger.info(f"{'='*70}")
-                    
-                    # 3. Production coordinator'ın trading loop'unu çağır
-                    # Bu metod tüm sembolleri tarar ve signal üretir
-                    try:
-                        await self.coordinator._process_trading_loop()
-                        logger.info(f"✅ Scan cycle #{loop_count} completed successfully")
-                    except Exception as e:
-                        logger.error(f"❌ Error in scan cycle #{loop_count}: {e}", exc_info=True)
-                    
-                    # Sonraki scan'e kadar bekle
-                    logger.info(f"⏳ Waiting {scan_interval}s before next scan...\n")
-                    await asyncio.sleep(scan_interval)
-                    
-            except KeyboardInterrupt:
-                logger.info("\n⚠️ Keyboard interrupt received - initiating graceful shutdown...")
-            except Exception as e:
-                logger.error(f"\n❌ Fatal error in trading loop: {e}", exc_info=True)
-            finally:
-                # Signal processing task'ını temiz şekilde durdur
-                if 'signal_task' in locals() and not signal_task.done():
-                    logger.info("Cancelling signal processing task...")
-                    signal_task.cancel()
-                    try:
-                        await signal_task
-                    except asyncio.CancelledError:
-                        logger.info("✓ Signal processing task cancelled")
-                
-                # Graceful shutdown
-                logger.info("\n" + "="*70)
-                logger.info("INITIATING GRACEFUL SHUTDOWN")
-                logger.info("="*70)
-                await self.stop()
-            
-            # Start health monitoring in background (non-blocking)
+            # 3.3: Start health monitoring (if enabled)
             if self.health_monitor:
                 _health_task = asyncio.create_task(
                     self.health_monitor.start_monitoring()
                 )
-                logger.info("✓ Health monitor started in background")
+                logger.info("✅ Health monitor started in background")
             
-            # Now main flow can proceed!
+            # ========================================
+            # STEP 4: RUN PRODUCTION LOOP
+            # ========================================
+            logger.info("\n" + "="*70)
+            logger.info("🚀 STARTING PRODUCTION LOOP")
+            logger.info("="*70)
+            
+            # Use coordinator's production loop (handles duration internally)
             await self.coordinator.run_production_loop(
                 mode=self.mode,
                 duration=duration,
@@ -1783,30 +1740,40 @@ class LiveTradingLauncher:
             )
             
         except KeyboardInterrupt:
-            logger.info("\n⚠ Keyboard interrupt received - initiating shutdown...")
+            logger.info("\n⚠️ Keyboard interrupt received - initiating shutdown...")
             raise  # Re-raise to be caught by main()
             
         except Exception as e:
-            logger.error(f"❌ Critical error in trading loop: {e}")
+            logger.error(f"❌ Critical error in trading loop: {e}", exc_info=True)
             if self.health_monitor:
                 self.health_monitor.record_error(str(e))
             raise  # Re-raise to be caught by main()
         
         finally:
-            # Stop health monitor first
+            # ========================================
+            # CLEANUP: STOP ALL SYSTEMS
+            # ========================================
+            
+            # Stop health monitor
             if self.health_monitor:
                 try:
                     await self.health_monitor.stop_monitoring()
                 except Exception as e:
                     logger.error(f"Error stopping health monitor: {e}")
             
-            # Cancel background task if still running
+            # Cancel health task if still running
             if _health_task and not _health_task.done():
                 _health_task.cancel()
                 try:
                     await _health_task
                 except asyncio.CancelledError:
                     pass
+            
+            # Graceful shutdown
+            logger.info("\n" + "="*70)
+            logger.info("INITIATING GRACEFUL SHUTDOWN")
+            logger.info("="*70)
+            await self.cleanup()
     
     async def _monitor_websocket_health(self):
         """
