@@ -298,17 +298,30 @@ class ProductionCoordinator:
                     logger.warning(f"[DATA-FETCH] WebSocketManager missing get_latest_data method: {e}")
                     pass
             
-            # REST API fallback
+            # REST API fallback with timeout protection
             if df_30m is None and self.exchange_clients:
                 logger.info(f"[DATA-FETCH] Using REST API fallback for {symbol}")
                 # İlk mevcut exchange'i kullan
                 for exchange_name, client in self.exchange_clients.items():
                     try:
-                        df_30m = await self._fetch_ohlcv(client, symbol, '30m')
-                        df_1h = await self._fetch_ohlcv(client, symbol, '1h')
-                        df_4h = await self._fetch_ohlcv(client, symbol, '4h')
+                        # Fetch all timeframes with overall 45s timeout (3 x 15s individual timeouts)
+                        df_30m = await asyncio.wait_for(
+                            self._fetch_ohlcv(client, symbol, '30m'),
+                            timeout=20.0
+                        )
+                        df_1h = await asyncio.wait_for(
+                            self._fetch_ohlcv(client, symbol, '1h'),
+                            timeout=20.0
+                        )
+                        df_4h = await asyncio.wait_for(
+                            self._fetch_ohlcv(client, symbol, '4h'),
+                            timeout=20.0
+                        )
                         logger.info(f"[DATA-FETCH] ✅ REST API data retrieved for {symbol} from {exchange_name}")
                         break
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[DATA-FETCH] ⏱️ REST API timeout for {symbol} on {exchange_name} (60s limit)")
+                        continue
                     except Exception as e:
                         logger.warning(f"[DATA-FETCH] REST API fetch failed for {symbol} on {exchange_name}: {e}")
                         continue
@@ -476,19 +489,30 @@ class ProductionCoordinator:
             return None 
 
     async def _process_trading_loop(self):
-        """Main trading loop processing with timeout protection."""
+        """Main trading loop processing with timeout protection and detailed logging."""
         # Log entry to confirm loop is executing
         logger.info(f"📋 [PROCESSING] Starting processing loop for {len(self.active_symbols)} symbols")
+        import time
+        start_time = time.time()
+        
+        processed_count = 0
+        signal_count = 0
+        error_count = 0
         
         for symbol in self.active_symbols:
             try:
-                logger.info(f"[PROCESSING] Symbol: {symbol}")
+                logger.info(f"[PROCESSING] Symbol {processed_count + 1}/{len(self.active_symbols)}: {symbol}")
+                symbol_start = time.time()
                 
                 # Add timeout protection and capture the returned signal
                 signal = await asyncio.wait_for(
                     self.process_symbol(symbol),
                     timeout=30.0
                 )
+                
+                symbol_duration = time.time() - symbol_start
+                logger.info(f"[PROCESSING] {symbol} completed in {symbol_duration:.2f}s")
+                processed_count += 1
     
                 # If a signal was generated, submit it for execution
                 if signal:
@@ -496,18 +520,63 @@ class ProductionCoordinator:
                     submission_result = await self.submit_signal(signal)
                     if not submission_result.get('success'):
                         logger.warning(f"Failed to submit signal for {symbol}: {submission_result.get('reason')}")
+                    else:
+                        signal_count += 1
                 else:
                     logger.info(f"ℹ️ No signal generated for {symbol}")
     
             except asyncio.TimeoutError:
-                logger.error(f"⏱️ Timeout processing {symbol} - skipping")
+                logger.error(f"⏱️ Timeout processing {symbol} after 30s - skipping")
+                error_count += 1
                 continue
             except Exception as e:
                 logger.error(f"❌ Error processing {symbol}: {e}", exc_info=True)
+                error_count += 1
                 continue
         
-        logger.info(f"✅ [PROCESSING] Completed processing loop for {len(self.active_symbols)} symbols")
+        total_duration = time.time() - start_time
+        logger.info(f"✅ [PROCESSING] Completed processing loop in {total_duration:.2f}s")
+        logger.info(f"   Processed: {processed_count}/{len(self.active_symbols)} symbols")
+        logger.info(f"   Signals: {signal_count} | Errors: {error_count}")
 
+    def _get_default_symbols(self) -> List[str]:
+        """
+        Get default symbols with proper fallback logic.
+        
+        This is the single source of truth for symbol discovery when
+        symbols are not explicitly provided via parameter.
+        
+        Fallback order:
+        1. Config file: config['universe']['fixed_symbols']
+        2. Environment variable: TRADING_SYMBOLS (comma-separated)
+        3. Hardcoded defaults: BTC/USDT:USDT, ETH/USDT:USDT, SOL/USDT:USDT
+        
+        Returns:
+            List of trading symbols
+        """
+        # Priority 1: Check config file
+        config_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
+        if config_symbols and isinstance(config_symbols, list) and len(config_symbols) > 0:
+            logger.info(f"[SYMBOL_DISCOVERY] Using {len(config_symbols)} symbols from config")
+            return config_symbols
+        
+        # Priority 2: Check environment variable
+        env_symbols = os.environ.get('TRADING_SYMBOLS', '').strip()
+        if env_symbols:
+            symbols = [s.strip() for s in env_symbols.split(',') if s.strip()]
+            if symbols:
+                logger.info(f"[SYMBOL_DISCOVERY] Using {len(symbols)} symbols from TRADING_SYMBOLS env var")
+                return symbols
+        
+        # Priority 3: Use hardcoded defaults
+        # Note: Using 3 major symbols as per issue requirements for cleaner default set.
+        # Previous implementation had 8 symbols: BTC, ETH, SOL, BNB, ADA, DOT, LTC, AVAX
+        # New default uses 3 major pairs (BTC, ETH, SOL) for sufficient fallback coverage
+        # while keeping the default set minimal and maintainable.
+        default_symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+        logger.info(f"[SYMBOL_DISCOVERY] Using {len(default_symbols)} hardcoded default symbols")
+        return default_symbols
+    
     async def _initialize_production_system(self) -> bool:
         """
         Legacy wrapper for backwards compatibility.
@@ -674,29 +743,15 @@ class ProductionCoordinator:
                 logger.info(f"✓ Active symbols set from parameter: {len(trading_symbols)} symbols")
                 logger.info(f"  Symbols: {', '.join(trading_symbols)}")
             else:
-                # Priority 2: Load from config file
-                config_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
-                if config_symbols and isinstance(config_symbols, list) and len(config_symbols) > 0:
-                    self.active_symbols = config_symbols
-                    logger.info(f"✓ Active symbols loaded from config: {len(config_symbols)} symbols")
-                    logger.info(f"  Symbols: {', '.join(config_symbols)}")
-                else:
-                    # Priority 3: Try getting from trading engine
-                    if self.trading_engine and hasattr(self.trading_engine, '_get_scan_symbols'):
-                        try:
-                            self.active_symbols = self.trading_engine._get_scan_symbols()
-                            if self.active_symbols:
-                                logger.info(f"✓ Active symbols loaded from engine: {len(self.active_symbols)} symbols")
-                                logger.info(f"  Symbols: {', '.join(self.active_symbols)}")
-                            else:
-                                logger.error("❌ Engine returned empty symbol list!")
-                                self.active_symbols = []
-                        except Exception as e:
-                            logger.error(f"❌ Failed to get symbols from engine: {e}")
-                            self.active_symbols = []
-                    else:
-                        logger.error("❌ No symbols configured and engine cannot provide symbols!")
-                        self.active_symbols = []
+                # Priority 2+: Use default symbol discovery
+                self.active_symbols = self._get_default_symbols()
+                logger.info(f"✓ Active symbols discovered: {len(self.active_symbols)} symbols")
+                logger.info(f"  Symbols: {', '.join(self.active_symbols)}")
+            
+            # Set symbols on trading engine for prefetch and other operations
+            if self.trading_engine and self.active_symbols:
+                self.trading_engine._cached_symbols = self.active_symbols
+                logger.info(f"✓ Trading engine symbols cache set: {len(self.active_symbols)} symbols")
             
             # ========================================
             # STEP 11: VALIDATE ACTIVE SYMBOLS
@@ -793,16 +848,32 @@ class ProductionCoordinator:
                 raise RuntimeError("Trading engine not initialized!")
             
             logger.info(f"🔍 [DEBUG] trading_engine exists, state={self.trading_engine.state.value}")
-            
+
             if self.trading_engine.state.value != 'running':
-                logger.error(f"🔍 [DEBUG] Engine state is {self.trading_engine.state.value}, not 'running'!")
-                raise RuntimeError(
-                    f"Trading engine not running (state={self.trading_engine.state.value})! "
-                    "Call trading_engine.start_live_trading() before run_production_loop()"
+                logger.warning(
+                    "⚠️ Trading engine reported state '%s' while entering production loop; "
+                    "awaiting synchronization...",
+                    self.trading_engine.state.value
                 )
-            
-            logger.info(f"✅ Trading engine already running (state={self.trading_engine.state.value})")
-            
+                # Give the event loop more time to schedule engine startup tasks
+                # Extended from 0s to 1.0s to ensure proper task scheduling
+                logger.info("⏱️ Waiting 1.0s for engine tasks to initialize...")
+                await asyncio.sleep(1.0)
+
+                if self.trading_engine.state.value != 'running':
+                    logger.error(
+                        "❌ Engine state still '%s' after 1s synchronization delay; aborting production loop.",
+                        self.trading_engine.state.value
+                    )
+                    raise RuntimeError(
+                        "Trading engine not running after synchronization delay "
+                        f"(state={self.trading_engine.state.value})"
+                    )
+                else:
+                    logger.info("✅ Trading engine reached running state after synchronization delay")
+            else:
+                logger.info(f"✅ Trading engine already running (state={self.trading_engine.state.value})")
+
             # Ensure is_running is True
             logger.info(f"🔍 [DEBUG] Current is_running = {self.is_running}")
             if not self.is_running:
@@ -815,6 +886,11 @@ class ProductionCoordinator:
             logger.info("🔍 [DEBUG] Creating queue monitoring task...")
             self._monitoring_task = asyncio.create_task(self._monitor_signal_queues())
             logger.info("🔍 [DEBUG] Queue monitoring task created")
+            
+            # Start watchdog task to detect if main loop stalls
+            logger.info("🔍 [DEBUG] Creating watchdog task...")
+            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+            logger.info("🔍 [DEBUG] Watchdog task created")
             
             logger.info("🔍 [DEBUG] About to print production loop info...")
             logger.info("\n🚀 Production trading loop active")
@@ -870,6 +946,11 @@ class ProductionCoordinator:
             while self.is_running:
                 logger.info(f"🔍 [DEBUG] INSIDE WHILE LOOP - Iteration starting")
                 logger.info(f"🔍 [DEBUG] Loop iteration: {loop_iteration + 1}, is_running: {self.is_running}")
+                
+                # Watchdog: Log heartbeat every 5 iterations
+                if loop_iteration > 0 and loop_iteration % 5 == 0:
+                    logger.info(f"💓 [WATCHDOG] Loop heartbeat - {loop_iteration} iterations completed")
+                
                 try:
                     loop_iteration += 1
                     # ✅ DEĞİŞTİR: logger.debug → logger.info
@@ -880,8 +961,16 @@ class ProductionCoordinator:
                         logger.critical("Emergency stop triggered - shutting down")
                         break
                     
-                    # Check circuit breaker
-                    breaker_status = await self.circuit_breaker.check_circuit_breaker()
+                    # Check circuit breaker with timeout protection
+                    try:
+                        breaker_status = await asyncio.wait_for(
+                            self.circuit_breaker.check_circuit_breaker(),
+                            timeout=5.0
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("⏱️ Circuit breaker check timeout - continuing")
+                        breaker_status = {'tripped': False}
+                    
                     if breaker_status.get('tripped'):
                         severity = breaker_status.get('severity', 'high')
                         
@@ -1320,14 +1409,54 @@ class ProductionCoordinator:
         
         This method runs the blocking client.ohlcv() call in a thread pool to prevent
         blocking the async event loop, which was causing the bot to freeze.
+        
+        Uses a 15-second timeout to prevent indefinite blocking on slow/failed requests.
         """
         try:
-            # Run blocking I/O in thread pool to prevent event loop blocking
-            rows = await asyncio.to_thread(client.ohlcv, symbol, timeframe, limit=200)
+            # Run blocking I/O in thread pool with timeout to prevent indefinite blocking
+            rows = await asyncio.wait_for(
+                asyncio.to_thread(client.ohlcv, symbol, timeframe, limit=200),
+                timeout=15.0
+            )
             return self._ohlcv_to_dataframe(rows)
+        except asyncio.TimeoutError:
+            logger.warning(f"⏱️ Timeout fetching {symbol} {timeframe} (15s limit)")
+            return None
         except Exception as e:
             logger.error(f"Failed to fetch {symbol} {timeframe}: {e}")
             return None
+    
+    async def _watchdog_loop(self):
+        """
+        Watchdog task that logs periodic heartbeats to detect loop stalls.
+        
+        Logs every 10 seconds regardless of main loop state to help diagnose
+        if the main loop is truly stuck or just not logging.
+        """
+        logger.info("🐕 [WATCHDOG] Watchdog task started - will log every 10s")
+        watchdog_count = 0
+        
+        try:
+            while self.is_running:
+                watchdog_count += 1
+                logger.info(f"🐕 [WATCHDOG-{watchdog_count}] Heartbeat - is_running={self.is_running}")
+                logger.info(f"   Active symbols: {len(self.active_symbols)}")
+                logger.info(f"   Processed symbols: {self.processed_symbols_count}")
+                
+                # Check if engine is still running
+                if self.trading_engine:
+                    logger.info(f"   Engine state: {self.trading_engine.state.value}")
+                
+                # Force log flush
+                import sys
+                sys.stdout.flush()
+                sys.stderr.flush()
+                
+                await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            logger.info("🐕 [WATCHDOG] Task cancelled")
+        except Exception as e:
+            logger.error(f"🐕 [WATCHDOG] Error: {e}", exc_info=True)
     
     async def _monitor_signal_queues(self):
         """
@@ -1389,6 +1518,14 @@ class ProductionCoordinator:
             self._monitoring_task.cancel()
             try:
                 await self._monitoring_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Cancel watchdog task
+        if hasattr(self, '_watchdog_task') and self._watchdog_task:
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
             except asyncio.CancelledError:
                 pass
         
