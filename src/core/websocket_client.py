@@ -42,6 +42,20 @@ class WebSocketClient:
         self._is_connected = False
         self._first_message_received = False
         self._last_message_time = None
+
+        # Diagnostic / telemetry / error-tracking defaults
+        # Ensure attributes used by get_health_status() and _log_error() exist
+        self.error_history: List[Dict[str, Any]] = []        # recent error records
+        self.max_error_history: int = 100                    # keep at most this many error records
+        # parse_frame_errors may be used to count parse issues per stream
+        self.parse_frame_errors: Dict[str, int] = getattr(self, 'parse_frame_errors', {})
+        self.max_parse_frame_retries: int = getattr(self, 'max_parse_frame_retries', 3)
+        # reconnect settings & counters
+        self.reconnect_delay: float = getattr(self, 'reconnect_delay', 5.0)
+        self.reconnect_count: int = getattr(self, 'reconnect_count', 0)
+        self.last_reconnect: Optional[datetime] = getattr(self, 'last_reconnect', None)
+        # flag used when we fell back to REST polling
+        self.use_rest_fallback: bool = getattr(self, 'use_rest_fallback', False)
         
         # ✅ DÜZENLEME: BingX için özel durum
         if self.name == 'bingx' and not CCXT_PRO_AVAILABLE:
