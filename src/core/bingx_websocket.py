@@ -240,6 +240,13 @@ class BingXWebSocket:
         while self._running:  # ✅ FIX: self.running -> self._running
             try:
                 message = await self.ws.recv()
+
+                # DEBUG: Log raw message type and sample
+                logger.debug(f"Raw message type: {type(message)}")
+                if isinstance(message, bytes):
+                    logger.debug(f"Raw bytes length: {len(message)}")
+                elif isinstance(message, str):
+                    logger.debug(f"Raw string preview: {message[:100]}")
                 
                 # Handle different message types
                 if isinstance(message, bytes):
