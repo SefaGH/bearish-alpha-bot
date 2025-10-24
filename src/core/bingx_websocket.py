@@ -1,9 +1,5 @@
-"""
-BingX Direct WebSocket Implementation
-No CCXT Pro required - uses native BingX WebSocket API
-"""
-
 import gzip
+import io
 import json
 import asyncio
 import logging
@@ -27,12 +23,14 @@ class BingXWebSocket:
     - OHLCV/Kline streaming
     - Order book updates
     - Automatic reconnection
-    - No CCXT Pro dependency
+    - GZIP decompression
+    - Ping/Pong handling
     """
     
     # BingX WebSocket endpoints
     WS_PUBLIC_SPOT = "wss://open-api-ws.bingx.com/market"
     WS_PUBLIC_SWAP = "wss://open-api-swap.bingx.com/swap-market"
+    WS_VST_SWAP = "wss://vst-open-api-ws.bingx.com/swap-market"
     
     def __init__(self, api_key: Optional[str] = None, api_secret: Optional[str] = None, 
                  testnet: bool = False, futures: bool = True):
@@ -52,15 +50,15 @@ class BingXWebSocket:
         
         # Select appropriate endpoint
         self.ws_url = self.WS_PUBLIC_SWAP if futures else self.WS_PUBLIC_SPOT
-        if testnet:
-            self.ws_url = self.ws_url.replace("bingx.com", "bingx.com")  # Testnet same URL
-            
+        
         # Connection management
         self.ws = None
         self._running = False
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = 5
         self._reconnect_delay = 5  # seconds
+        self._ping_interval = 30  # Send ping every 30 seconds
+        self._last_ping_time = None
         
         # Data storage
         self.tickers = {}
@@ -71,11 +69,13 @@ class BingXWebSocket:
         self.callbacks = {
             'ticker': [],
             'orderbook': [],
-            'kline': []
+            'kline': [],
+            'trade': []
         }
         
         # Subscription tracking
-        self.subscriptions = set()
+        self.subscriptions = {}  # id -> subscription info
+        self.pending_subscriptions = {}  # id -> subscription message
         
         # Statistics
         self.message_count = 0
@@ -95,22 +95,25 @@ class BingXWebSocket:
             logger.info(f"Connecting to BingX WebSocket: {self.ws_url}")
             self.ws = await websockets.connect(
                 self.ws_url,
-                ping_interval=20,
-                ping_timeout=10,
-                close_timeout=10
+                ping_interval=None,  # We handle ping/pong manually
+                ping_timeout=None,
+                close_timeout=10,
+                max_size=10 * 1024 * 1024  # 10MB max message size
             )
             
             self._running = True
             self._reconnect_attempts = 0
             self.connection_start_time = datetime.now(timezone.utc)
+            self._last_ping_time = time.time()
             
             logger.info("✅ BingX WebSocket connected successfully")
             
             # Re-subscribe to previous subscriptions after reconnect
-            if self.subscriptions:
-                logger.info(f"Re-subscribing to {len(self.subscriptions)} channels...")
-                for sub_msg in self.subscriptions:
-                    await self.ws.send(sub_msg)
+            if self.pending_subscriptions:
+                logger.info(f"Re-subscribing to {len(self.pending_subscriptions)} channels...")
+                for sub_id, sub_msg in self.pending_subscriptions.items():
+                    await self.ws.send(json.dumps(sub_msg))
+                    logger.debug(f"Re-sent subscription: {sub_msg}")
             
             return True
             
@@ -131,26 +134,27 @@ class BingXWebSocket:
         Subscribe to ticker updates for a symbol.
         
         Args:
-            symbol: Trading pair (e.g., 'BTC-USDT' for BingX format)
+            symbol: Trading pair (e.g., 'BTC/USDT:USDT' for CCXT format)
             
         Returns:
             True if subscription successful
         """
         try:
-            # Convert CCXT format (BTC/USDT:USDT) to BingX format (BTC-USDT)
+            # Convert CCXT format to BingX format
             bingx_symbol = self._convert_symbol_to_bingx(symbol)
             
+            sub_id = str(int(time.time() * 1000))
             sub_message = {
-                "id": str(int(time.time() * 1000)),
+                "id": sub_id,
                 "reqType": "sub",
                 "dataType": f"{bingx_symbol}@ticker"
             }
             
-            sub_msg_str = json.dumps(sub_message)
-            self.subscriptions.add(sub_msg_str)
+            # Track subscription
+            self.pending_subscriptions[sub_id] = sub_message
             
             if self.ws:
-                await self.ws.send(sub_msg_str)
+                await self.ws.send(json.dumps(sub_message))
                 logger.info(f"Subscribed to ticker: {bingx_symbol}")
                 return True
             
@@ -173,21 +177,20 @@ class BingXWebSocket:
         """
         try:
             bingx_symbol = self._convert_symbol_to_bingx(symbol)
-            
-            # Convert timeframe to BingX format
             bingx_interval = self._convert_timeframe(interval)
             
+            sub_id = str(int(time.time() * 1000))
             sub_message = {
-                "id": str(int(time.time() * 1000)),
+                "id": sub_id,
                 "reqType": "sub", 
                 "dataType": f"{bingx_symbol}@kline_{bingx_interval}"
             }
             
-            sub_msg_str = json.dumps(sub_message)
-            self.subscriptions.add(sub_msg_str)
+            # Track subscription
+            self.pending_subscriptions[sub_id] = sub_message
             
             if self.ws:
-                await self.ws.send(sub_msg_str)
+                await self.ws.send(json.dumps(sub_message))
                 logger.info(f"Subscribed to kline: {bingx_symbol} {bingx_interval}")
                 return True
                 
@@ -197,157 +200,139 @@ class BingXWebSocket:
             logger.error(f"Failed to subscribe to kline {symbol} {interval}: {e}")
             return False
     
-    async def subscribe_orderbook(self, symbol: str, depth: int = 20) -> bool:
-        """
-        Subscribe to order book updates.
-        
-        Args:
-            symbol: Trading pair
-            depth: Order book depth (5, 10, 20, 50, 100)
-            
-        Returns:
-            True if subscription successful
-        """
-        try:
-            bingx_symbol = self._convert_symbol_to_bingx(symbol)
-            
-            # BingX depth levels: depth5, depth10, depth20, depth50, depth100
-            if depth not in [5, 10, 20, 50, 100]:
-                depth = 20  # Default
-            
-            sub_message = {
-                "id": str(int(time.time() * 1000)),
-                "reqType": "sub",
-                "dataType": f"{bingx_symbol}@depth{depth}"
-            }
-            
-            sub_msg_str = json.dumps(sub_message)
-            self.subscriptions.add(sub_msg_str)
-            
-            if self.ws:
-                await self.ws.send(sub_msg_str)
-                logger.info(f"Subscribed to orderbook: {bingx_symbol} depth{depth}")
-                return True
-                
-            return False
-            
-        except Exception as e:
-            logger.error(f"Failed to subscribe to orderbook {symbol}: {e}")
-            return False
-    
     async def listen(self):
         """Listen to WebSocket messages with GZIP support"""
-        while self._running:  # ✅ FIX: self.running -> self._running
+        while self._running:
             try:
                 message = await self.ws.recv()
-
-                # DEBUG: Log raw message type and sample
-                logger.debug(f"Raw message type: {type(message)}")
-                if isinstance(message, bytes):
-                    logger.debug(f"Raw bytes length: {len(message)}")
-                elif isinstance(message, str):
-                    logger.debug(f"Raw string preview: {message[:100]}")
                 
-                # Handle different message types
+                # All BingX messages are GZIP compressed
                 if isinstance(message, bytes):
-                    # Check for GZIP compression
-                    if len(message) > 2 and message[:2] == b'\x1f\x8b':
-                        # Decompress GZIP data
-                        try:
-                            message = gzip.decompress(message)
-                            logger.debug("Decompressed GZIP message")  # ✅ FIX: self.logger -> logger
-                        except Exception as e:
-                            logger.error(f"GZIP decompression failed: {e}")  # ✅ FIX: self.logger -> logger
-                            continue
-                    
-                    # Decode bytes to string
                     try:
-                        message = message.decode('utf-8')
-                    except UnicodeDecodeError as e:
-                        logger.error(f"UTF-8 decode failed: {e}")  # ✅ FIX: self.logger -> logger
+                        # Decompress using GzipFile (not gzip.decompress)
+                        compressed_data = gzip.GzipFile(fileobj=io.BytesIO(message), mode='rb')
+                        decompressed_data = compressed_data.read()
+                        message_str = decompressed_data.decode('utf-8')
+                        
+                        # Handle Ping/Pong
+                        if message_str == "Ping":
+                            await self.ws.send("Pong")
+                            self._last_ping_time = time.time()
+                            logger.debug("Received Ping, sent Pong")
+                            continue
+                        
+                        # Skip empty messages
+                        if not message_str or message_str.strip() == "":
+                            continue
+                        
+                        # Parse JSON
+                        try:
+                            data = json.loads(message_str)
+                            await self._process_message(data)
+                        except json.JSONDecodeError:
+                            # Not JSON, might be a status message
+                            logger.debug(f"Non-JSON message: {message_str[:100]}")
+                            
+                    except Exception as e:
+                        logger.error(f"Error processing message: {e}")
+                        
+                elif isinstance(message, str):
+                    # Should not happen with BingX, but handle anyway
+                    if message == "Ping":
+                        await self.ws.send("Pong")
                         continue
-                
-                # Parse JSON
-                try:
-                    data = json.loads(message)
-                    await self._handle_message(data)
-                except json.JSONDecodeError as e:
-                    logger.error(f"JSON parse failed: {e}")  # ✅ FIX: self.logger -> logger
                     
+                    if message.strip():
+                        try:
+                            data = json.loads(message)
+                            await self._process_message(data)
+                        except json.JSONDecodeError:
+                            logger.debug(f"Non-JSON string: {message[:100]}")
+                            
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning("WebSocket connection closed")
+                break
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Listen loop error: {e}")  # ✅ FIX: self.logger -> logger
-                await asyncio.sleep(1)  # Prevent tight loop on errors
+                logger.error(f"Listen loop error: {e}")
+                await asyncio.sleep(1)
+        
+        # Connection lost, try to reconnect
+        if self._running:
+            logger.info("Connection lost, attempting to reconnect...")
+            await self._reconnect()
     
-    async def _handle_message(self, message: Union[str, bytes, dict]):
+    async def _process_message(self, data: dict):
         """
-        Process incoming WebSocket message.
+        Process a parsed WebSocket message.
         
         Args:
-            message: Raw message from WebSocket (can be str, bytes, or dict)
+            data: Parsed message dictionary
         """
         try:
-            # Handle different message types
-            if isinstance(message, dict):
-                # Message is already parsed (from listen() method)
-                data = message
-            elif isinstance(message, bytes):
-                # Decode bytes to string first
-                message = message.decode('utf-8')
-                data = json.loads(message)
-            elif isinstance(message, str):
-                # Parse JSON string
-                data = json.loads(message)
-            else:
-                logger.error(f"Unexpected message type: {type(message)}")
-                return
-            
             # Update statistics
             self.message_count += 1
             self.last_message_time = datetime.now(timezone.utc)
             
-            # Check if it's a ping/pong message
-            if isinstance(data, dict) and data.get("ping"):
-                await self._send_pong(data["ping"])
+            # Check if it's a subscription confirmation
+            if "id" in data and "code" in data:
+                await self._handle_subscription_response(data)
                 return
             
             # Check for error responses
-            if isinstance(data, dict) and "code" in data and data["code"] != 0:
+            if "code" in data and data["code"] != 0:
                 logger.error(f"BingX error response: {data}")
                 return
             
             # Process by data type
-            if isinstance(data, dict):
-                data_type = data.get("dataType", "")
-                
-                if "@ticker" in data_type:
-                    await self._handle_ticker(data)
-                elif "@kline" in data_type:
-                    await self._handle_kline(data)
-                elif "@depth" in data_type:
-                    await self._handle_orderbook(data)
-                else:
-                    logger.debug(f"Unknown message type: {data_type}")
+            data_type = data.get("dataType", "")
+            
+            if "@ticker" in data_type:
+                await self._handle_ticker(data)
+            elif "@kline" in data_type:
+                await self._handle_kline(data)
+            elif "@depth" in data_type or "@incrDepth" in data_type:
+                await self._handle_orderbook(data)
+            elif "@trade" in data_type:
+                await self._handle_trade(data)
+            elif "@lastPrice" in data_type:
+                await self._handle_last_price(data)
+            elif "@markPrice" in data_type:
+                await self._handle_mark_price(data)
+            elif "@bookTicker" in data_type:
+                await self._handle_book_ticker(data)
             else:
-                logger.warning(f"Unexpected data format: {type(data)}")
+                logger.debug(f"Unknown message type: {data_type}")
                 
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse WebSocket message: {e}")
-            if isinstance(message, (str, bytes)):
-                logger.debug(f"Raw message: {message[:100]}...")  # Log first 100 chars for debugging
         except Exception as e:
-            logger.error(f"Error handling message: {e}")
-            logger.debug(f"Message type: {type(message)}")
+            logger.error(f"Error processing message: {e}")
+            logger.debug(f"Message: {data}")
     
-    async def _handle_ticker(self, data: Dict):
+    async def _handle_subscription_response(self, data: dict):
+        """Handle subscription confirmation."""
+        sub_id = data.get("id")
+        code = data.get("code")
+        msg = data.get("msg", "")
+        
+        if code == 0:
+            logger.info(f"✅ Subscription confirmed: {sub_id}")
+            if sub_id in self.pending_subscriptions:
+                self.subscriptions[sub_id] = self.pending_subscriptions[sub_id]
+                del self.pending_subscriptions[sub_id]
+        else:
+            logger.error(f"❌ Subscription failed: {sub_id} - {msg}")
+            if sub_id in self.pending_subscriptions:
+                del self.pending_subscriptions[sub_id]
+    
+    async def _handle_ticker(self, data: dict):
         """Process ticker update."""
         try:
             ticker_data = data.get("data", {})
             if not ticker_data:
                 return
             
-            # Extract symbol from dataType (e.g., "BTC-USDT@ticker")
+            # Extract symbol from dataType
             data_type = data.get("dataType", "")
             symbol = data_type.split("@")[0] if "@" in data_type else None
             
@@ -376,83 +361,126 @@ class BingXWebSocket:
         except Exception as e:
             logger.error(f"Error handling ticker: {e}")
     
-    async def _handle_kline(self, data: Dict):
+    async def _handle_kline(self, data: dict):
         """Process kline/candlestick update."""
         try:
-            # Handle different data formats
-            if isinstance(data, dict):
-                kline_data = data.get("data", {})
-                data_type = data.get("dataType", "")
-            elif isinstance(data, list):
-                # BingX might send kline as array directly
-                # Format: [timestamp, open, high, low, close, volume]
-                if len(data) >= 6:
-                    # Direct kline array - create wrapper
-                    kline_data = {
-                        't': data[0],  # timestamp
-                        'o': data[1],  # open
-                        'h': data[2],  # high
-                        'l': data[3],  # low
-                        'c': data[4],  # close
-                        'v': data[5]   # volume
-                    }
-                    # Try to infer symbol from context or use default
-                    data_type = "UNKNOWN@kline_1m"  # Will need proper symbol tracking
-                else:
-                    logger.warning(f"Invalid kline array format: {data}")
-                    return
-            else:
-                logger.error(f"Unexpected kline data type: {type(data)}")
-                return
-                
+            kline_data = data.get("data")
             if not kline_data:
+                logger.debug("No kline data in message")
                 return
             
-            # Extract symbol and timeframe
-            parts = data_type.split("@") if "@" in data_type else ["UNKNOWN", "kline_1m"]
+            # Extract symbol and timeframe from dataType
+            data_type = data.get("dataType", "")
+            if not data_type:
+                logger.warning("No dataType in kline message")
+                return
+                
+            parts = data_type.split("@")
             if len(parts) != 2:
                 logger.warning(f"Invalid dataType format: {data_type}")
                 return
             
-            symbol = parts[0]
-            timeframe_part = parts[1].replace("kline_", "")
+            symbol = parts[0]  # e.g., "BTC-USDT"
+            timeframe_part = parts[1].replace("kline_", "")  # e.g., "1m"
             
-            # Convert to standard format
-            ccxt_symbol = self._convert_symbol_from_bingx(symbol) if symbol != "UNKNOWN" else "BTC/USDT:USDT"
+            # Convert to CCXT format
+            ccxt_symbol = self._convert_symbol_from_bingx(symbol)
             ccxt_timeframe = self._convert_timeframe_from_bingx(timeframe_part)
             
-            # Format: [timestamp, open, high, low, close, volume]
-            kline = [
-                kline_data.get('t', 0),           # timestamp
-                float(kline_data.get('o', 0)),    # open
-                float(kline_data.get('h', 0)),    # high
-                float(kline_data.get('l', 0)),    # low
-                float(kline_data.get('c', 0)),    # close
-                float(kline_data.get('v', 0))     # volume
-            ]
-            
-            # Store kline
-            if ccxt_symbol not in self.klines:
-                self.klines[ccxt_symbol] = {}
-            if ccxt_timeframe not in self.klines[ccxt_symbol]:
-                self.klines[ccxt_symbol][ccxt_timeframe] = []
-            
-            # Append and keep last 500 candles
-            self.klines[ccxt_symbol][ccxt_timeframe].append(kline)
-            if len(self.klines[ccxt_symbol][ccxt_timeframe]) > 500:
-                self.klines[ccxt_symbol][ccxt_timeframe] = self.klines[ccxt_symbol][ccxt_timeframe][-500:]
-            
-            # Call callbacks
-            for callback in self.callbacks['kline']:
-                await callback(ccxt_symbol, ccxt_timeframe, [kline])
+            # BingX sends kline data as a dict with specific fields
+            if isinstance(kline_data, dict):
+                # Parse single kline
+                kline = [
+                    kline_data.get('t', int(time.time() * 1000)),  # timestamp (eğer yoksa şimdiki zaman)
+                    float(kline_data.get('o', 0)),    # open
+                    float(kline_data.get('h', 0)),    # high
+                    float(kline_data.get('l', 0)),    # low
+                    float(kline_data.get('c', 0)),    # close
+                    float(kline_data.get('v', 0))     # volume
+                ]
+                
+                # Store kline
+                if ccxt_symbol not in self.klines:
+                    self.klines[ccxt_symbol] = {}
+                if ccxt_timeframe not in self.klines[ccxt_symbol]:
+                    self.klines[ccxt_symbol][ccxt_timeframe] = []
+                
+                # Append and keep last 500 candles
+                self.klines[ccxt_symbol][ccxt_timeframe].append(kline)
+                if len(self.klines[ccxt_symbol][ccxt_timeframe]) > 500:
+                    self.klines[ccxt_symbol][ccxt_timeframe] = self.klines[ccxt_symbol][ccxt_timeframe][-500:]
+                
+                # Log successful kline update
+                logger.debug(f"Kline updated for {ccxt_symbol} {ccxt_timeframe}: O={kline[1]}, H={kline[2]}, L={kline[3]}, C={kline[4]}, V={kline[5]}")
+                
+                # Call callbacks
+                for callback in self.callbacks.get('kline', []):
+                    await callback(ccxt_symbol, ccxt_timeframe, [kline])
+                    
+            elif isinstance(kline_data, list):
+                # Eğer multiple kline gelirse (batch update)
+                for k in kline_data:
+                    if isinstance(k, dict):
+                        kline = [
+                            k.get('t', int(time.time() * 1000)),
+                            float(k.get('o', 0)),
+                            float(k.get('h', 0)),
+                            float(k.get('l', 0)),
+                            float(k.get('c', 0)),
+                            float(k.get('v', 0))
+                        ]
+                        # Store each kline...
+                        if ccxt_symbol not in self.klines:
+                            self.klines[ccxt_symbol] = {}
+                        if ccxt_timeframe not in self.klines[ccxt_symbol]:
+                            self.klines[ccxt_symbol][ccxt_timeframe] = []
+                        
+                        self.klines[ccxt_symbol][ccxt_timeframe].append(kline)
+                        
+                # Trim to 500 candles
+                if ccxt_symbol in self.klines and ccxt_timeframe in self.klines[ccxt_symbol]:
+                    self.klines[ccxt_symbol][ccxt_timeframe] = self.klines[ccxt_symbol][ccxt_timeframe][-500:]
+                    
+                # Call callbacks with all new klines
+                if ccxt_symbol in self.klines and ccxt_timeframe in self.klines[ccxt_symbol]:
+                    for callback in self.callbacks.get('kline', []):
+                        await callback(ccxt_symbol, ccxt_timeframe, self.klines[ccxt_symbol][ccxt_timeframe])
+            else:
+                logger.warning(f"Unexpected kline_data format: {type(kline_data)}")
                 
         except Exception as e:
             logger.error(f"Error handling kline: {e}")
-            logger.debug(f"Kline data type: {type(data)}")
-            if isinstance(data, (dict, list)):
-                logger.debug(f"Kline data sample: {str(data)[:200]}")
+            logger.debug(f"Kline message: {data}")
     
-    async def _handle_orderbook(self, data: Dict):
+    def _parse_kline_dict(self, k: dict) -> list:
+        """Parse a kline dict to standard format [timestamp, o, h, l, c, v]"""
+        return [
+            k.get('t', 0),           # timestamp
+            float(k.get('o', 0)),    # open
+            float(k.get('h', 0)),    # high
+            float(k.get('l', 0)),    # low
+            float(k.get('c', 0)),    # close
+            float(k.get('v', 0))     # volume
+        ]
+    
+    def _store_kline(self, symbol: str, timeframe: str, kline: list):
+        """Store kline data and trigger callbacks."""
+        # Initialize storage
+        if symbol not in self.klines:
+            self.klines[symbol] = {}
+        if timeframe not in self.klines[symbol]:
+            self.klines[symbol][timeframe] = []
+        
+        # Store and limit size
+        self.klines[symbol][timeframe].append(kline)
+        if len(self.klines[symbol][timeframe]) > 500:
+            self.klines[symbol][timeframe] = self.klines[symbol][timeframe][-500:]
+        
+        # Trigger callbacks
+        for callback in self.callbacks.get('kline', []):
+            asyncio.create_task(callback(symbol, timeframe, [kline]))
+    
+    async def _handle_orderbook(self, data: dict):
         """Process orderbook update."""
         try:
             ob_data = data.get("data", {})
@@ -468,29 +496,204 @@ class BingXWebSocket:
             
             ccxt_symbol = self._convert_symbol_from_bingx(symbol)
             
-            # Format orderbook
-            orderbook = {
-                'symbol': ccxt_symbol,
-                'bids': [[float(p), float(q)] for p, q in ob_data.get('bids', [])],
-                'asks': [[float(p), float(q)] for p, q in ob_data.get('asks', [])],
-                'timestamp': data.get('ts', int(time.time() * 1000))
-            }
-            
-            # Store orderbook
-            self.orderbooks[ccxt_symbol] = orderbook
+            # Check if it's incremental depth
+            if "@incrDepth" in data_type:
+                # Handle incremental updates
+                action = ob_data.get("action", "")
+                if action == "all":
+                    # Full snapshot
+                    self.orderbooks[ccxt_symbol] = {
+                        'symbol': ccxt_symbol,
+                        'bids': [[float(p), float(q)] for p, q in ob_data.get('bids', [])],
+                        'asks': [[float(p), float(q)] for p, q in ob_data.get('asks', [])],
+                        'timestamp': data.get('ts', int(time.time() * 1000)),
+                        'lastUpdateId': ob_data.get('lastUpdateId', 0)
+                    }
+                elif action == "update":
+                    # Incremental update
+                    if ccxt_symbol in self.orderbooks:
+                        self._apply_orderbook_update(ccxt_symbol, ob_data)
+            else:
+                # Regular depth snapshot
+                self.orderbooks[ccxt_symbol] = {
+                    'symbol': ccxt_symbol,
+                    'bids': [[float(p), float(q)] for p, q in ob_data.get('bids', [])],
+                    'asks': [[float(p), float(q)] for p, q in ob_data.get('asks', [])],
+                    'timestamp': data.get('ts', int(time.time() * 1000))
+                }
             
             # Call callbacks
             for callback in self.callbacks['orderbook']:
-                await callback(ccxt_symbol, orderbook)
+                await callback(ccxt_symbol, self.orderbooks[ccxt_symbol])
                 
         except Exception as e:
             logger.error(f"Error handling orderbook: {e}")
     
-    async def _send_pong(self, ping_id):
-        """Send pong response to keep connection alive."""
-        pong_message = {"pong": ping_id}
-        if self.ws:
-            await self.ws.send(json.dumps(pong_message))
+    def _apply_orderbook_update(self, symbol: str, update_data: dict):
+        """Apply incremental orderbook update."""
+        if symbol not in self.orderbooks:
+            return
+        
+        ob = self.orderbooks[symbol]
+        
+        # Update bids
+        for price, qty in update_data.get('bids', []):
+            price = float(price)
+            qty = float(qty)
+            
+            if qty == 0:
+                # Remove price level
+                ob['bids'] = [bid for bid in ob['bids'] if bid[0] != price]
+            else:
+                # Update or add price level
+                found = False
+                for i, bid in enumerate(ob['bids']):
+                    if bid[0] == price:
+                        ob['bids'][i][1] = qty
+                        found = True
+                        break
+                if not found:
+                    ob['bids'].append([price, qty])
+        
+        # Update asks
+        for price, qty in update_data.get('asks', []):
+            price = float(price)
+            qty = float(qty)
+            
+            if qty == 0:
+                # Remove price level
+                ob['asks'] = [ask for ask in ob['asks'] if ask[0] != price]
+            else:
+                # Update or add price level
+                found = False
+                for i, ask in enumerate(ob['asks']):
+                    if ask[0] == price:
+                        ob['asks'][i][1] = qty
+                        found = True
+                        break
+                if not found:
+                    ob['asks'].append([price, qty])
+        
+        # Sort orderbook
+        ob['bids'].sort(key=lambda x: x[0], reverse=True)
+        ob['asks'].sort(key=lambda x: x[0])
+        
+        # Update timestamp and lastUpdateId
+        ob['timestamp'] = int(time.time() * 1000)
+        ob['lastUpdateId'] = update_data.get('lastUpdateId', ob.get('lastUpdateId', 0))
+    
+    async def _handle_trade(self, data: dict):
+        """Process trade update."""
+        try:
+            trade_data = data.get("data", {})
+            if not trade_data:
+                return
+            
+            # Extract symbol
+            data_type = data.get("dataType", "")
+            symbol = data_type.split("@")[0] if "@" in data_type else None
+            
+            if not symbol:
+                return
+            
+            ccxt_symbol = self._convert_symbol_from_bingx(symbol)
+            
+            # Format trade
+            trade = {
+                'symbol': ccxt_symbol,
+                'price': float(trade_data.get('p', 0)),
+                'quantity': float(trade_data.get('q', 0)),
+                'side': 'buy' if trade_data.get('m', True) else 'sell',
+                'timestamp': trade_data.get('t', int(time.time() * 1000))
+            }
+            
+            # Call callbacks
+            for callback in self.callbacks.get('trade', []):
+                await callback(ccxt_symbol, trade)
+                
+        except Exception as e:
+            logger.error(f"Error handling trade: {e}")
+    
+    async def _handle_last_price(self, data: dict):
+        """Process last price update."""
+        try:
+            price_data = data.get("data", {})
+            if not price_data:
+                return
+            
+            # Extract symbol
+            data_type = data.get("dataType", "")
+            symbol = data_type.split("@")[0] if "@" in data_type else None
+            
+            if not symbol:
+                return
+            
+            ccxt_symbol = self._convert_symbol_from_bingx(symbol)
+            
+            # Update ticker with last price
+            if ccxt_symbol not in self.tickers:
+                self.tickers[ccxt_symbol] = {}
+            
+            self.tickers[ccxt_symbol]['last'] = float(price_data.get('p', 0))
+            self.tickers[ccxt_symbol]['timestamp'] = data.get('ts', int(time.time() * 1000))
+            
+        except Exception as e:
+            logger.error(f"Error handling last price: {e}")
+    
+    async def _handle_mark_price(self, data: dict):
+        """Process mark price update."""
+        try:
+            price_data = data.get("data", {})
+            if not price_data:
+                return
+            
+            # Extract symbol
+            data_type = data.get("dataType", "")
+            symbol = data_type.split("@")[0] if "@" in data_type else None
+            
+            if not symbol:
+                return
+            
+            ccxt_symbol = self._convert_symbol_from_bingx(symbol)
+            
+            # Update ticker with mark price
+            if ccxt_symbol not in self.tickers:
+                self.tickers[ccxt_symbol] = {}
+            
+            self.tickers[ccxt_symbol]['mark'] = float(price_data.get('p', 0))
+            self.tickers[ccxt_symbol]['timestamp'] = data.get('ts', int(time.time() * 1000))
+            
+        except Exception as e:
+            logger.error(f"Error handling mark price: {e}")
+    
+    async def _handle_book_ticker(self, data: dict):
+        """Process book ticker (best bid/ask) update."""
+        try:
+            book_data = data.get("data", {})
+            if not book_data:
+                return
+            
+            # Extract symbol
+            data_type = data.get("dataType", "")
+            symbol = data_type.split("@")[0] if "@" in data_type else None
+            
+            if not symbol:
+                return
+            
+            ccxt_symbol = self._convert_symbol_from_bingx(symbol)
+            
+            # Update ticker with best bid/ask
+            if ccxt_symbol not in self.tickers:
+                self.tickers[ccxt_symbol] = {}
+            
+            self.tickers[ccxt_symbol]['bid'] = float(book_data.get('b', 0))
+            self.tickers[ccxt_symbol]['bidVolume'] = float(book_data.get('B', 0))
+            self.tickers[ccxt_symbol]['ask'] = float(book_data.get('a', 0))
+            self.tickers[ccxt_symbol]['askVolume'] = float(book_data.get('A', 0))
+            self.tickers[ccxt_symbol]['timestamp'] = data.get('ts', int(time.time() * 1000))
+            
+        except Exception as e:
+            logger.error(f"Error handling book ticker: {e}")
     
     async def _reconnect(self) -> bool:
         """
@@ -598,6 +801,10 @@ class BingXWebSocket:
         """Register callback for orderbook updates."""
         self.callbacks['orderbook'].append(callback)
     
+    def on_trade(self, callback: Callable):
+        """Register callback for trade updates."""
+        self.callbacks['trade'].append(callback)
+    
     def get_status(self) -> Dict[str, Any]:
         """Get WebSocket connection status."""
         return {
@@ -610,7 +817,10 @@ class BingXWebSocket:
                 if self.connection_start_time else 0
             ),
             'subscriptions': len(self.subscriptions),
+            'pending_subscriptions': len(self.pending_subscriptions),
             'tickers_tracked': len(self.tickers),
             'orderbooks_tracked': len(self.orderbooks),
-            'reconnect_attempts': self._reconnect_attempts
+            'klines_tracked': sum(len(tf) for tf in self.klines.values()),
+            'reconnect_attempts': self._reconnect_attempts,
+            'last_ping': time.time() - self._last_ping_time if self._last_ping_time else None
         }
