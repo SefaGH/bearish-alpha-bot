@@ -90,7 +90,7 @@ class TestMLSignalFlowIntegration:
             is_valid, _ = coordinator.validate_duplicate(signal, 'test_strategy')
             if is_valid:
                 accepted += 1
-            time.sleep(0.1)
+            time.sleep(0.1)  # Small delay to simulate time passing (sync sleep OK in test)
         
         # With 0.05% threshold, signals with 0.06% change should be accepted
         assert accepted >= 2, f"Expected at least 2 accepted signals, got {accepted}"
@@ -304,9 +304,10 @@ class TestMLConfigurationSettings:
         
         logger.info(f"Duplicate prevention threshold: {threshold}")
         
-        # Should be 0.0005 (0.05%), not 0.05 (5%)
+        # Should be 0.0005 (0.05%) ideally, but 0.001 (0.1%) is also acceptable
+        # as a slightly more conservative threshold that still allows signals through
         assert threshold == 0.0005 or threshold == 0.001, \
-            f"Threshold should be 0.0005 or 0.001, got {threshold}"
+            f"Threshold should be 0.0005 (0.05%) or 0.001 (0.1%), got {threshold}"
         
         logger.info("✅ Duplicate prevention threshold is correct")
 
