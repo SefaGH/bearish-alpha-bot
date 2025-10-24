@@ -243,7 +243,7 @@ class LiveTradingConfiguration:
             'max_data_age': cls.get_env_int('WEBSOCKET_MAX_DATA_AGE', 60),
             'fallback_threshold': cls.get_env_int('WEBSOCKET_FALLBACK_THRESHOLD', 3),
             'max_streams_per_exchange': {
-                'bingx': cls.get_env_int('WS_MAX_STREAMS_BINGX', 6),
+                'bingx': cls.get_env_int('WS_MAX_STREAMS_BINGX', 10),
                 'binance': cls.get_env_int('WS_MAX_STREAMS_BINANCE', 20),
                 'kucoinfutures': cls.get_env_int('WS_MAX_STREAMS_KUCOIN', 15),
                 'default': cls.get_env_int('WS_MAX_STREAMS_DEFAULT', 10),
