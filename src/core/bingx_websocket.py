@@ -363,6 +363,9 @@ class BingXWebSocket:
     
     async def _handle_kline(self, data: dict):
         """Process kline/candlestick update."""
+        logger.info(f"[KLINE-DEBUG] Received kline data type: {type(data)}")
+        logger.info(f"[KLINE-DEBUG] Data keys: {data.keys() if isinstance(data, dict) else 'Not a dict'}")
+        logger.info(f"[KLINE-DEBUG] Data sample: {str(data)[:200]}")
         try:
             kline_data = data.get("data")
             if not kline_data:
