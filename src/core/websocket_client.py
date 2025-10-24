@@ -57,7 +57,7 @@ class WebSocketClient:
         # flag used when we fell back to REST polling
         self.use_rest_fallback: bool = False
         
-        # ✅ DÜZENLEME: BingX için özel durum
+        # BingX-specific handling when CCXT Pro is not available
         if self.name == 'bingx' and not CCXT_PRO_AVAILABLE:
             logger.info("🎯 Using BingX Direct WebSocket (no CCXT Pro)")
             
@@ -125,7 +125,7 @@ class WebSocketClient:
         Watch OHLCV data for a symbol in real-time.
         """
         try:
-            # ✅ DÜZENLEME: BingX Direct WebSocket kullanımı
+            # Use BingX Direct WebSocket if available
             if hasattr(self, 'use_direct_ws') and self.use_direct_ws:
                 # Connect if needed
                 if not self._is_connected:
@@ -193,7 +193,7 @@ class WebSocketClient:
         Watch ticker data for a symbol in real-time.
         """
         try:
-            # ✅ DÜZENLEME: BingX Direct WebSocket kullanımı
+            # Use BingX Direct WebSocket if available
             if hasattr(self, 'use_direct_ws') and self.use_direct_ws:
                 # Connect if needed
                 if not self._is_connected:

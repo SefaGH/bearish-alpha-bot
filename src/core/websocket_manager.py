@@ -84,7 +84,7 @@ class WebSocketManager:
                 # Normalize exchange name to lowercase for consistency
                 ex_name_lower = ex_name.lower()
                 
-                # ✅ DÜZENLEME: BingX için log ekle
+                # Log BingX-specific initialization
                 if ex_name_lower == 'bingx':
                     logger.info("🎯 Initializing BingX WebSocket client")
                 
