@@ -101,7 +101,16 @@ class WebSocketManager:
                 # Extract credentials based on source type
                 creds = None
                 if self._use_ccxt_clients:
-                    # ... existing credential extraction logic ...
+                    from .ccxt_client import CcxtClient
+                    if isinstance(ex_data, CcxtClient):
+                        # Get credentials from the CcxtClient's exchange object
+                        if hasattr(ex_data.ex, 'apiKey') and ex_data.ex.apiKey:
+                            creds = {
+                                'apiKey': ex_data.ex.apiKey,
+                                'secret': ex_data.ex.secret
+                            }
+                            if hasattr(ex_data.ex, 'password') and ex_data.ex.password:
+                                creds['password'] = ex_data.ex.password
                 else:
                     creds = ex_data
                 
