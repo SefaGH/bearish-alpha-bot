@@ -326,10 +326,35 @@ class BingXWebSocket:
                 del self.pending_subscriptions[sub_id]
     
     async def _handle_ticker(self, data: dict):
-        """Process ticker update."""
+        """
+        Process ticker update.
+        
+        BingX ticker response format:
+        {
+            "code": 0,
+            "dataType": "BTC-USDT@ticker",
+            "data": {
+                "e": "24hTicker",
+                "E": 1761327444754,  # Event time (ms)
+                "s": "BTC-USDT",      # Symbol
+                "c": "110267.8",      # Close/Last price
+                "h": "112080.0",      # 24h high
+                "l": "109283.7",      # 24h low
+                "v": "15204.7267",    # 24h volume
+                "q": "171854.69",     # 24h quote volume
+                "o": "110703.8",      # Open price
+                "A": "110267.8",      # Best ask price
+                "a": "2.5786",        # Best ask quantity
+                "B": "110267.6",      # Best bid price
+                "b": "5.4305",        # Best bid quantity
+                "p": "-436.0",        # Price change
+                "P": "-0.39"          # Price change percent
+            }
+        }
+        """
         try:
             ticker_data = data.get("data", {})
-            if not ticker_data:
+            if not ticker_data or not isinstance(ticker_data, dict):
                 return
             
             # Extract symbol from dataType
@@ -342,13 +367,19 @@ class BingXWebSocket:
             # Convert BingX ticker format to standard format
             ticker = {
                 'symbol': self._convert_symbol_from_bingx(symbol),
-                'last': float(ticker_data.get('c', 0)),  # Last price
-                'bid': float(ticker_data.get('b', 0)),   # Best bid
-                'ask': float(ticker_data.get('a', 0)),   # Best ask
-                'high': float(ticker_data.get('h', 0)),  # 24h high
-                'low': float(ticker_data.get('l', 0)),   # 24h low
-                'volume': float(ticker_data.get('v', 0)), # 24h volume
-                'timestamp': data.get('ts', int(time.time() * 1000))
+                'last': float(ticker_data.get('c', 0)),      # Last/Close price
+                'bid': float(ticker_data.get('B', 0)),       # Best bid
+                'ask': float(ticker_data.get('A', 0)),       # Best ask
+                'bidVolume': float(ticker_data.get('b', 0)), # Best bid quantity
+                'askVolume': float(ticker_data.get('a', 0)), # Best ask quantity
+                'high': float(ticker_data.get('h', 0)),      # 24h high
+                'low': float(ticker_data.get('l', 0)),       # 24h low
+                'volume': float(ticker_data.get('v', 0)),    # 24h volume
+                'quoteVolume': float(ticker_data.get('q', 0)), # 24h quote volume
+                'open': float(ticker_data.get('o', 0)),      # Open price
+                'change': float(ticker_data.get('p', 0)),    # Price change
+                'percentage': float(ticker_data.get('P', 0)), # Price change %
+                'timestamp': ticker_data.get('E', int(time.time() * 1000))
             }
             
             # Store ticker
@@ -360,16 +391,36 @@ class BingXWebSocket:
                 
         except Exception as e:
             logger.error(f"Error handling ticker: {e}")
+            logger.debug(f"Ticker data: {data}")
     
     async def _handle_kline(self, data: dict):
-        """Process kline/candlestick update."""
-        logger.info(f"[KLINE-DEBUG] Received kline data type: {type(data)}")
-        logger.info(f"[KLINE-DEBUG] Data keys: {data.keys() if isinstance(data, dict) else 'Not a dict'}")
-        logger.info(f"[KLINE-DEBUG] Data sample: {str(data)[:200]}")
+        """
+        Process kline/candlestick update.
+        
+        BingX kline response format:
+        {
+            "code": 0,
+            "dataType": "BTC-USDT@kline_1m",
+            "s": "BTC-USDT",
+            "data": [  # ALWAYS an array
+                {
+                    "c": "110267.6",  # close (string)
+                    "o": "110298.6",  # open (string)
+                    "h": "110298.6",  # high (string)
+                    "l": "110265.1",  # low (string)
+                    "v": "2.0741",    # volume (string)
+                    "T": 1761327420000  # timestamp (number, ms)
+                }
+            ]
+        }
+        """
         try:
-            kline_data = data.get("data")
-            if not kline_data:
-                logger.debug("No kline data in message")
+            # Get kline data - it's ALWAYS a list, not a dict
+            kline_data = data.get("data", [])
+            
+            # Validate data
+            if not kline_data or not isinstance(kline_data, list):
+                logger.debug(f"Invalid or empty kline data: {type(kline_data)}")
                 return
             
             # Extract symbol and timeframe from dataType
@@ -390,66 +441,49 @@ class BingXWebSocket:
             ccxt_symbol = self._convert_symbol_from_bingx(symbol)
             ccxt_timeframe = self._convert_timeframe_from_bingx(timeframe_part)
             
-            # BingX sends kline data as a dict with specific fields
-            if isinstance(kline_data, dict):
-                # Parse single kline
+            # Initialize storage if needed
+            if ccxt_symbol not in self.klines:
+                self.klines[ccxt_symbol] = {}
+            if ccxt_timeframe not in self.klines[ccxt_symbol]:
+                self.klines[ccxt_symbol][ccxt_timeframe] = []
+            
+            # Process all klines in the array (usually just 1)
+            processed_klines = []
+            for kline_obj in kline_data:
+                if not isinstance(kline_obj, dict):
+                    logger.warning(f"Kline element is not a dict: {type(kline_obj)}")
+                    continue
+                
+                # Parse kline object to standard format [timestamp, o, h, l, c, v]
+                # Note: 'T' is timestamp, 'c' is close, 'o' is open, etc.
                 kline = [
-                    kline_data.get('t', int(time.time() * 1000)),  # timestamp (eğer yoksa şimdiki zaman)
-                    float(kline_data.get('o', 0)),    # open
-                    float(kline_data.get('h', 0)),    # high
-                    float(kline_data.get('l', 0)),    # low
-                    float(kline_data.get('c', 0)),    # close
-                    float(kline_data.get('v', 0))     # volume
+                    kline_obj.get('T', int(time.time() * 1000)),  # timestamp in ms
+                    float(kline_obj.get('o', 0)),    # open
+                    float(kline_obj.get('h', 0)),    # high
+                    float(kline_obj.get('l', 0)),    # low
+                    float(kline_obj.get('c', 0)),    # close
+                    float(kline_obj.get('v', 0))     # volume
                 ]
                 
                 # Store kline
-                if ccxt_symbol not in self.klines:
-                    self.klines[ccxt_symbol] = {}
-                if ccxt_timeframe not in self.klines[ccxt_symbol]:
-                    self.klines[ccxt_symbol][ccxt_timeframe] = []
-                
-                # Append and keep last 500 candles
                 self.klines[ccxt_symbol][ccxt_timeframe].append(kline)
-                if len(self.klines[ccxt_symbol][ccxt_timeframe]) > 500:
-                    self.klines[ccxt_symbol][ccxt_timeframe] = self.klines[ccxt_symbol][ccxt_timeframe][-500:]
+                processed_klines.append(kline)
                 
-                # Log successful kline update
-                logger.debug(f"Kline updated for {ccxt_symbol} {ccxt_timeframe}: O={kline[1]}, H={kline[2]}, L={kline[3]}, C={kline[4]}, V={kline[5]}")
-                
-                # Call callbacks
+                logger.debug(
+                    f"Kline updated for {ccxt_symbol} {ccxt_timeframe}: "
+                    f"T={kline[0]}, O={kline[1]:.2f}, H={kline[2]:.2f}, "
+                    f"L={kline[3]:.2f}, C={kline[4]:.2f}, V={kline[5]:.4f}"
+                )
+            
+            # Trim to last 500 candles
+            if len(self.klines[ccxt_symbol][ccxt_timeframe]) > 500:
+                self.klines[ccxt_symbol][ccxt_timeframe] = \
+                    self.klines[ccxt_symbol][ccxt_timeframe][-500:]
+            
+            # Call callbacks with the new klines
+            if processed_klines:
                 for callback in self.callbacks.get('kline', []):
-                    await callback(ccxt_symbol, ccxt_timeframe, [kline])
-                    
-            elif isinstance(kline_data, list):
-                # Eğer multiple kline gelirse (batch update)
-                for k in kline_data:
-                    if isinstance(k, dict):
-                        kline = [
-                            k.get('t', int(time.time() * 1000)),
-                            float(k.get('o', 0)),
-                            float(k.get('h', 0)),
-                            float(k.get('l', 0)),
-                            float(k.get('c', 0)),
-                            float(k.get('v', 0))
-                        ]
-                        # Store each kline...
-                        if ccxt_symbol not in self.klines:
-                            self.klines[ccxt_symbol] = {}
-                        if ccxt_timeframe not in self.klines[ccxt_symbol]:
-                            self.klines[ccxt_symbol][ccxt_timeframe] = []
-                        
-                        self.klines[ccxt_symbol][ccxt_timeframe].append(kline)
-                        
-                # Trim to 500 candles
-                if ccxt_symbol in self.klines and ccxt_timeframe in self.klines[ccxt_symbol]:
-                    self.klines[ccxt_symbol][ccxt_timeframe] = self.klines[ccxt_symbol][ccxt_timeframe][-500:]
-                    
-                # Call callbacks with all new klines
-                if ccxt_symbol in self.klines and ccxt_timeframe in self.klines[ccxt_symbol]:
-                    for callback in self.callbacks.get('kline', []):
-                        await callback(ccxt_symbol, ccxt_timeframe, self.klines[ccxt_symbol][ccxt_timeframe])
-            else:
-                logger.warning(f"Unexpected kline_data format: {type(kline_data)}")
+                    await callback(ccxt_symbol, ccxt_timeframe, processed_klines)
                 
         except Exception as e:
             logger.error(f"Error handling kline: {e}")
