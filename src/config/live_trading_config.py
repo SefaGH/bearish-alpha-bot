@@ -248,7 +248,7 @@ class LiveTradingConfiguration:
                 'kucoinfutures': cls.get_env_int('WS_MAX_STREAMS_KUCOIN', 15),
                 'default': cls.get_env_int('WS_MAX_STREAMS_DEFAULT', 10),
             },
-            'stream_timeframes': cls.get_env_list('WS_STREAM_TIMEFRAMES', ['1m']),
+            'stream_timeframes': cls.get_env_list('WS_STREAM_TIMEFRAMES', ['1m,5m,30m,1h,4h']),
             'reconnect_delay': cls.get_env_int('WS_RECONNECT_DELAY', 5),
             'max_reconnect_attempts': cls.get_env_int('WS_MAX_RECONNECT_ATTEMPTS', 3),
         }
