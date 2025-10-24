@@ -102,7 +102,7 @@ class WebSocketManager:
                             self.clients[ex_name] = WebSocketClient(ex_name, creds)
                         else:
                             self.clients[ex_name] = WebSocketClient(ex_name, None)
-                    else:
+                else:
                     # Create WebSocketClient (will automatically use BingX Direct if no CCXT Pro)
                     self.clients[ex_name] = WebSocketClient(ex_name, ex_data)
                     
