@@ -8,7 +8,11 @@ import logging
 import time
 from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime, timedelta
-import ccxt.pro as ccxtpro
+try:
+    import ccxt.pro as ccxtpro
+    CCXT_PRO_AVAILABLE = True
+except ImportError:
+    CCXT_PRO_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +41,10 @@ class WebSocketClient:
             AttributeError: If exchange name is invalid or not supported by CCXT Pro
         """
         # BingX için özel durum ekle
-        if ex_name.lower() == 'bingx':
-            ex_name = 'bingx'  # CCXT Pro'da 'bingx' olarak geçiyor
+        if ex_name.lower() == 'bingx' and not CCXT_PRO_AVAILABLE:
+            # Use direct BingX WebSocket
+            from .bingx_websocket import BingXWebSocket
+            # ... initialize with BingXWebSocket
             
         if not hasattr(ccxtpro, ex_name):
             # BingX için alternatif isimler dene
