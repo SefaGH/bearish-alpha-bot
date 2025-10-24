@@ -480,99 +480,55 @@ class OptimizedWebSocketManager:
         """
         try:
             logger.info("[WS-INIT] Starting WebSocket initialization and subscription...")
-
+    
             # Step 1: Setup configuration
             self.setup_from_config(self.config)
-
+    
             # Step 2: Initialize WebSocket connections (enforces limits + starts streams via _subscribe_optimized)
             logger.info("[WS-INIT] Initializing WebSocket connections...")
             tasks = await self.initialize_websockets(exchange_clients)
-
+    
             if not tasks:
                 logger.error("[WS-INIT] ❌ Failed to initialize WebSocket connections")
                 return False
-
+    
             logger.info(f"[WS-INIT] ✅ Initialized {len(tasks)} WebSocket tasks")
-
+    
             # Step 3: Verify data across configured TFs
             timeframes = (
                 self.config.get('websocket', {}).get('stream_timeframes', ['1m', '5m', '30m', '1h', '4h'])
                 if isinstance(self.config, dict) else ['1m', '5m', '30m', '1h', '4h']
             )
-
+    
             logger.info("[WS-VERIFY] Waiting for initial data...")
             await asyncio.sleep(3)
-
+    
             verified_count = 0
             for symbol in symbols[:3]:
-                if any(self.ws_manager.get_latest_data(symbol, tf) for tf in timeframes):
-                    logger.info(f"[WS-VERIFY] ✅ Data confirmed for {symbol} (at least one of {timeframes})")
+                tf_ok = False
+                for tf in timeframes:
+                    data = self.ws_manager.get_latest_data(symbol, tf)
+                    if data and data.get('ohlcv'):
+                        logger.info(f"[WS-VERIFY] ✅ Data confirmed for {symbol} [{tf}]")
+                        tf_ok = True
+                        break
+                if tf_ok:
                     verified_count += 1
                 else:
                     logger.warning(f"[WS-VERIFY] ⚠️ No data yet for {symbol} (checked TFs: {timeframes})")
-
+    
             if verified_count > 0:
                 logger.info(f"[WS-VERIFY] ✅ WebSocket data flow verified ({verified_count}/{min(3, len(symbols))} symbols)")
                 self.is_initialized = True
                 return True
-
+    
             logger.error("[WS-VERIFY] ❌ No data received after subscription")
             return False
-
-        except Exception as e:
-            logger.error(f"[WS-ERROR] Failed to initialize and subscribe: {e}", exc_info=True)
-            return False
-                    
-                    # Create callback for this symbol
-                    async def data_callback(sym, tf, ohlcv, ex=exchange_name, orig_sym=symbol):
-                        """Store incoming data in collector."""
-                        if hasattr(self.ws_manager, '_data_collector'):
-                            # Store with original symbol for lookup
-                            await self.ws_manager._data_collector.ohlcv_callback(ex, orig_sym, tf, ohlcv)
-                            logger.debug(f"[WS-DATA] {orig_sym} {tf}: {len(ohlcv)} candles stored")
-                    
-                    # Subscribe with callback
-                    subscribe_task = asyncio.create_task(
-                        client.watch_ohlcv_loop(
-                            symbol=exchange_symbol,
-                            timeframe='1m',
-                            callback=data_callback,
-                            max_iterations=None  # Continuous
-                        )
-                    )
-                    
-                    self.ws_manager._tasks.append(subscribe_task)
-                    subscription_count += 1
-                    logger.info(f"[WS-SUB] ✅ Subscribed: {exchange_name} {symbol} (as {exchange_symbol})")
-            
-            logger.info(f"[WS-SUB] ✅ Total subscriptions: {subscription_count}")
-            
-            # Step 4: Verify data is flowing (wait and check)
-            logger.info("[WS-VERIFY] Waiting for initial data...")
-            await asyncio.sleep(3)
-            
-            # Check if we're receiving data
-            verified_count = 0
-            for symbol in symbols[:3]:  # Check first 3 symbols
-                data = self.ws_manager.get_latest_data(symbol, '1m')
-                if data and data.get('ohlcv'):
-                    verified_count += 1
-                    logger.info(f"[WS-VERIFY] ✅ Data confirmed for {symbol}")
-                else:
-                    logger.warning(f"[WS-VERIFY] ⚠️ No data yet for {symbol}")
-            
-            if verified_count > 0:
-                logger.info(f"[WS-VERIFY] ✅ WebSocket data flow verified ({verified_count}/{min(3, len(symbols))} symbols)")
-                self.is_initialized = True
-                return True
-            else:
-                logger.error("[WS-VERIFY] ❌ No data received after subscription")
-                return False
-            
-        except Exception as e:
-            logger.error(f"[WS-ERROR] Failed to initialize and subscribe: {e}", exc_info=True)
-            return False
     
+        except Exception as e:
+            logger.error(f"[WS-ERROR] Failed to initialize and subscribe: {e}", exc_info=True)
+            return False
+        
     async def stop_streaming(self) -> None:
         """
         Stop all WebSocket streams properly.
