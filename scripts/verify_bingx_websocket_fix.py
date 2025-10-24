@@ -16,6 +16,8 @@ import os
 import asyncio
 import logging
 import json
+import time
+import traceback
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -82,7 +84,7 @@ async def verify_websocket():
         await ws.subscribe_kline("BTC/USDT:USDT", "1m")
         
         # Subscribe to orderbook manually
-        sub_id = str(int(asyncio.get_event_loop().time() * 1000))
+        sub_id = str(int(time.time() * 1000))
         sub_message = {
             "id": sub_id,
             "reqType": "sub",
@@ -159,7 +161,6 @@ async def verify_websocket():
         
     except Exception as e:
         print(f"\n❌ Error during verification: {e}")
-        import traceback
         traceback.print_exc()
         return False
     
