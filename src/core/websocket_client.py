@@ -1,6 +1,7 @@
 """
 WebSocket Client for real-time market data streaming.
 Enhanced with BingX direct WebSocket support when CCXT Pro is not available.
+FIXED: Singleton listen task pattern to prevent concurrent recv errors.
 """
 
 import asyncio
@@ -42,6 +43,10 @@ class WebSocketClient:
         self._is_connected = False
         self._first_message_received = False
         self._last_message_time = None
+        
+        # ✅ NEW: Singleton listen task management
+        self._listen_task: Optional[asyncio.Task] = None
+        self._listen_lock = asyncio.Lock()  # Prevent concurrent listen task creation
 
         # Diagnostic / telemetry / error-tracking defaults
         # Ensure attributes used by get_health_status() and _log_error() exist
@@ -119,6 +124,59 @@ class WebSocketClient:
         
         logger.info(f"WebSocketClient initialized for {ex_name}")
     
+    # ✅ NEW: Singleton listen task management method
+    async def _ensure_connection_and_listener(self) -> bool:
+        """
+        Ensure WebSocket is connected and exactly ONE listen task is running.
+        Thread-safe with lock protection.
+        
+        Returns:
+            True if connection and listener are ready, False otherwise
+        """
+        async with self._listen_lock:
+            try:
+                # Check if we need to connect
+                if not self._is_connected:
+                    logger.info("Establishing WebSocket connection...")
+                    connected = await self.ws_client.connect()
+                    
+                    if not connected:
+                        logger.error("Failed to establish WebSocket connection")
+                        return False
+                    
+                    self._is_connected = True
+                    logger.info("✅ WebSocket connected")
+                
+                # Check if listen task needs to be started
+                if self._listen_task is None or self._listen_task.done():
+                    if self._listen_task and self._listen_task.done():
+                        # Check if previous task had an exception
+                        try:
+                            exc = self._listen_task.exception()
+                            if exc:
+                                logger.warning(f"Previous listen task failed with: {exc}")
+                        except (asyncio.CancelledError, asyncio.InvalidStateError):
+                            pass
+                    
+                    # Create new listen task
+                    logger.info("Starting WebSocket listener task...")
+                    self._listen_task = asyncio.create_task(self.ws_client.listen())
+                    
+                    # Track in tasks list for cleanup
+                    if self._listen_task not in self._tasks:
+                        self._tasks.append(self._listen_task)
+                    
+                    logger.info("✅ WebSocket listener task started")
+                else:
+                    logger.debug("WebSocket listener already running")
+                
+                return True
+                
+            except Exception as e:
+                logger.error(f"Error in connection/listener setup: {e}")
+                self._is_connected = False
+                return False
+    
     async def watch_ohlcv(self, symbol: str, timeframe: str = '1m', 
                          callback: Optional[Callable] = None) -> List[List]:
         """
@@ -127,16 +185,12 @@ class WebSocketClient:
         try:
             # Use BingX Direct WebSocket if available
             if hasattr(self, 'use_direct_ws') and self.use_direct_ws:
-                # Connect if needed
-                if not self._is_connected:
-                    connected = await self.ws_client.connect()
-                    if connected:
-                        self._is_connected = True
-                        # Start listening in background and track task
-                        task = asyncio.create_task(self.ws_client.listen())
-                        self._tasks.append(task)
+                # ✅ FIXED: Use singleton listen task pattern
+                if not await self._ensure_connection_and_listener():
+                    logger.error("Failed to establish connection/listener")
+                    return []
                 
-                # Subscribe to kline
+                # Subscribe to kline (safe to call multiple times)
                 await self.ws_client.subscribe_kline(symbol, timeframe)
                 
                 # Wait a bit for data
@@ -185,6 +239,7 @@ class WebSocketClient:
                 
         except Exception as e:
             logger.error(f"Error watching OHLCV for {symbol} on {self.name}: {e}")
+            self._log_error('watch_ohlcv', str(e))
             return []
     
     async def watch_ticker(self, symbol: str, 
@@ -195,16 +250,12 @@ class WebSocketClient:
         try:
             # Use BingX Direct WebSocket if available
             if hasattr(self, 'use_direct_ws') and self.use_direct_ws:
-                # Connect if needed
-                if not self._is_connected:
-                    connected = await self.ws_client.connect()
-                    if connected:
-                        self._is_connected = True
-                        # Start listening in background and track task
-                        task = asyncio.create_task(self.ws_client.listen())
-                        self._tasks.append(task)
+                # ✅ FIXED: Use singleton listen task pattern
+                if not await self._ensure_connection_and_listener():
+                    logger.error("Failed to establish connection/listener")
+                    return {}
                 
-                # Subscribe to ticker
+                # Subscribe to ticker (safe to call multiple times)
                 await self.ws_client.subscribe_ticker(symbol)
                 
                 # Wait a bit for data
@@ -248,12 +299,22 @@ class WebSocketClient:
                 
         except Exception as e:
             logger.error(f"Error watching ticker for {symbol}: {e}")
+            self._log_error('watch_ticker', str(e))
             return {}
     
     async def close(self):
         """Close the WebSocket connection and cleanup resources."""
         self._running = False
         self._is_connected = False
+        
+        # ✅ NEW: Cancel listen task specifically
+        if self._listen_task and not self._listen_task.done():
+            logger.info("Cancelling listen task...")
+            self._listen_task.cancel()
+            try:
+                await self._listen_task
+            except asyncio.CancelledError:
+                pass
         
         # Cancel all running tasks
         for task in self._tasks:
@@ -347,6 +408,18 @@ class WebSocketClient:
         elif total_errors > 5:
             health = 'warning'
         
+        # ✅ NEW: Add listen task status
+        listen_task_status = 'not_created'
+        if self._listen_task:
+            if self._listen_task.done():
+                try:
+                    exc = self._listen_task.exception()
+                    listen_task_status = f'failed: {exc}' if exc else 'completed'
+                except (asyncio.CancelledError, asyncio.InvalidStateError):
+                    listen_task_status = 'cancelled'
+            else:
+                listen_task_status = 'running'
+        
         return {
             'exchange': self.name,
             'status': health,
@@ -359,5 +432,8 @@ class WebSocketClient:
             'reconnect_count': self.reconnect_count,
             'last_reconnect': self.last_reconnect.isoformat() if self.last_reconnect else None,
             'error_streams': {k: v for k, v in self.parse_frame_errors.items() if v > 0},
-            'recent_errors_5min': self._get_recent_error_count(300)
+            'recent_errors_5min': self._get_recent_error_count(300),
+            'listen_task_status': listen_task_status,  # ✅ NEW
+            'total_tasks': len(self._tasks),  # ✅ NEW
+            'active_tasks': sum(1 for t in self._tasks if not t.done())  # ✅ NEW
         }
