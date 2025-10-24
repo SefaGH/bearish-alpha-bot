@@ -5,16 +5,13 @@
 # IMPORTANT: This project requires Python 3.11
 # Python 3.12+ is NOT supported due to aiohttp 3.8.6 compatibility issues
 # 
-# aiohttp 3.8.6 is required for ccxt.pro WebSocket functionality, but does
-# not compile on Python 3.12 due to internal API changes (PyLongObject.ob_digit).
-# 
 # Install with: pip install -r requirements.txt
 # Verify version: python --version (should show Python 3.11.x)
 # ============================================================================
 
 # === CORE DEPENDENCIES ===
 ccxt==4.3.88              # Exchange APIs (REQUIRED)
-ccxtpro==4.3.88           # Exchange WebSocket APIs (REQUIRED)
+# ccxtpro==4.3.88         # Exchange WebSocket APIs (PAID - not available)
 pandas>=2.2.3,<3          # Data processing (REQUIRED)
 numpy>=2.2.6              # Numerical operations (REQUIRED)
 python-dotenv==1.0.1      # Environment variables (REQUIRED)
@@ -27,14 +24,12 @@ ta>=0.10.2                # Technical indicators library (REQUIRED)
 # === NOTIFICATIONS ===
 python-telegram-bot==21.6 # Telegram alerts
 
-# === ASYNC/WEBSOCKET (Fixed for parse_frame error) ===
-aiohttp==3.8.6            # Must use 3.8.6 to avoid ccxt.pro parse_frame error
+# === ASYNC/WEBSOCKET ===
+aiohttp==3.8.6            # Async HTTP
 yarl<2.0                  # Required for aiohttp 3.8.x
 multidict<7.0             # Required for aiohttp 3.8.x
-websocket-client>=1.6.0   # Direct WebSocket connections (OPTIONAL) - YENİ EKLENEN
-
-# === LOGGING (Optional) ===
-# colorlog>=6.7.0         # Colored terminal output (uncomment for dev)
+websocket-client>=1.6.0   # WebSocket client (for direct connections)
+websockets>=10.0          # Async WebSocket library (NEW)
 
 # === DEVELOPMENT & TESTING ===
 pytest>=7.0.0             # Testing framework
