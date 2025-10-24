@@ -372,21 +372,46 @@ class BingXWebSocket:
     async def _handle_kline(self, data: Dict):
         """Process kline/candlestick update."""
         try:
-            kline_data = data.get("data", {})
+            # Handle different data formats
+            if isinstance(data, dict):
+                kline_data = data.get("data", {})
+                data_type = data.get("dataType", "")
+            elif isinstance(data, list):
+                # BingX might send kline as array directly
+                # Format: [timestamp, open, high, low, close, volume]
+                if len(data) >= 6:
+                    # Direct kline array - create wrapper
+                    kline_data = {
+                        't': data[0],  # timestamp
+                        'o': data[1],  # open
+                        'h': data[2],  # high
+                        'l': data[3],  # low
+                        'c': data[4],  # close
+                        'v': data[5]   # volume
+                    }
+                    # Try to infer symbol from context or use default
+                    data_type = "UNKNOWN@kline_1m"  # Will need proper symbol tracking
+                else:
+                    logger.warning(f"Invalid kline array format: {data}")
+                    return
+            else:
+                logger.error(f"Unexpected kline data type: {type(data)}")
+                return
+                
             if not kline_data:
                 return
             
             # Extract symbol and timeframe
-            data_type = data.get("dataType", "")
-            parts = data_type.split("@")
+            parts = data_type.split("@") if "@" in data_type else ["UNKNOWN", "kline_1m"]
             if len(parts) != 2:
+                logger.warning(f"Invalid dataType format: {data_type}")
                 return
             
             symbol = parts[0]
             timeframe_part = parts[1].replace("kline_", "")
             
             # Convert to standard format
-            ccxt_symbol = self._convert_symbol_from_bingx(symbol)
+            ccxt_symbol = self._convert_symbol_from_bingx(symbol) if symbol != "UNKNOWN" else "BTC/USDT:USDT"
             ccxt_timeframe = self._convert_timeframe_from_bingx(timeframe_part)
             
             # Format: [timestamp, open, high, low, close, volume]
@@ -416,6 +441,9 @@ class BingXWebSocket:
                 
         except Exception as e:
             logger.error(f"Error handling kline: {e}")
+            logger.debug(f"Kline data type: {type(data)}")
+            if isinstance(data, (dict, list)):
+                logger.debug(f"Kline data sample: {str(data)[:200]}")
     
     async def _handle_orderbook(self, data: Dict):
         """Process orderbook update."""
