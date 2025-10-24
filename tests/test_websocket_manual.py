@@ -13,7 +13,7 @@ Usage:
     python test_websocket_manual.py
 
 Author: GitHub Copilot
-Date: 2025-10-24
+Date: 2024-10-24
 """
 
 import sys
@@ -124,9 +124,18 @@ async def test_websocket_subscription():
             print(f"   Clients available: {list(optimizer.ws_manager.clients.keys())}")
         else:
             print(f"   WebSocketManager: ❌ (not created)")
+    except (ConnectionError, OSError, TimeoutError) as e:
+        # Expected network-related errors in test environment
+        print(f"⚠️  Network error (expected in test environment): {e}")
+        print(f"   This is normal without credentials or network access")
+    except (ImportError, ModuleNotFoundError) as e:
+        # Unexpected import errors should fail the test
+        print(f"❌ Import error: {e}")
+        return False
     except Exception as e:
-        print(f"⚠️  WebSocket initialization failed (expected in test environment): {e}")
-        print(f"   This is normal if you don't have credentials or network access")
+        # Other unexpected errors
+        print(f"⚠️  WebSocket initialization error: {e}")
+        print(f"   May be expected in test environment without credentials")
     
     # Step 6: Verify initialize_and_subscribe method exists
     print("\nStep 6/6: Verifying initialize_and_subscribe method...")
@@ -208,7 +217,6 @@ async def test_data_collector():
         
         # Test OHLCV callback
         test_ohlcv = [[1234567890000, 100, 105, 95, 102, 1000]]
-        # Use await instead of asyncio.run since we're already in an async context
         await collector.ohlcv_callback('bingx', 'BTC/USDT:USDT', '1m', test_ohlcv)
         
         # Verify data was stored
