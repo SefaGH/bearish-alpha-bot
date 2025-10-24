@@ -14,11 +14,15 @@
 
 # === CORE DEPENDENCIES ===
 ccxt==4.3.88              # Exchange APIs (REQUIRED)
+ccxtpro==4.3.88           # Exchange WebSocket APIs (REQUIRED)
 pandas>=2.2.3,<3          # Data processing (REQUIRED)
 numpy>=2.2.6              # Numerical operations (REQUIRED)
 python-dotenv==1.0.1      # Environment variables (REQUIRED)
 pyyaml==6.0.2             # YAML config files (REQUIRED)
 requests==2.32.3          # HTTP requests (REQUIRED)
+
+# === TECHNICAL ANALYSIS ===
+ta>=0.10.2                # Technical indicators library (REQUIRED)
 
 # === NOTIFICATIONS ===
 python-telegram-bot==21.6 # Telegram alerts
@@ -27,6 +31,10 @@ python-telegram-bot==21.6 # Telegram alerts
 aiohttp==3.8.6            # Must use 3.8.6 to avoid ccxt.pro parse_frame error
 yarl<2.0                  # Required for aiohttp 3.8.x
 multidict<7.0             # Required for aiohttp 3.8.x
+websocket-client>=1.6.0   # Direct WebSocket connections (OPTIONAL) - YENİ EKLENEN
+
+# === LOGGING (Optional) ===
+# colorlog>=6.7.0         # Colored terminal output (uncomment for dev)
 
 # === DEVELOPMENT & TESTING ===
 pytest>=7.0.0             # Testing framework
