@@ -494,35 +494,43 @@ class OptimizedWebSocketManager:
     
             logger.info(f"[WS-INIT] ✅ Initialized {len(tasks)} WebSocket tasks")
     
-            # Step 3: Verify data across configured TFs
+            # Step 3: Verify data across configured TFs (retry'li)
             timeframes = (
                 self.config.get('websocket', {}).get('stream_timeframes', ['1m', '5m', '30m', '1h', '4h'])
                 if isinstance(self.config, dict) else ['1m', '5m', '30m', '1h', '4h']
             )
     
-            logger.info("[WS-VERIFY] Waiting for initial data...")
-            await asyncio.sleep(3)
+            max_checks = 3       # toplam 3 deneme
+            sleep_between = 4.0  # her deneme arasında 4s bekle
+            verified_symbols = set()
     
-            verified_count = 0
-            for symbol in symbols[:3]:
-                tf_ok = False
-                for tf in timeframes:
-                    data = self.ws_manager.get_latest_data(symbol, tf)
-                    if data and data.get('ohlcv'):
-                        logger.info(f"[WS-VERIFY] ✅ Data confirmed for {symbol} [{tf}]")
-                        tf_ok = True
-                        break
-                if tf_ok:
-                    verified_count += 1
-                else:
-                    logger.warning(f"[WS-VERIFY] ⚠️ No data yet for {symbol} (checked TFs: {timeframes})")
+            logger.info(f"[WS-VERIFY] Verifying data flow for TFs={timeframes} (max_checks={max_checks}, interval={sleep_between}s)")
     
-            if verified_count > 0:
-                logger.info(f"[WS-VERIFY] ✅ WebSocket data flow verified ({verified_count}/{min(3, len(symbols))} symbols)")
+            for attempt in range(1, max_checks + 1):
+                if attempt > 1:
+                    logger.info(f"[WS-VERIFY] Attempt {attempt}/{max_checks} - waiting {sleep_between:.1f}s before next check...")
+                    await asyncio.sleep(sleep_between)
+    
+                for symbol in symbols[:3]:
+                    if symbol in verified_symbols:
+                        continue
+    
+                    # TF'lerden herhangi birinde veri varsa sembolü doğrulanmış say
+                    if any(self.ws_manager.get_latest_data(symbol, tf) for tf in timeframes):
+                        logger.info(f"[WS-VERIFY] ✅ Data confirmed for {symbol} (one of {timeframes})")
+                        verified_symbols.add(symbol)
+                    else:
+                        logger.debug(f"[WS-VERIFY] Pending data for {symbol} (checked TFs: {timeframes})")
+    
+                if verified_symbols:
+                    break  # en az bir sembol doğrulandıysa daha fazla beklemek istemiyorsanız bu break kalabilir
+    
+            if verified_symbols:
+                logger.info(f"[WS-VERIFY] ✅ WebSocket data flow verified for {len(verified_symbols)}/{min(3, len(symbols))} symbols")
                 self.is_initialized = True
                 return True
     
-            logger.error("[WS-VERIFY] ❌ No data received after subscription")
+            logger.error("[WS-VERIFY] ❌ No data received after subscription window")
             return False
     
         except Exception as e:
