@@ -252,6 +252,14 @@ class LiveTradingEngine:
             self.tasks.append(signal_task)
             logger.info("  ✓ Signal processing started")
 
+            # Start strategy coordinator bridge (CRITICAL for signal flow)
+            if self.strategy_coordinator:
+                bridge_task = asyncio.create_task(self._strategy_coordinator_bridge_loop())
+                self.tasks.append(bridge_task)
+                logger.info("  ✓ Strategy coordinator bridge started")
+            else:
+                logger.warning("  ⚠️ No StrategyCoordinator attached - bridge not started")
+
             # Start position monitoring
             position_task = asyncio.create_task(self._position_monitoring_loop())
             self.tasks.append(position_task)
@@ -633,6 +641,87 @@ class LiveTradingEngine:
             logger.info("Signal processing loop cancelled")
         except Exception as e:
             logger.error(f"Fatal error in signal processing loop: {e}", exc_info=True)
+    
+    async def _strategy_coordinator_bridge_loop(self):
+        """
+        Bridge task to transfer signals from StrategyCoordinator queue to LiveTradingEngine queue.
+        This implements the proper signal flow: StrategyCoordinator → LiveTradingEngine
+        
+        Signal Flow:
+        1. StrategyCoordinator validates and queues signal
+        2. This bridge transfers it to LiveTradingEngine queue  
+        3. LiveTradingEngine._signal_processing_loop() executes it
+        """
+        logger.info("📌 [BRIDGE] Strategy Coordinator bridge loop started")
+        logger.info("📌 [BRIDGE] Monitoring StrategyCoordinator.signal_queue for signals")
+        
+        bridge_stats = {
+            'signals_transferred': 0,
+            'transfer_errors': 0,
+            'last_transfer_time': None
+        }
+        
+        try:
+            while self.state == EngineState.RUNNING:
+                try:
+                    # Check if coordinator exists
+                    if not self.strategy_coordinator:
+                        logger.warning("📌 [BRIDGE] No StrategyCoordinator attached, waiting...")
+                        await asyncio.sleep(5)
+                        continue
+                    
+                    # Get signal from StrategyCoordinator queue
+                    signal_data = await asyncio.wait_for(
+                        self.strategy_coordinator.get_next_signal(),
+                        timeout=1.0
+                    )
+                    
+                    if signal_data:
+                        signal_id = signal_data.get('signal_id', 'unknown')
+                        symbol = signal_data.get('signal', {}).get('symbol', 'unknown')
+                        
+                        logger.info(f"📌 [BRIDGE-RECEIVE] Got signal {signal_id} for {symbol} from StrategyCoordinator")
+                        
+                        # Extract the actual signal with metadata
+                        enriched_signal = {
+                            **signal_data.get('signal', {}),
+                            'signal_id': signal_id,
+                            'risk_assessment': signal_data.get('risk_assessment'),
+                            'routing': signal_data.get('routing'),
+                            'from_coordinator': True,  # Mark source
+                            'bridge_timestamp': datetime.now(timezone.utc)
+                        }
+                        
+                        # Transfer to LiveTradingEngine queue
+                        await self.signal_queue.put(enriched_signal)
+                        
+                        bridge_stats['signals_transferred'] += 1
+                        bridge_stats['last_transfer_time'] = datetime.now(timezone.utc)
+                        
+                        logger.info(f"📌 [BRIDGE-TRANSFER] Signal {signal_id} transferred to LiveTradingEngine queue")
+                        logger.info(f"📌 [BRIDGE-STATS] Total transferred: {bridge_stats['signals_transferred']}")
+                        
+                        # Log queue states
+                        coordinator_queue_size = self.strategy_coordinator.signal_queue.qsize()
+                        engine_queue_size = self.signal_queue.qsize()
+                        logger.info(f"📌 [BRIDGE-QUEUES] Coordinator: {coordinator_queue_size} | Engine: {engine_queue_size}")
+                        
+                except asyncio.TimeoutError:
+                    # Normal timeout, no signal available
+                    continue
+                    
+                except Exception as e:
+                    bridge_stats['transfer_errors'] += 1
+                    logger.error(f"📌 [BRIDGE-ERROR] Error in bridge loop: {e}", exc_info=True)
+                    await asyncio.sleep(1)  # Brief pause on error
+                    
+        except asyncio.CancelledError:
+            logger.info(f"📌 [BRIDGE] Bridge loop cancelled. Stats: {bridge_stats}")
+            raise
+            
+        except Exception as e:
+            logger.critical(f"📌 [BRIDGE-FATAL] Fatal error in bridge loop: {e}", exc_info=True)
+            raise
     
     async def _prefetch_historical_data(self):
         """
