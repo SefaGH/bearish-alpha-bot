@@ -81,27 +81,26 @@ class WebSocketManager:
         # Initialize WebSocket clients based on input type
         for ex_name, ex_data in exchanges.items():
             try:
-                try:
-                    # ✅ DÜZENLEME: BingX için log ekle
-                    if ex_name.lower() == 'bingx':
-                        logger.info("🎯 Initializing BingX WebSocket client")
-                    
-                    if self._use_ccxt_clients:
-                        # Extract credentials from CcxtClient if available
-                        from .ccxt_client import CcxtClient
-                        if isinstance(ex_data, CcxtClient):
-                            # Get credentials from the CcxtClient's exchange object
-                            creds = None
-                            if hasattr(ex_data.ex, 'apiKey') and ex_data.ex.apiKey:
-                                creds = {
-                                    'apiKey': ex_data.ex.apiKey,
-                                    'secret': ex_data.ex.secret
-                                }
-                                if hasattr(ex_data.ex, 'password') and ex_data.ex.password:
-                                    creds['password'] = ex_data.ex.password
-                            self.clients[ex_name] = WebSocketClient(ex_name, creds)
-                        else:
-                            self.clients[ex_name] = WebSocketClient(ex_name, None)
+                # ✅ DÜZENLEME: BingX için log ekle
+                if ex_name.lower() == 'bingx':
+                    logger.info("🎯 Initializing BingX WebSocket client")
+                
+                if self._use_ccxt_clients:
+                    # Extract credentials from CcxtClient if available
+                    from .ccxt_client import CcxtClient
+                    if isinstance(ex_data, CcxtClient):
+                        # Get credentials from the CcxtClient's exchange object
+                        creds = None
+                        if hasattr(ex_data.ex, 'apiKey') and ex_data.ex.apiKey:
+                            creds = {
+                                'apiKey': ex_data.ex.apiKey,
+                                'secret': ex_data.ex.secret
+                            }
+                            if hasattr(ex_data.ex, 'password') and ex_data.ex.password:
+                                creds['password'] = ex_data.ex.password
+                        self.clients[ex_name] = WebSocketClient(ex_name, creds)
+                    else:
+                        self.clients[ex_name] = WebSocketClient(ex_name, None)
                 else:
                     # Create WebSocketClient (will automatically use BingX Direct if no CCXT Pro)
                     self.clients[ex_name] = WebSocketClient(ex_name, ex_data)
