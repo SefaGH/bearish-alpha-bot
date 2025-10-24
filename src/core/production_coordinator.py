@@ -628,10 +628,12 @@ class ProductionCoordinator:
             
             # 2. Initialize Price Prediction Engine (simplified - no complex models for now)
             try:
-                self.price_engine = AdvancedPricePredictionEngine(
-                    predictor=None,  # Will use default simple predictor
-                    websocket_manager=self.websocket_manager
-                )
+                # AdvancedPricePredictionEngine bazı ortamlarda predictor keyword'ünü kabul etmiyor.
+                # Dayanıklı kurulum: önce positional None, TypeError olursa argsız deneyin.
+                try:
+                    self.price_engine = AdvancedPricePredictionEngine(None)
+                except TypeError:
+                    self.price_engine = AdvancedPricePredictionEngine()
                 ml_components.append('price_engine')
                 logger.info("✅ Price prediction engine initialized")
             except Exception as e:
