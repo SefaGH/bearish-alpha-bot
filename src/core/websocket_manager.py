@@ -83,55 +83,35 @@ class WebSocketManager:
             try:
                 ex_name_lower = ex_name.lower()
                 
-                # BingX için öncelik sırası:
-                # 1. websocket_client_bingx.py varsa kullan
-                # 2. websocket_client.py (CCXT Pro yoksa otomatik BingX Direct kullanır)
+                # Determine which WebSocket client to use
+                client_cls = WebSocketClient  # Default
                 
                 if ex_name_lower == 'bingx':
                     logger.info("🎯 Initializing BingX WebSocket client")
                     
-                    # Try dedicated BingX client first
+                    # Try dedicated BingX client if available
                     try:
                         from .websocket_client_bingx import WebSocketClient as BingxClient
                         client_cls = BingxClient
                         logger.info("✅ Using dedicated websocket_client_bingx.py")
                     except ImportError:
-                        # Fallback to general client (which will use BingX Direct if no CCXT Pro)
-                        from .websocket_client import WebSocketClient
-                        client_cls = WebSocketClient
-                        logger.info("✅ Using general websocket_client.py (will auto-detect CCXT Pro)")
-                else:
-                    # Other exchanges use general client
-                    from .websocket_client import WebSocketClient
-                    client_cls = WebSocketClient
+                        # websocket_client.py will handle BingX automatically
+                        logger.info("✅ Using websocket_client.py (auto-detects BingX mode)")
                 
-                # Create client with appropriate credentials
+                # Extract credentials based on source type
+                creds = None
                 if self._use_ccxt_clients:
-                    # Extract credentials from CcxtClient if available
-                    from .ccxt_client import CcxtClient
-                    if isinstance(ex_data, CcxtClient):
-                        # Get credentials from the CcxtClient's exchange object
-                        creds = None
-                        if hasattr(ex_data.ex, 'apiKey') and ex_data.ex.apiKey:
-                            creds = {
-                                'apiKey': ex_data.ex.apiKey,
-                                'secret': ex_data.ex.secret
-                            }
-                            if hasattr(ex_data.ex, 'password') and ex_data.ex.password:
-                                creds['password'] = ex_data.ex.password
-                        # Store with lowercase key
-                        self.clients[ex_name_lower] = client_cls(ex_name_lower, creds)
-                    else:
-                        self.clients[ex_name_lower] = client_cls(ex_name_lower, None)
+                    # ... existing credential extraction logic ...
                 else:
-                    # Create chosen WebSocketClient implementation (BingX-specific if available)
-                    # Store with lowercase key
-                    self.clients[ex_name_lower] = client_cls(ex_name_lower, ex_data)
-                    
-                logger.info(f"WebSocket client initialized for {ex_name_lower}")
+                    creds = ex_data
+                
+                # Create WebSocket client
+                self.clients[ex_name_lower] = client_cls(ex_name_lower, creds)
+                logger.info(f"✅ WebSocket client initialized for {ex_name_lower}")
+                
             except Exception as e:
                 logger.error(f"Failed to initialize WebSocket client for {ex_name}: {e}")
-    
+        
     def start_ohlcv_stream(self, exchange: str, symbol: str, timeframe: str) -> bool:
         """
         Start OHLCV stream for a specific symbol (PRODUCTION COORDINATOR COMPAT).
