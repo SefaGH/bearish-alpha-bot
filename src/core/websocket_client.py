@@ -88,6 +88,13 @@ class WebSocketClient:
             Exception: If streaming fails after retries
         """
         retry_key = f"{symbol}:{timeframe}"
+
+        # BingX için desteklenen timeframe'leri kontrol et
+        if self.name == 'bingx':
+            valid_timeframes = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d', '1w', '1M']
+            if timeframe not in valid_timeframes:
+                logger.warning(f"Invalid timeframe {timeframe} for BingX, using 1m")
+                timeframe = '1m'
         
         # Initialize error counter if needed
         if retry_key not in self.parse_frame_errors:
