@@ -86,7 +86,7 @@ class WebSocketManager:
                     if ex_name.lower() == 'bingx':
                         logger.info("🎯 Initializing BingX WebSocket client")
                     
-                if self._use_ccxt_clients:
+                    if self._use_ccxt_clients:
                     # Extract credentials from CcxtClient if available
                     from .ccxt_client import CcxtClient
                     if isinstance(ex_data, CcxtClient):
