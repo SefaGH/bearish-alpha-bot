@@ -81,15 +81,18 @@ class WebSocketManager:
         # Initialize WebSocket clients based on input type
         for ex_name, ex_data in exchanges.items():
             try:
+                # Normalize exchange name to lowercase for consistency
+                ex_name_lower = ex_name.lower()
+                
                 # ✅ DÜZENLEME: BingX için log ekle
-                if ex_name.lower() == 'bingx':
+                if ex_name_lower == 'bingx':
                     logger.info("🎯 Initializing BingX WebSocket client")
                 
                 # Default to the generic client class
                 client_cls = WebSocketClient
 
                 # If there's a dedicated BingX client use it (preferred)
-                if ex_name.lower() == 'bingx':
+                if ex_name_lower == 'bingx':
                     try:
                         from .websocket_client_bingx import WebSocketClient as BingxClient  # type: ignore
                         client_cls = BingxClient
@@ -111,14 +114,16 @@ class WebSocketManager:
                             }
                             if hasattr(ex_data.ex, 'password') and ex_data.ex.password:
                                 creds['password'] = ex_data.ex.password
-                        self.clients[ex_name] = client_cls(ex_name, creds)
+                        # Store with lowercase key
+                        self.clients[ex_name_lower] = client_cls(ex_name_lower, creds)
                     else:
-                        self.clients[ex_name] = client_cls(ex_name, None)
+                        self.clients[ex_name_lower] = client_cls(ex_name_lower, None)
                 else:
                     # Create chosen WebSocketClient implementation (BingX-specific if available)
-                    self.clients[ex_name] = client_cls(ex_name, ex_data)
+                    # Store with lowercase key
+                    self.clients[ex_name_lower] = client_cls(ex_name_lower, ex_data)
                     
-                logger.info(f"WebSocket client initialized for {ex_name}")
+                logger.info(f"WebSocket client initialized for {ex_name_lower}")
             except Exception as e:
                 logger.error(f"Failed to initialize WebSocket client for {ex_name}: {e}")
     
