@@ -223,7 +223,7 @@ class WebSocketManager:
         
         Args:
             symbols: List of symbols to subscribe to
-            timeframes: Optional list of timeframes (default: ['1m', '5m'])
+            timeframes: Optional list of timeframes (default: ['1m', '5m', '30m', '1h', '4h'])
             
         Returns:
             Dict mapping exchange names to list of successfully subscribed symbols
@@ -754,7 +754,7 @@ class OptimizedWebSocketManager(WebSocketManager):
             return {}
         
         result = {}
-        timeframes = self.config.get('websocket', {}).get('stream_timeframes', ['1m', '5m'])
+        timeframes = self.config.get('websocket', {}).get('stream_timeframes', ['1m', '5m', '30m', '1h', '4h'])
         
         for exchange in self.clients.keys():
             max_streams = self._stream_limits.get(exchange, self.default_max_streams)
