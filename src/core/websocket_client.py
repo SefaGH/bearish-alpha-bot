@@ -48,14 +48,14 @@ class WebSocketClient:
         self.error_history: List[Dict[str, Any]] = []        # recent error records
         self.max_error_history: int = 100                    # keep at most this many error records
         # parse_frame_errors may be used to count parse issues per stream
-        self.parse_frame_errors: Dict[str, int] = getattr(self, 'parse_frame_errors', {})
-        self.max_parse_frame_retries: int = getattr(self, 'max_parse_frame_retries', 3)
+        self.parse_frame_errors: Dict[str, int] = {}
+        self.max_parse_frame_retries: int = 3
         # reconnect settings & counters
-        self.reconnect_delay: float = getattr(self, 'reconnect_delay', 5.0)
-        self.reconnect_count: int = getattr(self, 'reconnect_count', 0)
-        self.last_reconnect: Optional[datetime] = getattr(self, 'last_reconnect', None)
+        self.reconnect_delay: float = 5.0
+        self.reconnect_count: int = 0
+        self.last_reconnect: Optional[datetime] = None
         # flag used when we fell back to REST polling
-        self.use_rest_fallback: bool = getattr(self, 'use_rest_fallback', False)
+        self.use_rest_fallback: bool = False
         
         # ✅ DÜZENLEME: BingX için özel durum
         if self.name == 'bingx' and not CCXT_PRO_AVAILABLE:
@@ -132,8 +132,9 @@ class WebSocketClient:
                     connected = await self.ws_client.connect()
                     if connected:
                         self._is_connected = True
-                        # Start listening in background
-                        asyncio.create_task(self.ws_client.listen())
+                        # Start listening in background and track task
+                        task = asyncio.create_task(self.ws_client.listen())
+                        self._tasks.append(task)
                 
                 # Subscribe to kline
                 await self.ws_client.subscribe_kline(symbol, timeframe)
@@ -199,8 +200,9 @@ class WebSocketClient:
                     connected = await self.ws_client.connect()
                     if connected:
                         self._is_connected = True
-                        # Start listening in background
-                        asyncio.create_task(self.ws_client.listen())
+                        # Start listening in background and track task
+                        task = asyncio.create_task(self.ws_client.listen())
+                        self._tasks.append(task)
                 
                 # Subscribe to ticker
                 await self.ws_client.subscribe_ticker(symbol)

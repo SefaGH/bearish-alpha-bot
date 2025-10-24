@@ -44,6 +44,17 @@ class WebSocketClient:
         self._first_message_received = False
         self._last_message_time = None
         
+        # Diagnostic / telemetry / error-tracking defaults
+        # Ensure attributes used by get_health_status() exist
+        self.error_history: List[Dict[str, Any]] = []
+        self.max_error_history: int = 100
+        self.parse_frame_errors: Dict[str, int] = {}
+        self.max_parse_frame_retries: int = 3
+        self.reconnect_delay: float = 5.0
+        self.reconnect_count: int = 0
+        self.last_reconnect: Optional[datetime] = None
+        self.use_rest_fallback: bool = False
+        
         logger.info("BingX WebSocket client initialized")
     
     async def watch_ohlcv(self, symbol: str, timeframe: str = '1m',

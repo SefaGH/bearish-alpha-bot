@@ -760,8 +760,9 @@ class ProductionCoordinator:
             # STEP 1: STORE PROVIDED CONFIGURATION
             # ========================================
             if exchange_clients:
-                self.exchange_clients = exchange_clients
-                logger.info(f"✓ Received {len(exchange_clients)} exchange client(s)")
+                # Normalize exchange keys to lowercase for consistency
+                self.exchange_clients = {k.lower(): v for k, v in exchange_clients.items()}
+                logger.info(f"✓ Received {len(self.exchange_clients)} exchange client(s): {list(self.exchange_clients.keys())}")
             
             # ========================================
             # STEP 2: INITIALIZE WEBSOCKET MANAGER
@@ -1741,5 +1742,7 @@ class ProductionCoordinator:
         
         if self.websocket_manager:
             await self.websocket_manager.close()
+            # Allow graceful shutdown with small delay
+            await asyncio.sleep(0.05)
         
         logger.info("Production system stopped")
