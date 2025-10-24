@@ -587,6 +587,132 @@ class ProductionCoordinator:
         logger.info(f"[SYMBOL_DISCOVERY] Using {len(default_symbols)} hardcoded default symbols")
         return default_symbols
     
+    async def _initialize_ml_components(self) -> Dict[str, Any]:
+        """
+        Initialize and connect ALL ML components from src/ml/.
+        This connects the fully implemented but disconnected ML layer.
+        
+        Returns:
+            Dict with 'success' and optional 'reason' keys
+        """
+        logger.info("🧠 [ML-INIT] Initializing ML system...")
+        
+        ml_components = []
+        
+        try:
+            # Import ML components (optional - won't fail if not available)
+            try:
+                from ml.strategy_integration import (
+                    MLStrategyIntegrationManager,
+                    AIEnhancedStrategyAdapter
+                )
+                from ml.price_predictor import AdvancedPricePredictionEngine
+                from ml.regime_predictor import MLRegimePredictor
+                from ml.prediction_engine import RealTimePredictionEngine
+                from ml.reinforcement_learning import TradingRLAgent
+                from ml.experience_replay import ExperienceReplay
+                from ml.feature_engineering import FeatureEngineeringPipeline
+                
+                logger.info("🧠 [ML-INIT] All ML modules imported successfully")
+            except ImportError as e:
+                logger.warning(f"🧠 [ML-INIT] ML modules not available: {e}")
+                return {
+                    'success': False,
+                    'reason': f'ML modules not available: {e}'
+                }
+            
+            # 1. Initialize Feature Engineering Pipeline
+            self.feature_pipeline = FeatureEngineeringPipeline()
+            ml_components.append('feature_pipeline')
+            logger.info("✅ Feature engineering pipeline ready")
+            
+            # 2. Initialize Price Prediction Engine (simplified - no complex models for now)
+            try:
+                self.price_engine = AdvancedPricePredictionEngine(
+                    predictor=None,  # Will use default simple predictor
+                    websocket_manager=self.websocket_manager
+                )
+                ml_components.append('price_engine')
+                logger.info("✅ Price prediction engine initialized")
+            except Exception as e:
+                logger.warning(f"⚠️ Price engine init failed: {e}")
+            
+            # 3. Initialize Regime Predictor
+            try:
+                self.regime_predictor = MLRegimePredictor(
+                    regime_analyzer=self.market_regime_analyzer,
+                    websocket_manager=self.websocket_manager
+                )
+                ml_components.append('regime_predictor')
+                logger.info("✅ Regime predictor initialized")
+            except Exception as e:
+                logger.warning(f"⚠️ Regime predictor init failed: {e}")
+            
+            # 4. Initialize Reinforcement Learning Agent
+            try:
+                self.rl_agent = TradingRLAgent(
+                    state_size=50,   # Feature dimension
+                    action_size=3,   # Buy/Hold/Sell
+                    learning_rate=0.001
+                )
+                
+                # Initialize experience replay buffer
+                self.experience_replay = ExperienceReplay(max_size=100000)
+                self.rl_agent.set_memory(self.experience_replay)
+                
+                ml_components.append('rl_agent')
+                logger.info("✅ Reinforcement learning agent initialized")
+            except Exception as e:
+                logger.warning(f"⚠️ RL agent init failed: {e}")
+            
+            # 5. Initialize ML Strategy Integration Manager
+            try:
+                if hasattr(self, 'price_engine') and hasattr(self, 'regime_predictor'):
+                    self.ml_integration = MLStrategyIntegrationManager(
+                        self.price_engine,
+                        self.regime_predictor
+                    )
+                    ml_components.append('ml_integration')
+                    logger.info("✅ ML strategy integration manager initialized")
+                else:
+                    logger.warning("⚠️ Cannot init ML integration without price/regime engines")
+            except Exception as e:
+                logger.warning(f"⚠️ ML integration init failed: {e}")
+            
+            # 6. Connect ML to Strategy Coordinator
+            if hasattr(self, 'strategy_coordinator') and self.strategy_coordinator:
+                if hasattr(self, 'ml_integration'):
+                    self.strategy_coordinator.ml_integration = self.ml_integration.adapter
+                if hasattr(self, 'feature_pipeline'):
+                    self.strategy_coordinator.feature_pipeline = self.feature_pipeline
+                if hasattr(self, 'rl_agent'):
+                    self.strategy_coordinator.rl_agent = self.rl_agent
+                logger.info("🔗 ML connected to StrategyCoordinator")
+            
+            # 7. Connect ML to LiveTradingEngine
+            if hasattr(self, 'trading_engine') and self.trading_engine:
+                if hasattr(self, 'rl_agent'):
+                    self.trading_engine.rl_agent = self.rl_agent
+                if hasattr(self, 'ml_integration'):
+                    self.trading_engine.ml_integration = self.ml_integration
+                logger.info("🔗 ML connected to LiveTradingEngine")
+            
+            logger.info("🧠 [ML-INIT] ✅ ML SYSTEM INITIALIZED")
+            logger.info(f"   Components: {', '.join(ml_components)}")
+            logger.info(f"   Tracking {len(self.active_symbols)} symbols")
+            
+            return {
+                'success': True,
+                'components': ml_components
+            }
+            
+        except Exception as e:
+            logger.error(f"🧠 [ML-INIT] Initialization error: {e}", exc_info=True)
+            return {
+                'success': False,
+                'reason': str(e)
+            }
+    
     async def _initialize_production_system(self) -> bool:
         """
         Legacy wrapper for backwards compatibility.
@@ -781,6 +907,29 @@ class ProductionCoordinator:
                 for idx, symbol in enumerate(self.active_symbols, 1):
                     logger.info(f"  {idx}. {symbol}")
                 logger.info("="*70)
+            
+            # ========================================
+            # STEP 11.5: INITIALIZE ML COMPONENTS (NEW)
+            # ========================================
+            ml_enabled = self.config.get('ml', {}).get('enabled', False)
+            if ml_enabled and self.active_symbols:
+                logger.info("="*70)
+                logger.info("🧠 INITIALIZING ML COMPONENTS")
+                logger.info("="*70)
+                try:
+                    ml_init_result = await self._initialize_ml_components()
+                    if ml_init_result.get('success'):
+                        logger.info("✅ ML components initialized successfully")
+                    else:
+                        logger.warning(f"⚠️ ML initialization partial: {ml_init_result.get('reason')}")
+                except Exception as e:
+                    logger.warning(f"⚠️ ML initialization failed: {e}")
+                    logger.info("Continuing without ML features")
+            else:
+                if not ml_enabled:
+                    logger.info("ℹ️ ML features disabled in config")
+                elif not self.active_symbols:
+                    logger.warning("⚠️ Cannot initialize ML without active symbols")
             
             # ========================================
             # STEP 12: MARK AS INITIALIZED

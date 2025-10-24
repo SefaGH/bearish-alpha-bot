@@ -366,6 +366,56 @@ quarantine:
 #   ADAPTIVE_MODE_STR=dynamic
 #   VOLATILITY_SENSITIVITY_STR=medium
 #
+# ML SETTINGS:
+#   ML_ENABLED=true
+#   ML_PRICE_PREDICTION_ENABLED=true
+#   ML_REGIME_PREDICTION_ENABLED=true
+#   ML_REINFORCEMENT_LEARNING_ENABLED=true
+#   ML_STRATEGY_OPTIMIZATION_ENABLED=true
+#   ML_DUPLICATE_DETECTION_ENABLED=true
+#
 # OTHER:
 #   UNIVERSE_AUTO_SELECT=false
 # ==============================================================================
+
+# ==============================================================================
+# ML (MACHINE LEARNING) CONFIGURATION
+# ==============================================================================
+ml:
+  enabled: false  # Set to true to enable ML features
+  
+  # Price Prediction Settings
+  price_prediction_enabled: true
+  regime_prediction_enabled: true
+  reinforcement_learning_enabled: true
+  strategy_optimization_enabled: true
+  
+  # Model Settings
+  models:
+    lstm_enabled: true
+    transformer_enabled: true
+    ensemble_enabled: true
+  
+  # Prediction Settings
+  prediction:
+    update_interval: 60        # Seconds between prediction updates
+    cache_ttl: 300            # Time-to-live for cached predictions
+    min_confidence: 0.6       # Minimum confidence threshold
+    min_consensus: 0.7        # Minimum model consensus threshold
+  
+  # Reinforcement Learning Settings
+  rl:
+    state_size: 50            # Feature vector dimension
+    action_size: 3            # Buy/Hold/Sell
+    learning_rate: 0.001      # RL learning rate
+    memory_size: 100000       # Experience replay buffer size
+    batch_size: 32            # Training batch size
+    gamma: 0.95               # Discount factor
+  
+  # Feature Engineering
+  features:
+    lookback_periods: [5, 10, 20, 50]  # Historical periods for features
+    include_technical: true             # Include technical indicators
+    include_volume: true                # Include volume features
+    include_sentiment: false            # Include sentiment data (if available)
+

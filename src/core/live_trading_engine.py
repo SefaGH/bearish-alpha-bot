@@ -692,6 +692,28 @@ class LiveTradingEngine:
                             'bridge_timestamp': datetime.now(timezone.utc)
                         }
                         
+                        # ML Enhancement: Check if ML enhanced or blocked
+                        if enriched_signal.get('ml_enhanced'):
+                            bridge_stats['ml_enhanced'] = bridge_stats.get('ml_enhanced', 0) + 1
+                            logger.info(f"🧠 [ML-BRIDGE] Signal {signal_id} is ML-enhanced")
+                            
+                            # Feed to RL agent for learning (store state for later reward calculation)
+                            if hasattr(self, 'rl_agent') and self.rl_agent:
+                                try:
+                                    import numpy as np
+                                    state = enriched_signal.get('rl_state', np.zeros(50))
+                                    action = ['buy', 'hold', 'sell'].index(enriched_signal.get('side', 'hold'))
+                                    enriched_signal['rl_state'] = state
+                                    enriched_signal['rl_action'] = action
+                                except Exception as e:
+                                    logger.debug(f"RL state prep failed: {e}")
+                        
+                        # Check if ML blocked
+                        if enriched_signal.get('ml_blocked'):
+                            bridge_stats['ml_blocked'] = bridge_stats.get('ml_blocked', 0) + 1
+                            logger.info(f"🧠 [ML-BRIDGE] Signal {signal_id} blocked by ML - skipping")
+                            continue
+                        
                         # Transfer to LiveTradingEngine queue
                         await self.signal_queue.put(enriched_signal)
                         
