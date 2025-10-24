@@ -27,17 +27,19 @@ class WebSocketClient:
     Uses CCXT Pro when available, falls back to BingX Direct WebSocket or REST API.
     """
     
-    def __init__(self, ex_name: str, creds: Optional[Dict[str, str]] = None):
+    def __init__(self, ex_name: str, creds: Optional[Dict[str, str]] = None, collector: Optional[object] = None):
         """
         Initialize WebSocket client.
         
         Args:
             ex_name: Exchange name (e.g., 'kucoinfutures', 'bingx')
             creds: Optional API credentials dict with 'apiKey', 'secret', 'password'
+            collector: Optional StreamDataCollector for bridging data
         """
         self.name = ex_name.lower()
         self._running = False
         self._tasks = []
+        self.collector = collector  # ✅ PATCH 3: Store collector reference
         
         # Connection state tracking
         self._is_connected = False
@@ -72,10 +74,12 @@ class WebSocketClient:
             api_key = creds.get('apiKey') if creds else None
             api_secret = creds.get('secret') if creds else None
             
+            # ✅ PATCH 3: Pass collector to BingXWebSocket
             self.ws_client = BingXWebSocket(
                 api_key=api_key,
                 api_secret=api_secret,
-                futures=True
+                futures=True,
+                collector=collector
             )
             self.use_direct_ws = True
             
@@ -242,6 +246,49 @@ class WebSocketClient:
             self._log_error('watch_ohlcv', str(e))
             return []
     
+    async def watch_ohlcv_loop(self, symbol: str, timeframe: str = '1m', 
+                              callback: Optional[Callable] = None, 
+                              max_iterations: Optional[int] = None) -> None:
+        """
+        Continuously watch OHLCV data for a symbol in a loop.
+        
+        Args:
+            symbol: Trading pair symbol
+            timeframe: Timeframe for candles (e.g., '1m', '5m', '30m')
+            callback: Optional callback function called for each update
+                     Function signature: async def callback(symbol, timeframe, ohlcv)
+            max_iterations: Maximum iterations (None for infinite loop)
+        """
+        iteration = 0
+        self._running = True
+        
+        logger.info(f"Starting OHLCV loop for {symbol} {timeframe} on {self.name}")
+        
+        while self._running and (max_iterations is None or iteration < max_iterations):
+            try:
+                # Call single watch_ohlcv
+                ohlcv = await self.watch_ohlcv(symbol, timeframe, callback=None)
+                
+                # If we got data and have a callback, call it
+                if ohlcv and callback:
+                    await callback(symbol, timeframe, ohlcv)
+                
+                iteration += 1
+                
+                # Small delay between iterations
+                await asyncio.sleep(1)
+                
+            except asyncio.CancelledError:
+                logger.info(f"OHLCV loop cancelled for {symbol} {timeframe}")
+                break
+            except Exception as e:
+                logger.error(f"Error in OHLCV loop for {symbol} {timeframe}: {e}")
+                self._log_error('watch_ohlcv_loop', str(e))
+                # Wait before retrying
+                await asyncio.sleep(5)
+        
+        logger.info(f"OHLCV loop stopped for {symbol} {timeframe} on {self.name} (iterations: {iteration})")
+    
     async def watch_ticker(self, symbol: str, 
                           callback: Optional[Callable] = None) -> Dict[str, Any]:
         """
@@ -301,6 +348,48 @@ class WebSocketClient:
             logger.error(f"Error watching ticker for {symbol}: {e}")
             self._log_error('watch_ticker', str(e))
             return {}
+    
+    async def watch_ticker_loop(self, symbol: str, 
+                               callback: Optional[Callable] = None,
+                               max_iterations: Optional[int] = None) -> None:
+        """
+        Continuously watch ticker data for a symbol in a loop.
+        
+        Args:
+            symbol: Trading pair symbol
+            callback: Optional callback function called for each update
+                     Function signature: async def callback(symbol, ticker)
+            max_iterations: Maximum iterations (None for infinite loop)
+        """
+        iteration = 0
+        self._running = True
+        
+        logger.info(f"Starting ticker loop for {symbol} on {self.name}")
+        
+        while self._running and (max_iterations is None or iteration < max_iterations):
+            try:
+                # Call single watch_ticker
+                ticker = await self.watch_ticker(symbol, callback=None)
+                
+                # If we got data and have a callback, call it
+                if ticker and callback:
+                    await callback(symbol, ticker)
+                
+                iteration += 1
+                
+                # Small delay between iterations
+                await asyncio.sleep(1)
+                
+            except asyncio.CancelledError:
+                logger.info(f"Ticker loop cancelled for {symbol}")
+                break
+            except Exception as e:
+                logger.error(f"Error in ticker loop for {symbol}: {e}")
+                self._log_error('watch_ticker_loop', str(e))
+                # Wait before retrying
+                await asyncio.sleep(5)
+        
+        logger.info(f"Ticker loop stopped for {symbol} on {self.name} (iterations: {iteration})")
     
     async def close(self):
         """Close the WebSocket connection and cleanup resources."""

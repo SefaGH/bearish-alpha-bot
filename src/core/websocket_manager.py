@@ -118,9 +118,9 @@ class WebSocketManager:
                 else:
                     creds = ex_data
                 
-                # Create WebSocket client
-                self.clients[ex_name_lower] = client_cls(ex_name_lower, creds)
-                logger.info(f"✅ WebSocket client initialized for {ex_name_lower}")
+                # ✅ PATCH 3: Pass collector to WebSocket client
+                self.clients[ex_name_lower] = client_cls(ex_name_lower, creds, collector=self._data_collector)
+                logger.info(f"✅ WebSocket client initialized for {ex_name_lower} with collector")
                 
             except Exception as e:
                 logger.error(f"Failed to initialize WebSocket client for {ex_name}: {e}")

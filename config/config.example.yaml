@@ -84,7 +84,11 @@ websocket:
     default: 10                       # Default for other exchanges - WS_MAX_STREAMS_DEFAULT
   
   stream_timeframes:
-    - 1m                              # Only essential timeframes (override with WS_STREAM_TIMEFRAMES)
+    - 1m                              # 1-minute candles
+    - 5m                              # 5-minute candles
+    - 30m                             # 30-minute candles (production needs)
+    - 1h                              # 1-hour candles (production needs)
+    - 4h                              # 4-hour candles (production needs)
   
   reconnect_delay: 5                  # Reconnection delay in seconds (override with WS_RECONNECT_DELAY)
   max_reconnect_attempts: 3           # Max reconnection attempts (override with WS_MAX_RECONNECT_ATTEMPTS)
@@ -341,7 +345,7 @@ quarantine:
 #   WS_MAX_STREAMS_BINANCE=20
 #   WS_MAX_STREAMS_KUCOIN=15
 #   WS_MAX_STREAMS_DEFAULT=10
-#   WS_STREAM_TIMEFRAMES=1m
+#   WS_STREAM_TIMEFRAMES=1m,5m,30m,1h,4h
 #   WS_RECONNECT_DELAY=5
 #   WS_MAX_RECONNECT_ATTEMPTS=3
 #

@@ -33,7 +33,7 @@ class BingXWebSocket:
     WS_VST_SWAP = "wss://vst-open-api-ws.bingx.com/swap-market"
     
     def __init__(self, api_key: Optional[str] = None, api_secret: Optional[str] = None, 
-                 testnet: bool = False, futures: bool = True):
+                 testnet: bool = False, futures: bool = True, collector: Optional[object] = None):
         """
         Initialize BingX WebSocket client.
         
@@ -42,11 +42,13 @@ class BingXWebSocket:
             api_secret: Optional API secret
             testnet: Use testnet endpoints
             futures: Use futures/swap market (True) or spot (False)
+            collector: Optional StreamDataCollector for bridging data
         """
         self.api_key = api_key
         self.api_secret = api_secret
         self.testnet = testnet
         self.futures = futures
+        self.collector = collector  # ✅ PATCH 4: Store collector reference
         
         # Select appropriate endpoint
         self.ws_url = self.WS_PUBLIC_SWAP if futures else self.WS_PUBLIC_SPOT
@@ -479,6 +481,21 @@ class BingXWebSocket:
             if len(self.klines[ccxt_symbol][ccxt_timeframe]) > 500:
                 self.klines[ccxt_symbol][ccxt_timeframe] = \
                     self.klines[ccxt_symbol][ccxt_timeframe][-500:]
+            
+            # ✅ PATCH 4: Bridge data to StreamDataCollector
+            if processed_klines and self.collector:
+                # Call collector's ohlcv_callback if it exists
+                cb = getattr(self.collector, 'ohlcv_callback', None)
+                if cb:
+                    try:
+                        # Collector expects: exchange, symbol, timeframe, ohlcv
+                        if asyncio.iscoroutinefunction(cb):
+                            await cb('bingx', ccxt_symbol, ccxt_timeframe, processed_klines)
+                        else:
+                            cb('bingx', ccxt_symbol, ccxt_timeframe, processed_klines)
+                        logger.debug(f"✅ Bridged {len(processed_klines)} klines to collector: {ccxt_symbol} {ccxt_timeframe}")
+                    except Exception as e:
+                        logger.error(f"Failed to bridge kline to collector: {e}")
             
             # Call callbacks with the new klines
             if processed_klines:
