@@ -7,7 +7,7 @@ FIXED: Singleton listen task pattern to prevent concurrent recv errors.
 import asyncio
 import logging
 import time
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, TYPE_CHECKING
 from datetime import datetime, timedelta
 
 # Try importing CCXT Pro first
@@ -18,6 +18,9 @@ except ImportError:
     CCXT_PRO_AVAILABLE = False
     import ccxt  # Regular CCXT for fallback
 
+if TYPE_CHECKING:
+    from .websocket_manager import StreamDataCollector
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,7 +30,8 @@ class WebSocketClient:
     Uses CCXT Pro when available, falls back to BingX Direct WebSocket or REST API.
     """
     
-    def __init__(self, ex_name: str, creds: Optional[Dict[str, str]] = None, collector: Optional[object] = None):
+    def __init__(self, ex_name: str, creds: Optional[Dict[str, str]] = None, 
+                 collector: Optional['StreamDataCollector'] = None):
         """
         Initialize WebSocket client.
         

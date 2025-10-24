@@ -6,10 +6,13 @@ import logging
 import time
 import hmac
 import hashlib
-from typing import Dict, List, Optional, Callable, Union, Any
+from typing import Dict, List, Optional, Callable, Union, Any, TYPE_CHECKING
 from datetime import datetime, timezone
 import websockets
 from collections import defaultdict
+
+if TYPE_CHECKING:
+    from .websocket_manager import StreamDataCollector
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +36,8 @@ class BingXWebSocket:
     WS_VST_SWAP = "wss://vst-open-api-ws.bingx.com/swap-market"
     
     def __init__(self, api_key: Optional[str] = None, api_secret: Optional[str] = None, 
-                 testnet: bool = False, futures: bool = True, collector: Optional[object] = None):
+                 testnet: bool = False, futures: bool = True, 
+                 collector: Optional['StreamDataCollector'] = None):
         """
         Initialize BingX WebSocket client.
         

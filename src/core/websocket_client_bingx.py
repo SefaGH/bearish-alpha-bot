@@ -6,10 +6,13 @@ FIXED: Singleton listen task pattern
 
 import asyncio
 import logging
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, TYPE_CHECKING
 from datetime import datetime
 
 from .bingx_websocket import BingXWebSocket
+
+if TYPE_CHECKING:
+    from .websocket_manager import StreamDataCollector
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +23,8 @@ class WebSocketClient:
     Provides CCXT-like interface using BingX direct WebSocket.
     """
     
-    def __init__(self, ex_name: str, creds: Optional[Dict[str, str]] = None, collector: Optional[object] = None):
+    def __init__(self, ex_name: str, creds: Optional[Dict[str, str]] = None, 
+                 collector: Optional['StreamDataCollector'] = None):
         """
         Initialize WebSocket client for BingX.
         
@@ -50,7 +54,7 @@ class WebSocketClient:
         self.bingx_ws = BingXWebSocket(
             api_key=api_key,
             api_secret=api_secret,
-            futures=True,  # Use futures market
+            futures=True,
             collector=collector
         )
         
