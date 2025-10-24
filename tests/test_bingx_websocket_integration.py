@@ -12,6 +12,7 @@ import os
 import sys
 import pytest
 import asyncio
+import json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
@@ -81,7 +82,6 @@ async def test_bingx_websocket_integration():
         print("   → Subscribed to BTC kline 1m")
         
         # Subscribe to orderbook (depth)
-        import json
         sub_id = str(int(asyncio.get_event_loop().time() * 1000))
         sub_message = {
             "id": sub_id,
