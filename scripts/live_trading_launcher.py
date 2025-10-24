@@ -323,47 +323,52 @@ class OptimizedWebSocketManager:
     
     async def _subscribe_optimized(self) -> List[asyncio.Task]:
         """
-        Subscribe to WebSocket streams with optimization.
-        
-        Returns:
-            List of stream tasks
+        Subscribe to WebSocket streams with optimization (SINGLE PATH).
+        Uses WebSocketManager.stream_ohlcv so that limit gating and tracking apply.
         """
         if not self.ws_manager:
             return []
-        
-        tasks = []
-        stream_count = {}
-        
-        for exchange_name, client in self.ws_manager.clients.items():
+
+        tasks: List[asyncio.Task] = []
+        stream_count: Dict[str, int] = {}
+
+        # TF'leri config'ten çek
+        timeframes = (
+            self.config.get('websocket', {}).get('stream_timeframes', ['1m', '5m', '30m', '1h', '4h'])
+            if isinstance(self.config, dict) else ['1m', '5m', '30m', '1h', '4h']
+        )
+
+        for exchange_name, _client in self.ws_manager.clients.items():
+            # Limit
             max_streams = self.max_streams_config.get(
                 exchange_name,
                 self.max_streams_config.get('default', 10)
             )
-            
-            exchange_symbols = []
-            for symbol in self.fixed_symbols:
-                if len(exchange_symbols) >= max_streams:
-                    logger.info(f"[WS-OPT] {exchange_name}: Max streams ({max_streams}) reached")
-                    break
-                exchange_symbols.append(symbol)
-            
-            if exchange_symbols:
-                # Subscribe to symbols
-                symbols_per_exchange = {exchange_name: exchange_symbols}
-                
-                # OHLCV streams for main timeframe
+
+            streams_per_symbol = max(1, len(timeframes))
+            max_symbols = max(1, max_streams // streams_per_symbol)
+
+            # Limit altında kalacak kadar sembol
+            exchange_symbols = self.fixed_symbols[:max_symbols]
+            if not exchange_symbols:
+                logger.warning(f"[WS-OPT] {exchange_name}: No symbols selected under limit={max_streams} with {len(timeframes)} TFs")
+                continue
+
+            symbols_per_exchange = {exchange_name: exchange_symbols}
+
+            # Her TF için manager üzerinden stream başlat
+            for tf in timeframes:
                 ohlcv_tasks = await self.ws_manager.stream_ohlcv(
                     symbols_per_exchange=symbols_per_exchange,
-                    timeframe='1m',
+                    timeframe=tf,
                     callback=None,
                     max_iterations=None
                 )
-                
                 tasks.extend(ohlcv_tasks)
-                stream_count[exchange_name] = len(exchange_symbols)
-                
-                logger.info(f"[WS-OPT] {exchange_name}: Subscribed to {len(exchange_symbols)} symbols")
-        
+
+            stream_count[exchange_name] = len(exchange_symbols) * len(timeframes)
+            logger.info(f"[WS-OPT] {exchange_name}: Subscribed to {len(exchange_symbols)} symbols across {len(timeframes)} TFs (limit={max_streams})")
+
         logger.info(f"[WS-OPT] Total streams: {sum(stream_count.values())}")
         return tasks
     
@@ -470,48 +475,53 @@ class OptimizedWebSocketManager:
     
     async def initialize_and_subscribe(self, exchange_clients: Dict[str, Any], symbols: List[str]) -> bool:
         """
-        Initialize WebSocket connections AND subscribe to symbols.
-        ✅ FIX 4: Implements Production Coordinator Phase 4 requirements.
-        
-        Args:
-            exchange_clients: Dictionary of exchange clients
-            symbols: List of symbols to subscribe (CCXT format)
-            
-        Returns:
-            True if successful, False otherwise
+        Initialize WebSocket connections AND subscribe to symbols (SINGLE PATH).
+        Streams are started inside _subscribe_optimized(). This method only verifies data flow across TFs.
         """
         try:
             logger.info("[WS-INIT] Starting WebSocket initialization and subscription...")
-            
+
             # Step 1: Setup configuration
             self.setup_from_config(self.config)
-            
-            # Step 2: Initialize WebSocket connections
+
+            # Step 2: Initialize WebSocket connections (enforces limits + starts streams via _subscribe_optimized)
             logger.info("[WS-INIT] Initializing WebSocket connections...")
             tasks = await self.initialize_websockets(exchange_clients)
-            
+
             if not tasks:
                 logger.error("[WS-INIT] ❌ Failed to initialize WebSocket connections")
                 return False
-            
+
             logger.info(f"[WS-INIT] ✅ Initialized {len(tasks)} WebSocket tasks")
-            
-            # Step 3: Subscribe to symbols with proper callbacks
-            logger.info(f"[WS-SUB] Subscribing to {len(symbols)} symbols...")
-            
-            subscription_count = 0
-            for exchange_name, client in self.ws_manager.clients.items():
-                max_streams = self.max_streams_config.get(exchange_name, 10)
-                
-                # Convert and subscribe to symbols
-                for i, symbol in enumerate(symbols):
-                    if i >= max_streams:
-                        logger.warning(f"[WS-SUB] Reached max streams ({max_streams}) for {exchange_name}")
-                        break
-                    
-                    # Convert symbol format
-                    exchange_symbol = self._convert_symbol_for_exchange(symbol, exchange_name)
-                    logger.debug(f"[WS-SUB] {symbol} -> {exchange_symbol}")
+
+            # Step 3: Verify data across configured TFs
+            timeframes = (
+                self.config.get('websocket', {}).get('stream_timeframes', ['1m', '5m', '30m', '1h', '4h'])
+                if isinstance(self.config, dict) else ['1m', '5m', '30m', '1h', '4h']
+            )
+
+            logger.info("[WS-VERIFY] Waiting for initial data...")
+            await asyncio.sleep(3)
+
+            verified_count = 0
+            for symbol in symbols[:3]:
+                if any(self.ws_manager.get_latest_data(symbol, tf) for tf in timeframes):
+                    logger.info(f"[WS-VERIFY] ✅ Data confirmed for {symbol} (at least one of {timeframes})")
+                    verified_count += 1
+                else:
+                    logger.warning(f"[WS-VERIFY] ⚠️ No data yet for {symbol} (checked TFs: {timeframes})")
+
+            if verified_count > 0:
+                logger.info(f"[WS-VERIFY] ✅ WebSocket data flow verified ({verified_count}/{min(3, len(symbols))} symbols)")
+                self.is_initialized = True
+                return True
+
+            logger.error("[WS-VERIFY] ❌ No data received after subscription")
+            return False
+
+        except Exception as e:
+            logger.error(f"[WS-ERROR] Failed to initialize and subscribe: {e}", exc_info=True)
+            return False
                     
                     # Create callback for this symbol
                     async def data_callback(sym, tf, ohlcv, ex=exchange_name, orig_sym=symbol):
@@ -1618,20 +1628,23 @@ class LiveTradingLauncher:
             # ✅ FIX 6: Check 6 - WebSocket Data Flow
             logger.info("Check 6/7: WebSocket data flow...")
             if self._is_ws_initialized():
-                # Test data retrieval for each symbol
+                # Config'ten TF listesi
+                timeframes = (
+                    self.config.get('websocket', {}).get('stream_timeframes', ['1m', '5m', '30m', '1h', '4h'])
+                    if isinstance(self.config, dict) else ['1m', '5m', '30m', '1h', '4h']
+                )
                 working_symbols = 0
-                for symbol in self.TRADING_PAIRS[:3]:  # Test first 3
-                    data = self.ws_optimizer.ws_manager.get_latest_data(symbol, '1m')
-                    if data and data.get('ohlcv'):
+                for symbol in self.TRADING_PAIRS[:3]:  # 1 sembol de olsa güvenli
+                    if any(self.ws_optimizer.ws_manager.get_latest_data(symbol, tf) for tf in timeframes):
                         working_symbols += 1
-                        logger.info(f"  ✅ {symbol}: Receiving data ({len(data['ohlcv'])} candles)")
+                        logger.info(f"  ✅ {symbol}: Receiving data (TFs checked: {timeframes})")
                     else:
-                        logger.warning(f"  ⚠️ {symbol}: No data available")
-                
+                        logger.warning(f"  ⚠️ {symbol}: No data available across {timeframes}")
+
                 if working_symbols > 0:
                     logger.info(f"✅ WebSocket data flow confirmed ({working_symbols}/{min(3, len(self.TRADING_PAIRS))} symbols)")
                 else:
-                    logger.error("❌ WebSocket connected but no data flowing")
+                    logger.error("❌ WebSocket connected but no data flowing across required TFs")
                     checks_passed = False
             else:
                 logger.warning("⚠️ WebSocket not initialized (REST mode)")
