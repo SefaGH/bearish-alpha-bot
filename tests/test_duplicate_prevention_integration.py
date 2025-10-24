@@ -20,7 +20,7 @@ class TestDuplicatePreventionIntegration:
             'signals': {
                 'duplicate_prevention': {
                     'enabled': True,
-                    'min_price_change_pct': 0.05,  # Optimized threshold
+                    'min_price_change_pct': 0.0005,  # CORRECTED: 0.05% threshold (was 0.05 = 5%)
                     'cooldown_seconds': 0.5         # Short cooldown for testing
                 }
             }
@@ -37,7 +37,7 @@ class TestDuplicatePreventionIntegration:
                 'duplicate_prevention': {
                     'enabled': True,
                     'same_symbol_cooldown': 1,  # Short cooldown for testing
-                    'price_delta_bypass_threshold': 0.0015,  # 0.15%
+                    'price_delta_bypass_threshold': 0.0015,  # 0.15% (remains correct)
                     'price_delta_bypass_enabled': True
                 }
             }

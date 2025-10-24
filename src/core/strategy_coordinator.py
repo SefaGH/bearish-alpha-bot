@@ -110,8 +110,8 @@ class StrategyCoordinator:
             cooldown = float(dup_config.get('cooldown_seconds', 20))
             
             # ✅ FIX #2: No double division - value is already in decimal
-            # Config has min_price_change_pct: 0.05 which means 5% = 0.05 in decimal
-            price_delta_bypass_threshold = float(dup_config.get('min_price_change_pct', 0.05))
+            # Config has min_price_change_pct: 0.0005 which means 0.05% in decimal
+            price_delta_bypass_threshold = float(dup_config.get('min_price_change_pct', 0.0005))
             price_delta_bypass_enabled = dup_config.get('price_delta_bypass_enabled', True)
             
             logger.debug(f"✓ Using signals.duplicate_prevention config")
@@ -156,7 +156,7 @@ class StrategyCoordinator:
                 if self.signal_price_history[symbol]:
                     last_timestamp, last_price = self.signal_price_history[symbol][-1]
                     
-                    # Step 3b: Calculate price_delta (already in decimal, e.g., 0.05 = 5%)
+                    # Step 3b: Calculate price_delta (in decimal, e.g., 0.0005 = 0.05%)
                     price_delta = abs(entry_price - last_price) / last_price
                     
                     # Step 3c: IF price_delta >= threshold, BYPASS
@@ -312,6 +312,20 @@ class StrategyCoordinator:
                     'stage': 'duplicate_validation'
                 }
             
+            # Step 2.6: ML Enhancement (if enabled)
+            if hasattr(self, 'ml_integration') and self.ml_integration:
+                enriched_signal = await self._enhance_signal_with_ml(enriched_signal)
+                if enriched_signal is None:
+                    # ML blocked the signal
+                    self.processing_stats['rejected_signals'] += 1
+                    self.processing_stats['ml_blocked_signals'] = self.processing_stats.get('ml_blocked_signals', 0) + 1
+                    logger.info(f"Signal rejected by ML enhancement")
+                    return {
+                        'status': 'rejected',
+                        'reason': 'ML enhancement blocked signal',
+                        'stage': 'ml_enhancement'
+                    }
+            
             # Step 3: Check for conflicts with existing positions/signals
             conflict_check = await self._check_signal_conflicts(enriched_signal)
             
@@ -398,6 +412,119 @@ class StrategyCoordinator:
                 'reason': str(e),
                 'stage': 'processing'
             }
+    
+    async def _enhance_signal_with_ml(self, signal: Dict) -> Optional[Dict]:
+        """
+        Enhance signal with ALL ML predictions.
+        Uses price prediction, regime prediction, and RL agent recommendations.
+        
+        Args:
+            signal: Trading signal dictionary
+            
+        Returns:
+            Enhanced signal dict or None if ML blocks the signal
+        """
+        if not hasattr(self, 'ml_integration') or not self.ml_integration:
+            return signal
+        
+        try:
+            import numpy as np
+            import pandas as pd
+            current_price = signal.get('entry', 0)
+            symbol = signal.get('symbol')
+            
+            # 1. Get ML enhancement from strategy integration
+            try:
+                enhancement = await self.ml_integration.enhance_strategy_signal(
+                    symbol, signal, current_price
+                )
+                
+                # Check if ML recommends blocking
+                if enhancement.get('final_signal') == 'neutral' or enhancement.get('final_signal') == 'hold':
+                    logger.info(f"🧠 [ML] Signal neutralized for {symbol}")
+                    signal['ml_blocked'] = True
+                    return None
+                
+                # Adjust signal strength based on ML confidence
+                signal['ml_strength'] = enhancement.get('final_strength', signal.get('strength', 0.5))
+                signal['ml_confidence'] = enhancement.get('confidence_adjustment', 1.0)
+                
+                # Add ML metadata
+                signal['ml_enhanced'] = True
+                signal['ml_forecast_price'] = enhancement.get('forecast_price')
+                signal['ml_uncertainty'] = enhancement.get('uncertainty')
+                signal['ml_consensus'] = enhancement.get('consensus')
+                
+            except Exception as e:
+                logger.debug(f"ML strategy integration failed: {e}")
+            
+            # 2. Get regime prediction (if available)
+            if hasattr(self, 'regime_predictor') and hasattr(self.ml_integration, 'regime_predictor'):
+                try:
+                    regime_prediction = await self.ml_integration.regime_predictor.predict_regime_transition(
+                        symbol,
+                        pd.DataFrame(),  # Would be actual price data in production
+                        horizon='1h'
+                    )
+                    signal['predicted_regime'] = regime_prediction.get('predicted_regime', 'neutral')
+                    signal['regime_confidence'] = regime_prediction.get('confidence', 0)
+                except Exception as e:
+                    logger.debug(f"Regime prediction failed: {e}")
+            
+            # 3. Get RL agent recommendation (if available)
+            if hasattr(self, 'rl_agent') and self.rl_agent:
+                try:
+                    # Extract features for RL state
+                    state_features = self._extract_rl_state(symbol, current_price)
+                    
+                    # Get RL action recommendation
+                    rl_action = self.rl_agent.act(
+                        state_features,
+                        market_regime=signal.get('predicted_regime', 'neutral'),
+                        training=False  # Inference mode
+                    )
+                    
+                    signal['rl_recommendation'] = ['buy', 'hold', 'sell'][rl_action]
+                    signal['rl_state'] = state_features  # Store for later learning
+                    signal['rl_confidence'] = 0.8  # Placeholder
+                except Exception as e:
+                    logger.debug(f"RL recommendation failed: {e}")
+            
+            # Position sizing with ML risk adjustment
+            if 'position_size' in signal and signal.get('ml_confidence'):
+                signal['position_size'] *= signal['ml_confidence']
+            
+            logger.info(f"🧠 [ML] Signal enhanced: {symbol}")
+            if signal.get('ml_strength'):
+                logger.info(f"   Strength: {signal.get('strength', 0.5):.2f} → {signal['ml_strength']:.2f}")
+            if signal.get('predicted_regime'):
+                logger.info(f"   Regime: {signal['predicted_regime']} ({signal.get('regime_confidence', 0):.2%})")
+            if signal.get('rl_recommendation'):
+                logger.info(f"   RL Says: {signal['rl_recommendation']}")
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"ML enhancement failed: {e}")
+            return signal  # Return original on error
+    
+    def _extract_rl_state(self, symbol: str, current_price: float) -> 'np.ndarray':
+        """
+        Extract feature vector for RL agent state.
+        
+        Args:
+            symbol: Trading symbol
+            current_price: Current price
+            
+        Returns:
+            State feature vector
+        """
+        import numpy as np
+        
+        # In a real implementation, this would extract actual features
+        # For now, return a placeholder state
+        state = np.random.randn(50)  # 50-dimensional state
+        return state
     
     async def resolve_signal_conflicts(self, new_signal: Dict, 
                                       conflicting_signals: List[Dict],
