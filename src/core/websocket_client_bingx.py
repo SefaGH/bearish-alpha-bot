@@ -20,8 +20,15 @@ class WebSocketClient:
     Provides CCXT-like interface using BingX direct WebSocket.
     """
     
-    def __init__(self, ex_name: str, creds: Optional[Dict[str, str]] = None):
-        """Initialize WebSocket client for BingX."""
+    def __init__(self, ex_name: str, creds: Optional[Dict[str, str]] = None, collector: Optional[object] = None):
+        """
+        Initialize WebSocket client for BingX.
+        
+        Args:
+            ex_name: Exchange name (must be 'bingx')
+            creds: Optional credentials
+            collector: Optional StreamDataCollector for bridging data
+        """
         
         if ex_name.lower() != 'bingx':
             raise ValueError(f"This client only supports BingX, got: {ex_name}")
@@ -29,19 +36,22 @@ class WebSocketClient:
         self.name = 'bingx'
         self._running = False
         self._tasks = []
+        self.collector = collector  # ✅ PATCH 3: Store collector reference
         
         # ✅ NEW: Singleton listen task management
         self._listen_task: Optional[asyncio.Task] = None
         self._listen_lock = asyncio.Lock()
         
-        # Initialize BingX WebSocket
+        # Initialize BingX WebSocket with collector
         api_key = creds.get('apiKey') if creds else None
         api_secret = creds.get('secret') if creds else None
         
+        # ✅ PATCH 3: Pass collector to BingXWebSocket
         self.bingx_ws = BingXWebSocket(
             api_key=api_key,
             api_secret=api_secret,
-            futures=True  # Use futures market
+            futures=True,  # Use futures market
+            collector=collector
         )
         
         # Connection tracking
