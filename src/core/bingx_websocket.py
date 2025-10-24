@@ -273,45 +273,65 @@ class BingXWebSocket:
                 logger.error(f"Listen loop error: {e}")  # ✅ FIX: self.logger -> logger
                 await asyncio.sleep(1)  # Prevent tight loop on errors
     
-    async def _handle_message(self, message: str):
+    async def _handle_message(self, message: Union[str, bytes, dict]):
         """
         Process incoming WebSocket message.
         
         Args:
-            message: Raw message string from WebSocket
+            message: Raw message from WebSocket (can be str, bytes, or dict)
         """
         try:
-            data = json.loads(message)
+            # Handle different message types
+            if isinstance(message, dict):
+                # Message is already parsed (from listen() method)
+                data = message
+            elif isinstance(message, bytes):
+                # Decode bytes to string first
+                message = message.decode('utf-8')
+                data = json.loads(message)
+            elif isinstance(message, str):
+                # Parse JSON string
+                data = json.loads(message)
+            else:
+                logger.error(f"Unexpected message type: {type(message)}")
+                return
             
             # Update statistics
             self.message_count += 1
             self.last_message_time = datetime.now(timezone.utc)
             
             # Check if it's a ping/pong message
-            if data.get("ping"):
+            if isinstance(data, dict) and data.get("ping"):
                 await self._send_pong(data["ping"])
                 return
             
-            # Check message type
-            if "code" in data and data["code"] != 0:
+            # Check for error responses
+            if isinstance(data, dict) and "code" in data and data["code"] != 0:
                 logger.error(f"BingX error response: {data}")
                 return
             
-            data_type = data.get("dataType", "")
-            
-            if "@ticker" in data_type:
-                await self._handle_ticker(data)
-            elif "@kline" in data_type:
-                await self._handle_kline(data)
-            elif "@depth" in data_type:
-                await self._handle_orderbook(data)
+            # Process by data type
+            if isinstance(data, dict):
+                data_type = data.get("dataType", "")
+                
+                if "@ticker" in data_type:
+                    await self._handle_ticker(data)
+                elif "@kline" in data_type:
+                    await self._handle_kline(data)
+                elif "@depth" in data_type:
+                    await self._handle_orderbook(data)
+                else:
+                    logger.debug(f"Unknown message type: {data_type}")
             else:
-                logger.debug(f"Unknown message type: {data_type}")
+                logger.warning(f"Unexpected data format: {type(data)}")
                 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse WebSocket message: {e}")
+            if isinstance(message, (str, bytes)):
+                logger.debug(f"Raw message: {message[:100]}...")  # Log first 100 chars for debugging
         except Exception as e:
             logger.error(f"Error handling message: {e}")
+            logger.debug(f"Message type: {type(message)}")
     
     async def _handle_ticker(self, data: Dict):
         """Process ticker update."""
