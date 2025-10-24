@@ -132,12 +132,22 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          echo "📦 Installing dependencies..."
           python -V
-          pip install --upgrade pip setuptools wheel
-          # Fix for parse_frame error - install specific versions first WITH QUOTES
+          python -m pip install --upgrade pip setuptools wheel
+          
+          # Install specific versions for compatibility
           pip install --no-cache-dir 'aiohttp==3.8.6' 'yarl<2.0' 'multidict<7.0'
+          
+          # Install TA library (required for strategies)
+          pip install --no-cache-dir 'ta>=0.10.2'
+          
+          # Install WebSocket libraries
+          pip install --no-cache-dir 'websocket-client>=1.6.0' 'websockets>=10.0'
+          
+          # Install remaining requirements (ccxtpro is commented out)
           pip install --no-cache-dir -r requirements.txt
+          
+          echo "✅ Dependencies installed successfully (using BingX Direct WebSocket)"
 
       - name: Run Dry-Run Pre-Flight Checks
         env:
