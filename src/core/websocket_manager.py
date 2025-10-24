@@ -81,9 +81,10 @@ class WebSocketManager:
         # Initialize WebSocket clients based on input type
         for ex_name, ex_data in exchanges.items():
             try:
-                # BingX ismini normalize et
-                if ex_name.lower() == 'bingx':
-                    ex_name = 'bingx'
+                try:
+                    # ✅ DÜZENLEME: BingX için log ekle
+                    if ex_name.lower() == 'bingx':
+                        logger.info("🎯 Initializing BingX WebSocket client")
                     
                 if self._use_ccxt_clients:
                     # Extract credentials from CcxtClient if available
@@ -102,7 +103,7 @@ class WebSocketManager:
                     else:
                         self.clients[ex_name] = WebSocketClient(ex_name, None)
                 else:
-                    # Legacy mode için de BingX kontrolü
+                    # Create WebSocketClient (will automatically use BingX Direct if no CCXT Pro)
                     self.clients[ex_name] = WebSocketClient(ex_name, ex_data)
                     
                 logger.info(f"WebSocket client initialized for {ex_name}")
