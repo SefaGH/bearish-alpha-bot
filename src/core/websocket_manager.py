@@ -81,26 +81,31 @@ class WebSocketManager:
         # Initialize WebSocket clients based on input type
         for ex_name, ex_data in exchanges.items():
             try:
-                # Normalize exchange name to lowercase for consistency
                 ex_name_lower = ex_name.lower()
                 
-                # Log BingX-specific initialization
+                # BingX için öncelik sırası:
+                # 1. websocket_client_bingx.py varsa kullan
+                # 2. websocket_client.py (CCXT Pro yoksa otomatik BingX Direct kullanır)
+                
                 if ex_name_lower == 'bingx':
                     logger.info("🎯 Initializing BingX WebSocket client")
-                
-                # Default to the generic client class
-                client_cls = WebSocketClient
-
-                # If there's a dedicated BingX client use it (preferred)
-                if ex_name_lower == 'bingx':
+                    
+                    # Try dedicated BingX client first
                     try:
-                        from .websocket_client_bingx import WebSocketClient as BingxClient  # type: ignore
+                        from .websocket_client_bingx import WebSocketClient as BingxClient
                         client_cls = BingxClient
-                        logger.debug("Using websocket_client_bingx.WebSocketClient for bingx")
-                    except Exception as e:
-                        # If import fails, fall back to generic WebSocketClient
-                        logger.debug(f"Could not import websocket_client_bingx: {e}; falling back to generic WebSocketClient")
-
+                        logger.info("✅ Using dedicated websocket_client_bingx.py")
+                    except ImportError:
+                        # Fallback to general client (which will use BingX Direct if no CCXT Pro)
+                        from .websocket_client import WebSocketClient
+                        client_cls = WebSocketClient
+                        logger.info("✅ Using general websocket_client.py (will auto-detect CCXT Pro)")
+                else:
+                    # Other exchanges use general client
+                    from .websocket_client import WebSocketClient
+                    client_cls = WebSocketClient
+                
+                # Create client with appropriate credentials
                 if self._use_ccxt_clients:
                     # Extract credentials from CcxtClient if available
                     from .ccxt_client import CcxtClient
