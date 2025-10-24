@@ -78,6 +78,10 @@ class WebSocketClient:
                 futures=True
             )
             self.use_direct_ws = True
+
+            # ✅ NEW: Singleton listen task management
+            self._listen_task: Optional[asyncio.Task] = None
+            self._listen_lock = asyncio.Lock()
             
         elif CCXT_PRO_AVAILABLE:
             # Use CCXT Pro for all exchanges
