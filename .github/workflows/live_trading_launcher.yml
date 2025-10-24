@@ -178,7 +178,7 @@ jobs:
           PER_TRADE_RISK_PCT: ${{ vars.PER_TRADE_RISK_PCT || '0.01' }}
           
           # ============= WEBSOCKET =============
-          WS_MAX_STREAMS_BINGX: ${{ vars.WS_MAX_STREAMS_BINGX || '6' }}
+          WS_MAX_STREAMS_BINGX: ${{ vars.WS_MAX_STREAMS_BINGX || '10' }}
         run: |
           echo "🔍 Running pre-flight checks..."
           echo "=================================="
@@ -315,11 +315,11 @@ jobs:
           WEBSOCKET_PRIORITY_ENABLED: ${{ vars.WEBSOCKET_PRIORITY_ENABLED || 'true' }}
           WEBSOCKET_MAX_DATA_AGE: ${{ vars.WEBSOCKET_MAX_DATA_AGE || '60' }}
           WEBSOCKET_FALLBACK_THRESHOLD: ${{ vars.WEBSOCKET_FALLBACK_THRESHOLD || '3' }}
-          WS_MAX_STREAMS_BINGX: ${{ vars.WS_MAX_STREAMS_BINGX || '6' }}
+          WS_MAX_STREAMS_BINGX: ${{ vars.WS_MAX_STREAMS_BINGX || '10' }}
           WS_MAX_STREAMS_BINANCE: ${{ vars.WS_MAX_STREAMS_BINANCE || '20' }}
           WS_MAX_STREAMS_KUCOIN: ${{ vars.WS_MAX_STREAMS_KUCOIN || '15' }}
           WS_MAX_STREAMS_DEFAULT: ${{ vars.WS_MAX_STREAMS_DEFAULT || '10' }}
-          WS_STREAM_TIMEFRAMES: ${{ vars.WS_STREAM_TIMEFRAMES || '1m' }}
+          WS_STREAM_TIMEFRAMES: ${{ vars.WS_STREAM_TIMEFRAMES || '1m,5m,30m,1h,4h' }}
           WS_RECONNECT_DELAY: ${{ vars.WS_RECONNECT_DELAY || '5' }}
           WS_MAX_RECONNECT_ATTEMPTS: ${{ vars.WS_MAX_RECONNECT_ATTEMPTS || '3' }}
           
