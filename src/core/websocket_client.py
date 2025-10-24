@@ -36,14 +36,34 @@ class WebSocketClient:
         Raises:
             AttributeError: If exchange name is invalid or not supported by CCXT Pro
         """
+        # BingX için özel durum ekle
+        if ex_name.lower() == 'bingx':
+            ex_name = 'bingx'  # CCXT Pro'da 'bingx' olarak geçiyor
+            
         if not hasattr(ccxtpro, ex_name):
+            # BingX için alternatif isimler dene
+            if ex_name in ['bingx', 'BingX', 'BINGX']:
+                ex_name = 'bingx'
+            else:
             raise AttributeError(f"Unknown exchange for WebSocket: {ex_name}")
         
         ex_cls = getattr(ccxtpro, ex_name)
+
+        # BingX için özel options
         params = {
             'enableRateLimit': True,
-            'options': {'defaultType': 'swap'}
+            'options': {
+                'defaultType': 'swap',  # Futures için
+                'adjustForTimeDifference': True,  # Zaman senkronizasyonu
+            }
         }
+        
+        # BingX için ek ayarlar
+        if ex_name == 'bingx':
+            params['options'].update({
+                'recvWindow': 10000,  # Daha geniş zaman penceresi
+                'fetchOHLCVLimit': 500,  # OHLCV limit
+            })
         
         if creds:
             params.update(creds)
