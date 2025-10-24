@@ -110,8 +110,8 @@ class StrategyCoordinator:
             cooldown = float(dup_config.get('cooldown_seconds', 20))
             
             # ✅ FIX #2: No double division - value is already in decimal
-            # Config has min_price_change_pct: 0.05 which means 5% = 0.05 in decimal
-            price_delta_bypass_threshold = float(dup_config.get('min_price_change_pct', 0.05))
+            # Config has min_price_change_pct: 0.0005 which means 0.05% in decimal
+            price_delta_bypass_threshold = float(dup_config.get('min_price_change_pct', 0.0005))
             price_delta_bypass_enabled = dup_config.get('price_delta_bypass_enabled', True)
             
             logger.debug(f"✓ Using signals.duplicate_prevention config")
@@ -156,7 +156,7 @@ class StrategyCoordinator:
                 if self.signal_price_history[symbol]:
                     last_timestamp, last_price = self.signal_price_history[symbol][-1]
                     
-                    # Step 3b: Calculate price_delta (already in decimal, e.g., 0.05 = 5%)
+                    # Step 3b: Calculate price_delta (in decimal, e.g., 0.0005 = 0.05%)
                     price_delta = abs(entry_price - last_price) / last_price
                     
                     # Step 3c: IF price_delta >= threshold, BYPASS

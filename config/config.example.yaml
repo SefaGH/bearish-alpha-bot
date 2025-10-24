@@ -160,10 +160,11 @@ signals:
   #   PRICE_DELTA_BYPASS_ENABLED - price_delta_bypass_enabled
   # ============================================================================
   duplicate_prevention:
-    min_price_change_pct: 0.05        # 5% min price change to accept signal (was 0.15%)
-    cooldown_seconds: 20              # 20s cooldown between signals (was 30s)
-    price_delta_bypass_threshold: 0.0015   # 0.15% bypass threshold
+    min_price_change_pct: 0.0005      # 0.05% min price change to accept signal (CORRECTED from 5%)
+    cooldown_seconds: 60              # 60s cooldown between signals (increased for stability)
+    price_delta_bypass_threshold: 0.001   # 0.1% bypass threshold
     price_delta_bypass_enabled: true  # Enable bypass feature
+    ml_duplicate_detection_enabled: true  # ML-enhanced duplicate detection
   
   # ============================================================================
   # OVERSOLD BOUNCE STRATEGY (LONG)

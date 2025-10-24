@@ -142,18 +142,22 @@ class LiveTradingConfiguration:
             'duplicate_prevention': {
                 'min_price_change_pct': cls.get_env_float(
                     'DUPLICATE_PREVENTION_THRESHOLD', 
-                    0.05
+                    0.0005  # CORRECTED: 0.05% (not 5%)
                 ),
                 'cooldown_seconds': cls.get_env_int(
                     'DUPLICATE_PREVENTION_COOLDOWN', 
-                    20
+                    60  # Increased from 20s for stability
                 ),
                 'price_delta_bypass_threshold': cls.get_env_float(
                     'PRICE_DELTA_BYPASS_THRESHOLD',
-                    0.0015
+                    0.001  # 0.1% bypass threshold
                 ),
                 'price_delta_bypass_enabled': cls.get_env_bool(
                     'PRICE_DELTA_BYPASS_ENABLED',
+                    True
+                ),
+                'ml_duplicate_detection_enabled': cls.get_env_bool(
+                    'ML_DUPLICATE_DETECTION_ENABLED',
                     True
                 ),
             },
