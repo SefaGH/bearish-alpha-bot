@@ -448,6 +448,121 @@ class OptimizedWebSocketManager:
         
         return status
     
+    def _convert_symbol_for_exchange(self, symbol: str, exchange: str = 'bingx') -> str:
+        """
+        Convert CCXT symbol format to exchange-specific format.
+        ✅ FIX 3: Symbol format conversion for BingX
+        
+        Args:
+            symbol: CCXT format symbol (e.g., 'BTC/USDT:USDT')
+            exchange: Target exchange name
+            
+        Returns:
+            Exchange-specific symbol format
+        """
+        if exchange.lower() == 'bingx':
+            # BTC/USDT:USDT -> BTC-USDT
+            base_symbol = symbol.split(':')[0] if ':' in symbol else symbol
+            return base_symbol.replace('/', '-')
+        
+        # Default: return as-is
+        return symbol
+    
+    async def initialize_and_subscribe(self, exchange_clients: Dict[str, Any], symbols: List[str]) -> bool:
+        """
+        Initialize WebSocket connections AND subscribe to symbols.
+        ✅ FIX 4: Implements Production Coordinator Phase 4 requirements.
+        
+        Args:
+            exchange_clients: Dictionary of exchange clients
+            symbols: List of symbols to subscribe (CCXT format)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            logger.info("[WS-INIT] Starting WebSocket initialization and subscription...")
+            
+            # Step 1: Setup configuration
+            self.setup_from_config(self.config)
+            
+            # Step 2: Initialize WebSocket connections
+            logger.info("[WS-INIT] Initializing WebSocket connections...")
+            tasks = await self.initialize_websockets(exchange_clients)
+            
+            if not tasks:
+                logger.error("[WS-INIT] ❌ Failed to initialize WebSocket connections")
+                return False
+            
+            logger.info(f"[WS-INIT] ✅ Initialized {len(tasks)} WebSocket tasks")
+            
+            # Step 3: Subscribe to symbols with proper callbacks
+            logger.info(f"[WS-SUB] Subscribing to {len(symbols)} symbols...")
+            
+            subscription_count = 0
+            for exchange_name, client in self.ws_manager.clients.items():
+                max_streams = self.max_streams_config.get(exchange_name, 10)
+                
+                # Convert and subscribe to symbols
+                for i, symbol in enumerate(symbols):
+                    if i >= max_streams:
+                        logger.warning(f"[WS-SUB] Reached max streams ({max_streams}) for {exchange_name}")
+                        break
+                    
+                    # Convert symbol format
+                    exchange_symbol = self._convert_symbol_for_exchange(symbol, exchange_name)
+                    logger.debug(f"[WS-SUB] {symbol} -> {exchange_symbol}")
+                    
+                    # Create callback for this symbol
+                    async def data_callback(sym, tf, ohlcv, ex=exchange_name, orig_sym=symbol):
+                        """Store incoming data in collector."""
+                        if hasattr(self.ws_manager, '_data_collector'):
+                            # Store with original symbol for lookup
+                            await self.ws_manager._data_collector.ohlcv_callback(ex, orig_sym, tf, ohlcv)
+                            logger.debug(f"[WS-DATA] {orig_sym} {tf}: {len(ohlcv)} candles stored")
+                    
+                    # Subscribe with callback
+                    subscribe_task = asyncio.create_task(
+                        client.watch_ohlcv_loop(
+                            symbol=exchange_symbol,
+                            timeframe='1m',
+                            callback=data_callback,
+                            max_iterations=None  # Continuous
+                        )
+                    )
+                    
+                    self.ws_manager._tasks.append(subscribe_task)
+                    subscription_count += 1
+                    logger.info(f"[WS-SUB] ✅ Subscribed: {exchange_name} {symbol} (as {exchange_symbol})")
+            
+            logger.info(f"[WS-SUB] ✅ Total subscriptions: {subscription_count}")
+            
+            # Step 4: Verify data is flowing (wait and check)
+            logger.info("[WS-VERIFY] Waiting for initial data...")
+            await asyncio.sleep(3)
+            
+            # Check if we're receiving data
+            verified_count = 0
+            for symbol in symbols[:3]:  # Check first 3 symbols
+                data = self.ws_manager.get_latest_data(symbol, '1m')
+                if data and data.get('ohlcv'):
+                    verified_count += 1
+                    logger.info(f"[WS-VERIFY] ✅ Data confirmed for {symbol}")
+                else:
+                    logger.warning(f"[WS-VERIFY] ⚠️ No data yet for {symbol}")
+            
+            if verified_count > 0:
+                logger.info(f"[WS-VERIFY] ✅ WebSocket data flow verified ({verified_count}/{min(3, len(symbols))} symbols)")
+                self.is_initialized = True
+                return True
+            else:
+                logger.error("[WS-VERIFY] ❌ No data received after subscription")
+                return False
+            
+        except Exception as e:
+            logger.error(f"[WS-ERROR] Failed to initialize and subscribe: {e}", exc_info=True)
+            return False
+    
     async def stop_streaming(self) -> None:
         """
         Stop all WebSocket streams properly.
@@ -1258,12 +1373,16 @@ class LiveTradingLauncher:
         logger.info("\n[5/8] Initializing Trading Strategies...")
         
         try:
-            # ÖNCE CONFIG'İ YÜKLE
-            import yaml
-            config_path = os.getenv('CONFIG_PATH', 'config/config.example.yaml')
-            with open(config_path, 'r') as f:
-                self.config = yaml.safe_load(f)
-            logger.info(f"✓ Config loaded from {config_path}")
+            # ✅ FIX 1: Use unified config loader (ENV > YAML > Defaults)
+            from config.live_trading_config import LiveTradingConfiguration
+            
+            # Load config with proper priority: ENV > YAML > Defaults
+            self.config = LiveTradingConfiguration.load(log_summary=False)
+            logger.info("✓ Config loaded via unified loader (ENV > YAML > Defaults)")
+            
+            # Log active configuration
+            symbols = self.config.get('universe', {}).get('fixed_symbols', [])
+            logger.info(f"✓ Trading symbols from config: {symbols}")
             
             # Initialize regime analyzer for adaptive strategies
             from core.market_regime import MarketRegimeAnalyzer
@@ -1339,28 +1458,40 @@ class LiveTradingLauncher:
         logger.info("\n[6/8] Initializing Production Trading System...")
         
         try:
-            # Config'i yükle
+            # ✅ FIX 5: Load config using unified loader
             if not self.config:
-                self._load_config()
+                from config.live_trading_config import LiveTradingConfiguration
+                self.config = LiveTradingConfiguration.load(log_summary=False)
             
-            # ProductionCoordinator'ı SADECE BİR KEZ yarat!
+            # Create ProductionCoordinator
             from core.production_coordinator import ProductionCoordinator
             self.coordinator = ProductionCoordinator()
             
-            # WebSocket optimizer'ı ayarla ve başlat
+            # ✅ FIX 5: Initialize WebSocket with proper subscription
+            logger.info("[WS] Setting up WebSocket optimization...")
             self.ws_optimizer.setup_from_config(self.config)
-            ws_initialized = await self.ws_optimizer.initialize_websockets(self.exchange_clients)
             
-            # Eğer WebSocket başarılıysa, coordinator'a ver
-            if ws_initialized:
-                logger.info("✓ WebSocket connections initialized")
-                # Coordinator'ın websocket_manager attribute'una dışarıdan set et
+            # Initialize AND subscribe to symbols
+            logger.info(f"[WS] Initializing WebSocket for {len(self.TRADING_PAIRS)} symbols...")
+            ws_success = await self.ws_optimizer.initialize_and_subscribe(
+                self.exchange_clients,
+                self.TRADING_PAIRS  # Pass the actual symbols!
+            )
+            
+            if ws_success:
+                logger.info("✅ [WS] WebSocket initialized and streaming data")
+                # Attach to coordinator
                 self.coordinator.websocket_manager = self.ws_optimizer.ws_manager
+                
+                # Log streaming status
+                status = await self.ws_optimizer.get_stream_status()
+                logger.info(f"✅ [WS] Stream status: {status}")
             else:
-                logger.warning("⚠️ WebSocket failed, using REST API mode")
-                # WebSocket yoksa bile devam et, REST API kullanılacak
+                logger.warning("⚠️ [WS] WebSocket initialization failed - using REST API fallback")
+                logger.warning("⚠️ [WS] Real-time data will be limited")
+                # Continue without WebSocket (REST fallback)
             
-            # Portfolio config hazırla
+            # Portfolio config
             portfolio_config = {
                 'equity_usd': self.CAPITAL_USDT,
                 'max_portfolio_risk': self.RISK_PARAMS['max_portfolio_risk'],
@@ -1368,31 +1499,26 @@ class LiveTradingLauncher:
                 'max_drawdown': self.RISK_PARAMS['max_drawdown']
             }
             
-            # PUBLIC initialize_production_system metodunu çağır (artık var!)
+            # Initialize production system
             init_result = await self.coordinator.initialize_production_system(
                 exchange_clients=self.exchange_clients,
                 portfolio_config=portfolio_config,
                 mode=self.mode,
-                trading_symbols=self.TRADING_PAIRS  # ← FIX: Pass symbols
+                trading_symbols=self.TRADING_PAIRS
             )
             
             if not init_result['success']:
                 logger.error(f"❌ Failed: {init_result.get('reason')}")
                 return False
             
-            # Active symbols'ı ayarla (fallback for edge cases)
+            # Active symbols fallback
             if hasattr(self.coordinator, 'active_symbols'):
-                if not self.coordinator.active_symbols:  # Only if still empty
+                if not self.coordinator.active_symbols:
                     self.coordinator.active_symbols = self.trading_pairs
                     logger.info(f"✓ Fallback: Configured with {len(self.trading_pairs)} symbols")
             
             logger.info("✓ Production system initialized")
             logger.info(f"  Components: {init_result['components']}")
-            
-            # WebSocket durumunu göster
-            if self.ws_optimizer:
-                ws_status = await self.ws_optimizer.get_stream_status()
-                logger.info(f"✓ WebSocket Status: {ws_status}")
             
             return True
             
@@ -1446,7 +1572,7 @@ class LiveTradingLauncher:
         
         try:
             # Check 1: Exchange connectivity
-            logger.info("Check 1/6: Exchange connectivity...")
+            logger.info("Check 1/7: Exchange connectivity...")
             try:
                 ticker = self.exchange_clients['bingx'].ticker('BTC/USDT:USDT')
                 logger.info(f"✓ BTC/USDT:USDT price: ${ticker.get('last', 0):.2f}")
@@ -1455,7 +1581,7 @@ class LiveTradingLauncher:
                 checks_passed = False
             
             # Check 2: System state
-            logger.info("Check 2/6: System state...")
+            logger.info("Check 2/7: System state...")
             state = self.coordinator.get_system_state()
             if state['is_initialized']:
                 logger.info("✓ Production system initialized")
@@ -1464,7 +1590,7 @@ class LiveTradingLauncher:
                 checks_passed = False
             
             # Check 3: Risk limits
-            logger.info("Check 3/6: Risk limits...")
+            logger.info("Check 3/7: Risk limits...")
             if self.coordinator.risk_manager:
                 risk_summary = self.coordinator.risk_manager.get_portfolio_summary()
                 logger.info(f"✓ Portfolio value: ${risk_summary['portfolio_value']:.2f}")
@@ -1474,7 +1600,7 @@ class LiveTradingLauncher:
                 checks_passed = False
             
             # Check 4: Strategies
-            logger.info("Check 4/6: Strategy registration...")
+            logger.info("Check 4/7: Strategy registration...")
             if self.coordinator.portfolio_manager:
                 strategies = self.coordinator.portfolio_manager.strategies
                 logger.info(f"✓ {len(strategies)} strategies registered")
@@ -1483,14 +1609,35 @@ class LiveTradingLauncher:
                 checks_passed = False
             
             # Check 5: Emergency protocols
-            logger.info("Check 5/6: Emergency shutdown protocols...")
+            logger.info("Check 5/7: Emergency shutdown protocols...")
             if self.coordinator.circuit_breaker:
                 logger.info("✓ Circuit breaker active")
             else:
                 logger.warning("⚠ Circuit breaker not available")
             
-            # Check 6: WebSocket optimization
-            logger.info("Check 6/6: WebSocket optimization...")
+            # ✅ FIX 6: Check 6 - WebSocket Data Flow
+            logger.info("Check 6/7: WebSocket data flow...")
+            if self._is_ws_initialized():
+                # Test data retrieval for each symbol
+                working_symbols = 0
+                for symbol in self.TRADING_PAIRS[:3]:  # Test first 3
+                    data = self.ws_optimizer.ws_manager.get_latest_data(symbol, '1m')
+                    if data and data.get('ohlcv'):
+                        working_symbols += 1
+                        logger.info(f"  ✅ {symbol}: Receiving data ({len(data['ohlcv'])} candles)")
+                    else:
+                        logger.warning(f"  ⚠️ {symbol}: No data available")
+                
+                if working_symbols > 0:
+                    logger.info(f"✅ WebSocket data flow confirmed ({working_symbols}/{min(3, len(self.TRADING_PAIRS))} symbols)")
+                else:
+                    logger.error("❌ WebSocket connected but no data flowing")
+                    checks_passed = False
+            else:
+                logger.warning("⚠️ WebSocket not initialized (REST mode)")
+            
+            # Check 7: WebSocket optimization
+            logger.info("Check 7/7: WebSocket optimization...")
             # Use helper method to safely check WebSocket initialization
             if self._is_ws_initialized():
                 ws_status = await self.ws_optimizer.get_stream_status()

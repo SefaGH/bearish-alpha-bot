@@ -61,6 +61,10 @@ class WebSocketManager:
         self.reconnection_count = 0
         self.streams = {}  # Track active streams for health monitoring
         
+        # ✅ FIX 2: Initialize data collector in __init__ (not in subscribe_to_symbols)
+        self._data_collector = StreamDataCollector(buffer_size=100)
+        logger.info("✅ StreamDataCollector initialized in __init__")
+        
         # Detect if we're using CcxtClient instances or credentials
         self._use_ccxt_clients = False
         if exchanges:
@@ -250,8 +254,7 @@ class WebSocketManager:
         
         total_subscribed = sum(len(syms) for syms in subscribed.values())
         logger.info(f"Subscribed to {total_subscribed} symbols across {len(subscribed)} exchanges")
-        # Data collector ekle (init'in sonuna)
-        self._data_collector = StreamDataCollector(buffer_size=100)
+        # ✅ FIX 2: Data collector now initialized in __init__ (removed duplicate)
         
         return dict(subscribed)
     
@@ -465,8 +468,10 @@ class WebSocketManager:
         Returns:
             Dict with latest OHLCV data or None if not available
         """
-        # Data collector yoksa oluştur
+        # ✅ FIX 2: Data collector now always initialized in __init__
+        # No need for defensive check, but keep for backward compatibility
         if not hasattr(self, '_data_collector'):
+            logger.warning("Data collector not initialized - this should not happen!")
             self._data_collector = StreamDataCollector(buffer_size=100)
             
         # Get from any available exchange
