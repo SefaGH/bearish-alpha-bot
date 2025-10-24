@@ -132,9 +132,17 @@ async def test_bridge_transfers_signals_between_queues():
     assert engine.state == EngineState.RUNNING, "Engine should be in RUNNING state"
     print("✓ Engine started and bridge is running")
     
-    # Wait for bridge to transfer signals
+    # Wait for bridge to transfer signals (poll with timeout)
     print("  Waiting for bridge to transfer signals...")
-    await asyncio.sleep(3)
+    max_wait = 5.0  # Maximum 5 seconds
+    poll_interval = 0.1  # Check every 100ms
+    elapsed = 0.0
+    
+    while elapsed < max_wait:
+        if engine.signal_queue.qsize() >= 2 and coordinator.signal_queue.qsize() == 0:
+            break
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
     
     # Verify signals were transferred to engine queue
     engine_queue_size_after = engine.signal_queue.qsize()
@@ -199,8 +207,17 @@ async def test_bridge_handles_empty_queue():
     # Start engine with empty coordinator queue
     await engine.start_live_trading(mode='paper')
     
-    # Wait to ensure bridge doesn't crash
-    await asyncio.sleep(2)
+    # Wait to ensure bridge doesn't crash (poll with timeout)
+    max_wait = 3.0  # Maximum 3 seconds
+    poll_interval = 0.5  # Check every 500ms
+    elapsed = 0.0
+    
+    while elapsed < max_wait:
+        # Just verify engine stays running
+        if engine.state != EngineState.RUNNING:
+            break
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
     
     # Verify engine is still running
     assert engine.state == EngineState.RUNNING, "Engine should still be running"
