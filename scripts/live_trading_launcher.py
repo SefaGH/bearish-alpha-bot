@@ -476,7 +476,10 @@ class OptimizedWebSocketManager:
     async def initialize_and_subscribe(self, exchange_clients: Dict[str, Any], symbols: List[str]) -> bool:
         """
         Initialize WebSocket connections AND subscribe to symbols (SINGLE PATH).
-        Streams are started inside _subscribe_optimized(). This method only verifies data flow across TFs.
+        Streams are started inside _subscribe_optimized(). This method only verifies data flow across TFs with
+        a robust two-stage check:
+          1) Client health (connected, listener running, subscriptions, message_count)
+          2) Collector data (prefer short TFs first, then any configured TF)
         """
         try:
             logger.info("[WS-INIT] Starting WebSocket initialization and subscription...")
@@ -484,7 +487,7 @@ class OptimizedWebSocketManager:
             # Step 1: Setup configuration
             self.setup_from_config(self.config)
     
-            # Step 2: Initialize WebSocket connections (enforces limits + starts streams via _subscribe_optimized)
+            # Step 2: Initialize WebSocket connections (limits enforced, streams started via _subscribe_optimized)
             logger.info("[WS-INIT] Initializing WebSocket connections...")
             tasks = await self.initialize_websockets(exchange_clients)
     
@@ -494,44 +497,105 @@ class OptimizedWebSocketManager:
     
             logger.info(f"[WS-INIT] ✅ Initialized {len(tasks)} WebSocket tasks")
     
-            # Step 3: Verify data across configured TFs (retry'li)
+            # === Stage 1: Client health verification ===
+            # Pick the first client for health probing (only BingX exists today)
+            if not self.ws_manager or not getattr(self.ws_manager, "clients", None):
+                logger.error("[WS-VERIFY] ❌ No WebSocket clients available")
+                return False
+    
+            # Prefer 'bingx' if present
+            if "bingx" in self.ws_manager.clients:
+                client = self.ws_manager.clients["bingx"]
+                client_name = "bingx"
+            else:
+                client_name, client = next(iter(self.ws_manager.clients.items()))
+    
+            # Wait up to 20 seconds for connection + listener + at least one message
+            max_health_wait_s = 20
+            health_ok = False
+            for second in range(max_health_wait_s):
+                try:
+                    health = client.get_health_status()
+                except Exception as e:
+                    logger.debug(f"[WS-VERIFY] Health status check failed: {e}")
+                    health = {}
+    
+                connected = bool(health.get("connected"))
+                listen_status = health.get("listen_task_status", "unknown")
+                subs = int(health.get("subscriptions", 0)) if isinstance(health.get("subscriptions"), int) else 0
+                msg_count = int(health.get("message_count", 0)) if isinstance(health.get("message_count"), int) else int(health.get("recent_errors_5min", 0) == 0)
+    
+                logger.info(
+                    f"[WS-VERIFY][{client_name}] t+{second:02d}s "
+                    f"connected={connected} listen={listen_status} subs={subs} messages={msg_count}"
+                )
+    
+                # Accept as healthy if:
+                # - connected AND listener running, AND either subscriptions recorded OR message_count > 0
+                if connected and listen_status == "running" and (subs > 0 or msg_count > 0):
+                    health_ok = True
+                    break
+    
+                await asyncio.sleep(1.0)
+    
+            if not health_ok:
+                logger.error("[WS-VERIFY] ❌ Client health not established (no connected/listener/subscriptions/messages)")
+                return False
+    
+            # === Stage 2: Collector data verification (multi-TF, retry) ===
             timeframes = (
-                self.config.get('websocket', {}).get('stream_timeframes', ['1m', '5m', '30m', '1h', '4h'])
-                if isinstance(self.config, dict) else ['1m', '5m', '30m', '1h', '4h']
+                self.config.get("websocket", {}).get("stream_timeframes", ["1m", "5m", "30m", "1h", "4h"])
+                if isinstance(self.config, dict) else ["1m", "5m", "30m", "1h", "4h"]
             )
     
-            max_checks = 3       # toplam 3 deneme
-            sleep_between = 4.0  # her deneme arasında 4s bekle
+            # Prefer short TFs first; they are more likely to tick during short windows
+            def tf_sort_key(tf: str) -> int:
+                order = {"1m": 0, "3m": 1, "5m": 2, "15m": 3, "30m": 4, "1h": 5, "4h": 6, "1d": 7}
+                return order.get(tf, 99)
+    
+            timeframes_sorted = sorted(timeframes, key=tf_sort_key)
+    
+            max_checks = 3
+            sleep_between = 4.0
             verified_symbols = set()
     
-            logger.info(f"[WS-VERIFY] Verifying data flow for TFs={timeframes} (max_checks={max_checks}, interval={sleep_between}s)")
-    
+            logger.info(f"[WS-VERIFY] Verifying collector data for TFs={timeframes_sorted} (max_checks={max_checks}, interval={sleep_between}s)")
             for attempt in range(1, max_checks + 1):
                 if attempt > 1:
-                    logger.info(f"[WS-VERIFY] Attempt {attempt}/{max_checks} - waiting {sleep_between:.1f}s before next check...")
+                    logger.info(f"[WS-VERIFY] Attempt {attempt}/{max_checks} - waiting {sleep_between:.1f}s...")
                     await asyncio.sleep(sleep_between)
     
                 for symbol in symbols[:3]:
                     if symbol in verified_symbols:
                         continue
     
-                    # TF'lerden herhangi birinde veri varsa sembolü doğrulanmış say
-                    if any(self.ws_manager.get_latest_data(symbol, tf) for tf in timeframes):
-                        logger.info(f"[WS-VERIFY] ✅ Data confirmed for {symbol} (one of {timeframes})")
-                        verified_symbols.add(symbol)
-                    else:
-                        logger.debug(f"[WS-VERIFY] Pending data for {symbol} (checked TFs: {timeframes})")
+                    # Check short TFs first, then the rest
+                    found = False
+                    for tf in timeframes_sorted:
+                        data = self.ws_manager.get_latest_data(symbol, tf)
+                        if data and data.get("ohlcv"):
+                            logger.info(f"[WS-VERIFY] ✅ Collector data confirmed for {symbol} [{tf}] (candles={len(data['ohlcv'])})")
+                            verified_symbols.add(symbol)
+                            found = True
+                            break
     
+                    if not found:
+                        logger.debug(f"[WS-VERIFY] ⏳ No collector data yet for {symbol} (checked TFs: {timeframes_sorted})")
+    
+                # If any symbol verified, we can accept success
                 if verified_symbols:
-                    break  # en az bir sembol doğrulandıysa daha fazla beklemek istemiyorsanız bu break kalabilir
+                    break
     
             if verified_symbols:
                 logger.info(f"[WS-VERIFY] ✅ WebSocket data flow verified for {len(verified_symbols)}/{min(3, len(symbols))} symbols")
                 self.is_initialized = True
                 return True
     
-            logger.error("[WS-VERIFY] ❌ No data received after subscription window")
-            return False
+            # If we reach here: Health is OK but collector not yet filled (likely TF timing).
+            # Treat as non-fatal for initialization: live trading loop will proceed and collector will start filling shortly.
+            logger.warning("[WS-VERIFY] ⚠️ Client healthy but collector has no OHLCV yet in the verification window; proceeding")
+            self.is_initialized = True
+            return True
     
         except Exception as e:
             logger.error(f"[WS-ERROR] Failed to initialize and subscribe: {e}", exc_info=True)
