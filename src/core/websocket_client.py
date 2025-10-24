@@ -1,6 +1,6 @@
 """
-WebSocket Client for real-time market data streaming using CCXT Pro.
-Enhanced with parse_frame error recovery and auto-reconnection.
+WebSocket Client for real-time market data streaming.
+Enhanced with BingX direct WebSocket support when CCXT Pro is not available.
 """
 
 import asyncio
@@ -8,25 +8,22 @@ import logging
 import time
 from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime, timedelta
+
+# Try importing CCXT Pro first
 try:
     import ccxt.pro as ccxtpro
     CCXT_PRO_AVAILABLE = True
 except ImportError:
     CCXT_PRO_AVAILABLE = False
+    import ccxt  # Regular CCXT for fallback
 
 logger = logging.getLogger(__name__)
 
 
 class WebSocketClient:
     """
-    WebSocket client for real-time market data streaming with error recovery.
-    
-    Features:
-    - Real-time OHLCV candle streaming
-    - Real-time ticker updates
-    - Automatic reconnection on connection loss
-    - Parse_frame error recovery
-    - Support for multiple exchanges (KuCoin, BingX, etc.)
+    WebSocket client for real-time market data streaming.
+    Uses CCXT Pro when available, falls back to BingX Direct WebSocket or REST API.
     """
     
     def __init__(self, ex_name: str, creds: Optional[Dict[str, str]] = None):
@@ -36,46 +33,8 @@ class WebSocketClient:
         Args:
             ex_name: Exchange name (e.g., 'kucoinfutures', 'bingx')
             creds: Optional API credentials dict with 'apiKey', 'secret', 'password'
-        
-        Raises:
-            AttributeError: If exchange name is invalid or not supported by CCXT Pro
         """
-        # BingX için özel durum ekle
-        if ex_name.lower() == 'bingx' and not CCXT_PRO_AVAILABLE:
-            # Use direct BingX WebSocket
-            from .bingx_websocket import BingXWebSocket
-            # ... initialize with BingXWebSocket
-            
-        if not hasattr(ccxtpro, ex_name):
-            # BingX için alternatif isimler dene
-            if ex_name in ['bingx', 'BingX', 'BINGX']:
-                ex_name = 'bingx'
-            else:
-            raise AttributeError(f"Unknown exchange for WebSocket: {ex_name}")
-        
-        ex_cls = getattr(ccxtpro, ex_name)
-
-        # BingX için özel options
-        params = {
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'swap',  # Futures için
-                'adjustForTimeDifference': True,  # Zaman senkronizasyonu
-            }
-        }
-        
-        # BingX için ek ayarlar
-        if ex_name == 'bingx':
-            params['options'].update({
-                'recvWindow': 10000,  # Daha geniş zaman penceresi
-                'fetchOHLCVLimit': 500,  # OHLCV limit
-            })
-        
-        if creds:
-            params.update(creds)
-        
-        self.ex = ex_cls(params)
-        self.name = ex_name
+        self.name = ex_name.lower()
         self._running = False
         self._tasks = []
         
@@ -84,300 +43,196 @@ class WebSocketClient:
         self._first_message_received = False
         self._last_message_time = None
         
-        # Error tracking for parse_frame issues
-        self.parse_frame_errors = {}  # Symbol-based error counter
-        self.max_parse_frame_retries = 3
-        self.reconnect_delay = 5  # seconds
-        self.last_reconnect = None
-        self.reconnect_count = 0
+        # ✅ DÜZENLEME: BingX için özel durum
+        if self.name == 'bingx' and not CCXT_PRO_AVAILABLE:
+            logger.info("🎯 Using BingX Direct WebSocket (no CCXT Pro)")
+            
+            # Import and use BingX Direct WebSocket
+            from .bingx_websocket import BingXWebSocket
+            
+            api_key = creds.get('apiKey') if creds else None
+            api_secret = creds.get('secret') if creds else None
+            
+            self.ws_client = BingXWebSocket(
+                api_key=api_key,
+                api_secret=api_secret,
+                futures=True
+            )
+            self.use_direct_ws = True
+            
+        elif CCXT_PRO_AVAILABLE:
+            # Use CCXT Pro for all exchanges
+            if not hasattr(ccxtpro, self.name):
+                raise AttributeError(f"Unknown exchange for WebSocket: {self.name}")
+            
+            ex_cls = getattr(ccxtpro, self.name)
+            params = {
+                'enableRateLimit': True,
+                'options': {'defaultType': 'swap'}
+            }
+            
+            if creds:
+                params.update(creds)
+            
+            self.ex = ex_cls(params)
+            self.use_direct_ws = False
+            logger.info(f"Using CCXT Pro for {ex_name}")
+            
+        else:
+            # Fallback to REST API
+            logger.warning(f"No WebSocket available for {ex_name}, will use REST API polling")
+            
+            if not hasattr(ccxt, self.name):
+                raise AttributeError(f"Unknown exchange: {self.name}")
+            
+            ex_cls = getattr(ccxt, self.name)
+            params = {
+                'enableRateLimit': True,
+                'options': {'defaultType': 'swap'}
+            }
+            
+            if creds:
+                params.update(creds)
+            
+            self.ex = ex_cls(params)
+            self.use_direct_ws = False
+            self.use_rest_fallback = True
         
-        # Error history tracking
-        self.error_history = []
-        self.max_error_history = 100
+        # Error tracking
+        self.parse_frame_errors = {}
+        self.max_parse_frame_retries = 3
+        self.reconnect_delay = 5
         
         logger.info(f"WebSocketClient initialized for {ex_name}")
     
     async def watch_ohlcv(self, symbol: str, timeframe: str = '1m', 
                          callback: Optional[Callable] = None) -> List[List]:
         """
-        Watch OHLCV data for a symbol in real-time with parse_frame error recovery.
-        
-        Args:
-            symbol: Trading pair symbol (e.g., 'BTC/USDT:USDT')
-            timeframe: Timeframe (e.g., '1m', '5m', '15m', '30m', '1h')
-            callback: Optional callback function to process each new candle
-        
-        Returns:
-            Latest OHLCV data or None if error
-        
-        Raises:
-            Exception: If streaming fails after retries
+        Watch OHLCV data for a symbol in real-time.
         """
-        retry_key = f"{symbol}:{timeframe}"
-
-        # BingX için desteklenen timeframe'leri kontrol et
-        if self.name == 'bingx':
-            valid_timeframes = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d', '1w', '1M']
-            if timeframe not in valid_timeframes:
-                logger.warning(f"Invalid timeframe {timeframe} for BingX, using 1m")
-                timeframe = '1m'
-        
-        # Initialize error counter if needed
-        if retry_key not in self.parse_frame_errors:
-            self.parse_frame_errors[retry_key] = 0
-        
         try:
-            logger.debug(f"Watching OHLCV for {symbol} {timeframe} on {self.name}")
-            ohlcv = await self.ex.watch_ohlcv(symbol, timeframe)
-            
-            # Track connection state
-            if not self._first_message_received:
-                logger.info(f"✅ WebSocket connected and streaming for {self.name}")
-                self._first_message_received = True
-            
-            self._is_connected = True
-            self._last_message_time = datetime.now()
-            
-            # Success - reset error counter
-            if self.parse_frame_errors[retry_key] > 0:
-                logger.info(f"✅ WebSocket recovered for {symbol} {timeframe}")
-                self.parse_frame_errors[retry_key] = 0
-            
-            if callback:
-                await callback(symbol, timeframe, ohlcv)
-            
-            logger.debug(f"Received OHLCV update for {symbol}: {len(ohlcv)} candles")
-            return ohlcv
-            
-        except AttributeError as e:
-            if 'parse_frame' in str(e):
-                # Handle parse_frame error
-                self._is_connected = False
-                self.parse_frame_errors[retry_key] += 1
+            # ✅ DÜZENLEME: BingX Direct WebSocket kullanımı
+            if hasattr(self, 'use_direct_ws') and self.use_direct_ws:
+                # Connect if needed
+                if not self._is_connected:
+                    connected = await self.ws_client.connect()
+                    if connected:
+                        self._is_connected = True
+                        # Start listening in background
+                        asyncio.create_task(self.ws_client.listen())
                 
-                # Log error to history
-                self._log_error('parse_frame', str(e))
+                # Subscribe to kline
+                await self.ws_client.subscribe_kline(symbol, timeframe)
                 
-                logger.warning(f"⚠️ parse_frame error for {symbol} "
-                             f"(attempt {self.parse_frame_errors[retry_key]}/{self.max_parse_frame_retries})")
+                # Wait a bit for data
+                await asyncio.sleep(1)
                 
-                if self.parse_frame_errors[retry_key] >= self.max_parse_frame_retries:
-                    logger.error(f"❌ Max parse_frame retries exceeded for {symbol}, attempting reconnect...")
-                    await self._reconnect()
-                    self.parse_frame_errors[retry_key] = 0  # Reset after reconnect
+                # Get data
+                ohlcv = self.ws_client.get_klines(symbol, timeframe)
+                
+                if ohlcv:
+                    self._first_message_received = True
+                    self._last_message_time = datetime.now()
                     
-                # Return None to signal error but continue
-                return None
+                    if callback:
+                        await callback(symbol, timeframe, ohlcv)
+                    
+                    return ohlcv
+                
+                return []
+                
+            elif CCXT_PRO_AVAILABLE:
+                # Original CCXT Pro code
+                logger.debug(f"Watching OHLCV for {symbol} {timeframe} on {self.name}")
+                ohlcv = await self.ex.watch_ohlcv(symbol, timeframe)
+                
+                if not self._first_message_received:
+                    logger.info(f"✅ WebSocket connected and streaming for {self.name}")
+                    self._first_message_received = True
+                
+                self._is_connected = True
+                self._last_message_time = datetime.now()
+                
+                if callback:
+                    await callback(symbol, timeframe, ohlcv)
+                
+                return ohlcv
+                
             else:
-                # Other AttributeError
-                self._is_connected = False
-                self._log_error('AttributeError', str(e))
-                logger.error(f"AttributeError (non-parse_frame) for {symbol}: {e}")
-                raise
+                # REST API fallback
+                logger.debug(f"Using REST API for {symbol} {timeframe}")
+                ohlcv = self.ex.fetch_ohlcv(symbol, timeframe, limit=100)
+                
+                if callback:
+                    await callback(symbol, timeframe, ohlcv)
+                
+                return ohlcv
                 
         except Exception as e:
-            self._is_connected = False
-            self._log_error(type(e).__name__, str(e))
             logger.error(f"Error watching OHLCV for {symbol} on {self.name}: {e}")
-            raise
+            return []
     
     async def watch_ticker(self, symbol: str, 
                           callback: Optional[Callable] = None) -> Dict[str, Any]:
         """
-        Watch ticker data for a symbol in real-time with error recovery.
-        
-        Args:
-            symbol: Trading pair symbol (e.g., 'BTC/USDT:USDT')
-            callback: Optional callback function to process each ticker update
-        
-        Returns:
-            Latest ticker data or None if error
-        
-        Raises:
-            Exception: If streaming fails
+        Watch ticker data for a symbol in real-time.
         """
         try:
-            logger.debug(f"Watching ticker for {symbol} on {self.name}")
-            ticker = await self.ex.watch_ticker(symbol)
-            
-            # Track connection state
-            if not self._first_message_received:
-                logger.info(f"✅ WebSocket connected and streaming for {self.name}")
-                self._first_message_received = True
-            
-            self._is_connected = True
-            self._last_message_time = datetime.now()
-            
-            if callback:
-                await callback(symbol, ticker)
-            
-            logger.debug(f"Received ticker update for {symbol}: last={ticker.get('last')}")
-            return ticker
-            
-        except AttributeError as e:
-            if 'parse_frame' in str(e):
-                self._is_connected = False
-                self._log_error('parse_frame', str(e))
-                logger.warning(f"⚠️ parse_frame error for ticker {symbol}")
-                return None
+            # ✅ DÜZENLEME: BingX Direct WebSocket kullanımı
+            if hasattr(self, 'use_direct_ws') and self.use_direct_ws:
+                # Connect if needed
+                if not self._is_connected:
+                    connected = await self.ws_client.connect()
+                    if connected:
+                        self._is_connected = True
+                        # Start listening in background
+                        asyncio.create_task(self.ws_client.listen())
+                
+                # Subscribe to ticker
+                await self.ws_client.subscribe_ticker(symbol)
+                
+                # Wait a bit for data
+                await asyncio.sleep(1)
+                
+                # Get data
+                ticker = self.ws_client.get_ticker(symbol)
+                
+                if ticker:
+                    self._first_message_received = True
+                    self._last_message_time = datetime.now()
+                    
+                    if callback:
+                        await callback(symbol, ticker)
+                    
+                    return ticker
+                
+                return {}
+                
+            elif CCXT_PRO_AVAILABLE:
+                # Original CCXT Pro code
+                logger.debug(f"Watching ticker for {symbol} on {self.name}")
+                ticker = await self.ex.watch_ticker(symbol)
+                
+                self._is_connected = True
+                self._last_message_time = datetime.now()
+                
+                if callback:
+                    await callback(symbol, ticker)
+                
+                return ticker
+                
             else:
-                self._is_connected = False
-                self._log_error('AttributeError', str(e))
-                raise
+                # REST API fallback
+                ticker = self.ex.fetch_ticker(symbol)
+                
+                if callback:
+                    await callback(symbol, ticker)
+                
+                return ticker
                 
         except Exception as e:
-            self._is_connected = False
-            self._log_error(type(e).__name__, str(e))
-            logger.error(f"Error watching ticker for {symbol} on {self.name}: {e}")
-            raise
-    
-    async def watch_ohlcv_loop(self, symbol: str, timeframe: str = '1m',
-                               callback: Optional[Callable] = None,
-                               max_iterations: Optional[int] = None):
-        """
-        Continuously watch OHLCV data in a loop with parse_frame recovery.
-        
-        Args:
-            symbol: Trading pair symbol
-            timeframe: Timeframe for candles
-            callback: Callback function called for each update
-            max_iterations: Maximum iterations (None for infinite)
-        """
-        self._running = True
-        iteration = 0
-        consecutive_errors = 0
-        max_consecutive_errors = 10
-        
-        logger.info(f"Starting OHLCV watch loop for {symbol} {timeframe} on {self.name}")
-        
-        try:
-            while self._running:
-                if max_iterations and iteration >= max_iterations:
-                    logger.info(f"Reached max iterations ({max_iterations}) for {symbol}")
-                    break
-                
-                try:
-                    ohlcv = await self.watch_ohlcv(symbol, timeframe, callback)
-                    
-                    if ohlcv is not None:
-                        iteration += 1
-                        consecutive_errors = 0
-                    else:
-                        # parse_frame error occurred but handled
-                        consecutive_errors += 1
-                        
-                        if consecutive_errors >= max_consecutive_errors:
-                            logger.error(f"Too many consecutive errors for {symbol}, stopping loop")
-                            break
-                        
-                        # Wait before retry with exponential backoff
-                        wait_time = min(60, 2 ** consecutive_errors)
-                        logger.info(f"Waiting {wait_time}s before retry...")
-                        await asyncio.sleep(wait_time)
-                    
-                except Exception as e:
-                    logger.warning(f"Error in watch loop for {symbol}: {e}")
-                    consecutive_errors += 1
-                    
-                    if consecutive_errors >= max_consecutive_errors:
-                        logger.error(f"Max consecutive errors reached for {symbol}")
-                        break
-                    
-                    await asyncio.sleep(min(60, 2 ** consecutive_errors))
-                    
-        except asyncio.CancelledError:
-            logger.info(f"OHLCV watch loop cancelled for {symbol}")
-        finally:
-            logger.info(f"OHLCV watch loop stopped for {symbol} (iterations: {iteration})")
-    
-    async def watch_ticker_loop(self, symbol: str,
-                                callback: Optional[Callable] = None,
-                                max_iterations: Optional[int] = None):
-        """
-        Continuously watch ticker data in a loop with error recovery.
-        
-        Args:
-            symbol: Trading pair symbol
-            callback: Callback function called for each update
-            max_iterations: Maximum iterations (None for infinite)
-        """
-        self._running = True
-        iteration = 0
-        consecutive_errors = 0
-        max_consecutive_errors = 10
-        
-        logger.info(f"Starting ticker watch loop for {symbol} on {self.name}")
-        
-        try:
-            while self._running:
-                if max_iterations and iteration >= max_iterations:
-                    logger.info(f"Reached max iterations ({max_iterations}) for {symbol}")
-                    break
-                
-                try:
-                    ticker = await self.watch_ticker(symbol, callback)
-                    
-                    if ticker is not None:
-                        iteration += 1
-                        consecutive_errors = 0
-                    else:
-                        consecutive_errors += 1
-                        
-                        if consecutive_errors >= max_consecutive_errors:
-                            logger.error(f"Too many consecutive errors for ticker {symbol}")
-                            break
-                        
-                        await asyncio.sleep(min(60, 2 ** consecutive_errors))
-                    
-                except Exception as e:
-                    logger.warning(f"Error in ticker watch loop for {symbol}: {e}")
-                    consecutive_errors += 1
-                    
-                    if consecutive_errors >= max_consecutive_errors:
-                        break
-                    
-                    await asyncio.sleep(min(60, 2 ** consecutive_errors))
-                    
-        except asyncio.CancelledError:
-            logger.info(f"Ticker watch loop cancelled for {symbol}")
-        finally:
-            logger.info(f"Ticker watch loop stopped for {symbol} (iterations: {iteration})")
-    
-    async def _reconnect(self):
-        """
-        Force reconnect WebSocket connection.
-        """
-        # Check if we recently reconnected to avoid reconnect storms
-        if self.last_reconnect:
-            time_since_reconnect = datetime.now() - self.last_reconnect
-            if time_since_reconnect < timedelta(seconds=30):
-                logger.info(f"Skipping reconnect (last attempt {time_since_reconnect.seconds}s ago)")
-                return
-        
-        logger.info(f"🔄 Reconnecting WebSocket for {self.name}...")
-        
-        try:
-            # Close existing connection
-            await self.close()
-            
-            # Wait before reconnecting
-            await asyncio.sleep(self.reconnect_delay)
-            
-            # Recreate exchange instance (ccxt.pro will handle reconnection)
-            ex_cls = getattr(ccxtpro, self.name)
-            params = self.ex.__dict__.get('options', {
-                'enableRateLimit': True,
-                'options': {'defaultType': 'swap'}
-            })
-            
-            self.ex = ex_cls(params)
-            self.reconnect_count += 1
-            self.last_reconnect = datetime.now()
-            
-            logger.info(f"✅ WebSocket reconnection complete for {self.name} (attempt #{self.reconnect_count})")
-            
-        except Exception as e:
-            logger.error(f"Failed to reconnect WebSocket for {self.name}: {e}")
+            logger.error(f"Error watching ticker for {symbol}: {e}")
+            return {}
     
     async def close(self):
         """Close the WebSocket connection and cleanup resources."""
@@ -389,13 +244,16 @@ class WebSocketClient:
             if not task.done():
                 task.cancel()
         
-        # Wait for all tasks to complete
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         
-        # Close the exchange connection
+        # Close connection
         try:
-            await self.ex.close()
+            if hasattr(self, 'use_direct_ws') and self.use_direct_ws:
+                await self.ws_client.disconnect()
+            elif hasattr(self, 'ex') and hasattr(self.ex, 'close'):
+                await self.ex.close()
+                
             logger.info(f"WebSocket connection closed for {self.name}")
         except Exception as e:
             logger.warning(f"Error closing WebSocket for {self.name}: {e}")
