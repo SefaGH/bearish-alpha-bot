@@ -78,51 +78,47 @@ class WebSocketManager:
                 'bingx': None
             }
         
-        # Initialize WebSocket clients based on input type
-        for ex_name, ex_data in exchanges.items():
-            try:
-                # ✅ DÜZENLEME: BingX için log ekle
-                if ex_name.lower() == 'bingx':
-                    logger.info("🎯 Initializing BingX WebSocket client")
-                
-                if self._use_ccxt_clients:
-                    # Extract credentials from CcxtClient if available
-                    from .ccxt_client import CcxtClient
-                    if isinstance(ex_data, CcxtClient):
-                        # Get credentials from the CcxtClient's exchange object
-                        creds = None
-                        if hasattr(ex_data.ex, 'apiKey') and ex_data.ex.apiKey:
-                            creds = {
-                                'apiKey': ex_data.ex.apiKey,
-                                'secret': ex_data.ex.secret
-                            }
-                            if hasattr(ex_data.ex, 'password') and ex_data.ex.password:
-                                creds['password'] = ex_data.ex.password
-                        self.clients[ex_name] = WebSocketClient(ex_name, creds)
-                    else:
-                        self.clients[ex_name] = WebSocketClient(ex_name, None)
-                else:
-                    # Create WebSocketClient (will automatically use BingX Direct if no CCXT Pro)
-                    self.clients[ex_name] = WebSocketClient(ex_name, ex_data)
-                    
-                logger.info(f"WebSocket client initialized for {ex_name}")
-                
-                # Set stream limits from config
-                ws_config = config.get('websocket', {}) if config else {}
-                max_streams_config = ws_config.get('max_streams_per_exchange', {})
-                
-                if isinstance(max_streams_config, dict):
-                    self._stream_limits[ex_name] = max_streams_config.get(
-                        ex_name, 
-                        max_streams_config.get('default', 10)
-                    )
-                else:
-                    self._stream_limits[ex_name] = 10
-                    
-            except Exception as e:
-                logger.error(f"Failed to initialize WebSocket client for {ex_name}: {e}")
+                # Initialize WebSocket clients based on input type
+                for ex_name, ex_data in exchanges.items():
+                    try:
+                        # ✅ DÜZENLEME: BingX için log ekle
+                        if ex_name.lower() == 'bingx':
+                            logger.info("🎯 Initializing BingX WebSocket client")
+                        
+                        # Default to the generic client class
+                        client_cls = WebSocketClient
         
-        logger.info(f"WebSocketManager initialized with {len(self.clients)} exchanges: {list(self.clients.keys())}")
+                        # If there's a dedicated BingX client use it (preferred)
+                        if ex_name.lower() == 'bingx':
+                            try:
+                                from .websocket_client_bingx import WebSocketClient as BingxClient  # type: ignore
+                                client_cls = BingxClient
+                                logger.debug("Using websocket_client_bingx.WebSocketClient for bingx")
+                            except Exception as e:
+                                # If import fails, fall back to generic WebSocketClient
+                                logger.debug(f"Could not import websocket_client_bingx: {e}; falling back to generic WebSocketClient")
+        
+                        if self._use_ccxt_clients:
+                            # Extract credentials from CcxtClient if available
+                            from .ccxt_client import CcxtClient
+                            if isinstance(ex_data, CcxtClient):
+                                # Get credentials from the CcxtClient's exchange object
+                                creds = None
+                                if hasattr(ex_data.ex, 'apiKey') and ex_data.ex.apiKey:
+                                    creds = {
+                                        'apiKey': ex_data.ex.apiKey,
+                                        'secret': ex_data.ex.secret
+                                    }
+                                    if hasattr(ex_data.ex, 'password') and ex_data.ex.password:
+                                        creds['password'] = ex_data.ex.password
+                                self.clients[ex_name] = client_cls(ex_name, creds)
+                            else:
+                                self.clients[ex_name] = client_cls(ex_name, None)
+                        else:
+                            # Create chosen WebSocketClient implementation (BingX-specific if available)
+                            self.clients[ex_name] = client_cls(ex_name, ex_data)
+                            
+                        logger.info(f"WebSocket client initialized for {ex_name}")
     
     def start_ohlcv_stream(self, exchange: str, symbol: str, timeframe: str) -> bool:
         """
@@ -162,6 +158,59 @@ class WebSocketManager:
         except Exception as e:
             logger.error(f"Failed to start stream {exchange} {symbol} {timeframe}: {e}")
             return False
+
+        def _make_ohlcv_wrapper(self, client, symbol, timeframe, callback, max_iterations, iteration_delay=1.0):
+            """
+            Return a coroutine that repeatedly calls client's watch_ohlcv for compatibility
+            when client does not provide watch_ohlcv_loop.
+            """
+            async def _wrapper():
+                iterations = 0
+                while self._running:
+                    if max_iterations is not None and iterations >= max_iterations:
+                        break
+                    try:
+                        ohlcv = await client.watch_ohlcv(symbol, timeframe, callback=None)
+                        if ohlcv and callback:
+                            try:
+                                await callback(symbol, timeframe, ohlcv)
+                            except Exception as cb_e:
+                                logger.exception(f"Error in OHLCV wrapper callback for {symbol}: {cb_e}")
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as e:
+                        logger.exception(f"OHLCV wrapper error for {symbol} on {getattr(client, 'name', 'unknown')}: {e}")
+                        await asyncio.sleep(getattr(client, 'reconnect_delay', 1))
+                    iterations += 1
+                    await asyncio.sleep(iteration_delay)
+                logger.info(f"OHLCV wrapper stopped for {symbol} on {getattr(client, 'name', 'unknown')}")
+            return _wrapper
+    
+        def _make_ticker_wrapper(self, client, symbol, callback, max_iterations, iteration_delay=1.0):
+            """
+            Return a coroutine that repeatedly calls client's watch_ticker when ticker_loop is absent.
+            """
+            async def _wrapper():
+                iterations = 0
+                while self._running:
+                    if max_iterations is not None and iterations >= max_iterations:
+                        break
+                    try:
+                        ticker = await client.watch_ticker(symbol, callback=None)
+                        if ticker and callback:
+                            try:
+                                await callback(symbol, ticker)
+                            except Exception as cb_e:
+                                logger.exception(f"Error in ticker wrapper callback for {symbol}: {cb_e}")
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as e:
+                        logger.exception(f"Ticker wrapper error for {symbol} on {getattr(client, 'name', 'unknown')}: {e}")
+                        await asyncio.sleep(getattr(client, 'reconnect_delay', 1))
+                    iterations += 1
+                    await asyncio.sleep(iteration_delay)
+                logger.info(f"Ticker wrapper stopped for {symbol} on {getattr(client, 'name', 'unknown')}")
+            return _wrapper
     
     def subscribe_to_symbols(self, symbols: List[str], timeframes: Optional[List[str]] = None) -> Dict[str, List[str]]:
         """
