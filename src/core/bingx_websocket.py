@@ -3,13 +3,14 @@ BingX Direct WebSocket Implementation
 No CCXT Pro required - uses native BingX WebSocket API
 """
 
+import gzip
 import json
 import asyncio
 import logging
 import time
 import hmac
 import hashlib
-from typing import Dict, List, Optional, Callable, Any
+from typing import Dict, List, Optional, Callable, Union, Any
 from datetime import datetime, timezone
 import websockets
 from collections import defaultdict
@@ -235,31 +236,42 @@ class BingXWebSocket:
             return False
     
     async def listen(self):
-        """
-        Main listening loop for WebSocket messages.
-        
-        Handles incoming messages and calls registered callbacks.
-        """
-        while self._running:
+        """Listen to WebSocket messages with GZIP support"""
+        while self.running:
             try:
-                if not self.ws:
-                    logger.warning("WebSocket not connected, attempting to reconnect...")
-                    if not await self._reconnect():
-                        await asyncio.sleep(self._reconnect_delay)
+                message = await self.ws.recv()
+                
+                # Handle different message types
+                if isinstance(message, bytes):
+                    # Check for GZIP compression
+                    if len(message) > 2 and message[:2] == b'\x1f\x8b':
+                        # Decompress GZIP data
+                        try:
+                            message = gzip.decompress(message)
+                            self.logger.debug("Decompressed GZIP message")
+                        except Exception as e:
+                            self.logger.error(f"GZIP decompression failed: {e}")
+                            continue
+                    
+                    # Decode bytes to string
+                    try:
+                        message = message.decode('utf-8')
+                    except UnicodeDecodeError as e:
+                        self.logger.error(f"UTF-8 decode failed: {e}")
                         continue
                 
-                # Receive message
-                message = await self.ws.recv()
-                await self._handle_message(message)
-                
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("WebSocket connection closed, reconnecting...")
-                self.ws = None
-                await self._reconnect()
-                
+                # Parse JSON
+                try:
+                    data = json.loads(message)
+                    await self._handle_message(data)
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"JSON parse failed: {e}")
+                    
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                logger.error(f"Error in listen loop: {e}")
-                await asyncio.sleep(1)
+                self.logger.error(f"Listen loop error: {e}")
+                await asyncio.sleep(1)  # Prevent tight loop on errors
     
     async def _handle_message(self, message: str):
         """
