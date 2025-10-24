@@ -237,7 +237,7 @@ class BingXWebSocket:
     
     async def listen(self):
         """Listen to WebSocket messages with GZIP support"""
-        while self.running:
+        while self._running:  # ✅ FIX: self.running -> self._running
             try:
                 message = await self.ws.recv()
                 
@@ -248,16 +248,16 @@ class BingXWebSocket:
                         # Decompress GZIP data
                         try:
                             message = gzip.decompress(message)
-                            self.logger.debug("Decompressed GZIP message")
+                            logger.debug("Decompressed GZIP message")  # ✅ FIX: self.logger -> logger
                         except Exception as e:
-                            self.logger.error(f"GZIP decompression failed: {e}")
+                            logger.error(f"GZIP decompression failed: {e}")  # ✅ FIX: self.logger -> logger
                             continue
                     
                     # Decode bytes to string
                     try:
                         message = message.decode('utf-8')
                     except UnicodeDecodeError as e:
-                        self.logger.error(f"UTF-8 decode failed: {e}")
+                        logger.error(f"UTF-8 decode failed: {e}")  # ✅ FIX: self.logger -> logger
                         continue
                 
                 # Parse JSON
@@ -265,12 +265,12 @@ class BingXWebSocket:
                     data = json.loads(message)
                     await self._handle_message(data)
                 except json.JSONDecodeError as e:
-                    self.logger.error(f"JSON parse failed: {e}")
+                    logger.error(f"JSON parse failed: {e}")  # ✅ FIX: self.logger -> logger
                     
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self.logger.error(f"Listen loop error: {e}")
+                logger.error(f"Listen loop error: {e}")  # ✅ FIX: self.logger -> logger
                 await asyncio.sleep(1)  # Prevent tight loop on errors
     
     async def _handle_message(self, message: str):
