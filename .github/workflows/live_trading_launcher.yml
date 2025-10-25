@@ -1,561 +1,623 @@
 name: Live Trading Launcher (Ultimate Continuous Mode)
-true:
+
+on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Trading Mode
+        description: 'Trading Mode'
         required: true
-        default: paper
+        default: 'paper'
         type: choice
         options:
-        - paper
-        - live
+          - paper
+          - live
+
       confirm_live:
-        description: Type YES to confirm live trading (required for live mode)
+        description: 'Type YES to confirm live trading (required for live mode)'
         required: false
         type: string
         default: ''
+
       duration:
-        description: Trading duration in seconds (leave empty for indefinite)
+        description: 'Trading duration in seconds (leave empty for indefinite)'
         required: false
         type: string
         default: ''
+
       dry_run:
-        description: Dry run mode (pre-flight checks only)
+        description: 'Dry run mode (pre-flight checks only)'
         required: true
         default: false
         type: boolean
+
+      skip_preflight:
+        description: 'Skip pre-flight checks (not recommended for live trading)'
+        required: true
+        default: false
+        type: boolean
+
       infinite:
         description: 'Enable Layer 1: TRUE CONTINUOUS MODE (never stops)'
         required: true
         default: false
         type: boolean
+
       auto_restart:
         description: 'Enable Layer 2: AUTO-RESTART FAILSAFE'
         required: true
         default: false
         type: boolean
+
       max_restarts:
-        description: Maximum restart attempts
+        description: 'Maximum restart attempts'
         required: false
         type: string
         default: '1000'
+
       restart_delay:
-        description: Base restart delay in seconds
+        description: 'Base restart delay in seconds'
         required: false
         type: string
         default: '30'
+
       debug_mode:
-        description: Enable debug mode (detailed logging)
+        description: 'Enable debug mode (detailed logging)'
         required: false
         default: 'false'
         type: choice
         options:
-        - 'false'
-        - 'true'
+          - 'false'
+          - 'true'
+
 jobs:
   validate-inputs:
     name: Validate Configuration
     runs-on: ubuntu-latest
     outputs:
       should_proceed: ${{ steps.validate.outputs.should_proceed }}
+      skip_preflight: ${{ steps.validate.outputs.skip_preflight }}
+
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-    - name: Install PyYAML for validation
-      run: pip install pyyaml
-    - name: Validate Live Trading Confirmation
-      id: validate
-      run: "MODE=\"${{ github.event.inputs.mode }}\"\nCONFIRM=\"${{ github.event.inputs.confirm_live\
-        \ }}\"\n\necho \"Mode: $MODE\"\necho \"Confirmation: $CONFIRM\"\n\nif [ \"\
-        $MODE\" = \"live\" ] && [ \"$CONFIRM\" != \"YES\" ]; then\n  echo \"❌ ERROR:\
-        \ Live trading requires typing 'YES' in the confirm_live field\"\n  echo \"\
-        should_proceed=false\" >> $GITHUB_OUTPUT\n  exit 1\nfi\n\necho \"✓ Validation\
-        \ passed\"\necho \"should_proceed=true\" >> $GITHUB_OUTPUT\n"
-    - name: Validate Adaptive Configuration
-      run: "echo \"\U0001F50D Checking config file...\"\nif [ ! -f \"config/config.example.yaml\"\
-        \ ]; then\n  echo \"❌ Config file not found!\"\n  exit 1\nfi\n\necho \"\U0001F4CB\
-        \ Config file contents (first 20 lines):\"\nhead -n 20 config/config.example.yaml\n\
-        \npython scripts/validate_adaptive_config.py\n"
+      # KRİTİK: Repository'yi checkout et
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML for validation
+        run: pip install pyyaml
+
+      - name: Validate Live Trading Confirmation
+        id: validate
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          CONFIRM="${{ github.event.inputs.confirm_live }}"
+          SKIP_PREFLIGHT="${{ github.event.inputs.skip_preflight }}"
+
+          echo "Mode: $MODE"
+          echo "Confirmation: $CONFIRM"
+          echo "Skip Pre-flight: $SKIP_PREFLIGHT"
+
+          # Live mode confirmation check
+          if [ "$MODE" = "live" ] && [ "$CONFIRM" != "YES" ]; then
+            echo "❌ ERROR: Live trading requires typing 'YES' in the confirm_live field"
+            echo "should_proceed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          # Warning for skipping pre-flight in live mode
+          if [ "$MODE" = "live" ] && [ "$SKIP_PREFLIGHT" = "true" ]; then
+            echo "⚠️ WARNING: Skipping pre-flight checks in LIVE mode is not recommended!"
+            echo "⚠️ This may result in unexpected behavior or trading errors."
+          fi
+
+          echo "✅ Validation passed"
+          echo "should_proceed=true" >> $GITHUB_OUTPUT
+          echo "skip_preflight=$SKIP_PREFLIGHT" >> $GITHUB_OUTPUT
+
+      - name: Validate Adaptive Configuration
+        if: github.event.inputs.skip_preflight != 'true'
+        run: |
+          echo "🔍 Checking config file..."
+          if [ ! -f "config/config.example.yaml" ]; then
+            echo "❌ Config file not found!"
+            exit 1
+          fi
+          
+          echo "📋 Config file contents (first 20 lines):"
+          head -n 20 config/config.example.yaml
+          
+          python scripts/validate_adaptive_config.py
+
+      - name: Skip Pre-flight Notice
+        if: github.event.inputs.skip_preflight == 'true'
+        run: |
+          echo "⏭️ PRE-FLIGHT CHECKS SKIPPED"
+          echo "=================================="
+          echo "⚠️ WARNING: Pre-flight validation has been bypassed"
+          echo "⚠️ Proceeding directly to trading execution"
+          echo "=================================="
+
   pre-flight-checks:
     name: Pre-Flight System Checks
     runs-on: ubuntu-latest
     needs: validate-inputs
-    if: needs.validate-inputs.outputs.should_proceed == 'true'
+    if: |
+      needs.validate-inputs.outputs.should_proceed == 'true' && 
+      needs.validate-inputs.outputs.skip_preflight != 'true'
+
     steps:
-    - name: Skip notice (pre-flight disabled)
-      if: ${{ github.event.inputs.run_preflight == 'false' }}
-      run: echo 'Pre-flight checks disabled by user input.'
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-      if: ${{ github.event.inputs.run_preflight != 'false' }}
-    - name: Setup Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: pip
-      if: ${{ github.event.inputs.run_preflight != 'false' }}
-    - name: Install Dependencies
-      run: 'python -V
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-        python -m pip install --upgrade pip setuptools wheel
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
 
+      - name: Install Dependencies
+        run: |
+          python -V
+          python -m pip install --upgrade pip setuptools wheel
+          
+          # Install specific versions for compatibility
+          pip install --no-cache-dir 'aiohttp==3.8.6' 'yarl<2.0' 'multidict<7.0'
+          
+          # Install TA library (required for strategies)
+          pip install --no-cache-dir 'ta>=0.10.2'
+          
+          # Install WebSocket libraries
+          pip install --no-cache-dir 'websocket-client>=1.6.0' 'websockets>=10.0'
+          
+          # Install remaining requirements (ccxtpro is commented out)
+          pip install --no-cache-dir -r requirements.txt
+          
+          echo "✅ Dependencies installed successfully (using BingX Direct WebSocket)"
 
-        # Install specific versions for compatibility
+      - name: Run Dry-Run Pre-Flight Checks
+        env:
+          # ============= EXCHANGE CREDENTIALS =============
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          
+          # ✅ NEW: TRADING CONFIGURATION FROM GITHUB VARIABLES
+          # ============= DUPLICATE PREVENTION =============
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
+          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
+          PRICE_DELTA_BYPASS_THRESHOLD: ${{ vars.PRICE_DELTA_BYPASS_THRESHOLD || '0.0015' }}
+          PRICE_DELTA_BYPASS_ENABLED: ${{ vars.PRICE_DELTA_BYPASS_ENABLED || 'true' }}
+          
+          # ============= TRADING SYMBOLS =============
+          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
+          
+          # ============= SYMBOL-SPECIFIC RSI =============
+          RSI_THRESHOLD_BTC: ${{ vars.RSI_THRESHOLD_BTC || '55' }}
+          RSI_THRESHOLD_ETH: ${{ vars.RSI_THRESHOLD_ETH || '50' }}
+          RSI_THRESHOLD_SOL: ${{ vars.RSI_THRESHOLD_SOL || '50' }}
+          
+          # ============= RISK MANAGEMENT =============
+          CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
+          DAILY_MAX_TRADES: ${{ vars.DAILY_MAX_TRADES || '5' }}
+          PER_TRADE_RISK_PCT: ${{ vars.PER_TRADE_RISK_PCT || '0.01' }}
+          
+          # ============= WEBSOCKET =============
+          WS_MAX_STREAMS_BINGX: ${{ vars.WS_MAX_STREAMS_BINGX || '10' }}
+        run: |
+          echo "🔍 Running pre-flight checks..."
+          echo "=================================="
+          echo "Environment Variables Loaded:"
+          echo "  DUPLICATE_PREVENTION_THRESHOLD: $DUPLICATE_PREVENTION_THRESHOLD"
+          echo "  DUPLICATE_PREVENTION_COOLDOWN: $DUPLICATE_PREVENTION_COOLDOWN"
+          echo "  TRADING_SYMBOLS: $TRADING_SYMBOLS"
+          echo "  RSI_THRESHOLD_BTC: $RSI_THRESHOLD_BTC"
+          echo "  CAPITAL_USDT: $CAPITAL_USDT"
+          echo "=================================="
 
-        pip install --no-cache-dir ''aiohttp==3.8.6'' ''yarl<2.0'' ''multidict<7.0''
+          python scripts/live_trading_launcher.py --dry-run --paper
 
+          echo "=================================="
+          echo "✅ Pre-flight checks completed"
 
-        # Install TA library (required for strategies)
+      - name: Upload Pre-Flight Logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pre-flight-logs
+          path: |
+            live_trading_*.log
+          if-no-files-found: ignore
 
-        pip install --no-cache-dir ''ta>=0.10.2''
-
-
-        # Install WebSocket libraries
-
-        pip install --no-cache-dir ''websocket-client>=1.6.0'' ''websockets>=10.0''
-
-
-        # Install remaining requirements (ccxtpro is commented out)
-
-        pip install --no-cache-dir -r requirements.txt
-
-
-        echo "✅ Dependencies installed successfully (using BingX Direct WebSocket)"
-
-        '
-      if: ${{ github.event.inputs.run_preflight != 'false' }}
-    - name: Run Dry-Run Pre-Flight Checks
-      env:
-        BINGX_KEY: ${{ secrets.BINGX_KEY }}
-        BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD ||
-          '0.05' }}
-        DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20'
-          }}
-        PRICE_DELTA_BYPASS_THRESHOLD: ${{ vars.PRICE_DELTA_BYPASS_THRESHOLD || '0.0015'
-          }}
-        PRICE_DELTA_BYPASS_ENABLED: ${{ vars.PRICE_DELTA_BYPASS_ENABLED || 'true'
-          }}
-        TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT'
-          }}
-        RSI_THRESHOLD_BTC: ${{ vars.RSI_THRESHOLD_BTC || '55' }}
-        RSI_THRESHOLD_ETH: ${{ vars.RSI_THRESHOLD_ETH || '50' }}
-        RSI_THRESHOLD_SOL: ${{ vars.RSI_THRESHOLD_SOL || '50' }}
-        CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
-        DAILY_MAX_TRADES: ${{ vars.DAILY_MAX_TRADES || '5' }}
-        PER_TRADE_RISK_PCT: ${{ vars.PER_TRADE_RISK_PCT || '0.01' }}
-        WS_MAX_STREAMS_BINGX: ${{ vars.WS_MAX_STREAMS_BINGX || '10' }}
-      run: 'echo "🔍 Running pre-flight checks..."
-
-        echo "=================================="
-
-        echo "Environment Variables Loaded:"
-
-        echo "  DUPLICATE_PREVENTION_THRESHOLD: $DUPLICATE_PREVENTION_THRESHOLD"
-
-        echo "  DUPLICATE_PREVENTION_COOLDOWN: $DUPLICATE_PREVENTION_COOLDOWN"
-
-        echo "  TRADING_SYMBOLS: $TRADING_SYMBOLS"
-
-        echo "  RSI_THRESHOLD_BTC: $RSI_THRESHOLD_BTC"
-
-        echo "  CAPITAL_USDT: $CAPITAL_USDT"
-
-        echo "=================================="
-
-
-        python scripts/live_trading_launcher.py --dry-run --paper
-
-
-        echo "=================================="
-
-        echo "✓ Pre-flight checks completed"
-
-        '
-      if: ${{ github.event.inputs.run_preflight != 'false' }}
-    - name: Upload Pre-Flight Logs
-      uses: actions/upload-artifact@v4
-      if: ${{ (always()) && (github.event.inputs.run_preflight != 'false') }}
-      with:
-        name: pre-flight-logs
-        path: 'live_trading_*.log
-
-          '
-        if-no-files-found: ignore
   live-trading:
     name: Execute Live Trading
     runs-on: ubuntu-latest
-    needs: pre-flight-checks
-    timeout-minutes: 720
+    needs: [validate-inputs, pre-flight-checks]
+    if: |
+      always() && 
+      needs.validate-inputs.outputs.should_proceed == 'true' &&
+      (needs.pre-flight-checks.result == 'success' || needs.validate-inputs.outputs.skip_preflight == 'true')
+    timeout-minutes: 720  # 12 hours maximum
+
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-    - name: Setup Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: pip
-    - name: Install Dependencies
-      run: 'echo "📦 Installing dependencies..."
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-        python -V
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
 
-        pip install --upgrade pip setuptools wheel
+      - name: Install Dependencies
+        run: |
+          echo "📦 Installing dependencies..."
+          python -V
+          pip install --upgrade pip setuptools wheel
+          # Fix for parse_frame error - install specific versions first WITH QUOTES
+          pip install --no-cache-dir 'aiohttp==3.8.6' 'yarl<2.0' 'multidict<7.0'
+          pip install --no-cache-dir -r requirements.txt
 
-        # Fix for parse_frame error - install specific versions first WITH QUOTES
+      - name: Display Configuration
+        env:
+          # Load variables for display
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
+          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
+          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
+          CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
+        run: |
+          echo "🚀 BEARISH ALPHA BOT - LIVE TRADING LAUNCHER"
+          echo "=============================================="
+          echo "Mode: ${{ github.event.inputs.mode }}"
+          echo "Dry Run: ${{ github.event.inputs.dry_run }}"
+          echo "Pre-flight Checks: ${{ github.event.inputs.skip_preflight == 'true' && 'SKIPPED ⚠️' || 'COMPLETED ✅' }}"
+          echo "Infinite Mode (Layer 1): ${{ github.event.inputs.infinite }}"
+          echo "Auto-Restart (Layer 2): ${{ github.event.inputs.auto_restart }}"
+          echo "Max Restarts: ${{ github.event.inputs.max_restarts }}"
+          echo "Restart Delay: ${{ github.event.inputs.restart_delay }}s"
+          echo "Duration: ${{ github.event.inputs.duration || 'indefinite' }}"
+          echo "Debug Mode: ${{ github.event.inputs.debug_mode }}"
+          echo ""
+          echo "Configuration from GitHub Variables:"
+          echo "- Capital: ${CAPITAL_USDT} USDT"
+          echo "- Exchange: BingX"
+          echo "- Trading Pairs: ${TRADING_SYMBOLS}"
+          echo "- Duplicate Prevention: ${DUPLICATE_PREVENTION_THRESHOLD}% / ${DUPLICATE_PREVENTION_COOLDOWN}s"
+          echo "=============================================="
 
-        pip install --no-cache-dir ''aiohttp==3.8.6'' ''yarl<2.0'' ''multidict<7.0''
+      - name: Launch Trading Bot
+        env:
+          # ============= EXCHANGE CREDENTIALS =============
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LOG_LEVEL: INFO
+          PYTHONUNBUFFERED: "1"
+          
+          # ✅ NEW: COMPLETE TRADING CONFIGURATION FROM GITHUB VARIABLES
+          # ============= DUPLICATE PREVENTION =============
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
+          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
+          PRICE_DELTA_BYPASS_THRESHOLD: ${{ vars.PRICE_DELTA_BYPASS_THRESHOLD || '0.0015' }}
+          PRICE_DELTA_BYPASS_ENABLED: ${{ vars.PRICE_DELTA_BYPASS_ENABLED || 'true' }}
+          
+          # ============= TRADING SYMBOLS =============
+          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
+          TRADING_SYMBOLS_PRIORITY: ${{ vars.TRADING_SYMBOLS_PRIORITY || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
+          UNIVERSE_AUTO_SELECT: ${{ vars.UNIVERSE_AUTO_SELECT || 'false' }}
+          
+          # ============= SYMBOL-SPECIFIC RSI =============
+          RSI_THRESHOLD_BTC: ${{ vars.RSI_THRESHOLD_BTC || '55' }}
+          RSI_THRESHOLD_ETH: ${{ vars.RSI_THRESHOLD_ETH || '50' }}
+          RSI_THRESHOLD_SOL: ${{ vars.RSI_THRESHOLD_SOL || '50' }}
+          
+          # ============= RISK MANAGEMENT =============
+          CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
+          PER_TRADE_RISK_PCT: ${{ vars.PER_TRADE_RISK_PCT || '0.01' }}
+          DAILY_LOSS_LIMIT_PCT: ${{ vars.DAILY_LOSS_LIMIT_PCT || '0.02' }}
+          RISK_USD_CAP: ${{ vars.RISK_USD_CAP || '5' }}
+          MAX_NOTIONAL_PER_TRADE: ${{ vars.MAX_NOTIONAL_PER_TRADE || '20' }}
+          MIN_STOP_PCT: ${{ vars.MIN_STOP_PCT || '0.003' }}
+          DAILY_MAX_TRADES: ${{ vars.DAILY_MAX_TRADES || '5' }}
+          
+          # ============= STRATEGIES =============
+          STRATEGY_OB_ENABLED: ${{ vars.STRATEGY_OB_ENABLED || 'true' }}
+          STRATEGY_OB_IGNORE_REGIME: ${{ vars.STRATEGY_OB_IGNORE_REGIME || 'true' }}
+          RSI_BASE_OB: ${{ vars.RSI_BASE_OB || '45' }}
+          RSI_RANGE_OB: ${{ vars.RSI_RANGE_OB || '10' }}
+          TP_ATR_MULT_OB: ${{ vars.TP_ATR_MULT_OB || '2.5' }}
+          SL_ATR_MULT_OB: ${{ vars.SL_ATR_MULT_OB || '1.2' }}
+          MIN_TP_PCT_OB: ${{ vars.MIN_TP_PCT_OB || '0.008' }}
+          MAX_SL_PCT_OB: ${{ vars.MAX_SL_PCT_OB || '0.015' }}
+          
+          STRATEGY_STR_ENABLED: ${{ vars.STRATEGY_STR_ENABLED || 'true' }}
+          STRATEGY_STR_IGNORE_REGIME: ${{ vars.STRATEGY_STR_IGNORE_REGIME || 'true' }}
+          RSI_BASE_STR: ${{ vars.RSI_BASE_STR || '55' }}
+          RSI_RANGE_STR: ${{ vars.RSI_RANGE_STR || '10' }}
+          TP_ATR_MULT_STR: ${{ vars.TP_ATR_MULT_STR || '3.0' }}
+          SL_ATR_MULT_STR: ${{ vars.SL_ATR_MULT_STR || '1.5' }}
+          MIN_TP_PCT_STR: ${{ vars.MIN_TP_PCT_STR || '0.010' }}
+          MAX_SL_PCT_STR: ${{ vars.MAX_SL_PCT_STR || '0.020' }}
+          
+          # ============= WEBSOCKET =============
+          WEBSOCKET_ENABLED: ${{ vars.WEBSOCKET_ENABLED || 'true' }}
+          WEBSOCKET_PRIORITY_ENABLED: ${{ vars.WEBSOCKET_PRIORITY_ENABLED || 'true' }}
+          WEBSOCKET_MAX_DATA_AGE: ${{ vars.WEBSOCKET_MAX_DATA_AGE || '60' }}
+          WEBSOCKET_FALLBACK_THRESHOLD: ${{ vars.WEBSOCKET_FALLBACK_THRESHOLD || '3' }}
+          WS_MAX_STREAMS_BINGX: ${{ vars.WS_MAX_STREAMS_BINGX || '10' }}
+          WS_MAX_STREAMS_BINANCE: ${{ vars.WS_MAX_STREAMS_BINANCE || '20' }}
+          WS_MAX_STREAMS_KUCOIN: ${{ vars.WS_MAX_STREAMS_KUCOIN || '15' }}
+          WS_MAX_STREAMS_DEFAULT: ${{ vars.WS_MAX_STREAMS_DEFAULT || '10' }}
+          WS_STREAM_TIMEFRAMES: ${{ vars.WS_STREAM_TIMEFRAMES || '1m,5m,30m,1h,4h' }}
+          WS_RECONNECT_DELAY: ${{ vars.WS_RECONNECT_DELAY || '5' }}
+          WS_MAX_RECONNECT_ATTEMPTS: ${{ vars.WS_MAX_RECONNECT_ATTEMPTS || '3' }}
+          
+          # ============= EXECUTION =============
+          ENABLE_LIVE_TRADING: ${{ vars.ENABLE_LIVE_TRADING || 'true' }}
+          ORDER_TYPE: ${{ vars.ORDER_TYPE || 'market' }}
+          TIME_IN_FORCE: ${{ vars.TIME_IN_FORCE || 'IOC' }}
+          FEE_PCT: ${{ vars.FEE_PCT || '0.0006' }}
+          MAX_SLIPPAGE_PCT: ${{ vars.MAX_SLIPPAGE_PCT || '0.001' }}
+          LEVERAGE_DEFAULT: ${{ vars.LEVERAGE_DEFAULT || '5' }}
+          
+          # ============= INDICATORS =============
+          INDICATOR_RSI_PERIOD: ${{ vars.INDICATOR_RSI_PERIOD || '14' }}
+          INDICATOR_ATR_PERIOD: ${{ vars.INDICATOR_ATR_PERIOD || '14' }}
+          INDICATOR_EMA_FAST: ${{ vars.INDICATOR_EMA_FAST || '21' }}
+          INDICATOR_EMA_MID: ${{ vars.INDICATOR_EMA_MID || '50' }}
+          INDICATOR_EMA_SLOW: ${{ vars.INDICATOR_EMA_SLOW || '200' }}
+          
+          # ============= ADAPTIVE MODES =============
+          ADAPTIVE_MODE_OB: ${{ vars.ADAPTIVE_MODE_OB || 'dynamic' }}
+          VOLATILITY_SENSITIVITY_OB: ${{ vars.VOLATILITY_SENSITIVITY_OB || 'medium' }}
+          ADAPTIVE_MODE_STR: ${{ vars.ADAPTIVE_MODE_STR || 'dynamic' }}
+          VOLATILITY_SENSITIVITY_STR: ${{ vars.VOLATILITY_SENSITIVITY_STR || 'medium' }}
+        run: |
+          # Build command dynamically
+          CMD="python scripts/live_trading_launcher.py"
 
-        pip install --no-cache-dir -r requirements.txt
+          # Add mode
+          if [ "${{ github.event.inputs.mode }}" = "paper" ]; then
+            CMD="$CMD --paper"
+          fi
 
-        '
-    - name: Display Configuration
-      env:
-        DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD ||
-          '0.05' }}
-        DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20'
-          }}
-        TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT'
-          }}
-        CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
-      run: 'echo "🚀 BEARISH ALPHA BOT - LIVE TRADING LAUNCHER"
+          # Add dry-run if enabled
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            CMD="$CMD --dry-run"
+          fi
 
-        echo "=============================================="
+          # Add infinite mode (Layer 1)
+          if [ "${{ github.event.inputs.infinite }}" = "true" ]; then
+            CMD="$CMD --infinite"
+          fi
 
-        echo "Mode: ${{ github.event.inputs.mode }}"
+          # Add auto-restart (Layer 2)
+          if [ "${{ github.event.inputs.auto_restart }}" = "true" ]; then
+            CMD="$CMD --auto-restart"
+          fi
 
-        echo "Dry Run: ${{ github.event.inputs.dry_run }}"
+          # Add max restarts if specified
+          if [ -n "${{ github.event.inputs.max_restarts }}" ] && [ "${{ github.event.inputs.max_restarts }}" != "1000" ]; then
+            CMD="$CMD --max-restarts ${{ github.event.inputs.max_restarts }}"
+          fi
 
-        echo "Infinite Mode (Layer 1): ${{ github.event.inputs.infinite }}"
+          # Add restart delay if specified
+          if [ -n "${{ github.event.inputs.restart_delay }}" ] && [ "${{ github.event.inputs.restart_delay }}" != "30" ]; then
+            CMD="$CMD --restart-delay ${{ github.event.inputs.restart_delay }}"
+          fi
 
-        echo "Auto-Restart (Layer 2): ${{ github.event.inputs.auto_restart }}"
+          # Add duration if specified
+          if [ -n "${{ github.event.inputs.duration }}" ]; then
+            CMD="$CMD --duration ${{ github.event.inputs.duration }}"
+          fi
 
-        echo "Max Restarts: ${{ github.event.inputs.max_restarts }}"
+          # Add debug mode if enabled
+          if [ "${{ github.event.inputs.debug_mode }}" = "true" ]; then
+            CMD="$CMD --debug"
+          fi
 
-        echo "Restart Delay: ${{ github.event.inputs.restart_delay }}s"
+          echo "🚀 Executing command:"
+          echo "$CMD"
+          echo ""
+          
+          echo "📊 Environment Variables Summary:"
+          echo "  DUPLICATE_PREVENTION_THRESHOLD: $DUPLICATE_PREVENTION_THRESHOLD"
+          echo "  DUPLICATE_PREVENTION_COOLDOWN: $DUPLICATE_PREVENTION_COOLDOWN"
+          echo "  TRADING_SYMBOLS: $TRADING_SYMBOLS"
+          echo "  RSI_THRESHOLD_BTC: $RSI_THRESHOLD_BTC"
+          echo "  RSI_THRESHOLD_ETH: $RSI_THRESHOLD_ETH"
+          echo "  RSI_THRESHOLD_SOL: $RSI_THRESHOLD_SOL"
+          echo "  CAPITAL_USDT: $CAPITAL_USDT"
+          echo "  WS_MAX_STREAMS_BINGX: $WS_MAX_STREAMS_BINGX"
+          echo ""
 
-        echo "Duration: ${{ github.event.inputs.duration || ''indefinite'' }}"
+          # Execute
+          $CMD
 
-        echo "Debug Mode: ${{ github.event.inputs.debug_mode }}"
+      - name: Generate Post-Session Summary
+        if: always()
+        run: |
+          echo "📊 POST-SESSION ANALYSIS"
+          echo "=============================================="
+          echo "Session completed at: $(date)"
+          echo ""
 
-        echo ""
+          # Check if log files exist
+          if ls live_trading_*.log 1> /dev/null 2>&1; then
+            echo "📄 Log files generated:"
+            ls -lh live_trading_*.log
+            echo ""
 
-        echo "Configuration from GitHub Variables:"
+            echo "📈 Log file statistics:"
+            for log in live_trading_*.log; do
+              echo "  $log:"
+              echo "    - Size: $(wc -c < "$log") bytes"
+              echo "    - Lines: $(wc -l < "$log")"
+              echo "    - Errors: $(grep -c "ERROR" "$log" || echo "0")"
+              echo "    - Warnings: $(grep -c "WARNING" "$log" || echo "0")"
+              echo ""
+            done
+          else
+            echo "ℹ️ No log files found"
+          fi
 
-        echo "- Capital: ${CAPITAL_USDT} USDT"
+          # Check for state files
+          if [ -f "state.json" ]; then
+            echo "💾 State file preserved: state.json"
+          fi
 
-        echo "- Exchange: BingX"
+          echo "=============================================="
+          echo "✅ Post-session analysis complete"
 
-        echo "- Trading Pairs: ${TRADING_SYMBOLS}"
+      - name: Upload Trading Logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trading-logs-${{ github.run_number }}
+          path: |
+            live_trading_*.log
+          retention-days: 30
+          if-no-files-found: warn
 
-        echo "- Duplicate Prevention: ${DUPLICATE_PREVENTION_THRESHOLD}% / ${DUPLICATE_PREVENTION_COOLDOWN}s"
+      - name: Upload trading state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-trading-state
+          path: |
+            data/state.json
+            data/day_stats.json
+          retention-days: 7
+          if-no-files-found: ignore
 
-        echo "=============================================="
+      - name: Upload Trading Data
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trading-data-${{ github.run_number }}
+          path: |
+            data/**
+            state.json
+            day_stats.json
+          retention-days: 30
+          if-no-files-found: ignore
 
-        '
-    - name: Launch Trading Bot
-      env:
-        BINGX_KEY: ${{ secrets.BINGX_KEY }}
-        BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        LOG_LEVEL: INFO
-        PYTHONUNBUFFERED: '1'
-        DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD ||
-          '0.05' }}
-        DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20'
-          }}
-        PRICE_DELTA_BYPASS_THRESHOLD: ${{ vars.PRICE_DELTA_BYPASS_THRESHOLD || '0.0015'
-          }}
-        PRICE_DELTA_BYPASS_ENABLED: ${{ vars.PRICE_DELTA_BYPASS_ENABLED || 'true'
-          }}
-        TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT'
-          }}
-        TRADING_SYMBOLS_PRIORITY: ${{ vars.TRADING_SYMBOLS_PRIORITY || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT'
-          }}
-        UNIVERSE_AUTO_SELECT: ${{ vars.UNIVERSE_AUTO_SELECT || 'false' }}
-        RSI_THRESHOLD_BTC: ${{ vars.RSI_THRESHOLD_BTC || '55' }}
-        RSI_THRESHOLD_ETH: ${{ vars.RSI_THRESHOLD_ETH || '50' }}
-        RSI_THRESHOLD_SOL: ${{ vars.RSI_THRESHOLD_SOL || '50' }}
-        CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
-        PER_TRADE_RISK_PCT: ${{ vars.PER_TRADE_RISK_PCT || '0.01' }}
-        DAILY_LOSS_LIMIT_PCT: ${{ vars.DAILY_LOSS_LIMIT_PCT || '0.02' }}
-        RISK_USD_CAP: ${{ vars.RISK_USD_CAP || '5' }}
-        MAX_NOTIONAL_PER_TRADE: ${{ vars.MAX_NOTIONAL_PER_TRADE || '20' }}
-        MIN_STOP_PCT: ${{ vars.MIN_STOP_PCT || '0.003' }}
-        DAILY_MAX_TRADES: ${{ vars.DAILY_MAX_TRADES || '5' }}
-        STRATEGY_OB_ENABLED: ${{ vars.STRATEGY_OB_ENABLED || 'true' }}
-        STRATEGY_OB_IGNORE_REGIME: ${{ vars.STRATEGY_OB_IGNORE_REGIME || 'true' }}
-        RSI_BASE_OB: ${{ vars.RSI_BASE_OB || '45' }}
-        RSI_RANGE_OB: ${{ vars.RSI_RANGE_OB || '10' }}
-        TP_ATR_MULT_OB: ${{ vars.TP_ATR_MULT_OB || '2.5' }}
-        SL_ATR_MULT_OB: ${{ vars.SL_ATR_MULT_OB || '1.2' }}
-        MIN_TP_PCT_OB: ${{ vars.MIN_TP_PCT_OB || '0.008' }}
-        MAX_SL_PCT_OB: ${{ vars.MAX_SL_PCT_OB || '0.015' }}
-        STRATEGY_STR_ENABLED: ${{ vars.STRATEGY_STR_ENABLED || 'true' }}
-        STRATEGY_STR_IGNORE_REGIME: ${{ vars.STRATEGY_STR_IGNORE_REGIME || 'true'
-          }}
-        RSI_BASE_STR: ${{ vars.RSI_BASE_STR || '55' }}
-        RSI_RANGE_STR: ${{ vars.RSI_RANGE_STR || '10' }}
-        TP_ATR_MULT_STR: ${{ vars.TP_ATR_MULT_STR || '3.0' }}
-        SL_ATR_MULT_STR: ${{ vars.SL_ATR_MULT_STR || '1.5' }}
-        MIN_TP_PCT_STR: ${{ vars.MIN_TP_PCT_STR || '0.010' }}
-        MAX_SL_PCT_STR: ${{ vars.MAX_SL_PCT_STR || '0.020' }}
-        WEBSOCKET_ENABLED: ${{ vars.WEBSOCKET_ENABLED || 'true' }}
-        WEBSOCKET_PRIORITY_ENABLED: ${{ vars.WEBSOCKET_PRIORITY_ENABLED || 'true'
-          }}
-        WEBSOCKET_MAX_DATA_AGE: ${{ vars.WEBSOCKET_MAX_DATA_AGE || '60' }}
-        WEBSOCKET_FALLBACK_THRESHOLD: ${{ vars.WEBSOCKET_FALLBACK_THRESHOLD || '3'
-          }}
-        WS_MAX_STREAMS_BINGX: ${{ vars.WS_MAX_STREAMS_BINGX || '10' }}
-        WS_MAX_STREAMS_BINANCE: ${{ vars.WS_MAX_STREAMS_BINANCE || '20' }}
-        WS_MAX_STREAMS_KUCOIN: ${{ vars.WS_MAX_STREAMS_KUCOIN || '15' }}
-        WS_MAX_STREAMS_DEFAULT: ${{ vars.WS_MAX_STREAMS_DEFAULT || '10' }}
-        WS_STREAM_TIMEFRAMES: ${{ vars.WS_STREAM_TIMEFRAMES || '1m,5m,30m,1h,4h' }}
-        WS_RECONNECT_DELAY: ${{ vars.WS_RECONNECT_DELAY || '5' }}
-        WS_MAX_RECONNECT_ATTEMPTS: ${{ vars.WS_MAX_RECONNECT_ATTEMPTS || '3' }}
-        ENABLE_LIVE_TRADING: ${{ vars.ENABLE_LIVE_TRADING || 'true' }}
-        ORDER_TYPE: ${{ vars.ORDER_TYPE || 'market' }}
-        TIME_IN_FORCE: ${{ vars.TIME_IN_FORCE || 'IOC' }}
-        FEE_PCT: ${{ vars.FEE_PCT || '0.0006' }}
-        MAX_SLIPPAGE_PCT: ${{ vars.MAX_SLIPPAGE_PCT || '0.001' }}
-        LEVERAGE_DEFAULT: ${{ vars.LEVERAGE_DEFAULT || '5' }}
-        INDICATOR_RSI_PERIOD: ${{ vars.INDICATOR_RSI_PERIOD || '14' }}
-        INDICATOR_ATR_PERIOD: ${{ vars.INDICATOR_ATR_PERIOD || '14' }}
-        INDICATOR_EMA_FAST: ${{ vars.INDICATOR_EMA_FAST || '21' }}
-        INDICATOR_EMA_MID: ${{ vars.INDICATOR_EMA_MID || '50' }}
-        INDICATOR_EMA_SLOW: ${{ vars.INDICATOR_EMA_SLOW || '200' }}
-        ADAPTIVE_MODE_OB: ${{ vars.ADAPTIVE_MODE_OB || 'dynamic' }}
-        VOLATILITY_SENSITIVITY_OB: ${{ vars.VOLATILITY_SENSITIVITY_OB || 'medium'
-          }}
-        ADAPTIVE_MODE_STR: ${{ vars.ADAPTIVE_MODE_STR || 'dynamic' }}
-        VOLATILITY_SENSITIVITY_STR: ${{ vars.VOLATILITY_SENSITIVITY_STR || 'medium'
-          }}
-      run: "# Build command dynamically\nCMD=\"python scripts/live_trading_launcher.py\"\
-        \n\n# Add mode\nif [ \"${{ github.event.inputs.mode }}\" = \"paper\" ]; then\n\
-        \  CMD=\"$CMD --paper\"\nfi\n\n# Add dry-run if enabled\nif [ \"${{ github.event.inputs.dry_run\
-        \ }}\" = \"true\" ]; then\n  CMD=\"$CMD --dry-run\"\nfi\n\n# Add infinite\
-        \ mode (Layer 1)\nif [ \"${{ github.event.inputs.infinite }}\" = \"true\"\
-        \ ]; then\n  CMD=\"$CMD --infinite\"\nfi\n\n# Add auto-restart (Layer 2)\n\
-        if [ \"${{ github.event.inputs.auto_restart }}\" = \"true\" ]; then\n  CMD=\"\
-        $CMD --auto-restart\"\nfi\n\n# Add max restarts if specified\nif [ -n \"${{\
-        \ github.event.inputs.max_restarts }}\" ] && [ \"${{ github.event.inputs.max_restarts\
-        \ }}\" != \"1000\" ]; then\n  CMD=\"$CMD --max-restarts ${{ github.event.inputs.max_restarts\
-        \ }}\"\nfi\n\n# Add restart delay if specified\nif [ -n \"${{ github.event.inputs.restart_delay\
-        \ }}\" ] && [ \"${{ github.event.inputs.restart_delay }}\" != \"30\" ]; then\n\
-        \  CMD=\"$CMD --restart-delay ${{ github.event.inputs.restart_delay }}\"\n\
-        fi\n\n# Add duration if specified\nif [ -n \"${{ github.event.inputs.duration\
-        \ }}\" ]; then\n  CMD=\"$CMD --duration ${{ github.event.inputs.duration }}\"\
-        \nfi\n\n# Add debug mode if enabled\nif [ \"${{ github.event.inputs.debug_mode\
-        \ }}\" = \"true\" ]; then\n  CMD=\"$CMD --debug\"\nfi\n\necho \"\U0001F680\
-        \ Executing command:\"\necho \"$CMD\"\necho \"\"\n\necho \"\U0001F4CA Environment\
-        \ Variables Summary:\"\necho \"  DUPLICATE_PREVENTION_THRESHOLD: $DUPLICATE_PREVENTION_THRESHOLD\"\
-        \necho \"  DUPLICATE_PREVENTION_COOLDOWN: $DUPLICATE_PREVENTION_COOLDOWN\"\
-        \necho \"  TRADING_SYMBOLS: $TRADING_SYMBOLS\"\necho \"  RSI_THRESHOLD_BTC:\
-        \ $RSI_THRESHOLD_BTC\"\necho \"  RSI_THRESHOLD_ETH: $RSI_THRESHOLD_ETH\"\n\
-        echo \"  RSI_THRESHOLD_SOL: $RSI_THRESHOLD_SOL\"\necho \"  CAPITAL_USDT: $CAPITAL_USDT\"\
-        \necho \"  WS_MAX_STREAMS_BINGX: $WS_MAX_STREAMS_BINGX\"\necho \"\"\n\n# Execute\n\
-        $CMD\n"
-    - name: Generate Post-Session Summary
-      if: always()
-      run: "echo \"\U0001F4CA POST-SESSION ANALYSIS\"\necho \"==============================================\"\
-        \necho \"Session completed at: $(date)\"\necho \"\"\n\n# Check if log files\
-        \ exist\nif ls live_trading_*.log 1> /dev/null 2>&1; then\n  echo \"\U0001F4DD\
-        \ Log files generated:\"\n  ls -lh live_trading_*.log\n  echo \"\"\n\n  echo\
-        \ \"\U0001F4C8 Log file statistics:\"\n  for log in live_trading_*.log; do\n\
-        \    echo \"  $log:\"\n    echo \"    - Size: $(wc -c < \"$log\") bytes\"\n\
-        \    echo \"    - Lines: $(wc -l < \"$log\")\"\n    echo \"    - Errors: $(grep\
-        \ -c \"ERROR\" \"$log\" || echo \"0\")\"\n    echo \"    - Warnings: $(grep\
-        \ -c \"WARNING\" \"$log\" || echo \"0\")\"\n    echo \"\"\n  done\nelse\n\
-        \  echo \"ℹ️ No log files found\"\nfi\n\n# Check for state files\nif [ -f\
-        \ \"state.json\" ]; then\n  echo \"\U0001F4BE State file preserved: state.json\"\
-        \nfi\n\necho \"==============================================\"\necho \"✓\
-        \ Post-session analysis complete\"\n"
-    - name: Upload Trading Logs
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: trading-logs-${{ github.run_number }}
-        path: 'live_trading_*.log
+      - name: Upload Health Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: health-reports-${{ github.run_number }}
+          path: |
+            health_*.json
+            restart_*.log
+            circuit_breaker_*.log
+          retention-days: 7
+          if-no-files-found: ignore
 
-          '
-        retention-days: 30
-        if-no-files-found: warn
-    - name: Upload trading state
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: live-trading-state
-        path: 'data/state.json
+      - name: Send Telegram Notification (Success)
+        if: success()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
+          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            PREFLIGHT_STATUS="${{ github.event.inputs.skip_preflight == 'true' && '⚠️ SKIPPED' || '✅ PASSED' }}"
+            
+            MESSAGE="✅ <b>Live Trading Session Completed</b>%0A%0A"
+            MESSAGE="${MESSAGE}<b>Configuration:</b>%0A"
+            MESSAGE="${MESSAGE}Mode: ${{ github.event.inputs.mode }}%0A"
+            MESSAGE="${MESSAGE}Pre-flight: ${PREFLIGHT_STATUS}%0A"
+            MESSAGE="${MESSAGE}Duration: ${{ github.event.inputs.duration || 'indefinite' }}%0A"
+            MESSAGE="${MESSAGE}Infinite: ${{ github.event.inputs.infinite }}%0A"
+            MESSAGE="${MESSAGE}Auto-Restart: ${{ github.event.inputs.auto_restart }}%0A"
+            MESSAGE="${MESSAGE}%0A<b>Trading Config:</b>%0A"
+            MESSAGE="${MESSAGE}Symbols: ${TRADING_SYMBOLS}%0A"
+            MESSAGE="${MESSAGE}Dup Prevention: ${DUPLICATE_PREVENTION_THRESHOLD}%%0A"
+            MESSAGE="${MESSAGE}%0A<b>Workflow:</b> ${{ github.workflow }}%0A"
+            MESSAGE="${MESSAGE}<b>Run:</b> #${{ github.run_number }}"
 
-          data/day_stats.json
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" \
+              -d "text=${MESSAGE}" \
+              -d "parse_mode=HTML" > /dev/null || true
+          fi
 
-          '
-        retention-days: 7
-        if-no-files-found: ignore
-    - name: Upload Trading Data
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: trading-data-${{ github.run_number }}
-        path: 'data/**
+      - name: Send Telegram Notification (Failure)
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            PREFLIGHT_STATUS="${{ github.event.inputs.skip_preflight == 'true' && '⚠️ SKIPPED' || '✅ PASSED' }}"
+            
+            MESSAGE="❌ <b>Live Trading Session Failed</b>%0A%0A"
+            MESSAGE="${MESSAGE}Mode: ${{ github.event.inputs.mode }}%0A"
+            MESSAGE="${MESSAGE}Pre-flight: ${PREFLIGHT_STATUS}%0A"
+            MESSAGE="${MESSAGE}Duration: ${{ github.event.inputs.duration || 'indefinite' }}%0A"
+            MESSAGE="${MESSAGE}Infinite: ${{ github.event.inputs.infinite }}%0A"
+            MESSAGE="${MESSAGE}Auto-Restart: ${{ github.event.inputs.auto_restart }}%0A"
+            MESSAGE="${MESSAGE}%0AWorkflow: ${{ github.workflow }}%0A"
+            MESSAGE="${MESSAGE}Run: #${{ github.run_number }}%0A"
+            MESSAGE="${MESSAGE}%0ACheck logs for details."
 
-          state.json
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" \
+              -d "text=${MESSAGE}" \
+              -d "parse_mode=HTML" > /dev/null || true
+          fi
 
-          day_stats.json
-
-          '
-        retention-days: 30
-        if-no-files-found: ignore
-    - name: Upload Health Reports
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: health-reports-${{ github.run_number }}
-        path: 'health_*.json
-
-          restart_*.log
-
-          circuit_breaker_*.log
-
-          '
-        retention-days: 7
-        if-no-files-found: ignore
-    - name: Send Telegram Notification (Success)
-      if: success()
-      env:
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD ||
-          '0.05' }}
-        TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT'
-          }}
-      run: "if [ -n \"$TELEGRAM_BOT_TOKEN\" ] && [ -n \"$TELEGRAM_CHAT_ID\" ]; then\n\
-        \  MESSAGE=\"✅ <b>Live Trading Session Completed</b>%0A%0A\"\n  MESSAGE=\"\
-        ${MESSAGE}<b>Configuration:</b>%0A\"\n  MESSAGE=\"${MESSAGE}Mode: ${{ github.event.inputs.mode\
-        \ }}%0A\"\n  MESSAGE=\"${MESSAGE}Duration: ${{ github.event.inputs.duration\
-        \ || 'indefinite' }}%0A\"\n  MESSAGE=\"${MESSAGE}Infinite: ${{ github.event.inputs.infinite\
-        \ }}%0A\"\n  MESSAGE=\"${MESSAGE}Auto-Restart: ${{ github.event.inputs.auto_restart\
-        \ }}%0A\"\n  MESSAGE=\"${MESSAGE}%0A<b>Trading Config:</b>%0A\"\n  MESSAGE=\"\
-        ${MESSAGE}Symbols: ${TRADING_SYMBOLS}%0A\"\n  MESSAGE=\"${MESSAGE}Dup Prevention:\
-        \ ${DUPLICATE_PREVENTION_THRESHOLD}%%0A\"\n  MESSAGE=\"${MESSAGE}%0A<b>Workflow:</b>\
-        \ ${{ github.workflow }}%0A\"\n  MESSAGE=\"${MESSAGE}<b>Run:</b> #${{ github.run_number\
-        \ }}\"\n\n  curl -s -X POST \"https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage\"\
-        \ \\\n    -d \"chat_id=${TELEGRAM_CHAT_ID}\" \\\n    -d \"text=${MESSAGE}\"\
-        \ \\\n    -d \"parse_mode=HTML\" > /dev/null || true\nfi\n"
-    - name: Send Telegram Notification (Failure)
-      if: failure()
-      env:
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      run: "if [ -n \"$TELEGRAM_BOT_TOKEN\" ] && [ -n \"$TELEGRAM_CHAT_ID\" ]; then\n\
-        \  MESSAGE=\"❌ <b>Live Trading Session Failed</b>%0A%0A\"\n  MESSAGE=\"${MESSAGE}Mode:\
-        \ ${{ github.event.inputs.mode }}%0A\"\n  MESSAGE=\"${MESSAGE}Duration: ${{\
-        \ github.event.inputs.duration || 'indefinite' }}%0A\"\n  MESSAGE=\"${MESSAGE}Infinite:\
-        \ ${{ github.event.inputs.infinite }}%0A\"\n  MESSAGE=\"${MESSAGE}Auto-Restart:\
-        \ ${{ github.event.inputs.auto_restart }}%0A\"\n  MESSAGE=\"${MESSAGE}%0AWorkflow:\
-        \ ${{ github.workflow }}%0A\"\n  MESSAGE=\"${MESSAGE}Run: #${{ github.run_number\
-        \ }}%0A\"\n  MESSAGE=\"${MESSAGE}%0ACheck logs for details.\"\n\n  curl -s\
-        \ -X POST \"https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage\"\
-        \ \\\n    -d \"chat_id=${TELEGRAM_CHAT_ID}\" \\\n    -d \"text=${MESSAGE}\"\
-        \ \\\n    -d \"parse_mode=HTML\" > /dev/null || true\nfi\n"
   summary:
     name: Session Summary
     runs-on: ubuntu-latest
-    needs:
-    - validate-inputs
-    - pre-flight-checks
-    - live-trading
+    needs: [validate-inputs, pre-flight-checks, live-trading]
     if: always()
+
     steps:
-    - name: Generate Workflow Summary
-      env:
-        DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD ||
-          '0.05' }}
-        DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20'
-          }}
-        TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT'
-          }}
-        CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
-      run: 'echo "# 🤖 Bearish Alpha Bot - Trading Session Summary" >> $GITHUB_STEP_SUMMARY
-
-        echo "" >> $GITHUB_STEP_SUMMARY
-
-        echo "## Workflow Configuration" >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Mode**: ${{ github.event.inputs.mode }}" >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Dry Run**: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Layer 1 (Infinite)**: ${{ github.event.inputs.infinite }}" >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Layer 2 (Auto-Restart)**: ${{ github.event.inputs.auto_restart }}"
-        >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Max Restarts**: ${{ github.event.inputs.max_restarts }}" >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Restart Delay**: ${{ github.event.inputs.restart_delay }}s" >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Duration**: ${{ github.event.inputs.duration || ''indefinite'' }}"
-        >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Debug Mode**: ${{ github.event.inputs.debug_mode }}" >> $GITHUB_STEP_SUMMARY
-
-        echo "" >> $GITHUB_STEP_SUMMARY
-
-        echo "## Trading Configuration (from GitHub Variables)" >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Capital**: ${CAPITAL_USDT} USDT" >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Exchange**: BingX" >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Trading Pairs**: ${TRADING_SYMBOLS}" >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Duplicate Prevention**: ${DUPLICATE_PREVENTION_THRESHOLD}% threshold,
-        ${DUPLICATE_PREVENTION_COOLDOWN}s cooldown" >> $GITHUB_STEP_SUMMARY
-
-        echo "" >> $GITHUB_STEP_SUMMARY
-
-        echo "## Job Status" >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Validation**: ${{ needs.validate-inputs.result }}" >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Pre-Flight Checks**: ${{ needs.pre-flight-checks.result }}" >> $GITHUB_STEP_SUMMARY
-
-        echo "- **Live Trading**: ${{ needs.live-trading.result }}" >> $GITHUB_STEP_SUMMARY
-
-        echo "" >> $GITHUB_STEP_SUMMARY
-
-        echo "## Artifacts" >> $GITHUB_STEP_SUMMARY
-
-        echo "Check the workflow run artifacts for:" >> $GITHUB_STEP_SUMMARY
-
-        echo "- 📝 Trading logs" >> $GITHUB_STEP_SUMMARY
-
-        echo "- 📊 Trading data and state" >> $GITHUB_STEP_SUMMARY
-
-        echo "- 🏥 Health reports" >> $GITHUB_STEP_SUMMARY
-
-        echo "" >> $GITHUB_STEP_SUMMARY
-
-        echo "---" >> $GITHUB_STEP_SUMMARY
-
-        echo "*Workflow run: #${{ github.run_number }}*" >> $GITHUB_STEP_SUMMARY
-
-        echo "*Config source: GitHub Variables + config.example.yaml*" >> $GITHUB_STEP_SUMMARY
-
-        '
-'on':
-  workflow_dispatch:
-    inputs:
-      run_preflight:
-        description: Pre-flight checks çalışsın mı?
-        required: false
-        default: 'true'
+      - name: Generate Workflow Summary
+        env:
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
+          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
+          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
+          CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
+        run: |
+          echo "# 🤖 Bearish Alpha Bot - Trading Session Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Workflow Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Mode**: ${{ github.event.inputs.mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Dry Run**: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pre-flight Checks**: ${{ github.event.inputs.skip_preflight == 'true' && '⚠️ SKIPPED' || '✅ COMPLETED' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Layer 1 (Infinite)**: ${{ github.event.inputs.infinite }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Layer 2 (Auto-Restart)**: ${{ github.event.inputs.auto_restart }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Max Restarts**: ${{ github.event.inputs.max_restarts }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Restart Delay**: ${{ github.event.inputs.restart_delay }}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration**: ${{ github.event.inputs.duration || 'indefinite' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Debug Mode**: ${{ github.event.inputs.debug_mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Trading Configuration (from GitHub Variables)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Capital**: ${CAPITAL_USDT} USDT" >> $GITHUB_STEP_SUMMARY
+          echo "- **Exchange**: BingX" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trading Pairs**: ${TRADING_SYMBOLS}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duplicate Prevention**: ${DUPLICATE_PREVENTION_THRESHOLD}% threshold, ${DUPLICATE_PREVENTION_COOLDOWN}s cooldown" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Job Status" >> $GITHUB_STEP_SUMMARY
+          echo "- **Validation**: ${{ needs.validate-inputs.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pre-Flight Checks**: ${{ needs.pre-flight-checks.result || (github.event.inputs.skip_preflight == 'true' && 'skipped' || 'N/A') }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Live Trading**: ${{ needs.live-trading.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "Check the workflow run artifacts for:" >> $GITHUB_STEP_SUMMARY
+          echo "- 📄 Trading logs" >> $GITHUB_STEP_SUMMARY
+          echo "- 📊 Trading data and state" >> $GITHUB_STEP_SUMMARY
+          echo "- 🏥 Health reports" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*Workflow run: #${{ github.run_number }}*" >> $GITHUB_STEP_SUMMARY
+          echo "*Config source: GitHub Variables + config.example.yaml*" >> $GITHUB_STEP_SUMMARY
