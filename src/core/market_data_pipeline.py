@@ -115,9 +115,6 @@ class MarketDataPipeline:
             
             # Add indicators
             df = add_indicators(df, self.config.get('indicators'))
-            
-            # Store data
-            self._store_data(exchange_name, symbol, timeframe, df)
         
             logger.info(f"✅ [PRIME] Loaded {len(df)} historical candles for {exchange_name} {symbol} {timeframe}")
             
