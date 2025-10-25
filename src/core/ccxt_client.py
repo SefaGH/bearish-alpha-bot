@@ -182,6 +182,32 @@ class CcxtClient:
             logger.error(f"Failed to load markets: {e}")
             raise
 
+    def load_markets(self, reload: bool = False, *args, **kwargs) -> Dict[str, Dict[str, Any]]:
+        """
+        Backwards-compatible proxy to load markets.
+
+        Many places expect the ccxt exchange object or call load_markets() directly.
+        This wrapper ensures older call sites continue to work and preserves the
+        CcxtClient caching / fixed-symbol behavior implemented in markets().
+        Args:
+            reload: bool - if True force reload (maps to force_reload)
+            *args, **kwargs: ignored / forwarded for compatibility
+        Returns:
+            dict: markets mapping
+        """
+        logger.info(f"[{self.name}] load_markets() wrapper called (reload={reload})")
+        # Use the existing markets() implementation which handles caching & required-symbols mode
+        
+        # Eğer live_trading_launcher'dan gelen 'symbols' parametresi varsa, onu kullan.
+        params = kwargs.get('params', {})
+        if 'symbols' in params:
+            self.set_required_symbols(params['symbols'])
+            # Gerekli semboller ayarlandığında, markets() metodu zaten filtrelenmiş marketleri dönecektir.
+            # force_reload=True, her seferinde borsadan taze veri çekilmesini sağlar.
+            return self.markets(force_reload=True)
+
+        return self.markets(force_reload=bool(reload))
+
     def validate_and_get_symbol(self, requested_symbol="BTC/USDT"):
         """
         Validate symbol exists on exchange, try common variants if not.
