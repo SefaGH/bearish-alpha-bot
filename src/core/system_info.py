@@ -286,6 +286,14 @@ class SystemInfoCollector:
                     'mode': 'rest'
                 }
             
+            # If OptimizedWebSocketManager wrapper verilmişse bağlanma bayrağını al
+            connecting_flag = False
+            try:
+                if hasattr(ws_manager, '_connection_status') and isinstance(getattr(ws_manager, '_connection_status'), dict):
+                    connecting_flag = bool(ws_manager._connection_status.get('connecting', False))
+            except Exception:
+                connecting_flag = False
+            
             # Check if this is OptimizedWebSocketManager with ws_manager attribute
             actual_ws_manager = ws_manager
             if hasattr(ws_manager, 'ws_manager') and ws_manager.ws_manager:
@@ -331,10 +339,12 @@ class SystemInfoCollector:
                     'mode': 'websocket'
                 }
             elif connected_clients and stream_count > 0:
+                # “connecting...” yalnızca gerçekten bağlantı kurulurken gösterilsin
+                status_text = 'STREAMING (connecting...)' if connecting_flag else 'STREAMING'
                 return {
                     'enabled': True,
                     'status_emoji': '✅',
-                    'status_text': 'STREAMING (connecting...)',
+                    'status_text': status_text,
                     'stream_count': stream_count,
                     'mode': 'websocket'
                 }
