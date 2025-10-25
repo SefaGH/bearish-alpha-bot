@@ -38,16 +38,18 @@ class MarketDataPipeline:
         '1d': 100
     }
     
-    def __init__(self, exchanges: Dict[str, CcxtClient], config: Dict[str, Any] = None):
+    def __init__(self, exchanges: Dict[str, CcxtClient], config: Dict[str, Any] = None, websocket_manager: Optional[Any] = None):
         """
         Initialize MarketDataPipeline.
         
         Args:
             exchanges: Dictionary mapping exchange names to CcxtClient instances
             config: Optional configuration dict for pipeline settings
+            websocket_manager: Optional WebSocketManager instance for data injection.
         """
         self.exchanges = exchanges
         self.config = config or {}
+        self.websocket_manager = websocket_manager
         
         # Data storage: {exchange: {symbol: {timeframe: DataFrame}}}
         self.data_streams = defaultdict(lambda: defaultdict(dict))
@@ -115,9 +117,17 @@ class MarketDataPipeline:
             df = add_indicators(df, self.config.get('indicators'))
             
             # Store data
-            self._store_data(exchange_name, symbol, timeframe, df)
-            
-            logger.info(f"✅ [PRIME] Loaded {len(df)} historical candles for {exchange_name} {symbol} {timeframe}")
+            # YENİ BLOK: Çekilen veriyi WebSocketManager'ın önbelleğine aktar.
+            if self.websocket_manager and hasattr(self.websocket_manager, 'collector'):
+                # CCXT sembol formatını ('BTC/USDT') WebSocket formatına ('BTC/USDT:USDT') çevir.
+                ws_symbol = f"{symbol}:{symbol.split('/')[-1]}" if ':' not in symbol and symbol.endswith('/USDT') else symbol
+                
+                # Collector'a DataFrame'i doğrudan gönder.
+                self.websocket_manager.collector.prime_buffer_with_dataframe(exchange_name, ws_symbol, timeframe, df)
+                logger.info(f"✅ [INJECT] Injected {len(df)} candles into WebSocket buffer for {ws_symbol} {timeframe}")
+            else:
+                logger.warning(f"⚠️ [INJECT] WebSocket manager or collector not found. Skipping data injection.")
+    
             return True
             
         except Exception as e:
