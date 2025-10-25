@@ -57,6 +57,7 @@ from .circuit_breaker import CircuitBreakerSystem
 
 # Phase 3.4: Live Trading Components
 from .live_trading_engine import LiveTradingEngine
+from .market_data_pipeline import MarketDataPipeline
 
 # Strategy imports - DÜZELTILDI
 from strategies.adaptive_ob import AdaptiveOversoldBounce
@@ -929,16 +930,24 @@ class ProductionCoordinator:
             logger.info("✓ Portfolio manager initialized")
             
             # ========================================
-            # STEP 7: INITIALIZE STRATEGY COORDINATOR
+            # STEP 7: INITIALIZE MARKET DATA PIPELINE (YENİ ADIM)
+            # ========================================
+            self.market_data_pipeline = MarketDataPipeline(self.exchange_clients, self.config)
+            logger.info("✓ Market data pipeline initialized")
+            
+            # ========================================
+            # STEP 8: INITIALIZE STRATEGY COORDINATOR (GÜNCELLENDİ)
             # ========================================
             self.strategy_coordinator = StrategyCoordinator(
                 self.portfolio_manager,
-                self.risk_manager
+                self.risk_manager,
+                market_data_pipeline=self.market_data_pipeline, # EKLENDİ
+                config=self.config # EKLENDİ
             )
             logger.info("✓ Strategy coordinator initialized")
             
             # ========================================
-            # STEP 8: INITIALIZE CIRCUIT BREAKER
+            # STEP 9: INITIALIZE CIRCUIT BREAKER
             # ========================================
             self.circuit_breaker = CircuitBreakerSystem(
                 self.portfolio_manager,
@@ -947,7 +956,7 @@ class ProductionCoordinator:
             logger.info("✓ Circuit breaker system initialized")
             
             # ========================================
-            # STEP 9: INITIALIZE LIVE TRADING ENGINE
+            # STEP 10: INITIALIZE LIVE TRADING ENGINE
             # ========================================
             self.trading_engine = LiveTradingEngine(
                 mode=mode,
@@ -960,7 +969,7 @@ class ProductionCoordinator:
             logger.info(f"✓ Live trading engine initialized (mode: {mode})")
             
             # ========================================
-            # STEP 10: SET ACTIVE SYMBOLS (CRITICAL!)
+            # STEP 11: SET ACTIVE SYMBOLS (CRITICAL!)
             # ========================================
             if trading_symbols:
                 # Priority 1: Use provided parameter
@@ -979,7 +988,7 @@ class ProductionCoordinator:
                 logger.info(f"✓ Trading engine symbols cache set: {len(self.active_symbols)} symbols")
             
             # ========================================
-            # STEP 11: VALIDATE ACTIVE SYMBOLS
+            # STEP 12: VALIDATE ACTIVE SYMBOLS
             # ========================================
             if not self.active_symbols:
                 logger.error("="*70)
@@ -998,7 +1007,7 @@ class ProductionCoordinator:
                 logger.info("="*70)
             
             # ========================================
-            # STEP 11.5: INITIALIZE ML COMPONENTS (NEW)
+            # STEP 12.5: INITIALIZE ML COMPONENTS (NEW)
             # ========================================
             ml_enabled = self.config.get('ml', {}).get('enabled', False)
             if ml_enabled and self.active_symbols:
@@ -1021,7 +1030,7 @@ class ProductionCoordinator:
                     logger.warning("⚠️ Cannot initialize ML without active symbols")
             
             # ========================================
-            # STEP 12: MARK AS INITIALIZED
+            # STEP 13: MARK AS INITIALIZED
             # ========================================
             self.is_initialized = True
             
