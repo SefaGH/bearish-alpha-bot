@@ -222,7 +222,11 @@ class MarketDataPipeline:
                     df = add_indicators(df, self.config.get('indicators'))
                     
                     # Store data
-                    self._store_data(exchange_name, symbol, timeframe, df)
+                    if self.websocket_manager and hasattr(self.websocket_manager, 'collector'):
+                        ws_symbol = f"{symbol}:{symbol.split('/')[-1]}" if ':' not in symbol and symbol.endswith('/USDT') else symbol
+                        self.websocket_manager.collector.prime_buffer_with_dataframe(exchange_name, ws_symbol, timeframe, df)
+                    else:
+                        logger.warning(f"⚠️ [INJECT-SYNC] WebSocket manager or collector not found. Skipping data injection for sync fetch.")
                     
                     results['successful_fetches'] += 1
                     results['exchanges_used'].add(exchange_name)
@@ -269,46 +273,46 @@ class MarketDataPipeline:
         return df
     
     def _store_data(self, exchange: str, symbol: str, timeframe: str, df: pd.DataFrame):
-        """
-        Store data with circular buffer management.
-        
-        Args:
-            exchange: Exchange name
-            symbol: Trading symbol
-            timeframe: Timeframe string
-            df: DataFrame to store
-        """
-        # Apply buffer limit
-        limit = self.BUFFER_LIMITS.get(timeframe, 500)
-        if len(df) > limit:
-            df = df.tail(limit)
-        
-        # Store data
-        self.data_streams[exchange][symbol][timeframe] = df
-        
-        # Update last update time
-        key = f"{exchange}:{symbol}:{timeframe}"
-        self.last_update_time[key] = datetime.now(timezone.utc)
+    """
+    DEPRECATED: This method is now a no-op. Data is stored centrally.
+    It's kept for backward compatibility to prevent crashes if called.
+    """
+    # Bu metodun içi artık boş. Sadece eski koda uyumluluk için var.
+    # logger.warning(f"DEPRECATED: _store_data for {exchange}:{symbol}:{timeframe} was called. This is a no-op.")
+    pass
     
     def get_latest_ohlcv(self, symbol: str, timeframe: str, exchange: str = None) -> Optional[pd.DataFrame]:
         """
-        Get latest OHLCV data for a symbol and timeframe.
-        
-        Args:
-            symbol: Trading symbol
-            timeframe: Timeframe string
-            exchange: Optional specific exchange name, otherwise uses best source
-        
-        Returns:
-            DataFrame with OHLCV data and indicators, or None if not available
+        Get latest OHLCV data by reading from the central WebSocketManager buffer.
+        This now acts as a proxy to the WebSocketManager, ensuring a single source of truth.
         """
-        if exchange:
-            # Get from specific exchange
-            if exchange in self.data_streams:
-                if symbol in self.data_streams[exchange]:
-                    return self.data_streams[exchange][symbol].get(timeframe)
+        # DÜZELTİLDİ: Artık veriyi doğrudan merkezi depodan, yani WebSocketManager'dan okuyor.
+        if not self.websocket_manager:
+            logger.warning("Cannot get OHLCV data: WebSocketManager is not available.")
             return None
         
+        try:
+            # ProductionCoordinator'daki _ws_fetch_df_with_fallback metodundan ilham alındı.
+            # WebSocketManager'da bu metodun olduğunu varsayıyoruz.
+            # Olası metod adları: get_latest_dataframe veya get_latest_data
+            if hasattr(self.websocket_manager, 'get_latest_dataframe'):
+                 return self.websocket_manager.get_latest_dataframe(symbol, timeframe, exchange)
+            elif hasattr(self.websocket_manager, 'get_latest_data'):
+                 # get_latest_data bir dict döndürüyorsa, onu df'e çevirmemiz gerekir.
+                 raw_data = self.websocket_manager.get_latest_data(symbol, timeframe, exchange)
+                 if raw_data: # None değilse
+                     if isinstance(raw_data, pd.DataFrame):
+                         return raw_data
+                     if 'ohlcv' in raw_data and raw_data['ohlcv']:
+                         return self._ohlcv_to_dataframe(raw_data['ohlcv'])
+                 return None
+            else:
+                logger.error("WebSocketManager has no standard method to get dataframe or data ('get_latest_dataframe' or 'get_latest_data').")
+                return None
+        except Exception as e:
+            logger.error(f"Error getting latest OHLCV from WebSocketManager for {symbol} {timeframe}: {e}")
+            return None
+            
         # Get from best available source
         return self._get_best_data_source(symbol, timeframe)
     
@@ -355,26 +359,12 @@ class MarketDataPipeline:
         return best['df']
     
     def health_check(self) -> Dict[str, Any]:
-        """
-        Perform health check on the pipeline.
-        
-        Returns:
-            Dict with health status and metrics
-        """
         uptime = (datetime.now(timezone.utc) - self.start_time).total_seconds()
         error_rate = (self.failed_requests / self.total_requests * 100) if self.total_requests > 0 else 0
         
-        # Count data streams
-        total_streams = 0
-        for exchange in self.data_streams:
-            for symbol in self.data_streams[exchange]:
-                total_streams += len(self.data_streams[exchange][symbol])
-        
         health_status = 'healthy'
-        if error_rate > 20:
-            health_status = 'degraded'
-        if error_rate > 50:
-            health_status = 'critical'
+        if error_rate > 20: health_status = 'degraded'
+        if error_rate > 50: health_status = 'critical'
         
         return {
             'status': health_status,
@@ -382,69 +372,17 @@ class MarketDataPipeline:
             'total_requests': self.total_requests,
             'failed_requests': self.failed_requests,
             'error_rate': round(error_rate, 2),
-            'active_streams': total_streams,
+            'active_streams': 0, # Deprecated
             'is_running': self.is_running
         }
-    
+        
     def get_pipeline_status(self) -> Dict[str, Any]:
-        """
-        Get detailed pipeline status including exchange-level breakdown.
-        
-        Returns:
-            Dict with comprehensive status information
-        """
         status = self.health_check()
-        
-        # Exchange-level breakdown
-        exchange_stats = {}
-        for exchange_name in self.data_streams:
-            symbols_count = len(self.data_streams[exchange_name])
-            streams_count = sum(len(self.data_streams[exchange_name][symbol]) 
-                              for symbol in self.data_streams[exchange_name])
-            
-            exchange_stats[exchange_name] = {
-                'symbols': symbols_count,
-                'streams': streams_count
-            }
-        
-        # Calculate memory estimation
-        total_rows = 0
-        for exchange in self.data_streams:
-            for symbol in self.data_streams[exchange]:
-                for timeframe, df in self.data_streams[exchange][symbol].items():
-                    if df is not None:
-                        total_rows += len(df)
-        
-        # Rough memory estimation (assuming ~200 bytes per row with indicators)
-        memory_mb = (total_rows * 200) / (1024 * 1024)
-        
-        # Data freshness
-        freshness = {}
-        now = datetime.now(timezone.utc)
-        for key, last_update in self.last_update_time.items():
-            age_seconds = (now - last_update).total_seconds()
-            if age_seconds < 300:  # 5 minutes
-                freshness[key] = 'fresh'
-            elif age_seconds < 3600:  # 1 hour
-                freshness[key] = 'stale'
-            else:
-                freshness[key] = 'expired'
-        
-        fresh_count = sum(1 for v in freshness.values() if v == 'fresh')
-        stale_count = sum(1 for v in freshness.values() if v == 'stale')
-        expired_count = sum(1 for v in freshness.values() if v == 'expired')
-        
-        status.update({
-            'exchanges': exchange_stats,
-            'memory_estimate_mb': round(memory_mb, 2),
-            'data_freshness': {
-                'fresh': fresh_count,
-                'stale': stale_count,
-                'expired': expired_count
-            },
-            'buffer_limits': self.BUFFER_LIMITS
-        })
-        
+        status['note'] = 'Data is now stored centrally in WebSocketManager. Status reflects priming jobs only.'
+        # Yerel depoya dayalı hesaplamalar kaldırıldı.
+        status['exchanges'] = {}
+        status['memory_estimate_mb'] = 0
+        status['data_freshness'] = {}
         return status
     
     def shutdown(self):
