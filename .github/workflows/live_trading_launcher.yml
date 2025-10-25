@@ -166,6 +166,7 @@ jobs:
           cache: 'pip'
 
       - name: Install Dependencies
+        shell: bash
         run: |
           python -V
           python -m pip install --upgrade pip setuptools wheel
@@ -179,8 +180,18 @@ jobs:
           # Install WebSocket libraries
           pip install --no-cache-dir 'websocket-client>=1.6.0' 'websockets>=10.0'
           
-          # Install remaining requirements (ccxtpro is commented out)
-          pip install --no-cache-dir -r requirements.txt
+          # === KOŞULLU YÜKLEME BAŞLANGICI ===
+          if [ "${{ github.event.inputs.enable_ml }}" = "true" ]; then
+            echo "ML is enabled. Installing all dependencies for pre-flight..."
+            # ML AÇIKSA: requirements.txt dosyasının tamamını kur
+            pip install --no-cache-dir -r requirements.txt
+          else
+            echo "ML is disabled. Installing core dependencies only for pre-flight..."
+            # ML KAPALIYSA: requirements.txt dosyasındaki ML bölümünü filtrele ve kalanı kur
+            [cite_start]#  dosyasındaki '# === MACHINE LEARNING (Optional) ===' satırını bulur
+            sed '/# === MACHINE LEARNING (Optional) ===/,$d' requirements.txt | pip install --no-cache-dir -r /dev/stdin
+          fi
+          # === KOŞULLU YÜKLEME SONU ===
           
           echo "✅ Dependencies installed successfully (using BingX Direct WebSocket)"
 
@@ -260,13 +271,26 @@ jobs:
           cache: 'pip'
 
       - name: Install Dependencies
+        shell: bash
         run: |
           echo "📦 Installing dependencies..."
           python -V
           pip install --upgrade pip setuptools wheel
           # Fix for parse_frame error - install specific versions first WITH QUOTES
           pip install --no-cache-dir 'aiohttp==3.8.6' 'yarl<2.0' 'multidict<7.0'
-          pip install --no-cache-dir -r requirements.txt
+          
+          # === KOŞULLU YÜKLEME BAŞLANGICI ===
+          if [ "${{ github.event.inputs.enable_ml }}" = "true" ]; then
+            echo "ML is enabled. Installing all dependencies..."
+            # ML AÇIKSA: requirements.txt dosyasının tamamını kur
+            pip install --no-cache-dir -r requirements.txt
+          else
+            echo "ML is disabled. Installing core dependencies only..."
+            # ML KAPALIYSA: requirements.txt dosyasındaki ML bölümünü filtrele ve kalanı kur
+            [cite_start]#  dosyasındaki '# === MACHINE LEARNING (Optional) ===' satırını bulur
+            sed '/# === MACHINE LEARNING (Optional) ===/,$d' requirements.txt | pip install --no-cache-dir -r /dev/stdin
+          fi
+          # === KOŞULLU YÜKLEME SONU ===
 
       - name: Display Configuration
         env:
@@ -297,6 +321,7 @@ jobs:
 
       - name: Launch Trading Bot
         env:
+          ML_ENABLED: ${{ github.event.inputs.enable_ml }}
           # ============= EXCHANGE CREDENTIALS =============
           BINGX_KEY: ${{ secrets.BINGX_KEY }}
           BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
