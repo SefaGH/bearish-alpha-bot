@@ -196,6 +196,7 @@ jobs:
 
       - name: Run Dry-Run Pre-Flight Checks
         env:
+          ML_ENABLED: ${{ github.event.inputs.enable_ml }}
           # ============= EXCHANGE CREDENTIALS =============
           BINGX_KEY: ${{ secrets.BINGX_KEY }}
           BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
