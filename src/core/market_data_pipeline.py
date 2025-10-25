@@ -65,12 +65,56 @@ class MarketDataPipeline:
         
         logger.info(f"🔄 MarketDataPipeline initialized with {len(exchanges)} exchanges: {list(exchanges.keys())}")
     
+    async def _wait_for_websocket_ready(self, timeout: float = 10.0) -> bool:
+        """
+        Wait for WebSocket manager's collector to be ready.
+        
+        This method prevents race conditions where MarketDataPipeline tries to
+        inject data before the WebSocketManager's collector is fully initialized.
+        
+        Args:
+            timeout: Maximum seconds to wait for collector (default: 10.0)
+        
+        Returns:
+            True if collector is ready, False if timeout or no WebSocket manager
+        """
+        if not self.websocket_manager:
+            logger.debug("[WS-READY] No WebSocket manager configured")
+            return False
+        
+        start_time = asyncio.get_event_loop().time()
+        check_interval = 0.1  # Check every 100ms
+        
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            
+            # Check timeout
+            if elapsed >= timeout:
+                logger.warning(f"[WS-READY] ⏱️ Timeout after {elapsed:.1f}s waiting for WebSocket collector")
+                return False
+            
+            # Check if collector is ready
+            if hasattr(self.websocket_manager, 'is_collector_ready'):
+                if self.websocket_manager.is_collector_ready():
+                    logger.info(f"[WS-READY] ✅ WebSocket collector ready after {elapsed:.2f}s")
+                    return True
+            elif hasattr(self.websocket_manager, 'collector') and self.websocket_manager.collector:
+                logger.info(f"[WS-READY] ✅ WebSocket collector ready after {elapsed:.2f}s")
+                return True
+            
+            # Wait before next check
+            await asyncio.sleep(check_interval)
+    
     async def prime_data_buffers_async(self, symbols: List[str], timeframes: List[str]):
         """
         Asynchronously fetches historical data for all symbols and timeframes to prime the data buffers.
         This is called at startup to prevent "Insufficient data" errors for indicators.
         """
         logger.info(f"[PRIME] Starting historical data priming for {len(symbols)} symbols and {len(timeframes)} timeframes.")
+        
+        # CRITICAL: Wait for WebSocket collector to be ready before priming
+        if not await self._wait_for_websocket_ready(timeout=10.0):
+            logger.warning("[PRIME] WebSocket collector not ready after 10s timeout - proceeding without WebSocket injection")
         
         tasks = []
         # We need enough data for indicators like EMA(200)
@@ -119,15 +163,26 @@ class MarketDataPipeline:
             logger.info(f"✅ [PRIME] Loaded {len(df)} historical candles for {exchange_name} {symbol} {timeframe}")
             
             # YENİ BLOK: Çekilen veriyi WebSocketManager'ın önbelleğine aktar.
-            if self.websocket_manager and hasattr(self.websocket_manager, 'collector'):
+            # DEFENSIVE: Check both websocket_manager AND collector existence
+            if not self.websocket_manager:
+                logger.debug(f"[INJECT] No WebSocket manager - skipping data injection for {symbol} {timeframe}")
+                return True
+            
+            if not hasattr(self.websocket_manager, 'collector') or not self.websocket_manager.collector:
+                logger.warning(f"⚠️ [INJECT] WebSocket manager exists but collector not found. Skipping data injection for {symbol} {timeframe}")
+                return True
+            
+            try:
                 # CCXT sembol formatını ('BTC/USDT') WebSocket formatına ('BTC/USDT:USDT') çevir.
                 ws_symbol = f"{symbol}:{symbol.split('/')[-1]}" if ':' not in symbol and symbol.endswith('/USDT') else symbol
                 
                 # Collector'a DataFrame'i doğrudan gönder.
                 self.websocket_manager.collector.prime_buffer_with_dataframe(exchange_name, ws_symbol, timeframe, df)
                 logger.info(f"✅ [INJECT] Injected {len(df)} candles into WebSocket buffer for {ws_symbol} {timeframe}")
-            else:
-                logger.warning(f"⚠️ [INJECT] WebSocket manager or collector not found. Skipping data injection.")
+            except Exception as e:
+                logger.error(f"❌ [INJECT] Failed to inject data into WebSocket buffer for {symbol} {timeframe}: {e}")
+                # Don't fail the entire prime operation if injection fails
+                pass
     
             return True
             
@@ -221,12 +276,19 @@ class MarketDataPipeline:
                     # Add indicators
                     df = add_indicators(df, self.config.get('indicators'))
                     
-                    # Store data
-                    if self.websocket_manager and hasattr(self.websocket_manager, 'collector'):
-                        ws_symbol = f"{symbol}:{symbol.split('/')[-1]}" if ':' not in symbol and symbol.endswith('/USDT') else symbol
-                        self.websocket_manager.collector.prime_buffer_with_dataframe(exchange_name, ws_symbol, timeframe, df)
+                    # Store data - DEFENSIVE checks before WebSocket injection
+                    if not self.websocket_manager:
+                        logger.debug(f"[INJECT-SYNC] No WebSocket manager - skipping data injection for {symbol} {timeframe}")
+                    elif not hasattr(self.websocket_manager, 'collector') or not self.websocket_manager.collector:
+                        logger.warning(f"⚠️ [INJECT-SYNC] WebSocket manager exists but collector not found. Skipping data injection for {symbol} {timeframe}")
                     else:
-                        logger.warning(f"⚠️ [INJECT-SYNC] WebSocket manager or collector not found. Skipping data injection for sync fetch.")
+                        try:
+                            ws_symbol = f"{symbol}:{symbol.split('/')[-1]}" if ':' not in symbol and symbol.endswith('/USDT') else symbol
+                            self.websocket_manager.collector.prime_buffer_with_dataframe(exchange_name, ws_symbol, timeframe, df)
+                            logger.debug(f"✅ [INJECT-SYNC] Injected {len(df)} candles for {ws_symbol} {timeframe}")
+                        except Exception as e:
+                            logger.error(f"❌ [INJECT-SYNC] Failed to inject data: {e}")
+                            # Don't fail - continue without injection
                     
                     results['successful_fetches'] += 1
                     results['exchanges_used'].add(exchange_name)

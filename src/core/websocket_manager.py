@@ -124,6 +124,28 @@ class WebSocketManager:
                 
             except Exception as e:
                 logger.error(f"Failed to initialize WebSocket client for {ex_name}: {e}")
+    
+    @property
+    def collector(self):
+        """
+        Property to access the data collector.
+        
+        This provides a public interface to the internal _data_collector,
+        allowing MarketDataPipeline to inject historical data into the buffer.
+        
+        Returns:
+            StreamDataCollector instance, or None if not initialized
+        """
+        return getattr(self, '_data_collector', None)
+    
+    def is_collector_ready(self) -> bool:
+        """
+        Check if the data collector is ready to accept data.
+        
+        Returns:
+            True if collector is initialized and ready, False otherwise
+        """
+        return self.collector is not None
         
     def start_ohlcv_stream(self, exchange: str, symbol: str, timeframe: str) -> bool:
         """
@@ -876,3 +898,61 @@ class StreamDataCollector:
         self.ohlcv_data.clear()
         self.ticker_data.clear()
         logger.info("StreamDataCollector cleared")
+    
+    def prime_buffer_with_dataframe(self, exchange: str, symbol: str, timeframe: str, df):
+        """
+        Prime the buffer with historical data from a DataFrame.
+        
+        This method is called by MarketDataPipeline to inject historical OHLCV data
+        into the WebSocket buffer, preventing "Insufficient data" errors.
+        
+        Args:
+            exchange: Exchange name (e.g., 'bingx')
+            symbol: Trading symbol (e.g., 'BTC/USDT:USDT')
+            timeframe: Timeframe (e.g., '30m', '1h')
+            df: Pandas DataFrame with OHLCV data (index: timestamp, columns: open, high, low, close, volume)
+        """
+        try:
+            import pandas as pd
+            
+            if df is None or df.empty:
+                logger.warning(f"[PRIME] Empty DataFrame for {exchange} {symbol} {timeframe}")
+                return
+            
+            # Initialize exchange dict if needed
+            if exchange not in self.ohlcv_data:
+                self.ohlcv_data[exchange] = {}
+            
+            key = f"{symbol}_{timeframe}"
+            
+            # Convert DataFrame to OHLCV list format
+            # Expected format: [[timestamp_ms, open, high, low, close, volume], ...]
+            ohlcv_list = []
+            for timestamp, row in df.iterrows():
+                # Convert timestamp to milliseconds
+                if hasattr(timestamp, 'timestamp'):
+                    timestamp_ms = int(timestamp.timestamp() * 1000)
+                else:
+                    timestamp_ms = int(pd.Timestamp(timestamp).timestamp() * 1000)
+                
+                ohlcv_list.append([
+                    timestamp_ms,
+                    float(row.get('open', 0)),
+                    float(row.get('high', 0)),
+                    float(row.get('low', 0)),
+                    float(row.get('close', 0)),
+                    float(row.get('volume', 0))
+                ])
+            
+            # Store in buffer with timestamp wrapper (same format as streaming data)
+            self.ohlcv_data[exchange][key] = [
+                {
+                    'timestamp': datetime.now(timezone.utc),
+                    'data': ohlcv_list
+                }
+            ]
+            
+            logger.info(f"[PRIME] ✅ Primed buffer with {len(ohlcv_list)} candles for {exchange} {symbol} {timeframe}")
+            
+        except Exception as e:
+            logger.error(f"[PRIME] ❌ Failed to prime buffer for {exchange} {symbol} {timeframe}: {e}", exc_info=True)

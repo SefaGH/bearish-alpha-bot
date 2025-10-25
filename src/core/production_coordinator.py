@@ -925,6 +925,24 @@ class ProductionCoordinator:
             logger.info("✓ Market data pipeline initialized")
             
             # ========================================
+            # STEP 8.5: VERIFY WEBSOCKET COLLECTOR READY
+            # ========================================
+            if self.websocket_manager:
+                if hasattr(self.websocket_manager, 'is_collector_ready'):
+                    if self.websocket_manager.is_collector_ready():
+                        logger.info("✓ WebSocket collector verified ready")
+                    else:
+                        logger.warning("⚠️ WebSocket manager exists but collector not ready")
+                else:
+                    # Fallback check
+                    if hasattr(self.websocket_manager, 'collector') and self.websocket_manager.collector:
+                        logger.info("✓ WebSocket collector verified ready (fallback check)")
+                    else:
+                        logger.warning("⚠️ WebSocket collector not found - data injection may fail")
+            else:
+                logger.info("ℹ️ No WebSocket manager - pipeline will use REST API only")
+            
+            # ========================================
             # STEP 9: INITIALIZE STRATEGY COORDINATOR (GÜNCELLENDİ)
             # ========================================
             self.strategy_coordinator = StrategyCoordinator(
