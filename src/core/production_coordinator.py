@@ -137,6 +137,45 @@ class ProductionCoordinator:
         
         logger.info("ProductionCoordinator created")
 
+    def _normalize_symbol_for_ws(self, symbol: str) -> str:
+        """
+        Normalize a spot-like CCXT symbol to futures format used by WebSocket collector.
+        'BTC/USDT' -> 'BTC/USDT:USDT' (if no colon and endswith '/USDT').
+        """
+        if not symbol:
+            return symbol
+        s = symbol.strip().upper()
+        if ':' in s:
+            return s
+        if s.endswith('/USDT'):
+            return f"{s}:USDT"
+        return s
+
+    def _ws_fetch_df_with_fallback(self, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
+        """
+        Try to fetch latest WS OHLCV for timeframe using both raw and normalized symbols.
+        Returns a DataFrame if found, otherwise None.
+        """
+        if not getattr(self, 'websocket_manager', None):
+            return None
+
+        candidates = []
+        sym_norm = self._normalize_symbol_for_ws(symbol)
+        # Try raw first, then normalized (only if different)
+        if symbol:
+            candidates.append(symbol)
+        if sym_norm and sym_norm != symbol:
+            candidates.append(sym_norm)
+
+        for sym in candidates:
+            try:
+                data = self.websocket_manager.get_latest_data(sym, timeframe)
+            except Exception:
+                data = None
+            if data and data.get('ohlcv'):
+                return self._ohlcv_to_dataframe(data['ohlcv'])
+        return None
+
     def _setup_websocket_connections(self) -> bool:
         """
         Setup WebSocket connections with proper validation and error handling.
@@ -278,27 +317,74 @@ class ProductionCoordinator:
             
             if self.websocket_manager:
                 try:
-                    # get_latest_data metodunu kullan
-                    data_30m = self.websocket_manager.get_latest_data(symbol, '30m')
-                    data_1h = self.websocket_manager.get_latest_data(symbol, '1h')
-                    data_4h = self.websocket_manager.get_latest_data(symbol, '4h')
-                    
-                    # OHLCV verilerini DataFrame'e dönüştür
-                    if data_30m and 'ohlcv' in data_30m:
-                        df_30m = self._ohlcv_to_dataframe(data_30m['ohlcv'])
-                    if data_1h and 'ohlcv' in data_1h:
-                        df_1h = self._ohlcv_to_dataframe(data_1h['ohlcv'])
-                    if data_4h and 'ohlcv' in data_4h:
-                        df_4h = self._ohlcv_to_dataframe(data_4h['ohlcv'])
-                    
-                    if df_30m is not None and df_1h is not None and df_4h is not None:
-                        logger.info(f"[DATA-FETCH] ✅ WebSocket data retrieved for {symbol}")
+                    # Hem ham sembol hem normalize sembolle dene (':USDT' fallback)
+                    df_30m = self._ws_fetch_df_with_fallback(symbol, '30m')
+                    df_1h  = self._ws_fetch_df_with_fallback(symbol, '1h')
+                    df_4h  = self._ws_fetch_df_with_fallback(symbol, '4h')
+
+                    # WS verisini "başarılı" saymak için 30m ve 1h yeterli; 4h opsiyonel
+                    if df_30m is not None and df_1h is not None:
+                        logger.info(f"[DATA-FETCH] ✅ WebSocket data retrieved for {symbol} (30m & 1h)")
+                        if df_4h is None:
+                            logger.info(f"[DATA-FETCH] ℹ️ WebSocket 4h not ready for {symbol} (will try REST to complete)")
                     else:
                         logger.info(f"[DATA-FETCH] ⚠️ Incomplete WebSocket data for {symbol}, will try REST API")
                         
                 except AttributeError as e:
                     logger.warning(f"[DATA-FETCH] WebSocketManager missing get_latest_data method: {e}")
                     pass
+            
+            # REST API fallback: SADECE EKSİK OLAN TF'LERİ TAMAMLA
+            missing_timeframes = []
+            if df_30m is None:
+                missing_timeframes.append('30m')
+            if df_1h is None:
+                missing_timeframes.append('1h')
+            if df_4h is None:
+                missing_timeframes.append('4h')
+
+            if missing_timeframes and self.exchange_clients:
+                logger.info(f"[DATA-FETCH] Using REST API fallback for {symbol} (missing: {missing_timeframes})")
+                # İlk mevcut exchange'i kullan
+                for exchange_name, client in self.exchange_clients.items():
+                    try:
+                        # Her eksik TF için ayrı timeout ile isteği paralel başlat
+                        fetch_tasks = []
+                        for tf in missing_timeframes:
+                            fetch_tasks.append(
+                                asyncio.create_task(asyncio.wait_for(
+                                    self._fetch_ohlcv(client, symbol, tf),
+                                    timeout=10.0
+                                ))
+                            )
+                        
+                        # Toplam 15 saniye üst sınır
+                        results = await asyncio.wait_for(
+                            asyncio.gather(*fetch_tasks, return_exceptions=True),
+                            timeout=15.0
+                        )
+                        
+                        # Sonuçları uygun df'lere yerleştir
+                        for tf, res in zip(missing_timeframes, results):
+                            if not isinstance(res, Exception) and res is not None:
+                                if tf == '30m':
+                                    df_30m = res
+                                elif tf == '1h':
+                                    df_1h = res
+                                elif tf == '4h':
+                                    df_4h = res
+                        
+                        # En azından 30m tamamlanmışsa başarılı sayalım
+                        if df_30m is not None:
+                            logger.info(f"[DATA-FETCH] ✅ REST API data retrieved for {symbol}")
+                            break
+                            
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[DATA-FETCH] ⏱️ REST API timeout for {symbol} (15s limit)")
+                        continue
+                    except Exception as e:
+                        logger.warning(f"[DATA-FETCH] REST API failed: {e}")
+                        continue
             
             # REST API fallback with timeout protection
             if df_30m is None and self.exchange_clients:
