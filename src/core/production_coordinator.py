@@ -968,7 +968,8 @@ class ProductionCoordinator:
                 risk_manager=self.risk_manager,
                 websocket_manager=self.websocket_manager,
                 exchange_clients=self.exchange_clients,
-                strategy_coordinator=self.strategy_coordinator
+                strategy_coordinator=self.strategy_coordinator,
+                market_data_pipeline=self.market_data_pipeline  # BU SATIRI EKLEYİN
             )
             logger.info(f"✓ Live trading engine initialized (mode: {mode})")
             
