@@ -932,7 +932,11 @@ class ProductionCoordinator:
             # ========================================
             # STEP 7: INITIALIZE MARKET DATA PIPELINE (YENİ ADIM)
             # ========================================
-            self.market_data_pipeline = MarketDataPipeline(self.exchange_clients, self.config)
+            self.market_data_pipeline = MarketDataPipeline(
+                exchanges=self.exchange_clients,
+                config=self.config,
+                websocket_manager=self.websocket_manager  # EKLENDİ: WebSocketManager'ı pipeline'a tanıtıyoruz.
+            )
             logger.info("✓ Market data pipeline initialized")
             
             # ========================================
