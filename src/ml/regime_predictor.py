@@ -8,10 +8,20 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
 import logging
+import os
+
+# ML_ENABLED ortam değişkenini oku
+ML_ENABLED = os.getenv("ML_ENABLED", "false").lower() in ("1", "true", "yes")
 
 from .feature_engineering import FeatureEngineeringPipeline
-from .neural_networks import LSTMRegimePredictor, TransformerRegimePredictor
-from sklearn.ensemble import RandomForestClassifier
+from .neural_networks import LSTMRegimePredictor
+
+# sklearn import işlemini koruma altına al
+if ML_ENABLED:
+    from sklearn.ensemble import RandomForestClassifier
+else:
+    # ML kapalıysa, programın çökmemesi için sahte (None) bir sınıf oluştur
+    RandomForestClassifier = None
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +37,23 @@ class EnsembleRegimePredictor:
             models: Dictionary of trained models
             weights: Optional weights for ensemble voting
         """
+
+        def __init__(self, models: Dict[str, Any], weights: Optional[Dict[str, float]] = None):
+        """
+        Initialize ensemble predictor.
+        
+        Args:
+            models: Dictionary of trained models
+            weights: Optional weights for ensemble voting
+        """
+        
+        # Eğer bu sınıf ML gerektiriyorsa (ki öyle görünüyor) ve ML kapalıysa, hata ver.
+        if not ML_ENABLED:
+            raise RuntimeError(
+                "EnsembleRegimePredictor sınıfı ML_ENABLED=true gerektirir. "
+                "Lütfen botu 'enable_ml=true' ile çalıştırın."
+            )
+        
         self.models = models
         self.weights = weights or {
             'lstm': 0.4,
