@@ -54,11 +54,11 @@ on:
         default: false
         type: boolean
 
-      max_restarts:
-        description: 'Maximum restart attempts'
-        required: false
-        type: string
-        default: '1000'
+    # max_restarts:
+    #   description: 'Maximum restart attempts'
+    #   required: false
+    #   type: string
+    #   default: '1000'
 
       restart_delay:
         description: 'Base restart delay in seconds'
