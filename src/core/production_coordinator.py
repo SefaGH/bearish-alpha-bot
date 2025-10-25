@@ -133,8 +133,7 @@ class ProductionCoordinator:
         self.config = LiveTradingConfiguration.load()
         
         # Market regime analyzer başlat
-        self.market_regime_analyzer = MarketRegimeAnalyzer()
-        logger.info("✅ Market regime analyzer initialized")
+        self.market_regime_analyzer = None #MarketRegimeAnalyzer()
         
         logger.info("ProductionCoordinator created")
 
@@ -849,9 +848,15 @@ class ProductionCoordinator:
                 logger.info("✓ WebSocket manager received from launcher (external).")
             else:
                 logger.warning("⚠️ No WebSocket manager provided by launcher. Continuing without WebSocket.")
+
+            # ========================================
+            # STEP 3: MARKET REGIME ANALYZER            
+            # ========================================
+            self.market_regime_analyzer = MarketRegimeAnalyzer(websocket_manager=self.websocket_manager) # <<< ARTIK DOLU OLAN MANAGER'I VERİYORUZ
+            logger.info("✓ Market regime analyzer initialized")
             
             # ========================================
-            # STEP 3: INITIALIZE PERFORMANCE MONITOR
+            # STEP 4: INITIALIZE PERFORMANCE MONITOR
             # ========================================
             try:
                 self.performance_monitor = PerformanceMonitor()
@@ -862,7 +867,7 @@ class ProductionCoordinator:
                 self.performance_monitor = RealTimePerformanceMonitor()
             
             # ========================================
-            # STEP 4: PREPARE RISK MANAGER CONFIG
+            # STEP 5: PREPARE RISK MANAGER CONFIG
             # ========================================
             portfolio_config = portfolio_config or {}
             config = self.config
@@ -887,7 +892,7 @@ class ProductionCoordinator:
             logger.info(f"✓ Risk config prepared: ${risk_manager_config['equity_usd']} equity")
             
             # ========================================
-            # STEP 5: INITIALIZE RISK MANAGER
+            # STEP 6: INITIALIZE RISK MANAGER
             # ========================================
             self.risk_manager = RiskManager(
                 portfolio_config=risk_manager_config,
@@ -897,7 +902,7 @@ class ProductionCoordinator:
             logger.info(f"✓ Risk manager initialized (portfolio value: ${self.risk_manager.portfolio_value:.2f})")
             
             # ========================================
-            # STEP 6: INITIALIZE PORTFOLIO MANAGER
+            # STEP 7: INITIALIZE PORTFOLIO MANAGER
             # ========================================
             self.portfolio_manager = PortfolioManager(
                 risk_manager=self.risk_manager,
@@ -910,7 +915,7 @@ class ProductionCoordinator:
             logger.info("✓ Portfolio manager initialized")
             
             # ========================================
-            # STEP 7: INITIALIZE MARKET DATA PIPELINE (YENİ ADIM)
+            # STEP 8: INITIALIZE MARKET DATA PIPELINE (YENİ ADIM)
             # ========================================
             self.market_data_pipeline = MarketDataPipeline(
                 exchanges=self.exchange_clients,
@@ -920,7 +925,7 @@ class ProductionCoordinator:
             logger.info("✓ Market data pipeline initialized")
             
             # ========================================
-            # STEP 8: INITIALIZE STRATEGY COORDINATOR (GÜNCELLENDİ)
+            # STEP 9: INITIALIZE STRATEGY COORDINATOR (GÜNCELLENDİ)
             # ========================================
             self.strategy_coordinator = StrategyCoordinator(
                 self.portfolio_manager,
@@ -931,7 +936,7 @@ class ProductionCoordinator:
             logger.info("✓ Strategy coordinator initialized")
             
             # ========================================
-            # STEP 9: INITIALIZE CIRCUIT BREAKER
+            # STEP 10: INITIALIZE CIRCUIT BREAKER
             # ========================================
             self.circuit_breaker = CircuitBreakerSystem(
                 self.portfolio_manager,
@@ -940,7 +945,7 @@ class ProductionCoordinator:
             logger.info("✓ Circuit breaker system initialized")
             
             # ========================================
-            # STEP 10: INITIALIZE LIVE TRADING ENGINE
+            # STEP 11: INITIALIZE LIVE TRADING ENGINE
             # ========================================
             self.trading_engine = LiveTradingEngine(
                 mode=mode,
@@ -953,7 +958,7 @@ class ProductionCoordinator:
             logger.info(f"✓ Live trading engine initialized (mode: {mode})")
             
             # ========================================
-            # STEP 11: SET ACTIVE SYMBOLS (CRITICAL!)
+            # STEP 12: SET ACTIVE SYMBOLS (CRITICAL!)
             # ========================================
             if trading_symbols:
                 # Priority 1: Use provided parameter
@@ -972,7 +977,7 @@ class ProductionCoordinator:
                 logger.info(f"✓ Trading engine symbols cache set: {len(self.active_symbols)} symbols")
             
             # ========================================
-            # STEP 12: VALIDATE ACTIVE SYMBOLS
+            # STEP 13: VALIDATE ACTIVE SYMBOLS          
             # ========================================
             if not self.active_symbols:
                 logger.error("="*70)
@@ -991,7 +996,7 @@ class ProductionCoordinator:
                 logger.info("="*70)
             
             # ========================================
-            # STEP 12.5: INITIALIZE ML COMPONENTS (NEW)
+            # STEP 13.5: INITIALIZE ML COMPONENTS (NEW)
             # ========================================
             ml_enabled = self.config.get('ml', {}).get('enabled', False)
             if ml_enabled and self.active_symbols:
@@ -1014,7 +1019,7 @@ class ProductionCoordinator:
                     logger.warning("⚠️ Cannot initialize ML without active symbols")
             
             # ========================================
-            # STEP 13: MARK AS INITIALIZED
+            # STEP 14: MARK AS INITIALIZED
             # ========================================
             self.is_initialized = True
             
