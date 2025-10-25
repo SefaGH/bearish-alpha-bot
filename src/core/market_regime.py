@@ -21,8 +21,9 @@ class MarketRegimeAnalyzer:
     - Momentum state: strong, weak, sideways
     """
     
-    def __init__(self):
-        """Initialize the market regime analyzer."""
+    def __init__(self, websocket_manager=None):
+        """Initialize MarketRegimeAnalyzer."""
+        self.websocket_manager = websocket_manager
         self.regime_states = {
             'trend': ['bullish', 'bearish', 'neutral'],
             'volatility': ['high', 'normal', 'low'], 
