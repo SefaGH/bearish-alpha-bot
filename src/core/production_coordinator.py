@@ -935,7 +935,7 @@ class ProductionCoordinator:
             self.market_data_pipeline = MarketDataPipeline(
                 exchanges=self.exchange_clients,
                 config=self.config,
-                websocket_manager=self.websocket_manager  # EKLENDİ: WebSocketManager'ı pipeline'a tanıtıyoruz.
+                websocket_manager=self.websocket_manager  # ÖNEMLİ: WS Manager'ı pipeline'a tanıtıyoruz.
             )
             logger.info("✓ Market data pipeline initialized")
             
@@ -945,8 +945,8 @@ class ProductionCoordinator:
             self.strategy_coordinator = StrategyCoordinator(
                 self.portfolio_manager,
                 self.risk_manager,
-                market_data_pipeline=self.market_data_pipeline, # EKLENDİ
-                config=self.config # EKLENDİ
+                market_data_pipeline=self.market_data_pipeline, # ÖNEMLİ: Doğru yapılandırılmış pipeline'ı coordinator'a veriyoruz.
+                config=self.config
             )
             logger.info("✓ Strategy coordinator initialized")
             
