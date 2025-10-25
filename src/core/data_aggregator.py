@@ -29,18 +29,18 @@ class DataAggregator:
     # Outlier detection threshold (multiplier for IQR)
     OUTLIER_IQR_MULTIPLIER = 3.0
     
-    def __init__(self, pipeline):
+    def __init__(self, websocket_manager: Any):
         """
         Initialize DataAggregator.
         
         Args:
-            pipeline: MarketDataPipeline instance for data access
+            websocket_manager: WebSocketManager instance for centralized data access.
         """
         # Avoid circular import by checking type without importing
-        if not hasattr(pipeline, 'exchanges') or not hasattr(pipeline, 'get_latest_ohlcv'):
-            raise TypeError("pipeline must be a MarketDataPipeline instance")
+        if not hasattr(websocket_manager, 'collector') or not hasattr(websocket_manager, 'exchanges'):
+            raise TypeError("websocket_manager must be a WebSocketManager instance")
         
-        self.pipeline = pipeline
+        self.websocket_manager = websocket_manager
         self.quality_thresholds = {
             'min_candles': 50,
             'max_gap_ratio': 0.05,  # 5% missing candles acceptable
@@ -163,11 +163,11 @@ class DataAggregator:
             'total_sources': 0
         }
         
-        # Collect data from all exchanges in the pipeline
-        for exchange_name in self.pipeline.exchanges.keys():
+        # Collect data from all exchanges in the WebSocket manager
+        for exchange_name in self.websocket_manager.exchanges.keys():
             try:
-                # Get data from pipeline storage
-                df = self.pipeline.get_latest_ohlcv(symbol, timeframe, exchange=exchange_name)
+                # Get data directly from WebSocketManager's collector
+                df = self.websocket_manager.get_latest_data(symbol, timeframe, exchange=exchange_name)
                 
                 if df is None or df.empty:
                     logger.debug(f"No data available for {symbol} {timeframe} from {exchange_name}")
@@ -221,18 +221,15 @@ class DataAggregator:
         logger.debug(f"Finding best data source for {symbol} {timeframe}")
         
         # Filter exchanges if specified
-        available_exchanges = exchanges or list(self.pipeline.exchanges.keys())
-        
-        best_exchange = None
-        best_score = -1
+        available_exchanges = exchanges or list(self.websocket_manager.exchanges.keys())
         
         for exchange_name in available_exchanges:
-            if exchange_name not in self.pipeline.exchanges:
-                logger.warning(f"Exchange {exchange_name} not in pipeline, skipping")
+            if exchange_name not in self.websocket_manager.exchanges:
+                logger.warning(f"Exchange {exchange_name} not in websocket_manager, skipping")
                 continue
             
             try:
-                df = self.pipeline.get_latest_ohlcv(symbol, timeframe, exchange=exchange_name)
+                df = self.websocket_manager.get_latest_data(symbol, timeframe, exchange=exchange_name)
                 
                 if df is None or df.empty:
                     continue
