@@ -37,15 +37,6 @@ class EnsembleRegimePredictor:
             models: Dictionary of trained models
             weights: Optional weights for ensemble voting
         """
-
-        def __init__(self, models: Dict[str, Any], weights: Optional[Dict[str, float]] = None):
-        """
-        Initialize ensemble predictor.
-        
-        Args:
-            models: Dictionary of trained models
-            weights: Optional weights for ensemble voting
-        """
         
         # Eğer bu sınıf ML gerektiriyorsa (ki öyle görünüyor) ve ML kapalıysa, hata ver.
         if not ML_ENABLED:
