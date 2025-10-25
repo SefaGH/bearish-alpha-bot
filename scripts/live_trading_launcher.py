@@ -27,8 +27,6 @@ import time
 import signal
 import yaml  # ← Add this import
 import inspect
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any
 
 # Note: Logging configuration is handled by setup_logger() and setup_debug_logger()
 # Do not use logging.basicConfig() here as it interferes with file logging
@@ -1843,15 +1841,24 @@ class LiveTradingLauncher:
         _health_task = None
         
         try:
-            # ========================================
-            # STEP 1: ESTABLISH WEBSOCKET CONNECTION
-            # ========================================
+            # STEP 1: USE EXISTING WS IF ALREADY RUNNING; OTHERWISE TRY TO ESTABLISH
             ws_connected = False
-            if self.ws_optimizer and self._is_ws_initialized():
-                ws_connected = await self._establish_websocket_connection(
-                    max_retries=3,
-                    timeout=30
-                )
+            if self._is_ws_initialized():
+                try:
+                    ws_status = await self.ws_optimizer.get_stream_status()
+                    # Accept as connected if either explicit 'running' flag is True or active stream count > 0
+                    if ws_status.get('running') or ws_status.get('active_streams', 0) > 0:
+                        logger.info("WebSocket already initialized and running; skipping re-initialization")
+                        ws_connected = True
+                    else:
+                        logger.info("WebSocket initialized but no active streams; attempting to (re)establish...")
+                        ws_connected = await self._establish_websocket_connection(max_retries=3, timeout=30)
+                except Exception as e:
+                    logger.warning(f"WS status check failed: {e}; attempting to (re)establish...")
+                    ws_connected = await self._establish_websocket_connection(max_retries=3, timeout=30)
+            else:
+                logger.info("WebSocket not initialized; continuing with REST mode")
+                ws_connected = False
                 
                 if not ws_connected:
                     logger.warning("=" * 70)
@@ -2182,7 +2189,7 @@ class LiveTradingLauncher:
             dry_run=self.dry_run,
             debug_mode=self.debug_mode,
             exchange_clients=self.exchange_clients,
-            ws_manager=self.ws_optimizer if hasattr(self, 'ws_optimizer') else None,
+            ws_manager=(self.ws_optimizer.ws_manager if self._is_ws_initialized() else None),
             capital=self.CAPITAL_USDT,
             trading_pairs=self.TRADING_PAIRS,
             strategies=self.strategies if hasattr(self, 'strategies') else {},
