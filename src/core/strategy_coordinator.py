@@ -32,27 +32,32 @@ class ConflictResolutionStrategy(Enum):
 class StrategyCoordinator:
     """Coordinate signals and positions across multiple strategies."""
     
-    def __init__(self, portfolio_manager, risk_manager):
+    def __init__(self, portfolio_manager, risk_manager, market_data_pipeline=None, config=None, **kwargs):
         """
         Initialize strategy coordinator.
-        
+    
         Args:
             portfolio_manager: PortfolioManager instance
             risk_manager: RiskManager instance
+            market_data_pipeline: Optional MarketDataPipeline instance (injected by production coordinator)
+            config: Optional configuration dictionary
+            **kwargs: Catches any other future arguments for forward compatibility.
         """
         self.portfolio_manager = portfolio_manager
         self.risk_manager = risk_manager
-        
+        self.market_data_pipeline = market_data_pipeline
+        self.config = config or {}
+    
         # Signal management
         self.active_signals = {}  # signal_id -> signal_data
         self.signal_queue = asyncio.Queue()
         self.signal_history = []
         self._signal_history_lookup: Dict[str, Dict[str, Any]] = {}
-        
+    
         # Conflict tracking
         self.conflict_history = []
-        
-        # Duplicate prevention tracking (Phase 3.4 - Issue #104)
+    
+        # Duplicate prevention tracking
         self.last_signal_time = {}  # "symbol:strategy" -> timestamp
         self.signal_price_history = defaultdict(list)  # symbol -> [(timestamp, price), ...]
         
@@ -72,7 +77,12 @@ class StrategyCoordinator:
             'rejected_price_delta': 0
         }
         
-        logger.info("StrategyCoordinator initialized")
+        # ML integration placeholders
+        self.ml_integration = None
+        self.feature_pipeline = None
+        self.rl_agent = None
+    
+        logger.info("StrategyCoordinator initialized (market_data_pipeline=%s)", bool(self.market_data_pipeline))
     
     def validate_duplicate(self, signal: Dict, strategy_name: str) -> Tuple[bool, str]:
         """
