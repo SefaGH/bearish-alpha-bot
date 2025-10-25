@@ -7,10 +7,22 @@ Provides comprehensive training, validation, and hyperparameter optimization.
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import TimeSeriesSplit
 import logging
+import os
+
+# ML_ENABLED ortam değişkenini oku
+ML_ENABLED = os.getenv("ML_ENABLED", "false").lower() in ("1", "true", "yes")
+
+# sklearn import işlemlerini koruma altına al
+if ML_ENABLED:
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.model_selection import TimeSeriesSplit
+else:
+    # ML kapalıysa, programın çökmemesi için sahte (None) sınıflar oluştur
+    RandomForestClassifier = None
+    StandardScaler = None
+    TimeSeriesSplit = None
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +37,14 @@ class TimeSeriesCV:
         Args:
             n_splits: Number of splits for cross-validation
         """
+        # === KORUMA EKLE ===
+        if not ML_ENABLED:
+            raise RuntimeError(
+                "TimeSeriesCV sınıfı ML_ENABLED=true gerektirir. "
+                "Lütfen botu 'enable_ml=true' ile çalıştırın."
+            )
+        # === KORUMA SONU ===
+        
         self.n_splits = n_splits
         self.splitter = TimeSeriesSplit(n_splits=n_splits)
     
@@ -52,6 +72,14 @@ class WalkForwardValidation:
             train_size: Size of training window
             test_size: Size of test window
         """
+        # === KORUMA EKLE ===
+        if not ML_ENABLED:
+            raise RuntimeError(
+                "WalkForwardValidation sınıfı ML_ENABLED=true gerektirir. "
+                "Lütfen botu 'enable_ml=true' ile çalıştırın."
+            )
+        # === KORUMA SONU ===
+        
         self.train_size = train_size
         self.test_size = test_size
     
@@ -362,6 +390,12 @@ class RegimeModelTrainer:
         Returns:
             Dictionary with feature importance scores
         """
+        # === KORUMA EKLE ===
+        if not ML_ENABLED:
+            logger.warning("ML_ENABLED=false olduğu için özellik önemi (feature importance) atlanıyor.")
+            return {}
+        # === KORUMA SONU ===
+        
         importance = {}
         
         try:
