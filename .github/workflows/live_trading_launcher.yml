@@ -187,8 +187,7 @@ jobs:
             pip install --no-cache-dir -r requirements.txt
           else
             echo "ML is disabled. Installing core dependencies only for pre-flight..."
-            # ML KAPALIYSA: requirements.txt dosyasındaki ML bölümünü filtrele ve kalanı kur
-            [cite_start]#  dosyasındaki '# === MACHINE LEARNING (Optional) ===' satırını bulur
+            # '# === MACHINE LEARNING (Optional) ===' işaretçisini bul ve o bölümü kaldır, ardından kalan bağımlılıkları yükle
             sed '/# === MACHINE LEARNING (Optional) ===/,$d' requirements.txt | pip install --no-cache-dir -r /dev/stdin
           fi
           # === KOŞULLU YÜKLEME SONU ===
@@ -286,8 +285,7 @@ jobs:
             pip install --no-cache-dir -r requirements.txt
           else
             echo "ML is disabled. Installing core dependencies only..."
-            # ML KAPALIYSA: requirements.txt dosyasındaki ML bölümünü filtrele ve kalanı kur
-            [cite_start]#  dosyasındaki '# === MACHINE LEARNING (Optional) ===' satırını bulur
+            # '# === MACHINE LEARNING (Optional) ===' işaretçisini bul ve o bölümü kaldır, ardından kalan bağımlılıkları yükle
             sed '/# === MACHINE LEARNING (Optional) ===/,$d' requirements.txt | pip install --no-cache-dir -r /dev/stdin
           fi
           # === KOŞULLU YÜKLEME SONU ===
