@@ -20,16 +20,13 @@ if sys.version_info[:2] != REQUIRED_PYTHON and not os.environ.get('SKIP_PYTHON_V
         f"   See README.md for installation instructions."
     )
 
+import sys
+import os
 import asyncio
 import logging
 import argparse
 import time
-import signal
-import yaml  # ← Add this import
 import inspect
-
-# Note: Logging configuration is handled by setup_logger() and setup_debug_logger()
-# Do not use logging.basicConfig() here as it interferes with file logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
@@ -39,8 +36,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from core.production_coordinator import ProductionCoordinator
 from core.ccxt_client import CcxtClient
 from core.notify import Telegram
-from core.state import load_state, save_state
-from core.market_regime import MarketRegimeAnalyzer
 from core.debug_logger import DebugLogger
 from core.system_info import SystemInfoCollector, format_startup_header
 from config.risk_config import RiskConfiguration
@@ -56,7 +51,6 @@ from ml.strategy_optimizer import StrategyOptimizer
 from strategies.adaptive_ob import AdaptiveOversoldBounce
 from strategies.adaptive_str import AdaptiveShortTheRip
 
-# Import logger setup from core
 from core.logger import setup_logger
 
 # Configure logging with file support
@@ -1672,7 +1666,7 @@ class LiveTradingLauncher:
             # Use helper method to safely check WebSocket initialization
             if self._is_ws_initialized():
                 ws_status = await self.ws_optimizer.get_stream_status()
-                logger.info(f"✓ WebSocket optimized: {ws_status['active_streams']} streams active")
+                logger.info(f"✓ WebSocket optimized: {ws_status.get('active_streams', 0)} streams active")
             else:
                 logger.warning("⚠ WebSocket not initialized (will use REST API)")
             
@@ -1822,54 +1816,52 @@ class LiveTradingLauncher:
         
         return False
     
-    async def _start_trading_loop(self, duration: Optional[float] = None) -> None:
-        """
-        Start the main trading loop with WebSocket optimization and connection retry.
-        
-        Args:
-            duration: Optional duration in seconds (None for indefinite)
-        """
-        logger.info("\n" + "="*70)
-        logger.info("STARTING LIVE TRADING")
-        logger.info("="*70)
-        logger.info(f"Mode: {self.mode.upper()}")
-        logger.info(f"Duration: {'Indefinite' if duration is None else f'{duration}s'}")
-        logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
-        logger.info("="*70)
-        
-        # Store health task for cleanup
-        _health_task = None
-        
-        try:
-            # STEP 1: USE EXISTING WS IF ALREADY RUNNING; OTHERWISE TRY TO ESTABLISH
-            ws_connected = False
-            if self._is_ws_initialized():
-                try:
-                    ws_status = await self.ws_optimizer.get_stream_status()
-                    # Accept as connected if either explicit 'running' flag is True or active stream count > 0
-                    if ws_status.get('running') or ws_status.get('active_streams', 0) > 0:
-                        logger.info("WebSocket already initialized and running; skipping re-initialization")
-                        ws_connected = True
-                    else:
-                        logger.info("WebSocket initialized but no active streams; attempting to (re)establish...")
-                        ws_connected = await self._establish_websocket_connection(max_retries=3, timeout=30)
-                except Exception as e:
-                    logger.warning(f"WS status check failed: {e}; attempting to (re)establish...")
-                    ws_connected = await self._establish_websocket_connection(max_retries=3, timeout=30)
-            else:
-                logger.info("WebSocket not initialized; continuing with REST mode")
+        async def _start_trading_loop(self, duration: Optional[float] = None) -> None:
+            """
+            Start the main trading loop with WebSocket optimization and connection retry.
+            
+            Args:
+                duration: Optional duration in seconds (None for indefinite)
+            """
+            logger.info("\n" + "="*70)
+            logger.info("STARTING LIVE TRADING")
+            logger.info("="*70)
+            logger.info(f"Mode: {self.mode.upper()}")
+            logger.info(f"Duration: {'Indefinite' if duration is None else f'{duration}s'}")
+            logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
+            logger.info("="*70)
+            
+            _health_task = None
+            
+            try:
+                # STEP 1: USE EXISTING WS IF ALREADY RUNNING; OTHERWISE TRY TO ESTABLISH
                 ws_connected = False
-                
+                if self._is_ws_initialized():
+                    try:
+                        ws_status = await self.ws_optimizer.get_stream_status()
+                        # Accept as connected if either explicit 'running' flag is True or active stream count > 0
+                        if ws_status.get('running') or ws_status.get('active_streams', 0) > 0:
+                            logger.info("WebSocket already initialized and running; skipping re-initialization")
+                            ws_connected = True
+                        else:
+                            logger.info("WebSocket initialized but no active streams; attempting to (re)establish...")
+                            ws_connected = await self._establish_websocket_connection(max_retries=3, timeout=30)
+                    except Exception as e:
+                        logger.warning(f"WS status check failed: {e}; attempting to (re)establish...")
+                        ws_connected = await self._establish_websocket_connection(max_retries=3, timeout=30)
+                else:
+                    logger.info("WebSocket not initialized; continuing with REST mode")
+                    ws_connected = False
+    
+                # Report final WS status
                 if not ws_connected:
                     logger.warning("=" * 70)
-                    logger.warning("⚠️ WebSocket connection failed after multiple attempts")
+                    logger.warning("⚠️ WebSocket connection unavailable")
                     logger.warning("⚠️ Continuing with REST API mode (reduced real-time data)")
                     logger.warning("=" * 70)
-                    
-                    # Send Telegram notification
                     if self.telegram:
                         self.telegram.send(
-                            "⚠️ <b>WebSocket Connection Failed</b>\n"
+                            "⚠️ <b>WebSocket Unavailable</b>\n"
                             "Trading will continue using REST API\n"
                             "Real-time data may be limited"
                         )
@@ -1877,128 +1869,100 @@ class LiveTradingLauncher:
                     logger.info("=" * 70)
                     logger.info("✅ WEBSOCKET CONNECTED - REAL-TIME DATA STREAMING")
                     logger.info("=" * 70)
-            else:
-                logger.info("WebSocket: ❌ DISABLED or NOT INITIALIZED")
-            
-            # ========================================
-            # STEP 2: SEND STARTUP NOTIFICATION
-            # ========================================
-            if self.telegram:
-                ws_info = "WebSocket CONNECTED ✅" if ws_connected else "REST API mode (WebSocket unavailable)"
+    
+                # STEP 2: SEND STARTUP NOTIFICATION
+                if self.telegram:
+                    ws_info = "WebSocket CONNECTED ✅" if ws_connected else "REST API mode (WebSocket unavailable)"
+                    self.telegram.send(
+                        f"🚀 <b>LIVE TRADING STARTED</b>\n"
+                        f"Mode: {self.mode.upper()}\n"
+                        f"Capital: {self.CAPITAL_USDT} USDT\n"
+                        f"Exchange: BingX\n"
+                        f"Pairs: {len(self.TRADING_PAIRS)}\n"
+                        f"Data: {ws_info}\n"
+                        f"Max Position: {self.RISK_PARAMS['max_position_size']:.1%}\n"
+                        f"Stop Loss: {self.RISK_PARAMS['stop_loss_pct']:.1%}\n"
+                        f"Take Profit: {self.RISK_PARAMS['take_profit_pct']:.1%}"
+                    )
                 
-                self.telegram.send(
-                    f"🚀 <b>LIVE TRADING STARTED</b>\n"
-                    f"Mode: {self.mode.upper()}\n"
-                    f"Capital: {self.CAPITAL_USDT} USDT\n"
-                    f"Exchange: BingX\n"
-                    f"Pairs: {len(self.TRADING_PAIRS)}\n"
-                    f"Data: {ws_info}\n"
-                    f"Max Position: {self.RISK_PARAMS['max_position_size']:.1%}\n"
-                    f"Stop Loss: {self.RISK_PARAMS['stop_loss_pct']:.1%}\n"
-                    f"Take Profit: {self.RISK_PARAMS['take_profit_pct']:.1%}"
-                )
-            
-            # ========================================
-            # STEP 3: ACTIVATE TRADING SYSTEMS
-            # ========================================
-            logger.info("\n" + "="*70)
-            logger.info("🚀 ACTIVATING TRADING SYSTEMS")
-            logger.info("="*70)
-            
-            # 3.1: Activate Production Coordinator
-            self.coordinator.is_running = True
-            logger.info("✅ Production coordinator activated (is_running = True)")
-            
-            # 3.2: Start LiveTradingEngine (sets state = RUNNING)
-            if self.coordinator.trading_engine:
-                start_result = await self.coordinator.trading_engine.start_live_trading(mode=self.mode)
-                if not start_result.get('success'):
-                    logger.error(f"❌ Failed to start trading engine: {start_result.get('reason')}")
+                # STEP 3: ACTIVATE TRADING SYSTEMS
+                logger.info("\n" + "="*70)
+                logger.info("🚀 ACTIVATING TRADING SYSTEMS")
+                logger.info("="*70)
+                
+                self.coordinator.is_running = True
+                logger.info("✅ Production coordinator activated (is_running = True)")
+                
+                if self.coordinator.trading_engine:
+                    start_result = await self.coordinator.trading_engine.start_live_trading(mode=self.mode)
+                    if not start_result.get('success'):
+                        logger.error(f"❌ Failed to start trading engine: {start_result.get('reason')}")
+                        return
+                    logger.info("✅ Trading engine started (state = RUNNING)")
+                    logger.info(f"   - Active tasks: {start_result.get('active_tasks', 0)}")
+                    logger.info(f"   - Mode: {start_result.get('mode', 'unknown')}")
+                else:
+                    logger.error("❌ Trading engine not available")
                     return
-                logger.info("✅ Trading engine started (state = RUNNING)")
-                logger.info(f"   - Active tasks: {start_result.get('active_tasks', 0)}")
-                logger.info(f"   - Mode: {start_result.get('mode', 'unknown')}")
-            else:
-                logger.error("❌ Trading engine not available")
-                return
-            
-            # 3.3: Start health monitoring (if enabled)
-            if self.health_monitor:
-                _health_task = asyncio.create_task(
-                    self.health_monitor.start_monitoring()
+                
+                # 3.3: Start health monitoring (if enabled)
+                if self.health_monitor:
+                    # Use the task returned by start_monitoring (avoid wrapping with create_task again)
+                    _health_task = await self.health_monitor.start_monitoring()
+                    logger.info("✅ Health monitor started in background")
+                
+                # STEP 4: RUN PRODUCTION LOOP
+                logger.info("\n" + "="*70)
+                logger.info("🚀 STARTING PRODUCTION LOOP")
+                logger.info("="*70)
+                logger.info("🔍 [LAUNCHER-DEBUG] About to call coordinator.run_production_loop()")
+                
+                if self.coordinator is None:
+                    logger.critical("❌ [LAUNCHER-DEBUG] coordinator is None! Cannot proceed!")
+                    raise RuntimeError("Coordinator is None - initialization failed")
+                
+                logger.info(f"🔍 [LAUNCHER-DEBUG] coordinator type: {type(self.coordinator)}")
+                logger.info(f"🔍 [LAUNCHER-DEBUG] coordinator.is_running: {self.coordinator.is_running}")
+                logger.info(f"🔍 [LAUNCHER-DEBUG] coordinator.is_initialized: {self.coordinator.is_initialized}")
+                logger.info(f"🔍 [LAUNCHER-DEBUG] Parameters: mode={self.mode}, duration={duration}, continuous={self.infinite}")
+                
+                if not hasattr(self.coordinator, 'run_production_loop'):
+                    logger.critical("❌ [LAUNCHER-DEBUG] coordinator has no run_production_loop method!")
+                    raise RuntimeError("Coordinator missing run_production_loop method")
+                
+                await self.coordinator.run_production_loop(
+                    mode=self.mode,
+                    duration=duration,
+                    continuous=self.infinite
                 )
-                logger.info("✅ Health monitor started in background")
-            
-            # ========================================
-            # STEP 4: RUN PRODUCTION LOOP
-            # ========================================
-            logger.info("\n" + "="*70)
-            logger.info("🚀 STARTING PRODUCTION LOOP")
-            logger.info("="*70)
-            
-            # ✅ DEBUG: Log before calling run_production_loop
-            logger.info(f"🔍 [LAUNCHER-DEBUG] About to call coordinator.run_production_loop()")
-            
-            # Check if coordinator exists
-            if self.coordinator is None:
-                logger.critical("❌ [LAUNCHER-DEBUG] coordinator is None! Cannot proceed!")
-                raise RuntimeError("Coordinator is None - initialization failed")
-            
-            logger.info(f"🔍 [LAUNCHER-DEBUG] coordinator type: {type(self.coordinator)}")
-            logger.info(f"🔍 [LAUNCHER-DEBUG] coordinator.is_running: {self.coordinator.is_running}")
-            logger.info(f"🔍 [LAUNCHER-DEBUG] coordinator.is_initialized: {self.coordinator.is_initialized}")
-            logger.info(f"🔍 [LAUNCHER-DEBUG] Parameters: mode={self.mode}, duration={duration}, continuous={self.infinite}")
-            
-            # Use coordinator's production loop (handles duration internally)
-            logger.info("🔍 [LAUNCHER-DEBUG] Calling await coordinator.run_production_loop()...")
-            
-            # ✅ CRITICAL: Ensure we're calling the right method
-            if not hasattr(self.coordinator, 'run_production_loop'):
-                logger.critical("❌ [LAUNCHER-DEBUG] coordinator has no run_production_loop method!")
-                raise RuntimeError("Coordinator missing run_production_loop method")
-            
-            await self.coordinator.run_production_loop(
-                mode=self.mode,
-                duration=duration,
-                continuous=self.infinite
-            )
-            logger.info("🔍 [LAUNCHER-DEBUG] coordinator.run_production_loop() RETURNED")
-            
-        except KeyboardInterrupt:
-            logger.info("\n⚠️ Keyboard interrupt received - initiating shutdown...")
-            raise  # Re-raise to be caught by main()
-            
-        except Exception as e:
-            logger.error(f"❌ Critical error in trading loop: {e}", exc_info=True)
-            if self.health_monitor:
-                self.health_monitor.record_error(str(e))
-            raise  # Re-raise to be caught by main()
-        
-        finally:
-            # ========================================
-            # CLEANUP: STOP ALL SYSTEMS
-            # ========================================
-            
-            # Stop health monitor
-            if self.health_monitor:
-                try:
-                    await self.health_monitor.stop_monitoring()
-                except Exception as e:
-                    logger.error(f"Error stopping health monitor: {e}")
-            
-            # Cancel health task if still running
-            if _health_task and not _health_task.done():
-                _health_task.cancel()
-                try:
-                    await _health_task
-                except asyncio.CancelledError:
-                    pass
-            
-            # Graceful shutdown
-            logger.info("\n" + "="*70)
-            logger.info("INITIATING GRACEFUL SHUTDOWN")
-            logger.info("="*70)
-            await self.cleanup()
+                logger.info("🔍 [LAUNCHER-DEBUG] coordinator.run_production_loop() RETURNED")
+                
+            except KeyboardInterrupt:
+                logger.info("\n⚠️ Keyboard interrupt received - initiating shutdown...")
+                raise
+            except Exception as e:
+                logger.error(f"❌ Critical error in trading loop: {e}", exc_info=True)
+                if self.health_monitor:
+                    self.health_monitor.record_error(str(e))
+                raise
+            finally:
+                if self.health_monitor:
+                    try:
+                        await self.health_monitor.stop_monitoring()
+                    except Exception as e:
+                        logger.error(f"Error stopping health monitor: {e}")
+                
+                if _health_task and not _health_task.done():
+                    _health_task.cancel()
+                    try:
+                        await _health_task
+                    except asyncio.CancelledError:
+                        pass
+                
+                logger.info("\n" + "="*70)
+                logger.info("INITIATING GRACEFUL SHUTDOWN")
+                logger.info("="*70)
+                await self.cleanup()
     
     async def _monitor_websocket_health(self):
         """
@@ -2576,8 +2540,7 @@ Examples:
         
         # Run launcher
         exit_code = await launcher.run(duration=args.duration)
-        
-        logger.info("✅ Trading completed successfully")
+        logger.info("✅ Trading completed successfully" if exit_code == 0 else f"⚠️ Trading exited with code {exit_code}")
     
     except KeyboardInterrupt:
         logger.warning("⚠️ Interrupted by user (Ctrl+C)")
