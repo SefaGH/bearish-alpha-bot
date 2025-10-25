@@ -63,6 +63,68 @@ class MarketDataPipeline:
         
         logger.info(f"🔄 MarketDataPipeline initialized with {len(exchanges)} exchanges: {list(exchanges.keys())}")
     
+    async def prime_data_buffers_async(self, symbols: List[str], timeframes: List[str]):
+        """
+        Asynchronously fetches historical data for all symbols and timeframes to prime the data buffers.
+        This is called at startup to prevent "Insufficient data" errors for indicators.
+        """
+        logger.info(f"[PRIME] Starting historical data priming for {len(symbols)} symbols and {len(timeframes)} timeframes.")
+        
+        tasks = []
+        # We need enough data for indicators like EMA(200)
+        limit = self.config.get('indicators', {}).get('ema_slow', 200) + 50  # 250 bars
+
+        for symbol in symbols:
+            for timeframe in timeframes:
+                # Assuming the first available exchange is the primary one for fetching.
+                # A more complex logic could try multiple exchanges.
+                exchange_name = next(iter(self.exchanges.keys()), None)
+                if not exchange_name:
+                    logger.error("[PRIME] No exchanges available to prime data.")
+                    continue
+                
+                client = self.exchanges[exchange_name]
+                tasks.append(self._fetch_and_store_async(client, exchange_name, symbol, timeframe, limit))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        success_count = sum(1 for r in results if isinstance(r, bool) and r)
+        failure_count = len(results) - success_count
+        
+        logger.info(f"[PRIME] Historical data priming complete. Success: {success_count}, Failures: {failure_count}")
+        if failure_count > 0:
+            logger.warning("[PRIME] Some symbols/timeframes failed to load historical data. This may affect initial signal generation.")
+
+    async def _fetch_and_store_async(self, client: CcxtClient, exchange_name: str, symbol: str, timeframe: str, limit: int) -> bool:
+        """Helper to fetch and store data for a single symbol/timeframe asynchronously."""
+        try:
+            self.total_requests += 1
+            
+            # Fetch OHLCV data
+            ohlcv_data = await asyncio.to_thread(client.ohlcv, symbol, timeframe, limit)
+            
+            if not ohlcv_data:
+                logger.warning(f"⚠️ [PRIME] Empty data for {symbol} {timeframe} from {exchange_name}")
+                self.failed_requests += 1
+                return False
+
+            # Convert to DataFrame
+            df = self._ohlcv_to_dataframe(ohlcv_data)
+            
+            # Add indicators
+            df = add_indicators(df, self.config.get('indicators'))
+            
+            # Store data
+            self._store_data(exchange_name, symbol, timeframe, df)
+            
+            logger.info(f"✅ [PRIME] Loaded {len(df)} historical candles for {exchange_name} {symbol} {timeframe}")
+            return True
+            
+        except Exception as e:
+            self.failed_requests += 1
+            logger.error(f"❌ [PRIME] Failed to fetch {symbol} {timeframe} on {exchange_name}: {e}")
+            return False
+
     def start_feeds(self, symbols: List[str], timeframes: List[str] = ['30m', '1h']) -> Dict[str, Any]:
         """
         Start data feeds for specified symbols and timeframes.
