@@ -231,8 +231,8 @@ class LiveTradingEngine:
             
             # Initialize Phase 3 components
             logger.info("\n[Phase 3.1] Initializing WebSocket connections...")
-            if self.ws_manager:
-                logger.info("  ✓ WebSocket manager ready")
+            if self.market_data_pipeline and self.market_data_pipeline.websocket_manager:
+                logger.info("  ✓ WebSocket manager ready (via MarketDataPipeline)")
             else:
                 logger.warning("  ⚠️  No WebSocket manager - real-time data disabled")
             
@@ -807,8 +807,8 @@ class LiveTradingEngine:
     def get_websocket_stats(self):
         """Get comprehensive WebSocket statistics."""
         stats = self.ws_stats.copy()
-        if self.ws_manager:
-            stats['connection_health'] = self.ws_manager.get_connection_health()
+        if self.market_data_pipeline and self.market_data_pipeline.websocket_manager:
+            stats['connection_health'] = self.market_data_pipeline.websocket_manager.get_connection_health()
         total = stats['websocket_fetches'] + stats['rest_fetches']
         stats['websocket_usage_ratio'] = (stats['websocket_fetches'] / total * 100) if total > 0 else 0.0
         if stats['avg_latency_rest'] > 0 and stats['avg_latency_ws'] > 0:
@@ -888,9 +888,10 @@ class LiveTradingEngine:
             Current price or None if unavailable
         """
         # Try WebSocket first
-        if self.ws_manager:
+        if self.market_data_pipeline and self.market_data_pipeline.websocket_manager:
             try:
-                ws_data = self.ws_manager.get_latest_data(symbol, '1m')
+                # Doğrudan pipeline'daki manager'ı kullan
+                ws_data = self.market_data_pipeline.websocket_manager.get_latest_data(symbol, '1m')
                 if ws_data and ws_data.get('ohlcv'):
                     latest_candle = ws_data['ohlcv'][-1]
                     return float(latest_candle[4])  # Close price
