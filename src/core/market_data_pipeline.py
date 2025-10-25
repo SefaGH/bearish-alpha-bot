@@ -117,6 +117,10 @@ class MarketDataPipeline:
             df = add_indicators(df, self.config.get('indicators'))
             
             # Store data
+            self._store_data(exchange_name, symbol, timeframe, df)
+        
+            logger.info(f"✅ [PRIME] Loaded {len(df)} historical candles for {exchange_name} {symbol} {timeframe}")
+            
             # YENİ BLOK: Çekilen veriyi WebSocketManager'ın önbelleğine aktar.
             if self.websocket_manager and hasattr(self.websocket_manager, 'collector'):
                 # CCXT sembol formatını ('BTC/USDT') WebSocket formatına ('BTC/USDT:USDT') çevir.
