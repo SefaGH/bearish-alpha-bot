@@ -26,7 +26,7 @@ import argparse
 import time
 import inspect
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Anyy
+from typing import Dict, List, Optional, Any
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -1594,7 +1594,7 @@ class LiveTradingLauncher:
             # Check 1: Exchange connectivity
             logger.info("Check 1/7: Exchange connectivity...")
             try:
-                ticker = self.exchange_clients['bingx'].ticker('BTC/USDT:USDT')
+                ticker = self.exchange_clients['bingx'].fetch_ticker('BTC/USDT:USDT')
                 logger.info(f"✓ BTC/USDT:USDT price: ${ticker.get('last', 0):.2f}")
             except Exception as e:
                 logger.error(f"❌ Exchange connectivity failed: {e}")
