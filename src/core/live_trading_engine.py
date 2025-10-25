@@ -89,8 +89,8 @@ class LiveTradingEngine:
     """Production-ready live trading execution engine with enhanced debugging."""
     
     def __init__(self, mode='paper', portfolio_manager=None, risk_manager=None,
-                 websocket_manager=None, exchange_clients=None, strategy_coordinator: Optional['StrategyCoordinator'] = None,
-                 market_data_pipeline: Optional[Any] = None): # YENİ PARAMETRE
+                 exchange_clients=None, strategy_coordinator: Optional['StrategyCoordinator'] = None,
+                 market_data_pipeline: Optional[Any] = None):
         """
         Initialize live trading engine.
         
@@ -98,8 +98,9 @@ class LiveTradingEngine:
             mode: Trading mode ('paper', 'live', 'simulation')
             portfolio_manager: PortfolioManager from Phase 3.3
             risk_manager: RiskManager from Phase 3.2
-            websocket_manager: WebSocketManager from Phase 3.1
             exchange_clients: Dict of exchange client instances from Phase 1
+            strategy_coordinator: StrategyCoordinator instance
+            market_data_pipeline: MarketDataPipeline instance with an active websocket_manager
         """
         # VALIDATION EKLENDİ ✅
         if exchange_clients is not None and not isinstance(exchange_clients, dict):
@@ -107,21 +108,29 @@ class LiveTradingEngine:
             
         self.portfolio_manager = portfolio_manager
         self.risk_manager = risk_manager
-        self.ws_manager = websocket_manager
+        # self.ws_manager artık kullanılmıyor, kaldırıldı.
         self.exchange_clients = exchange_clients or {}
-
-        # Coordinator reference (assigned lazily when running under ProductionCoordinator)
-        self.strategy_coordinator: Optional['StrategyCoordinator'] = strategy_coordinator
-        self.market_data_pipeline = market_data_pipeline # YENİ ATAMA
+    
+        # Coordinator ve Pipeline referansları
+        self.strategy_coordinator = strategy_coordinator
+        self.market_data_pipeline = market_data_pipeline
         
-        # Initialize sub-managers
+        # Initialize sub-managers (YENİ VE GÜVENLİ YOL)
         self.order_manager = SmartOrderManager(risk_manager, exchange_clients)
-        self.position_manager = AdvancedPositionManager(portfolio_manager, risk_manager, websocket_manager)
+        self.position_manager = AdvancedPositionManager(
+            portfolio_manager, 
+            risk_manager, 
+            self.market_data_pipeline.websocket_manager if self.market_data_pipeline else None
+        )
         self.execution_analytics = ExecutionAnalytics(self.order_manager, self.position_manager)
         
         # Engine state
         self.state = EngineState.STOPPED
-        self.mode = TradingMode.PAPER
+        try:
+            self.mode = TradingMode(mode)
+        except ValueError:
+            logger.warning(f"Invalid trading mode '{mode}', defaulting to 'paper'.")
+            self.mode = TradingMode.PAPER
         
         # Signal queue
         self.signal_queue = asyncio.Queue()
