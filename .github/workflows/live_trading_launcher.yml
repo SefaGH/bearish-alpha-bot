@@ -24,6 +24,12 @@ on:
         type: string
         default: ''
 
+      enable_ml:
+        description: 'Enable ML (Installs torch, scikit-learn, etc.)'
+        required: true
+        default: false
+        type: boolean  
+
       dry_run:
         description: 'Dry run mode (pre-flight checks only)'
         required: true
