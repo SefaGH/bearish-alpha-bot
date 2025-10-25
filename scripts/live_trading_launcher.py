@@ -543,7 +543,7 @@ class OptimizedWebSocketManager:
                 return False
     
             # === Stage 2: Collector data verification (multi-TF, retry) ===
-                        timeframes = self._parse_stream_timeframes()
+            timeframes = self._parse_stream_timeframes()
                 if isinstance(self.config, dict) else ["1m", "5m", "30m", "1h", "4h"]
             )
     
