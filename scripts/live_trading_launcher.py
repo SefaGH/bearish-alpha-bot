@@ -1497,74 +1497,53 @@ class LiveTradingLauncher:
         logger.info("\n[6/8] Initializing Production Trading System...")
         
         try:
-            # ✅ FIX 5: Load config using unified loader
+            # 1. Gerekli config'i hazırla
             if not self.config:
-                from config.live_trading_config import LiveTradingConfiguration
-                self.config = LiveTradingConfiguration.load(log_summary=False)
-            
-            # Create ProductionCoordinator
-            from core.production_coordinator import ProductionCoordinator
-            self.coordinator = ProductionCoordinator()
-            
-            # ✅ FIX 5: Initialize WebSocket with proper subscription
-            logger.info("[WS] Setting up WebSocket optimization...")
-            self.ws_optimizer.setup_from_config(self.config)
-            
-            # Initialize AND subscribe to symbols
-            logger.info(f"[WS] Initializing WebSocket for {len(self.TRADING_PAIRS)} symbols...")
-            ws_success = await self.ws_optimizer.initialize_and_subscribe(
-                self.exchange_clients,
-                self.TRADING_PAIRS  # Pass the actual symbols!
-            )
-            
-            if ws_success:
-                logger.info("✅ [WS] WebSocket initialized and streaming data")
-                # Attach to coordinator
-                self.coordinator.websocket_manager = self.ws_optimizer.ws_manager
-                
-                # Log streaming status
-                status = await self.ws_optimizer.get_stream_status()
-                logger.info(f"✅ [WS] Stream status: {status}")
-            else:
-                logger.warning("⚠️ [WS] WebSocket initialization failed - using REST API fallback")
-                logger.warning("⚠️ [WS] Real-time data will be limited")
-                # Continue without WebSocket (REST fallback)
-            
-            # Portfolio config
+                self._load_config()
+    
             portfolio_config = {
                 'equity_usd': self.CAPITAL_USDT,
                 'max_portfolio_risk': self.RISK_PARAMS['max_portfolio_risk'],
                 'max_position_size': self.RISK_PARAMS['max_position_size'],
                 'max_drawdown': self.RISK_PARAMS['max_drawdown']
             }
-            
-            # Initialize production system
+    
+            # 2. ProductionCoordinator'ı oluştur
+            from core.production_coordinator import ProductionCoordinator
+            self.coordinator = ProductionCoordinator()
+    
+            # ÖNEMLİ: WebSocket Optimizer'ı ve içindeki manager'ı burada oluşturup coordinator'a ver.
+            # Bu, referansın kaybolmasını engeller.
+            self.ws_optimizer.setup_from_config(self.config)
+            ws_success = await self.ws_optimizer.initialize_and_subscribe(
+                self.exchange_clients,
+                self.TRADING_PAIRS
+            )
+    
+            if not ws_success:
+                 logger.warning("⚠️ [WS] WebSocket initialization failed - using REST API fallback")
+    
+            # 3. Tüm sistemi ProductionCoordinator üzerinden başlat.
+            # Coordinator'a, dışarıda oluşturulan WebSocketManager'ı veriyoruz.
             init_result = await self.coordinator.initialize_production_system(
                 exchange_clients=self.exchange_clients,
                 portfolio_config=portfolio_config,
                 mode=self.mode,
-                trading_symbols=self.TRADING_PAIRS
+                trading_symbols=self.TRADING_PAIRS,
+                # BU SATIR EN ÖNEMLİSİ: Dışarıda oluşturulan ve çalışan WS Manager'ı veriyoruz.
+                websocket_manager=self.ws_optimizer.ws_manager if ws_success else None
             )
-            
-            if not init_result['success']:
-                logger.error(f"❌ Failed: {init_result.get('reason')}")
+    
+            if not init_result.get('success'):
+                logger.error(f"❌ Production system initialization failed: {init_result.get('reason')}")
                 return False
-            
-            # Active symbols fallback
-            if hasattr(self.coordinator, 'active_symbols'):
-                if not self.coordinator.active_symbols:
-                    self.coordinator.active_symbols = self.trading_pairs
-                    logger.info(f"✓ Fallback: Configured with {len(self.trading_pairs)} symbols")
-            
+    
             logger.info("✓ Production system initialized")
-            logger.info(f"  Components: {init_result['components']}")
-            
+            logger.info(f"  Components: {init_result.get('components', [])}")
             return True
-            
+    
         except Exception as e:
-            logger.error(f"❌ Failed to initialize: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.error(f"❌ Failed to initialize production system: {e}", exc_info=True)
             return False
     
     async def _register_strategies(self) -> bool:
