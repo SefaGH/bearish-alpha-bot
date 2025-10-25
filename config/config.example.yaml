@@ -97,6 +97,13 @@ websocket:
 # TRADING UNIVERSE
 # ==============================================================================
 universe:
+  # NEW: Configuration for pre-fetching historical data at startup
+  prefetch:
+    enabled: true
+    # Number of candles to fetch at startup for strategy analysis.
+    # At least 250 is recommended for indicators like EMA(200) to calculate correctly.
+    startup_candle_count: 500
+
   # Fixed symbol list - ONLY THESE WILL BE TRADED
   # Override with TRADING_SYMBOLS environment variable (comma-separated)
   fixed_symbols:
@@ -418,4 +425,3 @@ ml:
     include_technical: true             # Include technical indicators
     include_volume: true                # Include volume features
     include_sentiment: false            # Include sentiment data (if available)
-
