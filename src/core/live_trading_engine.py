@@ -89,7 +89,8 @@ class LiveTradingEngine:
     """Production-ready live trading execution engine with enhanced debugging."""
     
     def __init__(self, mode='paper', portfolio_manager=None, risk_manager=None,
-                 websocket_manager=None, exchange_clients=None, strategy_coordinator: Optional['StrategyCoordinator'] = None):
+                 websocket_manager=None, exchange_clients=None, strategy_coordinator: Optional['StrategyCoordinator'] = None,
+                 market_data_pipeline: Optional[Any] = None): # YENİ PARAMETRE
         """
         Initialize live trading engine.
         
@@ -111,6 +112,7 @@ class LiveTradingEngine:
 
         # Coordinator reference (assigned lazily when running under ProductionCoordinator)
         self.strategy_coordinator: Optional['StrategyCoordinator'] = strategy_coordinator
+        self.market_data_pipeline = market_data_pipeline # YENİ ATAMA
         
         # Initialize sub-managers
         self.order_manager = SmartOrderManager(risk_manager, exchange_clients)
@@ -748,33 +750,36 @@ class LiveTradingEngine:
     async def _prefetch_historical_data(self):
         """
         Prefetches historical data by delegating the task to the MarketDataPipeline.
-        This ensures indicators have sufficient data for calculation from the start.
         """
         try:
-            # The coordinator holds all the main components.
-            if not self.strategy_coordinator or not hasattr(self.strategy_coordinator, 'market_data_pipeline'):
-                logger.error("[PREFETCH] MarketDataPipeline not found via coordinator. Cannot prefetch data.")
+            # Artık doğrudan kendi pipeline nesnesini kullanıyor.
+            if not self.market_data_pipeline:
+                logger.error("[PREFETCH] MarketDataPipeline not available to LiveTradingEngine. Cannot prefetch data.")
                 return
-
-            pipeline = self.strategy_coordinator.market_data_pipeline
-            
+    
             # Get symbols and timeframes from the central config.
             symbols = self.config.get('universe', {}).get('fixed_symbols', [])
-            timeframes = self.config.get('websocket', {}).get('stream_timeframes', [])
-
+            timeframes_str = self.config.get('websocket', {}).get('stream_timeframes', '1m,5m,30m,1h,4h')
+            
+            # Timeframe'leri doğru formatta parse et
+            if isinstance(timeframes_str, list):
+                timeframes = [item.strip() for sublist in (tf.split(',') for tf in timeframes_str) for item in sublist]
+            else:
+                timeframes = [tf.strip() for tf in timeframes_str.split(',')]
+    
             if not symbols or not timeframes:
                 logger.warning("[PREFETCH] No symbols or timeframes configured to prefetch.")
                 return
-
-            logger.info(f"[PREFETCH] Delegating historical data prefetch to MarketDataPipeline...")
+    
+            logger.info(f"[PREFETCH] Delegating historical data prefetch to MarketDataPipeline for {len(symbols)} symbols...")
             
-            # Call the new method in the pipeline to do the actual work.
-            await pipeline.prime_data_buffers_async(symbols, timeframes)
+            # Doğrudan kendi pipeline nesnesindeki metodu çağır.
+            await self.market_data_pipeline.prime_data_buffers_async(symbols, timeframes)
             
             logger.info("[PREFETCH] Delegation to MarketDataPipeline complete.")
         
         except Exception as e:
-            logger.error(f"[PREFETCH] Fatal error during historical data prefetch delegation: {e}", exc_info=True)
+            logger.error(f"[PREFETCH] Fatal error during historical data prefetch: {e}", exc_info=True)
             logger.warning("[PREFETCH] Continuing without pre-fetched data. Signal generation may be delayed.")
     
     def _determine_default_exchange(self, symbol: str) -> Optional[str]:
