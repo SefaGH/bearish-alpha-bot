@@ -747,82 +747,35 @@ class LiveTradingEngine:
     
     async def _prefetch_historical_data(self):
         """
-        Prefetch historical OHLCV data for all symbols before starting signal generation.
-        
-        This ensures indicators have sufficient data for calculation from the start,
-        preventing the "cold start" problem where no signals are generated due to
-        insufficient bars for RSI/ATR/EMA calculations.
-        
-        Critical for short sessions (<30 min) where WebSocket accumulation is too slow.
-        
-        Note: Symbols must be set via _cached_symbols by ProductionCoordinator before
-        calling this method. This dependency is established during the initialization
-        of the production system when ProductionCoordinator.initialize_production_system()
-        creates the engine and directly assigns active_symbols to engine._cached_symbols.
+        Prefetches historical data by delegating the task to the MarketDataPipeline.
+        This ensures indicators have sufficient data for calculation from the start.
         """
         try:
-            # Use cached symbols that should be set by ProductionCoordinator
-            symbols = self._cached_symbols or []
-            
-            if not symbols:
-                logger.warning("[PREFETCH] No symbols to prefetch (no symbols configured)")
-                logger.warning("[PREFETCH] Symbols should be set by ProductionCoordinator via _cached_symbols")
+            # The coordinator holds all the main components.
+            if not self.strategy_coordinator or not hasattr(self.strategy_coordinator, 'market_data_pipeline'):
+                logger.error("[PREFETCH] MarketDataPipeline not found via coordinator. Cannot prefetch data.")
                 return
+
+            pipeline = self.strategy_coordinator.market_data_pipeline
             
-            logger.info(f"[PREFETCH] Fetching historical data for {len(symbols)} symbols...")
-            logger.info(f"[PREFETCH] Symbols: {', '.join(symbols)}")
+            # Get symbols and timeframes from the central config.
+            symbols = self.config.get('universe', {}).get('fixed_symbols', [])
+            timeframes = self.config.get('websocket', {}).get('stream_timeframes', [])
+
+            if not symbols or not timeframes:
+                logger.warning("[PREFETCH] No symbols or timeframes configured to prefetch.")
+                return
+
+            logger.info(f"[PREFETCH] Delegating historical data prefetch to MarketDataPipeline...")
             
-            prefetch_count = 0
-            failed_count = 0
+            # Call the new method in the pipeline to do the actual work.
+            await pipeline.prime_data_buffers_async(symbols, timeframes)
             
-            for symbol in symbols:
-                try:
-                    logger.debug(f"[PREFETCH] Fetching {symbol}...")
-                    
-                    # Fetch historical data for all required timeframes
-                    # Using 200 bars to ensure sufficient data for all indicators
-                    df_30m = self._get_ohlcv_with_priority(symbol, '30m', limit=200)
-                    df_1h = self._get_ohlcv_with_priority(symbol, '1h', limit=200)
-                    df_4h = self._get_ohlcv_with_priority(symbol, '4h', limit=200)
-                    
-                    # Check if we got sufficient data
-                    if df_30m is not None and len(df_30m) >= 14:
-                        prefetch_count += 1
-                        bars_30m = len(df_30m)
-                        bars_1h = len(df_1h) if df_1h is not None else 0
-                        bars_4h = len(df_4h) if df_4h is not None else 0
-                        
-                        logger.info(f"  ✓ {symbol}: {bars_30m} bars (30m), {bars_1h} bars (1h), {bars_4h} bars (4h)")
-                        
-                        # Verify indicators can be calculated
-                        if bars_30m < 14:
-                            logger.warning(f"  ⚠️ {symbol}: Insufficient bars for RSI/ATR ({bars_30m} < 14)")
-                    else:
-                        failed_count += 1
-                        bar_count = len(df_30m) if df_30m is not None else 0
-                        logger.warning(f"  ❌ {symbol}: Insufficient data - only {bar_count} bars")
-                
-                except Exception as e:
-                    failed_count += 1
-                    logger.error(f"  ❌ {symbol}: Prefetch failed - {e}")
-                
-                # Small delay to avoid rate limiting
-                await asyncio.sleep(0.05)
-            
-            logger.info("")
-            logger.info(f"[PREFETCH] Complete: {prefetch_count} success, {failed_count} failed out of {len(symbols)} symbols")
-            
-            if prefetch_count == 0:
-                logger.error("[PREFETCH] ⚠️ WARNING: No symbols have sufficient historical data!")
-                logger.error("[PREFETCH] Signal generation may be delayed or impossible in short sessions.")
-            elif failed_count > 0:
-                logger.warning(f"[PREFETCH] ⚠️ {failed_count} symbols failed to prefetch - may have delayed signal generation")
-            else:
-                logger.info("[PREFETCH] ✅ All symbols ready for signal generation with full indicator data")
+            logger.info("[PREFETCH] Delegation to MarketDataPipeline complete.")
         
         except Exception as e:
-            logger.error(f"[PREFETCH] Fatal error during historical data prefetch: {e}", exc_info=True)
-            logger.warning("[PREFETCH] Continuing anyway - signal generation may be delayed")
+            logger.error(f"[PREFETCH] Fatal error during historical data prefetch delegation: {e}", exc_info=True)
+            logger.warning("[PREFETCH] Continuing without pre-fetched data. Signal generation may be delayed.")
     
     def _determine_default_exchange(self, symbol: str) -> Optional[str]:
         """Determine default exchange for a generated signal."""
@@ -836,77 +789,7 @@ class LiveTradingEngine:
             return next(iter(self.exchange_clients.keys()))
 
         return self.config.get('execution', {}).get('default_exchange')
-
-    def _get_ohlcv_with_priority(self, symbol: str, timeframe: str, limit: int = 100):
-        """
-        Get OHLCV data with WebSocket priority and REST fallback.
-        
-        Logic:
-        1. Try WebSocket if enabled and available
-        2. Check data freshness via ws_manager.is_data_fresh()
-        3. Validate data has enough candles (>= limit)
-        4. Record metrics (latency, success)
-        5. Fallback to REST if WebSocket fails
-        6. Return pandas DataFrame with OHLCV
-        """
-        start_time = time.time()
-        
-        # Try WebSocket first
-        if self.ws_config['priority_enabled'] and self.ws_manager:
-            try:
-                if self.ws_manager.is_data_fresh(symbol, timeframe, self.ws_config['max_data_age_seconds']):
-                    ws_data = self.ws_manager.get_latest_data(symbol, timeframe)
-                    if ws_data and 'ohlcv' in ws_data and len(ws_data['ohlcv']) >= limit:
-                        latency = (time.time() - start_time) * 1000
-                        self._record_ws_fetch(latency, success=True)
-                        logger.debug(f"📡 [WS-DATA] {symbol} {timeframe} - {len(ws_data['ohlcv'])} candles, {latency:.1f}ms")
-                        return pd.DataFrame(ws_data['ohlcv'][-limit:], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            except Exception as e:
-                logger.debug(f"WebSocket fetch failed: {e}")
-                self._record_ws_fetch(0, success=False)
-        
-        # Fallback to REST
-        logger.debug(f"🌐 [REST-DATA] {symbol} {timeframe}")
-        return self._fetch_ohlcv_rest(symbol, timeframe, limit, start_time)
-
-    def _fetch_ohlcv_rest(self, symbol: str, timeframe: str, limit: int, start_time: float):
-        """Fetch OHLCV from REST with metrics."""
-        for exchange_name, client in self.exchange_clients.items():
-            try:
-                ohlcv = client.ohlcv(symbol, timeframe, limit=limit)
-                latency = (time.time() - start_time) * 1000
-                self._record_rest_fetch(latency, success=True)
-                logger.debug(f"🌐 [REST-SUCCESS] {symbol} - {latency:.1f}ms")
-                return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            except Exception as e:
-                logger.error(f"REST fetch failed: {e}")
-                self._record_rest_fetch(0, success=False)
-        return None
-
-    def _record_ws_fetch(self, latency_ms: float, success: bool):
-        """Record WebSocket fetch metrics."""
-        if success:
-            self.ws_stats['websocket_fetches'] += 1
-            self.ws_stats['total_latency_ws'] += latency_ms
-            self.ws_stats['avg_latency_ws'] = self.ws_stats['total_latency_ws'] / self.ws_stats['websocket_fetches']
-            self.ws_stats['last_ws_fetch_time'] = time.time()
-            self.ws_stats['consecutive_ws_failures'] = 0
-        else:
-            self.ws_stats['websocket_failures'] += 1
-            self.ws_stats['consecutive_ws_failures'] += 1
-        
-        total = self.ws_stats['websocket_fetches'] + self.ws_stats['websocket_failures']
-        if total > 0:
-            self.ws_stats['websocket_success_rate'] = (self.ws_stats['websocket_fetches'] / total * 100)
-
-    def _record_rest_fetch(self, latency_ms: float, success: bool):
-        """Record REST fetch metrics."""
-        if success:
-            self.ws_stats['rest_fetches'] += 1
-            self.ws_stats['total_latency_rest'] += latency_ms
-            self.ws_stats['avg_latency_rest'] = self.ws_stats['total_latency_rest'] / self.ws_stats['rest_fetches']
-            self.ws_stats['last_rest_fetch_time'] = time.time()
-
+    
     def get_websocket_stats(self):
         """Get comprehensive WebSocket statistics."""
         stats = self.ws_stats.copy()
