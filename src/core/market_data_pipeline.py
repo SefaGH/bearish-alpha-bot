@@ -273,13 +273,13 @@ class MarketDataPipeline:
         return df
     
     def _store_data(self, exchange: str, symbol: str, timeframe: str, df: pd.DataFrame):
-    """
-    DEPRECATED: This method is now a no-op. Data is stored centrally.
-    It's kept for backward compatibility to prevent crashes if called.
-    """
-    # Bu metodun içi artık boş. Sadece eski koda uyumluluk için var.
-    # logger.warning(f"DEPRECATED: _store_data for {exchange}:{symbol}:{timeframe} was called. This is a no-op.")
-    pass
+        """
+        DEPRECATED: This method is now a no-op. Data is stored centrally.
+        It's kept for backward compatibility to prevent crashes if called.
+        """
+        # Bu metodun içi artık boş. Sadece eski koda uyumluluk için var.
+        # logger.warning(f"DEPRECATED: _store_data for {exchange}:{symbol}:{timeframe} was called. This is a no-op.")
+        pass
     
     def get_latest_ohlcv(self, symbol: str, timeframe: str, exchange: str = None) -> Optional[pd.DataFrame]:
         """
