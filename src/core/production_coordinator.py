@@ -819,26 +819,15 @@ class ProductionCoordinator:
                                           exchange_clients: Optional[Dict] = None,
                                           portfolio_config: Optional[Dict] = None,
                                           mode: str = 'paper',
-                                          trading_symbols: Optional[List[str]] = None) -> Dict[str, Any]:
+                                          trading_symbols: Optional[List[str]] = None,
+                                          websocket_manager: Optional[Any] = None) -> Dict[str, Any]: # YENİ PARAMETRE
         """
         Initialize production system with all Phase 3 components.
-        
-        This is the main initialization method that sets up:
-        - WebSocket connections (Phase 3.1)
-        - Risk Management (Phase 3.2)
-        - Portfolio Management (Phase 3.3)
-        - Trading Engine (Phase 3.4)
-        - Strategy Coordinator
-        - Circuit Breaker System
-        
+        ...
         Args:
-            exchange_clients: Dict of exchange client instances {exchange_name: client}
-            portfolio_config: Portfolio configuration dict with 'equity_usd' etc.
-            mode: Trading mode ('paper', 'live', 'simulation')
-            trading_symbols: List of symbols to trade (e.g., ['BTC/USDT:USDT'])
-        
-        Returns:
-            Dict with 'success', 'components', and optional 'reason' keys
+            ...
+            websocket_manager: Optional pre-initialized WebSocketManager instance.
+        ...
         """
         logger.info("="*70)
         logger.info("INITIALIZING PRODUCTION SYSTEM")
@@ -849,26 +838,17 @@ class ProductionCoordinator:
             # STEP 1: STORE PROVIDED CONFIGURATION
             # ========================================
             if exchange_clients:
-                # Normalize exchange keys to lowercase for consistency
                 self.exchange_clients = {k.lower(): v for k, v in exchange_clients.items()}
                 logger.info(f"✓ Received {len(self.exchange_clients)} exchange client(s): {list(self.exchange_clients.keys())}")
             
             # ========================================
-            # STEP 2: INITIALIZE WEBSOCKET MANAGER
+            # STEP 2: USE INJECTED WEBSOCKET MANAGER
             # ========================================
-            if not self.websocket_manager and not hasattr(self, 'skip_ws_init'):
-                try:
-                    self.websocket_manager = WebSocketManager(exchanges=self.exchange_clients)
-                    logger.info("✓ WebSocket manager initialized")
-                except Exception as e:
-                    logger.warning(f"⚠️ WebSocket manager initialization failed: {e}")
-                    logger.warning("⚠️ Continuing without WebSocket (will use REST API)")
-                    self.websocket_manager = None
+            self.websocket_manager = websocket_manager # <<< DEĞİŞİKLİK
+            if self.websocket_manager:
+                logger.info("✓ WebSocket manager received from launcher (external).")
             else:
-                if self.websocket_manager:
-                    logger.info("✓ WebSocket manager already initialized (external)")
-                else:
-                    logger.info("ℹ️ WebSocket initialization skipped (skip_ws_init flag)")
+                logger.warning("⚠️ No WebSocket manager provided by launcher. Continuing without WebSocket.")
             
             # ========================================
             # STEP 3: INITIALIZE PERFORMANCE MONITOR
