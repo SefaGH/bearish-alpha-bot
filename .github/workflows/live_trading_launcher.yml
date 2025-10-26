@@ -165,6 +165,14 @@ jobs:
           python-version: "3.11"
           cache: 'pip'
 
+      - name: Ensure logs and data directories + placeholders
+        run: |
+          mkdir -p logs data
+          # Ensure placeholder state files exist so artifact upload doesn't fail
+          touch data/state.json data/day_stats.json
+          # Helpful placeholder so upload-artifact always has at least one file if no logs produced
+          : > logs/.placeholder || true
+
       - name: Install Dependencies
         shell: bash
         run: |
@@ -247,7 +255,9 @@ jobs:
         with:
           name: pre-flight-logs
           path: |
-            live_trading_*.log
+            path: |
+              logs/**/*.log
+              logs/*.log
           if-no-files-found: ignore
 
   live-trading:
@@ -263,6 +273,12 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Ensure logs and data directories + placeholders
+        run: |
+          mkdir -p logs data
+          touch data/state.json data/day_stats.json
+          : > logs/.placeholder || true
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
@@ -477,14 +493,14 @@ jobs:
           echo "Session completed at: $(date)"
           echo ""
 
-          # Check if log files exist
-          if ls live_trading_*.log 1> /dev/null 2>&1; then
-            echo "📄 Log files generated:"
-            ls -lh live_trading_*.log
+          # Check if log files exist in logs/
+          if compgen -G "logs/*.log" > /dev/null; then
+            echo "📄 Log files generated in logs/:"
+            ls -lh logs/*.log || true
             echo ""
-
             echo "📈 Log file statistics:"
-            for log in live_trading_*.log; do
+            for log in logs/*.log; do
+              [ -e "$log" ] || continue
               echo "  $log:"
               echo "    - Size: $(wc -c < "$log") bytes"
               echo "    - Lines: $(wc -l < "$log")"
@@ -493,12 +509,14 @@ jobs:
               echo ""
             done
           else
-            echo "ℹ️ No log files found"
+            echo "ℹ️ No log files found in logs/"
           fi
 
           # Check for state files
-          if [ -f "state.json" ]; then
-            echo "💾 State file preserved: state.json"
+          if [ -f "data/state.json" ]; then
+            echo "💾 State file preserved: data/state.json"
+          elif [ -f "state.json" ]; then
+            echo "💾 State file preserved at repo root: state.json"
           fi
 
           echo "=============================================="
@@ -510,7 +528,8 @@ jobs:
         with:
           name: trading-logs-${{ github.run_number }}
           path: |
-            live_trading_*.log
+            logs/**/*.log
+            logs/*.log
           retention-days: 30
           if-no-files-found: warn
 
