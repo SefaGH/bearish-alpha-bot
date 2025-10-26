@@ -126,58 +126,45 @@ class CcxtClient:
             return {}
 
     def markets(self, force_reload: bool = False) -> Dict[str, Dict[str, Any]]:
-        """Load markets - or skip if we have fixed symbols."""
-        
-        # Fixed sembol modundaysa market yükleme!
+        """
+        Load markets efficiently. If fixed symbols are set, generates a minimal
+        market structure without a network call. Otherwise, loads from cache or network.
+        """
+        # 1. En verimli senaryo: Sabit semboller ayarlanmış ve yeniden yükleme zorunlu değil.
+        # Bu, botun ana çalışma modudur ve AĞ ÇAĞRISINI TAMAMEN ATLAR.
         if self._skip_market_load and not force_reload:
-            logger.info(f"[{self.name}] Skipping market load (fixed symbols mode)")
-            # Minimal mapping dön
+            logger.info(f"[{self.name}] Generating minimal market structure for {len(self._required_symbols_only)} fixed symbols (no network call).")
             fake_markets = {}
             for symbol in self._required_symbols_only:
+                # CCXT'nin temel kontrolleri geçmesi için gereken minimum alanlar
                 fake_markets[symbol] = {
+                    'id': symbol.replace('/', '-'), # örn: BTC-USDT
                     'symbol': symbol,
-                    'active': True,
+                    'base': symbol.split('/')[0],
                     'quote': 'USDT',
+                    'active': True,
                     'type': 'swap',
                     'linear': True,
                     'swap': True,
-                    'spot': False
+                    'spot': False,
+                    'precision': {'amount': 0.001, 'price': 0.1}, # Makul varsayılanlar
+                    'limits': {'amount': {'min': 0.001, 'max': 100}}, # Makul varsayılanlar
                 }
             return fake_markets
-        
-        # Normal market yükleme (eski kod)
+
+        # 2. Cache kontrolü (Eski davranış korunuyor)
         current_time = time.time()
-    
-        # Cache 1 saat geçerli
         if not force_reload and self._markets_cache and (current_time - self._markets_cache_time) < 3600:
             return self._markets_cache
-    
+
+        # 3. Ağdan yükleme (Sadece gerekirse çalışacak fallback)
+        logger.warning(f"[{self.name}] Performing full market load from network (this may be slow).")
         try:
-            # Only load markets if we have required symbols
-            if self._required_symbols_only:
-                logger.info(f"Loading markets for {len(self._required_symbols_only)} required symbols only")
-            
-                # For BingX, we need to load all markets first (CCXT limitation)
-                # But we'll filter the results
-                all_markets = self.ex.load_markets()
-            
-                # Filter to only required symbols
-                markets = {}
-                for symbol in self._required_symbols_only:
-                    if symbol in all_markets:
-                        markets[symbol] = all_markets[symbol]
-                    
-                logger.info(f"Filtered to {len(markets)} markets from {len(all_markets)} total")
-            
-            else:
-                # Load all markets (old behavior)
-                markets = self.ex.load_markets()
-                logger.info(f"Loaded all {len(markets)} markets for {self.name}")
-        
+            markets = self.ex.load_markets()
+            logger.info(f"Loaded all {len(markets)} markets for {self.name}")
             self._markets_cache = markets
             self._markets_cache_time = current_time
             return markets
-        
         except Exception as e:
             logger.error(f"Failed to load markets: {e}")
             raise
@@ -185,26 +172,14 @@ class CcxtClient:
     def load_markets(self, reload: bool = False, *args, **kwargs) -> Dict[str, Dict[str, Any]]:
         """
         Backwards-compatible proxy to load markets.
-
-        Many places expect the ccxt exchange object or call load_markets() directly.
-        This wrapper ensures older call sites continue to work and preserves the
-        CcxtClient caching / fixed-symbol behavior implemented in markets().
-        Args:
-            reload: bool - if True force reload (maps to force_reload)
-            *args, **kwargs: ignored / forwarded for compatibility
-        Returns:
-            dict: markets mapping
+        This wrapper ensures older call sites continue to work.
         """
         logger.info(f"[{self.name}] load_markets() wrapper called (reload={reload})")
-        # Use the existing markets() implementation which handles caching & required-symbols mode
         
-        # Eğer live_trading_launcher'dan gelen 'symbols' parametresi varsa, onu kullan.
+        # Gelen 'symbols' parametresini ayarla
         params = kwargs.get('params', {})
         if 'symbols' in params:
             self.set_required_symbols(params['symbols'])
-            # Gerekli semboller ayarlandığında, markets() metodu zaten filtrelenmiş marketleri dönecektir.
-            # force_reload=True, her seferinde borsadan taze veri çekilmesini sağlar.
-            return self.markets(force_reload=True)
 
         return self.markets(force_reload=bool(reload))
 
