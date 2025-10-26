@@ -170,7 +170,8 @@ class AdaptiveShortTheRip(ShortTheRip):
     def signal(self, df_30m: pd.DataFrame, 
                df_1h: pd.DataFrame = None,
                regime_data: Optional[Dict] = None,
-               symbol: str = None) -> Optional[Dict]:
+               symbol: str = None,
+               market_data: Optional[Dict] = None) -> Optional[Dict]:
         """
         Generate adaptive trading signal based on market regime.
         
@@ -180,6 +181,9 @@ class AdaptiveShortTheRip(ShortTheRip):
             regime_data: Optional market regime data for adaptation
                         If None, falls back to base strategy
             symbol: Symbol name for debug logging
+            market_data: Optional dictionary containing all available timeframes
+                        Format: {'1m': df, '5m': df, '30m': df, '1h': df, '4h': df}
+                        Allows strategies to access additional timeframes if needed
         
         Returns:
             Signal dictionary or None
