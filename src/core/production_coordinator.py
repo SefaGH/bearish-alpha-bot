@@ -310,7 +310,9 @@ class ProductionCoordinator:
             self.processed_symbols_count += 1
             logger.info(f"[DATA-FETCH] Fetching market data for {symbol}")
             
-            # WebSocket'ten veri almayı dene
+            # WebSocket'ten veri almayı dene - TÜM ZAMAN DİLİMLERİNİ FETCH ET
+            df_1m = None
+            df_5m = None
             df_30m = None
             df_1h = None
             df_4h = None
@@ -318,15 +320,18 @@ class ProductionCoordinator:
             if self.websocket_manager:
                 try:
                     # Hem ham sembol hem normalize sembolle dene (':USDT' fallback)
+                    df_1m  = self._ws_fetch_df_with_fallback(symbol, '1m')
+                    df_5m  = self._ws_fetch_df_with_fallback(symbol, '5m')
                     df_30m = self._ws_fetch_df_with_fallback(symbol, '30m')
                     df_1h  = self._ws_fetch_df_with_fallback(symbol, '1h')
                     df_4h  = self._ws_fetch_df_with_fallback(symbol, '4h')
 
-                    # WS verisini "başarılı" saymak için 30m ve 1h yeterli; 4h opsiyonel
+                    # WS verisini "başarılı" saymak için 30m ve 1h yeterli; diğerleri opsiyonel
                     if df_30m is not None and df_1h is not None:
                         logger.info(f"[DATA-FETCH] ✅ WebSocket data retrieved for {symbol} (30m & 1h)")
-                        if df_4h is None:
-                            logger.info(f"[DATA-FETCH] ℹ️ WebSocket 4h not ready for {symbol} (will try REST to complete)")
+                        if df_1m is None or df_5m is None or df_4h is None:
+                            missing = [tf for tf, df in [('1m', df_1m), ('5m', df_5m), ('4h', df_4h)] if df is None]
+                            logger.info(f"[DATA-FETCH] ℹ️ WebSocket missing {missing} for {symbol} (will try REST to complete)")
                     else:
                         logger.info(f"[DATA-FETCH] ⚠️ Incomplete WebSocket data for {symbol}, will try REST API")
                         
@@ -336,6 +341,10 @@ class ProductionCoordinator:
             
             # REST API fallback: SADECE EKSİK OLAN TF'LERİ TAMAMLA
             missing_timeframes = []
+            if df_1m is None:
+                missing_timeframes.append('1m')
+            if df_5m is None:
+                missing_timeframes.append('5m')
             if df_30m is None:
                 missing_timeframes.append('30m')
             if df_1h is None:
@@ -367,7 +376,11 @@ class ProductionCoordinator:
                         # Sonuçları uygun df'lere yerleştir
                         for tf, res in zip(missing_timeframes, results):
                             if not isinstance(res, Exception) and res is not None:
-                                if tf == '30m':
+                                if tf == '1m':
+                                    df_1m = res
+                                elif tf == '5m':
+                                    df_5m = res
+                                elif tf == '30m':
                                     df_30m = res
                                 elif tf == '1h':
                                     df_1h = res
@@ -375,50 +388,6 @@ class ProductionCoordinator:
                                     df_4h = res
                         
                         # En azından 30m tamamlanmışsa başarılı sayalım
-                        if df_30m is not None:
-                            logger.info(f"[DATA-FETCH] ✅ REST API data retrieved for {symbol}")
-                            break
-                            
-                    except asyncio.TimeoutError:
-                        logger.warning(f"[DATA-FETCH] ⏱️ REST API timeout for {symbol} (15s limit)")
-                        continue
-                    except Exception as e:
-                        logger.warning(f"[DATA-FETCH] REST API failed: {e}")
-                        continue
-            
-            # REST API fallback with timeout protection
-            if df_30m is None and self.exchange_clients:
-                logger.info(f"[DATA-FETCH] Using REST API fallback for {symbol}")
-                # İlk mevcut exchange'i kullan
-                for exchange_name, client in self.exchange_clients.items():
-                    try:
-                        # Fetch all timeframes with overall 45s timeout (3 x 15s individual timeouts)
-                        fetch_tasks = [
-                            asyncio.create_task(asyncio.wait_for(
-                                self._fetch_ohlcv(client, symbol, '30m'), 
-                                timeout=10.0
-                            )),
-                            asyncio.create_task(asyncio.wait_for(
-                                self._fetch_ohlcv(client, symbol, '1h'), 
-                                timeout=10.0
-                            )),
-                            asyncio.create_task(asyncio.wait_for(
-                                self._fetch_ohlcv(client, symbol, '4h'), 
-                                timeout=10.0
-                            ))
-                        ]
-                        
-                        # Wait for all with overall timeout
-                        results = await asyncio.wait_for(
-                            asyncio.gather(*fetch_tasks, return_exceptions=True),
-                            timeout=15.0
-                        )
-                        
-                        # Process results
-                        df_30m = results[0] if not isinstance(results[0], Exception) else None
-                        df_1h = results[1] if not isinstance(results[1], Exception) else None
-                        df_4h = results[2] if not isinstance(results[2], Exception) else None
-                        
                         if df_30m is not None:
                             logger.info(f"[DATA-FETCH] ✅ REST API data retrieved for {symbol}")
                             break
@@ -470,6 +439,22 @@ class ProductionCoordinator:
                 except Exception as e:
                     logger.warning(f"[REGIME] Regime analysis failed for {symbol}: {e}")
             
+            # ===== CREATE MARKET_DATA DICTIONARY FOR STRATEGIES =====
+            # Stratejilerin tüm zaman dilimlerine erişebilmesi için market_data dict oluştur
+            market_data = {}
+            if df_1m is not None:
+                market_data['1m'] = df_1m
+            if df_5m is not None:
+                market_data['5m'] = df_5m
+            if df_30m is not None:
+                market_data['30m'] = df_30m
+            if df_1h is not None:
+                market_data['1h'] = df_1h
+            if df_4h is not None:
+                market_data['4h'] = df_4h
+            
+            logger.info(f"[DATA-FETCH] Market data prepared with timeframes: {list(market_data.keys())}")
+            
             # ===== STRATEGY SIGNALS =====
             signal = None
             
@@ -493,10 +478,15 @@ class ProductionCoordinator:
                         if hasattr(strategy_instance, 'signal'):
                             # Use cached regime_data support check
                             if capabilities.get('supports_regime_data', False):
-                                # Adaptive strategies take regime_data parameter
-                                strategy_signal = strategy_instance.signal(df_30m, df_1h, regime_data=metadata.get('regime'), symbol=symbol)
+                                # Adaptive strategies take regime_data parameter and now also market_data
+                                strategy_signal = strategy_instance.signal(
+                                    df_30m, df_1h, 
+                                    regime_data=metadata.get('regime'), 
+                                    symbol=symbol,
+                                    market_data=market_data
+                                )
                             else:
-                                # Standard strategies
+                                # Standard strategies - only pass what they expect
                                 strategy_signal = strategy_instance.signal(df_30m, df_1h)
                         elif hasattr(strategy_instance, 'generate_signal'):
                             # Mock or test strategies - use cached async check
@@ -530,8 +520,13 @@ class ProductionCoordinator:
                             ob_config = signals_config.get('oversold_bounce', {})
                             ob = AdaptiveOversoldBounce(ob_config, self.market_regime_analyzer)
                             
-                            # Adaptive strateji farklı parametre alıyor
-                            signal = ob.signal(df_30m, df_1h, regime_data=metadata.get('regime'), symbol=symbol)
+                            # Adaptive strateji farklı parametre alıyor - market_data ekle
+                            signal = ob.signal(
+                                df_30m, df_1h, 
+                                regime_data=metadata.get('regime'), 
+                                symbol=symbol,
+                                market_data=market_data
+                            )
                             
                             if signal:
                                 signal['strategy'] = 'adaptive_ob'
@@ -554,7 +549,13 @@ class ProductionCoordinator:
                             str_config = signals_config.get('short_the_rip', {})
                             strp = AdaptiveShortTheRip(str_config, self.market_regime_analyzer)
                             
-                            signal = strp.signal(df_30m, df_1h, regime_data=metadata.get('regime'), symbol=symbol)
+                            # market_data parametresi ekle
+                            signal = strp.signal(
+                                df_30m, df_1h, 
+                                regime_data=metadata.get('regime'), 
+                                symbol=symbol,
+                                market_data=market_data
+                            )
                             
                             if signal:
                                 signal['strategy'] = 'adaptive_str'
