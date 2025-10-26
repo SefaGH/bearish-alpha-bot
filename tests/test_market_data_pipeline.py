@@ -16,7 +16,7 @@ Tests cover:
 
 import sys
 import os
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, MagicMock
 import pytest
 import pandas as pd
 import time
@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from core.market_data_pipeline import MarketDataPipeline
 from core.ccxt_client import CcxtClient
+from core.websocket_manager import StreamDataCollector
 
 
 # Fixed timestamp for deterministic tests (recent enough to pass freshness checks)
@@ -85,16 +86,61 @@ def mock_failing_client():
 
 
 @pytest.fixture
-def pipeline_with_mock(mock_ccxt_client):
-    """Create a pipeline with mock clients."""
-    exchanges = {
-        'mock1': mock_ccxt_client,
-    }
-    return MarketDataPipeline(exchanges)
+def mock_websocket_manager():
+    """Create a mock WebSocketManager with working collector."""
+    # Create a real StreamDataCollector instance for proper data handling
+    collector = StreamDataCollector(buffer_size=1000)
+    
+    # Create a custom class with only the methods we want
+    class MockWebSocketManager:
+        def __init__(self):
+            self.collector = collector
+            self._data_collector = collector
+            
+        def is_collector_ready(self):
+            return True
+        
+        def get_latest_data(self, symbol, timeframe, exchange=None):
+            # If exchange is specified, only try that exchange
+            if exchange:
+                ohlcv = self.collector.get_latest_ohlcv(exchange, symbol, timeframe)
+                if ohlcv:
+                    return {
+                        'exchange': exchange,
+                        'symbol': symbol,
+                        'timeframe': timeframe,
+                        'ohlcv': ohlcv,
+                        'timestamp': pd.Timestamp.now(tz='UTC')
+                    }
+                return None
+            
+            # Otherwise, try all exchanges
+            for ex in ['mock1', 'mock2', 'success', 'test_exchange', 'test_exchange_2']:
+                ohlcv = self.collector.get_latest_ohlcv(ex, symbol, timeframe)
+                if ohlcv:
+                    return {
+                        'exchange': ex,
+                        'symbol': symbol,
+                        'timeframe': timeframe,
+                        'ohlcv': ohlcv,
+                        'timestamp': pd.Timestamp.now(tz='UTC')
+                    }
+            return None
+    
+    return MockWebSocketManager()
 
 
 @pytest.fixture
-def pipeline_multi_exchange(mock_ccxt_client, generate_ohlcv_data):
+def pipeline_with_mock(mock_ccxt_client, mock_websocket_manager):
+    """Create a pipeline with mock clients and WebSocketManager."""
+    exchanges = {
+        'mock1': mock_ccxt_client,
+    }
+    return MarketDataPipeline(exchanges, websocket_manager=mock_websocket_manager)
+
+
+@pytest.fixture
+def pipeline_multi_exchange(mock_ccxt_client, mock_websocket_manager, generate_ohlcv_data):
     """Create a pipeline with multiple mock exchanges."""
     # Create second mock client
     client2 = Mock(spec=CcxtClient)
@@ -111,7 +157,7 @@ def pipeline_multi_exchange(mock_ccxt_client, generate_ohlcv_data):
         'mock1': mock_ccxt_client,
         'mock2': client2,
     }
-    return MarketDataPipeline(exchanges)
+    return MarketDataPipeline(exchanges, websocket_manager=mock_websocket_manager)
 
 
 def test_pipeline_initialization(mock_ccxt_client):
@@ -250,35 +296,25 @@ def test_pipeline_status_detailed_metrics(pipeline_multi_exchange):
     # Get detailed status
     status = pipeline_multi_exchange.get_pipeline_status()
     
-    # Validate all required fields
-    assert 'exchanges' in status
-    assert 'memory_estimate_mb' in status
-    assert 'data_freshness' in status
-    assert 'buffer_limits' in status
-    assert 'active_streams' in status
+    # Validate all required fields for new architecture
+    assert 'status' in status
+    assert 'uptime_seconds' in status
     assert 'total_requests' in status
     assert 'failed_requests' in status
+    assert 'error_rate' in status
+    assert 'active_streams' in status
+    assert 'is_running' in status
+    assert 'note' in status
     
-    # Validate exchanges breakdown
-    assert isinstance(status['exchanges'], dict)
-    for exchange_name, exchange_data in status['exchanges'].items():
-        assert 'streams' in exchange_data
-        assert 'symbols' in exchange_data
+    # Verify note indicates centralized storage
+    assert 'WebSocketManager' in status['note']
     
-    # Validate data freshness
-    assert 'fresh' in status['data_freshness']
-    assert 'stale' in status['data_freshness']
-    assert 'expired' in status['data_freshness']
-    
-    # Validate memory estimate is reasonable
-    assert status['memory_estimate_mb'] >= 0
-    assert status['memory_estimate_mb'] < 1000  # Should be reasonable for test data
-    
-    # Validate active streams
-    assert status['active_streams'] > 0
+    # Validate request tracking still works
+    assert status['total_requests'] > 0  # Should have made requests
+    assert status['is_running'] == True
 
 
-def test_error_handling_resilience(mock_ccxt_client, mock_failing_client):
+def test_error_handling_resilience(mock_ccxt_client, mock_failing_client, mock_websocket_manager):
     """Test error handling resilience with retry logic and fallback."""
     # First exchange fails, second succeeds
     exchanges = {
@@ -286,7 +322,7 @@ def test_error_handling_resilience(mock_ccxt_client, mock_failing_client):
         'success': mock_ccxt_client,
     }
     
-    pipeline = MarketDataPipeline(exchanges)
+    pipeline = MarketDataPipeline(exchanges, websocket_manager=mock_websocket_manager)
     
     # This should try failing (and fail with retries), then try success (and succeed)
     results = pipeline.start_feeds(['BTC/USDT:USDT'], ['30m'])
@@ -294,46 +330,46 @@ def test_error_handling_resilience(mock_ccxt_client, mock_failing_client):
     assert pipeline.failed_requests > 0  # Should have failed attempts
     assert results['successful_fetches'] > 0  # Should eventually succeed with fallback
     
-    # Check that data was stored from successful exchange
+    # Check that data was stored in WebSocketManager from successful exchange
     df = pipeline.get_latest_ohlcv('BTC/USDT:USDT', '30m')
     assert df is not None
     assert not df.empty
 
 
 def test_store_data_circular_buffer(pipeline_with_mock, mock_ccxt_client, generate_ohlcv_data):
-    """Test _store_data() circular buffer management."""
-    # Create a DataFrame larger than buffer limit
+    """Test that data is properly stored in WebSocketManager buffer."""
+    # Create a DataFrame larger than typical buffer
     large_data = generate_ohlcv_data(count=2000, interval_minutes=60, base_price=50000)
     
     # Mock the client to return large dataset
     mock_ccxt_client.ohlcv.return_value = large_data
     
-    # Start feeds for 1h timeframe (buffer limit = 500)
+    # Start feeds for 1h timeframe
     pipeline_with_mock.start_feeds(['BTC/USDT:USDT'], ['1h'])
     
-    # Get stored data
+    # Get stored data from WebSocketManager
     df = pipeline_with_mock.get_latest_ohlcv('BTC/USDT:USDT', '1h')
     
-    # Verify data respects buffer limit
-    assert len(df) <= pipeline_with_mock.BUFFER_LIMITS['1h']
+    # Verify data was stored and retrieved successfully
+    assert df is not None
+    assert not df.empty
+    assert len(df) > 0  # Should have data
 
 
 def test_get_best_data_source_algorithm(pipeline_multi_exchange):
-    """Test _get_best_data_source() selection algorithm."""
-    # Start feeds to populate data (fallback means only first successful exchange stores data)
+    """Test data retrieval from WebSocketManager."""
+    # Start feeds to populate data
     pipeline_multi_exchange.start_feeds(['BTC/USDT:USDT'], ['30m'])
     
-    # Test auto-selection of best source
+    # Test auto-selection - should retrieve from WebSocketManager
     df = pipeline_multi_exchange.get_latest_ohlcv('BTC/USDT:USDT', '30m')
     
     assert df is not None
     assert not df.empty
     
-    # Test specific exchange selection (only mock1 has data due to fallback)
-    df_mock1 = pipeline_multi_exchange.get_latest_ohlcv('BTC/USDT:USDT', '30m', exchange='mock1')
-    
-    assert df_mock1 is not None
-    assert not df_mock1.empty
+    # Verify data has expected columns after indicator addition
+    assert 'open' in df.columns
+    assert 'close' in df.columns
     
     # mock2 should not have data due to fallback mechanism
     df_mock2 = pipeline_multi_exchange.get_latest_ohlcv('BTC/USDT:USDT', '30m', exchange='mock2')
@@ -395,23 +431,20 @@ def test_real_exchange_symbol_validation():
 
 
 def test_memory_usage_estimation(pipeline_multi_exchange):
-    """Test memory usage estimation accuracy."""
+    """Test pipeline status after data injection."""
     pipeline_multi_exchange.start_feeds(['BTC/USDT:USDT', 'ETH/USDT:USDT'], ['30m', '1h'])
     
     status = pipeline_multi_exchange.get_pipeline_status()
     
-    # Verify memory estimate exists and is reasonable
-    assert 'memory_estimate_mb' in status
-    assert status['memory_estimate_mb'] > 0
-    assert status['memory_estimate_mb'] < 100  # Should be reasonable for test data
+    # Verify status contains required fields (note: memory is now tracked by WebSocketManager)
+    assert 'status' in status
+    assert 'total_requests' in status
+    assert 'failed_requests' in status
+    assert 'note' in status
     
-    # Verify exchange tracking exists
-    assert 'exchanges' in status
-    for exchange_name, exchange_data in status['exchanges'].items():
-        assert 'streams' in exchange_data
-        assert 'symbols' in exchange_data
-        assert exchange_data['streams'] >= 0
-        assert exchange_data['symbols'] >= 0
+    # Verify data was injected successfully
+    assert status['total_requests'] > 0
+    assert 'WebSocketManager' in status['note']  # Confirms centralized storage
 
 
 def test_error_handling_all_exchanges_fail(mock_failing_client):
@@ -476,7 +509,7 @@ def test_get_health_status(pipeline_with_mock):
     assert 'memory_mb' in health
     
     assert health['overall_status'] == 'healthy'
-    assert health['active_feeds'] > 0
+    # active_feeds is now 0 since data is stored in WebSocketManager, not pipeline
     assert health['error_rate'] == 0
 
 

@@ -357,20 +357,26 @@ class MarketDataPipeline:
             # ProductionCoordinator'daki _ws_fetch_df_with_fallback metodundan ilham alındı.
             # WebSocketManager'da bu metodun olduğunu varsayıyoruz.
             # Olası metod adları: get_latest_dataframe veya get_latest_data
+            df = None
             if hasattr(self.websocket_manager, 'get_latest_dataframe'):
-                 return self.websocket_manager.get_latest_dataframe(symbol, timeframe, exchange)
+                 df = self.websocket_manager.get_latest_dataframe(symbol, timeframe, exchange)
             elif hasattr(self.websocket_manager, 'get_latest_data'):
                  # get_latest_data bir dict döndürüyorsa, onu df'e çevirmemiz gerekir.
                  raw_data = self.websocket_manager.get_latest_data(symbol, timeframe, exchange)
                  if raw_data: # None değilse
                      if isinstance(raw_data, pd.DataFrame):
-                         return raw_data
-                     if 'ohlcv' in raw_data and raw_data['ohlcv']:
-                         return self._ohlcv_to_dataframe(raw_data['ohlcv'])
-                 return None
+                         df = raw_data
+                     elif 'ohlcv' in raw_data and raw_data['ohlcv']:
+                         df = self._ohlcv_to_dataframe(raw_data['ohlcv'])
             else:
                 logger.error("WebSocketManager has no standard method to get dataframe or data ('get_latest_dataframe' or 'get_latest_data').")
                 return None
+            
+            # Add indicators to the DataFrame before returning
+            if df is not None and not df.empty:
+                df = add_indicators(df, self.config.get('indicators'))
+            
+            return df
         except Exception as e:
             logger.error(f"Error getting latest OHLCV from WebSocketManager for {symbol} {timeframe}: {e}")
             return None
