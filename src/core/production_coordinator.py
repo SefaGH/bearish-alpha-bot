@@ -1218,6 +1218,29 @@ class ProductionCoordinator:
                 logger.critical("❌ [CRITICAL] is_running is FALSE before loop entry!")
                 logger.critical(f"   This should never happen - is_running was just set to True at line 791")
                 raise RuntimeError("is_running unexpectedly False before loop entry")
+
+            # =============================================================
+            # ✅ YENİ EKLENECEK BLOK: GEÇMİŞ VERİ ENJEKSİYONU (PRIMING)
+            # =============================================================
+            logger.info("="*70)
+            logger.info("🔄 [DATA-PRIME] PRELOADING HISTORICAL DATA FOR ALL SYMBOLS...")
+            logger.info("="*70)
+            if self.market_data_pipeline and self.active_symbols:
+                try:
+                    # Stratejilerin ihtiyaç duyduğu tüm zaman dilimlerini burada belirtin
+                    prime_timeframes = self.config.get('websocket', {}).get('stream_timeframes', ['1m', '5m', '30m', '1h', '4h'])
+                    await self.market_data_pipeline.prime_data_buffers_async(
+                        symbols=self.active_symbols,
+                        timeframes=prime_timeframes
+                    )
+                    logger.info("✅ [DATA-PRIME] Historical data priming process completed.")
+                except Exception as e:
+                    logger.error(f"❌ [DATA-PRIME] Critical error during data priming: {e}", exc_info=True)
+                    # Priming başarısız olursa devam etme, çünkü sistem sağlıklı çalışmaz.
+                    raise RuntimeError("Failed to prime data buffers. Aborting.")
+            else:
+                logger.warning("⚠️ [DATA-PRIME] MarketDataPipeline or active_symbols not available. Skipping data priming.")
+            logger.info("="*70)
             
             while self.is_running:
                 # ✅ ENHANCED: Always log loop entry at INFO level for visibility
