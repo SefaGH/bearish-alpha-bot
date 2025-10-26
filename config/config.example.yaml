@@ -75,6 +75,7 @@ websocket:
   priority_enabled: true              # Enable WebSocket priority (override with WEBSOCKET_PRIORITY_ENABLED)
   max_data_age: 60                    # Max data age in seconds (override with WEBSOCKET_MAX_DATA_AGE)
   fallback_threshold: 3               # Failures before REST fallback (override with WEBSOCKET_FALLBACK_THRESHOLD)
+  buffer_size: 300                    # Stratejilerin ihtiyaç duyduğu mum sayısı
   
   # Maximum streams per exchange (override with WS_MAX_STREAMS_*)
   max_streams_per_exchange:
