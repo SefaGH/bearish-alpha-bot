@@ -44,6 +44,27 @@ class AdaptiveOversoldBounce(OversoldBounce):
         self.regime_analyzer = regime_analyzer
         self.base_cfg = cfg.copy()
         self.debug_logging = self.base_cfg.get('debug', {}).get('strategy_logging', False)
+
+        def _validate_input_data(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame, regime_data: Dict, symbol: str) -> tuple[bool, str]:
+        """Gerekli tüm verilerin varlığını ve geçerliliğini kontrol eder."""
+        # 1. Ana DataFrame Kontrolü
+        if df_30m is None or df_30m.empty:
+            return False, "Input data 'df_30m' is missing or empty."
+            
+        # 2. Zorunlu Sütunların Kontrolü
+        required_cols = ['close', 'rsi', 'atr', 'ema_fast']
+        missing_cols = [col for col in required_cols if col not in df_30m.columns]
+        if missing_cols:
+            return False, f"df_30m is missing required indicator columns: {missing_cols}."
+            
+        # 3. Yüksek Önemli "Adaptive" Verilerin Kontrolü (Uyarı Niteliğinde)
+        if self.debug_logging:
+            if df_1h is None or df_1h.empty:
+                logger.info(f"[{self.strategy_name.upper()}-INFO] {symbol} - 'df_1h' is missing. Market regime analysis may be less accurate.")
+            if regime_data is None:
+                logger.info(f"[{self.strategy_name.upper()}-INFO] {symbol} - 'regime_data' is missing. Strategy will fallback to non-adaptive mode.")
+
+        return True, "All required data is present."
         
     def get_adaptive_rsi_threshold(self, market_regime: Dict) -> float:
         """
@@ -192,10 +213,12 @@ class AdaptiveOversoldBounce(OversoldBounce):
         symbol_display = symbol or "UNKNOWN"
         logger.info(f"[OB-DEBUG] {symbol_display}")
         
-        # Data validation
-        if df_30m is None or df_30m.empty:
-            if self.debug_logging: logger.info(f"[{self.strategy_name.upper()}-DEBUG] {symbol_display} - ❌ No 30m data available.")
-            return None
+        # --- Kapsamlı Veri Doğrulama ---
+        if self.debug_logging:
+            validation_passed, reason = self._validate_input_data(df_30m, df_1h, regime_data, symbol_display)
+            if not validation_passed:
+                logger.warning(f"[{self.strategy_name.upper()}-REJECT] {symbol_display} - {reason}")
+                return None
         
         # Safely get last row
         try:
