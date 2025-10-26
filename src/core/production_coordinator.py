@@ -444,21 +444,30 @@ class ProductionCoordinator:
                 except Exception as e:
                     logger.warning(f"[REGIME] Regime analysis failed for {symbol}: {e}")
             
-            # ===== CREATE MARKET_DATA DICTIONARY FOR STRATEGIES =====
-            # Stratejilerin tüm zaman dilimlerine erişebilmesi için market_data dict oluştur
-            market_data = {}
-            if df_1m is not None:
-                market_data['1m'] = df_1m
-            if df_5m is not None:
-                market_data['5m'] = df_5m
-            if df_30m is not None:
-                market_data['30m'] = df_30m
-            if df_1h is not None:
-                market_data['1h'] = df_1h
-            if df_4h is not None:
-                market_data['4h'] = df_4h
+            # ===== CREATE & VALIDATE MARKET_DATA DICTIONARY FOR STRATEGIES =====
+            market_data = {
+                '1m': df_1m, '5m': df_5m, '30m': df_30m, '1h': df_1h, '4h': df_4h
+            }
             
-            logger.info(f"[DATA-FETCH] Market data prepared with timeframes: {list(market_data.keys())}")
+            # Bu log, verinin gerçekten enjekte edilip edilmediğini kanıtlar.
+            # Stratejiye giden verinin kaç mum içerdiğini gösterir.
+            if self.debug_logging:
+                logger.info(f"📊 [DATA-VALIDATION] For {symbol}:")
+                for tf, df in market_data.items():
+                    if df is not None and not df.empty:
+                        # Enjekte edilmiş verinin kanıtı: Mum sayısının yüksek olması gerekir.
+                        candle_count = len(df)
+                        status_icon = "✅" if candle_count > 50 else "⚠️" # 50'den fazla mum varsa, enjeksiyon başarılıdır.
+                        last_close = df['close'].iloc[-1]
+                        logger.info(f"  {status_icon} {tf}: {candle_count} candles | Last Close: ${last_close:,.2f}")
+                    elif tf in ['30m', '1h']: # Ana zaman dilimleri eksikse hata ver
+                        logger.error(f"  ❌ {tf}: NO DATA AVAILABLE! Strategy cannot run.")
+                    else: # Opsiyonel zaman dilimleri eksikse bilgi ver
+                        logger.info(f"  ℹ️ {tf}: No data available for this optional timeframe.")
+            else:
+                 # Debug modu kapalıyken eski, basit logu bas.
+                 available_tfs = [tf for tf, df in market_data.items() if df is not None and not df.empty]
+                 logger.info(f"[DATA-FETCH] Market data prepared with timeframes: {available_tfs}")
             
             # ===== STRATEGY SIGNALS =====
             signal = None
