@@ -45,7 +45,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
         self.base_cfg = cfg.copy()
         self.debug_logging = self.base_cfg.get('debug', {}).get('strategy_logging', False)
 
-        def _validate_input_data(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame, regime_data: Dict, symbol: str) -> tuple[bool, str]:
+    def _validate_input_data(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame, regime_data: Dict, symbol: str) -> tuple[bool, str]:
         """Gerekli tüm verilerin varlığını ve geçerliliğini kontrol eder."""
         # 1. Ana DataFrame Kontrolü
         if df_30m is None or df_30m.empty:
