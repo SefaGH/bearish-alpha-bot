@@ -326,14 +326,19 @@ class ProductionCoordinator:
                     df_1h  = self._ws_fetch_df_with_fallback(symbol, '1h')
                     df_4h  = self._ws_fetch_df_with_fallback(symbol, '4h')
 
-                    # WS verisini "başarılı" saymak için 30m ve 1h yeterli; diğerleri opsiyonel
-                    if df_30m is not None and df_1h is not None:
-                        logger.info(f"[DATA-FETCH] ✅ WebSocket data retrieved for {symbol} (30m & 1h)")
-                        if df_1m is None or df_5m is None or df_4h is None:
-                            missing = [tf for tf, df in [('1m', df_1m), ('5m', df_5m), ('4h', df_4h)] if df is None]
-                            logger.info(f"[DATA-FETCH] ℹ️ WebSocket missing {missing} for {symbol} (will try REST to complete)")
+                    # Mevcut olan tüm zaman dilimlerini topla ve logla
+                    available_tfs = [tf for tf, df in [('1m', df_1m), ('5m', df_5m), ('30m', df_30m), ('1h', df_1h), ('4h', df_4h)] if df is not None and not df.empty]
+                    
+                    if available_tfs:
+                        logger.info(f"[DATA-FETCH] ✅ WebSocket data retrieved for {symbol} (Available TFs: {', '.join(available_tfs)})")
+                        
+                        # Eksik zaman dilimlerini bul ve logla
+                        all_tfs = {'1m', '5m', '30m', '1h', '4h'}
+                        missing_tfs = all_tfs - set(available_tfs)
+                        if missing_tfs:
+                             logger.info(f"[DATA-FETCH] ℹ️ WebSocket missing {sorted(list(missing_tfs))} for {symbol} (will try REST to complete)")
                     else:
-                        logger.info(f"[DATA-FETCH] ⚠️ Incomplete WebSocket data for {symbol}, will try REST API")
+                        logger.info(f"[DATA-FETCH] ⚠️ No WebSocket data found for {symbol}, will try REST API")
                         
                 except AttributeError as e:
                     logger.warning(f"[DATA-FETCH] WebSocketManager missing get_latest_data method: {e}")
