@@ -851,42 +851,49 @@ class OptimizedWebSocketManager(WebSocketManager):
 
 
 class StreamDataCollector:
-    """
-    Helper class to collect streaming data into buffers for analysis.
-    """
+    """Helper class to collect streaming data into buffers for analysis."""
     
-    def __init__(self, buffer_size: int = 1000):
+    def __init__(self, buffer_size: int = 1000, config: Dict[str, Any] = None): # config parametresi ekle
         """
         Initialize data collector.
         
         Args:
             buffer_size: Maximum number of items to keep in each buffer
+            config: Optional configuration dictionary to override buffer size
         """
-        self.buffer_size = buffer_size
-        self.ohlcv_data: Dict[str, Dict[str, List]] = {}  # exchange -> symbol -> data
-        self.ticker_data: Dict[str, Dict[str, List]] = {}  # exchange -> symbol -> data
-        logger.info(f"StreamDataCollector initialized with buffer_size={buffer_size}")
+        # Konfigürasyondan buffer boyutunu oku, yoksa varsayılanı kullan
+        resolved_buffer_size = buffer_size
+        if config:
+            resolved_buffer_size = config.get('websocket', {}).get('buffer_size', buffer_size)
+
+        self.buffer_size = int(resolved_buffer_size)
+        # Veri yapısını basitleştir: deque doğrudan OHLCV listelerini tutacak
+        self.ohlcv_data: Dict[str, Dict[str, 'deque']] = {}  # exchange -> key -> deque
+        self.ticker_data: Dict[str, Dict[str, 'deque']] = {} # exchange -> key -> deque
+        logger.info(f"StreamDataCollector initialized with buffer_size={self.buffer_size}")
     
     async def ohlcv_callback(self, exchange: str, symbol: str, timeframe: str, ohlcv: List):
         """Callback to collect OHLCV data."""
+        from collections import deque
+
         if exchange not in self.ohlcv_data:
             self.ohlcv_data[exchange] = {}
         
         key = f"{symbol}_{timeframe}"
         if key not in self.ohlcv_data[exchange]:
-            self.ohlcv_data[exchange][key] = []
+            # Yeni anahtar için yeni bir deque oluştur
+            self.ohlcv_data[exchange][key] = deque(maxlen=self.buffer_size)
         
-        # Add timestamp and store
-        self.ohlcv_data[exchange][key].append({
-            'timestamp': datetime.now(timezone.utc),
-            'data': ohlcv
-        })
-        
-        # Trim buffer if needed
-        if len(self.ohlcv_data[exchange][key]) > self.buffer_size:
-            self.ohlcv_data[exchange][key] = self.ohlcv_data[exchange][key][-self.buffer_size:]
-        
-        logger.debug(f"Collected OHLCV: {exchange} {symbol} {timeframe} (buffer: {len(self.ohlcv_data[exchange][key])})")
+        # Gelen veriyi doğrudan deque'e ekle
+        # Gelen veri tek bir mum ise: [timestamp, o, h, l, c, v]
+        if ohlcv and isinstance(ohlcv[0], (int, float)):
+             self.ohlcv_data[exchange][key].append(ohlcv)
+        # Gelen veri mum listesi ise (bazı durumlarda olabilir)
+        elif ohlcv and isinstance(ohlcv[0], list):
+             for candle in ohlcv:
+                 self.ohlcv_data[exchange][key].append(candle)
+
+        logger.debug(f"Collected OHLCV: {exchange} {key} (buffer: {len(self.ohlcv_data[exchange][key])})")
     
     async def ticker_callback(self, exchange: str, symbol: str, ticker: Dict):
         """Callback to collect ticker data."""
@@ -908,12 +915,33 @@ class StreamDataCollector:
         
         logger.debug(f"Collected ticker: {exchange} {symbol} (buffer: {len(self.ticker_data[exchange][symbol])})")
     
-    def get_latest_ohlcv(self, exchange: str, symbol: str, timeframe: str) -> Optional[List]:
-        """Get the latest OHLCV data for a symbol."""
+    def get_latest_ohlcv(self, exchange: str, symbol: str, timeframe: str, limit: Optional[int] = None) -> Optional[List[List]]:
+        """
+        Get latest OHLCV data for a symbol as a list of lists.
+        
+        Args:
+            exchange: Exchange name
+            symbol: Trading symbol
+            timeframe: Timeframe
+            limit: Number of candles to return. If None, returns all available candles up to buffer_size.
+            
+        Returns:
+            List of OHLCV data lists, or None if not available.
+        """
         key = f"{symbol}_{timeframe}"
         if exchange in self.ohlcv_data and key in self.ohlcv_data[exchange]:
             buffer = self.ohlcv_data[exchange][key]
-            return buffer[-1]['data'] if buffer else None
+            if not buffer:
+                return None
+            
+            # Deque'i listeye çevir
+            all_candles = list(buffer)
+            
+            if limit is None:
+                return all_candles
+            else:
+                # İstenen sayıda son mumu döndür
+                return all_candles[-limit:]
         return None
     
     def get_latest_ticker(self, exchange: str, symbol: str) -> Optional[Dict]:
@@ -932,57 +960,39 @@ class StreamDataCollector:
     def prime_buffer_with_dataframe(self, exchange: str, symbol: str, timeframe: str, df):
         """
         Prime the buffer with historical data from a DataFrame.
-        
-        This method is called by MarketDataPipeline to inject historical OHLCV data
-        into the WebSocket buffer, preventing "Insufficient data" errors.
-        
-        Args:
-            exchange: Exchange name (e.g., 'bingx')
-            symbol: Trading symbol (e.g., 'BTC/USDT:USDT')
-            timeframe: Timeframe (e.g., '30m', '1h')
-            df: Pandas DataFrame with OHLCV data (index: timestamp, columns: open, high, low, close, volume)
+        This method now correctly appends data to the deque.
         """
+        from collections import deque
+        import pandas as pd
+
         try:
-            import pandas as pd
-            
             if df is None or df.empty:
-                logger.warning(f"[PRIME] Empty DataFrame for {exchange} {symbol} {timeframe}")
+                logger.warning(f"[PRIME] Empty DataFrame for {exchange} {symbol} {timeframe}, skipping.")
                 return
-            
-            # Initialize exchange dict if needed
+
             if exchange not in self.ohlcv_data:
                 self.ohlcv_data[exchange] = {}
             
             key = f"{symbol}_{timeframe}"
             
-            # Convert DataFrame to OHLCV list format
-            # Expected format: [[timestamp_ms, open, high, low, close, volume], ...]
+            # Eğer buffer zaten varsa, üzerine ekleme yapacağız. Yoksa yeni oluştur.
+            if key not in self.ohlcv_data[exchange]:
+                self.ohlcv_data[exchange][key] = deque(maxlen=self.buffer_size)
+
+            # DataFrame'i [timestamp, open, high, low, close, volume] listesine çevir
             ohlcv_list = []
             for timestamp, row in df.iterrows():
-                # Convert timestamp to milliseconds
-                if hasattr(timestamp, 'timestamp'):
-                    timestamp_ms = int(timestamp.timestamp() * 1000)
-                else:
-                    timestamp_ms = int(pd.Timestamp(timestamp).timestamp() * 1000)
-                
+                timestamp_ms = int(pd.Timestamp(timestamp).timestamp() * 1000)
                 ohlcv_list.append([
                     timestamp_ms,
-                    float(row.get('open', 0)),
-                    float(row.get('high', 0)),
-                    float(row.get('low', 0)),
-                    float(row.get('close', 0)),
-                    float(row.get('volume', 0))
+                    row['open'], row['high'], row['low'], row['close'], row['volume']
                 ])
             
-            # Store in buffer with timestamp wrapper (same format as streaming data)
-            self.ohlcv_data[exchange][key] = [
-                {
-                    'timestamp': datetime.now(timezone.utc),
-                    'data': ohlcv_list
-                }
-            ]
+            # Mevcut buffer'ı temizle ve geçmiş veriyi ekle. Bu, çift yüklemeyi engeller.
+            self.ohlcv_data[exchange][key].clear()
+            self.ohlcv_data[exchange][key].extend(ohlcv_list)
             
-            logger.info(f"[PRIME] ✅ Primed buffer with {len(ohlcv_list)} candles for {exchange} {symbol} {timeframe}")
-            
+            logger.info(f"[PRIME] ✅ Primed buffer with {len(ohlcv_list)} candles for {exchange} {key}. Buffer size: {len(self.ohlcv_data[exchange][key])}")
+
         except Exception as e:
-            logger.error(f"[PRIME] ❌ Failed to prime buffer for {exchange} {symbol} {timeframe}: {e}", exc_info=True)
+            logger.error(f"[PRIME] ❌ Failed to prime buffer for {exchange} {key}: {e}", exc_info=True)
