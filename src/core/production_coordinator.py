@@ -132,6 +132,9 @@ class ProductionCoordinator:
         # Configuration
         self.config = LiveTradingConfiguration.load()
         
+        # Debug ayarını config'den oku
+        self.debug_logging = self.config.get('debug', {}).get('strategy_logging', False)
+        
         # Market regime analyzer başlat
         self.market_regime_analyzer = None #MarketRegimeAnalyzer()
         
