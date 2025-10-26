@@ -194,7 +194,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
         
         # Data validation
         if df_30m is None or df_30m.empty:
-            logger.info(f"  ❌ No data available")
+            if self.debug_logging: logger.info(f"[{self.strategy_name.upper()}-DEBUG] {symbol_display} - ❌ No 30m data available.")
             return None
         
         # Safely get last row
@@ -217,6 +217,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
             # Get price and RSI data
             close_price = float(last['close'])
             rsi_val = float(last['rsi'])
+            ema_fast = float(last.get('ema_fast', 0)) # EMA yoksa çökmemesi için .get()
             
             # Get adaptive RSI threshold
             market_regime = {
