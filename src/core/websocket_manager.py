@@ -479,13 +479,35 @@ class WebSocketManager:
             }
         }
 
-    def get_latest_data(self, symbol: str, timeframe: str = '1m') -> Optional[Dict[str, Any]]:
+    def _create_data_response(self, exchange: str, symbol: str, timeframe: str, ohlcv: List) -> Dict[str, Any]:
+        """
+        Create a standardized data response dictionary.
+        
+        Args:
+            exchange: Exchange name
+            symbol: Trading symbol
+            timeframe: Timeframe
+            ohlcv: OHLCV data list
+            
+        Returns:
+            Dict with structured OHLCV data
+        """
+        return {
+            'exchange': exchange,
+            'symbol': symbol,
+            'timeframe': timeframe,
+            'ohlcv': ohlcv,
+            'timestamp': datetime.now(timezone.utc)
+        }
+    
+    def get_latest_data(self, symbol: str, timeframe: str = '1m', exchange: str = None) -> Optional[Dict[str, Any]]:
         """
         Get latest cached data for a symbol (PRODUCTION COORDINATOR COMPAT).
         
         Args:
             symbol: Trading pair (e.g., 'BTC/USDT:USDT')
             timeframe: Timeframe (e.g., '1m', '5m')
+            exchange: Optional specific exchange to query
             
         Returns:
             Dict with latest OHLCV data or None if not available
@@ -495,19 +517,27 @@ class WebSocketManager:
         if not hasattr(self, '_data_collector'):
             logger.warning("Data collector not initialized - this should not happen!")
             self._data_collector = StreamDataCollector(buffer_size=100)
-            
-        # Get from any available exchange
-        for exchange in self._active_streams.keys():
-            # Try to get cached data
+        
+        # If specific exchange requested, only check that exchange
+        if exchange:
             latest_ohlcv = self._data_collector.get_latest_ohlcv(exchange, symbol, timeframe)
             if latest_ohlcv:
-                return {
-                    'exchange': exchange,
-                    'symbol': symbol,
-                    'timeframe': timeframe,
-                    'ohlcv': latest_ohlcv,
-                    'timestamp': datetime.now(timezone.utc)
-                }
+                return self._create_data_response(exchange, symbol, timeframe, latest_ohlcv)
+            return None
+            
+        # Get from any available exchange - check both active streams and collector data
+        # First try active streams (for live data)
+        for exchange in self._active_streams.keys():
+            latest_ohlcv = self._data_collector.get_latest_ohlcv(exchange, symbol, timeframe)
+            if latest_ohlcv:
+                return self._create_data_response(exchange, symbol, timeframe, latest_ohlcv)
+        
+        # If no active streams, check all exchanges in the collector (for primed data)
+        if hasattr(self._data_collector, 'ohlcv_data'):
+            for exchange in self._data_collector.ohlcv_data.keys():
+                latest_ohlcv = self._data_collector.get_latest_ohlcv(exchange, symbol, timeframe)
+                if latest_ohlcv:
+                    return self._create_data_response(exchange, symbol, timeframe, latest_ohlcv)
                 
         # No cached data available
         logger.debug(f"No cached data for {symbol} {timeframe}")
