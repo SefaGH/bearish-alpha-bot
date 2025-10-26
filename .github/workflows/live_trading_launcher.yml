@@ -562,7 +562,7 @@ jobs:
         with:
           name: health-reports-${{ github.run_number }}
           path: |
-            health_*.json
+            logs/health_*.json
             restart_*.log
             circuit_breaker_*.log
           retention-days: 7

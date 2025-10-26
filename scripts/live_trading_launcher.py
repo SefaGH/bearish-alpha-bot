@@ -25,6 +25,7 @@ import logging
 import argparse
 import time
 import inspect
+import json
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
@@ -653,10 +654,18 @@ class HealthMonitor:
         self._stop_event = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
         
+        # Health report file path
+        ts = self.start_time.strftime('%Y%m%d_%H%M%S')
+        log_dir = 'logs'
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
+        self.health_log_path = os.path.join(log_dir, f'health_{ts}.json')
+        
         logger.info("="*70)
         logger.info("HEALTH MONITORING SYSTEM INITIALIZED (Layer 3 Guardian)")
         logger.info("="*70)
         logger.info(f"Heartbeat Interval: {self.heartbeat_interval}s")
+        logger.info(f"Health Report Path: {self.health_log_path}")
         logger.info("="*70)
     
     async def start_monitoring(self) -> asyncio.Task:
@@ -690,6 +699,10 @@ class HealthMonitor:
             except asyncio.CancelledError:
                 pass
         
+        # Write final health report
+        final_snapshot = self.get_health_report()
+        self._write_health_report(snapshot=final_snapshot, final=True)
+        
         logger.info("Health monitor stopped")
     
     async def _monitoring_loop(self):
@@ -717,6 +730,10 @@ class HealthMonitor:
                 # Update heartbeat
                 self.last_heartbeat = datetime.now(timezone.utc)
                 self.metrics['loops_completed'] += 1
+                
+                # Write periodic health report
+                snapshot = self.get_health_report()
+                self._write_health_report(snapshot=snapshot, final=False)
                 
                 # Send periodic Telegram update
                 if self.telegram and self.metrics['loops_completed'] % 12 == 0:  # Every hour
@@ -755,6 +772,37 @@ class HealthMonitor:
             'metrics': self.metrics,
             'last_heartbeat': self.last_heartbeat.isoformat()
         }
+    
+    def _write_health_report(self, snapshot: Optional[Dict[str, Any]] = None, final: bool = False):
+        """
+        Write health report to JSON file.
+        
+        Args:
+            snapshot: Optional health snapshot to write. If None, generates one from get_health_report()
+            final: Whether this is a final report (on shutdown)
+        """
+        try:
+            if snapshot is None:
+                snapshot = self.get_health_report()
+            
+            # Add metadata
+            report = {
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'report_type': 'final' if final else 'periodic',
+                'health': snapshot
+            }
+            
+            # Write to file
+            with open(self.health_log_path, 'w') as f:
+                json.dump(report, f, indent=2, default=str)
+            
+            if final:
+                logger.info(f"Final health report written to {self.health_log_path}")
+            else:
+                logger.debug(f"Health report updated: {self.health_log_path}")
+                
+        except Exception as e:
+            logger.warning(f"Failed to write health report: {e}")
 
 
 class AutoRestartManager:
