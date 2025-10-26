@@ -159,24 +159,26 @@ class ProductionCoordinator:
         Try to fetch latest WS OHLCV for timeframe using both raw and normalized symbols.
         Returns a DataFrame if found, otherwise None.
         """
-        if not getattr(self, 'websocket_manager', None):
+        if not getattr(self, 'websocket_manager', None) or not self.websocket_manager.collector:
             return None
 
-        candidates = []
+        # Sadece normalize edilmiş sembolü kullan, çünkü collector bu formatta saklıyor.
         sym_norm = self._normalize_symbol_for_ws(symbol)
-        # Try raw first, then normalized (only if different)
-        if symbol:
-            candidates.append(symbol)
-        if sym_norm and sym_norm != symbol:
-            candidates.append(sym_norm)
 
-        for sym in candidates:
-            try:
-                data = self.websocket_manager.get_latest_data(sym, timeframe)
-            except Exception:
-                data = None
-            if data and data.get('ohlcv'):
-                return self._ohlcv_to_dataframe(data['ohlcv'])
+        try:
+            # Doğrudan collector'dan OHLCV listesini al
+            ohlcv_list = self.websocket_manager.collector.get_latest_ohlcv(
+                exchange='bingx',  # Varsayılan olarak bingx kullanıyoruz
+                symbol=sym_norm,
+                timeframe=timeframe
+            )
+            
+            if ohlcv_list:
+                # Listeyi DataFrame'e çevir
+                return self._ohlcv_to_dataframe(ohlcv_list)
+        except Exception as e:
+            logger.error(f"Error fetching {sym_norm} {timeframe} from collector: {e}")
+        
         return None
 
     def _setup_websocket_connections(self) -> bool:
@@ -301,111 +303,85 @@ class ProductionCoordinator:
 
     async def process_symbol(self, symbol: str) -> Optional[Dict]:
         """
-        Process a single symbol for signals with market regime analysis.
-        
-        Args:
-            symbol: Trading symbol to process
-            
-        Returns:
-            Signal dictionary if found, None otherwise
+        Process a single symbol for signals.
+        This method is now streamlined to use the pre-loaded data from the WebSocket collector.
         """
         try:
             self.processed_symbols_count += 1
-            logger.info(f"[DATA-FETCH] Fetching market data for {symbol}")
-            
-            # WebSocket'ten veri almayı dene - TÜM ZAMAN DİLİMLERİNİ FETCH ET
-            df_1m = None
-            df_5m = None
-            df_30m = None
-            df_1h = None
-            df_4h = None
-            
-            if self.websocket_manager:
-                try:
-                    # Hem ham sembol hem normalize sembolle dene (':USDT' fallback)
-                    df_1m  = self._ws_fetch_df_with_fallback(symbol, '1m')
-                    df_5m  = self._ws_fetch_df_with_fallback(symbol, '5m')
-                    df_30m = self._ws_fetch_df_with_fallback(symbol, '30m')
-                    df_1h  = self._ws_fetch_df_with_fallback(symbol, '1h')
-                    df_4h  = self._ws_fetch_df_with_fallback(symbol, '4h')
+            logger.info(f"⚙️ [PROCESS] Processing symbol: {symbol}")
 
-                    # Mevcut olan tüm zaman dilimlerini topla ve logla
-                    available_tfs = [tf for tf, df in [('1m', df_1m), ('5m', df_5m), ('30m', df_30m), ('1h', df_1h), ('4h', df_4h)] if df is not None and not df.empty]
-                    
-                    if available_tfs:
-                        logger.info(f"[DATA-FETCH] ✅ WebSocket data retrieved for {symbol} (Available TFs: {', '.join(available_tfs)})")
-                        
-                        # Eksik zaman dilimlerini bul ve logla
-                        all_tfs = {'1m', '5m', '30m', '1h', '4h'}
-                        missing_tfs = all_tfs - set(available_tfs)
-                        if missing_tfs:
-                             logger.info(f"[DATA-FETCH] ℹ️ WebSocket missing {sorted(list(missing_tfs))} for {symbol} (will try REST to complete)")
+            # 1. Veriyi Doğrudan ve Sadece WebSocket Collector'dan Al
+            # Bu fonksiyon artık hem geçmiş (primed) hem de canlı veriyi içeren tam DataFrame'i döndürecek.
+            df_30m = self._ws_fetch_df_with_fallback(symbol, '30m')
+            df_1h = self._ws_fetch_df_with_fallback(symbol, '1h')
+            df_4h = self._ws_fetch_df_with_fallback(symbol, '4h')
+            
+            # Diğer zaman dilimleri stratejiler tarafından direkt kullanılmıyor ama rejim analizi için alınabilir.
+            df_1m = self._ws_fetch_df_with_fallback(symbol, '1m')
+            df_5m = self._ws_fetch_df_with_fallback(symbol, '5m')
+
+            market_data = {
+                '1m': df_1m, '5m': df_5m, '30m': df_30m, '1h': df_1h, '4h': df_4h
+            }
+
+            # 2. Veri Doğrulama Logları
+            if self.debug_logging:
+                logger.info(f"📊 [DATA-VALIDATION] For {symbol}:")
+                for tf, df in market_data.items():
+                    if df is not None and not df.empty:
+                        candle_count = len(df)
+                        # 200 mum, çoğu indikatör için güvenli bir limittir.
+                        status_icon = "✅" if candle_count > 200 else "⚠️"
+                        last_close = df['close'].iloc[-1]
+                        logger.info(f"  {status_icon} {tf}: {candle_count} candles | Last Close: ${last_close:,.2f}")
+                    elif tf in ['30m', '1h']:
+                        logger.error(f"  ❌ {tf}: NO DATA AVAILABLE! Strategy cannot run.")
                     else:
-                        logger.info(f"[DATA-FETCH] ⚠️ No WebSocket data found for {symbol}, will try REST API")
-                        
-                except AttributeError as e:
-                    logger.warning(f"[DATA-FETCH] WebSocketManager missing get_latest_data method: {e}")
-                    pass
+                        logger.info(f"  ℹ️ {tf}: No data available for this optional timeframe.")
             
-            # REST API fallback: SADECE EKSİK OLAN TF'LERİ TAMAMLA
-            missing_timeframes = []
-            if df_1m is None:
-                missing_timeframes.append('1m')
-            if df_5m is None:
-                missing_timeframes.append('5m')
-            if df_30m is None:
-                missing_timeframes.append('30m')
-            if df_1h is None:
-                missing_timeframes.append('1h')
-            if df_4h is None:
-                missing_timeframes.append('4h')
+            # Strateji için ana veri (30m) yoksa direkt çık
+            if df_30m is None or df_30m.empty:
+                logger.warning(f"Skipping {symbol} due to missing primary (30m) data.")
+                return None
 
-            if missing_timeframes and self.exchange_clients:
-                logger.info(f"[DATA-FETCH] Using REST API fallback for {symbol} (missing: {missing_timeframes})")
-                # İlk mevcut exchange'i kullan
-                for exchange_name, client in self.exchange_clients.items():
-                    try:
-                        # Her eksik TF için ayrı timeout ile isteği paralel başlat
-                        fetch_tasks = []
-                        for tf in missing_timeframes:
-                            fetch_tasks.append(
-                                asyncio.create_task(asyncio.wait_for(
-                                    self._fetch_ohlcv(client, symbol, tf),
-                                    timeout=10.0
-                                ))
-                            )
-                        
-                        # Toplam 15 saniye üst sınır
-                        results = await asyncio.wait_for(
-                            asyncio.gather(*fetch_tasks, return_exceptions=True),
-                            timeout=15.0
-                        )
-                        
-                        # Sonuçları uygun df'lere yerleştir
-                        for tf, res in zip(missing_timeframes, results):
-                            if not isinstance(res, Exception) and res is not None:
-                                if tf == '1m':
-                                    df_1m = res
-                                elif tf == '5m':
-                                    df_5m = res
-                                elif tf == '30m':
-                                    df_30m = res
-                                elif tf == '1h':
-                                    df_1h = res
-                                elif tf == '4h':
-                                    df_4h = res
-                        
-                        # En azından 30m tamamlanmışsa başarılı sayalım
-                        if df_30m is not None:
-                            logger.info(f"[DATA-FETCH] ✅ REST API data retrieved for {symbol}")
-                            break
-                            
-                    except asyncio.TimeoutError:
-                        logger.warning(f"[DATA-FETCH] ⏱️ REST API timeout for {symbol} (15s limit)")
-                        continue
-                    except Exception as e:
-                        logger.warning(f"[DATA-FETCH] REST API failed: {e}")
-                        continue
+            # 3. Market Rejim Analizi (Mevcut haliyle kalabilir)
+            metadata = {}
+            if self.market_regime_analyzer:
+                try:
+                    regime = self.market_regime_analyzer.analyze_market_regime(df_30m, df_1h, df_4h)
+                    metadata = {'regime': regime}
+                except Exception as e:
+                    logger.warning(f"[REGIME] Regime analysis failed for {symbol}: {e}")
+
+            # 4. Stratejileri Çalıştır
+            logger.info(f"[STRATEGY-CHECK] Executing {len(self.strategies)} strategies for {symbol}")
+            for strategy_name, strategy_instance in self.strategies.items():
+                logger.info(f"[STRATEGY-CHECK] Running {strategy_name} for {symbol}...")
+                try:
+                    # Stratejiler artık tüm market verisini alabilir
+                    signal = strategy_instance.signal(
+                        df_30m=df_30m, 
+                        df_1h=df_1h, 
+                        regime_data=metadata.get('regime'), 
+                        symbol=symbol,
+                        market_data=market_data
+                    )
+                    
+                    if signal:
+                        signal['strategy'] = strategy_name
+                        signal['metadata'] = metadata
+                        signal['symbol'] = symbol
+                        signal['timestamp'] = datetime.now(timezone.utc)
+                        logger.info(f"📊 Signal from {strategy_name} for {symbol}: {signal.get('reason')}")
+                        return signal # İlk sinyali bul ve döngüden çık
+                except Exception as e:
+                    logger.error(f"❌ {strategy_name} error for {symbol}: {e}", exc_info=True)
+            
+            return None # Hiçbir strateji sinyal üretmediyse None dön
+
+        except Exception as e:
+            logger.error(f"❌ Critical error processing {symbol}: {e}", exc_info=True)
+            return None
             
             # ===== MARKET REGIME ANALYSIS =====
             metadata = {}
@@ -604,49 +580,30 @@ class ProductionCoordinator:
 
     async def _process_trading_loop(self):
         """Main trading loop processing with timeout protection and detailed logging."""
-        # Log entry to confirm loop is executing
         logger.info(f"📋 [PROCESSING] Starting processing loop for {len(self.active_symbols)} symbols")
-        import time
         start_time = time.time()
         
+        # Artık tüm semboller için görevleri paralel başlatabiliriz. Bu, hızı artırır.
+        tasks = [self.process_symbol(symbol) for symbol in self.active_symbols]
+        signals = await asyncio.gather(*tasks, return_exceptions=True)
+
         processed_count = 0
         signal_count = 0
         error_count = 0
-        
-        for symbol in self.active_symbols:
-            try:
-                logger.info(f"[PROCESSING] Symbol {processed_count + 1}/{len(self.active_symbols)}: {symbol}")
-                symbol_start = time.time()
-                
-                # Add timeout protection and capture the returned signal
-                signal = await asyncio.wait_for(
-                    self.process_symbol(symbol),
-                    timeout=30.0
-                )
-                
-                symbol_duration = time.time() - symbol_start
-                logger.info(f"[PROCESSING] {symbol} completed in {symbol_duration:.2f}s")
-                processed_count += 1
-    
-                # If a signal was generated, submit it for execution
-                if signal:
-                    logger.info(f"✅ Signal generated for {symbol}, submitting to execution engine")
-                    submission_result = await self.submit_signal(signal)
-                    if not submission_result.get('success'):
-                        logger.warning(f"Failed to submit signal for {symbol}: {submission_result.get('reason')}")
-                    else:
-                        signal_count += 1
+
+        for i, result in enumerate(signals):
+            symbol = self.active_symbols[i]
+            processed_count += 1
+            if isinstance(result, Exception):
+                logger.error(f"❌ Error processing {symbol}: {result}", exc_info=False)
+                error_count += 1
+            elif result:
+                logger.info(f"✅ Signal generated for {symbol}, submitting to execution engine")
+                submission_result = await self.submit_signal(result)
+                if not submission_result.get('success'):
+                    logger.warning(f"Failed to submit signal for {symbol}: {submission_result.get('reason')}")
                 else:
-                    logger.info(f"ℹ️ No signal generated for {symbol}")
-    
-            except asyncio.TimeoutError:
-                logger.error(f"⏱️ Timeout processing {symbol} after 30s - skipping")
-                error_count += 1
-                continue
-            except Exception as e:
-                logger.error(f"❌ Error processing {symbol}: {e}", exc_info=True)
-                error_count += 1
-                continue
+                    signal_count += 1
         
         total_duration = time.time() - start_time
         logger.info(f"✅ [PROCESSING] Completed processing loop in {total_duration:.2f}s")
