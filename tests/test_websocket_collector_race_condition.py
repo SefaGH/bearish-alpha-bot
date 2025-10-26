@@ -1,8 +1,9 @@
 """
 Test for WebSocket collector race condition fix.
 
-This test verifies that the fixes for Issue #XX (WebSocket Manager collector 
-not ready) work correctly.
+This test verifies that the fixes for WebSocket Manager collector race condition
+work correctly. The issue was that MarketDataPipeline tried to inject data before
+WebSocketManager's collector was ready, causing repeated warnings.
 """
 
 import pytest
@@ -192,7 +193,6 @@ class TestWebSocketCollectorRaceCondition:
         key = 'BTC/USDT:USDT_1h'
         assert 'bingx' in ws_manager.collector.ohlcv_data
         assert key in ws_manager.collector.ohlcv_data['bingx']
-
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
