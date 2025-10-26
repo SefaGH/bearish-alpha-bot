@@ -158,7 +158,9 @@ class HealthMonitor:
                 json.dump(report, f, indent=2, default=str)
                 
         except Exception as e:
-            # Silently handle write errors
+            # Silently handle write errors to prevent health monitoring from disrupting
+            # the main application. Health reports are diagnostic tools and should not
+            # cause application failures. Common scenarios: disk full, permission errors.
             pass
 
 
@@ -408,7 +410,9 @@ class TestHealthReportIntegration:
         """Test that multiple monitors create different health report files."""
         # Create two monitors
         monitor1 = HealthMonitor(telegram=None)
-        await asyncio.sleep(1.1)  # Ensure different timestamps (1 second resolution)
+        # Sleep for 1+ seconds to ensure different timestamps
+        # (health log filename uses second-resolution timestamp format: %Y%m%d_%H%M%S)
+        await asyncio.sleep(1.1)
         monitor2 = HealthMonitor(telegram=None)
         
         # They should have different paths
