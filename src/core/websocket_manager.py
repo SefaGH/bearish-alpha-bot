@@ -62,7 +62,7 @@ class WebSocketManager:
         self.streams = {}  # Track active streams for health monitoring
         
         # ✅ FIX 2: Initialize data collector in __init__ (not in subscribe_to_symbols)
-        self._data_collector = StreamDataCollector(buffer_size=100)
+        self._data_collector = StreamDataCollector(config=self.config)
         logger.info("✅ StreamDataCollector initialized in __init__")
         
         # Detect if we're using CcxtClient instances or credentials
