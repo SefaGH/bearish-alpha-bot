@@ -43,6 +43,7 @@ class AdaptiveShortTheRip(ShortTheRip):
         super().__init__(cfg)
         self.regime_analyzer = regime_analyzer
         self.base_cfg = cfg.copy()
+        self.debug_logging = self.base_cfg.get('debug', {}).get('strategy_logging', False)
         
     def get_symbol_specific_threshold(self, symbol: str) -> Optional[float]:
         """
@@ -194,7 +195,7 @@ class AdaptiveShortTheRip(ShortTheRip):
         
         # Data validation
         if df_30m is None or df_30m.empty:
-            logger.info(f"  ❌ No data available")
+            if self.debug_logging: logger.info(f"[{self.strategy_name.upper()}-DEBUG] {symbol_display} - ❌ No 30m data available.")
             return None
         
         # Safely get last row
@@ -237,6 +238,7 @@ class AdaptiveShortTheRip(ShortTheRip):
             # Get price and RSI data
             close_price = float(last30['close'])
             rsi_val = float(last30['rsi'])
+            ema_fast = float(last30.get('ema_fast', 0))
             
             # Get adaptive RSI threshold
             market_regime = {
@@ -246,6 +248,34 @@ class AdaptiveShortTheRip(ShortTheRip):
             }
             
             adaptive_rsi_threshold = self.get_adaptive_rsi_threshold(market_regime)
+
+            if self.debug_logging:
+                logger.info(f"🔍 [{self.strategy_name.upper()}-CHECK] {symbol_display}")
+                logger.info(f"  - Market Regime: {market_regime.get('trend', 'N/A')}, Volatility: {market_regime.get('volatility', 'N/A')}")
+                logger.info(f"  - Current Price: ${close_price:,.2f}")
+                logger.info(f"  - Current 30m RSI: {rsi_val:.2f}")
+                logger.info(f"  - Adaptive RSI Threshold: {adaptive_rsi_threshold:.2f}")
+                logger.info(f"  - Current 30m EMA Fast: ${ema_fast:,.2f}")
+
+            # Ana sinyal koşulları
+            rsi_condition = rsi_val >= adaptive_rsi_threshold
+            price_condition = close_price > ema_fast if ema_fast > 0 else True
+
+            if self.debug_logging:
+                logger.info(f"  - Condition 'RSI >= Threshold': {rsi_condition}")
+                if ema_fast > 0:
+                    logger.info(f"  - Condition 'Price > EMA Fast': {price_condition}")
+
+            # Reddetme nedenlerini logla
+            if not rsi_condition:
+                if self.debug_logging: logger.info(f"  └─ ❌ REJECT: RSI ({rsi_val:.2f}) is below the adaptive threshold ({adaptive_rsi_threshold:.2f}).")
+                return None
+
+            if not price_condition:
+                if self.debug_logging: logger.info(f"  └─ ❌ REJECT: Price (${close_price:,.2f}) is not above the fast EMA (${ema_fast:,.2f}).")
+                return None
+            
+            if self.debug_logging: logger.info("  └─ ✅ ACCEPT: All conditions met. Proceeding to signal generation.")
             
             # Get symbol-specific threshold override if available
             symbol_specific_threshold = self.get_symbol_specific_threshold(symbol_display)
