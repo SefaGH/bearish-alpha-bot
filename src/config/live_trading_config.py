@@ -261,6 +261,14 @@ class LiveTradingConfiguration:
             'ema_mid': cls.get_env_int('INDICATOR_EMA_MID', 50),
             'ema_slow': cls.get_env_int('INDICATOR_EMA_SLOW', 200),
         }
+
+        # ==========================================================
+        # DEBUG AYARLARI
+        # ==========================================================
+        env_config['debug'] = {
+            'strategy_logging': cls.get_env_bool('DEBUG_STRATEGY_LOGGING', False),
+            # Gelecekte eklenebilecek diğer debug ayarları buraya gelebilir.
+            # 'data_validation_logging': cls.get_env_bool('DEBUG_DATA_VALIDATION', False),
         
         logger.info("✅ Environment variables loaded")
         return env_config
