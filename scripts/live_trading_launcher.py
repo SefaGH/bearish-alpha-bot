@@ -857,8 +857,8 @@ class LiveTradingLauncher:
                      
         # Define capital and risk parameters FIRST
         self._capital_source = "default"
-        self._default_capital_usdt = 100.0
-        self.CAPITAL_USDT = float(self._default_capital_usdt)
+        self._default_CAPITAL_USDT = 100.0
+        self.CAPITAL_USDT = float(self._default_CAPITAL_USDT)
         self.RISK_PARAMS = {
             'max_position_size': 0.20,  # 20% max position
             'stop_loss_pct': 0.02,      # 2% stop loss
@@ -1003,7 +1003,7 @@ class LiveTradingLauncher:
                 return max(capital, 0.0)
 
         self._capital_source = "default"
-        return float(self._default_capital_usdt)
+        return float(self._default_CAPITAL_USDT)
 
     @property
     def capital_source(self) -> str:
