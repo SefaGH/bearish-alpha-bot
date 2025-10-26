@@ -49,7 +49,7 @@ data/
 *.csv
 *.log
 !logs/.gitkeep
-logs/*.json
+logs/health_*.json
 test_results.txt
 
 # OS
