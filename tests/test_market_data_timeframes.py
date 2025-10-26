@@ -20,11 +20,17 @@ def create_mock_dataframe(periods=100):
     """Create a mock OHLCV dataframe with indicators."""
     dates = pd.date_range(end=datetime.now(), periods=periods, freq='1min')
     
-    # Generate mock OHLCV data
-    close = np.cumsum(np.random.randn(periods)) + 100
-    high = close + np.random.rand(periods) * 2
-    low = close - np.random.rand(periods) * 2
-    open_ = close + np.random.randn(periods)
+    # Generate realistic mock OHLCV data
+    close = np.cumsum(np.random.randn(periods) * 0.5) + 100
+    
+    # Ensure realistic price relationships
+    open_ = close * (1 + np.random.randn(periods) * 0.001)  # Small variation from close
+    high_range = np.abs(np.random.randn(periods) * 0.5)
+    low_range = np.abs(np.random.randn(periods) * 0.5)
+    
+    high = np.maximum(open_, close) + high_range
+    low = np.minimum(open_, close) - low_range
+    
     volume = np.random.randint(1000, 10000, periods)
     
     df = pd.DataFrame({
@@ -39,6 +45,13 @@ def create_mock_dataframe(periods=100):
     }, index=dates)
     
     return df
+
+
+# Shared configuration for tests
+BASE_CONFIG = {
+    'tp_pct': 0.015,
+    'sl_atr_mult': 1.0
+}
 
 
 def test_adaptive_ob_accepts_market_data():
@@ -66,11 +79,10 @@ def test_adaptive_ob_accepts_market_data():
         '1h': df_1h
     }
     
-    # Initialize strategy
+    # Initialize strategy with oversold-specific config
     config = {
-        'rsi_max': 35,
-        'tp_pct': 0.015,
-        'sl_atr_mult': 1.0
+        **BASE_CONFIG,
+        'rsi_max': 35
     }
     
     strategy = AdaptiveOversoldBounce(config, regime_analyzer=None)
@@ -117,11 +129,10 @@ def test_adaptive_str_accepts_market_data():
         '1h': df_1h
     }
     
-    # Initialize strategy
+    # Initialize strategy with overbought-specific config
     config = {
-        'rsi_min': 65,
-        'tp_pct': 0.015,
-        'sl_atr_mult': 1.0
+        **BASE_CONFIG,
+        'rsi_min': 65
     }
     
     strategy = AdaptiveShortTheRip(config, regime_analyzer=None)
