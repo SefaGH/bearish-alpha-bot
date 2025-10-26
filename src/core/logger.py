@@ -5,38 +5,37 @@ import os
 from datetime import datetime
 from typing import Set
 
-
 MANAGED_ROOT_LOG_FILES: Set[str] = set()
 
 def setup_logger(name: str = "bearish_alpha_bot", level: str = None, log_to_file: bool = True) -> logging.Logger:
     """
     Set up a configured logger for the bot.
-    
+
     Args:
         name: Logger name
         level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
                If None, reads from LOG_LEVEL env var, defaults to INFO
         log_to_file: Whether to also log to a file (default: True)
-    
+
     Returns:
         Configured logger instance
     """
     if level is None:
         level = os.getenv('LOG_LEVEL', 'INFO').upper()
-    
+
     # Resolve desired numeric level once
     log_level = getattr(logging, level, logging.INFO)
 
     # Create logger
     logger = logging.getLogger(name)
     logger.setLevel(log_level)
-    
+
     # Create formatter
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    
+
     # Ensure console handler exists and is configured
     console_handlers = [
         h for h in logger.handlers
@@ -72,7 +71,9 @@ def setup_logger(name: str = "bearish_alpha_bot", level: str = None, log_to_file
 
             # Create log file with timestamp
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-            log_file = os.path.join(log_dir, f'bearish_alpha_bot_{timestamp}.log')
+            # Default basename chosen to match workflow expectations
+            basename = os.getenv('LOG_FILE_BASENAME', 'live_trading')
+            log_file = os.path.join(log_dir, f'{basename}_{timestamp}.log')
     elif existing_file_handler:
         log_file = existing_file_handler.baseFilename
 
@@ -93,6 +94,33 @@ def setup_logger(name: str = "bearish_alpha_bot", level: str = None, log_to_file
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)
             logger.info(f"File logging enabled: {log_file}")
+
+            # Backwards compatibility: create symlinks for older patterns if possible
+            try:
+                # e.g. create bearish_alpha_bot_{ts}.log symlink pointing to live_trading_{ts}.log
+                log_dir = os.path.dirname(abs_log_file)
+                ts_part = os.path.basename(abs_log_file).split('_', 1)[-1]  # keep timestamp+rest
+                # Create a legacy-style symlink name
+                legacy_name = os.path.join(log_dir, f'bearish_alpha_bot_{ts_part}')
+                latest_name = os.path.join(log_dir, 'live_trading_latest.log')
+                # Remove if exists, then create symlink
+                if os.path.exists(legacy_name) or os.path.islink(legacy_name):
+                    try:
+                        os.remove(legacy_name)
+                    except Exception:
+                        pass
+                os.symlink(abs_log_file, legacy_name)
+                # Update or create latest symlink
+                if os.path.exists(latest_name) or os.path.islink(latest_name):
+                    try:
+                        os.remove(latest_name)
+                    except Exception:
+                        pass
+                os.symlink(abs_log_file, latest_name)
+            except Exception:
+                # Some environments (Windows runners without permissions) may not allow symlinks.
+                # In those cases, silently continue without breaking logging.
+                pass
 
     # Ensure root logger forwards logs for modules that don't call setup_logger
     root_logger = logging.getLogger()
