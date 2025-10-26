@@ -44,6 +44,24 @@ class AdaptiveShortTheRip(ShortTheRip):
         self.regime_analyzer = regime_analyzer
         self.base_cfg = cfg.copy()
         self.debug_logging = self.base_cfg.get('debug', {}).get('strategy_logging', False)
+
+        def _validate_input_data(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame, regime_data: Dict, symbol: str) -> tuple[bool, str]:
+            """Gerekli tüm verilerin varlığını ve geçerliliğini kontrol eder."""
+            if df_30m is None or df_30m.empty:
+                return False, "Input data 'df_30m' is missing or empty."
+            
+            required_cols = ['close', 'rsi', 'atr', 'ema_fast', 'ema21', 'ema50', 'ema200']
+            missing_cols = [col for col in required_cols if col not in df_30m.columns]
+            if missing_cols:
+                return False, f"df_30m is missing required indicator columns: {missing_cols}."
+                
+            if self.debug_logging:
+                if df_1h is None or df_1h.empty:
+                    logger.info(f"[{self.strategy_name.upper()}-INFO] {symbol} - 'df_1h' is missing. Market regime analysis may be less accurate.")
+                if regime_data is None:
+                    logger.info(f"[{self.strategy_name.upper()}-INFO] {symbol} - 'regime_data' is missing. Strategy will fallback to non-adaptive mode.")
+    
+            return True, "All required data is present."
         
     def get_symbol_specific_threshold(self, symbol: str) -> Optional[float]:
         """
@@ -193,10 +211,12 @@ class AdaptiveShortTheRip(ShortTheRip):
         symbol_display = symbol or "UNKNOWN"
         logger.info(f"[STR-DEBUG] {symbol_display}")
         
-        # Data validation
-        if df_30m is None or df_30m.empty:
-            if self.debug_logging: logger.info(f"[{self.strategy_name.upper()}-DEBUG] {symbol_display} - ❌ No 30m data available.")
-            return None
+        # --- Kapsamlı Veri Doğrulama ---
+        if self.debug_logging:
+            validation_passed, reason = self._validate_input_data(df_30m, df_1h, regime_data, symbol_display)
+            if not validation_passed:
+                logger.warning(f"[{self.strategy_name.upper()}-REJECT] {symbol_display} - {reason}")
+                return None
         
         # Safely get last row
         try:
@@ -249,30 +269,37 @@ class AdaptiveShortTheRip(ShortTheRip):
             
             adaptive_rsi_threshold = self.get_adaptive_rsi_threshold(market_regime)
 
+            # --- Detaylı Teşhis Logları (Tam Hali) ---
             if self.debug_logging:
                 logger.info(f"🔍 [{self.strategy_name.upper()}-CHECK] {symbol_display}")
-                logger.info(f"  - Market Regime: {market_regime.get('trend', 'N/A')}, Volatility: {market_regime.get('volatility', 'N/A')}")
+                logger.info(f"  - Market Regime: {market_regime.get('trend', 'N/A')}")
                 logger.info(f"  - Current Price: ${close_price:,.2f}")
                 logger.info(f"  - Current 30m RSI: {rsi_val:.2f}")
                 logger.info(f"  - Adaptive RSI Threshold: {adaptive_rsi_threshold:.2f}")
-                logger.info(f"  - Current 30m EMA Fast: ${ema_fast:,.2f}")
 
-            # Ana sinyal koşulları
+            # 1. Ana Koşul: RSI
             rsi_condition = rsi_val >= adaptive_rsi_threshold
-            price_condition = close_price > ema_fast if ema_fast > 0 else True
-
             if self.debug_logging:
                 logger.info(f"  - Condition 'RSI >= Threshold': {rsi_condition}")
-                if ema_fast > 0:
-                    logger.info(f"  - Condition 'Price > EMA Fast': {price_condition}")
-
-            # Reddetme nedenlerini logla
+            
             if not rsi_condition:
                 if self.debug_logging: logger.info(f"  └─ ❌ REJECT: RSI ({rsi_val:.2f}) is below the adaptive threshold ({adaptive_rsi_threshold:.2f}).")
                 return None
 
-            if not price_condition:
-                if self.debug_logging: logger.info(f"  └─ ❌ REJECT: Price (${close_price:,.2f}) is not above the fast EMA (${ema_fast:,.2f}).")
+            # 2. Teyit Koşulu: EMA Hizalaması
+            trend_strength = regime_data.get('micro_trend_strength', 0.5)
+            ema_params = self.adapt_ema_requirements(trend_strength)
+            ema_ok = True
+            if ema_params['require_strict_ema_align']:
+                ema21 = float(last30['ema21'])
+                ema50 = float(last30['ema50'])
+                ema200 = float(last30['ema200'])
+                ema_ok = ema21 < ema50 <= ema200
+                if self.debug_logging:
+                    logger.info(f"  - Condition 'Strict EMA Align (21<50<=200)': {ema_ok} (Values: {ema21:.1f} < {ema50:.1f} <= {ema200:.1f})")
+            
+            if not ema_ok:
+                if self.debug_logging: logger.info(f"  └─ ❌ REJECT: EMA alignment check failed.")
                 return None
             
             if self.debug_logging: logger.info("  └─ ✅ ACCEPT: All conditions met. Proceeding to signal generation.")
