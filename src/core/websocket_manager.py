@@ -865,35 +865,63 @@ class StreamDataCollector:
         resolved_buffer_size = buffer_size
         if config:
             resolved_buffer_size = config.get('websocket', {}).get('buffer_size', buffer_size)
+        
+        # Throttling/Debouncing için config
+        ws_config = config.get('websocket', {}) if config else {}
+        self.throttle_interval_ms = ws_config.get('throttle_interval_ms', 250)
 
         self.buffer_size = int(resolved_buffer_size)
         # Veri yapısını basitleştir: deque doğrudan OHLCV listelerini tutacak
         self.ohlcv_data: Dict[str, Dict[str, 'deque']] = {}  # exchange -> key -> deque
         self.ticker_data: Dict[str, Dict[str, 'deque']] = {} # exchange -> key -> deque
-        logger.info(f"StreamDataCollector initialized with buffer_size={self.buffer_size}")
+        
+        # Throttling için cache
+        self._last_update_cache: Dict[str, float] = {} # key -> timestamp (float)
+        
+        logger.info(f"StreamDataCollector initialized with buffer_size={self.buffer_size} and throttle_interval={self.throttle_interval_ms}ms")
     
     async def ohlcv_callback(self, exchange: str, symbol: str, timeframe: str, ohlcv: List):
-        """Callback to collect OHLCV data."""
+        """Callback to collect OHLCV data with throttling/debouncing."""
         from collections import deque
+        
+        key = f"{exchange}_{symbol}_{timeframe}"
+        now = time.time()
+        
+        # Throttling/Debouncing mekanizması
+        last_update_time = self._last_update_cache.get(key, 0)
+        if (now - last_update_time) * 1000 < self.throttle_interval_ms:
+            # Eğer çok sık güncelleme geliyorsa, sadece son güncellemeyi değiştir
+            if exchange in self.ohlcv_data and f"{symbol}_{timeframe}" in self.ohlcv_data[exchange]:
+                buffer = self.ohlcv_data[exchange][f"{symbol}_{timeframe}"]
+                if buffer:
+                    # Gelen veri tek bir mum ise, sondaki mumu bununla değiştir
+                    if ohlcv and isinstance(ohlcv[0], (int, float)):
+                        buffer[-1] = ohlcv
+                        # logger.debug(f"[THROTTLE] Replaced last candle for {key}")
+                        return # Yeni mum eklemeden çık
+                    # Gelen veri mum listesi ise, bu mantık şimdilik desteklenmiyor
+                    
+        # Throttling periyodu dışındaysa normal işleme devam et
+        self._last_update_cache[key] = now
 
         if exchange not in self.ohlcv_data:
             self.ohlcv_data[exchange] = {}
         
-        key = f"{symbol}_{timeframe}"
-        if key not in self.ohlcv_data[exchange]:
+        buffer_key = f"{symbol}_{timeframe}"
+        if buffer_key not in self.ohlcv_data[exchange]:
             # Yeni anahtar için yeni bir deque oluştur
-            self.ohlcv_data[exchange][key] = deque(maxlen=self.buffer_size)
+            self.ohlcv_data[exchange][buffer_key] = deque(maxlen=self.buffer_size)
         
         # Gelen veriyi doğrudan deque'e ekle
         # Gelen veri tek bir mum ise: [timestamp, o, h, l, c, v]
         if ohlcv and isinstance(ohlcv[0], (int, float)):
-             self.ohlcv_data[exchange][key].append(ohlcv)
+             self.ohlcv_data[exchange][buffer_key].append(ohlcv)
         # Gelen veri mum listesi ise (bazı durumlarda olabilir)
         elif ohlcv and isinstance(ohlcv[0], list):
              for candle in ohlcv:
-                 self.ohlcv_data[exchange][key].append(candle)
+                 self.ohlcv_data[exchange][buffer_key].append(candle)
 
-        logger.debug(f"Collected OHLCV: {exchange} {key} (buffer: {len(self.ohlcv_data[exchange][key])})")
+        logger.debug(f"Collected OHLCV: {exchange} {buffer_key} (buffer: {len(self.ohlcv_data[exchange][buffer_key])})")
     
     async def ticker_callback(self, exchange: str, symbol: str, ticker: Dict):
         """Callback to collect ticker data."""
