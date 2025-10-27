@@ -1635,7 +1635,7 @@ class LiveTradingLauncher:
         """
         logger.info("\n[8/8] Performing Pre-Flight System Checks...")
         
-        checks_passed = True
+        failed_checks = []
         
         try:
             # Check 1: Exchange connectivity
