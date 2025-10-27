@@ -790,6 +790,16 @@ class LiveTradingEngine:
         except Exception as e:
             logger.error(f"[PREFETCH] Fatal error during historical data prefetch: {e}", exc_info=True)
             logger.warning("[PREFETCH] Continuing without pre-fetched data. Signal generation may be delayed.")
+
+    # --- GERİYE DÖNÜK UYUMLULUK METODU ---
+    def prefetch_data(self):
+        """
+        Backwards-compatible public wrapper for _prefetch_historical_data.
+        This ensures that external callers expecting `prefetch_data` do not break.
+        It simply returns the awaitable coroutine from the internal method.
+        """
+        logger.debug("[PREFETCH-WRAPPER] Public `prefetch_data` called. Delegating to internal `_prefetch_historical_data`.")
+        return self._prefetch_historical_data()
     
     def _determine_default_exchange(self, symbol: str) -> Optional[str]:
         """Determine default exchange for a generated signal."""
