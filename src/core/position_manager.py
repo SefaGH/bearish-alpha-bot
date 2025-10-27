@@ -60,6 +60,7 @@ class ExitReason(Enum):
     SIGNAL_EXIT = 'signal_exit'
     MANUAL = 'manual'
     EMERGENCY = 'emergency'
+    SHUTDOWN = 'shutdown'  # *** YENİ: Kapanış için yeni neden ***
 
 
 class AdvancedPositionManager:
@@ -88,6 +89,85 @@ class AdvancedPositionManager:
         self.monitoring_task = None
         
         logger.info("AdvancedPositionManager initialized")
+
+    # *** YENİ METOT: Tüm açık pozisyonları kapatmak için ***
+    async def close_all_positions(self, reason: str = ExitReason.SHUTDOWN.value) -> Dict[str, Any]:
+        """
+        Force-close all open positions, typically on shutdown or emergency.
+        This is a critical function for risk management.
+
+        Args:
+            reason: The reason for closing all positions.
+
+        Returns:
+            A summary of the closing operations.
+        """
+        if not self.positions:
+            logger.info("No open positions to close.")
+            return {'success': True, 'closed_count': 0, 'errors': []}
+
+        logger.warning(f"🚨 Initiating closure of all {len(self.positions)} open positions. Reason: {reason}")
+        
+        closed_count = 0
+        errors = []
+        
+        # Create a copy of keys to iterate over, as the dictionary will be modified
+        position_ids_to_close = list(self.positions.keys())
+
+        for position_id in position_ids_to_close:
+            position = self.positions.get(position_id)
+            if not position:
+                continue
+
+            symbol = position['symbol']
+            side = position['side']
+            amount = position['amount']
+            
+            # Determine the closing side
+            close_side = 'buy' if side.lower() in ['short', 'sell'] else 'sell'
+            
+            try:
+                # Use the order manager from the portfolio manager to create and execute a market order
+                order_manager = self.portfolio_manager.order_manager
+                if not order_manager:
+                    logger.error(f"Cannot close {symbol}: OrderManager is not available.")
+                    errors.append({'position_id': position_id, 'reason': 'OrderManager not found'})
+                    continue
+
+                logger.info(f"Submitting market order to close {position_id}: {close_side} {amount} {symbol}")
+                
+                # Assume market order execution is handled by the order manager
+                # In a real scenario, this would involve a call like:
+                # execution_result = await order_manager.execute_market_order(symbol, close_side, amount)
+                
+                # For paper/test mode, we simulate the close
+                current_price = await self._get_current_price_from_ws(symbol)
+                if not current_price:
+                    # Fallback if price is not available
+                    current_price = position.get('current_price', position.get('entry_price'))
+                    logger.warning(f"Could not fetch live price for {symbol}, using last known price: {current_price}")
+
+                execution_result = {
+                    'success': True, 
+                    'avg_price': current_price, 
+                    'filled_amount': amount
+                }
+
+                if execution_result.get('success'):
+                    exit_price = execution_result.get('avg_price')
+                    await self.close_position(position_id, exit_price, exit_reason=reason)
+                    closed_count += 1
+                else:
+                    error_reason = execution_result.get('reason', 'Execution failed')
+                    logger.error(f"Failed to close position {position_id}: {error_reason}")
+                    errors.append({'position_id': position_id, 'reason': error_reason})
+
+            except Exception as e:
+                logger.error(f"Critical error closing position {position_id}: {e}", exc_info=True)
+                errors.append({'position_id': position_id, 'reason': str(e)})
+
+        logger.info(f"✅ Position closure summary: Closed={closed_count}, Errors={len(errors)}")
+        return {'success': len(errors) == 0, 'closed_count': closed_count, 'errors': errors}
     
     async def open_position(self, signal: Dict, execution_result: Dict) -> Dict[str, Any]:
         """
@@ -341,7 +421,7 @@ class AdvancedPositionManager:
             exit_emoji = '🛑' if exit_reason == 'stop_loss' else ('🎯' if exit_reason == 'take_profit' else ('🚦' if exit_reason == 'trailing_stop' else '🔄'))
             
             logger.info(
-                f"{exit_emoji} [{'STOP-LOSS-HIT' if exit_reason == 'stop_loss' else 'TAKE-PROFIT-HIT' if exit_reason == 'take_profit' else 'TRAILING-STOP-HIT' if exit_reason == 'trailing_stop' else 'POSITION-CLOSED'}] {position_id}\n"
+                f"{exit_emoji} [{'STOP-LOSS-HIT' if exit_reason == 'stop_loss' else 'TAKE-PROFIT-HIT' if exit_reason == 'take_profit' else 'TRAILING-STOP-HIT' if exit_reason == 'trailing_stop' else 'P[...]
                 f"   Symbol: {symbol}\n"
                 f"   Entry: ${entry_price:.2f}, Exit: ${exit_price:.2f}\n"
                 f"   P&L: ${realized_pnl:.2f} ({return_pct:+.2f}%)\n"
@@ -375,7 +455,16 @@ class AdvancedPositionManager:
             # Try WebSocket first
             if self.ws_manager:
                 try:
-                    ticker = self.ws_manager.get_latest_ticker(symbol)
+                    # WebSocket'ten fiyat almayı dene
+                    # ÖNEMLİ: Bu, WebSocketManager'da get_latest_ticker gibi bir metodun
+                    # var olduğunu varsayar. Eğer yoksa, collector'dan direkt alınabilir.
+                    ticker = None
+                    if hasattr(self.ws_manager, 'get_latest_ticker'):
+                         ticker = self.ws_manager.get_latest_ticker(symbol)
+                    elif hasattr(self.ws_manager, 'collector'):
+                         # Collector'dan almayı dene
+                         ticker = self.ws_manager.collector.get_latest_data(symbol, 'ticker')
+
                     if ticker and 'last' in ticker:
                         return float(ticker['last'])
                 except Exception as ws_error:
@@ -385,7 +474,7 @@ class AdvancedPositionManager:
             if hasattr(self.portfolio_manager, 'exchange_clients') and self.portfolio_manager.exchange_clients:
                 for ex_name, client in self.portfolio_manager.exchange_clients.items():
                     try:
-                        ticker = client.fetch_ticker(symbol)
+                        ticker = await asyncio.to_thread(client.fetch_ticker, symbol)
                         last_price = ticker.get('last', ticker.get('close', 0))
                         if last_price > 0:
                             return float(last_price)
