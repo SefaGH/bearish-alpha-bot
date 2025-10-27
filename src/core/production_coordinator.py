@@ -1031,6 +1031,33 @@ class ProductionCoordinator:
             else:
                 logger.warning("⚠️ No WebSocket manager provided by launcher. Continuing without WebSocket.")
 
+            # Eğer dışarıdan bir websocket_manager sağlanmadıysa, kendimiz oluşturmayı deneyelim.
+            if not self.websocket_manager and self.exchange_clients:
+                try:
+                    logger.info("ℹ️ No external WebSocketManager provided — creating internal one.")
+                    self.websocket_manager = WebSocketManager(exchanges=self.exchange_clients)
+                    self._setup_websocket_connections()
+                except Exception as e:
+                    logger.error(f"⚠️ Failed to create internal WebSocketManager: {e}")
+
+            # WebSocket yöneticimiz varsa, collector'ın hazır olmasını bekleyelim.
+            if self.websocket_manager:
+                logger.info("⏱️ Waiting for WebSocket collector to become ready (max 5s)...")
+                collector_ready = False
+                for _ in range(10): # 10 * 0.5s = 5s
+                    if hasattr(self.websocket_manager, 'collector') and self.websocket_manager.collector:
+                        collector_ready = True
+                        break
+                    await asyncio.sleep(0.5)
+                
+                if collector_ready:
+                    logger.info("✅ WebSocket collector is ready.")
+                else:
+                    logger.warning("⚠️ WebSocket collector did not become ready after 5s.")
+            else:
+                 logger.warning("⚠️ No WebSocket manager available. Indicator validation will rely on REST.")
+            # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
             # ========================================
             # STEP 3: MARKET REGIME ANALYZER            
             # ========================================
@@ -1107,7 +1134,7 @@ class ProductionCoordinator:
             logger.info("✓ Market data pipeline initialized")
             
             # ========================================
-            # STEP 8.5: VERIFY WEBSOCKET COLLECTOR READY
+            # STEP 9: VERIFY WEBSOCKET COLLECTOR READY
             # ========================================
             if self.websocket_manager:
                 if hasattr(self.websocket_manager, 'is_collector_ready'):
@@ -1125,7 +1152,7 @@ class ProductionCoordinator:
                 logger.info("ℹ️ No WebSocket manager - pipeline will use REST API only")
             
             # ========================================
-            # STEP 9: INITIALIZE STRATEGY COORDINATOR (GÜNCELLENDİ)
+            # STEP 10: INITIALIZE STRATEGY COORDINATOR (GÜNCELLENDİ)
             # ========================================
             self.strategy_coordinator = StrategyCoordinator(
                 self.portfolio_manager,
@@ -1136,7 +1163,7 @@ class ProductionCoordinator:
             logger.info("✓ Strategy coordinator initialized")
             
             # ========================================
-            # STEP 10: INITIALIZE CIRCUIT BREAKER
+            # STEP 11: INITIALIZE CIRCUIT BREAKER
             # ========================================
             self.circuit_breaker = CircuitBreakerSystem(
                 self.portfolio_manager,
@@ -1145,7 +1172,7 @@ class ProductionCoordinator:
             logger.info("✓ Circuit breaker system initialized")
             
             # ========================================
-            # STEP 11: INITIALIZE LIVE TRADING ENGINE
+            # STEP 12: INITIALIZE LIVE TRADING ENGINE
             # ========================================
             self.trading_engine = LiveTradingEngine(
                 mode=mode,
@@ -1158,7 +1185,7 @@ class ProductionCoordinator:
             logger.info(f"✓ Live trading engine initialized (mode: {mode})")
             
             # ========================================
-            # STEP 12: SET ACTIVE SYMBOLS (CRITICAL!)
+            # STEP 13: SET ACTIVE SYMBOLS (CRITICAL!)
             # ========================================
             if trading_symbols:
                 # Priority 1: Use provided parameter
@@ -1177,7 +1204,7 @@ class ProductionCoordinator:
                 logger.info(f"✓ Trading engine symbols cache set: {len(self.active_symbols)} symbols")
             
             # ========================================
-            # STEP 13: VALIDATE ACTIVE SYMBOLS          
+            # STEP 14: VALIDATE ACTIVE SYMBOLS          
             # ========================================
             if not self.active_symbols:
                 logger.error("="*70)
@@ -1196,7 +1223,7 @@ class ProductionCoordinator:
                 logger.info("="*70)
             
             # ========================================
-            # STEP 13.5: INITIALIZE ML COMPONENTS (NEW)
+            # STEP 15: INITIALIZE ML COMPONENTS (NEW)
             # ========================================
             ml_enabled = self.config.get('ml', {}).get('enabled', False)
             if ml_enabled and self.active_symbols:
@@ -1219,7 +1246,7 @@ class ProductionCoordinator:
                     logger.warning("⚠️ Cannot initialize ML without active symbols")
             
             # ========================================
-            # STEP 14: MARK AS INITIALIZED
+            # STEP 16: MARK AS INITIALIZED
             # ========================================
             self.is_initialized = True
             
