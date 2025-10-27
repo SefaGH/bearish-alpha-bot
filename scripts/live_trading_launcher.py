@@ -933,10 +933,9 @@ class LiveTradingLauncher:
         self.restart_manager = None
         self.health_monitor = None
 
-        # Cleanup tracking
+        # *** YENİ: Cleanup tracking için daha basit bir flag ***
         self._cleanup_done = False
-        self._shutdown_event = asyncio.Event()
-
+        
         # WebSocket optimization manager
         self.ws_optimizer = None
 
@@ -1092,6 +1091,7 @@ class LiveTradingLauncher:
         
         return self.trading_pairs
     
+    # *** DÜZELTME: Bu fonksiyon, kapanıştaki hataları düzeltecek şekilde yeniden yazıldı. ***
     async def cleanup(self):
         """
         Properly cleanup all resources.
@@ -1100,6 +1100,7 @@ class LiveTradingLauncher:
         This method is idempotent - safe to call multiple times.
         
         Cleans up:
+        - Open positions
         - WebSocket streams
         - Exchange connections (ccxt clients)
         - Production system components
@@ -1114,112 +1115,98 @@ class LiveTradingLauncher:
         logger.info("🧹 STARTING CLEANUP")
         logger.info("=" * 70)
 
-        # 🆕 1. Production coordinator'ı durdur
+        errors = []
+
+        # 1. Stop the Production Coordinator's main loop to prevent new signals
         if self.coordinator:
-            self.coordinator.is_running = False
-            logger.info("✅ Production coordinator stopped")
+            if self.coordinator.is_running:
+                logger.info("Stopping production coordinator loop...")
+                self.coordinator.is_running = False
+                logger.info("✅ Production coordinator loop stopped")
+
+        # 2. Close all open positions (CRITICAL - DO THIS BEFORE SHUTTING DOWN THE ENGINE)
+        if self.coordinator and self.coordinator.trading_engine and self.coordinator.trading_engine.position_manager:
+            logger.info("Closing all open positions...")
+            try:
+                # *** AÇIKLAMA: Hatanın kaynağı burasıydı. Artık doğru yoldan erişiyoruz: coordinator -> trading_engine -> position_manager ***
+                result = await self.coordinator.trading_engine.position_manager.close_all_positions(reason='shutdown')
+                logger.info(f"✅ Positions closed: {result.get('closed_count', 0)} closed, {len(result.get('errors', []))} errors.")
+                if result.get('errors'):
+                    errors.append(f"Position closure failed for some positions: {result['errors']}")
+            except Exception as e:
+                logger.error(f"⚠️ Error closing positions: {e}", exc_info=True)
+                errors.append(f"Position closure process failed: {e}")
+        else:
+            logger.warning("PositionManager not found, cannot close open positions.")
+
+        # 3. Stop WebSocket streams
+        if self.ws_optimizer:
+            logger.info("Stopping WebSocket streams...")
+            try:
+                await asyncio.wait_for(self.ws_optimizer.stop_streaming(), timeout=10.0)
+                logger.info("✅ WebSocket streams stopped")
+            except asyncio.TimeoutError:
+                logger.error("⚠️ WebSocket stop timed out (10s)")
+                errors.append("WebSocket stop timeout")
+            except Exception as e:
+                logger.error(f"⚠️ WebSocket stop failed: {e}", exc_info=True)
+                errors.append(f"WebSocket stop: {e}")
         
-        cleanup_errors = []
-        
-        try:
-            # 1. Stop WebSocket streams
-            if self.ws_optimizer:
-                logger.info("Stopping WebSocket streams...")
+        # 4. Stop the rest of the production system components (engine, etc.)
+        if self.coordinator:
+            logger.info("Stopping production system components...")
+            try:
+                await asyncio.wait_for(self.coordinator.stop_system(), timeout=10.0)
+                logger.info("✅ Production system components stopped")
+            except asyncio.TimeoutError:
+                logger.error("⚠️ Production system stop timed out (10s)")
+                errors.append("Production system stop timeout")
+            except Exception as e:
+                logger.error(f"⚠️ Production system stop failed: {e}", exc_info=True)
+                errors.append(f"Production system stop: {e}")
+
+        # 5. Close exchange connections (CCXT clients)
+        if self.exchange_clients:
+            logger.info("Closing exchange connections...")
+            for name, client in self.exchange_clients.items():
                 try:
-                    await asyncio.wait_for(
-                        self.ws_optimizer.stop_streaming(),
-                        timeout=10.0
-                    )
-                    logger.info("✅ WebSocket streams stopped")
+                    close_ret = client.close()
+                    if inspect.isawaitable(close_ret):
+                        await asyncio.wait_for(close_ret, timeout=5.0)
+                    logger.info(f"✅ {name} connection closed")
                 except asyncio.TimeoutError:
-                    logger.error("⚠️ WebSocket stop timeout (10s)")
-                    cleanup_errors.append("WebSocket stop timeout")
+                    logger.error(f"⚠️ {name} connection close timed out (5s)")
+                    errors.append(f"{name} connection close timeout")
                 except Exception as e:
-                    logger.error(f"⚠️ WebSocket stop failed: {e}")
-                    cleanup_errors.append(f"WebSocket: {e}")
-            
-            # 2. Close production system components
-            if self.coordinator:
-                logger.info("Closing production system...")
-                try:
-                    await asyncio.wait_for(
-                        self.coordinator.stop_system(),
-                        timeout=10.0
-                    )
-                    logger.info("✅ Production system stopped")
-                except asyncio.TimeoutError:
-                    logger.error("⚠️ Production system stop timeout (10s)")
-                    cleanup_errors.append("Production system timeout")
-                except Exception as e:
-                    logger.error(f"⚠️ Production system stop failed: {e}")
-                    cleanup_errors.append(f"Production system: {e}")
-            
-            # 3. Close exchange clients (CRITICAL!)
-            if self.exchange_clients:
-                logger.info("Closing exchange connections...")
-                for exchange_name, client in self.exchange_clients.items():
-                    try:
-                        close_ret = client.close()
-                        if inspect.isawaitable(close_ret):
-                            await asyncio.wait_for(close_ret, timeout=5.0)
-                        else:
-                            await asyncio.to_thread(client.close)
-                        logger.info(f"✅ {exchange_name} connection closed")
-                    except asyncio.TimeoutError:
-                        logger.error(f"⚠️ {exchange_name} close timeout (5s)")
-                        cleanup_errors.append(f"{exchange_name} close timeout")
-                    except Exception as e:
-                        logger.error(f"⚠️ {exchange_name} close failed: {e}")
-                        cleanup_errors.append(f"{exchange_name}: {e}")
-            
-            # 4. Cancel pending async tasks
-            logger.info("Cancelling pending tasks...")
-            pending = [t for t in asyncio.all_tasks() if not t.done() and t is not asyncio.current_task()]
-            
-            if pending:
-                logger.info(f"⚠️ Found {len(pending)} pending tasks")
-                
-                for task in pending:
-                    task.cancel()
-                    logger.debug(f"Cancelled task: {task.get_name()}")
-                
-                # Wait for cancellation with timeout
-                try:
-                    await asyncio.wait_for(
-                        asyncio.gather(*pending, return_exceptions=True),
-                        timeout=5.0
-                    )
-                    logger.info("✅ All pending tasks cancelled")
-                except asyncio.TimeoutError:
-                    logger.warning("⚠️ Some tasks did not cancel in time")
-                    cleanup_errors.append("Task cancellation timeout")
-            else:
-                logger.info("✅ No pending tasks")
-            
-            # 5. Flush logs
-            logger.info("Flushing logs...")
-            for handler in logger.handlers:
-                try:
-                    handler.flush()
-                except Exception as e:
-                    logger.error(f"⚠️ Log flush failed: {e}")
-            
-            self._cleanup_done = True
-            
-            logger.info("=" * 70)
-            if cleanup_errors:
-                logger.warning(f"⚠️ CLEANUP COMPLETED WITH {len(cleanup_errors)} ERRORS:")
-                for error in cleanup_errors:
-                    logger.warning(f"  - {error}")
-            else:
-                logger.info("✅ CLEANUP COMPLETED SUCCESSFULLY")
-            logger.info("=" * 70)
-            
-        except Exception as e:
-            logger.error(f"❌ Cleanup fatal error: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
+                    logger.error(f"⚠️ Failed to close {name} connection: {e}", exc_info=True)
+                    errors.append(f"{name} connection close: {e}")
+
+        # 6. Cancel any remaining asyncio tasks
+        logger.info("Cancelling pending tasks...")
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if pending:
+            logger.info(f"Found {len(pending)} pending tasks to cancel.")
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            logger.info("✅ All pending tasks cancelled")
+        else:
+            logger.info("✅ No pending tasks")
+
+        # 7. Flush logs
+        logger.info("Flushing logs...")
+        logging.shutdown()
+
+        logger.info("=" * 70)
+        if errors:
+            logger.warning(f"⚠️ CLEANUP COMPLETED WITH {len(errors)} ERRORS:")
+            for i, error in enumerate(errors, 1):
+                logger.warning(f"  {i}. {error}")
+        else:
+            logger.info("✅ CLEANUP COMPLETED SUCCESSFULLY")
+        logger.info("=" * 70)
+
+        self._cleanup_done = True
     
     def _load_environment(self) -> bool:
         """
@@ -1642,7 +1629,7 @@ class LiveTradingLauncher:
                 logger.info(f"✓ BTC/USDT:USDT price: ${ticker.get('last', 0):.2f}")
             except Exception as e:
                 logger.error(f"❌ Exchange connectivity failed: {e}")
-                checks_passed = False
+                failed_checks.append("Exchange connectivity")
             
             # Check 2: System state
             logger.info("Check 2/7: System state...")
@@ -1651,7 +1638,7 @@ class LiveTradingLauncher:
                 logger.info("✓ Production system initialized")
             else:
                 logger.error("❌ Production system not initialized")
-                checks_passed = False
+                failed_checks.append("System initialization")
             
             # Check 3: Risk limits
             logger.info("Check 3/7: Risk limits...")
@@ -1661,7 +1648,7 @@ class LiveTradingLauncher:
                 logger.info(f"✓ Risk limits configured")
             else:
                 logger.error("❌ Risk manager not available")
-                checks_passed = False
+                failed_checks.append("Risk manager")
             
             # Check 4: Strategies
             logger.info("Check 4/7: Strategy registration...")
@@ -1670,7 +1657,7 @@ class LiveTradingLauncher:
                 logger.info(f"✓ {len(strategies)} strategies registered")
             else:
                 logger.error("❌ Portfolio manager not available")
-                checks_passed = False
+                failed_checks.append("Strategy registration")
             
             # Check 5: Emergency protocols
             logger.info("Check 5/7: Emergency shutdown protocols...")
@@ -1698,10 +1685,10 @@ class LiveTradingLauncher:
                     logger.info(f"✅ WebSocket data flow confirmed ({working_symbols}/{min(3, len(symbols))} symbols)")
                 else:
                     logger.error("❌ WebSocket connected but no data flowing across required TFs")
-                    checks_passed = False
+                    failed_checks.append("WebSocket data flow")
             else:
                 logger.error("❌ WebSocket not initialized")
-                checks_passed = False
+                failed_checks.append("WebSocket initialization")
 
             # ============================================================================
             # Indicator Warmup Validation                                                                                                     
@@ -1720,7 +1707,7 @@ class LiveTradingLauncher:
     
                     # 2. SONRA: Enjekte edilmiş veriyi doğrula.
                     logger.info("  -> Step 2: Validating prefetched data...")
-                    validator = IndicatorValidator(self.ws_optimizer)
+                    validator = IndicatorValidator(self.ws_optimizer.ws_manager) # *** AÇIKLAMA: ws_optimizer.ws_manager olarak düzeltildi ***
                     all_valid, validation_results = await validator.validate_all_symbols(
                         symbols=self.TRADING_PAIRS,
                         exchange='bingx'
