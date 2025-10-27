@@ -7,6 +7,7 @@ Live Trading Launcher for Bearish Alpha Bot
 
 import sys
 import os
+from core.logger import setup_logger
 
 # Check Python version at startup (before any other imports)
 # Can be bypassed for testing by setting SKIP_PYTHON_VERSION_CHECK=1
@@ -53,8 +54,10 @@ from strategies.adaptive_str import AdaptiveShortTheRip
 from core.logger import setup_logger
 from core.indicator_validator import IndicatorValidator
 
-# Configure logging with file support
-logger = setup_logger(name=__name__, log_to_file=True)
+# Debug modu ortam değişkenine göre log seviyesini ayarla
+is_debug = os.getenv('DEBUG_STRATEGY_LOGGING', 'false').lower() == 'true'
+# Merkezi logger'ı çağır. Bu, tüm uygulama için loglamayı başlatacak.
+logger = setup_logger("bearish-alpha-bot", debug_mode=is_debug, log_to_file=True)
 
 
 # ============= WebSocket Optimization Manager =============
