@@ -173,6 +173,11 @@ jobs:
           # Helpful placeholder so upload-artifact always has at least one file if no logs produced
           : > logs/.placeholder || true
 
+            - name: Install TA-Lib C-Library
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ta-lib-dev
+
       - name: Install Dependencies
         shell: bash
         run: |
@@ -182,8 +187,8 @@ jobs:
           # Install specific versions for compatibility
           pip install --no-cache-dir 'aiohttp==3.8.6' 'yarl<2.0' 'multidict<7.0'
           
-          # Install TA library (required for strategies)
-          pip install --no-cache-dir 'ta>=0.10.2'
+          # Install TA-Lib Python library (Doğrusu bu)
+          pip install --no-cache-dir TA-Lib
           
           # Install WebSocket libraries
           pip install --no-cache-dir 'websocket-client>=1.6.0' 'websockets>=10.0'
@@ -289,6 +294,11 @@ jobs:
           python-version: "3.11"
           cache: 'pip'
 
+            - name: Install TA-Lib C-Library
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ta-lib-dev
+
       - name: Install Dependencies
         shell: bash
         run: |
@@ -297,6 +307,9 @@ jobs:
           pip install --upgrade pip setuptools wheel
           # Fix for parse_frame error - install specific versions first WITH QUOTES
           pip install --no-cache-dir 'aiohttp==3.8.6' 'yarl<2.0' 'multidict<7.0'
+          
+          # Install TA-Lib Python library (Doğrusu bu)
+          pip install --no-cache-dir TA-Lib
           
           # === KOŞULLU YÜKLEME BAŞLANGICI ===
           if [ "${{ github.event.inputs.enable_ml }}" = "true" ]; then
