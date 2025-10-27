@@ -1827,6 +1827,11 @@ class ProductionCoordinator:
         logger.info("Stopping production system...")
         self.is_running = False
         
+        # *** YENİ: Kapanışta pozisyonları kapat ***
+        if self.portfolio_manager and self.portfolio_manager.position_manager:
+            logger.info("Closing all open positions on shutdown...")
+            await self.portfolio_manager.position_manager.close_all_positions()
+
         # Cancel monitoring task
         if hasattr(self, '_monitoring_task') and self._monitoring_task:
             self._monitoring_task.cancel()
