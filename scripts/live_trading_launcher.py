@@ -36,7 +36,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from core.production_coordinator import ProductionCoordinator
 from core.ccxt_client import CcxtClient
 from core.notify import Telegram
-from core.debug_logger import DebugLogger
 from core.system_info import SystemInfoCollector, format_startup_header
 from config.risk_config import RiskConfiguration
 from config.optimization_config import OptimizationConfiguration
@@ -1257,11 +1256,6 @@ class LiveTradingLauncher:
             logger.info("✓ Telegram notifications enabled")
         else:
             logger.info("ℹ️  Telegram notifications disabled (optional)")
-        
-        # Initialize debug logger if debug mode is enabled
-        if self.debug_mode:
-            self.debug_logger = DebugLogger(debug_mode=True)
-            logger.info("✓ Debug Logger initialized")
         
         # Initialize health monitor (Layer 3)
         if self.infinite or self.auto_restart:
