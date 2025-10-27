@@ -89,39 +89,37 @@ class LiveTradingEngine:
     """Production-ready live trading execution engine with enhanced debugging."""
     
     def __init__(self, mode='paper', portfolio_manager=None, risk_manager=None,
+                 order_manager=None, position_manager=None, # <<< YENİ PARAMETRELER
                  exchange_clients=None, strategy_coordinator: Optional['StrategyCoordinator'] = None,
                  market_data_pipeline: Optional[Any] = None):
         """
-        Initialize live trading engine.
+        Initialize live trading engine with pre-configured managers.
         
         Args:
             mode: Trading mode ('paper', 'live', 'simulation')
-            portfolio_manager: PortfolioManager from Phase 3.3
-            risk_manager: RiskManager from Phase 3.2
-            exchange_clients: Dict of exchange client instances from Phase 1
-            strategy_coordinator: StrategyCoordinator instance
-            market_data_pipeline: MarketDataPipeline instance with an active websocket_manager
+            portfolio_manager: PortfolioManager instance.
+            risk_manager: RiskManager instance.
+            order_manager: Pre-configured SmartOrderManager instance.
+            position_manager: Pre-configured AdvancedPositionManager instance.
+            exchange_clients: Dict of exchange client instances.
+            strategy_coordinator: StrategyCoordinator instance.
+            market_data_pipeline: MarketDataPipeline instance.
         """
-        # VALIDATION EKLENDİ ✅
         if exchange_clients is not None and not isinstance(exchange_clients, dict):
             raise TypeError(f"exchange_clients must be a dict, got {type(exchange_clients).__name__}")
             
         self.portfolio_manager = portfolio_manager
         self.risk_manager = risk_manager
-        # self.ws_manager artık kullanılmıyor, kaldırıldı.
         self.exchange_clients = exchange_clients or {}
     
-        # Coordinator ve Pipeline referansları
         self.strategy_coordinator = strategy_coordinator
         self.market_data_pipeline = market_data_pipeline
         
-        # Initialize sub-managers (YENİ VE GÜVENLİ YOL)
-        self.order_manager = SmartOrderManager(risk_manager, exchange_clients)
-        self.position_manager = AdvancedPositionManager(
-            portfolio_manager, 
-            risk_manager, 
-            self.market_data_pipeline.websocket_manager if self.market_data_pipeline else None
-        )
+        # --- DEĞİŞTİRİLEN KISIM ---
+        # Artık kendi yöneticilerimizi oluşturmuyoruz, dışarıdan hazır alıyoruz.
+        self.order_manager = order_manager
+        self.position_manager = position_manager
+                     
         self.execution_analytics = ExecutionAnalytics(self.order_manager, self.position_manager)
         
         # Engine state
