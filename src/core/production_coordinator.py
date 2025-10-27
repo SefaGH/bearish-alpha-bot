@@ -59,6 +59,8 @@ from .circuit_breaker import CircuitBreakerSystem
 # Phase 3.4: Live Trading Components
 from .live_trading_engine import LiveTradingEngine
 from .market_data_pipeline import MarketDataPipeline
+from .indicator_validator import IndicatorValidator
+
 
 # Strategy imports - DÜZELTILDI
 from strategies.adaptive_ob import AdaptiveOversoldBounce
@@ -140,6 +142,46 @@ class ProductionCoordinator:
         self.market_regime_analyzer = None #MarketRegimeAnalyzer()
         
         logger.info("ProductionCoordinator created")
+
+    async def verify_indicator_health(self) -> bool:
+        """
+        Perform real-time indicator health check during trading loop.
+        Called every 5 minutes to ensure indicators remain valid.
+        
+        Returns:
+            bool: True if all indicators healthy, False otherwise
+        """
+        logger.info("🏥 [HEALTH-CHECK] Performing indicator health check...")
+        
+        try:
+            # Validator'ı burada oluşturuyoruz, çünkü her zaman en güncel ws_manager'a ihtiyacı var.
+            validator = IndicatorValidator(self.websocket_manager)
+            
+            all_valid, results = await validator.validate_all_symbols(
+                symbols=self.active_symbols,
+                exchange='bingx'
+            )
+            
+            if not all_valid:
+                logger.warning("⚠️  [HEALTH-CHECK] Some indicators unhealthy")
+                
+                # Log unhealthy indicators
+                for symbol, result in results.items():
+                    if not result['overall_valid']:
+                        logger.warning(f"   {symbol}:")
+                        for error in result['errors']:
+                            logger.warning(f"      - {error}")
+                
+                # Decide whether to pause trading
+                # (For now, just warn. Could implement auto-pause)
+                return False
+            
+            logger.info("✅ [HEALTH-CHECK] All indicators healthy")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ [HEALTH-CHECK] Health check failed: {e}")
+            return False
 
     def _normalize_symbol_for_ws(self, symbol: str) -> str:
         """
@@ -1200,6 +1242,10 @@ class ProductionCoordinator:
             # gereksizdi ve sistem başlangıcını yavaşlatıyordu.
             # =============================================================
             
+            # YENİ: Periyodik sağlık kontrolü için değişkenler
+            last_health_check_time = time.monotonic()
+            health_check_interval = 300 # 5 dakika
+
             while self.is_running:
                 # ✅ ENHANCED: Always log loop entry at INFO level for visibility
                 if loop_iteration == 0:
@@ -1259,38 +1305,12 @@ class ProductionCoordinator:
                     await self._process_trading_loop()
                     logger.info("🔍 [DEBUG] _process_trading_loop() completed")
                     
-                    # Market regime recommendations (periyodik)
-                    current_time = datetime.now(timezone.utc)
-                    time_since_last = (current_time - last_recommendation_time).total_seconds()
-                    
-                    if time_since_last >= recommendation_interval:
-                        if self.market_regime_analyzer and self.active_symbols:
-                            try:
-                                # İlk sembol için recommendations al
-                                test_symbol = self.active_symbols[0]
-                                
-                                if self.websocket_manager:
-                                    df_30m = self.websocket_manager.get_latest_data(test_symbol, '30m')
-                                    df_1h = self.websocket_manager.get_latest_data(test_symbol, '1h')
-                                    df_4h = self.websocket_manager.get_latest_data(test_symbol, '4h')
-                                    
-                                    if df_30m is not None and df_1h is not None and df_4h is not None:
-                                        recommendations = self.market_regime_analyzer.get_regime_recommendations(
-                                            df_30m, df_1h, df_4h
-                                        )
-                                        
-                                        if recommendations:
-                                            logger.info("\n" + "="*50)
-                                            logger.info("📊 MARKET RECOMMENDATIONS UPDATE:")
-                                            for rec in recommendations[:5]:
-                                                logger.info(f"  • {rec}")
-                                            logger.info("="*50 + "\n")
-                                        
-                                        last_recommendation_time = current_time
-                                
-                            except Exception as e:
-                                logger.debug(f"Could not get recommendations: {e}")
-                    
+                    # YENİ: Periyodik indikatör sağlık kontrolü
+                    current_time = time.monotonic()
+                    if current_time - last_health_check_time >= health_check_interval:
+                        await self.verify_indicator_health()
+                        last_health_check_time = current_time
+
                     # Sleep between iterations, but check duration first
                     logger.debug(f"🔁 Trading loop iteration {loop_iteration} completed, sleeping {self.loop_interval}s")
                     
