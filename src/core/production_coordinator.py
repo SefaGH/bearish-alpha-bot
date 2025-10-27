@@ -335,7 +335,7 @@ class ProductionCoordinator:
             stream_limits.get(exchange_name, 10)  # Default to 10
         )
 
-    def _get_top_volume_symbols(self, limit=20):
+    def _get_default_symbols(self, limit=20):
         """Get top volume symbols from exchanges."""
         # Basit implementasyon
         default_symbols = [
@@ -1827,10 +1827,8 @@ class ProductionCoordinator:
         logger.info("Stopping production system...")
         self.is_running = False
         
-        # *** YENİ: Kapanışta pozisyonları kapat ***
-        if self.portfolio_manager and self.portfolio_manager.position_manager:
-            logger.info("Closing all open positions on shutdown...")
-            await self.portfolio_manager.position_manager.close_all_positions()
+        # *** DÜZELTME: Pozisyon kapatma mantığı buradan kaldırıldı. ***
+        # Kapanış, artık daha üst seviyede (launcher) yönetilecek.
 
         # Cancel monitoring task
         if hasattr(self, '_monitoring_task') and self._monitoring_task:
