@@ -66,17 +66,17 @@ class ExitReason(Enum):
 class AdvancedPositionManager:
     """Comprehensive position lifecycle management."""
     
-    def __init__(self, portfolio_manager, risk_manager, websocket_manager=None):
+    def __init__(self, risk_manager, order_manager, websocket_manager=None):
         """
         Initialize position manager.
         
         Args:
-            portfolio_manager: PortfolioManager instance from Phase 3.3
-            risk_manager: RiskManager instance from Phase 3.2
-            websocket_manager: WebSocketManager from Phase 3.1 (optional)
+            risk_manager: RiskManager instance.
+            order_manager: SmartOrderManager instance for executing close orders.
+            websocket_manager: WebSocketManager for fetching live prices.
         """
-        self.portfolio_manager = portfolio_manager
         self.risk_manager = risk_manager
+        self.order_manager = order_manager # DOĞRUDAN BAĞIMLILIK
         self.ws_manager = websocket_manager
         
         # Position tracking
@@ -93,14 +93,7 @@ class AdvancedPositionManager:
     # *** YENİ METOT: Tüm açık pozisyonları kapatmak için ***
     async def close_all_positions(self, reason: str = ExitReason.SHUTDOWN.value) -> Dict[str, Any]:
         """
-        Force-close all open positions, typically on shutdown or emergency.
-        This is a critical function for risk management.
-
-        Args:
-            reason: The reason for closing all positions.
-
-        Returns:
-            A summary of the closing operations.
+        Force-close all open positions using the injected OrderManager.
         """
         if not self.positions:
             logger.info("No open positions to close.")
@@ -111,7 +104,6 @@ class AdvancedPositionManager:
         closed_count = 0
         errors = []
         
-        # Create a copy of keys to iterate over, as the dictionary will be modified
         position_ids_to_close = list(self.positions.keys())
 
         for position_id in position_ids_to_close:
@@ -122,38 +114,34 @@ class AdvancedPositionManager:
             symbol = position['symbol']
             side = position['side']
             amount = position['amount']
+            exchange = position['exchange'] # Pozisyon bilgisinden borsayı al
             
-            # Determine the closing side
             close_side = 'buy' if side.lower() in ['short', 'sell'] else 'sell'
             
             try:
-                # Use the order manager from the portfolio manager to create and execute a market order
-                order_manager = self.portfolio_manager.order_manager
-                if not order_manager:
+                # --- DÜZELTİLMİŞ MANTIK ---
+                # Artık order_manager'ı doğrudan kullanıyoruz.
+                if not self.order_manager:
                     logger.error(f"Cannot close {symbol}: OrderManager is not available.")
                     errors.append({'position_id': position_id, 'reason': 'OrderManager not found'})
                     continue
 
                 logger.info(f"Submitting market order to close {position_id}: {close_side} {amount} {symbol}")
                 
-                # Assume market order execution is handled by the order manager
-                # In a real scenario, this would involve a call like:
-                # execution_result = await order_manager.execute_market_order(symbol, close_side, amount)
-                
-                # For paper/test mode, we simulate the close
-                current_price = await self._get_current_price_from_ws(symbol)
-                if not current_price:
-                    # Fallback if price is not available
-                    current_price = position.get('current_price', position.get('entry_price'))
-                    logger.warning(f"Could not fetch live price for {symbol}, using last known price: {current_price}")
-
-                execution_result = {
-                    'success': True, 
-                    'avg_price': current_price, 
-                    'filled_amount': amount
+                # Kapatma emrini oluştur ve OrderManager'a gönder
+                close_order_request = {
+                    'symbol': symbol,
+                    'side': close_side,
+                    'amount': amount,
+                    'exchange': exchange, # Borsa bilgisini emre ekle
                 }
+                
+                execution_result = await self.order_manager.place_order(
+                    close_order_request, 
+                    execution_algo='market' # Kapatma emirleri genellikle market olur
+                )
 
-                if execution_result.get('success'):
+                if execution_result and execution_result.get('success'):
                     exit_price = execution_result.get('avg_price')
                     await self.close_position(position_id, exit_price, exit_reason=reason)
                     closed_count += 1
