@@ -21,16 +21,21 @@ class PortfolioManager:
         Initialize portfolio manager.
         
         Args:
-            risk_manager: RiskManager instance from Phase 3.2
-            performance_monitor: RealTimePerformanceMonitor from Phase 2
-            websocket_manager: WebSocketManager from Phase 3.1 (optional)
-            exchange_clients: Dictionary of exchange clients (optional)
+            risk_manager: RiskManager instance.
+            performance_monitor: RealTimePerformanceMonitor instance.
+            websocket_manager: WebSocketManager instance (optional).
+            exchange_clients: Dictionary of exchange clients (optional).
         """
         self.risk_manager = risk_manager
         self.performance_monitor = performance_monitor
         self.ws_manager = websocket_manager
         self.exchange_clients = exchange_clients or {}
         self.cfg = {}
+        
+        # --- YENİ EKLENEN SATIRLAR ---
+        # Bu yöneticiler dışarıdan enjekte edilecek.
+        self.order_manager = None
+        self.position_manager = None
         
         # Strategy registry
         self.strategies = {}  # strategy_name -> strategy_instance
@@ -51,6 +56,15 @@ class PortfolioManager:
         self.optimization_history = []
         
         logger.info(f"PortfolioManager initialized with portfolio value: ${risk_manager.portfolio_value:.2f}")
+
+    def set_execution_managers(self, order_manager, position_manager):
+        """
+        Injects the execution-layer managers (OrderManager, PositionManager).
+        This completes the link between portfolio and execution layers.
+        """
+        self.order_manager = order_manager
+        self.position_manager = position_manager
+        logger.info("✅ Execution managers (OrderManager, PositionManager) have been linked to PortfolioManager.")
     
     def add_exchange_client(self, exchange_name: str, client):
         """
