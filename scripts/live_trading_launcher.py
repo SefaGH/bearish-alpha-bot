@@ -1296,7 +1296,7 @@ class LiveTradingLauncher:
             # YENİ: Sadece ve sadece işlem yapacağımız sembollerin market verisini yükle.
             try:
                 logger.info(f"Explicitly loading market data for specified symbols: {trading_pairs}")
-                bingx_client.load_markets(params={'symbols': trading_pairs})
+                await bingx_client.load_markets(params={'symbols': trading_pairs})
             except Exception as e:
                 logger.error(f"Failed to load specific markets for symbols {trading_pairs}: {e}")
                 return False # Belirtilen marketler yüklenemiyorsa devam etme.
