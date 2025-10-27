@@ -6,6 +6,7 @@ FIXED: Singleton listen task pattern
 
 import asyncio
 import logging
+from .data_validator import validate_kline_timestamp
 from typing import Dict, Any, List, Optional, Callable, TYPE_CHECKING
 from datetime import datetime
 
