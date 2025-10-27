@@ -272,6 +272,11 @@ class WebSocketClient:
         self._running = False
         self._is_connected = False
         
+        # *** YENİ: Yeniden bağlanmayı devre dışı bırak ***
+        if self.bingx_ws:
+            logger.info("Disabling auto-reconnect for graceful shutdown.")
+            self.bingx_ws.auto_reconnect = False
+
         # Cancel listen task first
         if self._listen_task and not self._listen_task.done():
             logger.info("Cancelling listen task...")
@@ -290,7 +295,8 @@ class WebSocketClient:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         
         # Close BingX WebSocket
-        await self.bingx_ws.disconnect()
+        if self.bingx_ws:
+            await self.bingx_ws.disconnect()
         
         logger.info("BingX WebSocket client closed")
     
