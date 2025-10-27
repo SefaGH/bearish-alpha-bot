@@ -417,11 +417,21 @@ class AdvancedPositionManager:
             self.closed_positions.append(position)
             del self.positions[position_id]
             
-            # Enhanced logging with emoji indicators based on exit reason and P&L
-            exit_emoji = '🛑' if exit_reason == 'stop_loss' else ('🎯' if exit_reason == 'take_profit' else ('🚦' if exit_reason == 'trailing_stop' else '🔄'))
+            # *** DÜZELTME: Hatalı f-string düzeltildi ***
+            exit_emoji = '🛑' if exit_reason == ExitReason.STOP_LOSS.value else \
+                         '🎯' if exit_reason == ExitReason.TAKE_PROFIT.value else \
+                         '🚦' if exit_reason == ExitReason.TRAILING_STOP.value else \
+                         '🚪' if exit_reason == ExitReason.SHUTDOWN.value else '🔄'
+
+            exit_type = (
+                'STOP-LOSS-HIT' if exit_reason == ExitReason.STOP_LOSS.value else
+                'TAKE-PROFIT-HIT' if exit_reason == ExitReason.TAKE_PROFIT.value else
+                'TRAILING-STOP-HIT' if exit_reason == ExitReason.TRAILING_STOP.value else
+                exit_reason.upper().replace('_', '-')
+            )
             
             logger.info(
-                f"{exit_emoji} [{'STOP-LOSS-HIT' if exit_reason == 'stop_loss' else 'TAKE-PROFIT-HIT' if exit_reason == 'take_profit' else 'TRAILING-STOP-HIT' if exit_reason == 'trailing_stop' else 'P[...]
+                f"{exit_emoji} [{exit_type}]\n"
                 f"   Symbol: {symbol}\n"
                 f"   Entry: ${entry_price:.2f}, Exit: ${exit_price:.2f}\n"
                 f"   P&L: ${realized_pnl:.2f} ({return_pct:+.2f}%)\n"
