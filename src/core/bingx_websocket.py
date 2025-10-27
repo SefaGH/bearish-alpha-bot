@@ -3,6 +3,7 @@ import io
 import json
 import asyncio
 import logging
+from .data_validator import validate_kline_timestamp
 import time
 import hmac
 import hashlib
@@ -470,6 +471,9 @@ class BingXWebSocket:
                     float(kline_obj.get('c', 0)),    # close
                     float(kline_obj.get('v', 0))     # volume
                 ]
+
+                # 1. VERİ TUTARLILIĞINI KONTROL ET
+                validate_kline_timestamp(timestamp=kline[0], timeframe=ccxt_timeframe, symbol=ccxt_symbol)
                 
                 # Store kline
                 self.klines[ccxt_symbol][ccxt_timeframe].append(kline)
