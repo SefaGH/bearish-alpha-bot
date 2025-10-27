@@ -1763,6 +1763,10 @@ class LiveTradingLauncher:
                     logger.error(f"  {i}. {check_reason}")
                 logger.info("="*70)
                 return False
+
+        except Exception as e:
+            logger.error(f"❌ Pre-flight checks crashed unexpectedly: {e}", exc_info=True)
+            return False
     
     async def _wait_for_websocket_connection(self, timeout: int = 30, check_interval: int = 1) -> bool:
         """
