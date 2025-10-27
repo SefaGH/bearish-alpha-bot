@@ -173,10 +173,14 @@ jobs:
           # Helpful placeholder so upload-artifact always has at least one file if no logs produced
           : > logs/.placeholder || true
 
-      - name: Install TA-Lib C-Library
+      - name: Install TA-Lib from source
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ta-lib-dev
+          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+          tar -xzvf ta-lib-0.4.0-src.tar.gz
+          cd ta-lib/
+          ./configure --prefix=/usr
+          make
+          sudo make install
 
       - name: Install Dependencies
         shell: bash
@@ -187,7 +191,7 @@ jobs:
           # Install specific versions for compatibility
           pip install --no-cache-dir 'aiohttp==3.8.6' 'yarl<2.0' 'multidict<7.0'
           
-          # Install TA-Lib Python library (Doğrusu bu)
+          # Install TA-Lib Python library (C kütüphanesi artık kurulu)
           pip install --no-cache-dir TA-Lib
           
           # Install WebSocket libraries
@@ -196,14 +200,14 @@ jobs:
           # === KOŞULLU YÜKLEME BAŞLANGICI ===
           if [ "${{ github.event.inputs.enable_ml }}" = "true" ]; then
             echo "ML is enabled. Installing all dependencies for pre-flight..."
-            # ML AÇIKSA: requirements.txt dosyasının tamamını kur
             pip install --no-cache-dir -r requirements.txt
           else
             echo "ML is disabled. Installing core dependencies only for pre-flight..."
-            # '# === MACHINE LEARNING (Optional) ===' işaretçisini bul ve o bölümü kaldır, ardından kalan bağımlılıkları yükle
             sed '/# === MACHINE LEARNING (Optional) ===/,$d' requirements.txt | pip install --no-cache-dir -r /dev/stdin
           fi
           # === KOŞULLU YÜKLEME SONU ===
+          
+          echo "✅ Dependencies installed successfully"
           
           echo "✅ Dependencies installed successfully (using BingX Direct WebSocket)"
 
@@ -294,10 +298,14 @@ jobs:
           python-version: "3.11"
           cache: 'pip'
 
-      - name: Install TA-Lib C-Library
+      - name: Install TA-Lib from source
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ta-lib-dev
+          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+          tar -xzvf ta-lib-0.4.0-src.tar.gz
+          cd ta-lib/
+          ./configure --prefix=/usr
+          make
+          sudo make install
 
       - name: Install Dependencies
         shell: bash
@@ -308,17 +316,15 @@ jobs:
           # Fix for parse_frame error - install specific versions first WITH QUOTES
           pip install --no-cache-dir 'aiohttp==3.8.6' 'yarl<2.0' 'multidict<7.0'
           
-          # Install TA-Lib Python library (Doğrusu bu)
+          # Install TA-Lib Python library (C kütüphanesi artık kurulu)
           pip install --no-cache-dir TA-Lib
           
           # === KOŞULLU YÜKLEME BAŞLANGICI ===
           if [ "${{ github.event.inputs.enable_ml }}" = "true" ]; then
             echo "ML is enabled. Installing all dependencies..."
-            # ML AÇIKSA: requirements.txt dosyasının tamamını kur
             pip install --no-cache-dir -r requirements.txt
           else
             echo "ML is disabled. Installing core dependencies only..."
-            # '# === MACHINE LEARNING (Optional) ===' işaretçisini bul ve o bölümü kaldır, ardından kalan bağımlılıkları yükle
             sed '/# === MACHINE LEARNING (Optional) ===/,$d' requirements.txt | pip install --no-cache-dir -r /dev/stdin
           fi
           # === KOŞULLU YÜKLEME SONU ===
