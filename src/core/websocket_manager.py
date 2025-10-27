@@ -5,6 +5,7 @@ Coordinates WebSocket connections across multiple exchanges.
 
 import asyncio
 import logging
+from .data_validator import validate_kline_timestamp
 import time
 from typing import Dict, List, Any, Optional, Callable, Union, Set
 from datetime import datetime, timezone
