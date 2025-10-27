@@ -1309,13 +1309,13 @@ class LiveTradingLauncher:
             
             # Test connection with single API call instead of loading 2528 markets
             logger.info("Testing BingX connection...")
-            test_ticker = bingx_client.fetch_ticker('BTC/USDT:USDT')
+            test_ticker = await bingx_client.fetch_ticker('BTC/USDT:USDT')
             logger.info(f"✓ Connected to BingX - Test price: BTC=${test_ticker['last']:.2f}")
 
             if self._has_bingx_credentials:
                 # Test authentication with balance check
                 try:
-                    balance = bingx_client.get_bingx_balance()
+                    balance = await bingx_client.get_bingx_balance()
                     logger.info("✓ BingX authentication successful")
                 except Exception as e:
                     logger.warning(f"⚠️  BingX authentication test failed: {e}")
@@ -1328,7 +1328,7 @@ class LiveTradingLauncher:
         
             for pair in trading_pairs:  # ← CONFIG'DEN GELEN LİSTE
                 try:
-                    ticker = bingx_client.fetch_ticker(pair)
+                    ticker = await bingx_client.fetch_ticker(pair)
                     verified_pairs.append(pair)
                     logger.info(f"  ✓ {pair}: ${ticker['last']:.2f}")
                 except Exception as e:
