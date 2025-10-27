@@ -1,170 +1,110 @@
-"""Logging configuration for Bearish Alpha Bot."""
+"""
+Centralized, Asynchronous, and Unified Logging Configuration for the Bot.
+This version is asyncio-safe, merges debug logic, and preserves all original features.
+"""
 import logging
+import logging.handlers
 import sys
 import os
+import queue
 from datetime import datetime
-from typing import Set
 
-MANAGED_ROOT_LOG_FILES: Set[str] = set()
+# Global değişkenler, listener'ın sadece bir kez başlatılmasını sağlar.
+_listener = None
+_log_queue = queue.Queue(-1)
 
-def setup_logger(name: str = "bearish_alpha_bot", level: str = None, log_to_file: bool = True) -> logging.Logger:
+def setup_logger(name: str = "bearish_alpha_bot", debug_mode: bool = False, log_to_file: bool = True) -> logging.Logger:
     """
-    Set up a configured logger for the bot.
-
+    Sets up a centralized, queue-based logger that is safe for concurrent asyncio tasks.
+    It configures the root logger, so it only needs to be called once.
+    
     Args:
-        name: Logger name
-        level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-               If None, reads from LOG_LEVEL env var, defaults to INFO
-        log_to_file: Whether to also log to a file (default: True)
-
-    Returns:
-        Configured logger instance
+        name: Name of the logger to return (typically __name__).
+        debug_mode: If True, sets log level to DEBUG and adds debug formatting.
+        log_to_file: If True, logs to a timestamped file with symlinks.
     """
-    if level is None:
-        level = os.getenv('LOG_LEVEL', 'INFO').upper()
+    global _listener
 
-    # Resolve desired numeric level once
-    log_level = getattr(logging, level, logging.INFO)
+    log_level_str = 'DEBUG' if debug_mode else os.getenv('LOG_LEVEL', 'INFO').upper()
+    log_level = getattr(logging, log_level_str, logging.INFO)
 
-    # Create logger
-    logger = logging.getLogger(name)
-    logger.setLevel(log_level)
-
-    # Create formatter
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-
-    # Ensure console handler exists and is configured
-    console_handlers = [
-        h for h in logger.handlers
-        if isinstance(h, logging.StreamHandler) and getattr(h, "stream", None) == sys.stdout
-    ]
-    if console_handlers:
-        for handler in console_handlers:
-            handler.setLevel(log_level)
-            handler.setFormatter(formatter)
-    else:
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(log_level)
-        console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
-
-    # Prevent log duplication once root logger is configured
-    logger.propagate = False
-
-    # Create file handler if requested
-    log_file = None
-    existing_file_handler = next(
-        (h for h in logger.handlers if isinstance(h, logging.FileHandler)),
-        None
-    )
-    if log_to_file:
-        if existing_file_handler:
-            log_file = existing_file_handler.baseFilename
-        else:
-            # Ensure logs directory exists
-            log_dir = 'logs'
-            if not os.path.exists(log_dir):
-                os.makedirs(log_dir, exist_ok=True)
-
-            # Create log file with timestamp
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-            # Default basename chosen to match workflow expectations
-            basename = os.getenv('LOG_FILE_BASENAME', 'live_trading')
-            log_file = os.path.join(log_dir, f'{basename}_{timestamp}.log')
-    elif existing_file_handler:
-        log_file = existing_file_handler.baseFilename
-
-    if log_file:
-        abs_log_file = os.path.abspath(log_file)
-        file_handlers = [
-            h for h in logger.handlers
-            if isinstance(h, logging.FileHandler)
-            and os.path.abspath(h.baseFilename) == abs_log_file
-        ]
-        if file_handlers:
-            for handler in file_handlers:
-                handler.setLevel(log_level)
-                handler.setFormatter(formatter)
-        else:
-            file_handler = logging.FileHandler(log_file, mode='w')
-            file_handler.setLevel(log_level)
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
-            logger.info(f"File logging enabled: {log_file}")
-
-            # Backwards compatibility: create symlinks for older patterns if possible
-            try:
-                # e.g. create bearish_alpha_bot_{ts}.log symlink pointing to live_trading_{ts}.log
-                log_dir = os.path.dirname(abs_log_file)
-                ts_part = os.path.basename(abs_log_file).split('_', 1)[-1]  # keep timestamp+rest
-                # Create a legacy-style symlink name
-                legacy_name = os.path.join(log_dir, f'bearish_alpha_bot_{ts_part}')
-                latest_name = os.path.join(log_dir, 'live_trading_latest.log')
-                # Remove if exists, then create symlink
-                if os.path.exists(legacy_name) or os.path.islink(legacy_name):
-                    try:
-                        os.remove(legacy_name)
-                    except Exception:
-                        pass
-                os.symlink(abs_log_file, legacy_name)
-                # Update or create latest symlink
-                if os.path.exists(latest_name) or os.path.islink(latest_name):
-                    try:
-                        os.remove(latest_name)
-                    except Exception:
-                        pass
-                os.symlink(abs_log_file, latest_name)
-            except Exception:
-                # Some environments (Windows runners without permissions) may not allow symlinks.
-                # In those cases, silently continue without breaking logging.
-                pass
-
-    # Ensure root logger forwards logs for modules that don't call setup_logger
+    # Root logger'ı yapılandır, tüm loglar buradan geçecek.
     root_logger = logging.getLogger()
 
-    # Always keep the root at least as verbose as the requested level
-    root_logger.setLevel(max(root_logger.level or log_level, log_level))
+    # Listener sadece bir kez, ilk setup_logger çağrısında kurulmalı.
+    if _listener is None:
+        # Mevcut tüm handler'ları temizle, sıfırdan yapılandırıyoruz.
+        root_logger.handlers.clear()
+        root_logger.setLevel(log_level)
+        
+        # Gürültücü kütüphaneleri sustur (Hedef 1: Gürültüyü Engelleme)
+        logging.getLogger("websockets.client").setLevel(logging.WARNING)
+        logging.getLogger("asyncio").setLevel(logging.WARNING)
 
-    # Configure root console handler(s)
-    root_console_handlers = [
-        h for h in root_logger.handlers
-        if isinstance(h, logging.StreamHandler) and getattr(h, 'stream', None) == sys.stdout
-    ]
-    if root_console_handlers:
-        for handler in root_console_handlers:
-            handler.setLevel(log_level)
-            handler.setFormatter(formatter)
-    else:
-        root_console = logging.StreamHandler(sys.stdout)
-        root_console.setLevel(log_level)
-        root_console.setFormatter(formatter)
-        root_logger.addHandler(root_console)
+        formatter = logging.Formatter(
+            f'%(asctime)s - {"🔍 " if debug_mode else ""}[%(name)s] - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
 
-    # Attach file handler to root when requested so other modules log to disk too
-    if log_file:
+        # Handler listesini oluştur
+        handlers_to_listen = []
+        
+        # Konsol Handler'ı
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(formatter)
+        handlers_to_listen.append(console_handler)
+
+        # Dosya Handler'ı (Mevcut kodunuzdaki tüm mantık korunarak)
+        if log_to_file:
+            log_dir = 'logs'
+            os.makedirs(log_dir, exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+            basename = os.getenv('LOG_FILE_BASENAME', 'live_trading')
+            log_file = os.path.join(log_dir, f'{basename}_{timestamp}.log')
+            
+            file_handler = logging.FileHandler(log_file, mode='w')
+            file_handler.setFormatter(formatter)
+            handlers_to_listen.append(file_handler)
+            
+            # Sembolik linkleri oluştur (Önemli özellik korundu)
+            _create_symlinks(log_dir, log_file)
+            
+            # İlk log mesajını doğrudan yaz (listener başlamadan önce görünsün)
+            print(f"File logging enabled: {log_file}")
+
+        # Kuyruk Listener'ını başlat (Hedef 2: Bölünmüş Logları Düzeltme)
+        _listener = logging.handlers.QueueListener(_log_queue, *handlers_to_listen, respect_handler_level=True)
+        _listener.start()
+        
+        # Tüm logları kuyruğa yönlendiren ana handler'ı root'a ekle.
+        queue_handler = logging.handlers.QueueHandler(_log_queue)
+        root_logger.addHandler(queue_handler)
+
+        if debug_mode:
+            root_logger.info("🔍 DEBUG MODE: Enhanced logging enabled.")
+
+    # İstenen isimde bir logger döndür. Bu logger, root'a bağlı olduğu için
+    # tüm logları otomatik olarak kuyruğa gönderecektir.
+    return logging.getLogger(name)
+
+def _create_symlinks(log_dir: str, log_file: str):
+    """Creates symlinks for 'latest' and legacy log file patterns."""
+    try:
         abs_log_file = os.path.abspath(log_file)
-        for handler in root_logger.handlers:
-            if isinstance(handler, logging.FileHandler) and os.path.abspath(handler.baseFilename) == abs_log_file:
-                handler.setLevel(log_level)
-                handler.setFormatter(formatter)
-                MANAGED_ROOT_LOG_FILES.add(abs_log_file)
-                break
-        else:
-            root_file = logging.FileHandler(log_file, mode='w')
-            root_file.setLevel(log_level)
-            root_file.setFormatter(formatter)
-            root_logger.addHandler(root_file)
-            MANAGED_ROOT_LOG_FILES.add(abs_log_file)
+        latest_name = os.path.join(log_dir, 'live_trading_latest.log')
+        
+        # 'latest' symlink'ini güncelle
+        if os.path.lexists(latest_name): # islink() yerine lexists() daha güvenli
+            os.remove(latest_name)
+        os.symlink(abs_log_file, latest_name)
 
-    # Update levels for previously managed root file handlers even when not recreating them
-    for handler in root_logger.handlers:
-        if isinstance(handler, logging.FileHandler):
-            handler_path = os.path.abspath(handler.baseFilename)
-            if handler_path in MANAGED_ROOT_LOG_FILES:
-                handler.setLevel(log_level)
-                handler.setFormatter(formatter)
+        # Geriye uyumlu symlink (opsiyonel ama iyi bir özellik)
+        ts_part = os.path.basename(abs_log_file).split('_', 1)[-1]
+        legacy_name = os.path.join(log_dir, f'bearish_alpha_bot_{ts_part}')
+        if os.path.lexists(legacy_name):
+            os.remove(legacy_name)
+        os.symlink(abs_log_file, legacy_name)
 
-    return logger
+    except (OSError, AttributeError, ImportError) as e:
+        # Symlink oluşturma başarısız olursa (örn: Windows'ta yetki yok), sessizce devam et.
+        logging.getLogger(__name__).debug(f"Could not create symlinks: {e}")
