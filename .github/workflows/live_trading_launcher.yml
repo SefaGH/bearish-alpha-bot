@@ -208,6 +208,12 @@ jobs:
           # === KOŞULLU YÜKLEME SONU ===
           
           echo "✅ Dependencies installed successfully"
+
+          echo "📦 Installing the repository package in editable mode..."
+          # Bu komut, projenizi Python'a bir paket olarak tanıtır.
+          # Bu sayede `from core import ...` gibi importlar çalışır.
+          python -m pip install -e .
+          echo "✅ Repository package installed."
           
           echo "✅ Dependencies installed successfully (using BingX Direct WebSocket)"
 
