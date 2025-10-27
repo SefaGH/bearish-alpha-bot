@@ -12,6 +12,7 @@ import logging
 
 from .price_predictor import AdvancedPricePredictionEngine
 from .regime_predictor import MLRegimePredictor
+from .ml_context import MLContext
 
 logger = logging.getLogger(__name__)
 
@@ -369,6 +370,183 @@ class MLStrategyIntegrationManager:
         self.regime_predictor = regime_predictor
         
         logger.info("ML Strategy Integration Manager initialized")
+    
+    async def get_ml_context(self, symbol: str, market_data: Dict[str, Any], 
+                           indicator_validator=None) -> MLContext:
+        """
+        Generate ML context for a trading decision.
+        
+        This is the main entry point for getting ML predictions. It orchestrates
+        all ML components and produces a unified MLContext with validation.
+        
+        Args:
+            symbol: Trading symbol
+            market_data: Market data dictionary with price_data, indicators, etc.
+            indicator_validator: Optional IndicatorValidator for data validation
+            
+        Returns:
+            MLContext with all ML predictions and health status
+        """
+        from datetime import datetime
+        
+        # Initialize context
+        context = MLContext(
+            symbol=symbol,
+            timestamp=datetime.now()
+        )
+        
+        validation_errors = []
+        
+        try:
+            # Extract price data from market_data
+            price_data = market_data.get('price_data')
+            
+            # Validate input data
+            if price_data is None or price_data.empty:
+                validation_errors.append("Missing or empty price data")
+                context.is_healthy = False
+                context.validation_errors = validation_errors
+                logger.warning(f"🧠 [ML-CONTEXT] {symbol}: Cannot create ML context - no price data")
+                return context
+            
+            # Use IndicatorValidator if available for thorough validation
+            if indicator_validator:
+                is_valid, errors = indicator_validator.validate_ml_data(price_data, symbol)
+                if not is_valid:
+                    validation_errors.extend(errors)
+                    context.is_healthy = False
+                    context.validation_errors = validation_errors
+                    logger.warning(
+                        f"🧠 [ML-CONTEXT] {symbol}: Data validation failed - {', '.join(errors)}"
+                    )
+                    return context
+            else:
+                # Fallback validation if no validator provided
+                # Check for NaN values in critical columns
+                critical_cols = ['close', 'volume', 'high', 'low', 'open']
+                for col in critical_cols:
+                    if col in price_data.columns and price_data[col].isna().any():
+                        validation_errors.append(f"NaN values in {col}")
+                
+                # Check data freshness
+                if len(price_data) < 50:
+                    validation_errors.append(f"Insufficient data: {len(price_data)} rows (need at least 50)")
+                
+                # If critical validation errors, mark unhealthy and return
+                if validation_errors:
+                    context.is_healthy = False
+                    context.validation_errors = validation_errors
+                    logger.warning(
+                        f"🧠 [ML-CONTEXT] {symbol}: Data validation failed - {', '.join(validation_errors)}"
+                    )
+                    return context
+            
+            # Get regime prediction
+            if self.regime_predictor:
+                try:
+                    regime_result = await self.regime_predictor.predict_regime_transition(
+                        symbol, price_data
+                    )
+                    
+                    if regime_result:
+                        context.regime_prediction = regime_result.get('predicted_regime')
+                        context.regime_confidence = regime_result.get('confidence', 0.0)
+                        context.regime_probabilities = regime_result.get('probabilities', {})
+                        
+                        logger.debug(
+                            f"🧠 [ML-CONTEXT] {symbol}: Regime={context.regime_prediction} "
+                            f"(conf={context.regime_confidence:.2%})"
+                        )
+                except Exception as e:
+                    logger.warning(f"🧠 [ML-CONTEXT] {symbol}: Regime prediction failed - {e}")
+                    validation_errors.append(f"Regime prediction error: {str(e)}")
+            
+            # Get price forecast
+            if self.price_engine:
+                try:
+                    price_forecast = self.price_engine.get_price_forecast(symbol)
+                    
+                    if price_forecast:
+                        context.price_forecast = price_forecast
+                        
+                        # Extract aggregated forecast
+                        agg = price_forecast.get('aggregated', {})
+                        forecast_pct = agg.get('forecast', [0])[0] if 'forecast' in agg else 0
+                        
+                        # Determine price direction
+                        if forecast_pct > 0.02:  # 2% threshold
+                            context.price_direction = 'up'
+                        elif forecast_pct < -0.02:
+                            context.price_direction = 'down'
+                        else:
+                            context.price_direction = 'neutral'
+                        
+                        context.price_confidence = agg.get('consensus_strength', 0.0)
+                        context.uncertainty = float(agg.get('uncertainty', [1.0])[0]) if 'uncertainty' in agg else 1.0
+                        
+                        logger.debug(
+                            f"🧠 [ML-CONTEXT] {symbol}: Price={context.price_direction} "
+                            f"(conf={context.price_confidence:.2%})"
+                        )
+                except Exception as e:
+                    logger.warning(f"🧠 [ML-CONTEXT] {symbol}: Price prediction failed - {e}")
+                    validation_errors.append(f"Price prediction error: {str(e)}")
+            
+            # Calculate consensus score
+            predictions = []
+            confidences = []
+            
+            if context.regime_prediction:
+                predictions.append(context.regime_prediction)
+                confidences.append(context.regime_confidence)
+            
+            if context.price_direction:
+                predictions.append(context.price_direction)
+                confidences.append(context.price_confidence)
+            
+            if predictions:
+                # Map to numeric for comparison
+                direction_map = {
+                    'bullish': 1, 'up': 1,
+                    'neutral': 0,
+                    'bearish': -1, 'down': -1
+                }
+                
+                numeric_preds = [direction_map.get(p, 0) for p in predictions]
+                
+                # Calculate agreement (how close predictions are)
+                if len(numeric_preds) > 1:
+                    variance = np.var(numeric_preds)
+                    context.consensus_score = 1.0 / (1.0 + variance)
+                else:
+                    context.consensus_score = confidences[0] if confidences else 0.0
+                
+                # Quality score is weighted average of confidences
+                if confidences:
+                    context.quality_score = sum(confidences) / len(confidences)
+            
+            # Mark as healthy if we have at least some predictions
+            context.is_healthy = (
+                (context.regime_prediction is not None or context.price_direction is not None)
+                and len(validation_errors) == 0
+            )
+            
+            if context.is_healthy:
+                logger.debug(
+                    f"🧠 [ML-CONTEXT] {symbol}: ✓ HEALTHY - "
+                    f"Consensus={context.consensus_score:.2%} Quality={context.quality_score:.2%}"
+                )
+            else:
+                context.validation_errors = validation_errors or ["No predictions available"]
+                logger.debug(f"🧠 [ML-CONTEXT] {symbol}: ✗ UNHEALTHY - {context.validation_errors}")
+            
+            return context
+            
+        except Exception as e:
+            logger.error(f"🧠 [ML-CONTEXT] {symbol}: Critical error creating ML context - {e}")
+            context.is_healthy = False
+            context.validation_errors = [f"Critical error: {str(e)}"]
+            return context
     
     async def process_strategy_signal(self, symbol: str,
                                      base_signal: Dict[str, Any],

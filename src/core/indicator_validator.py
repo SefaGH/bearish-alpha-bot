@@ -120,3 +120,116 @@ class IndicatorValidator:
         else:
             logger.error("❌ SOME INDICATORS FAILED VALIDATION")
         logger.info("="*80)
+    
+    def validate_ml_data(self, price_data: pd.DataFrame, symbol: str) -> Tuple[bool, List[str]]:
+        """
+        Validate data quality for ML model consumption.
+        
+        This is the ML data validation gateway - ensures data is clean and complete
+        before feeding to ML models.
+        
+        Args:
+            price_data: Price DataFrame to validate
+            symbol: Trading symbol (for logging)
+            
+        Returns:
+            Tuple of (is_valid, list_of_errors)
+        """
+        errors = []
+        
+        # Check 1: Data exists and is not empty
+        if price_data is None or price_data.empty:
+            errors.append("Price data is None or empty")
+            return False, errors
+        
+        # Check 2: Minimum data requirements
+        min_rows = 50  # ML models need at least 50 candles
+        if len(price_data) < min_rows:
+            errors.append(f"Insufficient data: {len(price_data)} rows (need {min_rows})")
+        
+        # Check 3: Required columns
+        required_cols = ['open', 'high', 'low', 'close', 'volume']
+        missing_cols = [col for col in required_cols if col not in price_data.columns]
+        if missing_cols:
+            errors.append(f"Missing required columns: {missing_cols}")
+        
+        # Check 4: NaN values in critical columns
+        for col in required_cols:
+            if col in price_data.columns:
+                nan_count = price_data[col].isna().sum()
+                if nan_count > 0:
+                    errors.append(f"Found {nan_count} NaN values in '{col}'")
+        
+        # Check 5: Infinite values
+        for col in required_cols:
+            if col in price_data.columns:
+                inf_count = np.isinf(price_data[col]).sum()
+                if inf_count > 0:
+                    errors.append(f"Found {inf_count} infinite values in '{col}'")
+        
+        # Check 6: Zero or negative prices (invalid)
+        for col in ['open', 'high', 'low', 'close']:
+            if col in price_data.columns:
+                invalid_count = (price_data[col] <= 0).sum()
+                if invalid_count > 0:
+                    errors.append(f"Found {invalid_count} zero/negative values in '{col}'")
+        
+        # Check 7: Data freshness (last row should be recent)
+        if 'timestamp' in price_data.columns:
+            try:
+                last_timestamp = pd.to_datetime(price_data['timestamp'].iloc[-1])
+                age_minutes = (pd.Timestamp.now() - last_timestamp).total_seconds() / 60
+                if age_minutes > 60:  # Data older than 1 hour
+                    errors.append(f"Stale data: last update was {age_minutes:.1f} minutes ago")
+            except Exception as e:
+                logger.debug(f"Could not check data freshness: {e}")
+        
+        is_valid = len(errors) == 0
+        
+        if not is_valid:
+            logger.warning(f"🧠 [ML-VALIDATION] {symbol}: Data validation failed - {len(errors)} errors")
+            for error in errors:
+                logger.warning(f"   - {error}")
+        else:
+            logger.debug(f"🧠 [ML-VALIDATION] {symbol}: ✓ Data is clean and ready for ML")
+        
+        return is_valid, errors
+    
+    def validate_ml_features(self, features: pd.DataFrame, symbol: str) -> Tuple[bool, List[str]]:
+        """
+        Validate extracted ML features.
+        
+        Args:
+            features: Feature DataFrame
+            symbol: Trading symbol
+            
+        Returns:
+            Tuple of (is_valid, list_of_errors)
+        """
+        errors = []
+        
+        if features is None or features.empty:
+            errors.append("Features DataFrame is None or empty")
+            return False, errors
+        
+        # Check for NaN in features
+        nan_cols = features.columns[features.isna().any()].tolist()
+        if nan_cols:
+            errors.append(f"NaN values in features: {nan_cols}")
+        
+        # Check for infinite values
+        inf_cols = []
+        for col in features.select_dtypes(include=[np.number]).columns:
+            if np.isinf(features[col]).any():
+                inf_cols.append(col)
+        if inf_cols:
+            errors.append(f"Infinite values in features: {inf_cols}")
+        
+        is_valid = len(errors) == 0
+        
+        if not is_valid:
+            logger.warning(f"🧠 [ML-VALIDATION] {symbol}: Feature validation failed")
+            for error in errors:
+                logger.warning(f"   - {error}")
+        
+        return is_valid, errors

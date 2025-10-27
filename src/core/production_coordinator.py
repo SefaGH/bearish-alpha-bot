@@ -387,7 +387,47 @@ class ProductionCoordinator:
                 logger.warning(f"Skipping {symbol} due to missing primary (30m) data.")
                 return None
 
-            # 3. Market Rejim Analizi (Mevcut haliyle kalabilir)
+            # 3. ML Context Generation (NEW)
+            ml_context = None
+            if hasattr(self, 'ml_integration') and self.ml_integration:
+                try:
+                    # Prepare market data for ML
+                    ml_market_data = {
+                        'price_data': df_30m,  # Use 30m as primary for ML
+                        'timeframes': market_data
+                    }
+                    
+                    # Get indicator validator if available
+                    indicator_validator = None
+                    if hasattr(self, 'indicator_validator'):
+                        indicator_validator = self.indicator_validator
+                    
+                    # Get ML context with validation
+                    ml_context = await self.ml_integration.get_ml_context(
+                        symbol=symbol,
+                        market_data=ml_market_data,
+                        indicator_validator=indicator_validator
+                    )
+                    
+                    # Log ML context status
+                    if ml_context.is_healthy:
+                        logger.info(
+                            f"🧠 [ML] {symbol}: {ml_context.regime_prediction or 'N/A'} "
+                            f"(conf={ml_context.regime_confidence:.2%}) | "
+                            f"Price: {ml_context.price_direction or 'N/A'} | "
+                            f"Consensus: {ml_context.consensus_score:.2%}"
+                        )
+                    else:
+                        logger.warning(
+                            f"🧠 [ML] {symbol}: ML context unhealthy - "
+                            f"{', '.join(ml_context.validation_errors[:2])}"
+                        )
+                except Exception as e:
+                    logger.warning(f"🧠 [ML] {symbol}: Failed to generate ML context - {e}")
+                    # Continue without ML context
+                    ml_context = None
+
+            # 4. Market Rejim Analizi (Mevcut haliyle kalabilir)
             metadata = {}
             if self.market_regime_analyzer:
                 try:
@@ -401,13 +441,14 @@ class ProductionCoordinator:
             for strategy_name, strategy_instance in self.strategies.items():
                 logger.info(f"[STRATEGY-CHECK] Running {strategy_name} for {symbol}...")
                 try:
-                    # Stratejiler artık tüm market verisini alabilir
+                    # Stratejiler artık tüm market verisini ve ML context'i alabilir
                     signal = strategy_instance.signal(
                         df_30m=df_30m, 
                         df_1h=df_1h, 
                         regime_data=metadata.get('regime'), 
                         symbol=symbol,
-                        market_data=market_data
+                        market_data=market_data,
+                        ml_context=ml_context  # <<< YENİ: ML Context parametresi
                     )
                     
                     if signal:
@@ -415,6 +456,16 @@ class ProductionCoordinator:
                         signal['metadata'] = metadata
                         signal['symbol'] = symbol
                         signal['timestamp'] = datetime.now(timezone.utc)
+                        
+                        # Add ML metadata if available
+                        if ml_context and ml_context.is_healthy:
+                            signal['ml_metadata'] = {
+                                'regime': ml_context.regime_prediction,
+                                'regime_confidence': ml_context.regime_confidence,
+                                'price_direction': ml_context.price_direction,
+                                'consensus': ml_context.consensus_score
+                            }
+                        
                         logger.info(f"📊 Signal from {strategy_name} for {symbol}: {signal.get('reason')}")
                         return signal # İlk sinyali bul ve döngüden çık
                 except Exception as e:

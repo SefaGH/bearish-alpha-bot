@@ -29,6 +29,7 @@ from .strategy_integration import (
     StrategyPerformanceTracker,
     MLStrategyIntegrationManager
 )
+from .ml_context import MLContext
 
 __all__ = [
     # Phase 4.1: Regime Prediction
@@ -62,4 +63,5 @@ __all__ = [
     'AIEnhancedStrategyAdapter',
     'StrategyPerformanceTracker',
     'MLStrategyIntegrationManager',
+    'MLContext',
 ]

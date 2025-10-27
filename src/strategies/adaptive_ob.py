@@ -192,9 +192,10 @@ class AdaptiveOversoldBounce(OversoldBounce):
                df_1h: pd.DataFrame = None,
                regime_data: Optional[Dict] = None,
                symbol: str = None,
-               market_data: Optional[Dict] = None) -> Optional[Dict]:
+               market_data: Optional[Dict] = None,
+               ml_context=None) -> Optional[Dict]:
         """
-        Generate adaptive trading signal based on market regime.
+        Generate adaptive trading signal based on market regime and ML insights.
         
         Args:
             df_30m: 30-minute OHLCV dataframe with indicators
@@ -205,6 +206,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
             market_data: Optional dictionary containing all available timeframes
                         Format: {'1m': df, '5m': df, '30m': df, '1h': df, '4h': df}
                         Allows strategies to access additional timeframes if needed
+            ml_context: Optional MLContext with ML predictions and insights
         
         Returns:
             Signal dictionary or None
@@ -310,15 +312,72 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 logger.info(f"  ❌ Signal: NONE - Volume check failed")
                 return None
             
+            # ===== ML-AWARE DECISION MAKING (NEW) =====
+            # Base signal would be BUY (long) since we passed all checks above
+            base_signal_direction = 'long'
+            position_size_modifier = 1.0  # Default: no adjustment
+            ml_enhanced = False
+            
+            # Check if we have healthy ML context
+            if ml_context and ml_context.is_healthy:
+                ml_enhanced = True
+                
+                # VETO: ML strongly disagrees with our long signal
+                if ml_context.regime_prediction == 'bearish' and ml_context.regime_confidence > 0.7:
+                    if self.debug_logging:
+                        logger.info(
+                            f"  🧠 [ML-VETO] {symbol_display}: ML regime is BEARISH "
+                            f"(conf={ml_context.regime_confidence:.2%}), vetoing LONG signal"
+                        )
+                    return None
+                
+                if ml_context.price_direction == 'down' and ml_context.price_confidence > 0.7:
+                    if self.debug_logging:
+                        logger.info(
+                            f"  🧠 [ML-VETO] {symbol_display}: ML predicts price DOWN "
+                            f"(conf={ml_context.price_confidence:.2%}), vetoing LONG signal"
+                        )
+                    return None
+                
+                # CONFIRMATION: ML agrees with our long signal - increase position size
+                if (ml_context.regime_prediction == 'bullish' and ml_context.regime_confidence > 0.6) or \
+                   (ml_context.price_direction == 'up' and ml_context.price_confidence > 0.6):
+                    # Increase position size by up to 25% based on consensus
+                    position_size_modifier = 1.0 + (0.25 * ml_context.consensus_score)
+                    if self.debug_logging:
+                        logger.info(
+                            f"  🧠 [ML-CONFIRM] {symbol_display}: ML confirms LONG signal "
+                            f"(regime={ml_context.regime_prediction}, price={ml_context.price_direction}), "
+                            f"increasing position size by {(position_size_modifier - 1.0) * 100:.1f}%"
+                        )
+                
+                # WEAK CONSENSUS: Reduce position size if ML is uncertain
+                if ml_context.consensus_score < 0.5:
+                    position_size_modifier *= 0.75  # Reduce by 25%
+                    if self.debug_logging:
+                        logger.info(
+                            f"  🧠 [ML-CAUTION] {symbol_display}: Low ML consensus "
+                            f"({ml_context.consensus_score:.2%}), reducing position size by 25%"
+                        )
+            elif ml_context and not ml_context.is_healthy:
+                if self.debug_logging:
+                    logger.info(
+                        f"  🧠 [ML-UNAVAILABLE] {symbol_display}: ML context unhealthy, "
+                        f"proceeding with base strategy only"
+                    )
+            
+            # ===== ATR-BASED TP/SL CALCULATION =====
             # Calculate position size adjustment
             volatility = regime_data.get('volatility', 'normal')
             position_mult = self.calculate_dynamic_position_size(volatility)
+            
+            # Apply ML-based position size modifier
+            position_mult *= position_size_modifier
             
             # Get trend strength for EMA adaptation
             trend_strength = regime_data.get('micro_trend_strength', 0.5)
             ema_params = self.adapt_ema_distances(trend_strength)
             
-            # ===== ATR-BASED TP/SL CALCULATION =====
             entry_price = float(last['close'])
             atr_value = float(last['atr']) if 'atr' in last.index else entry_price * 0.02
             logger.info(f"  ATR: {atr_value:.4f}")
@@ -373,10 +432,21 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 "adaptive_threshold": adaptive_rsi_threshold,
                 "position_multiplier": position_mult,
                 "market_regime": market_regime,
-                "ema_params": ema_params
+                "ema_params": ema_params,
+                "ml_enhanced": ml_enhanced
             }
             
+            # Add ML metadata if available
+            if ml_context and ml_context.is_healthy:
+                signal['ml_regime'] = ml_context.regime_prediction
+                signal['ml_regime_confidence'] = ml_context.regime_confidence
+                signal['ml_price_direction'] = ml_context.price_direction
+                signal['ml_consensus'] = ml_context.consensus_score
+                signal['ml_position_modifier'] = position_size_modifier
+            
             logger.info(f"  ✅ Signal: BUY (RSI {rsi_val:.1f} <= {adaptive_rsi_threshold:.1f}, regime={market_regime['trend']})")
+            if ml_enhanced:
+                logger.info(f"  🧠 ML-Enhanced: regime={ml_context.regime_prediction}, price={ml_context.price_direction}, modifier={position_size_modifier:.2f}x")
             logger.info(f"  Entry: ${entry_price:.2f}, Target: ${target_price:.2f}, Stop: ${stop_price:.2f}, R/R: {rr_ratio:.2f}")
             
             # Strategy type ekle ve signal'i döndür
