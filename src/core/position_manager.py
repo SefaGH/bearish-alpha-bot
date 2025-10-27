@@ -417,6 +417,42 @@ class AdvancedPositionManager:
             self.closed_positions.append(position)
             del self.positions[position_id]
             
+            # ===== RL FEEDBACK LOOP (NEW) =====
+            # Provide feedback to RL agent if available
+            if hasattr(self, 'rl_agent') and self.rl_agent is not None:
+                try:
+                    # Calculate reward from PnL
+                    reward = self._calculate_rl_reward(realized_pnl, return_pct, exit_reason)
+                    
+                    # Get entry and exit states if available
+                    entry_state = position.get('entry_state')
+                    current_state = position.get('current_state')
+                    
+                    # Only provide feedback if we have state information
+                    if entry_state is not None and current_state is not None:
+                        # Map the action (buy/hold/sell)
+                        action_map = {'buy': 0, 'hold': 1, 'sell': 2}
+                        action = action_map.get(side, 1)  # Default to hold if unknown
+                        
+                        # Provide experience to RL agent
+                        metrics = self.rl_agent.learn_from_experience(
+                            state=entry_state,
+                            action=action,
+                            reward=reward,
+                            next_state=current_state,
+                            done=True  # Trade is complete
+                        )
+                        
+                        logger.info(
+                            f"🧠 [RL-FEEDBACK] {symbol}: Reward={reward:.4f}, "
+                            f"Loss={metrics.get('loss', 0):.4f}, "
+                            f"Q-value={metrics.get('q_value', 0):.4f}"
+                        )
+                    else:
+                        logger.debug(f"🧠 [RL-FEEDBACK] {symbol}: No state data available for learning")
+                except Exception as e:
+                    logger.warning(f"🧠 [RL-FEEDBACK] Failed to provide feedback to RL agent: {e}")
+            
             # *** DÜZELTME: Hatalı f-string düzeltildi ***
             exit_emoji = '🛑' if exit_reason == ExitReason.STOP_LOSS.value else \
                          '🎯' if exit_reason == ExitReason.TAKE_PROFIT.value else \
@@ -974,3 +1010,40 @@ class AdvancedPositionManager:
                 pass
         
         logger.info("Exit monitoring stopped")
+    
+    def _calculate_rl_reward(self, pnl: float, return_pct: float, exit_reason: str) -> float:
+        """
+        Calculate reward for RL agent from trade outcome.
+        
+        The reward function balances profitability with risk management:
+        - Positive PnL: reward based on return percentage
+        - Negative PnL: penalty based on loss magnitude
+        - Exit reason modifiers: bonus for TP, penalty for SL
+        
+        Args:
+            pnl: Realized profit/loss in currency
+            return_pct: Return percentage
+            exit_reason: Reason for exit
+            
+        Returns:
+            Reward value for RL learning
+        """
+        # Base reward is the return percentage (scaled down)
+        # We scale by 10 to keep rewards in a reasonable range [-1, 1]
+        reward = return_pct / 10.0
+        
+        # Apply exit reason modifiers
+        if exit_reason == ExitReason.TAKE_PROFIT.value:
+            # Bonus for hitting take profit (good risk management)
+            reward += 0.2
+        elif exit_reason == ExitReason.STOP_LOSS.value:
+            # Small additional penalty for stop loss (but not too harsh)
+            reward -= 0.1
+        elif exit_reason == ExitReason.TRAILING_STOP.value:
+            # Small bonus for using trailing stop (active management)
+            reward += 0.1
+        
+        # Clip reward to reasonable bounds
+        reward = max(-2.0, min(2.0, reward))
+        
+        return reward

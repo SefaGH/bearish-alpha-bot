@@ -12,6 +12,7 @@ import time
 import os
 import yaml
 import pandas as pd
+import numpy as np  # For ML health checks
 
 # Phase 1: Multi-Exchange Framework
 from .multi_exchange import build_clients_from_env
@@ -95,6 +96,9 @@ except ImportError:
 logger = logging.getLogger(__name__)
 # ✅ EKLE: Logger seviyesini zorla INFO yap
 logger.setLevel(logging.INFO)
+
+# Constants
+ML_HEALTH_CHECK_SYMBOL = "HEALTH_CHECK_BTC/USDT"  # Symbol for ML health checks
 
 
 class ProductionCoordinator:
@@ -387,7 +391,47 @@ class ProductionCoordinator:
                 logger.warning(f"Skipping {symbol} due to missing primary (30m) data.")
                 return None
 
-            # 3. Market Rejim Analizi (Mevcut haliyle kalabilir)
+            # 3. ML Context Generation (NEW)
+            ml_context = None
+            if hasattr(self, 'ml_integration') and self.ml_integration:
+                try:
+                    # Prepare market data for ML
+                    ml_market_data = {
+                        'price_data': df_30m,  # Use 30m as primary for ML
+                        'timeframes': market_data
+                    }
+                    
+                    # Get indicator validator if available
+                    indicator_validator = None
+                    if hasattr(self, 'indicator_validator'):
+                        indicator_validator = self.indicator_validator
+                    
+                    # Get ML context with validation
+                    ml_context = await self.ml_integration.get_ml_context(
+                        symbol=symbol,
+                        market_data=ml_market_data,
+                        indicator_validator=indicator_validator
+                    )
+                    
+                    # Log ML context status
+                    if ml_context.is_healthy:
+                        logger.info(
+                            f"🧠 [ML] {symbol}: {ml_context.regime_prediction or 'N/A'} "
+                            f"(conf={ml_context.regime_confidence:.2%}) | "
+                            f"Price: {ml_context.price_direction or 'N/A'} | "
+                            f"Consensus: {ml_context.consensus_score:.2%}"
+                        )
+                    else:
+                        logger.warning(
+                            f"🧠 [ML] {symbol}: ML context unhealthy - "
+                            f"{', '.join(ml_context.validation_errors[:2])}"
+                        )
+                except Exception as e:
+                    logger.warning(f"🧠 [ML] {symbol}: Failed to generate ML context - {e}")
+                    # Continue without ML context
+                    ml_context = None
+
+            # 4. Market Rejim Analizi (Mevcut haliyle kalabilir)
             metadata = {}
             if self.market_regime_analyzer:
                 try:
@@ -401,13 +445,14 @@ class ProductionCoordinator:
             for strategy_name, strategy_instance in self.strategies.items():
                 logger.info(f"[STRATEGY-CHECK] Running {strategy_name} for {symbol}...")
                 try:
-                    # Stratejiler artık tüm market verisini alabilir
+                    # Stratejiler artık tüm market verisini ve ML context'i alabilir
                     signal = strategy_instance.signal(
                         df_30m=df_30m, 
                         df_1h=df_1h, 
                         regime_data=metadata.get('regime'), 
                         symbol=symbol,
-                        market_data=market_data
+                        market_data=market_data,
+                        ml_context=ml_context  # <<< YENİ: ML Context parametresi
                     )
                     
                     if signal:
@@ -415,6 +460,16 @@ class ProductionCoordinator:
                         signal['metadata'] = metadata
                         signal['symbol'] = symbol
                         signal['timestamp'] = datetime.now(timezone.utc)
+                        
+                        # Add ML metadata if available
+                        if ml_context and ml_context.is_healthy:
+                            signal['ml_metadata'] = {
+                                'regime': ml_context.regime_prediction,
+                                'regime_confidence': ml_context.regime_confidence,
+                                'price_direction': ml_context.price_direction,
+                                'consensus': ml_context.consensus_score
+                            }
+                        
                         logger.info(f"📊 Signal from {strategy_name} for {symbol}: {signal.get('reason')}")
                         return signal # İlk sinyali bul ve döngüden çık
                 except Exception as e:
@@ -807,9 +862,13 @@ class ProductionCoordinator:
             logger.info(f"   Components: {', '.join(ml_components)}")
             logger.info(f"   Tracking {len(self.active_symbols)} symbols")
             
+            # Perform pre-flight health checks
+            health_check_result = await self._ml_preflight_health_check()
+            
             return {
                 'success': True,
-                'components': ml_components
+                'components': ml_components,
+                'health_check': health_check_result
             }
             
         except Exception as e:
@@ -818,6 +877,111 @@ class ProductionCoordinator:
                 'success': False,
                 'reason': str(e)
             }
+    
+    async def _ml_preflight_health_check(self) -> Dict[str, Any]:
+        """
+        Perform pre-flight health checks on ML system.
+        
+        Validates that ML models are loaded and can make basic predictions.
+        This is the "ML model validation on startup" requirement.
+        
+        Returns:
+            Health check results dictionary
+        """
+        logger.info("🧠 [ML-HEALTH-CHECK] Running pre-flight ML health checks...")
+        
+        results = {
+            'overall_healthy': True,
+            'checks': {},
+            'warnings': []
+        }
+        
+        # Check 1: Regime Predictor
+        if hasattr(self, 'regime_predictor') and self.regime_predictor:
+            try:
+                # Create dummy data for health check
+                dummy_data = pd.DataFrame({
+                    'close': np.random.randn(100).cumsum() + 100,
+                    'volume': np.random.rand(100) * 1000,
+                    'high': np.random.randn(100).cumsum() + 102,
+                    'low': np.random.randn(100).cumsum() + 98,
+                    'open': np.random.randn(100).cumsum() + 100
+                })
+                
+                # Try to make a prediction
+                regime_result = await self.regime_predictor.predict_regime_transition(
+                    ML_HEALTH_CHECK_SYMBOL, dummy_data
+                )
+                
+                if regime_result and 'predicted_regime' in regime_result:
+                    results['checks']['regime_predictor'] = {
+                        'status': 'healthy',
+                        'prediction': regime_result['predicted_regime'],
+                        'confidence': regime_result.get('confidence', 0.0)
+                    }
+                    logger.info(f"   ✅ Regime Predictor: healthy (test prediction: {regime_result['predicted_regime']})")
+                else:
+                    results['checks']['regime_predictor'] = {'status': 'degraded', 'reason': 'No prediction returned'}
+                    results['warnings'].append('Regime predictor returned no prediction')
+                    logger.warning("   ⚠️ Regime Predictor: degraded - no prediction returned")
+            except Exception as e:
+                results['checks']['regime_predictor'] = {'status': 'unhealthy', 'error': str(e)}
+                results['overall_healthy'] = False
+                logger.error(f"   ❌ Regime Predictor: unhealthy - {e}")
+        else:
+            results['checks']['regime_predictor'] = {'status': 'not_available'}
+            logger.info("   ℹ️ Regime Predictor: not available")
+        
+        # Check 2: ML Integration Manager
+        if hasattr(self, 'ml_integration') and self.ml_integration:
+            try:
+                status = self.ml_integration.get_integration_status()
+                results['checks']['ml_integration'] = {
+                    'status': 'healthy',
+                    'active': status.get('active', False)
+                }
+                logger.info(f"   ✅ ML Integration Manager: healthy")
+            except Exception as e:
+                results['checks']['ml_integration'] = {'status': 'unhealthy', 'error': str(e)}
+                results['overall_healthy'] = False
+                logger.error(f"   ❌ ML Integration Manager: unhealthy - {e}")
+        else:
+            results['checks']['ml_integration'] = {'status': 'not_available'}
+            logger.info("   ℹ️ ML Integration Manager: not available")
+        
+        # Check 3: RL Agent
+        if hasattr(self, 'rl_agent') and self.rl_agent:
+            try:
+                # Check if RL agent has memory set
+                has_memory = self.rl_agent.memory is not None
+                results['checks']['rl_agent'] = {
+                    'status': 'healthy' if has_memory else 'degraded',
+                    'has_memory': has_memory,
+                    'epsilon': self.rl_agent.epsilon
+                }
+                if has_memory:
+                    logger.info(f"   ✅ RL Agent: healthy (epsilon={self.rl_agent.epsilon:.4f})")
+                else:
+                    logger.warning("   ⚠️ RL Agent: degraded - no memory buffer")
+                    results['warnings'].append('RL agent has no memory buffer')
+            except Exception as e:
+                results['checks']['rl_agent'] = {'status': 'unhealthy', 'error': str(e)}
+                results['overall_healthy'] = False
+                logger.error(f"   ❌ RL Agent: unhealthy - {e}")
+        else:
+            results['checks']['rl_agent'] = {'status': 'not_available'}
+            logger.info("   ℹ️ RL Agent: not available")
+        
+        # Summary
+        if results['overall_healthy']:
+            logger.info("🧠 [ML-HEALTH-CHECK] ✅ All critical ML components are healthy")
+        else:
+            logger.error("🧠 [ML-HEALTH-CHECK] ❌ Some ML components failed health check")
+        
+        if results['warnings']:
+            logger.warning(f"🧠 [ML-HEALTH-CHECK] ⚠️ Warnings: {', '.join(results['warnings'])}")
+        
+        return results
     
     async def _initialize_production_system(self) -> bool:
         """
