@@ -173,7 +173,7 @@ jobs:
           # Helpful placeholder so upload-artifact always has at least one file if no logs produced
           : > logs/.placeholder || true
 
-            - name: Install TA-Lib C-Library
+      - name: Install TA-Lib C-Library
         run: |
           sudo apt-get update
           sudo apt-get install -y ta-lib-dev
