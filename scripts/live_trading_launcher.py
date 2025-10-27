@@ -1707,31 +1707,40 @@ class LiveTradingLauncher:
                 checks_passed = False
 
             # ============================================================================
-            # YENİ DOĞRULAMA ADIMI BURAYA EKLENECEK
+            # Indicator Warmup Validation                                                                                                     
             # ============================================================================
-            logger.info("Check 6.5/7: Indicator Warmup Validation...")
-            if not self.ws_optimizer or not self.ws_optimizer.ws_manager:
-                logger.error("❌ Indicator validation skipped: WebSocket manager not available.")
-                checks_passed = False
+            logger.info("Check 6/7: Indicator Warmup Validation...")
+            if not self.coordinator or not self.coordinator.trading_engine:
+                reason = "Coordinator or Trading Engine not available for prefetch."
+                logger.error(f"❌ {reason}")
+                failed_checks.append(f"IndicatorValidator: {reason}")
             else:
                 try:
-                    # Validator'ı ws_optimizer ile başlat
+                    # 1. ÖNCE: Geçmiş veriyi çek ve enjekte et.
+                    logger.info("  -> Step 1: Prefetching historical data...")
+                    await self.coordinator.trading_engine.prefetch_data()
+                    logger.info("  -> Prefetch complete.")
+    
+                    # 2. SONRA: Enjekte edilmiş veriyi doğrula.
+                    logger.info("  -> Step 2: Validating prefetched data...")
                     validator = IndicatorValidator(self.ws_optimizer)
-                    
-                    # Tüm semboller için doğrulamayı çalıştır
                     all_valid, validation_results = await validator.validate_all_symbols(
                         symbols=self.TRADING_PAIRS,
                         exchange='bingx'
                     )
                     
                     if not all_valid:
-                        logger.critical("❌ INDICATOR VALIDATION FAILED. CANNOT START TRADING.")
-                        checks_passed = False
+                        failed_reasons = [f"{s}: {', '.join(r['errors'])}" for s, r in validation_results.items() if not r['overall_valid']]
+                        reason = f"Indicator validation failed after prefetch. Details: {'; '.join(failed_reasons)}"
+                        logger.critical(f"❌ {reason}")
+                        failed_checks.append(f"IndicatorValidator: {reason}")
                     else:
                         logger.info("✅ ALL INDICATORS VALIDATED AND READY FOR TRADING.")
+    
                 except Exception as e:
-                    logger.critical(f"❌ Indicator validation crashed: {e}", exc_info=True)
-                    checks_passed = False
+                    reason = f"Indicator validation crashed: {e}"
+                    logger.critical(f"❌ {reason}", exc_info=True)
+                    failed_checks.append(f"IndicatorValidatorCrash: {reason}")
             
             # Check 7: WebSocket optimization
             logger.info("Check 7/7: WebSocket optimization...")
@@ -1742,18 +1751,18 @@ class LiveTradingLauncher:
             else:
                 logger.warning("⚠ WebSocket not initialized (will use REST API)")
             
+            # --- FINAL SUMMARY ---
             logger.info("\n" + "="*70)
-            if checks_passed:
+            if not failed_checks:
                 logger.info("✓ ALL PRE-FLIGHT CHECKS PASSED")
+                return True
             else:
                 logger.error("❌ SOME PRE-FLIGHT CHECKS FAILED")
-            logger.info("="*70)
-            
-            return checks_passed
-            
-        except Exception as e:
-            logger.error(f"❌ Pre-flight checks failed: {e}")
-            return False
+                logger.error("Failing checks:")
+                for i, check_reason in enumerate(failed_checks, 1):
+                    logger.error(f"  {i}. {check_reason}")
+                logger.info("="*70)
+                return False
     
     async def _wait_for_websocket_connection(self, timeout: int = 30, check_interval: int = 1) -> bool:
         """
