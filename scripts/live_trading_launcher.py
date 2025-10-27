@@ -2640,5 +2640,39 @@ Examples:
 
 
 if __name__ == '__main__':
-    exit_code = asyncio.run(main())
-    sys.exit(exit_code)
+    # Log dosyasının adını başlangıçta belirle
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file_path = os.path.join(log_dir, f"launch_error_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.log")
+
+    try:
+        exit_code = asyncio.run(main())
+        sys.exit(exit_code)
+    except Exception as e:
+        # Hata anında loglamanın çalıştığından emin ol
+        # Temel bir logger ile hatayı hem konsola hem dosyaya yaz
+        error_logger = logging.getLogger("CRITICAL_ERROR")
+        error_logger.setLevel(logging.ERROR)
+        
+        # Konsol handler
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.ERROR)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        ch.setFormatter(formatter)
+        if not error_logger.handlers:
+            error_logger.addHandler(ch)
+
+        # Dosya handler
+        fh = logging.FileHandler(log_file_path)
+        fh.setLevel(logging.ERROR)
+        fh.setFormatter(formatter)
+        error_logger.addHandler(fh)
+
+        # Hatayı logla
+        import traceback
+        tb_str = traceback.format_exc()
+        error_logger.critical(f"❌ A critical, unhandled error occurred in the launcher:\n{tb_str}")
+        
+        print(f"CRITICAL ERROR: A traceback has been written to {log_file_path}", file=sys.stderr)
+        
+        sys.exit(1)
