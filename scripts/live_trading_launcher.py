@@ -1220,19 +1220,21 @@ class LiveTradingLauncher:
         required_vars = ['BINGX_KEY', 'BINGX_SECRET']
         missing_vars = [var for var in required_vars if not os.getenv(var)]
 
-        credentials_required = self.mode == 'live' and not self.dry_run
+        # --- DÜZENLEME: `credentials_required` artık burada değil, kullanıldığı yerde kontrol edilecek ---
+        # credentials_required = self.mode == 'live' and not self.dry_run
         self._has_bingx_credentials = not missing_vars
 
-        if credentials_required:
-            if missing_vars:
-                logger.error(f"❌ Missing required environment variables: {missing_vars}")
-                return False
+        # --- YENİ MANTIK ---
+        # Sadece `dry_run` DEĞİLSE ve `live` modundaysa anahtarlar zorunludur.
+        if self.mode == 'live' and not self.dry_run and not self._has_bingx_credentials:
+            logger.error(f"❌ Missing required environment variables for LIVE mode: {missing_vars}")
+            return False
+        
+        if self._has_bingx_credentials:
             logger.info("✓ BingX credentials found")
         else:
-            if missing_vars:
-                logger.info("ℹ️  BingX credentials not provided – proceeding without authentication")
-            else:
-                logger.info("✓ BingX credentials loaded (optional)")
+            logger.info("ℹ️ BingX credentials not provided (OK for dry-run or paper mode)")
+
 
         # Optional Telegram setup
         tg_token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -1267,66 +1269,61 @@ class LiveTradingLauncher:
         """OPTIMIZED BingX initialization."""
         logger.info("\n[2/8] Initializing BingX Exchange Connection...")
         
-        # Get trading pairs from config
         trading_pairs = self._get_trading_pairs()
         
         try:
-            # Create BingX client with credentials
-            api_key = os.getenv('BINGX_KEY')
-            secret = os.getenv('BINGX_SECRET')
-
-            if self._has_bingx_credentials:
-                bingx_creds = {'apiKey': api_key, 'secret': secret}
-            else:
-                bingx_creds = None
-
-            # YENİ: Exchange ayarlarını burada tanımla
+            # --- YENİ VE GÜVENLİ YAPI ---
+            # Önce exchange_config için boş bir sözlük oluştur.
             exchange_config = {
-                'apiKey': bingx_creds['apiKey'] if bingx_creds else None,
-                'secret': bingx_creds['secret'] if bingx_creds else None,
-                # ÖNEMLİ: Marketleri otomatik olarak yüklemeyi devre dışı bırak.
-                'options': {
-                    'load_markets': False,
-                },
+                'apiKey': None,
+                'secret': None,
+                'options': {'load_markets': False},
             }
-            
-            # CcxtClient'ı yeni ayarlarla oluştur.
+
+            # SADECE anahtarlar varsa ve dry_run DEĞİLSE config'i doldur.
+            if self._has_bingx_credentials and not self.dry_run:
+                logger.info("Authenticated mode: Loading API credentials.")
+                exchange_config['apiKey'] = os.getenv('BINGX_KEY')
+                exchange_config['secret'] = os.getenv('BINGX_SECRET')
+            else:
+                logger.info("Public mode: Initializing without API credentials (dry-run or no secrets).")
+
+            # CcxtClient'ı her zaman güvenli olan bu config ile oluştur.
             bingx_client = CcxtClient('bingx', exchange_config)
             
-            # YENİ: Sadece ve sadece işlem yapacağımız sembollerin market verisini yükle.
+            # Sadece işlem yapacağımız sembollerin market verisini yükle.
             try:
                 logger.info(f"Explicitly loading market data for specified symbols: {trading_pairs}")
                 await bingx_client.load_markets(params={'symbols': trading_pairs})
             except Exception as e:
                 logger.error(f"Failed to load specific markets for symbols {trading_pairs}: {e}")
-                return False # Belirtilen marketler yüklenemiyorsa devam etme.
+                return False
     
-            # WebSocket optimization with CONFIG symbols
             bingx_client.set_required_symbols(trading_pairs)
             logger.info(f"✓ BingX client optimized for {len(trading_pairs)} symbols only")
             
             self.exchange_clients['bingx'] = bingx_client
             
-            # Test connection with single API call instead of loading 2528 markets
+            # Test connection with a public endpoint call
             logger.info("Testing BingX connection...")
             test_ticker = await bingx_client.fetch_ticker('BTC/USDT:USDT')
             logger.info(f"✓ Connected to BingX - Test price: BTC=${test_ticker['last']:.2f}")
 
-            if self._has_bingx_credentials:
-                # Test authentication with balance check
+            # SADECE anahtarlar varsa kimlik doğrulama testi yap.
+            if self._has_bingx_credentials and not self.dry_run:
                 try:
                     balance = await bingx_client.get_bingx_balance()
                     logger.info("✓ BingX authentication successful")
                 except Exception as e:
-                    logger.warning(f"⚠️  BingX authentication test failed: {e}")
+                    logger.warning(f"⚠️ BingX authentication test failed: {e}")
             else:
-                logger.info("ℹ️  Skipping BingX authentication check (no credentials)")
+                logger.info("ℹ️ Skipping BingX authentication check (public mode).")
             
-            # Verify ONLY configured pairs
+            # Verify configured pairs
             logger.info(f"Verifying {len(trading_pairs)} trading pairs...")
             verified_pairs = []
         
-            for pair in trading_pairs:  # ← CONFIG'DEN GELEN LİSTE
+            for pair in trading_pairs:
                 try:
                     ticker = await bingx_client.fetch_ticker(pair)
                     verified_pairs.append(pair)
@@ -1334,8 +1331,7 @@ class LiveTradingLauncher:
                 except Exception as e:
                     logger.warning(f"  ❌ {pair}: {e}")
             
-            # Check if enough pairs were verified (allow some failures)
-            min_required = max(1, len(trading_pairs) // 2)  # At least half should work
+            min_required = max(1, len(trading_pairs) // 2)
             
             if len(verified_pairs) >= min_required:
                 logger.info(f"✓ {len(verified_pairs)}/{len(trading_pairs)} trading pairs verified")
@@ -1345,7 +1341,7 @@ class LiveTradingLauncher:
                 return False
             
         except Exception as e:
-            logger.error(f"❌ Failed to connect to BingX: {e}")
+            logger.error(f"❌ Failed to connect to BingX: {e}", exc_info=True)
             return False
     
     def _initialize_risk_management(self) -> bool:
@@ -2418,6 +2414,8 @@ class LiveTradingLauncher:
                 await self.cleanup()
             except Exception as e:
                 logger.error(f"❌ Cleanup failed: {e}")
+                if exit_code == 0:
+                    exit_code = 1
     
     async def _run_with_auto_restart(self, duration: Optional[float] = None) -> int:
         """
