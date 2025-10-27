@@ -168,9 +168,7 @@ jobs:
       - name: Ensure logs and data directories + placeholders
         run: |
           mkdir -p logs data
-          # Ensure placeholder state files exist so artifact upload doesn't fail
           touch data/state.json data/day_stats.json
-          # Helpful placeholder so upload-artifact always has at least one file if no logs produced
           : > logs/.placeholder || true
 
       - name: Install TA-Lib from source
@@ -187,17 +185,10 @@ jobs:
         run: |
           python -V
           python -m pip install --upgrade pip setuptools wheel
-          
-          # Install specific versions for compatibility
           pip install --no-cache-dir 'aiohttp==3.8.6' 'yarl<2.0' 'multidict<7.0'
-          
-          # Install TA-Lib Python library (C kütüphanesi artık kurulu)
           pip install --no-cache-dir TA-Lib
-          
-          # Install WebSocket libraries
           pip install --no-cache-dir 'websocket-client>=1.6.0' 'websockets>=10.0'
           
-          # === KOŞULLU YÜKLEME BAŞLANGICI ===
           if [ "${{ github.event.inputs.enable_ml }}" = "true" ]; then
             echo "ML is enabled. Installing all dependencies for pre-flight..."
             pip install --no-cache-dir -r requirements.txt
@@ -205,65 +196,37 @@ jobs:
             echo "ML is disabled. Installing core dependencies only for pre-flight..."
             sed '/# === MACHINE LEARNING (Optional) ===/,$d' requirements.txt | pip install --no-cache-dir -r /dev/stdin
           fi
-          # === KOŞULLU YÜKLEME SONU ===
           
           echo "✅ Dependencies installed successfully"
-
-          echo "📦 Installing the repository package in editable mode..."
-          # Bu komut, projenizi Python'a bir paket olarak tanıtır.
-          # Bu sayede `from core import ...` gibi importlar çalışır.
           python -m pip install -e .
           echo "✅ Repository package installed."
-          
-          echo "✅ Dependencies installed successfully (using BingX Direct WebSocket)"
 
       - name: Run Dry-Run Pre-Flight Checks
         env:
+          # --- DÜZENLEME: Bu adımdan API sırları kaldırıldı ---
+          # Pre-flight kontrolü --dry-run modunda çalışır ve API anahtarlarına ihtiyaç DUYMAZ.
+          # Python betiği bu modda sırların eksikliğini tolere edecek şekilde güncellendi.
+          # Bu sayede bu adımın amacı (bağımlılık ve kurulum kontrolü) daha net hale gelir.
           ML_ENABLED: ${{ github.event.inputs.enable_ml }}
-          # ============= DEBUGGING =============
           DEBUG_STRATEGY_LOGGING: ${{ github.event.inputs.debug_mode }}
           
-          # ============= EXCHANGE CREDENTIALS =============
-          BINGX_KEY: ${{ secrets.BINGX_KEY }}
-          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          
-          # ✅ NEW: TRADING CONFIGURATION FROM GITHUB VARIABLES
-          # ============= DUPLICATE PREVENTION =============
+          # --- GitHub Değişkenlerinden (vars) gelen yapılandırma ---
           DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
           DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
           PRICE_DELTA_BYPASS_THRESHOLD: ${{ vars.PRICE_DELTA_BYPASS_THRESHOLD || '0.0015' }}
           PRICE_DELTA_BYPASS_ENABLED: ${{ vars.PRICE_DELTA_BYPASS_ENABLED || 'true' }}
-          
-          # ============= TRADING SYMBOLS =============
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
-          
-          # ============= SYMBOL-SPECIFIC RSI =============
           RSI_THRESHOLD_BTC: ${{ vars.RSI_THRESHOLD_BTC || '55' }}
           RSI_THRESHOLD_ETH: ${{ vars.RSI_THRESHOLD_ETH || '50' }}
           RSI_THRESHOLD_SOL: ${{ vars.RSI_THRESHOLD_SOL || '50' }}
-          
-          # ============= RISK MANAGEMENT =============
           CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
           DAILY_MAX_TRADES: ${{ vars.DAILY_MAX_TRADES || '5' }}
           PER_TRADE_RISK_PCT: ${{ vars.PER_TRADE_RISK_PCT || '0.01' }}
-          
-          # ============= WEBSOCKET =============
           WS_MAX_STREAMS_BINGX: ${{ vars.WS_MAX_STREAMS_BINGX || '10' }}
         run: |
-          echo "🔍 Running pre-flight checks..."
+          echo "🔍 Running pre-flight checks (without secrets)..."
           echo "=================================="
-          echo "Environment Variables Loaded:"
-          echo "  DUPLICATE_PREVENTION_THRESHOLD: $DUPLICATE_PREVENTION_THRESHOLD"
-          echo "  DUPLICATE_PREVENTION_COOLDOWN: $DUPLICATE_PREVENTION_COOLDOWN"
-          echo "  TRADING_SYMBOLS: $TRADING_SYMBOLS"
-          echo "  RSI_THRESHOLD_BTC: $RSI_THRESHOLD_BTC"
-          echo "  CAPITAL_USDT: $CAPITAL_USDT"
-          echo "=================================="
-
           python scripts/live_trading_launcher.py --dry-run --paper
-
           echo "=================================="
           echo "✅ Pre-flight checks completed"
 
@@ -272,12 +235,13 @@ jobs:
         if: always()
         with:
           name: pre-flight-logs
+          # --- DÜZELTME: Tekrarlanan 'path:' anahtarı kaldırıldı ---
           path: |
-            path: |
-              logs/**/*.log
-              logs/*.log
+            logs/**/*.log
+            logs/*.log
           if-no-files-found: ignore
 
+  # ... dosyanın geri kalanı aynı kalabilir ...
   live-trading:
     name: Execute Live Trading
     runs-on: ubuntu-latest
@@ -356,7 +320,7 @@ jobs:
           echo "Pre-flight Checks: ${{ github.event.inputs.skip_preflight == 'true' && 'SKIPPED ⚠️' || 'COMPLETED ✅' }}"
           echo "Infinite Mode (Layer 1): ${{ github.event.inputs.infinite }}"
           echo "Auto-Restart (Layer 2): ${{ github.event.inputs.auto_restart }}"
-          echo "Max Restarts: ${{ github.event.inputs.max_restarts }}"
+          # echo "Max Restarts: ${{ github.event.inputs.max_restarts }}"
           echo "Restart Delay: ${{ github.event.inputs.restart_delay }}s"
           echo "Duration: ${{ github.event.inputs.duration || 'indefinite' }}"
           echo "Debug Mode: ${{ github.event.inputs.debug_mode }}"
@@ -482,9 +446,9 @@ jobs:
           fi
 
           # Add max restarts if specified
-          if [ -n "${{ github.event.inputs.max_restarts }}" ] && [ "${{ github.event.inputs.max_restarts }}" != "1000" ]; then
-            CMD="$CMD --max-restarts ${{ github.event.inputs.max_restarts }}"
-          fi
+          # if [ -n "${{ github.event.inputs.max_restarts }}" ] && [ "${{ github.event.inputs.max_restarts }}" != "1000" ]; then
+          #   CMD="$CMD --max-restarts ${{ github.event.inputs.max_restarts }}"
+          # fi
 
           # Add restart delay if specified
           if [ -n "${{ github.event.inputs.restart_delay }}" ] && [ "${{ github.event.inputs.restart_delay }}" != "30" ]; then
@@ -679,7 +643,7 @@ jobs:
           echo "- **Pre-flight Checks**: ${{ github.event.inputs.skip_preflight == 'true' && '⚠️ SKIPPED' || '✅ COMPLETED' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Layer 1 (Infinite)**: ${{ github.event.inputs.infinite }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Layer 2 (Auto-Restart)**: ${{ github.event.inputs.auto_restart }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Max Restarts**: ${{ github.event.inputs.max_restarts }}" >> $GITHUB_STEP_SUMMARY
+          # echo "- **Max Restarts**: ${{ github.event.inputs.max_restarts }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Restart Delay**: ${{ github.event.inputs.restart_delay }}s" >> $GITHUB_STEP_SUMMARY
           echo "- **Duration**: ${{ github.event.inputs.duration || 'indefinite' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Debug Mode**: ${{ github.event.inputs.debug_mode }}" >> $GITHUB_STEP_SUMMARY
