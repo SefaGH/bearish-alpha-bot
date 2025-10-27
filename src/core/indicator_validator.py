@@ -39,6 +39,8 @@ class IndicatorValidator:
         Args:
             websocket_manager: WebSocket manager instance with historical data
         """
+        actual_ws_manager = getattr(websocket_manager, 'ws_manager', None)
+        
         if not websocket_manager or not websocket_manager.collector:
             raise ValueError("IndicatorValidator requires a WebSocketManager with an initialized collector.")
         self.ws_manager = websocket_manager
@@ -65,6 +67,13 @@ class IndicatorValidator:
         
         all_valid = True
         results = {}
+
+        # TA-Lib yoksa, doğrulamayı atla ve hata ver.
+        if not TALIB_AVAILABLE:
+            logger.error("❌ TA-Lib is not installed. Cannot perform indicator validation.")
+            for symbol in symbols:
+                results[symbol] = {'overall_valid': False, 'errors': ['TA-Lib not installed']}
+            return False, results
         
         for symbol in symbols:
             symbol_valid, symbol_results = await self.validate_symbol(
