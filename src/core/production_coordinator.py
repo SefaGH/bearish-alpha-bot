@@ -51,6 +51,9 @@ class RealTimePerformanceMonitor:
             'trade_count': 0
         }
 
+from .order_manager import SmartOrderManager
+from .position_manager import AdvancedPositionManager
+
 # Phase 3.1-3.3: Risk & Portfolio Management
 from .risk_manager import RiskManager
 from .portfolio_manager import PortfolioManager
@@ -1109,9 +1112,24 @@ class ProductionCoordinator:
                 performance_monitor=self.performance_monitor
             )
             logger.info(f"✓ Risk manager initialized (portfolio value: ${self.risk_manager.portfolio_value:.2f})")
+
+            # ========================================
+            # STEP 7: INITIALIZE EXECUTION MANAGERS (YENİ VE KRİTİK ADIM)
+            # ========================================
+            # Önce OrderManager'ı oluşturun. Henüz exchange_clients vermiyoruz.
+            self.order_manager = SmartOrderManager(risk_manager=self.risk_manager)
+            logger.info("✓ Order manager initialized (dependencies pending)")
+            
+            # Sonra PositionManager'ı, order_manager'ı bir bağımlılık olarak vererek oluşturun.
+            self.position_manager = AdvancedPositionManager(
+                risk_manager=self.risk_manager,
+                order_manager=self.order_manager, # <<< İŞTE BAĞLANTI NOKTASI!
+                websocket_manager=self.websocket_manager
+            )
+            logger.info("✓ Position manager initialized and linked with OrderManager")
             
             # ========================================
-            # STEP 7: INITIALIZE PORTFOLIO MANAGER
+            # STEP 8: INITIALIZE PORTFOLIO MANAGER
             # ========================================
             self.portfolio_manager = PortfolioManager(
                 risk_manager=self.risk_manager,
@@ -1119,12 +1137,12 @@ class ProductionCoordinator:
                 websocket_manager=self.websocket_manager,
                 exchange_clients=self.exchange_clients
             )
-            # Attach full config to portfolio manager
             self.portfolio_manager.cfg = self.config
             logger.info("✓ Portfolio manager initialized")
+
             
             # ========================================
-            # STEP 8: INITIALIZE MARKET DATA PIPELINE (YENİ ADIM)
+            # STEP 9: INITIALIZE MARKET DATA PIPELINE (YENİ ADIM)
             # ========================================
             self.market_data_pipeline = MarketDataPipeline(
                 exchanges=self.exchange_clients,
@@ -1132,9 +1150,21 @@ class ProductionCoordinator:
                 websocket_manager=self.websocket_manager  # ÖNEMLİ: WS Manager'ı pipeline'a tanıtıyoruz.
             )
             logger.info("✓ Market data pipeline initialized")
+
+            # ========================================
+            # STEP 10: LINK MANAGERS (YENİ VE KRİTİK ADIM)
+            # ========================================
+            # Şimdi tüm yöneticileri birbirine bağlayın.
+            self.portfolio_manager.set_execution_managers(self.order_manager, self.position_manager)
+            self.order_manager.set_dependencies(
+                risk_manager=self.risk_manager,
+                exchange_clients=self.exchange_clients # <<< exchange_clients'ı enjekte et!
+            )
+            logger.info("✓ All managers have been interlinked")
+
             
             # ========================================
-            # STEP 9: VERIFY WEBSOCKET COLLECTOR READY
+            # STEP 11: VERIFY WEBSOCKET COLLECTOR READY
             # ========================================
             if self.websocket_manager:
                 if hasattr(self.websocket_manager, 'is_collector_ready'):
@@ -1152,7 +1182,7 @@ class ProductionCoordinator:
                 logger.info("ℹ️ No WebSocket manager - pipeline will use REST API only")
             
             # ========================================
-            # STEP 10: INITIALIZE STRATEGY COORDINATOR (GÜNCELLENDİ)
+            # STEP 12: INITIALIZE STRATEGY COORDINATOR (GÜNCELLENDİ)
             # ========================================
             self.strategy_coordinator = StrategyCoordinator(
                 self.portfolio_manager,
@@ -1163,7 +1193,7 @@ class ProductionCoordinator:
             logger.info("✓ Strategy coordinator initialized")
             
             # ========================================
-            # STEP 11: INITIALIZE CIRCUIT BREAKER
+            # STEP 13: INITIALIZE CIRCUIT BREAKER
             # ========================================
             self.circuit_breaker = CircuitBreakerSystem(
                 self.portfolio_manager,
@@ -1172,20 +1202,22 @@ class ProductionCoordinator:
             logger.info("✓ Circuit breaker system initialized")
             
             # ========================================
-            # STEP 12: INITIALIZE LIVE TRADING ENGINE
+            # STEP 14: INITIALIZE LIVE TRADING ENGINE
             # ========================================
             self.trading_engine = LiveTradingEngine(
                 mode=mode,
                 portfolio_manager=self.portfolio_manager,
                 risk_manager=self.risk_manager,
+                order_manager=self.order_manager, # <<< HAZIR VER
+                position_manager=self.position_manager, # <<< HAZIR VER
                 exchange_clients=self.exchange_clients,
                 strategy_coordinator=self.strategy_coordinator,
-                market_data_pipeline=self.market_data_pipeline  # BU SATIRI EKLEYİN
+                market_data_pipeline=self.market_data_pipeline
             )
-            logger.info(f"✓ Live trading engine initialized (mode: {mode})")
+            logger.info(f"✓ Live trading engine initialized (mode: {mode}) with pre-configured managers")
             
             # ========================================
-            # STEP 13: SET ACTIVE SYMBOLS (CRITICAL!)
+            # STEP 15: SET ACTIVE SYMBOLS (CRITICAL!)
             # ========================================
             if trading_symbols:
                 # Priority 1: Use provided parameter
@@ -1204,7 +1236,7 @@ class ProductionCoordinator:
                 logger.info(f"✓ Trading engine symbols cache set: {len(self.active_symbols)} symbols")
             
             # ========================================
-            # STEP 14: VALIDATE ACTIVE SYMBOLS          
+            # STEP 16: VALIDATE ACTIVE SYMBOLS          
             # ========================================
             if not self.active_symbols:
                 logger.error("="*70)
@@ -1223,7 +1255,7 @@ class ProductionCoordinator:
                 logger.info("="*70)
             
             # ========================================
-            # STEP 15: INITIALIZE ML COMPONENTS (NEW)
+            # STEP 17: INITIALIZE ML COMPONENTS (NEW)
             # ========================================
             ml_enabled = self.config.get('ml', {}).get('enabled', False)
             if ml_enabled and self.active_symbols:
@@ -1246,7 +1278,7 @@ class ProductionCoordinator:
                     logger.warning("⚠️ Cannot initialize ML without active symbols")
             
             # ========================================
-            # STEP 16: MARK AS INITIALIZED
+            # STEP 18: MARK AS INITIALIZED
             # ========================================
             self.is_initialized = True
             
