@@ -2638,41 +2638,41 @@ Examples:
     
     return exit_code
 
-
 if __name__ == '__main__':
-    # Log dosyasının adını başlangıçta belirle
-    log_dir = "logs"
-    os.makedirs(log_dir, exist_ok=True)
-    log_file_path = os.path.join(log_dir, f"launch_error_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.log")
-
+    # Hata yakalama ve loglama için bu bloğu kullanın
     try:
         exit_code = asyncio.run(main())
         sys.exit(exit_code)
     except Exception as e:
         # Hata anında loglamanın çalıştığından emin ol
-        # Temel bir logger ile hatayı hem konsola hem dosyaya yaz
-        error_logger = logging.getLogger("CRITICAL_ERROR")
-        error_logger.setLevel(logging.ERROR)
-        
-        # Konsol handler
-        ch = logging.StreamHandler()
-        ch.setLevel(logging.ERROR)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        ch.setFormatter(formatter)
-        if not error_logger.handlers:
-            error_logger.addHandler(ch)
-
-        # Dosya handler
-        fh = logging.FileHandler(log_file_path)
-        fh.setLevel(logging.ERROR)
-        fh.setFormatter(formatter)
-        error_logger.addHandler(fh)
-
-        # Hatayı logla
         import traceback
-        tb_str = traceback.format_exc()
-        error_logger.critical(f"❌ A critical, unhandled error occurred in the launcher:\n{tb_str}")
         
-        print(f"CRITICAL ERROR: A traceback has been written to {log_file_path}", file=sys.stderr)
+        # Hata detaylarını bir string olarak al
+        error_details = traceback.format_exc()
         
+        # Hem konsola hem de dosyaya yaz
+        log_dir = "logs"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        
+        error_log_path = os.path.join(log_dir, "CRITICAL_FAILURE.log")
+        
+        # Konsola hatayı bas
+        print("="*80, file=sys.stderr)
+        print("❌ A CRITICAL, UNHANDLED ERROR OCCURRED IN THE LAUNCHER!", file=sys.stderr)
+        print("="*80, file=sys.stderr)
+        print(error_details, file=sys.stderr)
+        print("="*80, file=sys.stderr)
+        print(f"Full error details have been saved to: {error_log_path}", file=sys.stderr)
+        print("="*80, file=sys.stderr)
+        
+        # Dosyaya hatayı yaz
+        with open(error_log_path, "w") as f:
+            f.write(f"Timestamp: {datetime.now(timezone.utc).isoformat()}\n")
+            f.write("="*80 + "\n")
+            f.write("A critical, unhandled error occurred in the launcher:\n")
+            f.write("="*80 + "\n")
+            f.write(error_details)
+            
+        # Hata koduyla çık
         sys.exit(1)
