@@ -35,16 +35,16 @@ class OrderType(Enum):
 class SmartOrderManager:
     """Advanced order management with execution optimization."""
     
-    def __init__(self, risk_manager, exchange_clients: Dict):
+    def __init__(self, risk_manager=None, exchange_clients: Optional[Dict] = None):
         """
-        Initialize smart order manager.
+        Initialize smart order manager. Dependencies can be set later.
         
         Args:
-            risk_manager: RiskManager instance from Phase 3.2
-            exchange_clients: Dictionary of exchange client instances
+            risk_manager: RiskManager instance.
+            exchange_clients: Dictionary of exchange client instances.
         """
         self.risk_manager = risk_manager
-        self.exchange_clients = exchange_clients
+        self.exchange_clients = exchange_clients if exchange_clients is not None else {}
         
         # Order management
         self.active_orders = {}  # order_id -> order_data
@@ -70,6 +70,14 @@ class SmartOrderManager:
         }
         
         logger.info("SmartOrderManager initialized")
+
+    def set_dependencies(self, risk_manager: Any, exchange_clients: Dict):
+        """
+        Set dependencies after initialization. This allows for flexible setup.
+        """
+        self.risk_manager = risk_manager
+        self.exchange_clients = exchange_clients
+        logger.info(f"OrderManager dependencies set. {len(exchange_clients)} exchange client(s) registered.")
     
     async def place_order(self, order_request: Dict, execution_algo: str = 'limit') -> Dict[str, Any]:
         """
