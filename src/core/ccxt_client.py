@@ -169,19 +169,72 @@ class CcxtClient:
             logger.error(f"Failed to load markets: {e}")
             raise
 
-    def load_markets(self, reload: bool = False, *args, **kwargs) -> Dict[str, Dict[str, Any]]:
+    async def load_markets(self, reload=False, params={}):
         """
-        Backwards-compatible proxy to load markets.
-        This wrapper ensures older call sites continue to work.
+        CCXT market loading wrapper with optimization for fixed symbols.
+        If a fixed list of symbols is provided, it avoids loading all markets
+        and instead injects a minimal market structure for only those symbols.
+        This prevents CCXT's "lazy loading" from fetching all markets on the
+        first private API call.
         """
-        logger.info(f"[{self.name}] load_markets() wrapper called (reload={reload})")
-        
-        # Gelen 'symbols' parametresini ayarla
-        params = kwargs.get('params', {})
-        if 'symbols' in params:
-            self.set_required_symbols(params['symbols'])
+        logger.info(f"[{self.exchange.id}] load_markets() wrapper called (reload={reload})")
 
-        return self.markets(force_reload=bool(reload))
+        # Eğer semboller önceden tanımlanmışsa ve yeniden yükleme zorunlu değilse, optimizasyonu uygula
+        if self.symbols and not reload:
+            logger.info(f"[{self.exchange.id}] Will only work with {len(self.symbols)} symbols (no market load)")
+            
+            # --- YENİ EKLENEN ANA MANTIK ---
+            # ccxt'nin otomatik yüklemesini engellemek için minimal bir piyasa yapısı oluşturup enjekte et.
+            try:
+                minimal_markets = {}
+                for symbol in self.symbols:
+                    # CCXT'nin beklediği temel piyasa yapısını oluştur
+                    market = self.exchange.safe_market_structure({
+                        'id': symbol,
+                        'symbol': symbol,
+                        'base': symbol.split('/')[0],
+                        'quote': symbol.split('/')[1].split(':')[0],
+                        'baseId': symbol.split('/')[0],
+                        'quoteId': symbol.split('/')[1].split(':')[0],
+                        'active': True,
+                        'type': 'swap',
+                        'linear': True,
+                        'inverse': False,
+                        'spot': False,
+                        'swap': True,
+                        'future': False,
+                        'option': False,
+                        'precision': {
+                            'amount': 8,
+                            'price': 8,
+                        },
+                        'limits': {
+                            'amount': {'min': 1e-8, 'max': None},
+                            'price': {'min': 1e-8, 'max': None},
+                            'cost': {'min': None, 'max': None},
+                        },
+                        'info': {}, # Borsa özel bilgileri
+                    })
+                    minimal_markets[symbol] = market
+
+                # Oluşturulan bu minimal piyasa yapısını doğrudan ccxt'ye set et.
+                # Bu, ccxt'nin load_markets() çağırmasını engeller.
+                self.exchange.set_markets(minimal_markets)
+                logger.info(f"[{self.exchange.id}] Injected minimal market structure for {len(self.symbols)} symbols.")
+                return self.exchange.markets
+            except Exception as e:
+                logger.error(f"[{self.exchange.id}] Failed to create minimal market structure: {e}. Falling back to full load.")
+                # Eğer bu işlem başarısız olursa, güvenli moda dön ve her şeyi yükle.
+                return await self._execute_ccxt_method('load_markets', reload, params)
+
+        else:
+            # Standart davranış: tüm piyasaları yükle
+            if reload:
+                logger.info(f"[{self.exchange.id}] Forcing reload of all markets...")
+            else:
+                logger.info(f"[{self.exchange.id}] Loading all available markets...")
+            
+            return await self._execute_ccxt_method('load_markets', reload, params)
 
     def validate_and_get_symbol(self, requested_symbol="BTC/USDT"):
         """
