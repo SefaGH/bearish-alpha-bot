@@ -1263,7 +1263,7 @@ class LiveTradingLauncher:
         
         return True
     
-    def _initialize_exchange_connection(self) -> bool:
+    async def _initialize_exchange_connection(self) -> bool:
         """OPTIMIZED BingX initialization."""
         logger.info("\n[2/8] Initializing BingX Exchange Connection...")
         
@@ -2361,7 +2361,7 @@ class LiveTradingLauncher:
                 return 1
             
             # Step 2: Initialize exchange
-            if not self._initialize_exchange_connection():
+            if not await self._initialize_exchange_connection():
                 return 1
             
             # Step 3: Initialize risk management
