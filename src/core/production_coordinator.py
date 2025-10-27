@@ -12,6 +12,7 @@ import time
 import os
 import yaml
 import pandas as pd
+import numpy as np  # For ML health checks
 
 # Phase 1: Multi-Exchange Framework
 from .multi_exchange import build_clients_from_env
@@ -95,6 +96,9 @@ except ImportError:
 logger = logging.getLogger(__name__)
 # ✅ EKLE: Logger seviyesini zorla INFO yap
 logger.setLevel(logging.INFO)
+
+# Constants
+ML_HEALTH_CHECK_SYMBOL = "HEALTH_CHECK_BTC/USDT"  # Symbol for ML health checks
 
 
 class ProductionCoordinator:
@@ -896,9 +900,6 @@ class ProductionCoordinator:
         if hasattr(self, 'regime_predictor') and self.regime_predictor:
             try:
                 # Create dummy data for health check
-                import pandas as pd
-                import numpy as np
-                
                 dummy_data = pd.DataFrame({
                     'close': np.random.randn(100).cumsum() + 100,
                     'volume': np.random.rand(100) * 1000,
@@ -909,7 +910,7 @@ class ProductionCoordinator:
                 
                 # Try to make a prediction
                 regime_result = await self.regime_predictor.predict_regime_transition(
-                    'HEALTH_CHECK', dummy_data
+                    ML_HEALTH_CHECK_SYMBOL, dummy_data
                 )
                 
                 if regime_result and 'predicted_regime' in regime_result:
