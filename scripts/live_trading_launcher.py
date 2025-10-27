@@ -51,6 +51,7 @@ from strategies.adaptive_ob import AdaptiveOversoldBounce
 from strategies.adaptive_str import AdaptiveShortTheRip
 
 from core.logger import setup_logger
+from core.indicator_validator import IndicatorValidator
 
 # Configure logging with file support
 logger = setup_logger(name=__name__, log_to_file=True)
@@ -1704,6 +1705,33 @@ class LiveTradingLauncher:
             else:
                 logger.error("❌ WebSocket not initialized")
                 checks_passed = False
+
+            # ============================================================================
+            # YENİ DOĞRULAMA ADIMI BURAYA EKLENECEK
+            # ============================================================================
+            logger.info("Check 6.5/7: Indicator Warmup Validation...")
+            if not self.ws_optimizer or not self.ws_optimizer.ws_manager:
+                logger.error("❌ Indicator validation skipped: WebSocket manager not available.")
+                checks_passed = False
+            else:
+                try:
+                    # Validator'ı ws_optimizer ile başlat
+                    validator = IndicatorValidator(self.ws_optimizer)
+                    
+                    # Tüm semboller için doğrulamayı çalıştır
+                    all_valid, validation_results = await validator.validate_all_symbols(
+                        symbols=self.TRADING_PAIRS,
+                        exchange='bingx'
+                    )
+                    
+                    if not all_valid:
+                        logger.critical("❌ INDICATOR VALIDATION FAILED. CANNOT START TRADING.")
+                        checks_passed = False
+                    else:
+                        logger.info("✅ ALL INDICATORS VALIDATED AND READY FOR TRADING.")
+                except Exception as e:
+                    logger.critical(f"❌ Indicator validation crashed: {e}", exc_info=True)
+                    checks_passed = False
             
             # Check 7: WebSocket optimization
             logger.info("Check 7/7: WebSocket optimization...")
