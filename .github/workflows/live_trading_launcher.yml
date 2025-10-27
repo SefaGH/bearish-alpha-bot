@@ -335,6 +335,12 @@ jobs:
           fi
           # === KOŞULLU YÜKLEME SONU ===
 
+          # --- YENİ EKLENECEK BÖLÜM ---
+          echo "📦 Installing the repository package in editable mode..."
+          python -m pip install -e .
+          echo "✅ Repository package installed."
+          # --- YENİ BÖLÜM SONU ---
+
       - name: Display Configuration
         env:
           # Load variables for display
