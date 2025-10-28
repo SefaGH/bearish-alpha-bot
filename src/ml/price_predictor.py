@@ -152,8 +152,11 @@ if TORCH_AVAILABLE:
             
             # Transformer encoder
             encoder_layer = nn.TransformerEncoderLayer(
-                d_model, nhead, dim_feedforward=d_model*4,
-                dropout=0.1, batch_first=True
+                d_model=d_model,
+                nhead=2,  # 26, 2'ye tam bölünebilir.
+                dim_feedforward=512,
+                dropout=0.1,
+                batch_first=True
             )
             self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
             
