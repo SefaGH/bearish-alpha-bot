@@ -4,6 +4,7 @@ ML-Based Market Regime Predictor.
 Integrates with Phase 2 regime detection to provide predictive capabilities.
 """
 
+import joblib
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
@@ -88,10 +89,9 @@ class EnsembleRegimePredictor:
 class MLRegimePredictor:
     """
     Machine learning-based market regime prediction system.
-    
-    Integrates with Phase 2 MarketRegimeAnalyzer to provide predictive
-    capabilities using ensemble of ML models.
+    (GÜNCELLENDİ: load_models metodu eklendi)
     """
+    MODEL_DIR = "data/models/regime"
     
     def __init__(self, regime_analyzer=None, websocket_manager=None):
         """
@@ -103,6 +103,7 @@ class MLRegimePredictor:
         """
         self.regime_analyzer = regime_analyzer
         self.ws_manager = websocket_manager
+        self.scaler = None # Scaler için bir alan ekle
         
         # Initialize models
         self.models = {
@@ -117,6 +118,48 @@ class MLRegimePredictor:
         self.is_trained = False
         
         logger.info("ML Regime Predictor initialized")
+        # Başlangıçta modelleri yüklemeyi dene
+        self.load_models()
+
+    def load_models(self):
+        """Eğitilmiş rejim modellerini ve scaler'ı diskten yükler."""
+        if not os.path.exists(self.MODEL_DIR):
+            logger.warning(f"Regime model directory not found: {self.MODEL_DIR}. Models are not loaded.")
+            self.is_trained = False
+            return
+
+        models_loaded = 0
+        try:
+            # Scaler'ı yükle
+            scaler_path = os.path.join(self.MODEL_DIR, "scaler.pkl")
+            if os.path.exists(scaler_path):
+                self.scaler = joblib.load(scaler_path)
+                logger.info("✅ Regime feature scaler loaded.")
+
+            # Modelleri yükle
+            # ... (Bu kısma, model_trainer'daki gibi bir döngü ile tüm modelleri yükleme mantığı eklenir)
+            
+            # Örnek: Random Forest yükleme
+            rf_path = os.path.join(self.MODEL_DIR, "random_forest.pkl")
+            if os.path.exists(rf_path) and RandomForestClassifier is not None:
+                self.models['random_forest'] = joblib.load(rf_path)
+                models_loaded += 1
+                logger.info("✅ Random Forest regime model loaded.")
+            
+            # ... (LSTM ve Transformer yükleme mantığı da buraya eklenir) ...
+
+            if models_loaded > 0:
+                # Ensemble modelini yeniden oluştur
+                self.models['ensemble'] = EnsembleRegimePredictor(self.models)
+                self.is_trained = True
+                logger.info(f"✅ {models_loaded} regime models loaded and ensemble created.")
+            else:
+                logger.warning("No pre-trained regime models found.")
+                self.is_trained = False
+
+        except Exception as e:
+            logger.error(f"Failed to load regime models: {e}", exc_info=True)
+            self.is_trained = False
     
     async def predict_regime_transition(self, symbol: str, 
                                        price_data: pd.DataFrame,
