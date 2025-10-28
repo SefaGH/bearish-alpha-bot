@@ -887,36 +887,46 @@ class LiveTradingEngine:
     
     async def _get_current_price(self, symbol: str) -> Optional[float]:
         """
-        Get current price with WebSocket/REST fallback.
+        Get current price with an intelligent WebSocket-first approach.
+        This new version is more robust and avoids relying on the broken fetch_ticker.
         
         Args:
-            symbol: Trading symbol
+            symbol: Trading symbol (e.g., 'BTC/USDT')
             
         Returns:
-            Current price or None if unavailable
+            Current price or None if unavailable.
         """
-        # Try WebSocket first
-        if self.market_data_pipeline and self.market_data_pipeline.websocket_manager:
+        # 1. ADIM: WebSocket Yöneticisinin varlığını kontrol et
+        if not (self.market_data_pipeline and self.market_data_pipeline.websocket_manager):
+            logger.warning("MarketDataPipeline or WebSocketManager not available for price fetching.")
+            return None
+
+        # 2. ADIM: En kısa zaman diliminden başlayarak mevcut tüm zaman dilimlerini dene
+        # Botun abone olduğu zaman dilimlerini doğrudan konfigürasyondan alalım.
+        timeframes_str = self.config.get('websocket', {}).get('stream_timeframes', '1m,5m,15m,30m,1h,4h')
+        available_timeframes = [tf.strip() for tf in timeframes_str.split(',')]
+
+        for tf in available_timeframes:
             try:
-                # Doğrudan pipeline'daki manager'ı kullan
-                ws_data = self.market_data_pipeline.websocket_manager.get_latest_data(symbol, '1m')
+                # WebSocket yöneticisinden en son veriyi iste
+                ws_data = self.market_data_pipeline.websocket_manager.get_latest_data(symbol, tf)
+                
+                # Gelen verinin içinde OHLCV var mı ve dolu mu diye kontrol et
                 if ws_data and ws_data.get('ohlcv'):
                     latest_candle = ws_data['ohlcv'][-1]
-                    return float(latest_candle[4])  # Close price
+                    price = float(latest_candle[4])  # 4. indeks her zaman kapanış fiyatıdır (close)
+                    
+                    if price > 0:
+                        logger.debug(f"✅ Price for {symbol} found via WebSocket on timeframe '{tf}': ${price}")
+                        return price
+                        
             except Exception as e:
-                logger.debug(f"WebSocket price fetch failed: {e}")
-        
-        # Fallback to REST API
-        for exchange_name, client in self.exchange_clients.items():
-            try:
-                ticker = client.fetch_ticker(symbol)
-                price = ticker.get('last', ticker.get('close', 0))
-                if price > 0:
-                    return float(price)
-            except Exception as e:
-                logger.debug(f"REST price fetch failed for {exchange_name}: {e}")
-        
-        logger.warning(f"Could not fetch price for {symbol}")
+                logger.debug(f"Failed to get price from WebSocket for {symbol} on timeframe '{tf}': {e}")
+                continue # Bir sonraki zaman dilimini dene
+
+        # 3. ADIM: Tüm denemeler başarısız olursa uyarı ver
+        # Artık REST API'ye düşmüyoruz çünkü onun bozuk olduğunu biliyoruz.
+        logger.warning(f"❌ Could not fetch price for {symbol} from any available WebSocket stream {available_timeframes}.")
         return None
     
     async def _position_monitoring_loop(self):
