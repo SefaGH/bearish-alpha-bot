@@ -1,8 +1,8 @@
 import asyncio
 import os
 import sys
+import pandas as pd
 import pandas_ta_classic as ta
-import pandas_ta
 import numpy as np
 import logging
 
