@@ -17,8 +17,7 @@ numpy>=2.2.6              # Numerical operations (REQUIRED)
 python-dotenv==1.0.1      # Environment variables (REQUIRED)
 pyyaml==6.0.2             # YAML config files (REQUIRED)
 requests==2.32.3          # HTTP requests (REQUIRED)
-
-pandas-ta @ https://github.com/twopirllc/pandas-ta/archive/refs/tags/0.3.14b0.tar.gz
+pandas-ta-classic==0.3.14b0
 
 
 # === TECHNICAL ANALYSIS ===
