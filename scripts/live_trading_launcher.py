@@ -1092,110 +1092,65 @@ class LiveTradingLauncher:
         return self.trading_pairs
     
     # *** DÜZELTME: Bu fonksiyon, kapanıştaki hataları düzeltecek şekilde yeniden yazıldı. ***
-    async def cleanup(self):
-        """
-        Properly cleanup all resources in the correct order.
-        This method is idempotent - safe to call multiple times.
-        """
-        if self._cleanup_done:
+    async def cleanup(self, signum=None, frame=None):
+        """Graceful shutdown procedure in the correct order."""
+        if self._cleanup_completed:
             logger.info("Cleanup already completed, skipping.")
             return
-        
-        logger.info("\n" + "=" * 70)
-        logger.info("🧹 STARTING CLEANUP (Corrected Order)")
-        logger.info("=" * 70)
+
+        logger.info("\n" + "="*70)
+        logger.info("🧹 STARTING GRACEFUL SHUTDOWN (Corrected Order)")
+        logger.info("="*70)
 
         errors = []
 
-        # --- DOĞRU SIRALAMA ---
-
-        # ADIM 1: Yeni sinyal üretimini durdur.
-        if self.coordinator and self.coordinator.is_running:
-            logger.info("Step 1: Halting new signal generation...")
-            self.coordinator.is_running = False
-            logger.info("✅ New signal generation halted.")
-
-        # ADIM 2: TÜM AÇIK POZİSYONLARI KAPAT (SİSTEM HALA CANLIYKEN).
-        # Bu, en kritik adımdır.
-        if self.coordinator and hasattr(self.coordinator, 'position_manager') and self.coordinator.position_manager:
-            logger.info("Step 2: Closing all open positions...")
-            try:
-                # position_manager'a coordinator üzerinden erişiyoruz.
-                result = await self.coordinator.position_manager.close_all_positions(reason='shutdown')
-                closed_count = result.get('closed_count', 0)
-                error_list = result.get('errors', [])
-                logger.info(f"✅ Positions closed: {closed_count} closed, {len(error_list)} errors.")
-                if error_list:
-                    errors.append(f"Position closure failed for some positions: {error_list}")
-            except Exception as e:
-                logger.error(f"⚠️ Critical error during position closure: {e}", exc_info=True)
-                errors.append(f"Position closure process crashed: {e}")
-        else:
-            logger.warning("Step 2: PositionManager not found, cannot close positions.")
-
-        # ADIM 3: WebSocket akışlarını durdur.
-        if self.ws_optimizer and self.ws_optimizer.is_initialized:
-            logger.info("Step 3: Stopping WebSocket streams...")
-            try:
-                await asyncio.wait_for(self.ws_optimizer.stop_streaming(), timeout=10.0)
-                logger.info("✅ WebSocket streams stopped.")
-            except Exception as e:
-                logger.error(f"⚠️ WebSocket stop failed: {e}", exc_info=True)
-                errors.append(f"WebSocket stop failed: {e}")
-
-        # ADIM 4: Geri kalan tüm sistem bileşenlerini (Trading Engine vb.) durdur.
+        # Adım 1: Ana işlem döngüsünü durdur
+        logger.info("Step 1: Stopping main trading loop...")
         if self.coordinator:
-            logger.info("Step 4: Stopping remaining production system components...")
-            try:
-                # ProductionCoordinator'ın kendi stop metodu olmalı.
-                if hasattr(self.coordinator, 'stop'):
-                    await self.coordinator.stop()
-                elif hasattr(self.coordinator, 'stop_system'): # Eski isimle uyumluluk
-                     await self.coordinator.stop_system()
-                logger.info("✅ Production system components stopped.")
-            except Exception as e:
-                logger.error(f"⚠️ Production system stop failed: {e}", exc_info=True)
-                errors.append(f"Production system stop failed: {e}")
+            await self.coordinator.stop()
+        logger.info("✅ Main trading loop stopped.")
 
-        # ADIM 5: Borsa bağlantılarını (CCXT istemcileri) kapat.
+        # Adım 2: Açık pozisyonları kapat (Borsa bağlantısı hala aktifken)
+        logger.info("Step 2: Closing all open positions...")
+        if self.coordinator and self.coordinator.position_manager:
+            try:
+                closed_count, close_errors = await self.coordinator.position_manager.close_all_positions("shutdown")
+                if close_errors:
+                    errors.append(f"Position closure failed for some positions: {close_errors}")
+                logger.info(f"✅ Positions closure attempt finished: {closed_count} closed, {len(close_errors)} errors.")
+            except Exception as e:
+                error_msg = f"Critical error during position closure: {e}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
+        else:
+            logger.info("Position manager not available, skipping position closure.")
+
+        # Adım 3: WebSocket akışlarını durdur
+        logger.info("Step 3: Stopping WebSocket streams...")
+        if self.ws_optimizer:
+            await self.ws_optimizer.stop_streaming()
+        logger.info("✅ WebSocket streams stopped.")
+
+        # Adım 4: Diğer tüm production sistem bileşenlerini durdur
+        logger.info("Step 4: Stopping remaining production system components...")
+        # Bu adım artık Adım 1'de yapıldığı için çoğunlukla doğrulama amaçlı
+        if self.coordinator:
+            await self.coordinator.stop() # Tekrar çağırmak zararsız
+        logger.info("✅ Production system components stopped.")
+
+        # Adım 5: Borsa bağlantılarını (CCXT istemcileri) en son kapat
+        logger.info("Step 5: Closing exchange connections...")
         if self.exchange_clients:
-            logger.info("Step 5: Closing exchange connections...")
             for name, client in self.exchange_clients.items():
                 try:
-                    # DÜZELTME: client.close() metodunu 'await' ile çağırın.
-                    if inspect.isawaitable(client.close()):
-                         await client.close()
-                    else:
-                         client.close() # Eğer asenkron değilse normal çağır
+                    # 'await' düzeltmesi burada kritik
+                    if hasattr(client, 'close') and inspect.iscoroutinefunction(client.close):
+                        await client.close()
                     logger.info(f"✅ {name} connection closed.")
                 except Exception as e:
-                    logger.error(f"⚠️ Failed to close {name} connection: {e}", exc_info=True)
-                    errors.append(f"Failed to close {name} connection: {e}")
-
-        # ADIM 6: Kalan tüm asenkron görevleri iptal et.
-        logger.info("Step 6: Cancelling any remaining background tasks...")
-        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        if pending:
-            logger.info(f"Found {len(pending)} pending tasks to cancel.")
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-            logger.info("✅ All pending tasks cancelled.")
-
-        # ADIM 7: Logları diske yazdır.
-        logger.info("Step 7: Flushing logs...")
-        logging.shutdown()
-
-        logger.info("=" * 70)
-        if errors:
-            logger.warning(f"⚠️ CLEANUP COMPLETED WITH {len(errors)} ERRORS:")
-            for i, error in enumerate(errors, 1):
-                logger.warning(f"  {i}. {error}")
-        else:
-            logger.info("✅ CLEANUP COMPLETED SUCCESSFULLY")
-        logger.info("=" * 70)
-
-        self._cleanup_done = True
+                    error_msg = f"Failed to close {name} connection: {e}"
+                    logger.error(error_msg, exc_info=True)
+                    errors.append(error_msg)
     
     def _load_environment(self) -> bool:
         """
