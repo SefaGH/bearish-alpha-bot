@@ -127,9 +127,15 @@ class BingXWebSocket:
         except Exception as e:
             logger.error(f"Failed to connect to BingX WebSocket: {e}")
             return False
+
+    def disable_reconnect(self):
+        """Permanently disables the auto-reconnect feature for graceful shutdown."""
+        logger.info("Permanently disabling auto-reconnect for BingXWebSocket.")
+        self.auto_reconnect = False
     
     async def disconnect(self):
         """Disconnect WebSocket connection."""
+        self.disable_reconnect()
         self._running = False
         if self.ws:
             await self.ws.close()
@@ -764,6 +770,11 @@ class BingXWebSocket:
         Returns:
             True if reconnection successful
         """
+        # --- DÜZENLEME: auto_reconnect'i kontrol et. Artık daha güvenilir olacak. ---
+        if not getattr(self, 'auto_reconnect', True):
+            logger.info("Auto-reconnect is disabled, will not attempt to reconnect.")
+            return False
+            
         if self._reconnect_attempts >= self._max_reconnect_attempts:
             logger.error(f"Max reconnection attempts ({self._max_reconnect_attempts}) reached")
             return False
