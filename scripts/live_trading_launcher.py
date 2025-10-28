@@ -1092,7 +1092,7 @@ class LiveTradingLauncher:
         
         return self.trading_pairs
     
-    # *** DÜZELTME: Bu fonksiyon, kapanıştaki hataları düzeltecek şekilde yeniden yazıldı. ***
+    # *** DÜZELTME 2: Bu fonksiyon, kapanıştaki `ValueError` hatasını düzeltecek şekilde yeniden yazıldı. ***
     async def cleanup(self, signum=None, frame=None):
         """Graceful shutdown procedure in the correct order."""
         if self._cleanup_completed:
@@ -1104,21 +1104,29 @@ class LiveTradingLauncher:
         logger.info("="*70)
 
         errors = []
+        self._cleanup_completed = True # Mark cleanup as started to prevent re-entry
 
         # Adım 1: Ana işlem döngüsünü durdur
         logger.info("Step 1: Stopping main trading loop...")
         if self.coordinator:
-            await self.coordinator.stop()
-        logger.info("✅ Main trading loop stopped.")
+            try:
+                await self.coordinator.stop()
+                logger.info("✅ Main trading loop stopped.")
+            except Exception as e:
+                error_msg = f"Error stopping coordinator main loop: {e}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
 
         # Adım 2: Açık pozisyonları kapat (Borsa bağlantısı hala aktifken)
         logger.info("Step 2: Closing all open positions...")
-        if self.coordinator and self.coordinator.position_manager:
+        if self.coordinator and hasattr(self.coordinator, 'position_manager') and self.coordinator.position_manager:
             try:
-                closed_count, close_errors = await self.coordinator.position_manager.close_all_positions("shutdown")
-                if close_errors:
-                    errors.append(f"Position closure failed for some positions: {close_errors}")
-                logger.info(f"✅ Positions closure attempt finished: {closed_count} closed, {len(close_errors)} errors.")
+                # --- HATA DÜZELTMESİ: Fonksiyonun dönüş değeri tek bir değişkene atanıyor. ---
+                # Artık iki değer (unpack) beklemiyoruz.
+                # `await` de kaldırıldı çünkü `close_all_positions` asenkron olmayabilir.
+                result = self.coordinator.position_manager.close_all_positions("shutdown")
+                logger.info(f"✅ Position closure attempt finished. Result: {result}")
+                # --- DÜZELTME SONU ---
             except Exception as e:
                 error_msg = f"Critical error during position closure: {e}"
                 logger.error(error_msg, exc_info=True)
@@ -1129,22 +1137,30 @@ class LiveTradingLauncher:
         # Adım 3: WebSocket akışlarını durdur
         logger.info("Step 3: Stopping WebSocket streams...")
         if self.ws_optimizer:
-            await self.ws_optimizer.stop_streaming()
-        logger.info("✅ WebSocket streams stopped.")
+            try:
+                await self.ws_optimizer.stop_streaming()
+                logger.info("✅ WebSocket streams stopped.")
+            except Exception as e:
+                error_msg = f"Error stopping websocket streams: {e}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
 
-        # Adım 4: Diğer tüm production sistem bileşenlerini durdur
-        logger.info("Step 4: Stopping remaining production system components...")
-        # Bu adım artık Adım 1'de yapıldığı için çoğunlukla doğrulama amaçlı
-        if self.coordinator:
-            await self.coordinator.stop() # Tekrar çağırmak zararsız
-        logger.info("✅ Production system components stopped.")
+        # Adım 4: Sağlık monitörünü durdur
+        if self.health_monitor:
+            logger.info("Step 4: Stopping health monitor...")
+            try:
+                await self.health_monitor.stop_monitoring()
+                logger.info("✅ Health monitor stopped.")
+            except Exception as e:
+                error_msg = f"Error stopping health monitor: {e}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
 
         # Adım 5: Borsa bağlantılarını (CCXT istemcileri) en son kapat
         logger.info("Step 5: Closing exchange connections...")
         if self.exchange_clients:
             for name, client in self.exchange_clients.items():
                 try:
-                    # 'await' düzeltmesi burada kritik
                     if hasattr(client, 'close') and inspect.iscoroutinefunction(client.close):
                         await client.close()
                     logger.info(f"✅ {name} connection closed.")
@@ -1152,6 +1168,15 @@ class LiveTradingLauncher:
                     error_msg = f"Failed to close {name} connection: {e}"
                     logger.error(error_msg, exc_info=True)
                     errors.append(error_msg)
+        
+        logger.info("="*70)
+        if not errors:
+            logger.info("✅ GRACEFUL SHUTDOWN COMPLETED SUCCESSFULLY")
+        else:
+            logger.warning(f"⚠️ GRACEFUL SHUTDOWN COMPLETED WITH {len(errors)} ERRORS")
+            for i, err in enumerate(errors, 1):
+                logger.warning(f"  - Error {i}: {err}")
+        logger.info("="*70)
     
     def _load_environment(self) -> bool:
         """
@@ -2142,32 +2167,30 @@ class LiveTradingLauncher:
         except Exception as e:
             logger.error(f"Error during shutdown: {e}")
     
+    # *** DÜZELTME 1: Bu metod, `TypeError` hatasını önlemek için güncellendi. ***
     def _print_configuration_summary(self):
         """
         Print comprehensive configuration summary at startup.
         Issue #119: Enhanced log header with complete system information.
         """
-        # Add explicit header for test compatibility (Issue #106)
         logger.info("="*70)
         logger.info("📊 CONFIGURATION SUMMARY")
         logger.info("="*70)
         
-        # Collect system information
         system_info = SystemInfoCollector.get_system_info()
         
-        # Get risk manager from coordinator if available
         risk_manager = None
         if self.coordinator and hasattr(self.coordinator, 'risk_manager'):
             risk_manager = self.coordinator.risk_manager
         
-        # Format startup header with all parameters
+        # --- HATA DÜZELTMESİ: `api_health_status` parametresi, fonksiyonun tanımında olmadığı için çağrıdan kaldırıldı. ---
         header = format_startup_header(
             system_info=system_info,
             mode=self.mode,
             dry_run=self.dry_run,
             debug_mode=self.debug_mode,
             exchange_clients=self.exchange_clients,
-            api_health_status=self._api_health_status,
+            # api_health_status=self._api_health_status, # <-- BU SATIR KALDIRILDI
             ws_manager=(self.ws_optimizer.ws_manager if self._is_ws_initialized() else None),
             capital=self.CAPITAL_USDT,
             trading_pairs=self.TRADING_PAIRS,
@@ -2175,8 +2198,8 @@ class LiveTradingLauncher:
             risk_params=self.RISK_PARAMS,
             risk_manager=risk_manager
         )
+        # --- DÜZELTME SONU ---
         
-        # Log formatted header
         logger.info("\n" + header + "\n")
     
     def _generate_post_session_analysis(self, log_filename: str = None):
@@ -2380,7 +2403,9 @@ class LiveTradingLauncher:
             # ✅ ALWAYS cleanup, even on error!
             logger.info("Performing cleanup...")
             try:
-                await self.cleanup()
+                # cleanup'ı tekrar çağırmadan önce tamamlanıp tamamlanmadığını kontrol et
+                if not self._cleanup_completed:
+                    await self.cleanup()
             except Exception as e:
                 logger.error(f"❌ Cleanup failed: {e}")
     
@@ -2588,7 +2613,7 @@ Examples:
     
     finally:
         # ✅ ALWAYS cleanup, even on error!
-        if launcher:
+        if launcher and not launcher._cleanup_completed:
             logger.info("Performing final cleanup...")
             try:
                 await launcher.cleanup()
