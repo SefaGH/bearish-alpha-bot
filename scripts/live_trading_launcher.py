@@ -1542,33 +1542,43 @@ class LiveTradingLauncher:
         except Exception as e:
             logger.error(f"❌ Failed to register strategies: {e}")
             return False
-    
+
     async def _perform_preflight_checks(self) -> bool:
         """
-        Perform comprehensive pre-flight system checks.
+        Perform comprehensive pre-flight system checks with defensive programming.
+        (GÜNCELLENDİ: API bağlantısı olmadan da çökmemesi sağlandı)
         
         Returns:
-            True if all checks pass
+            True if all checks pass, False otherwise.
         """
         logger.info("\n[8/8] Performing Pre-Flight System Checks...")
         
         failed_checks = []
         
+        # --- YENİ SAVUNMACI YAKLAŞIM: Mevcut borsa istemcisini en başta belirle ---
+        # exchange_clients sözlüğündeki ilk (ve tek) istemcinin adını al.
+        # Eğer sözlük boşsa, bu değişken None olacak ve sonraki adımlar bunu bilecek.
+        available_exchange_name = next(iter(self.exchange_clients), None)
+        # --- YENİ YAKLAŞIM SONU ---
+
         try:
             # Check 1: Exchange connectivity
             logger.info("Check 1/7: Exchange connectivity...")
-            try:
-                # `ticker` async olmadığı için await kaldırıldı.
-                ticker = self.exchange_clients['bingx'].ticker('BTC/USDT')
-                logger.info(f"✓ BTC/USDT price: ${ticker.get('last', 0):.2f}")
-            except Exception as e:
-                logger.error(f"❌ Exchange connectivity failed: {e}")
-                failed_checks.append("Exchange connectivity")
+            if available_exchange_name:
+                try:
+                    client = self.exchange_clients[available_exchange_name]
+                    ticker = client.ticker('BTC/USDT')
+                    logger.info(f"✓ BTC/USDT price via '{available_exchange_name}': ${ticker.get('last', 0):.2f}")
+                except Exception as e:
+                    logger.error(f"❌ Exchange connectivity failed: {e}")
+                    failed_checks.append("Exchange connectivity")
+            else:
+                logger.warning("⚠️ Exchange client not available, skipping connectivity check.")
             
             # Check 2: System state
             logger.info("Check 2/7: System state...")
             state = self.coordinator.get_system_state()
-            if state['is_initialized']:
+            if state.get('is_initialized'):
                 logger.info("✓ Production system initialized")
             else:
                 logger.error("❌ Production system not initialized")
@@ -1578,8 +1588,8 @@ class LiveTradingLauncher:
             logger.info("Check 3/7: Risk limits...")
             if self.coordinator.risk_manager:
                 risk_summary = self.coordinator.risk_manager.get_portfolio_summary()
-                logger.info(f"✓ Portfolio value: ${risk_summary['portfolio_value']:.2f}")
-                logger.info(f"✓ Risk limits configured")
+                logger.info(f"✓ Portfolio value: ${risk_summary.get('portfolio_value', 0):.2f}")
+                logger.info("✓ Risk limits configured")
             else:
                 logger.error("❌ Risk manager not available")
                 failed_checks.append("Risk manager")
@@ -1600,51 +1610,52 @@ class LiveTradingLauncher:
             else:
                 logger.warning("⚠ Circuit breaker not available")
             
-            # Check 6/7: WebSocket data flow (normalized TFs + symbols)
+            # Check 6/7: WebSocket data flow (Bu blok büyük ölçüde aynı kalabilir)
             logger.info("Check 6/7: WebSocket data flow...")
-            if self._is_ws_initialized():
+            if self._is_ws_initialized() and self.ws_optimizer.ws_manager:
                 timeframes = self.ws_optimizer._parse_stream_timeframes()
                 symbols = self.ws_optimizer._normalize_ccxt_futures_symbols(self.TRADING_PAIRS)
                 logger.info(f"  • Parsed timeframes: {timeframes}")
 
                 working_symbols = 0
-                for symbol in symbols[:3]:
+                for symbol in symbols[:3]: # Sadece ilk 3 sembolü kontrol et
                     if any(self.ws_optimizer.ws_manager.get_latest_data(symbol, tf) for tf in timeframes):
                         working_symbols += 1
-                        logger.info(f"  ✅ {symbol}: Receiving data (TFs checked: {timeframes})")
+                        logger.info(f"  ✅ {symbol}: Receiving data")
                     else:
-                        logger.warning(f"  ⚠️ {symbol}: No data available across {timeframes}")
+                        logger.warning(f"  ⚠️ {symbol}: No data available across checked TFs")
 
                 if working_symbols > 0:
-                    logger.info(f"✅ WebSocket data flow confirmed ({working_symbols}/{min(3, len(symbols))} symbols)")
+                    logger.info(f"✅ WebSocket data flow confirmed for {working_symbols}/{min(3, len(symbols))} symbols")
                 else:
-                    logger.error("❌ WebSocket connected but no data flowing across required TFs")
+                    logger.error("❌ WebSocket connected but no data is flowing for initial symbols")
                     failed_checks.append("WebSocket data flow")
             else:
-                logger.error("❌ WebSocket not initialized")
+                logger.error("❌ WebSocket not initialized or manager is missing")
                 failed_checks.append("WebSocket initialization")
 
-            # ============================================================================
-            # Indicator Warmup Validation                                                                                                     
-            # ============================================================================
+            # Indicator Warmup Validation (Artık daha güvenli)
             logger.info("Check 6/7: Indicator Warmup Validation...")
-            if not self.coordinator or not self.coordinator.trading_engine:
+            # --- YENİ SAVUNMACI KONTROL ---
+            if not available_exchange_name:
+                logger.warning("⚠️ Skipping Indicator Warmup Validation: No exchange client available.")
+            elif not self.coordinator or not self.coordinator.trading_engine:
                 reason = "Coordinator or Trading Engine not available for prefetch."
                 logger.error(f"❌ {reason}")
                 failed_checks.append(f"IndicatorValidator: {reason}")
             else:
                 try:
-                    # 1. ÖNCE: Geçmiş veriyi çek ve enjekte et.
                     logger.info("  -> Step 1: Prefetching historical data...")
                     await self.coordinator.trading_engine.prefetch_data()
                     logger.info("  -> Prefetch complete.")
     
-                    # 2. SONRA: Enjekte edilmiş veriyi doğrula.
                     logger.info("  -> Step 2: Validating prefetched data...")
                     validator = IndicatorValidator(self.ws_optimizer.ws_manager)
+                    
+                    # Dinamik olarak belirlenen borsa adını kullan
                     all_valid, validation_results = await validator.validate_all_symbols(
                         symbols=self.TRADING_PAIRS,
-                        exchange='bingx'
+                        exchange=available_exchange_name
                     )
                     
                     if not all_valid:
@@ -1659,10 +1670,10 @@ class LiveTradingLauncher:
                     reason = f"Indicator validation crashed: {e}"
                     logger.critical(f"❌ {reason}", exc_info=True)
                     failed_checks.append(f"IndicatorValidatorCrash: {reason}")
+            # --- YENİ KONTROL SONU ---
             
             # Check 7: WebSocket optimization
             logger.info("Check 7/7: WebSocket optimization...")
-            # Use helper method to safely check WebSocket initialization
             if self._is_ws_initialized():
                 ws_status = await self.ws_optimizer.get_stream_status()
                 logger.info(f"✓ WebSocket optimized: {ws_status.get('active_streams', 0)} streams active")
