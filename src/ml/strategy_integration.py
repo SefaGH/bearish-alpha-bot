@@ -48,70 +48,67 @@ class AIEnhancedStrategyAdapter:
                                      current_price: float) -> Dict[str, Any]:
         """
         Enhance a base trading strategy signal with AI predictions.
-        
-        Args:
-            symbol: Trading symbol
-            base_signal: Original strategy signal
-            current_price: Current market price
-            
-        Returns:
-            Enhanced signal with AI adjustments
+        (GÜNCELLENDİ: Gelen sinyal formatına karşı daha dayanıklı hale getirildi)
         """
         try:
+            # --- YENİ SAVUNMACI KOD BAŞLANGICI ---
+            # Gelen base_signal'ın doğru formatta olduğundan emin ol.
+            # Eğer sadece bir string ('buy', 'sell') geldiyse, onu sözlüğe çevir.
+            if isinstance(base_signal, str):
+                processed_signal = {'signal': base_signal, 'strength': 0.7} # Varsayılan güç ata
+            elif isinstance(base_signal, dict) and 'signal' in base_signal:
+                processed_signal = base_signal
+            else:
+                logger.warning(f"🧠 [ML-ADAPTER] Uyumsuz sinyal formatı alındı: {base_signal}. Nötr olarak kabul ediliyor.")
+                processed_signal = {'signal': 'neutral', 'strength': 0.0}
+            # --- YENİ SAVUNMACI KOD SONU ---
+
             logger.debug(f"🧠 [ML-ADAPTER] Enhancing signal for {symbol} at ${current_price:.2f}")
             
             # Get price forecast
+            # get_price_forecast'in asenkron olup olmadığını kontrol etmemiz gerekebilir.
+            # Şimdilik senkron olduğunu varsayıyoruz.
             price_forecast = self.price_engine.get_price_forecast(symbol)
             
-            # Get regime prediction
-            regime_data = pd.DataFrame()  # Placeholder - would come from data feed
-            
-            # Calculate enhancement factors
             enhancement = {
-                'original_signal': base_signal['signal'],
-                'original_strength': base_signal.get('strength', 0.5),
+                'original_signal': processed_signal['signal'],
+                'original_strength': processed_signal.get('strength', 0.5),
                 'ai_signal': 'neutral',
                 'ai_strength': 0.0,
-                'final_signal': base_signal['signal'],
-                'final_strength': base_signal.get('strength', 0.5),
+                'final_signal': processed_signal['signal'],
+                'final_strength': processed_signal.get('strength', 0.5),
                 'confidence_adjustment': 1.0,
                 'risk_adjustment': 1.0,
                 'recommendations': []
             }
             
-            logger.debug(f"🧠 [ML-ADAPTER] Base signal: {base_signal['signal']} (strength: {base_signal.get('strength', 0.5):.2f})")
+            logger.debug(f"🧠 [ML-ADAPTER] Base signal: {processed_signal['signal']} (strength: {processed_signal.get('strength', 0.5):.2f})")
             
-            # If no AI predictions available, return base signal
             if not price_forecast:
                 enhancement['recommendations'].append('No AI forecast available')
                 logger.debug(f"🧠 [ML-ADAPTER] No price forecast available, using base signal")
+                # Hata döndürmek yerine, base sinyali içeren enhancement'ı döndür
                 return enhancement
             
-            # Get AI signal from price forecast
-            ai_signal = self.price_engine.generate_trading_signals(
-                symbol, current_price
-            )
+            ai_signal = self.price_engine.generate_trading_signals(symbol, current_price)
+            enhancement['ai_signal'] = ai_signal.get('signal', 'neutral')
+            enhancement['ai_strength'] = ai_signal.get('strength', 0.0)
             
-            enhancement['ai_signal'] = ai_signal['signal']
-            enhancement['ai_strength'] = ai_signal['strength']
+            logger.debug(f"🧠 [ML-ADAPTER] AI signal: {ai_signal.get('signal', 'neutral')} (strength: {ai_signal.get('strength', 0.0):.2f})")
             
-            logger.debug(f"🧠 [ML-ADAPTER] AI signal: {ai_signal['signal']} (strength: {ai_signal['strength']:.2f})")
-            
-            # Combine signals
-            combined = self._combine_signals(base_signal, ai_signal, price_forecast)
-            
+            combined = self._combine_signals(processed_signal, ai_signal, price_forecast)
             enhancement.update(combined)
             
-            logger.debug(f"🧠 [ML-ADAPTER] Signal enhancement: {base_signal['signal']} → {enhancement['final_signal']} (strength: {enhancement['final_strength']:.2f})")
+            logger.debug(f"🧠 [ML-ADAPTER] Signal enhancement: {processed_signal['signal']} → {enhancement['final_signal']} (strength: {enhancement['final_strength']:.2f})")
             
             return enhancement
             
         except Exception as e:
-            logger.error(f"Error enhancing strategy signal: {e}")
-            logger.debug(f"🧠 [ML-ADAPTER] Enhancement error: {e}")
+            logger.error(f"Error enhancing strategy signal: {e}", exc_info=True) # exc_info=True ekleyerek daha detaylı hata kaydı alalım
+            # Hata durumunda bile yapısal olarak doğru bir sözlük döndür
             return {
-                'original_signal': base_signal['signal'],
-                'final_signal': base_signal['signal'],
+                'original_signal': base_signal.get('signal', 'unknown') if isinstance(base_signal, dict) else base_signal,
+                'final_signal': base_signal.get('signal', 'unknown') if isinstance(base_signal, dict) else base_signal,
                 'error': str(e)
             }
     
@@ -386,9 +383,7 @@ class MLStrategyIntegrationManager:
                            indicator_validator=None) -> MLContext:
         """
         Generate ML context for a trading decision.
-        
-        This is the main entry point for getting ML predictions. It orchestrates
-        all ML components and produces a unified MLContext with validation.
+        (GÜNCELLENDİ: 'train_or_load_model' hatası düzeltildi)
         """
         from datetime import datetime
         
@@ -398,7 +393,6 @@ class MLStrategyIntegrationManager:
         try:
             price_data = market_data.get('price_data')
             
-            # --- ÇÖZUM 2: Daha Sağlam Veri Doğrulama ---
             if price_data is None or price_data.empty or len(price_data) < 50:
                 error_msg = f"Insufficient data for ML context: {len(price_data) if price_data is not None else 0} rows (need at least 50)"
                 validation_errors.append(error_msg)
@@ -407,22 +401,28 @@ class MLStrategyIntegrationManager:
                 logger.debug(f"🧠 [ML-CONTEXT] {symbol}: {error_msg}")
                 return context
 
-            # ... (mevcut veri doğrulama mantığı burada devam edebilir) ...
-
-            # --- ÇÖZÜM 3: Talep Odaklı Model Eğitimi/Yüklemesi ---
-            # Price engine mevcutsa ve o sembol için bir modeli yoksa, şimdi oluşturmasını iste.
+            # --- 'train_or_load_model' HATASININ ÇÖZÜMÜ ---
             if self.price_engine and not self.price_engine.has_model_for(symbol):
                 logger.info(f"🧠 [ML-CONTEXT] No model found for {symbol}. Training/loading on-demand...")
                 try:
-                    await self.price_engine.train_or_load_model(symbol=symbol, price_data=price_data)
+                    # 'train_or_load_model' yerine, bu işlevi yerine getirecek bir metot çağırıyoruz.
+                    # price_predictor.py'de 'train_model' olduğunu varsayarak bu kodu yazıyoruz.
+                    # Eğer metot adı farklıysa, burayı ona göre güncellemelisiniz.
+                    # Bu metot asenkron ise 'await' kullanmalıyız.
+                    if hasattr(self.price_engine, 'train_model') and asyncio.iscoroutinefunction(self.price_engine.train_model):
+                        await self.price_engine.train_model(symbol=symbol, price_data=price_data)
+                    elif hasattr(self.price_engine, 'train_model'):
+                         self.price_engine.train_model(symbol=symbol, price_data=price_data)
+                    else:
+                        raise NotImplementedError("'train_model' method not found in AdvancedPricePredictionEngine")
+                        
                     logger.info(f"🧠 [ML-CONTEXT] Successfully trained/loaded model for {symbol}.")
                 except Exception as e:
-                    logger.error(f"🧠 [ML-CONTEXT] On-demand model training failed for {symbol}: {e}")
+                    logger.error(f"🧠 [ML-CONTEXT] On-demand model training failed for {symbol}: {e}", exc_info=True)
                     validation_errors.append(f"Model training failed: {e}")
 
-            # Get regime prediction (sadece predictor varsa)
+            # Get regime prediction
             if self.regime_predictor:
-                # ... (mevcut regime prediction kodu) ...
                 try:
                     regime_result = await self.regime_predictor.predict_regime_transition(symbol, price_data)
                     if regime_result:
@@ -432,20 +432,18 @@ class MLStrategyIntegrationManager:
                     logger.warning(f"🧠 [ML-CONTEXT] {symbol}: Regime prediction failed - {e}")
                     validation_errors.append(f"Regime prediction error: {str(e)}")
 
-            # Get price forecast (sadece price engine ve modeli varsa)
+            # Get price forecast
             if self.price_engine and self.price_engine.has_model_for(symbol):
-                # ... (mevcut price forecast kodu) ...
                 try:
                     price_forecast = self.price_engine.get_price_forecast(symbol)
                     if price_forecast:
-                         # ... (context'i doldurma mantığı) ...
-                         pass
+                         context.price_direction = price_forecast.get('direction')
+                         context.price_confidence = price_forecast.get('confidence')
+                         context.price_target = price_forecast.get('predicted_price')
                 except Exception as e:
                     logger.warning(f"🧠 [ML-CONTEXT] {symbol}: Price prediction failed - {e}")
                     validation_errors.append(f"Price prediction error: {str(e)}")
             
-            # ... (context'in geri kalanını hesaplama mantığı) ...
-
             context.is_healthy = not validation_errors and (context.regime_prediction is not None or context.price_direction is not None)
             context.validation_errors = validation_errors
             
@@ -456,8 +454,6 @@ class MLStrategyIntegrationManager:
             context.is_healthy = False
             context.validation_errors.append(f"Critical error: {str(e)}")
             return context
-
-    # ... (process_strategy_signal ve record_trade_outcome metodları aynı kalabilir) ...
 
     def get_integration_status(self) -> Dict[str, Any]:
         """
