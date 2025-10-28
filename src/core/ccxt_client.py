@@ -40,6 +40,9 @@ class CcxtClient:
             logger.info(f"KuCoin {ex_name} initialized in PRODUCTION mode")
         
         self.ex = ex_cls(params)
+        # --- DÜZELTME 1: self.exchange takma adını burada oluşturuyoruz. ---
+        self.exchange = self.ex
+        # --- DÜZELTME 1 SONU ---
         self.name = ex_name
         
         # Initialize caches for KuCoin Futures integration
@@ -72,6 +75,9 @@ class CcxtClient:
         """
         self._required_symbols_only = set(symbols)
         self._skip_market_load = True
+        # --- DÜZELTME 2: `async def load_markets` metodunun ihtiyaç duyduğu `self.symbols`'ı ayarla ---
+        self.symbols = list(symbols)
+        # --- DÜZELTME 2 SONU ---
         logger.info(f"[{self.name}] Will only work with {len(symbols)} symbols (no market load)")
 
     def ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> List[List]:
