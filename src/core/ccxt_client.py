@@ -53,10 +53,7 @@ class CcxtClient:
         self._markets_cache_time = 0
         self._required_symbols_only = set()
         self._skip_market_load = False
-
-        # --- NIHAI DÜZELTME: `self.symbols` değişkenini burada başlatıyoruz. ---
         self.symbols: List[str] = []
-        # --- NIHAI DÜZELTME SONU ---
         
         # Add BingX authenticator
         if ex_name == 'bingx' and creds:
@@ -67,6 +64,16 @@ class CcxtClient:
             logger.info("🔐 [CCXT-CLIENT] BingX authenticator added")
         else:
             self.bingx_auth = None
+
+    # --- YENİ YARDIMCI METOT: Sembol formatını BingX için düzeltir ---
+    def _get_bingx_native_symbol(self, symbol: str) -> str:
+        """Converts a CCXT symbol (e.g., BTC/USDT) to BingX native format (BTC-USDT)."""
+        if self.name != 'bingx':
+            return symbol
+        # "BTC/USDT:USDT" -> "BTC/USDT"
+        base_symbol = symbol.split(':')[0]
+        # "BTC/USDT" -> "BTC-USDT"
+        return base_symbol.replace('/', '-')
 
     def set_required_symbols(self, symbols: List[str]):
         """
@@ -83,26 +90,17 @@ class CcxtClient:
     def ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> List[List]:
         """
         Fetch OHLCV data with retries.
-        
-        Args:
-            symbol: Trading pair symbol
-            timeframe: Timeframe (e.g., '1h', '30m')
-            limit: Number of candles to fetch
-        
-        Returns:
-            List of OHLCV data [[timestamp, open, high, low, close, volume], ...]
-        
-        Raises:
-            Exception: After 3 failed retry attempts
         """
+        # --- DÜZELTME: Sembolü BingX formatına çevir ---
+        native_symbol = self._get_bingx_native_symbol(symbol)
         last_exc = None
         for attempt in range(3):
             try:
-                logger.debug(f"Fetching OHLCV for {symbol} {timeframe} limit={limit} (attempt {attempt + 1}/3)")
-                data = self.ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+                logger.debug(f"Fetching OHLCV for {native_symbol} ({symbol}) {timeframe} limit={limit} (attempt {attempt + 1}/3)")
+                data = self.ex.fetch_ohlcv(native_symbol, timeframe=timeframe, limit=limit)
                 
                 # Enhanced debug logging for KuCoin
-                logger.debug(f"Fetched {len(data) if data else 0} candles for {symbol} on {self.name}")
+                logger.debug(f"Fetched {len(data) if data else 0} candles for {native_symbol} on {self.name}")
                 
                 logger.info(f"Successfully fetched {len(data) if data else 0} candles for {symbol} {timeframe}")
                 return data
@@ -121,7 +119,9 @@ class CcxtClient:
 
     def ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetch current ticker data for a symbol."""
-        return self.ex.fetch_ticker(symbol)
+        # --- DÜZELTME: Sembolü BingX formatına çevir ---
+        native_symbol = self._get_bingx_native_symbol(symbol)
+        return self.ex.fetch_ticker(native_symbol)
 
     def tickers(self) -> Dict[str, Dict[str, Any]]:
         """Fetch all tickers. Returns empty dict on failure."""
@@ -142,9 +142,11 @@ class CcxtClient:
             logger.info(f"[{self.name}] Generating minimal market structure for {len(self._required_symbols_only)} fixed symbols (no network call).")
             fake_markets = {}
             for symbol in self._required_symbols_only:
+                # --- DÜZELTME: Sahte market oluştururken de doğru formatı kullan ---
+                native_id = self._get_bingx_native_symbol(symbol)
                 # CCXT'nin temel kontrolleri geçmesi için gereken minimum alanlar
                 fake_markets[symbol] = {
-                    'id': symbol.replace('/', '-'), # örn: BTC-USDT
+                    'id': native_id, # örn: BTC-USDT
                     'symbol': symbol,
                     'base': symbol.split('/')[0],
                     'quote': 'USDT',
@@ -194,9 +196,11 @@ class CcxtClient:
             try:
                 minimal_markets = {}
                 for symbol in self.symbols:
+                    # --- DÜZELTME: Burada da doğru formatı kullan ---
+                    native_id = self._get_bingx_native_symbol(symbol)
                     # CCXT'nin beklediği temel piyasa yapısını oluştur
                     market = self.exchange.safe_market_structure({
-                        'id': symbol,
+                        'id': native_id,
                         'symbol': symbol,
                         'base': symbol.split('/')[0],
                         'quote': symbol.split('/')[1].split(':')[0],
@@ -358,19 +362,10 @@ class CcxtClient:
                      price: float = None, params: dict = None) -> Dict[str, Any]:
         """
         Create an order.
-        
-        Args:
-            symbol: Trading pair
-            side: 'buy' or 'sell'
-            type_: Order type (e.g., 'market', 'limit')
-            amount: Order size
-            price: Price for limit orders
-            params: Additional exchange-specific parameters
-        
-        Returns:
-            Order response from exchange
         """
-        return self.ex.create_order(symbol, type_, side, amount, price, params or {})
+        # --- DÜZELTME: Sembolü BingX formatına çevir ---
+        native_symbol = self._get_bingx_native_symbol(symbol)
+        return self.ex.create_order(native_symbol, type_, side, amount, price, params or {})
 
     def fetch_ohlcv_bulk(self, symbol: str, timeframe: str, target_limit: int) -> List[List]:
         """
@@ -626,9 +621,8 @@ class CcxtClient:
         if self.name != 'bingx':
             return self.ex.fetch_ohlcv(symbol, timeframe, since=start_time, limit=500)
         
-        # Get dynamic native symbol
-        symbol_map = self._get_bingx_contracts()
-        native_symbol = symbol_map.get(symbol, symbol)
+        # --- DÜZELTME: Burada da çeviriciyi kullan ---
+        native_symbol = self._get_bingx_native_symbol(symbol)
         
         # BingX interval format (e.g., "1m", "5m", "1h")
         interval = self._get_bingx_interval(timeframe)
@@ -745,7 +739,8 @@ class CcxtClient:
         """
         params = {}
         if symbol:
-            params['symbol'] = self.bingx_auth.convert_symbol_to_bingx(symbol)
+            # --- DÜZELTME: Burada da çeviriciyi kullan ---
+            params['symbol'] = self._get_bingx_native_symbol(symbol)
         
         logger.info(f"🔐 [BINGX-API] Fetching positions {symbol or 'all'}")
         return self._make_authenticated_bingx_request('/openApi/swap/v2/user/positions', params)
@@ -765,7 +760,8 @@ class CcxtClient:
         Returns:
             Order response dictionary
         """
-        bingx_symbol = self.bingx_auth.convert_symbol_to_bingx(symbol)
+        # --- DÜZELTME: Burada da çeviriciyi kullan ---
+        bingx_symbol = self._get_bingx_native_symbol(symbol)
         
         params = {
             'symbol': bingx_symbol,
@@ -780,18 +776,6 @@ class CcxtClient:
         
         logger.info(f"🔐 [BINGX-API] Placing {side} order: {amount} {symbol} @ ${price}")
         return self._make_authenticated_bingx_request('/openApi/swap/v2/trade/order', params, 'POST')
-    
-    def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
-        """
-        Fetch current ticker for a symbol.
-        
-        Args:
-            symbol: Trading pair symbol
-            
-        Returns:
-            Ticker data dictionary
-        """
-        return self.ex.fetch_ticker(symbol)
     
     async def close(self):
         """
