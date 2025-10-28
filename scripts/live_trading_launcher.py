@@ -1244,7 +1244,7 @@ class LiveTradingLauncher:
             # Test connection with a public endpoint call
             logger.info("Testing BingX connection...")
             # `fetch_ticker` async olmadığı için await kaldırıldı.
-            test_ticker = bingx_client.ticker('BTC/USDT')
+            test_ticker = await bingx_client.ticker('BTC/USDT')
             logger.info(f"✓ Connected to BingX - Test price: BTC=${test_ticker['last']:.2f}")
 
             if self._has_bingx_credentials and not self.dry_run:
@@ -1262,7 +1262,7 @@ class LiveTradingLauncher:
             for pair in trading_pairs:
                 try:
                     # `fetch_ticker` async olmadığı için await kaldırıldı.
-                    ticker = bingx_client.ticker(pair)
+                    ticker = await bingx_client.ticker(pair)
                     verified_pairs.append(pair)
                     logger.info(f"  ✓ {pair}: ${ticker['last']:.2f}")
                 except Exception as e:
