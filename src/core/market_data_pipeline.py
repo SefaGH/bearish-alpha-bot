@@ -147,7 +147,7 @@ class MarketDataPipeline:
             self.total_requests += 1
             
             # Fetch OHLCV data
-            ohlcv_data = await asyncio.to_thread(client.ohlcv, symbol, timeframe, limit)
+            ohlcv_data = await client.ohlcv(symbol, timeframe, limit)
             
             if not ohlcv_data:
                 logger.warning(f"⚠️ [PRIME] Empty data for {symbol} {timeframe} from {exchange_name}")
