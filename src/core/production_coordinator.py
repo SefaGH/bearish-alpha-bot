@@ -2044,6 +2044,17 @@ class ProductionCoordinator:
                     
         except Exception as e:
             logger.error(f"Fatal error in queue monitoring: {e}", exc_info=True)
+
+    async def stop(self):
+        """
+        Graceful shutdown trigger for the coordinator.
+        Delegates to the more specific stop_system method for compatibility.
+        """
+        logger.info("Coordinator 'stop()' called, delegating to 'stop_system()'.")
+        if hasattr(self, 'stop_system') and callable(self.stop_system):
+            await self.stop_system()
+        else:
+            logger.warning("'stop_system()' method not found on coordinator during shutdown.")
     
     async def stop_system(self):
         """Stop the production system gracefully."""
