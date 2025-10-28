@@ -109,9 +109,6 @@ class CcxtClient:
                 df.set_index('timestamp', inplace=True)
 
                 if add_indicators:
-                    if not PANDAS_TA_AVAILABLE:
-                        logger.error("'pandas-ta' kütüphanesi kurulu değil. İndikatörler eklenemiyor.")
-                        return df # Ham veriyi döndür
 
                     logger.info(f"Adding technical indicators to {symbol} [{timeframe}] data...")
                     custom_strategy = ta.Strategy(
