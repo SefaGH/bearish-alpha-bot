@@ -1092,7 +1092,6 @@ class LiveTradingLauncher:
         
         return self.trading_pairs
     
-    # *** DÜZELTME 2: Bu fonksiyon, kapanıştaki `ValueError` hatasını düzeltecek şekilde yeniden yazıldı. ***
     async def cleanup(self, signum=None, frame=None):
         """Graceful shutdown procedure in the correct order."""
         if self._cleanup_completed:
@@ -1121,12 +1120,24 @@ class LiveTradingLauncher:
         logger.info("Step 2: Closing all open positions...")
         if self.coordinator and hasattr(self.coordinator, 'position_manager') and self.coordinator.position_manager:
             try:
-                # --- HATA DÜZELTMESİ: Fonksiyonun dönüş değeri tek bir değişkene atanıyor. ---
-                # Artık iki değer (unpack) beklemiyoruz.
-                # `await` de kaldırıldı çünkü `close_all_positions` asenkron olmayabilir.
-                result = self.coordinator.position_manager.close_all_positions("shutdown")
-                logger.info(f"✅ Position closure attempt finished. Result: {result}")
+                # --- UYARI DÜZELTMESİ: 'await' geri eklendi ---
+                # close_all_positions asenkron bir fonksiyon olduğu için 'await' ile çağrılmalıdır.
+                # Fonksiyonun dönüş değeri, tek bir sonuç veya iki değer olabilir. İki değer beklemek daha güvenli.
+                closed_count, close_errors = await self.coordinator.position_manager.close_all_positions("shutdown")
+                if close_errors:
+                    errors.append(f"Position closure failed for some positions: {close_errors}")
+                logger.info(f"✅ Positions closure attempt finished: {closed_count} closed, {len(close_errors)} errors.")
                 # --- DÜZELTME SONU ---
+            except ValueError:
+                # Eğer fonksiyon iki değer döndürmüyorsa bu bloğa düşeriz.
+                logger.warning("close_all_positions did not return two values. Retrying with single value handling.")
+                try:
+                    result = await self.coordinator.position_manager.close_all_positions("shutdown")
+                    logger.info(f"✅ Position closure attempt finished with single return value: {result}")
+                except Exception as e:
+                     error_msg = f"Critical error during position closure retry: {e}"
+                     logger.error(error_msg, exc_info=True)
+                     errors.append(error_msg)
             except Exception as e:
                 error_msg = f"Critical error during position closure: {e}"
                 logger.error(error_msg, exc_info=True)
@@ -1161,8 +1172,9 @@ class LiveTradingLauncher:
         if self.exchange_clients:
             for name, client in self.exchange_clients.items():
                 try:
-                    if hasattr(client, 'close') and inspect.iscoroutinefunction(client.close):
-                        await client.close()
+                    # `close` metodu artık hem senkron hem asenkron durumları idare edebiliyor
+                    if hasattr(client, 'close'):
+                         await client.close()
                     logger.info(f"✅ {name} connection closed.")
                 except Exception as e:
                     error_msg = f"Failed to close {name} connection: {e}"
