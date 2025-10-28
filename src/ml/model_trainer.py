@@ -4,6 +4,7 @@ Model Training and Validation System for Regime Prediction.
 Provides comprehensive training, validation, and hyperparameter optimization.
 """
 
+import joblib
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
@@ -153,10 +154,9 @@ class MonteCarloValidation:
 class RegimeModelTrainer:
     """
     Comprehensive model training and validation system.
-    
-    Handles training of multiple model types with cross-validation,
-    hyperparameter optimization, and performance evaluation.
+    (GÜNCELLENDİ: save_models metodu eklendi)
     """
+    MODEL_SAVE_DIR = "data/models/regime" # Rejim modelleri için ayrı bir klasör
     
     def __init__(self):
         """Initialize the model trainer."""
@@ -168,6 +168,7 @@ class RegimeModelTrainer:
             'monte_carlo': MonteCarloValidation()
         }
         self.performance_history = []
+        os.makedirs(self.MODEL_SAVE_DIR, exist_ok=True) # Klasörün var olduğundan emin ol
     
     def train_ensemble_models(self, X: np.ndarray, y: np.ndarray,
                              validation_method: str = 'time_series_cv') -> Dict[str, Any]:
@@ -214,15 +215,45 @@ class RegimeModelTrainer:
             results['models']['transformer'] = transformer_model
             results['metrics']['transformer'] = transformer_metrics
             
-            # Store models
-            self.models = results['models']
+            # Eğitim tamamlandıktan sonra modelleri kaydet
+            self.save_models()
             
-            logger.info("Ensemble training complete")
+            logger.info("Ensemble training complete and models saved.")
             return results
             
         except Exception as e:
             logger.error(f"Error in ensemble training: {e}")
             return results
+
+    def save_models(self):
+        """Eğitilmiş rejim modellerini ve scaler'ı diske kaydeder."""
+        if not self.models:
+            logger.warning("No trained regime models to save.")
+            return
+
+        try:
+            # Scaler'ı kaydet
+            if 'ensemble' in self.scalers:
+                scaler_path = os.path.join(self.MODEL_SAVE_DIR, "scaler.pkl")
+                joblib.dump(self.scalers['ensemble'], scaler_path)
+                logger.info(f"✅ Regime feature scaler saved to {scaler_path}")
+
+            # Modelleri kaydet
+            for name, model in self.models.items():
+                if model is None:
+                    continue
+                
+                if name == 'random_forest' and RandomForestClassifier is not None:
+                    model_path = os.path.join(self.MODEL_SAVE_DIR, f"{name}.pkl")
+                    joblib.dump(model, model_path)
+                    logger.info(f"✅ Saved regime model to {model_path}")
+                elif TORCH_AVAILABLE and isinstance(model, (LSTMRegimePredictor, TransformerRegimePredictor)):
+                    model_path = os.path.join(self.MODEL_SAVE_DIR, f"{name}.pth")
+                    torch.save(model.state_dict(), model_path)
+                    logger.info(f"✅ Saved regime model state to {model_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to save regime models: {e}", exc_info=True)
     
     def _train_random_forest(self, X: np.ndarray, y: np.ndarray,
                            validation_method: str) -> Tuple[RandomForestClassifier, Dict[str, float]]:
