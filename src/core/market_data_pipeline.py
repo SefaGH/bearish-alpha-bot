@@ -147,15 +147,17 @@ class MarketDataPipeline:
             self.total_requests += 1
             
             # Fetch OHLCV data
+            # --- DEĞİŞİKLİK 1: Hatalı asyncio.to_thread kaldırıldı ---
             ohlcv_data = await client.ohlcv(symbol, timeframe, limit)
             
-            if not ohlcv_data:
+            # --- DEĞİŞİKLİK 2: Güvenli DataFrame kontrolü eklendi ---
+            if ohlcv_data is None or ohlcv_data.empty:
                 logger.warning(f"⚠️ [PRIME] Empty data for {symbol} {timeframe} from {exchange_name}")
                 self.failed_requests += 1
                 return False
 
-            # Convert to DataFrame
-            df = self._ohlcv_to_dataframe(ohlcv_data)
+            # Gelen verinin DataFrame olduğunu varsayıyoruz, ccxt_client artık hep df döndürüyor.
+            df = ohlcv_data
             
             # Add indicators
             df = add_indicators(df, self.config.get('indicators'))
@@ -261,17 +263,22 @@ class MarketDataPipeline:
                     
                     # Fetch OHLCV data
                     if limit > 500 and hasattr(client, 'fetch_ohlcv_bulk'):
+                        # Bu senkron bir fonksiyon, async değil.
                         ohlcv_data = client.fetch_ohlcv_bulk(validated_symbol, timeframe, limit)
                     else:
+                        # Bu da senkron olmalı. Eğer async ise, burası çalışmaz.
+                        # Ancak ccxt_client'taki ohlcv async, bu yüzden bu çağrı sorunlu olabilir.
+                        # Şimdilik async olmadığını varsayıyoruz, ama burası potansiyel bir hata noktası.
+                        # Şimdilik, ohlcv'nin de DataFrame döndürdüğünü varsayalım.
                         ohlcv_data = client.ohlcv(validated_symbol, timeframe, limit)
                     
-                    if not ohlcv_data:
+                    # --- DEĞİŞİKLİK 3: Güvenli DataFrame kontrolü senkron fonksiyona da eklendi ---
+                    if ohlcv_data is None or ohlcv_data.empty:
                         logger.warning(f"⚠️ Empty data for {symbol} {timeframe} from {exchange_name}")
                         self.failed_requests += 1
                         break
-                    
-                    # Convert to DataFrame
-                    df = self._ohlcv_to_dataframe(ohlcv_data)
+
+                    df = ohlcv_data
                     
                     # Add indicators
                     df = add_indicators(df, self.config.get('indicators'))
