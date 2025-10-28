@@ -13,7 +13,7 @@
 ccxt==4.3.88              # Exchange APIs (REQUIRED)
 # ccxtpro==4.3.88         # Exchange WebSocket APIs (PAID - not available)
 pandas>=2.2.3,<3          # Data processing (REQUIRED)
-numpy>=2.2.6              # Numerical operations (REQUIRED)
+numpy<2              # Numerical operations (REQUIRED)
 python-dotenv==1.0.1      # Environment variables (REQUIRED)
 pyyaml==6.0.2             # YAML config files (REQUIRED)
 requests==2.32.3          # HTTP requests (REQUIRED)
