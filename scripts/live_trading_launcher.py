@@ -1094,107 +1094,93 @@ class LiveTradingLauncher:
     # *** DÜZELTME: Bu fonksiyon, kapanıştaki hataları düzeltecek şekilde yeniden yazıldı. ***
     async def cleanup(self):
         """
-        Properly cleanup all resources.
-        
-        CRITICAL: Must be called before exit to prevent resource leaks!
+        Properly cleanup all resources in the correct order.
         This method is idempotent - safe to call multiple times.
-        
-        Cleans up:
-        - Open positions
-        - WebSocket streams
-        - Exchange connections (ccxt clients)
-        - Production system components
-        - Async tasks
-        - Log handlers
         """
         if self._cleanup_done:
-            logger.info("Cleanup already completed, skipping")
+            logger.info("Cleanup already completed, skipping.")
             return
         
-        logger.info("=" * 70)
-        logger.info("🧹 STARTING CLEANUP")
+        logger.info("\n" + "=" * 70)
+        logger.info("🧹 STARTING CLEANUP (Corrected Order)")
         logger.info("=" * 70)
 
         errors = []
 
-        # 1. Stop the Production Coordinator's main loop to prevent new signals
-        if self.coordinator:
-            if self.coordinator.is_running:
-                logger.info("Stopping production coordinator loop...")
-                self.coordinator.is_running = False
-                logger.info("✅ Production coordinator loop stopped")
+        # --- DOĞRU SIRALAMA ---
 
-        # 2. Close all open positions (CRITICAL - DO THIS BEFORE SHUTTING DOWN THE ENGINE)
-        if self.coordinator and self.coordinator.trading_engine and self.coordinator.trading_engine.position_manager:
-            logger.info("Closing all open positions...")
+        # ADIM 1: Yeni sinyal üretimini durdur.
+        if self.coordinator and self.coordinator.is_running:
+            logger.info("Step 1: Halting new signal generation...")
+            self.coordinator.is_running = False
+            logger.info("✅ New signal generation halted.")
+
+        # ADIM 2: TÜM AÇIK POZİSYONLARI KAPAT (SİSTEM HALA CANLIYKEN).
+        # Bu, en kritik adımdır.
+        if self.coordinator and hasattr(self.coordinator, 'position_manager') and self.coordinator.position_manager:
+            logger.info("Step 2: Closing all open positions...")
             try:
-                # *** AÇIKLAMA: Hatanın kaynağı burasıydı. Artık doğru yoldan erişiyoruz: coordinator -> trading_engine -> position_manager ***
-                result = await self.coordinator.trading_engine.position_manager.close_all_positions(reason='shutdown')
-                logger.info(f"✅ Positions closed: {result.get('closed_count', 0)} closed, {len(result.get('errors', []))} errors.")
-                if result.get('errors'):
-                    errors.append(f"Position closure failed for some positions: {result['errors']}")
+                # position_manager'a coordinator üzerinden erişiyoruz.
+                result = await self.coordinator.position_manager.close_all_positions(reason='shutdown')
+                closed_count = result.get('closed_count', 0)
+                error_list = result.get('errors', [])
+                logger.info(f"✅ Positions closed: {closed_count} closed, {len(error_list)} errors.")
+                if error_list:
+                    errors.append(f"Position closure failed for some positions: {error_list}")
             except Exception as e:
-                logger.error(f"⚠️ Error closing positions: {e}", exc_info=True)
-                errors.append(f"Position closure process failed: {e}")
+                logger.error(f"⚠️ Critical error during position closure: {e}", exc_info=True)
+                errors.append(f"Position closure process crashed: {e}")
         else:
-            logger.warning("PositionManager not found, cannot close open positions.")
+            logger.warning("Step 2: PositionManager not found, cannot close positions.")
 
-        # 3. Stop WebSocket streams
-        if self.ws_optimizer:
-            logger.info("Stopping WebSocket streams...")
+        # ADIM 3: WebSocket akışlarını durdur.
+        if self.ws_optimizer and self.ws_optimizer.is_initialized:
+            logger.info("Step 3: Stopping WebSocket streams...")
             try:
                 await asyncio.wait_for(self.ws_optimizer.stop_streaming(), timeout=10.0)
-                logger.info("✅ WebSocket streams stopped")
-            except asyncio.TimeoutError:
-                logger.error("⚠️ WebSocket stop timed out (10s)")
-                errors.append("WebSocket stop timeout")
+                logger.info("✅ WebSocket streams stopped.")
             except Exception as e:
                 logger.error(f"⚠️ WebSocket stop failed: {e}", exc_info=True)
-                errors.append(f"WebSocket stop: {e}")
-        
-        # 4. Stop the rest of the production system components (engine, etc.)
+                errors.append(f"WebSocket stop failed: {e}")
+
+        # ADIM 4: Geri kalan tüm sistem bileşenlerini (Trading Engine vb.) durdur.
         if self.coordinator:
-            logger.info("Stopping production system components...")
+            logger.info("Step 4: Stopping remaining production system components...")
             try:
-                await asyncio.wait_for(self.coordinator.stop_system(), timeout=10.0)
-                logger.info("✅ Production system components stopped")
-            except asyncio.TimeoutError:
-                logger.error("⚠️ Production system stop timed out (10s)")
-                errors.append("Production system stop timeout")
+                # ProductionCoordinator'ın kendi stop metodu olmalı.
+                if hasattr(self.coordinator, 'stop'):
+                    await self.coordinator.stop()
+                elif hasattr(self.coordinator, 'stop_system'): # Eski isimle uyumluluk
+                     await self.coordinator.stop_system()
+                logger.info("✅ Production system components stopped.")
             except Exception as e:
                 logger.error(f"⚠️ Production system stop failed: {e}", exc_info=True)
-                errors.append(f"Production system stop: {e}")
+                errors.append(f"Production system stop failed: {e}")
 
-        # 5. Close exchange connections (CCXT clients)
+        # ADIM 5: Borsa bağlantılarını (CCXT istemcileri) kapat.
         if self.exchange_clients:
-            logger.info("Closing exchange connections...")
+            logger.info("Step 5: Closing exchange connections...")
             for name, client in self.exchange_clients.items():
                 try:
-                    close_ret = client.close()
-                    if inspect.isawaitable(close_ret):
-                        await asyncio.wait_for(close_ret, timeout=5.0)
-                    logger.info(f"✅ {name} connection closed")
-                except asyncio.TimeoutError:
-                    logger.error(f"⚠️ {name} connection close timed out (5s)")
-                    errors.append(f"{name} connection close timeout")
+                    # CcxtClient.close() asenkron olmayabilir, bu yüzden await kullanmıyoruz.
+                    client.close()
+                    logger.info(f"✅ {name} connection closed.")
                 except Exception as e:
                     logger.error(f"⚠️ Failed to close {name} connection: {e}", exc_info=True)
-                    errors.append(f"{name} connection close: {e}")
+                    errors.append(f"Failed to close {name} connection: {e}")
 
-        # 6. Cancel any remaining asyncio tasks
-        logger.info("Cancelling pending tasks...")
+        # ADIM 6: Kalan tüm asenkron görevleri iptal et.
+        logger.info("Step 6: Cancelling any remaining background tasks...")
         pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         if pending:
             logger.info(f"Found {len(pending)} pending tasks to cancel.")
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
-            logger.info("✅ All pending tasks cancelled")
-        else:
-            logger.info("✅ No pending tasks")
+            logger.info("✅ All pending tasks cancelled.")
 
-        # 7. Flush logs
-        logger.info("Flushing logs...")
+        # ADIM 7: Logları diske yazdır.
+        logger.info("Step 7: Flushing logs...")
         logging.shutdown()
 
         logger.info("=" * 70)
