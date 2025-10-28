@@ -215,6 +215,11 @@ class RegimeModelTrainer:
             results['models']['transformer'] = transformer_model
             results['metrics']['transformer'] = transformer_metrics
             
+            # --- DEĞİŞİKLİK BURADA ---
+            # Eğitilen modelleri, kaydedilmeden önce sınıfın kendisine ata
+            self.models = results['models']
+            # --- DEĞİŞİKLİK SONU ---
+
             # Eğitim tamamlandıktan sonra modelleri kaydet
             self.save_models()
             
@@ -243,14 +248,14 @@ class RegimeModelTrainer:
                 if model is None:
                     continue
                 
-                if name == 'random_forest' and RandomForestClassifier is not None:
+                # Sadece .pkl olarak kaydedilebilecek modelleri kaydet
+                if name == 'random_forest' and RandomForestClassifier is not None and hasattr(model, 'fit'):
                     model_path = os.path.join(self.MODEL_SAVE_DIR, f"{name}.pkl")
                     joblib.dump(model, model_path)
                     logger.info(f"✅ Saved regime model to {model_path}")
-                elif TORCH_AVAILABLE and isinstance(model, (LSTMRegimePredictor, TransformerRegimePredictor)):
-                    model_path = os.path.join(self.MODEL_SAVE_DIR, f"{name}.pth")
-                    torch.save(model.state_dict(), model_path)
-                    logger.info(f"✅ Saved regime model state to {model_path}")
+                # Not: LSTM ve Transformer modelleri bu trainer'da sadece placeholder.
+                # Gerçek eğitimleri ve kaydetmeleri kendi sınıflarında (price_predictor.py) yapılıyor.
+                # Bu yüzden burada .pth kaydetme koduna gerek yok.
 
         except Exception as e:
             logger.error(f"Failed to save regime models: {e}", exc_info=True)
