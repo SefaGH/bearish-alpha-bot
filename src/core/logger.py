@@ -9,90 +9,84 @@ from datetime import datetime
 _listener = None
 _log_queue = queue.Queue(-1)
 
-def setup_logger(name: str = "bearish_alpha_bot", debug_mode: bool = False, log_to_file: bool = True, log_filename: str = None) -> logging.Logger:
+def setup_logger(name: str = "bearish_alpha_bot",
+                 debug_mode: bool = False,
+                 log_to_file: bool = True,
+                 log_filename: str = None,
+                 level: int = None) -> logging.Logger:
     """
     Sets up a centralized, queue-based logger that is safe for concurrent asyncio tasks.
     It configures the root logger, so it only needs to be called once.
     
-    (GÜNCELLENDİ: 'log_filename' parametresini kabul eder hale getirildi.)
+    (GÜNCELLENDİ: 'level' ve 'debug_mode' parametrelerini birlikte kabul eder hale getirildi.)
 
     Args:
         name: Name of the logger to return (typically __name__).
-        debug_mode: If True, sets log level to DEBUG and adds debug formatting.
+        debug_mode: If True, sets log level to DEBUG.
         log_to_file: If True, logs to a file.
-        log_filename: (YENİ) Specific filename for the log. If None, a timestamped name is generated.
+        log_filename: Specific filename for the log.
+        level: (YENİ) Explicit log level (e.g., logging.DEBUG). Overrides debug_mode if set.
     """
     global _listener
 
-    log_level_str = 'DEBUG' if debug_mode else os.getenv('LOG_LEVEL', 'INFO').upper()
-    log_level = getattr(logging, log_level_str, logging.INFO)
+    # --- YENİ MANTIK: 'level' ve 'debug_mode' uyumluluğu ---
+    # Eğer 'level' parametresi verilmişse, onu öncelikli olarak kullan.
+    if level is not None:
+        log_level = level
+    # Eğer 'level' verilmemişse, 'debug_mode' bayrağına göre karar ver.
+    else:
+        log_level_str = 'DEBUG' if debug_mode else os.getenv('LOG_LEVEL', 'INFO').upper()
+        log_level = getattr(logging, log_level_str, logging.INFO)
+    # --- YENİ MANTIK SONU ---
 
-    # Root logger'ı yapılandır, tüm loglar buradan geçecek.
     root_logger = logging.getLogger()
 
-    # Listener sadece bir kez, ilk setup_logger çağrısında kurulmalı.
     if _listener is None:
-        # Mevcut tüm handler'ları temizle, sıfırdan yapılandırıyoruz.
         root_logger.handlers.clear()
         root_logger.setLevel(log_level)
         
-        # Gürültücü kütüphaneleri sustur
         logging.getLogger("websockets.client").setLevel(logging.WARNING)
         logging.getLogger("asyncio").setLevel(logging.WARNING)
 
         formatter = logging.Formatter(
-            f'%(asctime)s - {"🔍 " if debug_mode else ""}[%(name)s] - %(levelname)s - %(message)s',
+            f'%(asctime)s - {"🔍 " if log_level == logging.DEBUG else ""}[%(name)s] - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
 
-        # Handler listesini oluştur
         handlers_to_listen = []
         
-        # Konsol Handler'ı
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(formatter)
         handlers_to_listen.append(console_handler)
 
-        # Dosya Handler'ı
         if log_to_file:
             log_dir = 'logs'
             os.makedirs(log_dir, exist_ok=True)
             
-            # --- YENİ MANTIK BAŞLANGICI ---
-            # Eğer bir log_filename belirtilmişse onu kullan, belirtilmemişse eskisi gibi zaman damgalı oluştur.
             if log_filename:
-                # eğitim betiği gibi özel durumlar için sabit bir isim kullan
                 log_file_path = os.path.join(log_dir, log_filename)
-                # Bu durumda sembolik link oluşturmaya gerek yok, çünkü dosya adı sabit.
-                file_handler = logging.FileHandler(log_file_path, mode='a') # 'a' (append) modu ile üzerine yazmayı engelle
+                file_handler = logging.FileHandler(log_file_path, mode='a')
             else:
-                # Canlı bot için zaman damgalı dosya adı oluşturma mantığı korunuyor.
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
                 basename = os.getenv('LOG_FILE_BASENAME', 'live_trading')
                 log_file_path = os.path.join(log_dir, f'{basename}_{timestamp}.log')
                 file_handler = logging.FileHandler(log_file_path, mode='w')
-                
-                # Sembolik linkleri sadece zaman damgalı loglar için oluştur.
                 _create_symlinks(log_dir, log_file_path)
-            # --- YENİ MANTIK SONU ---
 
             file_handler.setFormatter(formatter)
             handlers_to_listen.append(file_handler)
             
             print(f"File logging enabled: {log_file_path}")
 
-        # Kuyruk Listener'ını başlat
         _listener = logging.handlers.QueueListener(_log_queue, *handlers_to_listen, respect_handler_level=True)
         _listener.start()
         
-        # Tüm logları kuyruğa yönlendiren ana handler'ı root'a ekle.
         queue_handler = logging.handlers.QueueHandler(_log_queue)
         root_logger.addHandler(queue_handler)
 
-        if debug_mode:
+        if log_level == logging.DEBUG:
             root_logger.info("🔍 DEBUG MODE: Enhanced logging enabled.")
 
-    # İstenen isimde bir logger döndür.
     return logging.getLogger(name)
 
 def _create_symlinks(log_dir: str, log_file: str):
@@ -105,7 +99,6 @@ def _create_symlinks(log_dir: str, log_file: str):
             os.remove(latest_name)
         os.symlink(abs_log_file, latest_name)
 
-        # Geriye uyumlu symlink
         ts_part = os.path.basename(abs_log_file).split('_', 1)[-1]
         legacy_name = os.path.join(log_dir, f'bearish_alpha_bot_{ts_part}')
         if os.path.lexists(legacy_name):
