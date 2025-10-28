@@ -498,6 +498,27 @@ class AdvancedPricePredictionEngine:
         self.update_interval = 60  # seconds
         
         logger.info("Advanced Price Prediction Engine initialized")
+
+    def has_model_for(self, symbol: str) -> bool:
+        """
+        Checks if a model configuration exists for the given symbol.
+        
+        This is a placeholder implementation. A real implementation would check
+        if trained model files exist for the symbol and its timeframes.
+        For now, it checks if the symbol is being tracked in data_buffers.
+        
+        Args:
+            symbol: The trading symbol (e.g., 'BTC/USDT').
+            
+        Returns:
+            True if a model is assumed to exist, False otherwise.
+        """
+        # Bu basit implementasyon, sembolün veri tamponlarında izlenip izlenmediğini
+        # modelin varlığı için bir gösterge olarak kabul eder.
+        # Gerçek bir sistemde, diskten model dosyalarının varlığını kontrol etmek daha doğru olur.
+        model_exists = symbol in self.data_buffers
+        logger.debug(f"🧠 [PRICE-ENGINE] Model check for {symbol}: {'Exists' if model_exists else 'Not Found'}")
+        return model_exists
     
     async def start_prediction_loop(self, symbols: List[str],
                                    timeframes: List[str] = ['5m', '15m', '1h']):
