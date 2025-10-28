@@ -268,37 +268,38 @@ class WebSocketClient:
             self._running = False
     
     async def close(self):
-        """Close WebSocket connection."""
+        """Gracefully and decisively closes the WebSocket connection."""
         self._running = False
         self._is_connected = False
         
-        # *** YENİ: Yeniden bağlanmayı devre dışı bırak ***
+        # 1. ÖNCE: Alt katmana yeniden bağlanmayı BIRAKMASINI söyle.
         if self.bingx_ws:
-            logger.info("Disabling auto-reconnect for graceful shutdown.")
-            self.bingx_ws.auto_reconnect = False
+            logger.info("Instructing underlying BingXWebSocket to disable reconnect.")
+            # Az önce eklediğimiz yeni metodu çağırıyoruz.
+            if hasattr(self.bingx_ws, 'disable_reconnect'):
+                self.bingx_ws.disable_reconnect()
 
-        # Cancel listen task first
+        # 2. SONRA: Arka plan görevlerini iptal et.
         if self._listen_task and not self._listen_task.done():
             logger.info("Cancelling listen task...")
             self._listen_task.cancel()
             try:
                 await self._listen_task
             except asyncio.CancelledError:
-                pass
+                pass  # Bu beklenen bir durumdur.
         
-        # Cancel other tasks
+        # Diğer görevleri de iptal et
         for task in self._tasks:
             if not task.done():
                 task.cancel()
-        
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         
-        # Close BingX WebSocket
+        # 3. EN SON: Fiziksel bağlantıyı kes.
         if self.bingx_ws:
             await self.bingx_ws.disconnect()
         
-        logger.info("BingX WebSocket client closed")
+        logger.info("BingX WebSocket client closed successfully.")
     
     def stop(self):
         """Stop all watch loops."""
