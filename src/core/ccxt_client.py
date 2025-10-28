@@ -2,6 +2,8 @@ import ccxt
 import time
 import logging
 import requests
+import asyncio
+import inspect
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from .bingx_authenticator import BingXAuthenticator
@@ -31,6 +33,8 @@ class CcxtClient:
         if not hasattr(ccxt, ex_name):
             raise AttributeError(f"Unknown exchange: {ex_name}")
         
+        # --- DÜZELTME: ccxt.async_support yerine ccxt kullanılıyor gibi görünüyor, bu yüzden async_support'u import etmiyoruz.
+        # ex_cls = getattr(ccxt.async_support, ex_name) # Bu satır yerine alt satır
         ex_cls = getattr(ccxt, ex_name)
         params = EX_DEFAULTS | (creds or {})
         
@@ -244,7 +248,13 @@ class CcxtClient:
             else:
                 logger.info(f"[{self.exchange.id}] Loading all available markets...")
             
-            return await self.ex.load_markets(params=params)
+            # --- GÜVENLİ ÇAĞRI DÜZELTMESİ ---
+            load_markets_fn = getattr(self.ex, 'load_markets')
+            if inspect.iscoroutinefunction(load_markets_fn):
+                return await load_markets_fn(params=params)
+            else:
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(None, lambda: load_markets_fn(params=params))
 
     def validate_and_get_symbol(self, requested_symbol="BTC/USDT"):
         """
@@ -777,51 +787,59 @@ class CcxtClient:
         logger.info(f"🔐 [BINGX-API] Placing {side} order: {amount} {symbol} @ ${price}")
         return self._make_authenticated_bingx_request('/openApi/swap/v2/trade/order', params, 'POST')
 
+    # --- NIHAI DÜZELTME: Güvenli async/sync çağrı mantığı eklendi ---
     async def check_api_health(self) -> Dict[str, Any]:
         """
         Performs a quick health check of the API connection and credentials.
-        (NİHAİ DÜZELTME: ccxt nesnesine doğru şekilde 'self.ex' üzerinden erişiyor)
+        This version safely handles both synchronous and asynchronous ccxt methods.
         """
-        # CcxtClient'ın içindeki asıl ccxt borsa nesnesinin varlığını kontrol et.
         if not hasattr(self, 'ex'):
             return {'status': 'UNHEALTHY', 'reason': 'Internal CCXT exchange object (self.ex) not found.'}
 
         try:
-            # DOĞRU ÇAĞRI: self.ex üzerinden ccxt'nin kendi metodunu çağır.
-            # Bu, 'CcxtClient' sınıfının bir sarmalayıcı (wrapper) olduğu gerçeğine uyar.
-            await self.ex.fetch_balance()
+            fetch_balance_fn = getattr(self.ex, 'fetch_balance', None)
+            if not callable(fetch_balance_fn):
+                 return {'status': 'UNHEALTHY', 'reason': 'fetch_balance method not available on exchange object.'}
+
+            # Fonksiyonun asenkron olup olmadığını kontrol et
+            if inspect.iscoroutinefunction(fetch_balance_fn):
+                await fetch_balance_fn()
+            else:
+                # Senkron ise, event loop'u bloklamamak için executor'da çalıştır
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, fetch_balance_fn)
+            
             logger.info(f"✅ API Health Check for '{self.name}' passed (via fetch_balance).")
             return {'status': 'HEALTHY', 'reason': 'Authenticated connection confirmed.'}
 
         except ccxt.AuthenticationError as e:
-            # API anahtarları olmadan çalıştırıldığında bu normal bir durumdur.
             logger.warning(f"ℹ️ API Health Check for '{self.name}': No valid credentials provided. This is expected in public/dry-run mode.")
             return {'status': 'PUBLIC_ONLY', 'reason': f'AuthenticationError: {e}'}
         except (ccxt.NetworkError, ccxt.ExchangeNotAvailable) as e:
             logger.error(f"❌ API Health Check for '{self.name}' FAILED: Network or exchange issue. {e}")
             return {'status': 'UNHEALTHY', 'reason': f'NetworkError: {e}'}
         except Exception as e:
-            # Diğer tüm beklenmedik hatalar
             logger.error(f"❌ API Health Check for '{self.name}' FAILED with an unexpected error: {e}", exc_info=True)
             return {'status': 'UNHEALTHY', 'reason': f'Unexpected error: {e}'}
     
+    # --- NIHAI DÜZELTME: Güvenli async/sync çağrı mantığı eklendi ---
     async def close(self):
         """
-        Close the exchange connection and release all resources.
-        
-        CRITICAL: Must be called before application exit to prevent resource leaks!
-        This method properly closes the ccxt exchange connection, including:
-        - aiohttp ClientSession objects
-        - WebSocket connections
-        - Network sockets
-        
-        This prevents the "Unclosed client session" and "requires to release all 
-        resources" warnings that cause subsequent runs to hang.
+        Safely close the exchange connection, handling both sync and async methods.
         """
         if self.ex and hasattr(self.ex, 'close'):
             try:
-                # ccxt.close() is async, so we await it
-                await self.ex.close()
+                close_fn = getattr(self.ex, 'close')
+                if not callable(close_fn):
+                    logger.debug(f"[{self.name}] 'close' attribute is not callable.")
+                    return
+
+                if inspect.iscoroutinefunction(close_fn):
+                    await close_fn()
+                else:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, close_fn)
+                
                 logger.info(f"✅ [{self.name}] Exchange connection closed")
             except Exception as e:
                 logger.error(f"⚠️ [{self.name}] Error closing exchange: {e}")
