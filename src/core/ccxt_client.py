@@ -11,11 +11,11 @@ from .bingx_authenticator import BingXAuthenticator
 
 logger = logging.getLogger(__name__)
 
-# HATA DÜZELTMESİ: pandas-ta kütüphanesini import et (try/except bloğu ile)
 try:
-    import pandas_ta as ta
+    import pandas_ta_classic as ta
     PANDAS_TA_AVAILABLE = True
 except ImportError:
+    logger.warning("Kritik kütüphane 'pandas-ta-classic' bulunamadı! İndikatörler eklenemeyecek.")
     PANDAS_TA_AVAILABLE = False
 
 EX_DEFAULTS = {
