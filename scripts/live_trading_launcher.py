@@ -1162,8 +1162,11 @@ class LiveTradingLauncher:
             logger.info("Step 5: Closing exchange connections...")
             for name, client in self.exchange_clients.items():
                 try:
-                    # CcxtClient.close() asenkron olmayabilir, bu yüzden await kullanmıyoruz.
-                    client.close()
+                    # DÜZELTME: client.close() metodunu 'await' ile çağırın.
+                    if inspect.isawaitable(client.close()):
+                         await client.close()
+                    else:
+                         client.close() # Eğer asenkron değilse normal çağır
                     logger.info(f"✅ {name} connection closed.")
                 except Exception as e:
                     logger.error(f"⚠️ Failed to close {name} connection: {e}", exc_info=True)
