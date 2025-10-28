@@ -4,7 +4,6 @@ Live Trading Launcher for Bearish Alpha Bot
 
 [... mevcut docstring ...]
 """
-
 import sys
 import os
 from core.logger import setup_logger
@@ -1103,41 +1102,24 @@ class LiveTradingLauncher:
         logger.info("="*70)
 
         errors = []
-        self._cleanup_completed = True # Mark cleanup as started to prevent re-entry
+        self._cleanup_completed = True
 
-        # Adım 1: Ana işlem döngüsünü durdur
         logger.info("Step 1: Stopping main trading loop...")
         if self.coordinator:
             try:
                 await self.coordinator.stop()
                 logger.info("✅ Main trading loop stopped.")
             except Exception as e:
-                error_msg = f"Error stopping coordinator main loop: {e}"
-                logger.error(error_msg, exc_info=True)
-                errors.append(error_msg)
+                errors.append(f"Error stopping coordinator: {e}")
+                logger.error(f"Error stopping coordinator: {e}", exc_info=True)
 
-        # Adım 2: Açık pozisyonları kapat (Borsa bağlantısı hala aktifken)
         logger.info("Step 2: Closing all open positions...")
         if self.coordinator and hasattr(self.coordinator, 'position_manager') and self.coordinator.position_manager:
             try:
-                # --- UYARI DÜZELTMESİ: 'await' geri eklendi ---
-                # close_all_positions asenkron bir fonksiyon olduğu için 'await' ile çağrılmalıdır.
-                # Fonksiyonun dönüş değeri, tek bir sonuç veya iki değer olabilir. İki değer beklemek daha güvenli.
-                closed_count, close_errors = await self.coordinator.position_manager.close_all_positions("shutdown")
-                if close_errors:
-                    errors.append(f"Position closure failed for some positions: {close_errors}")
-                logger.info(f"✅ Positions closure attempt finished: {closed_count} closed, {len(close_errors)} errors.")
-                # --- DÜZELTME SONU ---
-            except ValueError:
-                # Eğer fonksiyon iki değer döndürmüyorsa bu bloğa düşeriz.
-                logger.warning("close_all_positions did not return two values. Retrying with single value handling.")
-                try:
-                    result = await self.coordinator.position_manager.close_all_positions("shutdown")
-                    logger.info(f"✅ Position closure attempt finished with single return value: {result}")
-                except Exception as e:
-                     error_msg = f"Critical error during position closure retry: {e}"
-                     logger.error(error_msg, exc_info=True)
-                     errors.append(error_msg)
+                # --- İYİLEŞTİRME: Artık tek bir değer beklendiği için try/except kaldırıldı ---
+                result = await self.coordinator.position_manager.close_all_positions("shutdown")
+                logger.info(f"✅ Position closure attempt finished. Result: {result}")
+                # --- İYİLEŞTİRME SONU ---
             except Exception as e:
                 error_msg = f"Critical error during position closure: {e}"
                 logger.error(error_msg, exc_info=True)
@@ -1145,41 +1127,35 @@ class LiveTradingLauncher:
         else:
             logger.info("Position manager not available, skipping position closure.")
 
-        # Adım 3: WebSocket akışlarını durdur
         logger.info("Step 3: Stopping WebSocket streams...")
         if self.ws_optimizer:
             try:
                 await self.ws_optimizer.stop_streaming()
                 logger.info("✅ WebSocket streams stopped.")
             except Exception as e:
-                error_msg = f"Error stopping websocket streams: {e}"
-                logger.error(error_msg, exc_info=True)
-                errors.append(error_msg)
-
-        # Adım 4: Sağlık monitörünü durdur
+                errors.append(f"Error stopping WebSocket: {e}")
+                logger.error(f"Error stopping WebSocket: {e}", exc_info=True)
+        
         if self.health_monitor:
             logger.info("Step 4: Stopping health monitor...")
             try:
                 await self.health_monitor.stop_monitoring()
                 logger.info("✅ Health monitor stopped.")
             except Exception as e:
-                error_msg = f"Error stopping health monitor: {e}"
-                logger.error(error_msg, exc_info=True)
-                errors.append(error_msg)
+                 errors.append(f"Error stopping health monitor: {e}")
+                 logger.error(f"Error stopping health monitor: {e}", exc_info=True)
 
-        # Adım 5: Borsa bağlantılarını (CCXT istemcileri) en son kapat
+
         logger.info("Step 5: Closing exchange connections...")
         if self.exchange_clients:
             for name, client in self.exchange_clients.items():
                 try:
-                    # `close` metodu artık hem senkron hem asenkron durumları idare edebiliyor
                     if hasattr(client, 'close'):
                          await client.close()
                     logger.info(f"✅ {name} connection closed.")
                 except Exception as e:
-                    error_msg = f"Failed to close {name} connection: {e}"
-                    logger.error(error_msg, exc_info=True)
-                    errors.append(error_msg)
+                    errors.append(f"Failed to close {name}: {e}")
+                    logger.error(f"Failed to close {name}: {e}", exc_info=True)
         
         logger.info("="*70)
         if not errors:
