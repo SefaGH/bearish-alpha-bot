@@ -3,7 +3,7 @@ import os
 import sys
 import pandas as pd
 import numpy as np
-import logging  # HATA DÜZELTMESİ: Eksik 'logging' importu eklendi.
+import logging
 
 # --- YOL AYARLAMASI (IMPORT HATALARINI ÖNLER) ---
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -33,32 +33,31 @@ TIMEFRAMES_TO_TRAIN = ['1h', '4h']
 CANDLE_LIMIT = 2000
 
 async def main():
-    """
-    Tüm ML modellerini (Rejim ve Fiyat) eğitmek ve kaydetmek için ana fonksiyon.
-    """
     logger.info("="*60)
     logger.info("🤖 BAŞLIYOR: BİRLEŞİK ML MODEL EĞİTİM BETİĞİ 🤖")
     logger.info("="*60)
 
-    # Gerekli araçların başlatılması
     exchange_client = CcxtClient('bingx')
     feature_engine = FeatureEngineeringPipeline()
     logger.info("✅ Borsa istemcisi ve özellik motoru başlatıldı.")
 
-    # Veri toplama
     training_data = {symbol: {} for symbol in SYMBOLS_TO_TRAIN}
     for symbol in SYMBOLS_TO_TRAIN:
         for timeframe in TIMEFRAMES_TO_TRAIN:
             logger.info(f"\n--- Veri Çekiliyor: {symbol} [{timeframe}] ---")
             try:
+                # ARTIK BU ÇAĞRI DOĞRU ÇALIŞACAK!
                 ohlcv_df = await exchange_client.ohlcv(symbol, timeframe=timeframe, limit=CANDLE_LIMIT, add_indicators=True)
+                
                 if ohlcv_df is None or ohlcv_df.empty:
-                    logger.warning(f"Veri çekilemedi. Atlanıyor.")
+                    logger.warning(f"Veri çekilemedi veya indikatör eklenemedi. Atlanıyor.")
                     continue
-                logger.info(f"✅ {len(ohlcv_df)} adet mum verisi çekildi.")
+                logger.info(f"✅ {len(ohlcv_df)} adet mum verisi çekildi ve indikatörler eklendi.")
                 training_data[symbol][timeframe] = ohlcv_df
             except Exception as e:
                 logger.error(f"❌ Veri çekme hatası: {e}", exc_info=True)
+    
+    # --- Buradan sonrası aynı kalıyor ---
     
     # 1. REJİM MODELLERİ EĞİTİMİ
     logger.info("\n" + "="*60)
@@ -66,51 +65,60 @@ async def main():
     logger.info("="*60)
     
     regime_training_tf = TIMEFRAMES_TO_TRAIN[-1]
-    regime_training_data = training_data[SYMBOLS_TO_TRAIN[0]].get(regime_training_tf)
+    # Check if symbol and timeframe data exist before accessing
+    if SYMBOLS_TO_TRAIN[0] in training_data and regime_training_tf in training_data[SYMBOLS_TO_TRAIN[0]]:
+        regime_training_data = training_data[SYMBOLS_TO_TRAIN[0]].get(regime_training_tf)
 
-    if regime_training_data is not None and not regime_training_data.empty:
-        regime_labels = generate_regime_labels(regime_training_data)
-        features_df = feature_engine.extract_features(regime_training_data)
-        
-        features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-        features_df.dropna(inplace=True)
-        
-        X, y = feature_engine.prepare_for_training(features_df, regime_labels)
+        if regime_training_data is not None and not regime_training_data.empty:
+            regime_labels = generate_regime_labels(regime_training_data)
+            features_df = feature_engine.extract_features(regime_training_data)
+            
+            features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+            features_df.dropna(inplace=True)
+            
+            X, y = feature_engine.prepare_for_training(features_df, regime_labels)
 
-        if X.shape[0] > 100:
-            regime_trainer = RegimeModelTrainer()
-            training_results = regime_trainer.train_ensemble_models(X, y)
-            logger.info(f"✅ Rejim modelleri eğitildi ve kaydedildi.")
+            if X.shape[0] > 100:
+                regime_trainer = RegimeModelTrainer()
+                training_results = regime_trainer.train_ensemble_models(X, y)
+                logger.info(f"✅ Rejim modelleri eğitildi ve kaydedildi.")
+            else:
+                logger.warning("Rejim modellerini eğitmek için yeterli veri bulunamadı.")
         else:
-            logger.warning("Rejim modellerini eğitmek için yeterli veri bulunamadı.")
+            logger.error(f"Rejim eğitimi için {regime_training_tf} verisi bulunamadı.")
     else:
-        logger.error(f"Rejim eğitimi için {regime_training_tf} verisi bulunamadı.")
+        logger.error(f"Rejim eğitimi için {SYMBOLS_TO_TRAIN[0]} sembolüne ait {regime_training_tf} verisi bulunamadı.")
+
 
     # 2. FİYAT TAHMİN MODELLERİ EĞİTİMİ
     logger.info("\n" + "="*60)
     logger.info("📈 ADIM 2: FİYAT TAHMİN MODELLERİ EĞİTİLİYOR 📈")
     logger.info("="*60)
     
-    symbol_data_values = list(training_data[SYMBOLS_TO_TRAIN[0]].values())
-    if not symbol_data_values:
-        logger.error("Fiyat modeli eğitimi için hiç veri bulunamadı. Bu adım atlanıyor.")
-    else:
-        sample_features = feature_engine.extract_features(symbol_data_values[0])
-        input_feature_size = sample_features.shape[1]
-        logger.info(f"Fiyat tahmin modelleri için dinamik girdi boyutu: {input_feature_size}")
+    if SYMBOLS_TO_TRAIN[0] in training_data:
+        symbol_data_values = list(training_data[SYMBOLS_TO_TRAIN[0]].values())
+        if not symbol_data_values:
+            logger.error("Fiyat modeli eğitimi için hiç veri bulunamadı. Bu adım atlanıyor.")
+        else:
+            sample_features = feature_engine.extract_features(symbol_data_values[0])
+            input_feature_size = sample_features.shape[1]
+            logger.info(f"Fiyat tahmin modelleri için dinamik girdi boyutu: {input_feature_size}")
 
-        timeframe_models = {}
-        for tf in TIMEFRAMES_TO_TRAIN:
-            base_models = {
-                'lstm': LSTMPricePredictor(input_size=input_feature_size),
-                'transformer': TransformerPricePredictor(d_model=input_feature_size)
-            }
-            timeframe_models[tf] = EnsemblePricePredictor(base_models)
-        
-        multi_tf_predictor = MultiTimeframePricePredictor(timeframe_models)
-        price_engine = AdvancedPricePredictionEngine(multi_tf_predictor)
-        
-        price_engine.train_and_save_models(training_data)
+            timeframe_models = {}
+            for tf in TIMEFRAMES_TO_TRAIN:
+                base_models = {
+                    'lstm': LSTMPricePredictor(input_size=input_feature_size),
+                    'transformer': TransformerPricePredictor(d_model=input_feature_size)
+                }
+                timeframe_models[tf] = EnsemblePricePredictor(base_models)
+            
+            multi_tf_predictor = MultiTimeframePricePredictor(timeframe_models)
+            price_engine = AdvancedPricePredictionEngine(multi_tf_predictor)
+            
+            price_engine.train_and_save_models(training_data)
+    else:
+        logger.error(f"Fiyat modeli eğitimi için {SYMBOLS_TO_TRAIN[0]} sembolüne ait veri bulunamadı.")
+
 
     logger.info("\n" + "="*60)
     logger.info("✅ TÜM MODEL EĞİTİMLERİ TAMAMLANDI ✅")
