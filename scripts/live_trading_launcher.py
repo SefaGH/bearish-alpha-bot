@@ -1220,12 +1220,8 @@ class LiveTradingLauncher:
         required_vars = ['BINGX_KEY', 'BINGX_SECRET']
         missing_vars = [var for var in required_vars if not os.getenv(var)]
 
-        # --- DÜZENLEME: `credentials_required` artık burada değil, kullanıldığı yerde kontrol edilecek ---
-        # credentials_required = self.mode == 'live' and not self.dry_run
         self._has_bingx_credentials = not missing_vars
 
-        # --- YENİ MANTIK ---
-        # Sadece `dry_run` DEĞİLSE ve `live` modundaysa anahtarlar zorunludur.
         if self.mode == 'live' and not self.dry_run and not self._has_bingx_credentials:
             logger.error(f"❌ Missing required environment variables for LIVE mode: {missing_vars}")
             return False
@@ -1234,7 +1230,6 @@ class LiveTradingLauncher:
             logger.info("✓ BingX credentials found")
         else:
             logger.info("ℹ️ BingX credentials not provided (OK for dry-run or paper mode)")
-
 
         # Optional Telegram setup
         tg_token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -1272,60 +1267,57 @@ class LiveTradingLauncher:
         trading_pairs = self._get_trading_pairs()
         
         try:
-            # --- YENİ VE GÜVENLİ YAPI ---
-            # Önce exchange_config için boş bir sözlük oluştur.
-            exchange_config = {
-                'apiKey': None,
-                'secret': None,
-                'options': {'load_markets': False},
-            }
-
-            # SADECE anahtarlar varsa ve dry_run DEĞİLSE config'i doldur.
+            creds = None
             if self._has_bingx_credentials and not self.dry_run:
                 logger.info("Authenticated mode: Loading API credentials.")
-                exchange_config['apiKey'] = os.getenv('BINGX_KEY')
-                exchange_config['secret'] = os.getenv('BINGX_SECRET')
+                creds = {
+                    'apiKey': os.getenv('BINGX_KEY'),
+                    'secret': os.getenv('BINGX_SECRET')
+                }
             else:
                 logger.info("Public mode: Initializing without API credentials (dry-run or no secrets).")
 
-            # CcxtClient'ı her zaman güvenli olan bu config ile oluştur.
-            bingx_client = CcxtClient('bingx', exchange_config)
+            bingx_client = CcxtClient('bingx', creds=creds)
             
-            # Sadece işlem yapacağımız sembollerin market verisini yükle.
+            # --- NIHAI DÜZELTME: Fonksiyonların çağrılma sırasını düzeltiyoruz ---
+            # 1. ÖNCE sembolleri ayarla, böylece `self.symbols` oluşsun.
+            bingx_client.set_required_symbols(trading_pairs)
+            
+            # 2. SONRA marketleri yükle. Artık `self.symbols` olduğu için hata vermeyecek.
             try:
                 logger.info(f"Explicitly loading market data for specified symbols: {trading_pairs}")
                 await bingx_client.load_markets(params={'symbols': trading_pairs})
             except Exception as e:
-                logger.error(f"Failed to load specific markets for symbols {trading_pairs}: {e}")
+                logger.error(f"Failed to load specific markets for symbols {trading_pairs}: {e}", exc_info=True)
                 return False
+            # --- NIHAI DÜZELTME SONU ---
     
-            bingx_client.set_required_symbols(trading_pairs)
             logger.info(f"✓ BingX client optimized for {len(trading_pairs)} symbols only")
             
             self.exchange_clients['bingx'] = bingx_client
             
             # Test connection with a public endpoint call
             logger.info("Testing BingX connection...")
-            test_ticker = await bingx_client.fetch_ticker('BTC/USDT:USDT')
+            # `fetch_ticker` async olmadığı için await kaldırıldı.
+            test_ticker = bingx_client.ticker('BTC/USDT')
             logger.info(f"✓ Connected to BingX - Test price: BTC=${test_ticker['last']:.2f}")
 
-            # SADECE anahtarlar varsa kimlik doğrulama testi yap.
             if self._has_bingx_credentials and not self.dry_run:
                 try:
-                    balance = await bingx_client.get_bingx_balance()
+                    balance = bingx_client.get_bingx_balance()
                     logger.info("✓ BingX authentication successful")
                 except Exception as e:
                     logger.warning(f"⚠️ BingX authentication test failed: {e}")
             else:
                 logger.info("ℹ️ Skipping BingX authentication check (public mode).")
             
-            # Verify configured pairs
             logger.info(f"Verifying {len(trading_pairs)} trading pairs...")
             verified_pairs = []
         
             for pair in trading_pairs:
                 try:
-                    ticker = await bingx_client.fetch_ticker(pair)
+                    # `fetch_ticker` async olmadığı için await kaldırıldı.
+                    ticker = bingx_client.ticker(pair)
                     verified_pairs.append(pair)
                     logger.info(f"  ✓ {pair}: ${ticker['last']:.2f}")
                 except Exception as e:
@@ -1621,8 +1613,9 @@ class LiveTradingLauncher:
             # Check 1: Exchange connectivity
             logger.info("Check 1/7: Exchange connectivity...")
             try:
-                ticker = self.exchange_clients['bingx'].fetch_ticker('BTC/USDT:USDT')
-                logger.info(f"✓ BTC/USDT:USDT price: ${ticker.get('last', 0):.2f}")
+                # `ticker` async olmadığı için await kaldırıldı.
+                ticker = self.exchange_clients['bingx'].ticker('BTC/USDT')
+                logger.info(f"✓ BTC/USDT price: ${ticker.get('last', 0):.2f}")
             except Exception as e:
                 logger.error(f"❌ Exchange connectivity failed: {e}")
                 failed_checks.append("Exchange connectivity")
@@ -1703,7 +1696,7 @@ class LiveTradingLauncher:
     
                     # 2. SONRA: Enjekte edilmiş veriyi doğrula.
                     logger.info("  -> Step 2: Validating prefetched data...")
-                    validator = IndicatorValidator(self.ws_optimizer.ws_manager) # *** AÇIKLAMA: ws_optimizer.ws_manager olarak düzeltildi ***
+                    validator = IndicatorValidator(self.ws_optimizer.ws_manager)
                     all_valid, validation_results = await validator.validate_all_symbols(
                         symbols=self.TRADING_PAIRS,
                         exchange='bingx'
@@ -2414,8 +2407,6 @@ class LiveTradingLauncher:
                 await self.cleanup()
             except Exception as e:
                 logger.error(f"❌ Cleanup failed: {e}")
-                if exit_code == 0:
-                    exit_code = 1
     
     async def _run_with_auto_restart(self, duration: Optional[float] = None) -> int:
         """
