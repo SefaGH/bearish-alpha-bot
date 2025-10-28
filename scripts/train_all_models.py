@@ -27,7 +27,7 @@ from src.ml.price_predictor import (
 from src.ml.label_generator import generate_regime_labels
 
 # Logger kurulumu
-logger = setup_logger("model-trainer", log_to_file=True, log_filename="logs/training.log")
+logger = setup_logger("model-trainer", level=logging.DEBUG, log_to_file=True, log_filename="training.log")
 
 # --- EĞİTİM PARAMETRELERİ ---
 SYMBOLS_TO_TRAIN = ['BTC/USDT']
