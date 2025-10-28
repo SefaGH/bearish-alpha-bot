@@ -4,11 +4,19 @@ import logging
 import requests
 import asyncio
 import inspect
+import pandas as pd
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from .bingx_authenticator import BingXAuthenticator
 
 logger = logging.getLogger(__name__)
+
+# HATA DÜZELTMESİ: pandas-ta kütüphanesini import et (try/except bloğu ile)
+try:
+    import pandas_ta as ta
+    PANDAS_TA_AVAILABLE = True
+except ImportError:
+    PANDAS_TA_AVAILABLE = False
 
 EX_DEFAULTS = {
     "options": {"defaultType": "swap"},
@@ -19,26 +27,12 @@ EX_DEFAULTS = {
 
 class CcxtClient:
     def __init__(self, ex_name: str, creds: dict | None = None):
-        """
-        Initialize CCXT exchange client.
-        
-        Args:
-            ex_name: Exchange name (e.g., 'binance', 'bingx')
-            creds: API credentials dict with 'apiKey', 'secret', optional 'password'
-        
-        Raises:
-            AttributeError: If exchange name is invalid
-            ccxt.AuthenticationError: If credentials are invalid
-        """
         if not hasattr(ccxt, ex_name):
             raise AttributeError(f"Unknown exchange: {ex_name}")
         
-        # --- DÜZELTME: ccxt.async_support yerine ccxt kullanılıyor gibi görünüyor, bu yüzden async_support'u import etmiyoruz.
-        # ex_cls = getattr(ccxt.async_support, ex_name) # Bu satır yerine alt satır
         ex_cls = getattr(ccxt, ex_name)
         params = EX_DEFAULTS | (creds or {})
         
-        # Force production mode for KuCoin exchanges
         if ex_name in ['kucoin', 'kucoinfutures']:
             params['sandbox'] = False
             logger.info(f"KuCoin {ex_name} initialized in PRODUCTION mode")
@@ -47,19 +41,16 @@ class CcxtClient:
         self.exchange = self.ex
         self.name = ex_name
         
-        # Initialize caches for KuCoin Futures integration
         self._symbol_cache = {}
         self._last_symbol_update = 0
         self._server_time_offset = 0
         
-        # Lazy loading for market data
         self._markets_cache = None
         self._markets_cache_time = 0
         self._required_symbols_only = set()
         self._skip_market_load = False
         self.symbols: List[str] = []
         
-        # Add BingX authenticator
         if ex_name == 'bingx' and creds:
             self.bingx_auth = BingXAuthenticator(
                 api_key=creds.get('apiKey', ''),
@@ -91,30 +82,62 @@ class CcxtClient:
         self.symbols = list(symbols)
         logger.info(f"[{self.name}] Will only work with {len(symbols)} symbols (no market load)")
 
-    def ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> List[List]:
+    async def ohlcv(self, symbol: str, timeframe: str, limit: int = 500, add_indicators: bool = False) -> Optional[pd.DataFrame]:
         """
-        Fetch OHLCV data with retries.
+        Asenkron olarak OHLCV verilerini çeker ve isteğe bağlı olarak teknik indikatörleri ekler.
         """
-        # --- DÜZELTME: Sembolü BingX formatına çevir ---
-        native_symbol = self._get_bingx_native_symbol(symbol)
+        loop = asyncio.get_running_loop()
         last_exc = None
+        
         for attempt in range(3):
             try:
+                native_symbol = self._get_bingx_native_symbol(symbol)
                 logger.debug(f"Fetching OHLCV for {native_symbol} ({symbol}) {timeframe} limit={limit} (attempt {attempt + 1}/3)")
-                data = self.ex.fetch_ohlcv(native_symbol, timeframe=timeframe, limit=limit)
                 
-                # Enhanced debug logging for KuCoin
-                logger.debug(f"Fetched {len(data) if data else 0} candles for {native_symbol} on {self.name}")
-                
-                logger.info(f"Successfully fetched {len(data) if data else 0} candles for {symbol} {timeframe}")
-                return data
+                # Senkron CCXT çağrısını asenkron hale getir
+                data = await loop.run_in_executor(
+                    None, 
+                    lambda: self.ex.fetch_ohlcv(native_symbol, timeframe=timeframe, limit=limit)
+                )
+
+                if not data:
+                    logger.warning(f"No OHLCV data returned for {symbol} on attempt {attempt + 1}")
+                    continue
+
+                df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+
+                if add_indicators:
+                    if not PANDAS_TA_AVAILABLE:
+                        logger.error("'pandas-ta' kütüphanesi kurulu değil. İndikatörler eklenemiyor.")
+                        return df # Ham veriyi döndür
+
+                    logger.info(f"Adding technical indicators to {symbol} [{timeframe}] data...")
+                    custom_strategy = ta.Strategy(
+                        name="ML_Features",
+                        ta=[
+                            {"kind": "rsi"},
+                            {"kind": "macd"},
+                            {"kind": "bbands", "length": 20, "std": 2},
+                            {"kind": "ema", "length": 20},
+                            {"kind": "ema", "length": 50},
+                            {"kind": "atr", "length": 14},
+                        ]
+                    )
+                    df.ta.strategy(custom_strategy)
+                    df.columns = [col.lower().replace('_14_2_2', '') for col in df.columns] # Kolon isimlerini temizle
+                    logger.info(f"✅ Indicators added. Columns: {list(df.columns)}")
+
+                logger.info(f"Successfully fetched {len(df)} candles for {symbol} {timeframe}")
+                return df
+
             except Exception as e:
                 last_exc = e
                 logger.warning(f"OHLCV fetch attempt {attempt + 1}/3 failed for {symbol} {timeframe}: {type(e).__name__}: {e}")
-                if attempt < 2:  # Don't sleep on last attempt
-                    time.sleep(0.8)
+                if attempt < 2:
+                    await asyncio.sleep(0.8)
         
-        # All retries failed - log detailed error and raise
         error_msg = f"Failed to fetch OHLCV for {symbol} {timeframe} after 3 attempts"
         logger.error(f"{error_msg}. Last error: {type(last_exc).__name__}: {last_exc}")
         if last_exc is not None:
