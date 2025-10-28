@@ -2,7 +2,6 @@ import ccxt
 import time
 import logging
 import requests
-import ccxt.async_support as ccxt
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from .bingx_authenticator import BingXAuthenticator
