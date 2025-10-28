@@ -929,6 +929,7 @@ class LiveTradingLauncher:
         self.coordinator = None
         self.telegram = None
         self.exchange_clients = {}
+        self._api_health_status: Dict[str, Any] = {}
         self.strategies = {}
         self.restart_manager = None
         self.health_monitor = None
@@ -2155,6 +2156,7 @@ class LiveTradingLauncher:
             dry_run=self.dry_run,
             debug_mode=self.debug_mode,
             exchange_clients=self.exchange_clients,
+            api_health_status=self._api_health_status,
             ws_manager=(self.ws_optimizer.ws_manager if self._is_ws_initialized() else None),
             capital=self.CAPITAL_USDT,
             trading_pairs=self.TRADING_PAIRS,
@@ -2296,6 +2298,19 @@ class LiveTradingLauncher:
             # Step 2: Initialize exchange
             if not await self._initialize_exchange_connection():
                 return 1
+
+            # Step 2.5: Perform API Health Check
+            logger.info("Performing API health check...")
+            for name, client in self.exchange_clients.items():
+                if hasattr(client, 'check_api_health'):
+                    # Bu metodun ccxt_client.py'de tanımlandığını varsayıyoruz.
+                    health_result = await client.check_api_health()
+                    self._api_health_status[name] = health_result
+                    if health_result['status'] != 'HEALTHY' and self.mode == 'live':
+                        logger.critical(f"❌ API for '{name}' is UNHEALTHY: {health_result['reason']}. Aborting live mode.")
+                        return 1
+                else:
+                    self._api_health_status[name] = {'status': 'UNKNOWN', 'reason': 'check_api_health method not found.'}
             
             # Step 3: Initialize risk management
             if not self._initialize_risk_management():
