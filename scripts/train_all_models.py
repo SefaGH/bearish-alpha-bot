@@ -30,7 +30,7 @@ logger = setup_logger("model-trainer", level=logging.DEBUG, log_to_file=True, lo
 # --- EĞİTİM PARAMETRELERİ ---
 SYMBOLS_TO_TRAIN = ['BTC/USDT']
 TIMEFRAMES_TO_TRAIN = ['1h', '4h']
-CANDLE_LIMIT = 2000
+CANDLE_LIMIT = 1440
 
 async def main():
     logger.info("="*60)
