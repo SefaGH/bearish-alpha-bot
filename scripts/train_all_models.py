@@ -1,11 +1,16 @@
-# Bu, bir önceki mesajdaki betiğin güncellenmiş ve son halidir.
-
 import asyncio
 import os
 import sys
-import pandas as pd
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# --- HATA DÜZELTMESİ BAŞLANGICI ---
+# Bu blok, betiğin projenin ana dizinini tanımasını sağlar.
+# Bu sayede 'src' gibi klasörlerden import işlemi başarılı olur.
+# Bu kod, betiğin kendi konumundan bir üst dizine çıkarak ana yolu bulur.
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+# --- HATA DÜZELTMESİ SONU ---
+
+import pandas as pd
 
 from src.core.ccxt_client import CcxtClient
 from src.core.logger import setup_logger
@@ -56,7 +61,6 @@ async def main():
         regime_labels = generate_regime_labels(regime_training_data)
         features_df = feature_engine.extract_features(regime_training_data)
         
-        # Özellik sayısı uyuşmazlığını önlemek için scaler'ı burada fit et
         features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
         features_df.dropna(inplace=True)
         
@@ -64,7 +68,7 @@ async def main():
 
         if X.shape[0] > 100:
             regime_trainer = RegimeModelTrainer()
-            training_results = regime_trainer.train_ensemble_models(X, y) # Bu metot artık kaydetmeyi de tetikleyecek
+            training_results = regime_trainer.train_ensemble_models(X, y)
             logger.info(f"✅ Rejim modelleri eğitildi ve kaydedildi.")
         else:
             logger.warning("Rejim modellerini eğitmek için yeterli veri bulunamadı.")
@@ -76,7 +80,6 @@ async def main():
     logger.info("📈 ADIM 2: FİYAT TAHMİN MODELLERİ EĞİTİLİYOR 📈")
     logger.info("="*60)
     
-    # GÜNCELLEME: Özellik sayısını dinamik olarak al
     sample_features = feature_engine.extract_features(next(iter(training_data[SYMBOLS_TO_TRAIN[0]].values())))
     input_feature_size = sample_features.shape[1]
     logger.info(f"Fiyat tahmin modelleri için dinamik girdi boyutu: {input_feature_size}")
