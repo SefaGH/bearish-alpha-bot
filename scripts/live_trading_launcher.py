@@ -935,7 +935,7 @@ class LiveTradingLauncher:
         self.health_monitor = None
 
         # *** YENİ: Cleanup tracking için daha basit bir flag ***
-        self._cleanup_done = False
+        self._cleanup_completed = False
         
         # WebSocket optimization manager
         self.ws_optimizer = None
@@ -2314,12 +2314,18 @@ class LiveTradingLauncher:
             logger.info("Performing API health check...")
             for name, client in self.exchange_clients.items():
                 if hasattr(client, 'check_api_health'):
-                    # Bu metodun ccxt_client.py'de tanımlandığını varsayıyoruz.
                     health_result = await client.check_api_health()
                     self._api_health_status[name] = health_result
-                    if health_result['status'] != 'HEALTHY' and self.mode == 'live':
-                        logger.critical(f"❌ API for '{name}' is UNHEALTHY: {health_result['reason']}. Aborting live mode.")
+                    
+                    # --- YENİ KONTROL MANTIĞI ---
+                    # Sadece 'live' moddaysak ve durum 'UNHEALTHY' ise dur.
+                    # 'PUBLIC_ONLY' durumu 'live' mod için bir hata değildir.
+                    if health_result['status'] == 'UNHEALTHY':
+                        logger.critical(f"❌ API for '{name}' is UNHEALTHY: {health_result['reason']}. Aborting launch.")
                         return 1
+                    elif health_result['status'] == 'PUBLIC_ONLY' and self.mode == 'live' and not self.dry_run:
+                        logger.warning(f"⚠️ API for '{name}' is in PUBLIC_ONLY mode. Live trading may fail.")
+                    # --- YENİ KONTROL SONU ---
                 else:
                     self._api_health_status[name] = {'status': 'UNKNOWN', 'reason': 'check_api_health method not found.'}
             
