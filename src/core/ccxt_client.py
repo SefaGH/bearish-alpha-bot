@@ -781,27 +781,31 @@ class CcxtClient:
     async def check_api_health(self) -> Dict[str, Any]:
         """
         Performs a quick health check of the API connection and credentials.
+        (GÜNCELLENDİ: 'self.client' yerine doğrudan 'self' kullanıyor)
 
         Returns:
             A dictionary with 'status' ('HEALTHY' or 'UNHEALTHY') and 'reason'.
         """
-        if not self.client:
-            return {'status': 'UNHEALTHY', 'reason': 'CCXT client not initialized.'}
-
+        # self.client yerine doğrudan self'in varlığını kontrol edebiliriz,
+        # ama zaten bu metodun içindeysek self vardır. Bu yüzden ilk kontrol gereksiz.
         try:
-            # fetch_balance() is a good lightweight check for authenticated endpoints.
-            # It confirms that the API keys are valid and the connection is working.
-            await self.client.fetch_balance()
+            # fetch_balance(), hem kimlik doğrulamayı hem de bağlantıyı test eden
+            # hafif bir API çağrısıdır.
+            # self.client.fetch_balance() YERİNE self.fetch_balance() KULLANIYORUZ.
+            await self.fetch_balance()
             logger.info(f"✅ API Health Check for '{self.name}' passed (via fetch_balance).")
             return {'status': 'HEALTHY', 'reason': 'Authenticated connection confirmed.'}
 
         except ccxt.AuthenticationError as e:
-            logger.error(f"❌ API Health Check for '{self.name}' FAILED: Invalid API keys. {e}")
-            return {'status': 'UNHEALTHY', 'reason': f'AuthenticationError: {e}'}
+            # API anahtarları olmadan çalıştırıldığında bu hata normaldir.
+            # Bu durumu bir "hata" değil, bir "durum" olarak ele alalım.
+            logger.warning(f"ℹ️ API Health Check for '{self.name}': No valid credentials provided. {e}")
+            return {'status': 'PUBLIC_ONLY', 'reason': f'AuthenticationError: {e}'}
         except (ccxt.NetworkError, ccxt.ExchangeNotAvailable) as e:
             logger.error(f"❌ API Health Check for '{self.name}' FAILED: Network or exchange issue. {e}")
             return {'status': 'UNHEALTHY', 'reason': f'NetworkError: {e}'}
         except Exception as e:
+            # Diğer tüm beklenmedik hatalar
             logger.error(f"❌ API Health Check for '{self.name}' FAILED with an unexpected error: {e}", exc_info=True)
             return {'status': 'UNHEALTHY', 'reason': f'Unexpected error: {e}'}
     
