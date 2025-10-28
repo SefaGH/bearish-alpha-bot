@@ -781,25 +781,22 @@ class CcxtClient:
     async def check_api_health(self) -> Dict[str, Any]:
         """
         Performs a quick health check of the API connection and credentials.
-        (GÜNCELLENDİ: 'self.client' yerine doğrudan 'self' kullanıyor)
-
-        Returns:
-            A dictionary with 'status' ('HEALTHY' or 'UNHEALTHY') and 'reason'.
+        (NİHAİ DÜZELTME: ccxt nesnesine doğru şekilde 'self.ex' üzerinden erişiyor)
         """
-        # self.client yerine doğrudan self'in varlığını kontrol edebiliriz,
-        # ama zaten bu metodun içindeysek self vardır. Bu yüzden ilk kontrol gereksiz.
+        # CcxtClient'ın içindeki asıl ccxt borsa nesnesinin varlığını kontrol et.
+        if not hasattr(self, 'ex'):
+            return {'status': 'UNHEALTHY', 'reason': 'Internal CCXT exchange object (self.ex) not found.'}
+
         try:
-            # fetch_balance(), hem kimlik doğrulamayı hem de bağlantıyı test eden
-            # hafif bir API çağrısıdır.
-            # self.client.fetch_balance() YERİNE self.fetch_balance() KULLANIYORUZ.
-            await self.fetch_balance()
+            # DOĞRU ÇAĞRI: self.ex üzerinden ccxt'nin kendi metodunu çağır.
+            # Bu, 'CcxtClient' sınıfının bir sarmalayıcı (wrapper) olduğu gerçeğine uyar.
+            await self.ex.fetch_balance()
             logger.info(f"✅ API Health Check for '{self.name}' passed (via fetch_balance).")
             return {'status': 'HEALTHY', 'reason': 'Authenticated connection confirmed.'}
 
         except ccxt.AuthenticationError as e:
-            # API anahtarları olmadan çalıştırıldığında bu hata normaldir.
-            # Bu durumu bir "hata" değil, bir "durum" olarak ele alalım.
-            logger.warning(f"ℹ️ API Health Check for '{self.name}': No valid credentials provided. {e}")
+            # API anahtarları olmadan çalıştırıldığında bu normal bir durumdur.
+            logger.warning(f"ℹ️ API Health Check for '{self.name}': No valid credentials provided. This is expected in public/dry-run mode.")
             return {'status': 'PUBLIC_ONLY', 'reason': f'AuthenticationError: {e}'}
         except (ccxt.NetworkError, ccxt.ExchangeNotAvailable) as e:
             logger.error(f"❌ API Health Check for '{self.name}' FAILED: Network or exchange issue. {e}")
