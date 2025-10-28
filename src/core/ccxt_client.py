@@ -40,9 +40,7 @@ class CcxtClient:
             logger.info(f"KuCoin {ex_name} initialized in PRODUCTION mode")
         
         self.ex = ex_cls(params)
-        # --- DÜZELTME 1: self.exchange takma adını burada oluşturuyoruz. ---
         self.exchange = self.ex
-        # --- DÜZELTME 1 SONU ---
         self.name = ex_name
         
         # Initialize caches for KuCoin Futures integration
@@ -53,8 +51,12 @@ class CcxtClient:
         # Lazy loading for market data
         self._markets_cache = None
         self._markets_cache_time = 0
-        self._required_symbols_only = set()  # Sadece ihtiyaç duyulan semboller
+        self._required_symbols_only = set()
         self._skip_market_load = False
+
+        # --- NIHAI DÜZELTME: `self.symbols` değişkenini burada başlatıyoruz. ---
+        self.symbols: List[str] = []
+        # --- NIHAI DÜZELTME SONU ---
         
         # Add BingX authenticator
         if ex_name == 'bingx' and creds:
@@ -75,9 +77,7 @@ class CcxtClient:
         """
         self._required_symbols_only = set(symbols)
         self._skip_market_load = True
-        # --- DÜZELTME 2: `async def load_markets` metodunun ihtiyaç duyduğu `self.symbols`'ı ayarla ---
         self.symbols = list(symbols)
-        # --- DÜZELTME 2 SONU ---
         logger.info(f"[{self.name}] Will only work with {len(symbols)} symbols (no market load)")
 
     def ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> List[List]:
@@ -231,7 +231,7 @@ class CcxtClient:
             except Exception as e:
                 logger.error(f"[{self.exchange.id}] Failed to create minimal market structure: {e}. Falling back to full load.")
                 # Eğer bu işlem başarısız olursa, güvenli moda dön ve her şeyi yükle.
-                return await self._execute_ccxt_method('load_markets', reload, params)
+                return await self.ex.load_markets(params=params)
 
         else:
             # Standart davranış: tüm piyasaları yükle
@@ -240,7 +240,7 @@ class CcxtClient:
             else:
                 logger.info(f"[{self.exchange.id}] Loading all available markets...")
             
-            return await self._execute_ccxt_method('load_markets', reload, params)
+            return await self.ex.load_markets(params=params)
 
     def validate_and_get_symbol(self, requested_symbol="BTC/USDT"):
         """
