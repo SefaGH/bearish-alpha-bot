@@ -2,11 +2,10 @@ import asyncio
 import os
 import sys
 import pandas as pd
-import numpy as np # HATA DÜZELTMESİ: Eksik numpy importu eklendi.
+import numpy as np
+import logging  # HATA DÜZELTMESİ: Eksik 'logging' importu eklendi.
 
 # --- YOL AYARLAMASI (IMPORT HATALARINI ÖNLER) ---
-# Bu blok, betiğin projenin ana dizinini tanımasını sağlar.
-# Bu sayede 'src' gibi klasörlerden import işlemi başarılı olur.
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 # --- YOL AYARLAMASI SONU ---
@@ -23,7 +22,6 @@ from src.ml.price_predictor import (
     LSTMPricePredictor,
     TransformerPricePredictor
 )
-# Bu dosyanın var olduğundan emin olun -> src/ml/label_generator.py
 from src.ml.label_generator import generate_regime_labels
 
 # Logger kurulumu
@@ -53,7 +51,6 @@ async def main():
         for timeframe in TIMEFRAMES_TO_TRAIN:
             logger.info(f"\n--- Veri Çekiliyor: {symbol} [{timeframe}] ---")
             try:
-                # DÜZELTME: ohlcv asenkron bir fonksiyon olduğu için 'await' kullanıldı.
                 ohlcv_df = await exchange_client.ohlcv(symbol, timeframe=timeframe, limit=CANDLE_LIMIT, add_indicators=True)
                 if ohlcv_df is None or ohlcv_df.empty:
                     logger.warning(f"Veri çekilemedi. Atlanıyor.")
@@ -75,7 +72,6 @@ async def main():
         regime_labels = generate_regime_labels(regime_training_data)
         features_df = feature_engine.extract_features(regime_training_data)
         
-        # Sonsuz değerleri NaN ile değiştir ve temizle
         features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
         features_df.dropna(inplace=True)
         
@@ -83,7 +79,6 @@ async def main():
 
         if X.shape[0] > 100:
             regime_trainer = RegimeModelTrainer()
-            # train_ensemble_models metodu artık kaydetme işlemini de içeriyor.
             training_results = regime_trainer.train_ensemble_models(X, y)
             logger.info(f"✅ Rejim modelleri eğitildi ve kaydedildi.")
         else:
@@ -96,12 +91,10 @@ async def main():
     logger.info("📈 ADIM 2: FİYAT TAHMİN MODELLERİ EĞİTİLİYOR 📈")
     logger.info("="*60)
     
-    # HATA DÜZELTMESİ: Boş veri setine karşı koruma eklendi.
     symbol_data_values = list(training_data[SYMBOLS_TO_TRAIN[0]].values())
     if not symbol_data_values:
         logger.error("Fiyat modeli eğitimi için hiç veri bulunamadı. Bu adım atlanıyor.")
     else:
-        # Girdi boyutunu dinamik olarak belirle
         sample_features = feature_engine.extract_features(symbol_data_values[0])
         input_feature_size = sample_features.shape[1]
         logger.info(f"Fiyat tahmin modelleri için dinamik girdi boyutu: {input_feature_size}")
@@ -117,7 +110,6 @@ async def main():
         multi_tf_predictor = MultiTimeframePricePredictor(timeframe_models)
         price_engine = AdvancedPricePredictionEngine(multi_tf_predictor)
         
-        # Modelleri eğit ve kaydet
         price_engine.train_and_save_models(training_data)
 
     logger.info("\n" + "="*60)
@@ -125,10 +117,8 @@ async def main():
     logger.info("="*60)
 
 if __name__ == "__main__":
-    # ML_ENABLED ortam değişkenini ayarla (eğer ayarlanmadıysa)
     if "ML_ENABLED" not in os.environ:
         os.environ["ML_ENABLED"] = "true"
         print("ML_ENABLED ortam değişkeni 'true' olarak ayarlandı.")
     
-    # Asenkron main fonksiyonunu çalıştır
     asyncio.run(main())
