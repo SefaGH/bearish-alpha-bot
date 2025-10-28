@@ -2,6 +2,7 @@ import ccxt
 import time
 import logging
 import requests
+import ccxt.async_support as ccxt
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from .bingx_authenticator import BingXAuthenticator
@@ -776,6 +777,33 @@ class CcxtClient:
         
         logger.info(f"🔐 [BINGX-API] Placing {side} order: {amount} {symbol} @ ${price}")
         return self._make_authenticated_bingx_request('/openApi/swap/v2/trade/order', params, 'POST')
+
+    async def check_api_health(self) -> Dict[str, Any]:
+        """
+        Performs a quick health check of the API connection and credentials.
+
+        Returns:
+            A dictionary with 'status' ('HEALTHY' or 'UNHEALTHY') and 'reason'.
+        """
+        if not self.client:
+            return {'status': 'UNHEALTHY', 'reason': 'CCXT client not initialized.'}
+
+        try:
+            # fetch_balance() is a good lightweight check for authenticated endpoints.
+            # It confirms that the API keys are valid and the connection is working.
+            await self.client.fetch_balance()
+            logger.info(f"✅ API Health Check for '{self.name}' passed (via fetch_balance).")
+            return {'status': 'HEALTHY', 'reason': 'Authenticated connection confirmed.'}
+
+        except ccxt.AuthenticationError as e:
+            logger.error(f"❌ API Health Check for '{self.name}' FAILED: Invalid API keys. {e}")
+            return {'status': 'UNHEALTHY', 'reason': f'AuthenticationError: {e}'}
+        except (ccxt.NetworkError, ccxt.ExchangeNotAvailable) as e:
+            logger.error(f"❌ API Health Check for '{self.name}' FAILED: Network or exchange issue. {e}")
+            return {'status': 'UNHEALTHY', 'reason': f'NetworkError: {e}'}
+        except Exception as e:
+            logger.error(f"❌ API Health Check for '{self.name}' FAILED with an unexpected error: {e}", exc_info=True)
+            return {'status': 'UNHEALTHY', 'reason': f'Unexpected error: {e}'}
     
     async def close(self):
         """
