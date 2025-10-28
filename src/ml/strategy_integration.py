@@ -379,81 +379,58 @@ class MLStrategyIntegrationManager:
         
         logger.info("ML Strategy Integration Manager initialized")
 
-    async def get_ml_context(self, symbol: str, market_data: Dict[str, Any], 
-                           indicator_validator=None) -> MLContext:
+    async def get_ml_context(self, symbol: str) -> Dict[str, Any]:
         """
-        Generate ML context for a trading decision.
-        (GÜNCELLENDİ: 'train_or_load_model' hatası düzeltildi)
+        Gathers ML-driven context for a symbol, including price predictions and regime analysis.
+        (DÜZELTİLDİ: Var olmayan train_model çağrısı kaldırıldı)
         """
-        from datetime import datetime
+        logger.info(f"🧠 [ML-CONTEXT] Gathering ML context for {symbol}...")
+        context = {
+            'is_healthy': False,
+            'prediction': None,
+            'regime': None,
+            'confidence': 0.0,
+            'reason': "Initialization failed"
+        }
+
+        # Model eğitimi mantığı (Düzeltilmiş)
+        if symbol not in self.price_engine.models:
+            logger.warning(f"🧠 [ML-CONTEXT] No pre-trained model found for {symbol}. On-demand training is not implemented.")
+            # Hata fırlatmak yerine, ML bağlamının sağlıksız olduğunu belirtip devam et.
+            context['reason'] = f"Model for {symbol} not trained."
         
-        context = MLContext(symbol=symbol, timestamp=datetime.now())
-        validation_errors = []
-
+        # Fiyat tahmini
         try:
-            price_data = market_data.get('price_data')
-            
-            if price_data is None or price_data.empty or len(price_data) < 50:
-                error_msg = f"Insufficient data for ML context: {len(price_data) if price_data is not None else 0} rows (need at least 50)"
-                validation_errors.append(error_msg)
-                context.is_healthy = False
-                context.validation_errors = validation_errors
-                logger.debug(f"🧠 [ML-CONTEXT] {symbol}: {error_msg}")
-                return context
-
-            # --- 'train_or_load_model' HATASININ ÇÖZÜMÜ ---
-            if self.price_engine and not self.price_engine.has_model_for(symbol):
-                logger.info(f"🧠 [ML-CONTEXT] No model found for {symbol}. Training/loading on-demand...")
-                try:
-                    # 'train_or_load_model' yerine, bu işlevi yerine getirecek bir metot çağırıyoruz.
-                    # price_predictor.py'de 'train_model' olduğunu varsayarak bu kodu yazıyoruz.
-                    # Eğer metot adı farklıysa, burayı ona göre güncellemelisiniz.
-                    # Bu metot asenkron ise 'await' kullanmalıyız.
-                    if hasattr(self.price_engine, 'train_model') and asyncio.iscoroutinefunction(self.price_engine.train_model):
-                        await self.price_engine.train_model(symbol=symbol, price_data=price_data)
-                    elif hasattr(self.price_engine, 'train_model'):
-                         self.price_engine.train_model(symbol=symbol, price_data=price_data)
-                    else:
-                        raise NotImplementedError("'train_model' method not found in AdvancedPricePredictionEngine")
-                        
-                    logger.info(f"🧠 [ML-CONTEXT] Successfully trained/loaded model for {symbol}.")
-                except Exception as e:
-                    logger.error(f"🧠 [ML-CONTEXT] On-demand model training failed for {symbol}: {e}", exc_info=True)
-                    validation_errors.append(f"Model training failed: {e}")
-
-            # Get regime prediction
-            if self.regime_predictor:
-                try:
-                    regime_result = await self.regime_predictor.predict_regime_transition(symbol, price_data)
-                    if regime_result:
-                        context.regime_prediction = regime_result.get('predicted_regime')
-                        context.regime_confidence = regime_result.get('confidence', 0.0)
-                except Exception as e:
-                    logger.warning(f"🧠 [ML-CONTEXT] {symbol}: Regime prediction failed - {e}")
-                    validation_errors.append(f"Regime prediction error: {str(e)}")
-
-            # Get price forecast
-            if self.price_engine and self.price_engine.has_model_for(symbol):
-                try:
-                    price_forecast = self.price_engine.get_price_forecast(symbol)
-                    if price_forecast:
-                         context.price_direction = price_forecast.get('direction')
-                         context.price_confidence = price_forecast.get('confidence')
-                         context.price_target = price_forecast.get('predicted_price')
-                except Exception as e:
-                    logger.warning(f"🧠 [ML-CONTEXT] {symbol}: Price prediction failed - {e}")
-                    validation_errors.append(f"Price prediction error: {str(e)}")
-            
-            context.is_healthy = not validation_errors and (context.regime_prediction is not None or context.price_direction is not None)
-            context.validation_errors = validation_errors
-            
-            return context
-
+            prediction = await self.price_engine.predict(symbol, horizon='1h')
+            if prediction and 'predicted_price' in prediction:
+                context['prediction'] = prediction
+                context['confidence'] = prediction.get('confidence', 0.0)
+                logger.info(f"🧠 [ML-CONTEXT] Price prediction for {symbol}: ${prediction['predicted_price']:.2f} (Confidence: {context['confidence']:.2f})")
+            else:
+                logger.warning(f"🧠 [ML-CONTEXT] Price prediction failed for {symbol}: No valid output.")
+                context['reason'] = "Prediction failed"
         except Exception as e:
-            logger.error(f"🧠 [ML-CONTEXT] {symbol}: Critical error creating ML context - {e}", exc_info=True)
-            context.is_healthy = False
-            context.validation_errors.append(f"Critical error: {str(e)}")
-            return context
+            logger.error(f"🧠 [ML-CONTEXT] Price prediction crashed for {symbol}: {e}", exc_info=True)
+            context['reason'] = f"Prediction crashed: {e}"
+
+        # Rejim analizi
+        try:
+            regime = await self.regime_predictor.predict(symbol, horizon='1h')
+            context['regime'] = regime
+            logger.info(f"🧠 [ML-CONTEXT] Market regime for {symbol}: {regime}")
+        except Exception as e:
+            logger.error(f"🧠 [ML-CONTEXT] Regime prediction crashed for {symbol}: {e}", exc_info=True)
+            context['reason'] = f"Regime prediction crashed: {e}"
+
+        # Sağlık durumu
+        if context['prediction'] and context['regime']:
+            context['is_healthy'] = True
+            context['reason'] = "ML context successfully gathered."
+        
+        if not context['is_healthy']:
+             logger.warning(f"🧠 [ML-CONTEXT] ML context for {symbol} is unhealthy. Reason: {context['reason']}")
+
+        return context
 
     def get_integration_status(self) -> Dict[str, Any]:
         """
