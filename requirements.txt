@@ -18,6 +18,7 @@ python-dotenv==1.0.1      # Environment variables (REQUIRED)
 pyyaml==6.0.2             # YAML config files (REQUIRED)
 requests==2.32.3          # HTTP requests (REQUIRED)
 pandas-ta-classic==0.3.14b1
+setuptools<81             # WORKAROUND for pandas_ta_classic pkg_resources deprecation
 
 
 # === TECHNICAL ANALYSIS ===
