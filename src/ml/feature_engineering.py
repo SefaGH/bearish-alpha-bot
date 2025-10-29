@@ -9,6 +9,12 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 import logging
 
+# pandas_ta'yı güvenli bir şekilde import et
+try:
+    import pandas_ta as ta
+except ImportError:
+    ta = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,6 +23,8 @@ class TechnicalIndicatorFeatures:
     
     def __init__(self):
         """Initialize technical indicator feature extractor."""
+        if not ta:
+            raise ImportError("pandas_ta kütüphanesi bulunamadı. Lütfen 'pip install pandas-ta-classic' ile kurun.")
         self.rsi_period = 14
         self.macd_fast = 12
         self.macd_slow = 26
@@ -37,37 +45,34 @@ class TechnicalIndicatorFeatures:
         features = pd.DataFrame(index=price_data.index)
         
         try:
-            # RSI-based features
-            if 'rsi' in price_data.columns:
-                features['rsi'] = price_data['rsi']
-                features['rsi_oversold'] = (price_data['rsi'] < 30).astype(float)
-                features['rsi_overbought'] = (price_data['rsi'] > 70).astype(float)
+            # RSI
+            features['rsi'] = ta.rsi(price_data['close'], length=self.rsi_period)
+            features['rsi_oversold'] = (features['rsi'] < 30).astype(float)
+            features['rsi_overbought'] = (features['rsi'] > 70).astype(float)
             
-            # MACD-based features
-            if 'macd' in price_data.columns and 'macd_signal' in price_data.columns:
-                features['macd'] = price_data['macd']
-                features['macd_signal'] = price_data['macd_signal']
-                features['macd_histogram'] = price_data['macd'] - price_data['macd_signal']
-                features['macd_cross'] = np.sign(features['macd_histogram'])
+            # MACD
+            macd = ta.macd(price_data['close'], fast=self.macd_fast, slow=self.macd_slow, signal=self.macd_signal)
+            features['macd'] = macd[f'MACD_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}']
+            features['macd_signal'] = macd[f'MACDs_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}']
+            features['macd_histogram'] = macd[f'MACDh_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}']
+            features['macd_cross'] = np.sign(features['macd_histogram'])
             
-            # EMA-based features
-            if 'ema_20' in price_data.columns and 'ema_50' in price_data.columns:
-                features['ema_20'] = price_data['ema_20']
-                features['ema_50'] = price_data['ema_50']
-                features['ema_cross'] = (price_data['ema_20'] > price_data['ema_50']).astype(float)
+            # EMA
+            features['ema_20'] = ta.ema(price_data['close'], length=20)
+            features['ema_50'] = ta.ema(price_data['close'], length=50)
+            features['ema_cross'] = (features['ema_20'] > features['ema_50']).astype(float)
             
-            # Bollinger Bands features
-            if 'bb_upper' in price_data.columns and 'bb_lower' in price_data.columns:
-                features['bb_upper'] = price_data['bb_upper']
-                features['bb_lower'] = price_data['bb_lower']
-                bb_range = price_data['bb_upper'] - price_data['bb_lower']
-                features['bb_width'] = bb_range / price_data['close']
-                features['bb_position'] = (price_data['close'] - price_data['bb_lower']) / bb_range
+            # Bollinger Bands
+            bbands = ta.bbands(price_data['close'], length=self.bb_period)
+            features['bb_upper'] = bbands[f'BBU_{self.bb_period}_2.0']
+            features['bb_lower'] = bbands[f'BBL_{self.bb_period}_2.0']
+            bb_range = features['bb_upper'] - features['bb_lower']
+            features['bb_width'] = bb_range / price_data['close']
+            features['bb_position'] = (price_data['close'] - features['bb_lower']) / (bb_range + 1e-10)
             
-            # ATR features
-            if 'atr' in price_data.columns:
-                features['atr'] = price_data['atr']
-                features['atr_pct'] = price_data['atr'] / price_data['close']
+            # ATR
+            features['atr'] = ta.atr(price_data['high'], price_data['low'], price_data['close'], length=self.atr_period)
+            features['atr_pct'] = features['atr'] / price_data['close']
             
         except Exception as e:
             logger.error(f"Error computing technical indicators: {e}")
@@ -182,7 +187,9 @@ class MomentumFeatures:
             
             # Trend strength
             if 'ema_20' in price_data.columns and 'ema_50' in price_data.columns:
-                features['trend_strength'] = (price_data['ema_20'] - price_data['ema_50']) / price_data['close']
+                ema20 = ta.ema(price_data['close'], length=20)
+                ema50 = ta.ema(price_data['close'], length=50)
+                features['trend_strength'] = (ema20 - ema50) / price_data['close']
             
             # Momentum regime
             mom_mean = features['roc_20'].rolling(window=50).mean()
@@ -283,6 +290,10 @@ class FeatureEngineeringPipeline:
             # Combine all features
             combined_features = self._combine_features(features)
             
+            # Replace inf/-inf with NaN and drop rows with any NaN
+            combined_features.replace([np.inf, -np.inf], np.nan, inplace=True)
+            combined_features.dropna(inplace=True)
+
             logger.info(f"Extracted {len(combined_features.columns)} features from price data")
             return combined_features
             
