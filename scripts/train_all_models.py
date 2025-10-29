@@ -105,11 +105,19 @@ async def main():
             input_feature_size = sample_features.shape[1]
             logger.info(f"Fiyat tahmin modelleri için dinamik girdi boyutu: {input_feature_size}")
 
+            # <<< KÖK NEDEN DÜZELTMESİ: Transformer için d_model çift sayı olmalı >>>
+            transformer_d_model = input_feature_size
+            if transformer_d_model % 2 != 0:
+                transformer_d_model += 1
+                logger.warning(f"Transformer d_model tek sayı ({input_feature_size}) olamaz. "
+                               f"{transformer_d_model}'e yükseltildi.")
+
             timeframe_models = {}
             for tf in TIMEFRAMES_TO_TRAIN:
                 base_models = {
                     'lstm': LSTMPricePredictor(input_size=input_feature_size),
-                    'transformer': TransformerPricePredictor(d_model=input_feature_size)
+                    # Transformer'ı düzeltilmiş d_model ile başlat
+                    'transformer': TransformerPricePredictor(d_model=transformer_d_model)
                 }
                 timeframe_models[tf] = EnsemblePricePredictor(base_models)
             
