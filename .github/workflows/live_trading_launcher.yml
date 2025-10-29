@@ -27,7 +27,7 @@ on:
       enable_ml:
         description: 'Enable ML (Installs torch, scikit-learn, etc.)'
         required: true
-        default: false
+        default: true
         type: boolean  
 
       dry_run:
