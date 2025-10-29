@@ -331,4 +331,3 @@ jobs:
           echo "| 🚀 Execute Live Trading | \`${{ needs.trade.result || 'Not Run' }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Check the workflow run artifacts for logs and data." >> $GITHUB_STEP_SUMMARY
-```
