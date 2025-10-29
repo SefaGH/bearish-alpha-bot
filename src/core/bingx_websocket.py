@@ -862,15 +862,18 @@ class BingXWebSocket:
         self.callbacks['trade'].append(callback)
     
     def get_status(self) -> Dict[str, Any]:
-        """Get WebSocket connection status."""
+        """Get comprehensive and reliable WebSocket connection status."""
+        # 'connected' durumunu doğrudan is_connected() metodundan alarak garantiliyoruz.
+        is_conn = self.is_connected()
+        
         return {
-            'connected': self.ws is not None,
+            'connected': is_conn,
             'running': self._running,
             'message_count': self.message_count,
             'last_message_time': self.last_message_time.isoformat() if self.last_message_time else None,
             'connection_uptime': (
                 (datetime.now(timezone.utc) - self.connection_start_time).total_seconds()
-                if self.connection_start_time else 0
+                if self.connection_start_time and is_conn else 0
             ),
             'subscriptions': len(self.subscriptions),
             'pending_subscriptions': len(self.pending_subscriptions),
