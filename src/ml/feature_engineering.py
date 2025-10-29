@@ -11,7 +11,8 @@ import logging
 
 # pandas_ta'yı güvenli bir şekilde import et
 try:
-    import pandas_ta as ta
+    # <<< KÖK NEDEN DÜZELTMESİ: Doğru kütüphane adı kullanıldı.
+    import pandas_ta_classic as ta
 except ImportError:
     ta = None
 
@@ -24,7 +25,7 @@ class TechnicalIndicatorFeatures:
     def __init__(self):
         """Initialize technical indicator feature extractor."""
         if not ta:
-            raise ImportError("pandas_ta kütüphanesi bulunamadı. Lütfen 'pip install pandas-ta-classic' ile kurun.")
+            raise ImportError("pandas_ta_classic kütüphanesi bulunamadı. Lütfen 'pip install pandas-ta-classic' ile kurun.")
         self.rsi_period = 14
         self.macd_fast = 12
         self.macd_slow = 26
