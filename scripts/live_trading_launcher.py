@@ -1475,6 +1475,7 @@ class LiveTradingLauncher:
         logger.info("\n[6/8] Initializing Production Trading System...")
         
         try:
+            # 1. Gerekli config'i hazırla
             if not self.config:
                 self._load_config()
     
@@ -1485,21 +1486,26 @@ class LiveTradingLauncher:
                 'max_drawdown': self.RISK_PARAMS['max_drawdown']
             }
     
+            # 2. ProductionCoordinator'ı oluştur
             from core.production_coordinator import ProductionCoordinator
             self.coordinator = ProductionCoordinator()
     
             # === YENİ VE DOĞRU BAŞLANGIÇ AKIŞI ===
-            # 1. WebSocket Optimizer'ı yapılandır.
+            # Adım A: WebSocket Optimizer'ı yapılandır.
             self.ws_optimizer.setup_from_config(self.config)
             
-            # 2. WebSocket bağlantılarını ve stream'lerini BAŞLAT.
-            ws_tasks = await self.ws_optimizer.initialize_websockets(self.exchange_clients)
-            ws_success = bool(ws_tasks)
-
+            # Adım B: WebSocket bağlantılarını ve stream'lerini BAŞLAT.
+            # Bu çağrı, bağlantı kurulana ve veri akışı başlayana kadar bekler.
+            ws_success = await self.ws_optimizer.initialize_and_subscribe(
+                self.exchange_clients,
+                self.TRADING_PAIRS
+            )
+    
             if not ws_success:
                  logger.warning("⚠️ [WS] WebSocket initialization failed - using REST API fallback")
     
-            # 3. ProductionCoordinator'ı, DIŞARIDA oluşturulan ve ÇALIŞAN WebSocket yöneticisiyle başlat.
+            # Adım C: ProductionCoordinator'ı, DIŞARIDA oluşturulan ve ÇALIŞAN WebSocket yöneticisiyle başlat.
+            # Artık coordinator'a hazır ve çalışır bir bileşen enjekte ediyoruz.
             init_result = await self.coordinator.initialize_production_system(
                 exchange_clients=self.exchange_clients,
                 portfolio_config=portfolio_config,
@@ -1516,6 +1522,10 @@ class LiveTradingLauncher:
             logger.info("✓ Production system initialized")
             logger.info(f"  Components: {init_result.get('components', [])}")
             return True
+    
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize production system: {e}", exc_info=True)
+            return False
     
         except Exception as e:
             logger.error(f"❌ Failed to initialize production system: {e}", exc_info=True)
