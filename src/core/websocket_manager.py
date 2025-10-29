@@ -11,6 +11,8 @@ import asyncio
 import logging
 from typing import Dict, List, Any, Optional, Callable
 from datetime import datetime, timezone
+
+# Bu import artık yeni oluşturduğunuz dosya sayesinde çalışacak.
 from .stream_data_collector import StreamDataCollector
 
 logger = logging.getLogger(__name__)
@@ -29,7 +31,6 @@ class WebSocketManager:
         self._tasks: List[asyncio.Task] = []
         self._running = False
         
-        # StreamDataCollector is integral to this manager.
         self._data_collector = StreamDataCollector(config=self.config)
         logger.info("StreamDataCollector initialized within WebSocketManager")
         
@@ -39,7 +40,6 @@ class WebSocketManager:
             try:
                 ex_name_lower = ex_name.lower()
                 
-                # This manager now only supports exchanges with dedicated clients.
                 if ex_name_lower == 'bingx':
                     from .websocket_client_bingx import WebSocketClient as BingxClient
                     
@@ -48,7 +48,6 @@ class WebSocketManager:
                     if isinstance(ex_data, CcxtClient) and hasattr(ex_data.ex, 'apiKey') and ex_data.ex.apiKey:
                         creds = {'apiKey': ex_data.ex.apiKey, 'secret': ex_data.ex.secret}
 
-                    # The collector is passed directly to the client.
                     self.clients[ex_name_lower] = BingxClient(ex_name_lower, creds, collector=self._data_collector)
                     logger.info(f"✅ Dedicated BingX WebSocket client initialized for '{ex_name_lower}'")
                 else:
@@ -84,7 +83,6 @@ class WebSocketManager:
                 continue
             
             for symbol in symbols:
-                # Directly use the efficient `watch_ohlcv_loop`. No wrappers needed.
                 task = asyncio.create_task(
                     client.watch_ohlcv_loop(symbol, timeframe, callback, max_iterations)
                 )
