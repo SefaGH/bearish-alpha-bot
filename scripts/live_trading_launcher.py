@@ -298,40 +298,20 @@ class OptimizedWebSocketManager:
                 logger.warning("[WS-OPT] No fixed symbols, WebSocket disabled")
                 return []
 
-            # Import WebSocketManager lazily and protect against TypeError
             try:
                 from core.websocket_manager import WebSocketManager
             except Exception:
-                # If the import fails in a test environment, return empty list gracefully
-                logger.debug("[WS-OPT] core.websocket_manager not available in test env; skipping WebSocket setup")
+                logger.debug("[WS-OPT] core.websocket_manager not available; skipping WebSocket setup")
                 return []
 
-            # Create the WebSocketManager instance inside its own try/except
             try:
                 self.ws_manager = WebSocketManager(
                     exchanges=exchange_clients,
                     config=self.config
                 )
-            except TypeError as e:
-                # Compute a safe map of config value types first, then log it.
-                try:
-                    type_map = {k: type(v).__name__ for k, v in (self.config or {}).items()}
-                except Exception:
-                    type_map = str(self.config)
-                logger.error(f"[WS-OPT] WebSocketManager init TypeError: {e}; config types: {type_map}")
-                return []
             except Exception as e:
                 logger.error(f"[WS-OPT] WebSocketManager init failed: {e}")
-                return []
-
-            # Enforce per-exchange limits
-            for ex_name in exchange_clients.keys():
-                max_streams = self.max_streams_config.get(ex_name, self.max_streams_config.get('default', 10))
-                logger.info(f"[WS-OPT] {ex_name}: Max streams set to {max_streams}")
-                try:
-                    self.ws_manager._stream_limits[ex_name] = int(max_streams)
-                except Exception:
-                    self.ws_manager._stream_limits[ex_name] = 10
+                return []         
 
             # Start streams (single path)
             tasks = await self._subscribe_optimized()
@@ -343,7 +323,7 @@ class OptimizedWebSocketManager:
             return tasks
 
         except Exception as e:
-            logger.error(f"[WS-OPT] Failed to initialize WebSocket: {e}")
+            logger.error(f"[WS-OPT] Failed to initialize WebSocket: {e}", exc_info=True)
             return []
     
     async def _subscribe_optimized(self) -> List[asyncio.Task]:
