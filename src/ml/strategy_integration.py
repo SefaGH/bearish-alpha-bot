@@ -4,6 +4,7 @@ Strategy Integration Layer for Advanced Price Prediction.
 Integrates price forecasts with existing trading strategies for AI-enhanced
 decision making and risk management.
 """
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
