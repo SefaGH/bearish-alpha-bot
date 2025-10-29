@@ -73,6 +73,33 @@ class WebSocketClient:
         self.use_rest_fallback: bool = False
         
         logger.info("BingX WebSocket client initialized with Connection Lock")
+
+    async def _ensure_connection_and_listener(self) -> bool:
+        """
+        Ensures the WebSocket is connected and the listener task is running.
+        Uses a lock to prevent race conditions from multiple stream initializations.
+        Returns True if connection is established, False otherwise.
+        """
+        async with self._connection_lock:
+            # Sadece ilk çağrıda çalıştır, diğerleri bekle ve devam et
+            if self._tasks_started:
+                return self.bingx_ws.is_connected()
+
+            # 1. Bağlantıyı kur
+            connected = await self.bingx_ws.connect()
+            if not connected:
+                logger.error("Failed to establish initial WebSocket connection in _ensure_connection.")
+                return False
+
+            # 2. Dinleyici görevini oluştur ve başlat
+            if self.bingx_ws.ws:
+                listen_task = asyncio.create_task(self.bingx_ws.listen())
+                self._tasks.append(listen_task)
+                self._tasks_started = True
+                logger.info("✅ BingX listener task started successfully.")
+                return True
+            
+            return False
     
     async def watch_ohlcv_loop(self, symbol: str, timeframe: str = '1m',
                                callback: Optional[Callable] = None,
