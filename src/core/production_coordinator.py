@@ -411,9 +411,7 @@ class ProductionCoordinator:
                     
                     # Get ML context with validation
                     ml_context = await self.ml_integration.get_ml_context(
-                        symbol=symbol,
-                        market_data=ml_market_data,
-                        indicator_validator=indicator_validator
+                        symbol=symbol
                     )
                     
                     # Log ML context status
