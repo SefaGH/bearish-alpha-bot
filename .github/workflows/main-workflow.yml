@@ -41,11 +41,6 @@ on:
         required: true
         default: false
         type: boolean
-      skip_preflight:
-        description: 'Başlangıç kontrollerini atla'
-        required: true
-        default: false
-        type: boolean
       infinite:
         description: 'Katman 1: Sürekli Mod'
         required: true
