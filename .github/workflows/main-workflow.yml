@@ -1,3 +1,9 @@
+# ======================================================================
+# Bearish Alpha Bot - Ana İş Akışı (Eğit ve İşlem Yap)
+# Bu dosya, model eğitimi ve canlı işlem adımlarını tek bir
+# akışta birleştirir, böylece canlı işlem botu her zaman en
+# güncel modelleri kullanır.
+# ======================================================================
 name: Bearish Alpha Bot - Main Workflow (Train & Trade)
 
 on:
@@ -32,6 +38,11 @@ on:
         type: boolean
       dry_run:
         description: 'Dry run modu (sadece başlangıç kontrolleri)'
+        required: true
+        default: false
+        type: boolean
+      skip_preflight:
+        description: 'Başlangıç kontrollerini atla'
         required: true
         default: false
         type: boolean
@@ -150,19 +161,27 @@ jobs:
         with:
           python-version: "3.11"
           cache: 'pip'
-      - name: Install TA-Lib and Dependencies
+
+      # DÜZELTME: TA-Lib kurulumu ayrı bir adımda
+      - name: Install TA-Lib from source
         run: |
           wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
           tar -xzvf ta-lib-0.4.0-src.tar.gz
           cd ta-lib/ && ./configure --prefix=/usr && make && sudo make install
+
+      # DÜZELTME: Bağımlılık kurulumu ayrı bir adımda
+      - name: Install Python Dependencies
+        run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
       - name: Run Dry-Run Pre-Flight Checks
         env:
           ML_ENABLED: ${{ github.event.inputs.enable_ml }}
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT' }}
           CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
         run: python scripts/live_trading_launcher.py --dry-run --paper
+
       - name: Upload Pre-Flight Logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -193,14 +212,12 @@ jobs:
           python-version: "3.11"
           cache: 'pip'
 
-      # --- EN ÖNEMLİ ADIM: MODELLERİ İNDİR ---
       - name: Download Trained Models from Artifact
         uses: actions/download-artifact@v4
         with:
-          name: trained-models # 'train' işinde yüklenen yapıtın adı
+          name: trained-models
           path: data/models/
-        # Eğer artifact bulunamazsa (örn: 'trade_only' modunda ilk çalıştırma) hata verme
-        continue-on-error: true
+        continue-on-error: true # Eğer artifact yoksa hata verme
 
       - name: Verify Downloaded Models
         run: |
@@ -212,14 +229,22 @@ jobs:
             echo "⚠️ No models downloaded from artifacts. Bot will use models from the repository if they exist."
           fi
 
-      - name: Install TA-Lib and Dependencies
+      # DÜZELTME: TA-Lib kurulumu ayrı bir adımda
+      - name: Install TA-Lib from source
         run: |
           wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
           tar -xzvf ta-lib-0.4.0-src.tar.gz
           cd ta-lib/ && ./configure --prefix=/usr && make && sudo make install
+
+      # DÜZELTME: Bağımlılık kurulumu ayrı bir adımda
+      - name: Install Python Dependencies
+        run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
       - name: Display Configuration
+        # Bu adım live_trading_launcher.yml'deki ile aynıdır.
+        # ... (içeriği aynı kalabilir) ...
         env:
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT' }}
           CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
@@ -236,8 +261,9 @@ jobs:
           echo "- Duplicate Prevention: ${DUPLICATE_PREVENTION_THRESHOLD}% / ${DUPLICATE_PREVENTION_COOLDOWN}s"
           echo "=============================================="
 
-      # Bu adım, live_trading_launcher.yml dosyanızdaki 'Launch Trading Bot' adımının birebir aynısıdır.
       - name: Launch Trading Bot
+        # Bu adım live_trading_launcher.yml dosyanızdaki ile aynıdır.
+        # Tüm env değişkenlerinizi ve run komutunuzu içerir.
         env:
           ML_ENABLED: ${{ github.event.inputs.enable_ml }}
           BINGX_KEY: ${{ secrets.BINGX_KEY }}
@@ -245,10 +271,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PYTHONUNBUFFERED: "1"
-          # GitHub Secrets/Variables'dan gelen tüm diğer yapılandırma değişkenleriniz...
+          # ... (diğer tüm env değişkenlerinizi buraya ekleyin)
           CAPITAL_USDT: ${{ vars.CAPITAL_USDT }}
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS }}
-          # ... (diğer tüm env değişkenlerinizi buraya ekleyin)
         run: |
           CMD="python scripts/live_trading_launcher.py"
           if [ "${{ github.event.inputs.mode }}" = "paper" ]; then CMD="$CMD --paper"; fi
@@ -262,7 +287,6 @@ jobs:
           echo "$CMD"
           $CMD
 
-      # Bu adımlar, live_trading_launcher.yml dosyanızdaki ile aynıdır ve log/veri toplama görevini görür.
       - name: Upload Trading Logs & Data
         if: always()
         uses: actions/upload-artifact@v4
@@ -292,7 +316,6 @@ jobs:
             MESSAGE="${STATUS_ICON} ${STATUS_TEXT}%0A%0A<b>Mode:</b> ${{ github.event.inputs.mode }}%0A<b>Run:</b> #${{ github.run_number }}"
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
               -d "chat_id=${TELEGRAM_CHAT_ID}" -d "text=${MESSAGE}" -d "parse_mode=HTML" > /dev/null || true
-          fi
           
   # =================================================================
   # İŞ 5: İŞ AKIŞI ÖZETİ OLUŞTUR
@@ -305,8 +328,9 @@ jobs:
     steps:
       - name: Generate Workflow Summary
         run: |
+          # DÜZELTME: $GITHUB_STEP_summary -> $GITHUB_STEP_SUMMARY
           echo "# 🤖 Bearish Alpha Bot - Session Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_summary
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Run Details" >> $GITHUB_STEP_SUMMARY
           echo "- **Run Mode**: \`${{ github.event.inputs.run_mode || 'Scheduled' }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Trading Mode**: \`${{ github.event.inputs.mode || 'N/A' }}\`" >> $GITHUB_STEP_SUMMARY
