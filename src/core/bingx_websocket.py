@@ -74,10 +74,10 @@ class BingXWebSocket:
         # --- Data, Callbacks, and Subscriptions ---
         self.tickers = {}
         self.orderbooks = {}
-        self.klines = defaultdict(lambda: defaultdict(list)) # Geliştirme: Veri yapısını daha tutarlı hale getir
+        self.klines = defaultdict(dict)
         self.callbacks = defaultdict(list)
-        # Geliştirme: Abonelikleri daha basit ve güvenilir bir yapıda sakla
-        self.subscriptions = {}  # dataType -> sub_message
+        self.subscriptions = {}  # dataType as key for robust resubscription
+        self.pending_subscriptions = {} # Kept for health check compatibility
         
         # Statistics
         self.message_count = 0
@@ -92,55 +92,44 @@ class BingXWebSocket:
             try:
                 if self.ws and self.ws.open:
                     await self.ws.send("Ping")
-                    logger.debug("Sent 'Ping' to BingX server.")
                 await asyncio.sleep(20)
             except websockets.exceptions.ConnectionClosed:
-                logger.warning("Connection closed during ping loop. Exiting.")
                 break
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in ping loop: {e}")
+                logger.error(f"Error in proactive ping loop: {e}")
                 await asyncio.sleep(5)
-        logger.info("Ping loop stopped.")
     
     async def connect(self) -> bool:
         """
-        Establishes and maintains a single, persistent WebSocket connection.
-        Starts listener and ping tasks only once upon successful connection.
-        This method is thread-safe.
+        Establishes a WebSocket connection. Does NOT start background tasks.
         """
-        async with self._connection_lock:
-            if self.ws and self.ws.open:
-                return True
+        if self.ws and self.ws.open:
+            return True
+        
+        try:
+            logger.info(f"Connecting to BingX WebSocket: {self.ws_url}")
+            self.ws = await websockets.connect(
+                self.ws_url,
+                ping_interval=None,  # We handle ping/pong manually
+                ping_timeout=None
+            )
             
-            try:
-                logger.info(f"Connecting to BingX WebSocket: {self.ws_url}")
-                self.ws = await websockets.connect(
-                    self.ws_url,
-                    ping_interval=None,  # We handle ping/pong manually
-                    ping_timeout=None
-                )
-                
-                self._running = True
-                self.auto_reconnect = True
-                self._reconnect_attempts = 0
-                self.connection_start_time = datetime.now(timezone.utc)
-
-                # Start background tasks only if they are not already running
-                if self._listen_task is None or self._listen_task.done():
-                    self._listen_task = asyncio.create_task(self.listen()) # Orijinal listen metodunu çağır
-                
-                if self._ping_task is None or self._ping_task.done():
-                    self._ping_task = asyncio.create_task(self._ping_loop())
-
-                logger.info("✅ BingX WebSocket connected successfully.")
-                await self._resubscribe()
-                return True
-
-            except Exception as e:
-                logger.error(f"Failed to connect to BingX WebSocket: {e}", exc_info=True)
-                return False
+            self._running = True
+            self.auto_reconnect = True
+            self._reconnect_attempts = 0
+            self.connection_start_time = datetime.now(timezone.utc)
+            logger.info("✅ BingX WebSocket connected successfully.")
+            
+            # Yeniden bağlanma sonrası abonelikleri yenile
+            await self._resubscribe()
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to connect to BingX WebSocket: {e}", exc_info=True)
+            self.ws = None
+            return False
 
     def disable_reconnect(self):
         """Permanently disables the auto-reconnect feature for graceful shutdown."""
@@ -149,7 +138,7 @@ class BingXWebSocket:
     
     async def disconnect(self):
         """Gracefully disconnects the WebSocket and stops all background tasks."""
-        logger.info("Initiating graceful disconnect...")
+        logger.info("Initiating graceful disconnect in bingx_websocket...")
         self.disable_reconnect()
         self._running = False
 
@@ -160,13 +149,15 @@ class BingXWebSocket:
                 try:
                     await task
                 except asyncio.CancelledError:
-                    pass # Görev iptali beklenen bir durumdur
+                    pass
         
         if self.ws and self.ws.open:
             await self.ws.close(code=1000, reason="Client shutdown")
         
         self.ws = None
-        logger.info("BingX WebSocket disconnected successfully.")
+        self._listen_task = None
+        self._ping_task = None
+        logger.info("BingX direct WebSocket disconnected successfully.")
     
     async def subscribe_ticker(self, symbol: str) -> bool:
         """Subscribes to a ticker stream."""
@@ -220,72 +211,46 @@ class BingXWebSocket:
             try:
                 if self.ws and self.ws.open:
                     await self.ws.send(json.dumps(sub_msg))
-                    logger.debug(f"Resent subscription for {sub_id}")
             except Exception as e:
                 logger.error(f"Failed to resubscribe to {sub_id}: {e}")
     
     async def listen(self):
-        """Listen to WebSocket messages with GZIP support"""
+        """Listen to WebSocket messages with GZIP support and manage ping task."""
+        # Ensure the proactive ping loop is running alongside this listener
+        if self._ping_task is None or self._ping_task.done():
+            self._ping_task = asyncio.create_task(self._ping_loop())
+
         while self._running:
             try:
                 message = await self.ws.recv()
                 
-                # All BingX messages are GZIP compressed
                 if isinstance(message, bytes):
-                    try:
-                        # Decompress using GzipFile (not gzip.decompress)
-                        compressed_data = gzip.GzipFile(fileobj=io.BytesIO(message), mode='rb')
-                        decompressed_data = compressed_data.read()
-                        message_str = decompressed_data.decode('utf-8')
-                        
-                        # Handle Ping/Pong
-                        if message_str == "Ping":
-                            await self.ws.send("Pong")
-                            self._last_ping_time = time.time()
-                            logger.debug("Received Ping, sent Pong")
-                            continue
-                        
-                        # Skip empty messages
-                        if not message_str or message_str.strip() == "":
-                            continue
-                        
-                        # Parse JSON
-                        try:
-                            data = json.loads(message_str)
-                            await self._process_message(data)
-                        except json.JSONDecodeError:
-                            # Not JSON, might be a status message
-                            logger.debug(f"Non-JSON message: {message_str[:100]}")
-                            
-                    except Exception as e:
-                        logger.error(f"Error processing message: {e}")
-                        
-                elif isinstance(message, str):
-                    # Should not happen with BingX, but handle anyway
-                    if message == "Ping":
+                    decompressed_data = gzip.decompress(message)
+                    message_str = decompressed_data.decode('utf-8')
+                    
+                    if message_str == "Ping":
                         await self.ws.send("Pong")
+                        self._last_ping_time = time.time()
+                        logger.debug("Received Ping, sent Pong")
                         continue
                     
-                    if message.strip():
-                        try:
-                            data = json.loads(message)
-                            await self._process_message(data)
-                        except json.JSONDecodeError:
-                            logger.debug(f"Non-JSON string: {message[:100]}")
-                            
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("WebSocket connection closed")
+                    if message_str and message_str.strip():
+                        data = json.loads(message_str)
+                        await self._process_message(data)
+
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.warning(f"WebSocket connection closed in listen loop: {e.code}")
+                # Break the loop; the responsible manager will handle reconnection.
                 break
             except asyncio.CancelledError:
+                # This is a clean shutdown.
                 break
             except Exception as e:
-                logger.error(f"Listen loop error: {e}")
-                await asyncio.sleep(1)
+                logger.error(f"Listen loop error: {e}", exc_info=True)
+                # To prevent a tight loop on persistent errors, wait before continuing
+                await asyncio.sleep(5)
         
-        # Connection lost, try to reconnect if enabled and still running
-        if self.auto_reconnect and self._running:
-            logger.info("Connection lost, attempting to reconnect...")
-            await self._reconnect()
+        logger.info("BingX listen loop has stopped.")
     
     async def _process_message(self, data: dict):
         """
