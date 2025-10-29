@@ -149,8 +149,16 @@ class MLRegimePredictor:
             # ... (LSTM ve Transformer yükleme mantığı da buraya eklenir) ...
 
             if models_loaded > 0:
-                # Ensemble modelini yeniden oluştur
-                self.models['ensemble'] = EnsembleRegimePredictor(self.models)
+                # === KÖK NEDEN ÇÖZÜMÜ BURADA ===
+                # 1. Sadece temel modelleri içeren bir kopya oluştur.
+                base_models_for_ensemble = {
+                    name: model for name, model in self.models.items() if name != 'ensemble'
+                }
+                
+                # 2. Ensemble modelini SADECE bu temel modellerle oluştur.
+                self.models['ensemble'] = EnsembleRegimePredictor(base_models_for_ensemble)
+                # === ÇÖZÜM SONU ===
+
                 self.is_trained = True
                 logger.info(f"✅ {models_loaded} regime models loaded and ensemble created.")
             else:
