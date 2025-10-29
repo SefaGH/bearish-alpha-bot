@@ -43,72 +43,110 @@ class AIEnhancedStrategyAdapter:
         self.risk_scaling_factor = 1.5
         
         logger.info("AI-Enhanced Strategy Adapter initialized")
+
+    def _normalize_signal(self, base_signal: Any) -> Dict[str, Any]:
+        """
+        Normalizes various incoming signal formats into a consistent internal schema.
+        Örnek: {'side': 'buy', 'rr_ratio': 2.5} -> {'signal': 'bullish', 'strength': 0.725}
+        """
+        # Durum 1: Sinyal zaten 'signal' anahtarı ile doğru formatta.
+        if isinstance(base_signal, dict) and 'signal' in base_signal:
+            return {
+                'signal': str(base_signal['signal']).lower(),
+                'strength': float(base_signal.get('strength', 0.6))
+            }
+
+        # Durum 2: Sinyal {'side': 'buy', ...} formatında. (En yaygın durum)
+        if isinstance(base_signal, dict) and 'side' in base_signal:
+            side = str(base_signal['side']).lower()
+            
+            if side in ('buy', 'long'):
+                signal_direction = 'bullish'
+            elif side in ('sell', 'short'):
+                signal_direction = 'bearish'
+            else:
+                signal_direction = 'neutral'
+
+            # 'strength' (güç) değerini türet. Öncelik: rr_ratio.
+            if 'rr_ratio' in base_signal:
+                rr_ratio = float(base_signal.get('rr_ratio', 1.0))
+                # rr_ratio'yu 1.0-3.0 arasından 0.5-0.8 aralığına haritala.
+                strength = 0.5 + (max(0, rr_ratio - 1.0) * 0.15)
+                strength = max(0.5, min(0.8, strength)) # Güvenli aralıkta kalmasını sağla.
+            else:
+                strength = 0.6  # Varsayılan güç.
+
+            return {'signal': signal_direction, 'strength': strength}
+
+        # Durum 3: Sinyal sadece bir string ('buy', 'sell' vb.)
+        if isinstance(base_signal, str):
+            side = base_signal.lower()
+            if side in ('buy', 'long'): signal_direction = 'bullish'
+            elif side in ('sell', 'short'): signal_direction = 'bearish'
+            else: signal_direction = 'neutral'
+            return {'signal': signal_direction, 'strength': 0.7}
+
+        # Durum 4: Tanınmayan format. Pass-through için 'neutral' yap.
+        logger.warning(f"🧠 [ML-ADAPTER] Uyumsuz sinyal formatı: {base_signal}. Pass-through için nötr kabul ediliyor.")
+        return {'signal': 'neutral', 'strength': 0.0}
     
     async def enhance_strategy_signal(self, symbol: str, base_signal: Dict[str, Any],
                                      current_price: float) -> Dict[str, Any]:
         """
         Enhance a base trading strategy signal with AI predictions.
-        (GÜNCELLENDİ: Gelen sinyal formatına karşı daha dayanıklı hale getirildi)
+        (GÜNCELLENDİ: Sinyal normalizasyonu ve pass-through mantığı eklendi)
         """
         try:
-            # --- YENİ SAVUNMACI KOD BAŞLANGICI ---
-            # Gelen base_signal'ın doğru formatta olduğundan emin ol.
-            # Eğer sadece bir string ('buy', 'sell') geldiyse, onu sözlüğe çevir.
-            if isinstance(base_signal, str):
-                processed_signal = {'signal': base_signal, 'strength': 0.7} # Varsayılan güç ata
-            elif isinstance(base_signal, dict) and 'signal' in base_signal:
-                processed_signal = base_signal
-            else:
-                logger.warning(f"🧠 [ML-ADAPTER] Uyumsuz sinyal formatı alındı: {base_signal}. Nötr olarak kabul ediliyor.")
-                processed_signal = {'signal': 'neutral', 'strength': 0.0}
-            # --- YENİ SAVUNMACI KOD SONU ---
+            # 1. Gelen sinyali standart bir formata dönüştür.
+            processed_signal = self._normalize_signal(base_signal)
 
-            logger.debug(f"🧠 [ML-ADAPTER] Enhancing signal for {symbol} at ${current_price:.2f}")
-            
-            # Get price forecast
-            # get_price_forecast'in asenkron olup olmadığını kontrol etmemiz gerekebilir.
-            # Şimdilik senkron olduğunu varsayıyoruz.
-            price_forecast = self.price_engine.get_price_forecast(symbol)
-            
+            # 2. Varsayılan 'enhancement' objesini oluştur. Başlangıçta final sinyal, işlenmiş sinyalin aynısıdır.
             enhancement = {
                 'original_signal': processed_signal['signal'],
-                'original_strength': processed_signal.get('strength', 0.5),
+                'original_strength': processed_signal.get('strength', 0.6),
                 'ai_signal': 'neutral',
                 'ai_strength': 0.0,
-                'final_signal': processed_signal['signal'],
-                'final_strength': processed_signal.get('strength', 0.5),
+                'final_signal': processed_signal['signal'], # Pass-through için başlangıç değeri
+                'final_strength': processed_signal.get('strength', 0.6), # Pass-through için başlangıç değeri
                 'confidence_adjustment': 1.0,
                 'risk_adjustment': 1.0,
                 'recommendations': []
             }
-            
-            logger.debug(f"🧠 [ML-ADAPTER] Base signal: {processed_signal['signal']} (strength: {processed_signal.get('strength', 0.5):.2f})")
-            
+
+            # 3. Fiyat tahmini almayı dene.
+            price_forecast = self.price_engine.get_price_forecast(symbol)
+
+            # 4. Fiyat tahmini yoksa, sinyali olduğu gibi geri döndür (Pass-through).
             if not price_forecast:
-                enhancement['recommendations'].append('No AI forecast available')
-                logger.debug(f"🧠 [ML-ADAPTER] No price forecast available, using base signal")
-                # Hata döndürmek yerine, base sinyali içeren enhancement'ı döndür
+                enhancement['recommendations'].append('No AI forecast available – pass-through')
+                logger.info(f"🧠 [ML-ADAPTER] {symbol} için AI tahmini yok. Sinyal olduğu gibi geçiriliyor.")
                 return enhancement
-            
+
+            # 5. Fiyat tahmini varsa, AI sinyali üret ve base sinyal ile birleştir.
             ai_signal = self.price_engine.generate_trading_signals(symbol, current_price)
             enhancement['ai_signal'] = ai_signal.get('signal', 'neutral')
-            enhancement['ai_strength'] = ai_signal.get('strength', 0.0)
-            
-            logger.debug(f"🧠 [ML-ADAPTER] AI signal: {ai_signal.get('signal', 'neutral')} (strength: {ai_signal.get('strength', 0.0):.2f})")
-            
+            enhancement['ai_strength'] = float(ai_signal.get('strength', 0.0))
+
             combined = self._combine_signals(processed_signal, ai_signal, price_forecast)
             enhancement.update(combined)
             
-            logger.debug(f"🧠 [ML-ADAPTER] Signal enhancement: {processed_signal['signal']} → {enhancement['final_signal']} (strength: {enhancement['final_strength']:.2f})")
-            
+            logger.info(f"🧠 [ML-ADAPTER] Sinyal zenginleştirildi: {enhancement['original_signal']} -> {enhancement['final_signal']}")
             return enhancement
-            
+
         except Exception as e:
-            logger.error(f"Error enhancing strategy signal: {e}", exc_info=True) # exc_info=True ekleyerek daha detaylı hata kaydı alalım
-            # Hata durumunda bile yapısal olarak doğru bir sözlük döndür
+            logger.error(f"Error enhancing strategy signal: {e}", exc_info=True)
+            # Hata durumunda sinyali veto ETME, olduğu gibi geçir (Pass-through).
+            original_signal_val = 'unknown'
+            if isinstance(base_signal, dict):
+                original_signal_val = base_signal.get('side') or base_signal.get('signal', 'unknown')
+            elif isinstance(base_signal, str):
+                original_signal_val = base_signal
+
             return {
-                'original_signal': base_signal.get('signal', 'unknown') if isinstance(base_signal, dict) else base_signal,
-                'final_signal': base_signal.get('signal', 'unknown') if isinstance(base_signal, dict) else base_signal,
+                'original_signal': original_signal_val,
+                'final_signal': original_signal_val,
+                'final_strength': float(base_signal.get('strength', 0.6)) if isinstance(base_signal, dict) else 0.6,
+                'recommendations': [f'Enhancement failed: {e}', 'Pass-through'],
                 'error': str(e)
             }
     
@@ -121,55 +159,47 @@ class AIEnhancedStrategyAdapter:
         Uses a weighted approach based on confidence and consensus.
         """
         base_strength = base_signal.get('strength', 0.5)
-        ai_strength = ai_signal['strength']
-        ai_confidence = ai_signal['confidence']
-        consensus = ai_signal['consensus']
+        ai_strength = ai_signal.get('strength', 0.0)
+        ai_confidence = ai_signal.get('confidence', 0.0)
+        consensus = ai_signal.get('consensus', 0.0)
         
         # Calculate weights
-        base_weight = 0.6  # Base strategy gets 60% weight
-        ai_weight = 0.4 * ai_confidence  # AI weight scaled by confidence
-        
+        base_weight = 0.6
+        ai_weight = 0.4 * ai_confidence
         total_weight = base_weight + ai_weight
-        
-        # Normalize weights
+        if total_weight == 0: total_weight = 1 # Prevent division by zero
+
         base_weight /= total_weight
         ai_weight /= total_weight
         
-        # Combine strengths
         combined_strength = base_strength * base_weight + ai_strength * ai_weight
         
-        # Determine final signal
         base_direction = self._signal_to_direction(base_signal['signal'])
         ai_direction = self._signal_to_direction(ai_signal['signal'])
         
-        # Check agreement
-        if base_direction == ai_direction:
+        if base_direction == ai_direction and base_direction != 0:
             final_signal = base_signal['signal']
-            final_strength = combined_strength * 1.2  # Boost when both agree
+            final_strength = combined_strength * 1.2
             recommendations = ['Base strategy and AI forecast agree - strong signal']
-        elif abs(base_direction - ai_direction) > 1:  # Opposite signals
+        elif abs(base_direction - ai_direction) > 1:
             final_signal = 'neutral'
             final_strength = 0.0
             recommendations = ['Conflicting signals - recommend caution']
-        else:  # One neutral
+        else:
             if base_direction == 0:
                 final_signal = ai_signal['signal']
                 final_strength = ai_strength * ai_confidence
             else:
                 final_signal = base_signal['signal']
-                final_strength = base_strength * 0.8  # Reduce strength
+                final_strength = base_strength * 0.8
             recommendations = ['Partial agreement - moderate confidence']
         
-        # Adjust by consensus
         if consensus < self.min_consensus:
             final_strength *= 0.7
             recommendations.append(f'Low timeframe consensus ({consensus:.2f})')
         
-        # Calculate risk adjustments
-        uncertainty = ai_signal['uncertainty']
+        uncertainty = ai_signal.get('uncertainty', 1.0)
         risk_adjustment = 1.0 / (1.0 + uncertainty * self.risk_scaling_factor)
-        
-        # Confidence adjustment
         confidence_adjustment = ai_confidence if consensus > self.min_consensus else ai_confidence * 0.8
         
         return {
@@ -205,14 +235,11 @@ class AIEnhancedStrategyAdapter:
         Returns:
             Adjusted position sizing with risk metrics
         """
-        # Apply confidence and risk adjustments
         confidence_adj = enhancement.get('confidence_adjustment', 1.0)
         risk_adj = enhancement.get('risk_adjustment', 1.0)
         
-        # Calculate adjusted position
         adjusted_position = base_position * confidence_adj * risk_adj
         
-        # Cap at 1.5x base position for safety
         max_position = base_position * 1.5
         adjusted_position = min(adjusted_position, max_position)
         
@@ -250,7 +277,6 @@ class AIEnhancedStrategyAdapter:
         uncertainty = float(np.mean(agg['uncertainty']))
         consensus = agg['consensus_strength']
         
-        # Classify risk level
         if uncertainty < 0.02 and consensus > 0.8:
             risk_level = 'low'
         elif uncertainty < 0.05 and consensus > 0.6:
@@ -299,7 +325,6 @@ class StrategyPerformanceTracker:
         
         self.metrics['total_trades'] += 1
         
-        # Update win counts
         if trade.get('strategy_type') == 'base' and trade.get('pnl', 0) > 0:
             self.metrics['base_strategy_wins'] += 1
         elif trade.get('strategy_type') == 'ai_enhanced' and trade.get('pnl', 0) > 0:
@@ -317,7 +342,6 @@ class StrategyPerformanceTracker:
         
         df = pd.DataFrame(self.trades)
         
-        # Calculate improvement
         if 'base' in df['strategy_type'].values and 'ai_enhanced' in df['strategy_type'].values:
             base_pnl = df[df['strategy_type'] == 'base']['pnl'].mean()
             ai_pnl = df[df['strategy_type'] == 'ai_enhanced']['pnl'].mean()
@@ -361,13 +385,9 @@ class MLStrategyIntegrationManager:
             price_engine: Price prediction engine. Can be None.
             regime_predictor: Regime prediction engine. Can be None.
         """
-        # --- ÇÖZÜM 1: Savunmacı Başlatma ---
-        # price_engine veya regime_predictor'ın None olabileceğini kabul ediyoruz.
-        # Bu, sistemin ML bileşenleri olmadan da çökmemesini sağlar.
         self.price_engine = price_engine
         self.regime_predictor = regime_predictor
         
-        # Adapter ve Tracker'ı sadece bağımlılıklar mevcutsa başlatıyoruz.
         self.adapter = None
         if self.price_engine and self.regime_predictor:
             self.adapter = AIEnhancedStrategyAdapter(price_engine, regime_predictor)
@@ -392,28 +412,25 @@ class MLStrategyIntegrationManager:
             'confidence': 0.0,
             'reason': "Initialization failed"
         }
-
-        # Model eğitimi mantığı (Düzeltilmiş)
-        if symbol not in self.price_engine.models:
-            logger.warning(f"🧠 [ML-CONTEXT] No pre-trained model found for {symbol}. On-demand training is not implemented.")
-            # Hata fırlatmak yerine, ML bağlamının sağlıksız olduğunu belirtip devam et.
-            context['reason'] = f"Model for {symbol} not trained."
         
-        # Fiyat tahmini
-        try:
-            prediction = await self.price_engine.predict(symbol, horizon='1h')
-            if prediction and 'predicted_price' in prediction:
-                context['prediction'] = prediction
-                context['confidence'] = prediction.get('confidence', 0.0)
-                logger.info(f"🧠 [ML-CONTEXT] Price prediction for {symbol}: ${prediction['predicted_price']:.2f} (Confidence: {context['confidence']:.2f})")
-            else:
-                logger.warning(f"🧠 [ML-CONTEXT] Price prediction failed for {symbol}: No valid output.")
-                context['reason'] = "Prediction failed"
-        except Exception as e:
-            logger.error(f"🧠 [ML-CONTEXT] Price prediction crashed for {symbol}: {e}", exc_info=True)
-            context['reason'] = f"Prediction crashed: {e}"
+        # `models` özelliğinin varlığını kontrol et
+        if not hasattr(self.price_engine, 'models') or symbol not in self.price_engine.models:
+            logger.warning(f"🧠 [ML-CONTEXT] No pre-trained model found for {symbol}. On-demand training is not implemented.")
+            context['reason'] = f"Model for {symbol} not trained."
+        else:
+            try:
+                prediction = await self.price_engine.predict(symbol, horizon='1h')
+                if prediction and 'predicted_price' in prediction:
+                    context['prediction'] = prediction
+                    context['confidence'] = prediction.get('confidence', 0.0)
+                    logger.info(f"🧠 [ML-CONTEXT] Price prediction for {symbol}: ${prediction['predicted_price']:.2f} (Confidence: {context['confidence']:.2f})")
+                else:
+                    logger.warning(f"🧠 [ML-CONTEXT] Price prediction failed for {symbol}: No valid output.")
+                    context['reason'] = "Prediction failed"
+            except Exception as e:
+                logger.error(f"🧠 [ML-CONTEXT] Price prediction crashed for {symbol}: {e}", exc_info=True)
+                context['reason'] = f"Prediction crashed: {e}"
 
-        # Rejim analizi
         try:
             regime = await self.regime_predictor.predict(symbol, horizon='1h')
             context['regime'] = regime
@@ -422,7 +439,6 @@ class MLStrategyIntegrationManager:
             logger.error(f"🧠 [ML-CONTEXT] Regime prediction crashed for {symbol}: {e}", exc_info=True)
             context['reason'] = f"Regime prediction crashed: {e}"
 
-        # Sağlık durumu
         if context['prediction'] and context['regime']:
             context['is_healthy'] = True
             context['reason'] = "ML context successfully gathered."
@@ -439,17 +455,11 @@ class MLStrategyIntegrationManager:
         Returns:
             Status information for all components.
         """
-        # --- ÇÖZÜM 4: Dayanıklı Sağlık Kontrolü ---
-        # Artık price_engine olmasa bile veya içinde model olmasa bile çökmeyecek.
         price_engine_status = {}
         if self.price_engine:
-            # get_engine_status'ı doğrudan çağırmak yerine, daha güvenli bir şekilde durum alalım.
-            # Bu, price_predictor.py'de de bir değişiklik gerektirebilir,
-            # ama şimdilik varsayımsal olarak böyle yapalım.
             try:
                 price_engine_status = self.price_engine.get_engine_status()
             except AttributeError as e:
-                # Eğer 'models' gibi bir nitelik yoksa bu hatayı yakala
                 price_engine_status = {
                     'status': 'uninitialized', 
                     'reason': f'Missing attribute, likely models not loaded: {e}',
