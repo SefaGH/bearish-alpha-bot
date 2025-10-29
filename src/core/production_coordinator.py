@@ -1057,7 +1057,6 @@ class ProductionCoordinator:
             portfolio_config = portfolio_config or {}
             config = self.config
             risk_config = config.get('risk', {})
-            self.risk_manager = RiskManager(...) # websocket_manager'ı parametre olarak alır
             
             # Merge portfolio_config with config file settings
             risk_manager_config = {
