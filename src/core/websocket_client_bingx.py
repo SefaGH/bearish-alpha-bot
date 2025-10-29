@@ -135,10 +135,13 @@ class WebSocketClient:
         return self.bingx_ws.is_connected() if self.bingx_ws else False
     
     def get_health_status(self) -> Dict[str, Any]:
-        """Gets health status from the underlying BingXWebSocket instance."""
+        """Gets a reliable health status from the underlying BingXWebSocket instance."""
         if not self.bingx_ws:
-            return {'status': 'uninitialized'}
+            return {'status': 'uninitialized', 'connected': False}
         
+        # Görevi doğrudan alt katmana devrediyoruz.
+        # Alt katmanın get_status metodu artık güvenilir olduğu için
+        # burada ek bir işlem yapmaya gerek yok.
         status = self.bingx_ws.get_status()
         status['wrapper_running'] = self._running
         return status
