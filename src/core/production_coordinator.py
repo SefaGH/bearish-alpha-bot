@@ -1177,7 +1177,7 @@ class ProductionCoordinator:
             # ========================================
             # STEP 14: INITIALIZE LIVE TRADING ENGINE
             # ========================================
-            elf.trading_engine = LiveTradingEngine(
+             self.trading_engine = LiveTradingEngine(
                 mode=mode,
                 portfolio_manager=self.portfolio_manager,
                 risk_manager=self.risk_manager,
