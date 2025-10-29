@@ -47,18 +47,18 @@ async def main():
         for timeframe in TIMEFRAMES_TO_TRAIN:
             logger.info(f"\n--- Veri Çekiliyor: {symbol} [{timeframe}] ---")
             try:
-                # ARTIK BU ÇAĞRI DOĞRU ÇALIŞACAK!
-                ohlcv_df = await exchange_client.ohlcv(symbol, timeframe=timeframe, limit=CANDLE_LIMIT, add_indicators=True)
+                # *** DEĞİŞİKLİK: add_indicators=False olarak ayarlandı ***
+                # Bu, eğitim ortamının canlı ortamı birebir taklit etmesini sağlar.
+                # Özellik mühendisliği boru hattı (pipeline) zaten tüm indikatörleri hesaplayacaktır.
+                ohlcv_df = await exchange_client.ohlcv(symbol, timeframe=timeframe, limit=CANDLE_LIMIT, add_indicators=False)
                 
                 if ohlcv_df is None or ohlcv_df.empty:
-                    logger.warning(f"Veri çekilemedi veya indikatör eklenemedi. Atlanıyor.")
+                    logger.warning(f"Veri çekilemedi. Atlanıyor.")
                     continue
-                logger.info(f"✅ {len(ohlcv_df)} adet mum verisi çekildi ve indikatörler eklendi.")
+                logger.info(f"✅ {len(ohlcv_df)} adet HAM mum verisi çekildi.")
                 training_data[symbol][timeframe] = ohlcv_df
             except Exception as e:
                 logger.error(f"❌ Veri çekme hatası: {e}", exc_info=True)
-    
-    # --- Buradan sonrası aynı kalıyor ---
     
     # 1. REJİM MODELLERİ EĞİTİMİ
     logger.info("\n" + "="*60)
@@ -66,22 +66,26 @@ async def main():
     logger.info("="*60)
     
     regime_training_tf = TIMEFRAMES_TO_TRAIN[-1]
-    # Check if symbol and timeframe data exist before accessing
     if SYMBOLS_TO_TRAIN[0] in training_data and regime_training_tf in training_data[SYMBOLS_TO_TRAIN[0]]:
         regime_training_data = training_data[SYMBOLS_TO_TRAIN[0]].get(regime_training_tf)
 
         if regime_training_data is not None and not regime_training_data.empty:
+            # Önce etiketleri oluştur (sadece ham OHLCV verisi yeterli)
             regime_labels = generate_regime_labels(regime_training_data)
+            
+            # Sonra özellikleri çıkar. Bu, canlı ortamdaki sırayla %100 aynıdır.
             features_df = feature_engine.extract_features(regime_training_data)
             
-            features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-            features_df.dropna(inplace=True)
+            # *** DEĞİŞİKLİK: Gereksiz temizleme adımları kaldırıldı ***
+            # feature_engine.extract_features() ve prepare_for_training() bu adımları zaten içeriyor.
+            # features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+            # features_df.dropna(inplace=True)
             
             X, y = feature_engine.prepare_for_training(features_df, regime_labels)
 
             if X.shape[0] > 100:
                 regime_trainer = RegimeModelTrainer()
-                training_results = regime_trainer.train_ensemble_models(X, y)
+                training_results = regime_trainer.train_ensemble_models(X, y, list(features_df.columns))
                 logger.info(f"✅ Rejim modelleri eğitildi ve kaydedildi.")
             else:
                 logger.warning("Rejim modellerini eğitmek için yeterli veri bulunamadı.")
@@ -101,11 +105,12 @@ async def main():
         if not symbol_data_values:
             logger.error("Fiyat modeli eğitimi için hiç veri bulunamadı. Bu adım atlanıyor.")
         else:
+            # Özellik çıkarma mantığı artık tutarlı olduğu için bu boyut her zaman doğru olacaktır.
             sample_features = feature_engine.extract_features(symbol_data_values[0])
             input_feature_size = sample_features.shape[1]
-            logger.info(f"Fiyat tahmin modelleri için dinamik girdi boyutu: {input_feature_size}")
+            logger.info(f"Fiyat tahmin modelleri için tutarlı girdi boyutu: {input_feature_size}")
 
-            # <<< KÖK NEDEN DÜZELTMESİ: Transformer için d_model çift sayı olmalı >>>
+            # Transformer için d_model'in çift sayı olması kontrolü devam etmeli.
             transformer_d_model = input_feature_size
             if transformer_d_model % 2 != 0:
                 transformer_d_model += 1
