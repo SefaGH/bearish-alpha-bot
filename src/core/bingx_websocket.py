@@ -880,3 +880,9 @@ class BingXWebSocket:
             'reconnect_attempts': self._reconnect_attempts,
             'last_ping': time.time() - self._last_ping_time if self._last_ping_time else None
         }
+
+    def is_connected(self) -> bool:
+        """
+        Check if the WebSocket is actively connected and open.
+        """
+        return self.ws is not None and self.ws.open
