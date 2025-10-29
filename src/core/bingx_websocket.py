@@ -97,7 +97,7 @@ class BingXWebSocket:
         """Proactively sends a 'Ping' to the server every 20 seconds to keep the connection alive."""
         while self._running:
             try:
-                if self.ws and self.ws.open:
+                if self.ws and not self.ws.closed:
                     await self.ws.send("Ping")
                 await asyncio.sleep(20)
             except websockets.exceptions.ConnectionClosed:
@@ -112,7 +112,7 @@ class BingXWebSocket:
         """
         Establishes a WebSocket connection. Does NOT start background tasks.
         """
-        if self.ws and self.ws.open:
+        if self.ws and not self.ws.closed:
             return True
         
         try:
@@ -158,7 +158,7 @@ class BingXWebSocket:
                 except asyncio.CancelledError:
                     pass
         
-        if self.ws and self.ws.open:
+        if self.ws and not self.ws.closed:
             await self.ws.close(code=1000, reason="Client shutdown")
         
         self.ws = None
@@ -178,7 +178,7 @@ class BingXWebSocket:
             sub_message = {"id": data_type, "reqType": "sub", "dataType": data_type}
             self.subscriptions[data_type] = sub_message
 
-            if self.ws and self.ws.open:
+            if self.ws and not self.ws.closed:
                 await self.ws.send(json.dumps(sub_message))
                 logger.info(f"Subscribed to ticker: {bingx_symbol}")
             return True
@@ -199,7 +199,7 @@ class BingXWebSocket:
             sub_message = {"id": data_type, "reqType": "sub", "dataType": data_type}
             self.subscriptions[data_type] = sub_message
             
-            if self.ws and self.ws.open:
+            if self.ws and not self.ws.closed:
                 await self.ws.send(json.dumps(sub_message))
                 logger.info(f"Subscribed to kline: {bingx_symbol} {interval}")
             return True
@@ -216,8 +216,8 @@ class BingXWebSocket:
         # Create a copy to avoid issues if the dict changes during iteration
         for sub_id, sub_msg in list(self.subscriptions.items()):
             try:
-                if self.ws and self.ws.open:
-                    await self.ws.send(json.dumps(sub_msg))
+                if self.ws and not self.ws.closed:
+                    await self.ws.send(json.dumps(sub_message))
             except Exception as e:
                 logger.error(f"Failed to resubscribe to {sub_id}: {e}")
     
@@ -886,6 +886,7 @@ class BingXWebSocket:
 
     def is_connected(self) -> bool:
         """
-        Check if the WebSocket is actively connected and open.
+        Check if the WebSocket is actively connected and the connection is open.
+        Compatible with recent versions of the 'websockets' library.
         """
-        return self.ws is not None and self.ws.open
+        return self.ws is not None and not self.ws.closed
