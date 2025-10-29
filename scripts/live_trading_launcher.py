@@ -1475,7 +1475,6 @@ class LiveTradingLauncher:
         logger.info("\n[6/8] Initializing Production Trading System...")
         
         try:
-            # 1. Gerekli config'i hazırla
             if not self.config:
                 self._load_config()
     
@@ -1486,29 +1485,27 @@ class LiveTradingLauncher:
                 'max_drawdown': self.RISK_PARAMS['max_drawdown']
             }
     
-            # 2. ProductionCoordinator'ı oluştur
             from core.production_coordinator import ProductionCoordinator
             self.coordinator = ProductionCoordinator()
     
-            # ÖNEMLİ: WebSocket Optimizer'ı ve içindeki manager'ı burada oluşturup coordinator'a ver.
-            # Bu, referansın kaybolmasını engeller.
+            # === YENİ VE DOĞRU BAŞLANGIÇ AKIŞI ===
+            # 1. WebSocket Optimizer'ı yapılandır.
             self.ws_optimizer.setup_from_config(self.config)
-            ws_success = await self.ws_optimizer.initialize_and_subscribe(
-                self.exchange_clients,
-                self.TRADING_PAIRS
-            )
-    
+            
+            # 2. WebSocket bağlantılarını ve stream'lerini BAŞLAT.
+            ws_tasks = await self.ws_optimizer.initialize_websockets(self.exchange_clients)
+            ws_success = bool(ws_tasks)
+
             if not ws_success:
                  logger.warning("⚠️ [WS] WebSocket initialization failed - using REST API fallback")
     
-            # 3. Tüm sistemi ProductionCoordinator üzerinden başlat.
-            # Coordinator'a, dışarıda oluşturulan WebSocketManager'ı veriyoruz.
+            # 3. ProductionCoordinator'ı, DIŞARIDA oluşturulan ve ÇALIŞAN WebSocket yöneticisiyle başlat.
             init_result = await self.coordinator.initialize_production_system(
                 exchange_clients=self.exchange_clients,
                 portfolio_config=portfolio_config,
                 mode=self.mode,
                 trading_symbols=self.TRADING_PAIRS,
-                # BU SATIR EN ÖNEMLİSİ: Dışarıda oluşturulan ve çalışan WS Manager'ı veriyoruz.
+                # ws_optimizer.ws_manager, başarılı bir şekilde başlatılmış olan yöneticiyi içerir.
                 websocket_manager=self.ws_optimizer.ws_manager if ws_success else None
             )
     
