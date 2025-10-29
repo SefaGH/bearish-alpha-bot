@@ -1255,8 +1255,6 @@ class ProductionCoordinator:
             # STEP 18: MARK AS INITIALIZED
             # ========================================
             self.is_initialized = True
-            return {
-                'success': True,
             
             components = [
                 'websocket_manager',
@@ -1277,12 +1275,28 @@ class ProductionCoordinator:
             logger.info(f"Mode: {mode}")
             logger.info("="*70)
             
+            # Tüm işlemler bittikten sonra, en sonda return ifadesi çağrılır.
+            return {
+                'success': True,
+                'components': components,
+                'is_initialized': self.is_initialized,
+                'active_symbols_count': len(self.active_symbols)
             }
-
+            
         except Exception as e:
-                logger.error(f"❌ PRODUCTION SYSTEM INITIALIZATION FAILED: {e}", exc_info=True)
-                self.is_initialized = False
-                return {'success': False, 'reason': str(e)}
+            logger.error("="*70)
+            logger.error("❌ PRODUCTION SYSTEM INITIALIZATION FAILED")
+            logger.error("="*70)
+            logger.error(f"Error: {e}", exc_info=True)
+            logger.error("="*70)
+            
+            self.is_initialized = False
+            
+            return {
+                'success': False,
+                'reason': str(e),
+                'is_initialized': False
+            }
     
     async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
                                   continuous: bool = False):
