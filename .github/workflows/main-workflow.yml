@@ -1,9 +1,3 @@
-# ======================================================================
-# Bearish Alpha Bot - Ana İş Akışı (Eğit ve İşlem Yap)
-# Bu dosya, model eğitimi ve canlı işlem adımlarını tek bir
-# akışta birleştirir, böylece canlı işlem botu her zaman en
-# güncel modelleri kullanır.
-# ======================================================================
 name: Bearish Alpha Bot - Main Workflow (Train & Trade)
 
 on:
