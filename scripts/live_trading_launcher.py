@@ -6,7 +6,6 @@ Live Trading Launcher for Bearish Alpha Bot
 """
 import sys
 import os
-from core.logger import setup_logger
 
 # Check Python version at startup (before any other imports)
 # Can be bypassed for testing by setting SKIP_PYTHON_VERSION_CHECK=1
@@ -20,6 +19,9 @@ if sys.version_info[:2] != REQUIRED_PYTHON and not os.environ.get('SKIP_PYTHON_V
         f"   See README.md for installation instructions."
     )
 
+# Add src to path BEFORE importing from core
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
 import asyncio
 import logging
 import argparse
@@ -29,8 +31,7 @@ import json
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+from core.logger import setup_logger
 
 from core.production_coordinator import ProductionCoordinator
 from core.ccxt_client import CcxtClient
@@ -48,8 +49,6 @@ from ml.strategy_integration import AIEnhancedStrategyAdapter
 from ml.strategy_optimizer import StrategyOptimizer
 from strategies.adaptive_ob import AdaptiveOversoldBounce
 from strategies.adaptive_str import AdaptiveShortTheRip
-
-from core.logger import setup_logger
 from core.indicator_validator import IndicatorValidator
 
 # Debug modu ortam değişkenine göre log seviyesini ayarla
