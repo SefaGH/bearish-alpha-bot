@@ -1277,11 +1277,6 @@ class ProductionCoordinator:
             logger.info(f"Mode: {mode}")
             logger.info("="*70)
             
-            return {
-                'success': True,
-                'components': components,
-                'is_initialized': True,
-                'active_symbols_count': len(self.active_symbols)
             }
 
         except Exception as e:
