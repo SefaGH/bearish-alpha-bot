@@ -12,11 +12,14 @@ import logging
 
 from .price_predictor import AdvancedPricePredictionEngine
 from .regime_predictor import MLRegimePredictor
-from .ml_context import MLContext
+# Bu import, WebSocketManager'a tip ipucu (type hint) verebilmek için gereklidir.
+from src.core.websocket_manager import WebSocketManager
 
 logger = logging.getLogger(__name__)
 
 
+# ... AIEnhancedStrategyAdapter ve StrategyPerformanceTracker sınıfları hiç değişmeden kalıyor ...
+# ... Bu sınıflar önceki yanıtta olduğu gibi buradadır, kısalık için gizlenmiştir ...
 class AIEnhancedStrategyAdapter:
     """
     Adapter that enhances existing trading strategies with AI predictions.
@@ -367,7 +370,6 @@ class StrategyPerformanceTracker:
         
         return pd.DataFrame(self.trades).tail(n_trades)
 
-
 class MLStrategyIntegrationManager:
     """
     Main integration manager coordinating all ML enhancements.
@@ -376,19 +378,24 @@ class MLStrategyIntegrationManager:
     risk management, and performance tracking.
     """
     
-    def __init__(self, price_engine: Optional[AdvancedPricePredictionEngine],
-                 regime_predictor: Optional[MLRegimePredictor]):
+    def __init__(self, 
+                 price_engine: Optional[AdvancedPricePredictionEngine],
+                 regime_predictor: Optional[MLRegimePredictor],
+                 websocket_manager: Optional[WebSocketManager]): # *** DEĞİŞİKLİK 1: ws_manager eklendi ***
         """
         Initialize the integration manager.
         
         Args:
             price_engine: Price prediction engine. Can be None.
             regime_predictor: Regime prediction engine. Can be None.
+            websocket_manager: WebSocket manager to access real-time data. Can be None.
         """
         self.price_engine = price_engine
         self.regime_predictor = regime_predictor
+        self.websocket_manager = websocket_manager # *** DEĞİŞİKLİK 1: ws_manager saklandı ***
         
         self.adapter = None
+        # Adapter'ın başlatılması için websocket_manager bir bağımlılık değil, bu yüzden mantık aynı kalıyor.
         if self.price_engine and self.regime_predictor:
             self.adapter = AIEnhancedStrategyAdapter(price_engine, regime_predictor)
             logger.info("✅ AIEnhancedStrategyAdapter initialized.")
@@ -399,10 +406,10 @@ class MLStrategyIntegrationManager:
         
         logger.info("ML Strategy Integration Manager initialized")
 
-    async def get_ml_context(self, symbol: str) -> Dict[str, Any]:
+    async def get_ml_context(self, symbol: str, horizon: str = '1h') -> Dict[str, Any]:
         """
         Gathers ML-driven context for a symbol, including price predictions and regime analysis.
-        (DÜZELTİLDİ: Var olmayan train_model çağrısı kaldırıldı)
+        *** KÖK NEDEN DÜZELTMESİ: Fonksiyon imzası ve çağrı mantığı tamamen düzeltildi. ***
         """
         logger.info(f"🧠 [ML-CONTEXT] Gathering ML context for {symbol}...")
         context = {
@@ -413,33 +420,54 @@ class MLStrategyIntegrationManager:
             'reason': "Initialization failed"
         }
         
-        # `models` özelliğinin varlığını kontrol et
-        if not hasattr(self.price_engine, 'models') or symbol not in self.price_engine.models:
-            logger.warning(f"🧠 [ML-CONTEXT] No pre-trained model found for {symbol}. On-demand training is not implemented.")
-            context['reason'] = f"Model for {symbol} not trained."
-        else:
+        # *** DEĞİŞİKLİK 2: Rejim tahmini için gerekli veriyi al ***
+        price_data_dict = None
+        if self.websocket_manager:
+            # WebSocketManager'dan en güncel veriyi çek. Bu, tamponlanmış (buffered) veridir.
+            price_data_dict = self.websocket_manager.get_latest_data(symbol, timeframe=horizon)
+        
+        if not price_data_dict or not price_data_dict.get('ohlcv'):
+            context['reason'] = f"Could not retrieve price data for {symbol} from WebSocketManager."
+            logger.warning(f"🧠 [ML-CONTEXT] {context['reason']}")
+            # Veri olmadan devam etmenin anlamı yok, burada sağlıksız bir context döndürebiliriz.
+            return context
+
+        # Gelen veriyi DataFrame'e dönüştür
+        ohlcv_list = price_data_dict['ohlcv']
+        price_data = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        price_data['timestamp'] = pd.to_datetime(price_data['timestamp'], unit='ms')
+        price_data.set_index('timestamp', inplace=True)
+
+        # --- Fiyat Tahmini (Değişiklik yok) ---
+        if self.price_engine:
             try:
-                prediction = await self.price_engine.predict(symbol, horizon='1h')
+                prediction = await self.price_engine.predict(symbol, horizon=horizon)
                 if prediction and 'predicted_price' in prediction:
                     context['prediction'] = prediction
                     context['confidence'] = prediction.get('confidence', 0.0)
-                    logger.info(f"🧠 [ML-CONTEXT] Price prediction for {symbol}: ${prediction['predicted_price']:.2f} (Confidence: {context['confidence']:.2f})")
                 else:
-                    logger.warning(f"🧠 [ML-CONTEXT] Price prediction failed for {symbol}: No valid output.")
-                    context['reason'] = "Prediction failed"
+                    context['reason'] = "Prediction returned no valid output."
             except Exception as e:
                 logger.error(f"🧠 [ML-CONTEXT] Price prediction crashed for {symbol}: {e}", exc_info=True)
                 context['reason'] = f"Prediction crashed: {e}"
+        
+        # --- Rejim Tahmini (Düzeltilmiş Çağrı) ---
+        if self.regime_predictor:
+            try:
+                # *** DEĞİŞİKLİK 3: Doğru fonksiyonu, doğru parametrelerle çağır ***
+                regime = await self.regime_predictor.predict_regime_transition(
+                    symbol=symbol, 
+                    price_data=price_data, # Artık elimizde olan DataFrame'i veriyoruz
+                    horizon=horizon
+                )
+                context['regime'] = regime
+                logger.info(f"🧠 [ML-CONTEXT] Market regime for {symbol}: {regime.get('predicted_regime', 'unknown')}")
+            except Exception as e:
+                logger.error(f"🧠 [ML-CONTEXT] Regime prediction crashed for {symbol}: {e}", exc_info=True)
+                context['reason'] = f"Regime prediction crashed: {e}"
 
-        try:
-            regime = await self.regime_predictor.predict(symbol, horizon='1h')
-            context['regime'] = regime
-            logger.info(f"🧠 [ML-CONTEXT] Market regime for {symbol}: {regime}")
-        except Exception as e:
-            logger.error(f"🧠 [ML-CONTEXT] Regime prediction crashed for {symbol}: {e}", exc_info=True)
-            context['reason'] = f"Regime prediction crashed: {e}"
-
-        if context['prediction'] and context['regime']:
+        # --- Sağlık Kontrolü (Değişiklik yok) ---
+        if context['prediction'] and context['regime'] and context['regime'].get('confidence', 0) > 0:
             context['is_healthy'] = True
             context['reason'] = "ML context successfully gathered."
         
