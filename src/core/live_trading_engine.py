@@ -858,25 +858,23 @@ class LiveTradingEngine:
                 if hasattr(client, 'fetch_ohlcv_bulk') and limit > 500:
                     # Use bulk fetch for large requests
                     logger.debug(f"Using bulk fetch for {symbol} {timeframe} ({limit} candles)")
-                    data = client.fetch_ohlcv_bulk(symbol, timeframe=timeframe, target_limit=limit)
+                    # Assuming fetch_ohlcv_bulk is synchronous and returns a list, not DataFrame
+                    data_list = client.fetch_ohlcv_bulk(symbol, timeframe=timeframe, target_limit=limit)
+                    if data_list:
+                        # Convert list to DataFrame here
+                        df = pd.DataFrame(data_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                        df.set_index('timestamp', inplace=True)
+                        return df
                 elif hasattr(client, 'ohlcv'):
-                    # Use standard method
-                    data = client.ohlcv(symbol, timeframe, limit=limit)
+                    # Use standard method, which is async and returns a DataFrame
+                    df = await client.ohlcv(symbol, timeframe, limit=limit)
+                    if df is not None and not df.empty:
+                        logger.debug(f"✅ Fetched {len(df)} candles for {symbol} {timeframe} from {exchange_name}")
+                        return df
                 else:
                     logger.warning(f"Exchange client {exchange_name} does not support OHLCV fetching")
                     continue
-                
-                if data and len(data) > 0:
-                    # Convert to DataFrame
-                    df = pd.DataFrame(
-                        data,
-                        columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
-                    )
-                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                    df.set_index('timestamp', inplace=True)
-                    
-                    logger.debug(f"✅ Fetched {len(df)} candles for {symbol} {timeframe} from {exchange_name}")
-                    return df
                     
             except Exception as e:
                 logger.debug(f"Could not fetch {symbol} {timeframe} from {exchange_name}: {e}")
@@ -888,52 +886,59 @@ class LiveTradingEngine:
     async def _get_current_price(self, symbol: str) -> Optional[float]:
         """
         Get current price with an intelligent WebSocket-first approach.
-        This new version is more robust and avoids relying on the broken fetch_ticker.
-        
-        Args:
-            symbol: Trading symbol (e.g., 'BTC/USDT')
-            
-        Returns:
-            Current price or None if unavailable.
+        *** KÖK NEDEN DÜZELTMESİ: Bu metot, split hatasını önlemek için sağlamlaştırıldı. ***
         """
-        # 1. ADIM: WebSocket Yöneticisinin varlığını kontrol et
+        # 1. ADIM: WebSocket Yöneticisinin varlığını ve hazır olup olmadığını kontrol et
         if not (self.market_data_pipeline and self.market_data_pipeline.websocket_manager):
             logger.warning("MarketDataPipeline or WebSocketManager not available for price fetching.")
-            return None
+            return await self._get_current_price_from_rest(symbol)
 
-        # 2. ADIM: En kısa zaman diliminden başlayarak mevcut tüm zaman dilimlerini dene
-        # Botun abone olduğu zaman dilimlerini doğrudan konfigürasyondan alalım.
-        timeframes_str = self.config.get('websocket', {}).get('stream_timeframes', '1m,5m,15m,30m,1h,4h')
-        available_timeframes = [tf.strip() for tf in timeframes_str.split(',')]
+        # 2. ADIM: WebSocket'ten fiyat almayı dene (en hızlı yöntem)
+        try:
+            timeframes_str = self.config.get('websocket', {}).get('stream_timeframes', '1m,5m,15m,30m,1h,4h')
+            available_timeframes = [tf.strip() for tf in timeframes_str.split(',')]
 
-        for tf in available_timeframes:
-            try:
-                # WebSocket yöneticisinden en son veriyi iste
+            for tf in available_timeframes:
                 ws_data = self.market_data_pipeline.websocket_manager.get_latest_data(symbol, tf)
                 
-                # Gelen verinin içinde OHLCV var mı ve dolu mu diye kontrol et
-                if ws_data and ws_data.get('ohlcv'):
+                if ws_data and isinstance(ws_data, dict) and ws_data.get('ohlcv'):
                     latest_candle = ws_data['ohlcv'][-1]
-                    price = float(latest_candle[4])  # 4. indeks her zaman kapanış fiyatıdır (close)
-                    
-                    if price > 0:
-                        logger.debug(f"✅ Price for {symbol} found via WebSocket on timeframe '{tf}': ${price}")
-                        return price
-                        
-            except Exception as e:
-                logger.debug(f"Failed to get price from WebSocket for {symbol} on timeframe '{tf}': {e}")
-                continue # Bir sonraki zaman dilimini dene
+                    if isinstance(latest_candle, list) and len(latest_candle) >= 5:
+                        price = float(latest_candle[4])
+                        if price > 0:
+                            logger.debug(f"✅ Price for {symbol} found via WebSocket on timeframe '{tf}': ${price}")
+                            self.ws_stats['websocket_fetches'] += 1
+                            self.ws_stats['consecutive_ws_failures'] = 0
+                            return price
+        except Exception as e:
+            logger.debug(f"Failed to get price from WebSocket for {symbol}: {e}")
+            self.ws_stats['websocket_failures'] += 1
+            self.ws_stats['consecutive_ws_failures'] += 1
+        
+        # 3. ADIM: WebSocket başarısız olursa, REST API'ye düş (fallback)
+        logger.warning(f"⚠️ WebSocket price fetch failed for {symbol}. Falling back to REST API.")
+        return await self._get_current_price_from_rest(symbol)
 
-        # 3. ADIM: Tüm denemeler başarısız olursa uyarı ver
-        # Artık REST API'ye düşmüyoruz çünkü onun bozuk olduğunu biliyoruz.
-        logger.warning(f"❌ Could not fetch price for {symbol} from any available WebSocket stream {available_timeframes}.")
+    async def _get_current_price_from_rest(self, symbol: str) -> Optional[float]:
+        """Helper method to fetch price via REST API as a fallback."""
+        try:
+            df = await self._fetch_ohlcv(symbol, timeframe='1m', limit=1)
+            if df is not None and not df.empty:
+                price = df['close'].iloc[-1]
+                if price > 0:
+                    logger.debug(f"✅ Price for {symbol} found via REST API: ${price}")
+                    self.ws_stats['rest_fetches'] += 1
+                    return float(price)
+        except Exception as e:
+            logger.error(f"❌ REST API price fetch also failed for {symbol}: {e}", exc_info=True)
+        
+        logger.error(f"❌ CRITICAL: Could not fetch price for {symbol} from any source.")
         return None
     
     async def _position_monitoring_loop(self):
         """Enhanced position monitoring with real-time P&L and exit checking."""
         logger.info("Position monitoring loop started")
         
-        # Reduce interval to 10 seconds for faster response
         interval = 10
         
         try:
@@ -944,80 +949,65 @@ class LiveTradingEngine:
                 
                 logger.debug(f"Monitoring {len(self.active_positions)} active positions")
                 
-                # Track summary statistics
                 total_unrealized_pnl = 0.0
                 positions_closed_count = 0
                 
                 for position_id in list(self.active_positions.keys()):
                     try:
                         position = self.active_positions.get(position_id)
-                        if not position:
+                        if not position or not isinstance(position, dict):
+                            logger.warning(f"Invalid or missing position data for ID: {position_id}. Removing from active list.")
+                            self.active_positions.pop(position_id, None)
                             continue
                         
                         symbol = position.get('symbol')
+                        # *** KÖK NEDEN DÜZELTMESİ: Savunmacı Kodlama ***
+                        if not isinstance(symbol, str):
+                            logger.error(f"CRITICAL: Position {position_id} has a non-string symbol: {symbol} (type: {type(symbol)}). Skipping.")
+                            continue
+
                         entry_price = position.get('entry_price', 0)
                         
-                        # Fetch current price
                         current_price = await self._get_current_price(symbol)
                         
                         if current_price is None or current_price <= 0:
-                            logger.warning(f"Invalid price for {symbol}, skipping")
+                            logger.warning(f"Invalid or unavailable price for {symbol}, skipping P&L update for position {position_id}.")
                             continue
                         
-                        # Update P&L
-                        pnl_result = await self.position_manager.monitor_position_pnl(
-                            position_id,
-                            current_price
-                        )
+                        pnl_result = await self.position_manager.monitor_position_pnl(position_id, current_price)
                         
                         if pnl_result.get('success'):
                             unrealized_pnl = pnl_result.get('unrealized_pnl', 0)
                             pnl_pct = pnl_result.get('pnl_pct', 0)
                             
-                            # Enhanced P&L logging
                             logger.info(
-                                f"💰 [P&L-UPDATE] {position_id}\n"
-                                f"   Symbol: {symbol}\n"
-                                f"   Entry: ${entry_price:.2f}\n"
-                                f"   Current: ${current_price:.2f}\n"
-                                f"   Unrealized P&L: ${unrealized_pnl:.2f} ({pnl_pct:+.2f}%)"
+                                f"💰 [P&L-UPDATE] {position_id} | {symbol} | Entry: ${entry_price:.2f}, "
+                                f"Current: ${current_price:.2f} | P&L: ${unrealized_pnl:.2f} ({pnl_pct:+.2f}%)"
                             )
-                            
-                            # Track total unrealized P&L
                             total_unrealized_pnl += unrealized_pnl
                         
-                        # Check exit conditions
                         exit_check = await self.position_manager.manage_position_exits(position_id)
                         
                         if exit_check.get('should_exit'):
                             exit_reason = exit_check.get('exit_reason')
-                            exit_emoji = '🛑' if exit_reason == 'stop_loss' else '🎯'
+                            exit_emoji = '🛑' if 'stop_loss' in exit_reason else '🎯'
                             
-                            # Enhanced exit logging
                             logger.warning(
-                                f"{exit_emoji} [EXIT-SIGNAL] {position_id}\n"
-                                f"   Symbol: {symbol}\n"
-                                f"   Reason: {exit_reason.upper()}\n"
-                                f"   Entry: ${entry_price:.2f}\n"
-                                f"   Exit: ${current_price:.2f}\n"
-                                f"   P&L: ${unrealized_pnl:.2f} ({pnl_pct:+.2f}%)"
+                                f"{exit_emoji} [EXIT-SIGNAL] {position_id} for {symbol} due to {exit_reason.upper()}"
                             )
                             
-                            # Execute exit
                             await self._execute_position_exit(position_id, exit_check)
                             positions_closed_count += 1
                     
                     except Exception as e:
-                        logger.error(f"Error monitoring position {position_id}: {e}")
+                        logger.error(f"Error monitoring position {position_id}: {e}", exc_info=True)
                         continue
                 
-                # Summary logging at end of monitoring loop
                 if self.active_positions:
                     logger.info(
-                        f"📊 [MONITORING-SUMMARY]\n"
-                        f"   Active Positions: {len(self.active_positions)}\n"
-                        f"   Total Unrealized P&L: ${total_unrealized_pnl:.2f}\n"
-                        f"   Positions Closed This Cycle: {positions_closed_count}"
+                        f"📊 [MONITORING-SUMMARY] Active: {len(self.active_positions)}, "
+                        f"Total Unrealized P&L: ${total_unrealized_pnl:+.2f}, "
+                        f"Closed this cycle: {positions_closed_count}"
                     )
                 
                 await asyncio.sleep(interval)
@@ -1035,8 +1025,6 @@ class LiveTradingEngine:
                     if self.active_orders:
                         logger.debug(f"Managing {len(self.active_orders)} active orders")
                     
-                    # Monitor active orders for timeouts, partial fills, etc.
-                    # Implementation would check order status and take action
                     await asyncio.sleep(5)
                     
                 except Exception as e:
@@ -1050,13 +1038,11 @@ class LiveTradingEngine:
         """Background task for performance reporting."""
         logger.info("Performance reporting loop started")
         
-        # Default interval if not in config
         interval = self.config.get('monitoring', {}).get('performance_report_interval', 3600)
         
         try:
             while self.state == EngineState.RUNNING:
                 try:
-                    # Generate performance report
                     report = self.execution_analytics.generate_execution_report('1h')
                     
                     if report['success']:
@@ -1084,13 +1070,11 @@ class LiveTradingEngine:
                 logger.warning(f"Position not found: {position_id}")
                 return
             
-            # Log exit details
             logger.info(f"  Symbol: {position.get('symbol')}")
             logger.info(f"  Side: {position.get('side')}")
             logger.info(f"  Amount: {position.get('amount')}")
             logger.info(f"  Exit reason: {exit_signal.get('exit_reason')}")
             
-            # Create exit order
             exit_order = {
                 'symbol': position['symbol'],
                 'side': 'sell' if position['side'] == 'long' else 'buy',
@@ -1098,11 +1082,9 @@ class LiveTradingEngine:
                 'exchange': position['exchange']
             }
             
-            # Execute exit order
             execution_result = await self.order_manager.place_order(exit_order, 'market')
             
             if execution_result.get('success'):
-                # Close position
                 exit_price = execution_result.get('avg_price', 0)
                 close_result = await self.position_manager.close_position(
                     position_id,
@@ -1115,7 +1097,6 @@ class LiveTradingEngine:
                     logger.info(f"   Exit price: ${exit_price:.2f}")
                     logger.info(f"   P&L: {close_result.get('pnl', 0):.2%}")
                     
-                    # Remove from active positions
                     if position_id in self.active_positions:
                         del self.active_positions[position_id]
                 else:
@@ -1129,29 +1110,25 @@ class LiveTradingEngine:
     async def _initialize_risk_management(self) -> Dict[str, Any]:
         """Initialize risk management systems."""
         try:
-            # Risk manager should already be initialized
             if self.risk_manager:
                 logger.info("  Risk manager initialized")
                 return {'success': True}
             else:
                 logger.warning("  No risk manager provided")
-                return {'success': True}  # Allow running without risk manager in paper mode
+                return {'success': True}
         except Exception as e:
             return {'success': False, 'reason': str(e)}
     
     async def _initialize_portfolio_management(self) -> Dict[str, Any]:
         """Initialize portfolio management systems."""
         try:
-            # Portfolio manager should already be initialized
             if self.portfolio_manager:
                 logger.info("  Portfolio manager initialized")
                 
-                # Log registered strategies if any
                 if hasattr(self.portfolio_manager, 'strategies'):
                     strategies = self.portfolio_manager.strategies
                     logger.info(f"  Registered strategies: {list(strategies.keys())}")
                     
-                    # Check for adaptive strategies
                     adaptive_count = sum(1 for name in strategies.keys() if 'adaptive' in name.lower())
                     if adaptive_count > 0:
                         logger.info(f"  🎯 Adaptive strategies: {adaptive_count}")
@@ -1159,7 +1136,7 @@ class LiveTradingEngine:
                 return {'success': True}
             else:
                 logger.warning("  No portfolio manager provided")
-                return {'success': True}  # Allow running without portfolio manager in paper mode
+                return {'success': True}
         except Exception as e:
             return {'success': False, 'reason': str(e)}
     
@@ -1171,9 +1148,9 @@ class LiveTradingEngine:
             'active_positions': len(self.active_positions),
             'active_orders': len(self.active_orders),
             'total_trades': len(self.trade_history),
-            'signals_received': self._signal_count,  # Fixed: was 'total_signals', now correctly named
-            'signals_executed': self._executed_count,  # Track executed signals
-            'total_signals': self._signal_count,  # Keep for backward compatibility
+            'signals_received': self._signal_count,
+            'signals_executed': self._executed_count,
+            'total_signals': self._signal_count,
             'last_signal_time': self._last_signal_time.isoformat() if self._last_signal_time else None,
             'active_tasks': len([t for t in self.tasks if not t.done()]),
             'signal_queue_size': self.signal_queue.qsize(),
@@ -1184,7 +1161,6 @@ class LiveTradingEngine:
             }
         }
         
-        # Add manager stats if available
         if self.order_manager and hasattr(self.order_manager, 'get_execution_statistics'):
             status['execution_stats'] = self.order_manager.get_execution_statistics()
             
