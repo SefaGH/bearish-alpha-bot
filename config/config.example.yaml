@@ -23,7 +23,8 @@ execution:
   max_slippage_pct: 0.001        # Maximum slippage tolerance (override with MAX_SLIPPAGE_PCT)
   leverage:
     default: 5                   # Default leverage (override with LEVERAGE_DEFAULT)
-    overrides: {}                # Symbol-specific leverage overrides
+    overrides:
+      "BTC/USDT:USDT": 10        # Example: BTC için 10x kaldıraç kullan
 
 # ==============================================================================
 # RISK MANAGEMENT
@@ -244,33 +245,10 @@ signals:
     symbols:
       "BTC/USDT:USDT":
         rsi_threshold: 55             # BTC: More selective (higher threshold)
-      "ETH/USDT:USDT":
-        rsi_threshold: 50             # ETH: More sensitive (lower threshold)
-      "SOL/USDT:USDT":
-        rsi_threshold: 50             # SOL: More sensitive (lower threshold)
-
-# ==============================================================================
-# MONITORING & DUPLICATE PREVENTION (Phase 3.4 - Issues #103, #118)
-# ==============================================================================
-# NOTE: This section is for backward compatibility.
-# New code should use signals.duplicate_prevention above.
-# ==============================================================================
-monitoring:
-  duplicate_prevention:
-    enabled: true                     # Enable duplicate prevention
-    same_symbol_cooldown: 60          # Cooldown for same symbol+strategy (60s)
-    
-    # Price Delta Bypass Configuration (Issue #118)
-    price_delta_bypass_threshold: 0.0015    # 0.15% price change bypasses cooldown
-    price_delta_bypass_enabled: true        # Enable bypass feature
-    
-    # Future Enhancement Placeholders (not yet implemented)
-    cooldown_volatility_multiplier: 1.5     # Adjust cooldown based on volatility
-    cooldown_min: 30                        # Minimum cooldown period
-    cooldown_max: 180                       # Maximum cooldown period
-    
-    # Legacy (backward compatibility)
-    min_price_change: 0.002                 # 0.2% minimum price movement
+      #"ETH/USDT:USDT":
+      #  rsi_threshold: 50             # ETH: More sensitive (lower threshold)
+      #"SOL/USDT:USDT":
+      #  rsi_threshold: 50             # SOL: More sensitive (lower threshold)
 
 # ==============================================================================
 # POSITION EXIT MANAGEMENT (Phase 3.4 - Issue #100)
@@ -290,101 +268,6 @@ quarantine:
   enable: true                        # Enable quarantine for problematic symbols
   days: 7                             # Quarantine duration in days
   file: data/quarantine.json          # Quarantine data file path
-
-# ==============================================================================
-# ENVIRONMENT VARIABLE REFERENCE
-# ==============================================================================
-# Below is a complete list of environment variables that override this config.
-# Set these in GitHub Repository → Settings → Secrets and variables → Actions
-#
-# CRITICAL TRADING PARAMETERS:
-#   DUPLICATE_PREVENTION_THRESHOLD=0.0005
-#   DUPLICATE_PREVENTION_COOLDOWN=60
-#   PRICE_DELTA_BYPASS_THRESHOLD=0.0015
-#   PRICE_DELTA_BYPASS_ENABLED=true
-#
-# TRADING SYMBOLS:
-#   TRADING_SYMBOLS=BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT
-#   TRADING_SYMBOLS_PRIORITY=BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT
-#
-# SYMBOL-SPECIFIC RSI:
-#   RSI_THRESHOLD_BTC=55
-#   RSI_THRESHOLD_ETH=50
-#   RSI_THRESHOLD_SOL=50
-#
-# RISK MANAGEMENT:
-#   CAPITAL_USDT=100
-#   PER_TRADE_RISK_PCT=0.01
-#   DAILY_LOSS_LIMIT_PCT=0.02
-#   RISK_USD_CAP=5
-#   MAX_NOTIONAL_PER_TRADE=20
-#   MIN_STOP_PCT=0.003
-#   DAILY_MAX_TRADES=5
-#
-# STRATEGY SETTINGS:
-#   STRATEGY_OB_ENABLED=true
-#   STRATEGY_OB_IGNORE_REGIME=true
-#   RSI_BASE_OB=45
-#   RSI_RANGE_OB=10
-#   TP_ATR_MULT_OB=2.5
-#   SL_ATR_MULT_OB=1.2
-#   MIN_TP_PCT_OB=0.008
-#   MAX_SL_PCT_OB=0.015
-#
-#   STRATEGY_STR_ENABLED=true
-#   STRATEGY_STR_IGNORE_REGIME=true
-#   RSI_BASE_STR=55
-#   RSI_RANGE_STR=10
-#   TP_ATR_MULT_STR=3.0
-#   SL_ATR_MULT_STR=1.5
-#   MIN_TP_PCT_STR=0.010
-#   MAX_SL_PCT_STR=0.020
-#
-# WEBSOCKET:
-#   WEBSOCKET_ENABLED=true
-#   WEBSOCKET_PRIORITY_ENABLED=true
-#   WEBSOCKET_MAX_DATA_AGE=60
-#   WEBSOCKET_FALLBACK_THRESHOLD=3
-#   WS_MAX_STREAMS_BINGX=10
-#   WS_MAX_STREAMS_BINANCE=20
-#   WS_MAX_STREAMS_KUCOIN=15
-#   WS_MAX_STREAMS_DEFAULT=10
-#   WS_STREAM_TIMEFRAMES=1m,5m,30m,1h,4h
-#   WS_RECONNECT_DELAY=5
-#   WS_MAX_RECONNECT_ATTEMPTS=3
-#
-# EXECUTION:
-#   ENABLE_LIVE_TRADING=true
-#   ORDER_TYPE=market
-#   TIME_IN_FORCE=IOC
-#   FEE_PCT=0.0006
-#   MAX_SLIPPAGE_PCT=0.001
-#   LEVERAGE_DEFAULT=5
-#
-# INDICATORS:
-#   INDICATOR_RSI_PERIOD=14
-#   INDICATOR_ATR_PERIOD=14
-#   INDICATOR_EMA_FAST=21
-#   INDICATOR_EMA_MID=50
-#   INDICATOR_EMA_SLOW=200
-#
-# ADAPTIVE MODES:
-#   ADAPTIVE_MODE_OB=dynamic
-#   VOLATILITY_SENSITIVITY_OB=medium
-#   ADAPTIVE_MODE_STR=dynamic
-#   VOLATILITY_SENSITIVITY_STR=medium
-#
-# ML SETTINGS:
-#   ML_ENABLED=true
-#   ML_PRICE_PREDICTION_ENABLED=true
-#   ML_REGIME_PREDICTION_ENABLED=true
-#   ML_REINFORCEMENT_LEARNING_ENABLED=true
-#   ML_STRATEGY_OPTIMIZATION_ENABLED=true
-#   ML_DUPLICATE_DETECTION_ENABLED=true
-#
-# OTHER:
-#   UNIVERSE_AUTO_SELECT=false
-# ==============================================================================
 
 # ==============================================================================
 # ML (MACHINE LEARNING) CONFIGURATION
@@ -426,3 +309,7 @@ ml:
     include_technical: true             # Include technical indicators
     include_volume: true                # Include volume features
     include_sentiment: false            # Include sentiment data (if available)
+
+# ==============================================================================
+# ENVIRONMENT VARIABLE REFERENCE (REMOVED - Artık dosyanın sonunda değil, ilgili bölümlerin üstünde yer alıyor)
+# ==============================================================================
