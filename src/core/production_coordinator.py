@@ -832,7 +832,8 @@ class ProductionCoordinator:
                 if hasattr(self, 'price_engine') and hasattr(self, 'regime_predictor'):
                     self.ml_integration = MLStrategyIntegrationManager(
                         self.price_engine,
-                        self.regime_predictor
+                        self.regime_predictor,
+                        self.websocket_manager  # *** DEĞİŞİKLİK: Eksik parametre eklendi ***
                     )
                     ml_components.append('ml_integration')
                     logger.info("✅ ML strategy integration manager initialized")
