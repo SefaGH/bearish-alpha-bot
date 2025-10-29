@@ -9,7 +9,8 @@ import hmac
 import hashlib
 from typing import Dict, List, Optional, Callable, Union, Any, TYPE_CHECKING
 from datetime import datetime, timezone
-import websockets
+import threading
+import websocket # DOKÜMANDA BELİRTİLEN DOĞRU KÜTÜPHANE
 from collections import defaultdict
 
 if TYPE_CHECKING:
@@ -58,13 +59,14 @@ class BingXWebSocket:
         # Select appropriate endpoint
         self.ws_url = self.WS_PUBLIC_SWAP if futures else self.WS_PUBLIC_SPOT
         
-        # --- Connection & Task Management ---
-        self.ws: Optional[websockets.WebSocketClientProtocol] = None
+        # --- Connection & Task Management (websocket-client uyumlu) ---
+        self.ws: Optional[websocket.WebSocketApp] = None
         self._running = False
-        self._listen_task: Optional[asyncio.Task] = None
-        self._ping_task: Optional[asyncio.Task] = None
-        self._connection_lock = asyncio.Lock()
+        self._ws_thread: Optional[threading.Thread] = None
+        self._is_connected = False
+        self._connection_lock = asyncio.Lock() # Bu kilit kalabilir, start/stop için faydalı
         self.auto_reconnect = True
+        self._event_queue = asyncio.Queue() # Thread ve asyncio arasında güvenli köprü
 
         # --- Reconnection Logic ---
         self._reconnect_attempts = 0
@@ -91,121 +93,174 @@ class BingXWebSocket:
         
         logger.info(f"BingX WebSocket initialized ({'futures' if futures else 'spot'} market)")
 
-    # ... (dosyanın geri kalanı aynı kalacak) ...
+    # === YENİ BAĞLANTI MİMARİSİ (websocket-client uyumlu) ===
 
-    async def _ping_loop(self):
-        """Proactively sends a 'Ping' to the server every 20 seconds to keep the connection alive."""
+    def start(self):
+        """Starts the WebSocket connection in a separate thread."""
+        if self._running:
+            return
+        asyncio.run_coroutine_threadsafe(self._start_async(), asyncio.get_event_loop())
+    
+    async def _start_async(self):
+        """Helper to run start logic in the main async loop."""
+        async with self._connection_lock:
+            if self._running:
+                return
+            self._running = True
+            self.ws = websocket.WebSocketApp(
+                self.ws_url,
+                on_open=self._on_open,
+                on_message=self._on_message,
+                on_error=self._on_error,
+                on_close=self._on_close
+            )
+            self._ws_thread = threading.Thread(target=self.ws.run_forever, daemon=True)
+            self._ws_thread.start()
+            
+            # Event queue işlemcisini başlat
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._process_event_queue())
+            except RuntimeError:
+                logger.error("No running asyncio loop to start event processor.")
+            
+            logger.info("WebSocket thread starter initiated.")
+    
+    async def stop(self):
+        """Stops the WebSocket connection."""
+        async with self._connection_lock:
+            if not self._running:
+                return
+            logger.info("Stopping WebSocket client...")
+            self._running = False
+            self.auto_reconnect = False
+            if self.ws:
+                self.ws.close()
+            logger.info("WebSocket client stop command issued.")
+    
+    def _on_open(self, ws):
+        """Callback for when the connection is opened (runs in thread)."""
+        logger.info("✅ WebSocket connection opened.")
+        self._is_connected = True
+        self.connection_start_time = datetime.now(timezone.utc)
+        self._reconnect_attempts = 0
+        # Ana loop'a yeniden abone olma görevini güvenli bir şekilde gönder
+        asyncio.run_coroutine_threadsafe(self._resubscribe_async(), asyncio.get_event_loop())
+    
+    def _on_message(self, ws, message):
+        """Callback for incoming messages (runs in thread)."""
+        try:
+            decompressed = gzip.decompress(message).decode('utf-8')
+            if decompressed == "Ping":
+                ws.send("Pong")
+                self._last_ping_time = time.time()
+                logger.debug("Received Ping, sent Pong")
+                return
+    
+            self.message_count += 1
+            self.last_message_time = datetime.now(timezone.utc)
+            data = json.loads(decompressed)
+            # Olayı asenkron işleme kuyruğuna koy
+            self._event_queue.put_nowait(data)
+        except Exception as e:
+            logger.error(f"Error in _on_message callback: {e}")
+    
+    def _on_error(self, ws, error):
+        """Callback for errors (runs in thread)."""
+        logger.error(f"WebSocket thread error: {error}")
+    
+    def _on_close(self, ws, close_status_code, close_msg):
+        """Callback for when the connection is closed (runs in thread)."""
+        logger.warning(f"WebSocket connection closed: {close_status_code} - {close_msg}")
+        self._is_connected = False
+        if self._running and self.auto_reconnect:
+            delay = min(60, self._reconnect_delay * (2 ** self._reconnect_attempts))
+            logger.info(f"Will attempt to reconnect in {delay:.2f} seconds...")
+            time.sleep(delay)
+            self._reconnect_attempts += 1
+            if self._running: # Tekrar kontrol et, belki bu arada stop çağrılmıştır
+                # run_forever durduğu için yeni bir WebSocketApp nesnesi ve thread'i gerekir.
+                # Bu, start() metodunun mantığına çok benzer.
+                self.ws = websocket.WebSocketApp(self.ws_url, on_open=self._on_open, on_message=self._on_message, on_error=self._on_error, on_close=self._on_close)
+                self._ws_thread = threading.Thread(target=self.ws.run_forever, daemon=True)
+                self._ws_thread.start()
+    
+    
+    async def _process_event_queue(self):
+        """Asynchronously processes events from the WebSocket thread."""
         while self._running:
             try:
-                if self.ws and not self.ws.closed:
-                    await self.ws.send("Ping")
-                await asyncio.sleep(20)
-            except websockets.exceptions.ConnectionClosed:
-                break
+                data = await self._event_queue.get()
+                await self._process_message(data) # Bu zaten _process_message'ı çağırıyor
+                self._event_queue.task_done()
             except asyncio.CancelledError:
+                logger.info("Event queue processor cancelled.")
                 break
             except Exception as e:
-                logger.error(f"Error in proactive ping loop: {e}")
-                await asyncio.sleep(5)
+                logger.error(f"Error in event queue processor: {e}")
     
-    async def connect(self) -> bool:
-        """
-        Establishes a WebSocket connection. Does NOT start background tasks.
-        """
-        if self.ws and not self.ws.closed:
-            return True
-        
-        try:
-            logger.info(f"Connecting to BingX WebSocket: {self.ws_url}")
-            self.ws = await websockets.connect(
-                self.ws_url,
-                ping_interval=None,  # We handle ping/pong manually
-                ping_timeout=None
-            )
-            
-            self._running = True
-            self.auto_reconnect = True
-            self._reconnect_attempts = 0
-            self.connection_start_time = datetime.now(timezone.utc)
-            logger.info("✅ BingX WebSocket connected successfully.")
-            
-            # Yeniden bağlanma sonrası abonelikleri yenile
-            await self._resubscribe()
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to connect to BingX WebSocket: {e}", exc_info=True)
-            self.ws = None
-            return False
-
-    def disable_reconnect(self):
-        """Permanently disables the auto-reconnect feature for graceful shutdown."""
-        logger.info("Permanently disabling auto-reconnect for BingXWebSocket.")
-        self.auto_reconnect = False
+    async def _resubscribe_async(self):
+        """Async version of resubscribe to be called from the event loop."""
+        if not self.subscriptions: return
+        logger.info(f"Resubscribing to {len(self.subscriptions)} channels...")
+        for sub_msg in self.subscriptions.values():
+            self._send_json_threadsafe(sub_message)
     
-    async def disconnect(self):
-        """Gracefully disconnects the WebSocket and stops all background tasks."""
-        logger.info("Initiating graceful disconnect in bingx_websocket...")
-        self.disable_reconnect()
-        self._running = False
-
-        tasks_to_cancel = [self._listen_task, self._ping_task]
-        for task in tasks_to_cancel:
-            if task and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        
-        if self.ws and not self.ws.closed:
-            await self.ws.close(code=1000, reason="Client shutdown")
-        
-        self.ws = None
-        self._listen_task = None
-        self._ping_task = None
-        logger.info("BingX direct WebSocket disconnected successfully.")
+    def _send_json_threadsafe(self, data: dict):
+        """Thread-safe method to send a JSON message."""
+        if self._is_connected and self.ws:
+            try:
+                self.ws.send(json.dumps(data))
+                return True
+            except Exception as e:
+                logger.error(f"Failed to send message: {e}")
+        return False
     
     async def subscribe_ticker(self, symbol: str) -> bool:
-        """Subscribes to a ticker stream."""
+        """Subscribes to a ticker stream using the new thread-safe architecture."""
         try:
+            # Adım 1: Sembolü BingX formatına çevir (örn: 'BTC/USDT' -> 'BTC-USDT')
             bingx_symbol = self._convert_symbol_to_bingx(symbol)
+            
+            # Adım 2: Ticker için doğru 'dataType' formatını oluştur
             data_type = f"{bingx_symbol}@ticker"
-
-            if data_type in self.subscriptions:
-                return True
-
+            
+            # Adım 3: Abonelik mesajını ve kimliğini oluştur
             sub_message = {"id": data_type, "reqType": "sub", "dataType": data_type}
+            
+            # Adım 4: Olası yeniden bağlanma (reconnect) durumları için aboneliği kaydet
             self.subscriptions[data_type] = sub_message
-
-            if self.ws and not self.ws.closed:
-                await self.ws.send(json.dumps(sub_message))
-                logger.info(f"Subscribed to ticker: {bingx_symbol}")
+            
+            # Adım 5: Eğer zaten bağlıysak, mesajı hemen gönder. 
+            # Değilsek, bağlantı kurulduğunda _on_open metodu _resubscribe_async'i çağırarak gönderecek.
+            if self._is_connected:
+                self._send_json_threadsafe(sub_message)
+            
+            logger.info(f"Subscription for ticker '{data_type}' has been queued.")
             return True
         except Exception as e:
-            logger.error(f"Failed to subscribe to ticker {symbol}: {e}")
+            logger.error(f"Failed to queue ticker subscription for {symbol}: {e}")
             return False
 
     async def subscribe_kline(self, symbol: str, interval: str = "1m") -> bool:
-        """Subscribes to a kline/candlestick stream."""
-        try:
-            bingx_symbol = self._convert_symbol_to_bingx(symbol)
-            bingx_interval = self._convert_timeframe(interval)
-            data_type = f"{bingx_symbol}@kline_{bingx_interval}"
-            
-            if data_type in self.subscriptions:
-                return True
-
-            sub_message = {"id": data_type, "reqType": "sub", "dataType": data_type}
-            self.subscriptions[data_type] = sub_message
-            
-            if self.ws and not self.ws.closed:
-                await self.ws.send(json.dumps(sub_message))
-                logger.info(f"Subscribed to kline: {bingx_symbol} {interval}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to subscribe to kline {symbol} {interval}: {e}")
-            return False
+    """Subscribes to a kline/candlestick stream."""
+    try:
+        bingx_symbol = self._convert_symbol_to_bingx(symbol)
+        bingx_interval = self._convert_timeframe(interval)
+        data_type = f"{bingx_symbol}@kline_{bingx_interval}"
+        
+        sub_message = {"id": data_type, "reqType": "sub", "dataType": data_type}
+        self.subscriptions[data_type] = sub_message # Gelecekteki reconnect'ler için sakla
+        
+        # Eğer zaten bağlıysak, hemen gönder. Değilsek, _on_open'de gönderilecek.
+        if self._is_connected:
+            self._send_json_threadsafe(sub_message)
+        
+        logger.info(f"Subscription for kline '{data_type}' has been queued.")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to queue kline subscription for {symbol} {interval}: {e}")
+        return False
 
     async def _resubscribe(self):
         """Resubscribes to all tracked channels after a reconnection."""
@@ -220,44 +275,6 @@ class BingXWebSocket:
                     await self.ws.send(json.dumps(sub_message))
             except Exception as e:
                 logger.error(f"Failed to resubscribe to {sub_id}: {e}")
-    
-    async def listen(self):
-        """Listen to WebSocket messages with GZIP support and manage ping task."""
-        # Ensure the proactive ping loop is running alongside this listener
-        if self._ping_task is None or self._ping_task.done():
-            self._ping_task = asyncio.create_task(self._ping_loop())
-
-        while self._running:
-            try:
-                message = await self.ws.recv()
-                
-                if isinstance(message, bytes):
-                    decompressed_data = gzip.decompress(message)
-                    message_str = decompressed_data.decode('utf-8')
-                    
-                    if message_str == "Ping":
-                        await self.ws.send("Pong")
-                        self._last_ping_time = time.time()
-                        logger.debug("Received Ping, sent Pong")
-                        continue
-                    
-                    if message_str and message_str.strip():
-                        data = json.loads(message_str)
-                        await self._process_message(data)
-
-            except websockets.exceptions.ConnectionClosed as e:
-                logger.warning(f"WebSocket connection closed in listen loop: {e.code}")
-                # Break the loop; the responsible manager will handle reconnection.
-                break
-            except asyncio.CancelledError:
-                # This is a clean shutdown.
-                break
-            except Exception as e:
-                logger.error(f"Listen loop error: {e}", exc_info=True)
-                # To prevent a tight loop on persistent errors, wait before continuing
-                await asyncio.sleep(5)
-        
-        logger.info("BingX listen loop has stopped.")
     
     async def _process_message(self, data: dict):
         """
@@ -866,15 +883,15 @@ class BingXWebSocket:
         # 'connected' durumunu doğrudan is_connected() metodundan alarak garantiliyoruz.
         is_conn = self.is_connected()
         
+        # Geri kalan tüm hesaplamalar bu güvenilir 'is_conn' değişkenini kullanır.
+        uptime = (datetime.now(timezone.utc) - self.connection_start_time).total_seconds() if self.connection_start_time and is_conn else 0
+        
         return {
             'connected': is_conn,
             'running': self._running,
             'message_count': self.message_count,
             'last_message_time': self.last_message_time.isoformat() if self.last_message_time else None,
-            'connection_uptime': (
-                (datetime.now(timezone.utc) - self.connection_start_time).total_seconds()
-                if self.connection_start_time and is_conn else 0
-            ),
+            'connection_uptime': uptime,
             'subscriptions': len(self.subscriptions),
             'pending_subscriptions': len(self.pending_subscriptions),
             'tickers_tracked': len(self.tickers),
@@ -885,8 +902,5 @@ class BingXWebSocket:
         }
 
     def is_connected(self) -> bool:
-        """
-        Check if the WebSocket is actively connected and the connection is open.
-        Compatible with recent versions of the 'websockets' library.
-        """
-        return self.ws is not None and not self.ws.closed
+        """Checks if the WebSocket connection is active."""
+        return self._is_connected
