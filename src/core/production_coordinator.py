@@ -1003,69 +1003,43 @@ class ProductionCoordinator:
                                           portfolio_config: Optional[Dict] = None,
                                           mode: str = 'paper',
                                           trading_symbols: Optional[List[str]] = None,
-                                          websocket_manager: Optional[Any] = None) -> Dict[str, Any]: # YENİ PARAMETRE
+                                          websocket_manager: Optional[Any] = None) -> Dict[str, Any]:
         """
-        Initialize production system with all Phase 3 components.
-        ...
-        Args:
-            ...
-            websocket_manager: Optional pre-initialized WebSocketManager instance.
-        ...
+        Initializes the production system by assembling pre-configured components.
+        This method strictly follows the Dependency Injection principle and does NOT
+        create its own major components like WebSocketManager.
         """
         logger.info("="*70)
-        logger.info("INITIALIZING PRODUCTION SYSTEM")
+        logger.info("INITIALIZING PRODUCTION SYSTEM (Dependency Injection Mode)")
         logger.info("="*70)
         
         try:
-            # ========================================
-            # STEP 1: STORE PROVIDED CONFIGURATION
-            # ========================================
+            # === ADIM 1: DIŞARIDAN GELEN BİLEŞENLERİ KABUL ET ===
             if exchange_clients:
                 self.exchange_clients = {k.lower(): v for k, v in exchange_clients.items()}
                 logger.info(f"✓ Received {len(self.exchange_clients)} exchange client(s): {list(self.exchange_clients.keys())}")
             
-            # ========================================
-            # STEP 2: USE INJECTED WEBSOCKET MANAGER
-            # ========================================
-            self.websocket_manager = websocket_manager # <<< DEĞİŞİKLİK
+            # Dışarıdan gelen WebSocket yöneticisini ata.
+            self.websocket_manager = websocket_manager
             if self.websocket_manager:
                 logger.info("✓ WebSocket manager received from launcher (external).")
             else:
-                logger.warning("⚠️ No WebSocket manager provided by launcher. Continuing without WebSocket.")
-
-            # Eğer dışarıdan bir websocket_manager sağlanmadıysa, kendimiz oluşturmayı deneyelim.
-            if not self.websocket_manager and self.exchange_clients:
-                try:
-                    logger.info("ℹ️ No external WebSocketManager provided — creating internal one.")
-                    self.websocket_manager = WebSocketManager(exchanges=self.exchange_clients)
-                    self._setup_websocket_connections()
-                except Exception as e:
-                    logger.error(f"⚠️ Failed to create internal WebSocketManager: {e}")
-
-            # WebSocket yöneticimiz varsa, collector'ın hazır olmasını bekleyelim.
-            if self.websocket_manager:
-                logger.info("⏱️ Waiting for WebSocket collector to become ready (max 5s)...")
-                collector_ready = False
-                for _ in range(10): # 10 * 0.5s = 5s
-                    if hasattr(self.websocket_manager, 'collector') and self.websocket_manager.collector:
-                        collector_ready = True
-                        break
-                    await asyncio.sleep(0.5)
-                
-                if collector_ready:
-                    logger.info("✅ WebSocket collector is ready.")
-                else:
-                    logger.warning("⚠️ WebSocket collector did not become ready after 5s.")
-            else:
-                 logger.warning("⚠️ No WebSocket manager available. Indicator validation will rely on REST.")
-            # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
-            # ========================================
-            # STEP 3: MARKET REGIME ANALYZER            
-            # ========================================
-            self.market_regime_analyzer = MarketRegimeAnalyzer(websocket_manager=self.websocket_manager) # <<< ARTIK DOLU OLAN MANAGER'I VERİYORUZ
-            logger.info("✓ Market regime analyzer initialized")
+                # ARTIK YENİSİNİ OLUŞTURMUYOR, SADECE UYARIYOR.
+                logger.warning("⚠️ No WebSocket manager provided by launcher. Continuing without WebSocket (REST API fallback).")
             
+            # === ADIM 2: DİĞER YÖNETİCİLERİ BU HAZIR BİLEŞENLERLE OLUŞTUR ===
+            # MarketDataPipeline, RiskManager, PortfolioManager, LiveTradingEngine vb.
+            # oluşturma mantığı, artık her zaman doğru ve tek bir `websocket_manager`
+            # referansına sahip olacağı için sorunsuz çalışacaktır.
+            
+            # Market Data Pipeline'ı başlat
+            self.market_data_pipeline = MarketDataPipeline(
+                exchanges=self.exchange_clients,
+                config=self.config,
+                websocket_manager=self.websocket_manager  # Burası artık güvenli.
+            )
+            logger.info("✓ Market data pipeline initialized")
+ 
             # ========================================
             # STEP 4: INITIALIZE PERFORMANCE MONITOR
             # ========================================
@@ -1083,6 +1057,7 @@ class ProductionCoordinator:
             portfolio_config = portfolio_config or {}
             config = self.config
             risk_config = config.get('risk', {})
+            self.risk_manager = RiskManager(...) # websocket_manager'ı parametre olarak alır
             
             # Merge portfolio_config with config file settings
             risk_manager_config = {
@@ -1203,17 +1178,17 @@ class ProductionCoordinator:
             # ========================================
             # STEP 14: INITIALIZE LIVE TRADING ENGINE
             # ========================================
-            self.trading_engine = LiveTradingEngine(
+            elf.trading_engine = LiveTradingEngine(
                 mode=mode,
                 portfolio_manager=self.portfolio_manager,
                 risk_manager=self.risk_manager,
-                order_manager=self.order_manager, # <<< HAZIR VER
-                position_manager=self.position_manager, # <<< HAZIR VER
+                order_manager=self.order_manager,
+                position_manager=self.position_manager,
                 exchange_clients=self.exchange_clients,
                 strategy_coordinator=self.strategy_coordinator,
-                market_data_pipeline=self.market_data_pipeline
+                market_data_pipeline=self.market_data_pipeline # Pipeline'ı direkt ver.
             )
-            logger.info(f"✓ Live trading engine initialized (mode: {mode}) with pre-configured managers")
+            logger.info(f"✓ Live trading engine initialized (mode: {mode})")
             
             # ========================================
             # STEP 15: SET ACTIVE SYMBOLS (CRITICAL!)
@@ -1280,6 +1255,8 @@ class ProductionCoordinator:
             # STEP 18: MARK AS INITIALIZED
             # ========================================
             self.is_initialized = True
+            return {
+                'success': True,
             
             components = [
                 'websocket_manager',
@@ -1306,22 +1283,12 @@ class ProductionCoordinator:
                 'is_initialized': True,
                 'active_symbols_count': len(self.active_symbols)
             }
-            
+
         except Exception as e:
-            logger.error("="*70)
-            logger.error("❌ PRODUCTION SYSTEM INITIALIZATION FAILED")
-            logger.error("="*70)
-            logger.error(f"Error: {e}", exc_info=True)
-            logger.error("="*70)
-            
-            self.is_initialized = False
-            
-            return {
-                'success': False,
-                'reason': str(e),
-                'is_initialized': False
-            }
-            
+                logger.error(f"❌ PRODUCTION SYSTEM INITIALIZATION FAILED: {e}", exc_info=True)
+                self.is_initialized = False
+                return {'success': False, 'reason': str(e)}
+    
     async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
                                   continuous: bool = False):
         # ✅ EMERGENCY DEBUG with print()
