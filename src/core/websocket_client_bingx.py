@@ -43,9 +43,7 @@ class WebSocketClient:
         self._tasks = []
         self.collector = collector  # ✅ PATCH 3: Store collector reference
         
-        # ✅ NEW: Singleton listen task management
-        self._listen_task: Optional[asyncio.Task] = None
-        self._listen_lock = asyncio.Lock()
+        self._tasks_started = False
         
         # Initialize BingX WebSocket with collector
         api_key = creds.get('apiKey') if creds else None
@@ -78,52 +76,29 @@ class WebSocketClient:
     
     async def _ensure_connection_and_listener(self) -> bool:
         """
-        Ensure WebSocket is connected and exactly ONE listen task is running.
-        Thread-safe with lock protection.
+        Ensures the underlying connection is active and that the perpetual
+        listener and ping tasks have been started exactly once.
         """
-        async with self._listen_lock:
-            try:
-                # Check if we need to connect
-                if not self._is_connected:
-                    logger.info("Establishing BingX WebSocket connection...")
-                    connected = await self.bingx_ws.connect()
-                    
-                    if not connected:
-                        logger.error("Failed to establish BingX WebSocket connection")
-                        return False
-                    
-                    self._is_connected = True
-                    logger.info("✅ BingX WebSocket connected")
-                
-                # Check if listen task needs to be started
-                if self._listen_task is None or self._listen_task.done():
-                    if self._listen_task and self._listen_task.done():
-                        # Check if previous task had an exception
-                        try:
-                            exc = self._listen_task.exception()
-                            if exc:
-                                logger.warning(f"Previous listen task failed with: {exc}")
-                        except (asyncio.CancelledError, asyncio.InvalidStateError):
-                            pass
-                    
-                    # Create new listen task
-                    logger.info("Starting BingX WebSocket listener task...")
-                    self._listen_task = asyncio.create_task(self.bingx_ws.listen())
-                    
-                    # Track in tasks list for cleanup
-                    if self._listen_task not in self._tasks:
-                        self._tasks.append(self._listen_task)
-                    
-                    logger.info("✅ BingX WebSocket listener task started")
-                else:
-                    logger.debug("BingX WebSocket listener already running")
-                
-                return True
-                
-            except Exception as e:
-                logger.error(f"Error in BingX connection/listener setup: {e}")
+        # First, ensure we have a physical connection
+        if not (self.bingx_ws.ws and self.bingx_ws.ws.open):
+            logger.info("Underlying connection is down. Attempting to connect...")
+            connected = await self.bingx_ws.connect()
+            if not connected:
+                logger.error("Failed to establish underlying BingX connection.")
                 self._is_connected = False
                 return False
+            self._is_connected = True
+            logger.info("✅ Underlying BingX connection established.")
+
+        # Now, ensure the background tasks are started, but only once.
+        if not self._tasks_started:
+            logger.info("Starting underlying listener and ping tasks for the first time...")
+            # The listen() method in bingx_websocket now handles starting the ping_loop as well.
+            self.bingx_ws._listen_task = asyncio.create_task(self.bingx_ws.listen())
+            self._tasks_started = True
+            logger.info("✅ Underlying BingX tasks have been started.")
+        
+        return True
     
     async def watch_ohlcv(self, symbol: str, timeframe: str = '1m',
                          callback: Optional[Callable] = None) -> List[List]:
@@ -268,38 +243,11 @@ class WebSocketClient:
             self._running = False
     
     async def close(self):
-        """Gracefully and decisively closes the WebSocket connection."""
+        """Delegates the close operation to the underlying BingXWebSocket instance."""
         self._running = False
-        self._is_connected = False
-        
-        # 1. ÖNCE: Alt katmana yeniden bağlanmayı BIRAKMASINI söyle.
-        if self.bingx_ws:
-            logger.info("Instructing underlying BingXWebSocket to disable reconnect.")
-            # Az önce eklediğimiz yeni metodu çağırıyoruz.
-            if hasattr(self.bingx_ws, 'disable_reconnect'):
-                self.bingx_ws.disable_reconnect()
-
-        # 2. SONRA: Arka plan görevlerini iptal et.
-        if self._listen_task and not self._listen_task.done():
-            logger.info("Cancelling listen task...")
-            self._listen_task.cancel()
-            try:
-                await self._listen_task
-            except asyncio.CancelledError:
-                pass  # Bu beklenen bir durumdur.
-        
-        # Diğer görevleri de iptal et
-        for task in self._tasks:
-            if not task.done():
-                task.cancel()
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
-        
-        # 3. EN SON: Fiziksel bağlantıyı kes.
         if self.bingx_ws:
             await self.bingx_ws.disconnect()
-        
-        logger.info("BingX WebSocket client closed successfully.")
+        logger.info("BingX WebSocket client wrapper closed successfully.")
     
     def stop(self):
         """Stop all watch loops."""
@@ -310,32 +258,12 @@ class WebSocketClient:
         return self._is_connected and self._running
     
     def get_health_status(self) -> Dict[str, Any]:
-        """Get WebSocket health status."""
-        bingx_status = self.bingx_ws.get_status()
+        """Gets health status from the underlying BingXWebSocket instance."""
+        if not self.bingx_ws:
+            return {'status': 'uninitialized'}
         
-        # Add listen task status
-        listen_task_status = 'not_created'
-        if self._listen_task:
-            if self._listen_task.done():
-                try:
-                    exc = self._listen_task.exception()
-                    listen_task_status = f'failed: {exc}' if exc else 'completed'
-                except (asyncio.CancelledError, asyncio.InvalidStateError):
-                    listen_task_status = 'cancelled'
-            else:
-                listen_task_status = 'running'
-        
-        return {
-            'exchange': 'bingx',
-            'status': 'healthy' if bingx_status['connected'] else 'disconnected',
-            'connected': bingx_status['connected'],
-            'streaming': self._first_message_received,
-            'running': self._running,
-            'last_message_time': self._last_message_time.isoformat() if self._last_message_time else None,
-            'message_count': bingx_status['message_count'],
-            'subscriptions': bingx_status['subscriptions'],
-            'reconnect_count': bingx_status['reconnect_attempts'],
-            'listen_task_status': listen_task_status,
-            'total_tasks': len(self._tasks),
-            'active_tasks': sum(1 for t in self._tasks if not t.done())
-        }
+        # Delegate directly to the underlying get_status method
+        # and add wrapper-specific status
+        status = self.bingx_ws.get_status()
+        status['wrapper_running'] = self._running
+        return status
