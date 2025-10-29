@@ -70,22 +70,28 @@ async def main():
         regime_training_data = training_data[SYMBOLS_TO_TRAIN[0]].get(regime_training_tf)
 
         if regime_training_data is not None and not regime_training_data.empty:
-            # Önce etiketleri oluştur (sadece ham OHLCV verisi yeterli)
-            regime_labels = generate_regime_labels(regime_training_data)
+            # === KÖK NEDEN ÇÖZÜMÜ BURADA ===
+            # 1. Önce sadece ham OHLCV verisinden özellikleri çıkar.
+            #    .copy() kullanarak orijinal verinin bozulmasını önle.
+            features_df = feature_engine.extract_features(regime_training_data.copy())
+            logger.info(f"Rejim modeli için {features_df.shape[1]} özellik çıkarıldı.")
             
-            # Sonra özellikleri çıkar. Bu, canlı ortamdaki sırayla %100 aynıdır.
-            features_df = feature_engine.extract_features(regime_training_data)
+            # 2. Ayrı bir şekilde, yine ham OHLCV verisinden etiketleri oluştur.
+            regime_labels = generate_regime_labels(regime_training_data.copy())
             
-            # *** DEĞİŞİKLİK: Gereksiz temizleme adımları kaldırıldı ***
-            # feature_engine.extract_features() ve prepare_for_training() bu adımları zaten içeriyor.
-            # features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-            # features_df.dropna(inplace=True)
-            
+            # 3. Özellikleri ve etiketleri, `prepare_for_training` ile hizala ve temizle.
+            #    Bu metot, her ikisindeki NaN değerleri tutarlı bir şekilde temizleyerek
+            #    X (sadece özellikler) ve y (sadece etiketler) dizilerini döndürür.
             X, y = feature_engine.prepare_for_training(features_df, regime_labels)
+            
+            # Artık X, sadece özellikleri içeriyor ve doğru sayıda sütuna sahip.
+            # === ÇÖZÜM SONU ===
 
             if X.shape[0] > 100:
+                logger.info(f"Model {X.shape[1]} özellik ile eğitilecek. (Örnek sayısı: {X.shape[0]})")
                 regime_trainer = RegimeModelTrainer()
-                training_results = regime_trainer.train_ensemble_models(X, y, list(features_df.columns))
+                # `train_ensemble_models` metodu zaten doğru imzaya sahip, sadece X ve y göndermek yeterli.
+                training_results = regime_trainer.train_ensemble_models(X, y)
                 logger.info(f"✅ Rejim modelleri eğitildi ve kaydedildi.")
             else:
                 logger.warning("Rejim modellerini eğitmek için yeterli veri bulunamadı.")
@@ -95,7 +101,7 @@ async def main():
         logger.error(f"Rejim eğitimi için {SYMBOLS_TO_TRAIN[0]} sembolüne ait {regime_training_tf} verisi bulunamadı.")
 
 
-    # 2. FİYAT TAHMİN MODELLERİ EĞİTİMİ
+    # 2. FİYAT TAHMİN MODELLERİ EĞİTİMİ (Bu kısım doğru çalışıyor, değişiklik gerekmiyor)
     logger.info("\n" + "="*60)
     logger.info("📈 ADIM 2: FİYAT TAHMİN MODELLERİ EĞİTİLİYOR 📈")
     logger.info("="*60)
@@ -105,12 +111,10 @@ async def main():
         if not symbol_data_values:
             logger.error("Fiyat modeli eğitimi için hiç veri bulunamadı. Bu adım atlanıyor.")
         else:
-            # Özellik çıkarma mantığı artık tutarlı olduğu için bu boyut her zaman doğru olacaktır.
             sample_features = feature_engine.extract_features(symbol_data_values[0])
             input_feature_size = sample_features.shape[1]
             logger.info(f"Fiyat tahmin modelleri için tutarlı girdi boyutu: {input_feature_size}")
 
-            # Transformer için d_model'in çift sayı olması kontrolü devam etmeli.
             transformer_d_model = input_feature_size
             if transformer_d_model % 2 != 0:
                 transformer_d_model += 1
@@ -121,7 +125,6 @@ async def main():
             for tf in TIMEFRAMES_TO_TRAIN:
                 base_models = {
                     'lstm': LSTMPricePredictor(input_size=input_feature_size),
-                    # Transformer'ı düzeltilmiş d_model ile başlat
                     'transformer': TransformerPricePredictor(d_model=transformer_d_model)
                 }
                 timeframe_models[tf] = EnsemblePricePredictor(base_models)
