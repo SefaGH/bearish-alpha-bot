@@ -7,13 +7,15 @@ decision making and risk management.
 
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
 import logging
 
 from .price_predictor import AdvancedPricePredictionEngine
 from .regime_predictor import MLRegimePredictor
-# Bu import, WebSocketManager'a tip ipucu (type hint) verebilmek için gereklidir.
-from src.core.websocket_manager import WebSocketManager
+
+# Use TYPE_CHECKING to avoid runtime import errors while preserving type hints
+if TYPE_CHECKING:
+    from core.websocket_manager import WebSocketManager
 
 logger = logging.getLogger(__name__)
 
