@@ -110,6 +110,8 @@ universe:
   # Override with TRADING_SYMBOLS environment variable (comma-separated)
   fixed_symbols:
     - BTC/USDT:USDT                   # Bitcoin
+    - ETH/USDT:USDT                   # Ethereum
+    - SOL/USDT:USDT                   # Solana
   
   # Auto-select MUST be false for fixed symbols
   auto_select: false                  # Override with UNIVERSE_AUTO_SELECT (should be false)
@@ -118,13 +120,8 @@ universe:
   # Override with TRADING_SYMBOLS_PRIORITY (comma-separated)
   priority_order:
     - BTC/USDT:USDT                   # Highest priority
-  
-  # Legacy parameters (not used when auto_select=false)
-  min_quote_volume_usdt: 1000000
-  prefer_perps: true
-  max_symbols_per_exchange: 80
-  top_n_per_exchange: 15
-  only_linear: true
+    - ETH/USDT:USDT
+    - SOL/USDT:USDT
 
 # ==============================================================================
 # TECHNICAL INDICATORS
