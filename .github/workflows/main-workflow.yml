@@ -1,0 +1,334 @@
+# ======================================================================
+# Bearish Alpha Bot - Ana İş Akışı (Eğit ve İşlem Yap)
+# Bu dosya, model eğitimi ve canlı işlem adımlarını tek bir
+# akışta birleştirir, böylece canlı işlem botu her zaman en
+# güncel modelleri kullanır.
+# ======================================================================
+name: Bearish Alpha Bot - Main Workflow (Train & Trade)
+
+on:
+  # Manuel olarak çalıştırma seçenekleri
+  workflow_dispatch:
+    inputs:
+      run_mode:
+        description: 'Çalışma Modu Seçimi'
+        required: true
+        default: 'train_and_trade'
+        type: choice
+        options:
+          - train_and_trade  # Önce eğit, sonra canlı işleme geç
+          - trade_only       # Sadece canlı işleme geç (önceden eğitilmiş modelleri kullanır)
+          - train_only       # Sadece modelleri eğit ve dur
+      mode:
+        description: 'İşlem Modu (paper/live)'
+        required: true
+        default: 'paper'
+        type: choice
+        options: [paper, live]
+      confirm_live:
+        description: 'Canlı işlem için "YES" yazın'
+        required: false
+      duration:
+        description: 'İşlem süresi (saniye). Boş bırakılırsa süresiz.'
+        required: false
+      enable_ml:
+        description: 'ML bağımlılıklarını etkinleştir'
+        required: true
+        default: true
+        type: boolean
+      dry_run:
+        description: 'Dry run modu (sadece başlangıç kontrolleri)'
+        required: true
+        default: false
+        type: boolean
+      skip_preflight:
+        description: 'Başlangıç kontrollerini atla'
+        required: true
+        default: false
+        type: boolean
+      infinite:
+        description: 'Katman 1: Sürekli Mod'
+        required: true
+        default: false
+        type: boolean
+      auto_restart:
+        description: 'Katman 2: Otomatik Yeniden Başlatma'
+        required: true
+        default: false
+        type: boolean
+      restart_delay:
+        description: 'Yeniden başlatma gecikmesi (saniye)'
+        required: false
+        default: '30'
+      debug_mode:
+        description: 'Debug modunu etkinleştir'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+  # Modelleri haftalık olarak otomatik eğitmek için
+  schedule:
+    - cron: '0 5 * * 0' # Her Pazar 05:00 UTC
+
+jobs:
+  # =================================================================
+  # İŞ 1: MODELLERİ EĞİT VE YAPIT OLARAK YÜKLE
+  # =================================================================
+  train:
+    name: 🚂 Train Models
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'schedule' || 
+      github.event.inputs.run_mode == 'train_and_trade' || 
+      github.event.inputs.run_mode == 'train_only'
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run model training script
+        env:
+          ML_ENABLED: "true"
+        run: python scripts/train_all_models.py
+      - name: Archive trained models as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-models
+          path: data/models/
+          retention-days: 7
+
+  # =================================================================
+  # İŞ 2: CANLI İŞLEM İÇİN GİRDİLERİ DOĞRULA
+  # =================================================================
+  validate-inputs:
+    name: 🛡️ Validate Inputs
+    runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.run_mode == 'train_and_trade' ||
+      github.event.inputs.run_mode == 'trade_only'
+    outputs:
+      should_proceed: ${{ steps.validate.outputs.should_proceed }}
+      skip_preflight: ${{ steps.validate.outputs.skip_preflight }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install PyYAML for validation
+        run: pip install pyyaml
+      - name: Validate Live Trading Confirmation
+        id: validate
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          CONFIRM="${{ github.event.inputs.confirm_live }}"
+          if [ "$MODE" = "live" ] && [ "$CONFIRM" != "YES" ]; then
+            echo "❌ ERROR: Live trading requires typing 'YES' in the confirm_live field"
+            echo "should_proceed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          echo "✅ Validation passed"
+          echo "should_proceed=true" >> $GITHUB_OUTPUT
+          echo "skip_preflight=${{ github.event.inputs.skip_preflight }}" >> $GITHUB_OUTPUT
+      - name: Validate Adaptive Configuration
+        if: github.event.inputs.skip_preflight != 'true'
+        run: python scripts/validate_adaptive_config.py
+
+  # =================================================================
+  # İŞ 3: CANLI İŞLEM ÖNCESİ SİSTEM KONTROLLERİ
+  # =================================================================
+  pre-flight-checks:
+    name: ✈️ Pre-Flight System Checks
+    runs-on: ubuntu-latest
+    needs: validate-inputs
+    if: |
+      needs.validate-inputs.outputs.should_proceed == 'true' && 
+      needs.validate-inputs.outputs.skip_preflight != 'true'
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+      - name: Install TA-Lib and Dependencies
+        run: |
+          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+          tar -xzvf ta-lib-0.4.0-src.tar.gz
+          cd ta-lib/ && ./configure --prefix=/usr && make && sudo make install
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Dry-Run Pre-Flight Checks
+        env:
+          ML_ENABLED: ${{ github.event.inputs.enable_ml }}
+          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT' }}
+          CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
+        run: python scripts/live_trading_launcher.py --dry-run --paper
+      - name: Upload Pre-Flight Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-flight-logs
+          path: logs/*.log
+          if-no-files-found: ignore
+
+  # =================================================================
+  # İŞ 4: CANLI İŞLEMLERİ BAŞLAT
+  # =================================================================
+  trade:
+    name: 🚀 Execute Live Trading
+    runs-on: ubuntu-latest
+    needs: [train, validate-inputs, pre-flight-checks]
+    if: |
+      always() &&
+      (github.event.inputs.run_mode == 'train_and_trade' || github.event.inputs.run_mode == 'trade_only') &&
+      needs.validate-inputs.outputs.should_proceed == 'true' &&
+      (needs.pre-flight-checks.result == 'success' || needs.validate-inputs.outputs.skip_preflight == 'true')
+    timeout-minutes: 720
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+
+      # --- EN ÖNEMLİ ADIM: MODELLERİ İNDİR ---
+      - name: Download Trained Models from Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-models # 'train' işinde yüklenen yapıtın adı
+          path: data/models/
+        # Eğer artifact bulunamazsa (örn: 'trade_only' modunda ilk çalıştırma) hata verme
+        continue-on-error: true
+
+      - name: Verify Downloaded Models
+        run: |
+          echo "Verifying model files in data/models/ ..."
+          if [ -d "data/models" ] && [ "$(ls -A data/models)" ]; then
+            ls -lR data/models
+            echo "✅ Models found in artifact."
+          else
+            echo "⚠️ No models downloaded from artifacts. Bot will use models from the repository if they exist."
+          fi
+
+      - name: Install TA-Lib and Dependencies
+        run: |
+          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+          tar -xzvf ta-lib-0.4.0-src.tar.gz
+          cd ta-lib/ && ./configure --prefix=/usr && make && sudo make install
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Display Configuration
+        env:
+          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT' }}
+          CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.0005' }}
+          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '60' }}
+        run: |
+          echo "🚀 BEARISH ALPHA BOT - LIVE TRADING LAUNCHER"
+          echo "=============================================="
+          echo "Mode: ${{ github.event.inputs.mode }}"
+          echo "Pre-flight Checks: ${{ github.event.inputs.skip_preflight == 'true' && 'SKIPPED ⚠️' || 'COMPLETED ✅' }}"
+          echo "Duration: ${{ github.event.inputs.duration || 'indefinite' }}"
+          echo "- Capital: ${CAPITAL_USDT} USDT"
+          echo "- Trading Pairs: ${TRADING_SYMBOLS}"
+          echo "- Duplicate Prevention: ${DUPLICATE_PREVENTION_THRESHOLD}% / ${DUPLICATE_PREVENTION_COOLDOWN}s"
+          echo "=============================================="
+
+      # Bu adım, live_trading_launcher.yml dosyanızdaki 'Launch Trading Bot' adımının birebir aynısıdır.
+      - name: Launch Trading Bot
+        env:
+          ML_ENABLED: ${{ github.event.inputs.enable_ml }}
+          BINGX_KEY: ${{ secrets.BINGX_KEY }}
+          BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONUNBUFFERED: "1"
+          # GitHub Secrets/Variables'dan gelen tüm diğer yapılandırma değişkenleriniz...
+          CAPITAL_USDT: ${{ vars.CAPITAL_USDT }}
+          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS }}
+          # ... (diğer tüm env değişkenlerinizi buraya ekleyin)
+        run: |
+          CMD="python scripts/live_trading_launcher.py"
+          if [ "${{ github.event.inputs.mode }}" = "paper" ]; then CMD="$CMD --paper"; fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then CMD="$CMD --dry-run"; fi
+          if [ "${{ github.event.inputs.infinite }}" = "true" ]; then CMD="$CMD --infinite"; fi
+          if [ "${{ github.event.inputs.auto_restart }}" = "true" ]; then CMD="$CMD --auto-restart"; fi
+          if [ -n "${{ github.event.inputs.restart_delay }}" ]; then CMD="$CMD --restart-delay ${{ github.event.inputs.restart_delay }}"; fi
+          if [ -n "${{ github.event.inputs.duration }}" ]; then CMD="$CMD --duration ${{ github.event.inputs.duration }}"; fi
+          if [ "${{ github.event.inputs.debug_mode }}" = "true" ]; then CMD="$CMD --debug"; fi
+          echo "🚀 Executing command:"
+          echo "$CMD"
+          $CMD
+
+      # Bu adımlar, live_trading_launcher.yml dosyanızdaki ile aynıdır ve log/veri toplama görevini görür.
+      - name: Upload Trading Logs & Data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-session-output-${{ github.run_number }}
+          path: |
+            logs/
+            data/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Send Telegram Notification on Completion
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          JOB_STATUS: ${{ needs.trade.result }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            if [ "$JOB_STATUS" = "success" ]; then
+              STATUS_ICON="✅"
+              STATUS_TEXT="<b>Live Trading Session Completed</b>"
+            else
+              STATUS_ICON="❌"
+              STATUS_TEXT="<b>Live Trading Session Failed</b>"
+            fi
+            MESSAGE="${STATUS_ICON} ${STATUS_TEXT}%0A%0A<b>Mode:</b> ${{ github.event.inputs.mode }}%0A<b>Run:</b> #${{ github.run_number }}"
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" -d "text=${MESSAGE}" -d "parse_mode=HTML" > /dev/null || true
+          fi
+          
+  # =================================================================
+  # İŞ 5: İŞ AKIŞI ÖZETİ OLUŞTUR
+  # =================================================================
+  summary:
+    name: 📝 Session Summary
+    runs-on: ubuntu-latest
+    needs: [train, validate-inputs, pre-flight-checks, trade]
+    if: always()
+    steps:
+      - name: Generate Workflow Summary
+        run: |
+          echo "# 🤖 Bearish Alpha Bot - Session Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_summary
+          echo "### Run Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Run Mode**: \`${{ github.event.inputs.run_mode || 'Scheduled' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trading Mode**: \`${{ github.event.inputs.mode || 'N/A' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Job Status" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🚂 Train Models | \`${{ needs.train.result || 'Not Run' }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🛡️ Validate Inputs | \`${{ needs.validate-inputs.result || 'Not Run' }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| ✈️ Pre-Flight Checks | \`${{ needs.pre-flight-checks.result || 'Not Run' }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🚀 Execute Live Trading | \`${{ needs.trade.result || 'Not Run' }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Check the workflow run artifacts for logs and data." >> $GITHUB_STEP_SUMMARY
+```
