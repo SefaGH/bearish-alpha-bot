@@ -40,10 +40,13 @@ from core.system_info import SystemInfoCollector, format_startup_header
 from config.risk_config import RiskConfiguration
 from config.optimization_config import OptimizationConfiguration
 from ml.regime_predictor import MLRegimePredictor
+# --- GÜNCELLENDİ: Gerçek model sınıflarını da import et ---
 from ml.price_predictor import (
     AdvancedPricePredictionEngine, 
     MultiTimeframePricePredictor,
-    EnsemblePricePredictor
+    EnsemblePricePredictor,
+    LSTMPricePredictor,
+    TransformerPricePredictor
 )
 from ml.strategy_integration import AIEnhancedStrategyAdapter
 from ml.strategy_optimizer import StrategyOptimizer
@@ -1323,7 +1326,7 @@ class LiveTradingLauncher:
     async def _initialize_ai_components(self) -> bool:
         """
         Initialize Phase 4 AI enhancement components.
-        (GÜNCELLENDİ: Modelleri ve zaman dilimlerini config'den okur)
+        (GÜNCELLENDİ: Modelleri ve zaman dilimlerini config'den okur ve modelleri yükler)
         """
         logger.info("\n[4/8] Initializing Phase 4 AI Components...")
         
@@ -1348,26 +1351,35 @@ class LiveTradingLauncher:
             # Phase 4.4: Price Prediction (YENİDEN YAPILANDIRILDI)
             logger.info("Initializing price prediction engine...")
             
-            # --- ÇÖZÜM: Timeframes ve modelleri config'den oku ---
             ml_config = self.config.get('ml', {})
             timeframes = ml_config.get('timeframes', ['5m', '15m', '1h'])
             model_types = ml_config.get('models', ['lstm', 'transformer'])
+            model_params = ml_config.get('model_params', {})
 
-            # Multi-timeframe predictor'ı dinamik olarak oluştur
             models_by_timeframe = {}
             for tf in timeframes:
-                # Her zaman dilimi için bir model sözlüğü oluştur
-                # Başlangıçta modeller None, `load_models` bunları dolduracak.
-                ensemble_models = {model_type: None for model_type in model_types}
+                ensemble_models = {}
+                for model_type in model_types:
+                    if model_type == 'lstm':
+                        params = model_params.get('lstm', {})
+                        ensemble_models['lstm'] = LSTMPricePredictor(**params)
+                    elif model_type == 'transformer':
+                        params = model_params.get('transformer', {})
+                        ensemble_models['transformer'] = TransformerPricePredictor(**params)
+                
                 models_by_timeframe[tf] = EnsemblePricePredictor(ensemble_models)
-            
+                logger.info(f"✓ Created ensemble models for timeframe '{tf}'")
+
             multi_timeframe_predictor = MultiTimeframePricePredictor(models_by_timeframe)
             
-            # AdvancedPricePredictionEngine'i doğru yapılandırılmış predictor ile başlat
             self.price_engine = AdvancedPricePredictionEngine(multi_timeframe_predictor)
             logger.info("✓ Price Prediction Engine initialized")
-            # --- ÇÖZÜM SONU ---
 
+            # --- ÇÖZÜM: Modelleri burada, her şey hazır olduktan sonra yükle ---
+            logger.info("Attempting to load pre-trained models for the price engine...")
+            self.price_engine.load_models()
+            # --- ÇÖZÜM SONU ---
+            
             # Strategy integration adapter
             if self.regime_predictor and self.price_engine:
                 self.strategy_adapter = AIEnhancedStrategyAdapter(
