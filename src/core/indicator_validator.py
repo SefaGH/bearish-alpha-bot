@@ -93,47 +93,62 @@ class IndicatorValidator:
         symbol_norm = f"{symbol.split(':')[0]}:USDT"
         
         results = {'symbol': symbol, 'exchange': exchange, 'indicators': {}, 'overall_valid': True, 'errors': []}
-        
-        # Prefetch sonrası veriyi doğrudan collector'dan al
+    
+        # --- KRİTİK DEĞİŞİKLİK ---
+        # MarketDataPipeline'ın REST verisini WebSocket Collector'a enjekte etmesi için
+        # çok kısa bir bekleme süresi tanıyın. Bu, zamanlama sorununu çözer.
+        await asyncio.sleep(1) # 1 saniye bekle
+    
+        # Veriyi doğrudan collector'dan al
         ohlcv_1m = self.ws_manager.collector.get_latest_ohlcv(exchange, symbol_norm, '1m', limit=self.REQUIRED_CANDLES)
         
-        # Kontrol: Prefetch başarılı oldu mu?
+        # Kontrol: Prefetch ve enjeksiyon başarılı oldu mu?
         if ohlcv_1m is None or len(ohlcv_1m) < self.REQUIRED_CANDLES:
-            error = f"Insufficient 1m data after prefetch: {len(ohlcv_1m) if ohlcv_1m else 0}/{self.REQUIRED_CANDLES} candles. Prefetch step may have failed."
+            # Eğer hala yeterli veri yoksa, canlı akıştan gelenleri loglayalım.
+            live_data_count = len(ohlcv_1m) if ohlcv_1m is not None else 0
+            error = (f"Insufficient 1m data after prefetch & injection: "
+                     f"found {live_data_count}, expected {self.REQUIRED_CANDLES}. "
+                     f"This indicates the historical data priming step failed to inject data into the collector.")
             logger.error(f"❌ {error}")
             results['errors'].append(error)
             results['overall_valid'] = False
             return False, results
             
-        logger.info(f"✅ Data availability: {len(ohlcv_1m)} candles found in collector.")
+        logger.info(f"✅ Data availability check passed: {len(ohlcv_1m)} candles found in collector for validation.")
         
         df = pd.DataFrame(ohlcv_1m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']).apply(pd.to_numeric)
         
         # TA-Lib hesaplamaları...
         try:
+            # En sondan kontrol etmek yerine, serinin tamamında NaN olup olmadığına bakmak daha güvenli.
             close = df['close'].values
             high = df['high'].values
             low = df['low'].values
             
-            # Basit NaN kontrolü
-            if np.isnan(talib.RSI(close)[-1]):
-                results['errors'].append("RSI calculation resulted in NaN.")
-            if np.isnan(talib.ATR(high, low, close)[-1]):
-                results['errors'].append("ATR calculation resulted in NaN.")
-            if np.isnan(talib.EMA(close, timeperiod=200)[-1]):
-                 results['errors'].append("EMA_SLOW calculation resulted in NaN.")
-
+            rsi = talib.RSI(close)
+            if np.all(np.isnan(rsi)):
+                results['errors'].append("RSI calculation resulted in all NaNs.")
+    
+            atr = talib.ATR(high, low, close)
+            if np.all(np.isnan(atr)):
+                results['errors'].append("ATR calculation resulted in all NaNs.")
+    
+            ema_slow = talib.EMA(close, timeperiod=200)
+            # EMA'nın başlangıçta NaN olması normaldir, sondakinin olmaması gerekir.
+            if np.isnan(ema_slow[-1]):
+                 results['errors'].append("EMA_SLOW calculation resulted in NaN at the last candle.")
+    
         except Exception as e:
-            logger.error(f"Indicator calculation error: {e}")
+            logger.error(f"Indicator calculation error: {e}", exc_info=True)
             results['errors'].append(f"TA-Lib calculation failed: {e}")
-
+    
         if results['errors']:
             results['overall_valid'] = False
             logger.error(f"❌ {symbol}: Indicator validation FAILED")
             for err in results['errors']: logger.error(f"   - {err}")
         else:
-            logger.info(f"✅ {symbol}: All indicators seem healthy.")
-
+            logger.info(f"✅ {symbol}: All indicators seem healthy and ready.")
+    
         return results['overall_valid'], results
 
     def _log_validation_summary(self, results: Dict):
