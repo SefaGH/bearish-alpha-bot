@@ -907,3 +907,15 @@ class BingXWebSocket:
     def is_connected(self) -> bool:
         """Checks if the WebSocket connection is active."""
         return self._is_connected
+
+    def is_listening(self) -> bool:
+        """Check if the listen thread is alive."""
+        return self.thread and self.thread.is_alive()
+
+    def get_subscription_count(self) -> int:
+        """Return the number of active subscriptions."""
+        return len(self.subscriptions)
+
+    def get_message_count(self) -> int:
+        """Return the total number of messages received."""
+        return self.message_count_lock.get_value()
