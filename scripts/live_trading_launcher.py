@@ -1466,16 +1466,14 @@ class LiveTradingLauncher:
                 'max_drawdown': self.RISK_PARAMS['max_drawdown']
             }
     
-            # 2. ProductionCoordinator'ı oluştur
-            from core.production_coordinator import ProductionCoordinator
-            self.coordinator = ProductionCoordinator()
+            # === MİMARİ DÜZELTME: DOĞRU BAŞLANGIÇ AKIŞI ===
     
-            # === YENİ VE DOĞRU BAŞLANGIÇ AKIŞI ===
             # Adım A: WebSocket Optimizer'ı yapılandır.
+            # Bu, hangi sembollere ve zaman dilimlerine abone olacağımızı belirler.
             self.ws_optimizer.setup_from_config(self.config)
             
             # Adım B: WebSocket bağlantılarını ve stream'lerini BAŞLAT.
-            # Bu çağrı, bağlantı kurulana ve veri akışı başlayana kadar bekler.
+            # Bu çağrı, WebSocketManager'ı (ws_manager) oluşturur, bağlantıyı kurar ve veri akışını başlatır.
             ws_success = await self.ws_optimizer.initialize_and_subscribe(
                 self.exchange_clients,
                 self.TRADING_PAIRS
@@ -1486,12 +1484,16 @@ class LiveTradingLauncher:
     
             # Adım C: ProductionCoordinator'ı, DIŞARIDA oluşturulan ve ÇALIŞAN WebSocket yöneticisiyle başlat.
             # Artık coordinator'a hazır ve çalışır bir bileşen enjekte ediyoruz.
+            # WebSocket başarısız olsa bile ws_manager=None geçerek sistemin REST ile devam etmesini sağlıyoruz.
+            from core.production_coordinator import ProductionCoordinator
+            self.coordinator = ProductionCoordinator()
+            
             init_result = await self.coordinator.initialize_production_system(
                 exchange_clients=self.exchange_clients,
                 portfolio_config=portfolio_config,
                 mode=self.mode,
                 trading_symbols=self.TRADING_PAIRS,
-                # ws_optimizer.ws_manager, başarılı bir şekilde başlatılmış olan yöneticiyi içerir.
+                # ws_optimizer.ws_manager, initialize_and_subscribe içinde başarıyla oluşturulmuş olan yöneticiyi içerir.
                 websocket_manager=self.ws_optimizer.ws_manager if ws_success else None
             )
     
@@ -1506,11 +1508,7 @@ class LiveTradingLauncher:
         except Exception as e:
             logger.error(f"❌ Failed to initialize production system: {e}", exc_info=True)
             return False
-    
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize production system: {e}", exc_info=True)
-            return False
-    
+        
     async def _register_strategies(self) -> bool:
         """Initialize adaptive trading strategies."""
         logger.info("\n[5/8] Initializing Trading Strategies...")
