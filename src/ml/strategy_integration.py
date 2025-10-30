@@ -412,7 +412,7 @@ class MLStrategyIntegrationManager:
     async def get_ml_context(self, symbol: str, horizon: str = '1h') -> Dict[str, Any]:
         """
         Gathers ML-driven context for a symbol, including price predictions and regime analysis.
-        *** KÖK NEDEN DÜZELTMESİ: Fonksiyon imzası ve çağrı mantığı tamamen düzeltildi. ***
+        This version correctly fetches data from the WebSocketManager and formats it for prediction models.
         """
         logger.info(f"🧠 [ML-CONTEXT] Gathering ML context for {symbol}...")
         context = {
@@ -422,57 +422,62 @@ class MLStrategyIntegrationManager:
             'confidence': 0.0,
             'reason': "Initialization failed"
         }
-        
-        # *** DEĞİŞİKLİK 2: Rejim tahmini için gerekli veriyi al ***
-        price_data_dict = None
-        if self.websocket_manager:
-            # WebSocketManager'dan en güncel veriyi çek. Bu, tamponlanmış (buffered) veridir.
-            price_data_dict = self.websocket_manager.get_latest_data(symbol, timeframe=horizon)
+
+        # Adım 1: Rejim tahmini için gerekli veriyi WebSocketManager'dan al.
+        if not self.websocket_manager:
+            context['reason'] = "WebSocketManager is not available."
+            logger.warning(f"🧠 [ML-CONTEXT] {context['reason']}")
+            return context
+
+        price_data_dict = self.websocket_manager.get_latest_data(symbol, timeframe=horizon)
         
         if not price_data_dict or not price_data_dict.get('ohlcv'):
             context['reason'] = f"Could not retrieve price data for {symbol} from WebSocketManager."
             logger.warning(f"🧠 [ML-CONTEXT] {context['reason']}")
-            # Veri olmadan devam etmenin anlamı yok, burada sağlıksız bir context döndürebiliriz.
             return context
 
-        # Gelen veriyi DataFrame'e dönüştür
-        ohlcv_list = price_data_dict['ohlcv']
-        price_data = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        price_data['timestamp'] = pd.to_datetime(price_data['timestamp'], unit='ms')
-        price_data.set_index('timestamp', inplace=True)
+        # Adım 2: Gelen veriyi DataFrame'e dönüştür.
+        try:
+            ohlcv_list = price_data_dict['ohlcv']
+            price_data = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            price_data['timestamp'] = pd.to_datetime(price_data['timestamp'], unit='ms')
+            price_data.set_index('timestamp', inplace=True)
+        except (ValueError, KeyError) as e:
+            context['reason'] = f"Failed to parse OHLCV data into DataFrame: {e}"
+            logger.error(f"🧠 [ML-CONTEXT] {context['reason']}")
+            return context
 
-        # --- Fiyat Tahmini (Değişiklik yok) ---
+        # Adım 3: Fiyat Tahmini yap (mevcut mantık aynı kalıyor).
         if self.price_engine:
             try:
+                # Not: price_engine.predict'in de 'await' gerektirdiğini varsayıyoruz.
                 prediction = await self.price_engine.predict(symbol, horizon=horizon)
                 if prediction and 'predicted_price' in prediction:
                     context['prediction'] = prediction
                     context['confidence'] = prediction.get('confidence', 0.0)
-                else:
-                    context['reason'] = "Prediction returned no valid output."
             except Exception as e:
-                logger.error(f"🧠 [ML-CONTEXT] Price prediction crashed for {symbol}: {e}", exc_info=True)
-                context['reason'] = f"Prediction crashed: {e}"
-        
-        # --- Rejim Tahmini (Düzeltilmiş Çağrı) ---
+                logger.error(f"🧠 [ML-CONTEXT] Price prediction crashed for {symbol}: {e}", exc_info=False)
+
+        # Adım 4: Rejim Tahmini yap (doğru veri formatıyla).
         if self.regime_predictor:
             try:
-                # *** DEĞİŞİKLİK 3: Doğru fonksiyonu, doğru parametrelerle çağır ***
+                # Artık elimizde olan DataFrame'i veriyoruz.
                 regime = await self.regime_predictor.predict_regime_transition(
                     symbol=symbol, 
-                    price_data=price_data, # Artık elimizde olan DataFrame'i veriyoruz
+                    price_data=price_data, 
                     horizon=horizon
                 )
                 context['regime'] = regime
                 logger.info(f"🧠 [ML-CONTEXT] Market regime for {symbol}: {regime.get('predicted_regime', 'unknown')}")
             except Exception as e:
-                logger.error(f"🧠 [ML-CONTEXT] Regime prediction crashed for {symbol}: {e}", exc_info=True)
-                context['reason'] = f"Regime prediction crashed: {e}"
+                logger.error(f"🧠 [ML-CONTEXT] Regime prediction crashed for {symbol}: {e}", exc_info=False)
 
-        # --- Sağlık Kontrolü (Değişiklik yok) ---
-        if context['prediction'] and context['regime'] and context['regime'].get('confidence', 0) > 0:
+        # Adım 5: Sağlık durumunu belirle.
+        if context['prediction'] and context['regime']:
             context['is_healthy'] = True
             context['reason'] = "ML context successfully gathered."
+        else:
+            context['reason'] = "One or more ML components failed to produce output."
         
         if not context['is_healthy']:
              logger.warning(f"🧠 [ML-CONTEXT] ML context for {symbol} is unhealthy. Reason: {context['reason']}")
