@@ -484,9 +484,8 @@ class AdvancedPricePredictionEngine:
                  websocket_manager=None):
         """
         Initialize advanced prediction engine.
-        (GÜNCELLENDİ: `is_trained` bayrağı ve `load_models` çağrısı eklendi)
+        (GÜNCELLENDİ: `load_models` çağrısı kaldırıldı)
         """
-        # --- ÇÖZÜM: Parametrenin None olup olmadığını kontrol et ---
         if not isinstance(multi_timeframe_predictor, MultiTimeframePricePredictor):
             raise TypeError(
                 "AdvancedPricePredictionEngine requires a valid MultiTimeframePricePredictor instance."
@@ -505,8 +504,8 @@ class AdvancedPricePredictionEngine:
         self.is_trained = False # Modelin eğitimli olup olmadığını izler
         
         logger.info("Advanced Price Prediction Engine initialized")
-        # Başlangıçta eğitilmiş modelleri yüklemeyi dene
-        self.load_models()
+        # --- KALDIRILDI: Başlangıçta modelleri yükleme ---
+        # self.load_models()
 
     def has_model_for(self, symbol: str) -> bool:
         """
@@ -570,20 +569,26 @@ class AdvancedPricePredictionEngine:
 
         logger.info("Attempting to load trained models from disk...")
         models_loaded = 0
-        # self.predictor.models, MultiTimeframePricePredictor içindeki zaman dilimi modellerini içerir.
+        
+        # --- KORUMA: self.predictor veya self.predictor.models yoksa çık ---
         if not hasattr(self.predictor, 'models') or not self.predictor.models:
              logger.warning("No timeframes configured in MultiTimeframePricePredictor. Cannot load models.")
              return
 
         for tf, ensemble_model in self.predictor.models.items():
-            for model_name, model in ensemble_model.models.items():
+            for model_name, model_instance in ensemble_model.models.items():
+                # --- ÇÖZÜM: model_instance'ın None olup olmadığını kontrol et ---
+                if model_instance is None:
+                    logger.debug(f"Skipping model loading for {tf}/{model_name} as it is not instantiated yet.")
+                    continue
+                    
                 # Sadece gerçek PyTorch modellerini yükle
-                if isinstance(model, (LSTMPricePredictor, TransformerPricePredictor)) and 'load_state_dict' in dir(model):
+                if isinstance(model_instance, (LSTMPricePredictor, TransformerPricePredictor)) and 'load_state_dict' in dir(model_instance):
                     model_path = os.path.join(self.MODEL_SAVE_DIR, f"{model_name}_{tf}.pth")
                     if os.path.exists(model_path):
                         try:
-                            model.load_state_dict(torch.load(model_path))
-                            model.eval() # Modeli tahmin (inference) moduna al
+                            model_instance.load_state_dict(torch.load(model_path))
+                            model_instance.eval() # Modeli tahmin (inference) moduna al
                             logger.info(f"✅ Successfully loaded model from {model_path}")
                             models_loaded += 1
                         except Exception as e:
