@@ -348,7 +348,7 @@ class MarketDataPipeline:
         2. Fall back to REST API if WebSocket unavailable or returns no data
         3. Return None only if both sources fail
         
-        Technical indicators (RSI, MACD, Bollinger Bands, EMAs, ATR) are automatically
+        Technical indicators (RSI, ATR, EMA21, EMA50, EMA200) are automatically
         added to the DataFrame before returning, ensuring strategies always receive
         complete data with all required indicators.
         
