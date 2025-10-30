@@ -76,30 +76,16 @@ class WebSocketClient:
 
     async def _ensure_connection_and_listener(self) -> bool:
         """
-        Ensures the WebSocket is connected and the listener task is running.
-        Uses a lock to prevent race conditions from multiple stream initializations.
-        Returns True if connection is established, False otherwise.
+        Ensures the underlying WebSocket client's 'start' method is called once.
+        Uses a lock to prevent race conditions.
         """
         async with self._connection_lock:
-            # Sadece ilk çağrıda çalıştır, diğerleri bekle ve devam et
-            if self._tasks_started:
-                return self.bingx_ws.is_connected()
-
-            # 1. Bağlantıyı kur
-            connected = await self.bingx_ws.connect()
-            if not connected:
-                logger.error("Failed to establish initial WebSocket connection in _ensure_connection.")
-                return False
-
-            # 2. Dinleyici görevini oluştur ve başlat
-            if self.bingx_ws.ws:
-                listen_task = asyncio.create_task(self.bingx_ws.listen())
-                self._tasks.append(listen_task)
+            if not self._tasks_started:
+                self.bingx_ws.start()  # Yeni, thread-safe başlatma metodu
                 self._tasks_started = True
-                logger.info("✅ BingX listener task started successfully.")
-                return True
-            
-            return False
+                logger.info("BingXWebSocket client 'start' method called.")
+            # Bu mimaride, bağlantı thread'de kurulur, hemen True dönebiliriz.
+            return True
     
     async def watch_ohlcv_loop(self, symbol: str, timeframe: str = '1m',
                                callback: Optional[Callable] = None,
@@ -139,17 +125,11 @@ class WebSocketClient:
         logger.info(f"Subscribed to Ticker stream for {symbol}")
     
     async def close(self):
-        """Closes the connection and cancels background tasks."""
+        """Closes the connection and stops background tasks."""
         self._running = False
         
-        for task in self._tasks:
-            if not task.done():
-                task.cancel()
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
-            
         if self.bingx_ws:
-            await self.bingx_ws.disconnect()
+            await self.bingx_ws.stop() # Yeni asenkron stop metodu
             
         logger.info("BingX WebSocket client wrapper closed successfully.")
     
