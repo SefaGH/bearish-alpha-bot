@@ -721,8 +721,17 @@ class ProductionCoordinator:
                     error_count += len(strategies_to_run)
                     continue
 
+                # CRITICAL GUARD CLAUSE: Skip symbol if primary data (30m) is not available
+                # This prevents 'NoneType' object has no attribute 'dropna' errors in strategies
                 if df_30m is None or df_30m.empty:
                     logger.warning(f"⚠️ Could not retrieve 30m indicator data for {symbol} from MarketDataPipeline.")
+                    logger.warning(f"⚠️ Skipping {symbol} to prevent strategy crashes - data will be retried next iteration")
+                    error_count += len(strategies_to_run)
+                    continue  # Skip this symbol entirely - don't run any strategies
+                
+                # Secondary check for 1h data (less critical, but log if missing)
+                if df_1h is None or df_1h.empty:
+                    logger.warning(f"⚠️ Could not retrieve 1h indicator data for {symbol}, but proceeding with 30m data only")
             
             except Exception as data_fetch_error:
                 logger.error(f"❌ Critical error during data fetching from MarketDataPipeline for {symbol}: {data_fetch_error}", exc_info=True)
