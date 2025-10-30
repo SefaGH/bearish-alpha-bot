@@ -32,7 +32,8 @@ class ConflictResolutionStrategy(Enum):
 class StrategyCoordinator:
     """Coordinate signals and positions across multiple strategies."""
     
-    def __init__(self, portfolio_manager, risk_manager, market_data_pipeline=None, indicator_manager=None, config=None, **kwargs):
+    # __init__ metodundan 'indicator_manager' kaldırıldı.
+    def __init__(self, portfolio_manager, risk_manager, market_data_pipeline=None, config=None, **kwargs):
         """
         Initialize strategy coordinator.
     
@@ -40,14 +41,12 @@ class StrategyCoordinator:
             portfolio_manager: PortfolioManager instance
             risk_manager: RiskManager instance
             market_data_pipeline: Optional MarketDataPipeline instance (injected by production coordinator)
-            indicator_manager: Optional IndicatorManager instance (injected by production coordinator) # <-- YENİ
             config: Optional configuration dictionary
             **kwargs: Catches any other future arguments for forward compatibility.
         """
         self.portfolio_manager = portfolio_manager
         self.risk_manager = risk_manager
         self.market_data_pipeline = market_data_pipeline
-        self.indicator_manager = indicator_manager  # <-- YENİ ATAMA
         self.config = config or {}
     
         # Signal management
@@ -85,63 +84,6 @@ class StrategyCoordinator:
         self.rl_agent = None
     
         logger.info("StrategyCoordinator initialized (market_data_pipeline=%s)", bool(self.market_data_pipeline))
-
-    async def run_strategies_for_symbol(self, symbol: str):
-        """
-        Fetches data, runs all registered strategies for a given symbol,
-        and processes any generated signals.
-        This method is called by the ProductionCoordinator.
-        """
-        # market_data_pipeline yerine indicator_manager'ı kontrol et
-        if not self.indicator_manager:
-            logger.error(f"Cannot run strategies for {symbol}: IndicatorManager is not available.")
-            return
-
-        # 1. Gerekli verileri ve ML context'i hazırla
-        df_30m, df_1h, ml_context = None, None, None
-        try:
-            # Veriyi doğrudan self.indicator_manager'dan al
-            df_30m = self.indicator_manager.get_indicator_data(symbol, "30m")
-            df_1h = self.indicator_manager.get_indicator_data(symbol, "1h")
-
-            if df_30m is None or df_30m.empty:
-                logger.warning(f"No 30m indicator data available for {symbol} to run strategies.")
-                return
-
-            # ML verisini al (eğer varsa)
-            if self.ml_integration:
-                ml_context = await self.ml_integration.get_ml_context(symbol)
-
-        except Exception as e:
-            logger.error(f"Failed to prepare data for {symbol} in StrategyCoordinator: {e}", exc_info=True)
-            return
-
-        # 2. Kayıtlı tüm stratejileri bu sembol için çalıştır
-        strategies_to_run = list(self.portfolio_manager.strategies.items())
-        logger.debug(f"Running {len(strategies_to_run)} strategies for {symbol}...")
-
-        for strategy_name, strategy_instance in strategies_to_run:
-            try:
-                if not self.portfolio_manager.strategy_metadata.get(strategy_name, {}).get('active', False):
-                    continue
-
-                if hasattr(strategy_instance, 'signal') and callable(getattr(strategy_instance, 'signal')):
-                    # Stratejinin 'signal' metodunu doğru argümanlarla çağır
-                    signal = strategy_instance.signal(
-                        df_30m=df_30m,
-                        df_1h=df_1h,
-                        regime_data=ml_context,
-                        symbol=symbol,
-                        ml_context=ml_context
-                    )
-
-                    # 3. Eğer bir sinyal üretildiyse, mevcut sinyal işleme akışına dahil et
-                    if signal:
-                        logger.info(f"'{strategy_name}' produced a signal for {symbol}. Processing...")
-                        await self.process_strategy_signal(strategy_name, signal)
-                
-            except Exception as e:
-                logger.error(f"Error executing strategy '{strategy_name}' for {symbol}: {e}", exc_info=True)
     
     def validate_duplicate(self, signal: Dict, strategy_name: str) -> Tuple[bool, str]:
         """
