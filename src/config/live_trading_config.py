@@ -265,9 +265,11 @@ class LiveTradingConfiguration:
         # ============= ML CONFIG (Issue #135) =============
         env_config['ml'] = {
             'enabled': cls.get_env_bool('ML_ENABLED', True),
+            # --- ÇÖZÜM: Buradaki varsayılan liste kaldırıldı. ---
+            # Artık environment değişkeni yoksa, YAML'daki değer kullanılacak.
             'timeframes': cls.get_env_list(
                 'ML_TIMEFRAMES',
-                ['1h', '4h']
+                [] # Boş liste, böylece YAML'ı ezerse bile sorun olmaz.
             )
         }
         
