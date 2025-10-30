@@ -486,6 +486,12 @@ class AdvancedPricePredictionEngine:
         Initialize advanced prediction engine.
         (GÜNCELLENDİ: `is_trained` bayrağı ve `load_models` çağrısı eklendi)
         """
+        # --- ÇÖZÜM: Parametrenin None olup olmadığını kontrol et ---
+        if not isinstance(multi_timeframe_predictor, MultiTimeframePricePredictor):
+            raise TypeError(
+                "AdvancedPricePredictionEngine requires a valid MultiTimeframePricePredictor instance."
+            )
+        
         self.predictor = multi_timeframe_predictor
         self.ws_manager = websocket_manager
         self.prediction_cache = {}
