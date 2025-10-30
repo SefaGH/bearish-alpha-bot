@@ -438,6 +438,106 @@ class MarketDataPipeline:
             logger.error(f"❌ REST API fallback failed for {symbol} {timeframe}: {e}", exc_info=True)
             return None
     
+    async def get_latest_price(self, symbol: str, timeframe: str = '1m', exchange: str = None) -> Optional[float]:
+        """
+        Get latest price for a symbol with WebSocket-first approach and REST fallback.
+        
+        This is a centralized method that should be used by all components that need
+        current price data. It automatically handles:
+        1. WebSocket data retrieval (fastest, real-time)
+        2. REST API fallback if WebSocket unavailable
+        3. Multiple timeframe fallback strategy
+        
+        Args:
+            symbol: Trading symbol (e.g., 'BTC/USDT')
+            timeframe: Preferred timeframe (default: '1m')
+            exchange: Optional specific exchange name
+        
+        Returns:
+            Latest close price as float, or None if all sources fail
+        """
+        # STEP 1: Try WebSocket first (real-time data)
+        if self.websocket_manager:
+            try:
+                # Try to get data from preferred timeframe
+                ws_data = self.websocket_manager.get_latest_data(symbol, timeframe, exchange)
+                
+                if ws_data and isinstance(ws_data, dict) and ws_data.get('ohlcv'):
+                    ohlcv = ws_data['ohlcv']
+                    if isinstance(ohlcv, list) and len(ohlcv) > 0:
+                        latest_candle = ohlcv[-1]
+                        if isinstance(latest_candle, list) and len(latest_candle) >= 5:
+                            price = float(latest_candle[4])  # Close price
+                            if price > 0:
+                                logger.debug(f"✅ Price for {symbol} from WebSocket ({timeframe}): ${price:.2f}")
+                                return price
+                
+                # Fallback to other timeframes if preferred one failed
+                fallback_timeframes = ['1m', '5m', '15m', '30m', '1h', '4h']
+                if timeframe in fallback_timeframes:
+                    fallback_timeframes.remove(timeframe)
+                
+                for tf in fallback_timeframes:
+                    ws_data = self.websocket_manager.get_latest_data(symbol, tf, exchange)
+                    if ws_data and isinstance(ws_data, dict) and ws_data.get('ohlcv'):
+                        ohlcv = ws_data['ohlcv']
+                        if isinstance(ohlcv, list) and len(ohlcv) > 0:
+                            latest_candle = ohlcv[-1]
+                            if isinstance(latest_candle, list) and len(latest_candle) >= 5:
+                                price = float(latest_candle[4])
+                                if price > 0:
+                                    logger.debug(f"✅ Price for {symbol} from WebSocket ({tf} fallback): ${price:.2f}")
+                                    return price
+                
+                logger.debug(f"⚠️ WebSocket data unavailable or invalid for {symbol}")
+                
+            except Exception as e:
+                logger.debug(f"⚠️ Error getting price from WebSocket for {symbol}: {e}")
+        
+        # STEP 2: REST API Fallback
+        logger.debug(f"🔄 Falling back to REST API for {symbol} price")
+        
+        try:
+            # Determine which exchange to use
+            if not exchange and self.exchanges:
+                exchange = next(iter(self.exchanges.keys()))
+            
+            if not exchange or exchange not in self.exchanges:
+                logger.error(f"❌ No valid exchange available for REST API price fetch")
+                return None
+            
+            client = self.exchanges[exchange]
+            
+            # Fetch minimal data (just 1 candle) for efficiency
+            try:
+                ohlcv_data = await client.ohlcv(symbol, timeframe, limit=1, add_indicators=False)
+            except Exception as api_error:
+                logger.warning(f"⚠️ REST API call failed for {symbol}: {api_error}")
+                return None
+            
+            # Extract price from response
+            if ohlcv_data is not None:
+                if isinstance(ohlcv_data, pd.DataFrame) and not ohlcv_data.empty:
+                    price = float(ohlcv_data['close'].iloc[-1])
+                    if price > 0:
+                        logger.debug(f"✅ Price for {symbol} from REST API: ${price:.2f}")
+                        return price
+                elif isinstance(ohlcv_data, list) and len(ohlcv_data) > 0:
+                    # Handle raw OHLCV list format
+                    latest_candle = ohlcv_data[-1]
+                    if isinstance(latest_candle, list) and len(latest_candle) >= 5:
+                        price = float(latest_candle[4])
+                        if price > 0:
+                            logger.debug(f"✅ Price for {symbol} from REST API: ${price:.2f}")
+                            return price
+            
+            logger.warning(f"⚠️ REST API returned no valid price data for {symbol}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ REST API price fetch failed for {symbol}: {e}")
+            return None
+    
     def _get_best_data_source(self, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
         """
         Get data from the best available exchange source.

@@ -885,56 +885,42 @@ class LiveTradingEngine:
     
     async def _get_current_price(self, symbol: str) -> Optional[float]:
         """
-        Get current price with an intelligent WebSocket-first approach.
-        *** KÖK NEDEN DÜZELTMESİ: Bu metot, split hatasını önlemek için sağlamlaştırıldı. ***
+        Get current price using centralized MarketDataPipeline.
+        
+        This method now delegates to MarketDataPipeline.get_latest_price() which
+        handles WebSocket-first approach with REST fallback internally.
+        This eliminates direct websocket_manager access and ensures consistent
+        data flow across the entire system.
         """
-        # 1. ADIM: WebSocket Yöneticisinin varlığını ve hazır olup olmadığını kontrol et
-        if not (self.market_data_pipeline and self.market_data_pipeline.websocket_manager):
-            logger.warning("MarketDataPipeline or WebSocketManager not available for price fetching.")
-            return await self._get_current_price_from_rest(symbol)
-
-        # 2. ADIM: WebSocket'ten fiyat almayı dene (en hızlı yöntem)
+        # Check if MarketDataPipeline is available
+        if not self.market_data_pipeline:
+            logger.error(f"❌ CRITICAL: MarketDataPipeline not available for {symbol}")
+            return None
+        
+        # Use centralized price fetching from MarketDataPipeline
+        # It handles WebSocket-first with REST fallback internally
         try:
-            timeframes_str = self.config.get('websocket', {}).get('stream_timeframes', '1m,5m,15m,30m,1h,4h')
-            available_timeframes = [tf.strip() for tf in timeframes_str.split(',')]
-
-            for tf in available_timeframes:
-                ws_data = self.market_data_pipeline.websocket_manager.get_latest_data(symbol, tf)
+            price = await self.market_data_pipeline.get_latest_price(symbol, timeframe='1m')
+            
+            if price is not None and price > 0:
+                # Update statistics - track successful fetch
+                self.ws_stats['websocket_fetches'] += 1
+                self.ws_stats['consecutive_ws_failures'] = 0
+                return price
+            else:
+                # Price fetch failed from all sources
+                logger.error(f"❌ CRITICAL: Could not fetch price for {symbol} from MarketDataPipeline (all sources failed)")
+                self.ws_stats['websocket_failures'] += 1
+                self.ws_stats['consecutive_ws_failures'] += 1
+                return None
                 
-                if ws_data and isinstance(ws_data, dict) and ws_data.get('ohlcv'):
-                    latest_candle = ws_data['ohlcv'][-1]
-                    if isinstance(latest_candle, list) and len(latest_candle) >= 5:
-                        price = float(latest_candle[4])
-                        if price > 0:
-                            logger.debug(f"✅ Price for {symbol} found via WebSocket on timeframe '{tf}': ${price}")
-                            self.ws_stats['websocket_fetches'] += 1
-                            self.ws_stats['consecutive_ws_failures'] = 0
-                            return price
         except Exception as e:
-            logger.debug(f"Failed to get price from WebSocket for {symbol}: {e}")
+            logger.error(f"❌ Exception while fetching price for {symbol}: {e}", exc_info=True)
             self.ws_stats['websocket_failures'] += 1
             self.ws_stats['consecutive_ws_failures'] += 1
-        
-        # 3. ADIM: WebSocket başarısız olursa, REST API'ye düş (fallback)
-        logger.warning(f"⚠️ WebSocket price fetch failed for {symbol}. Falling back to REST API.")
-        return await self._get_current_price_from_rest(symbol)
+            return None
 
-    async def _get_current_price_from_rest(self, symbol: str) -> Optional[float]:
-        """Helper method to fetch price via REST API as a fallback."""
-        try:
-            df = await self._fetch_ohlcv(symbol, timeframe='1m', limit=1)
-            if df is not None and not df.empty:
-                price = df['close'].iloc[-1]
-                if price > 0:
-                    logger.debug(f"✅ Price for {symbol} found via REST API: ${price}")
-                    self.ws_stats['rest_fetches'] += 1
-                    return float(price)
-        except Exception as e:
-            logger.error(f"❌ REST API price fetch also failed for {symbol}: {e}", exc_info=True)
-        
-        logger.error(f"❌ CRITICAL: Could not fetch price for {symbol} from any source.")
-        return None
-    
+
     async def _position_monitoring_loop(self):
         """Enhanced position monitoring with real-time P&L and exit checking."""
         logger.info("Position monitoring loop started")

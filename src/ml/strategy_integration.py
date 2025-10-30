@@ -384,21 +384,24 @@ class MLStrategyIntegrationManager:
     def __init__(self, 
                  price_engine: Optional[AdvancedPricePredictionEngine],
                  regime_predictor: Optional[MLRegimePredictor],
-                 websocket_manager: Optional[WebSocketManager]): # *** DEĞİŞİKLİK 1: ws_manager eklendi ***
+                 market_data_pipeline: Optional[Any] = None): # *** UPDATED: Use MarketDataPipeline instead of websocket_manager ***
         """
         Initialize the integration manager.
         
         Args:
             price_engine: Price prediction engine. Can be None.
             regime_predictor: Regime prediction engine. Can be None.
-            websocket_manager: WebSocket manager to access real-time data. Can be None.
+            market_data_pipeline: MarketDataPipeline for centralized data access. Can be None.
         """
         self.price_engine = price_engine
         self.regime_predictor = regime_predictor
-        self.websocket_manager = websocket_manager # *** DEĞİŞİKLİK 1: ws_manager saklandı ***
+        self.market_data_pipeline = market_data_pipeline # *** UPDATED: Store MarketDataPipeline ***
+        
+        # Keep backward compatibility with websocket_manager attribute
+        self.websocket_manager = market_data_pipeline.websocket_manager if market_data_pipeline else None
         
         self.adapter = None
-        # Adapter'ın başlatılması için websocket_manager bir bağımlılık değil, bu yüzden mantık aynı kalıyor.
+        # Adapter'ın başlatılması için market_data_pipeline bir bağımlılık değil, bu yüzden mantık aynı kalıyor.
         if self.price_engine and self.regime_predictor:
             self.adapter = AIEnhancedStrategyAdapter(price_engine, regime_predictor)
             logger.info("✅ AIEnhancedStrategyAdapter initialized.")
@@ -412,7 +415,9 @@ class MLStrategyIntegrationManager:
     async def get_ml_context(self, symbol: str, horizon: str = '1h') -> Dict[str, Any]:
         """
         Gathers ML-driven context for a symbol, including price predictions and regime analysis.
-        This version correctly fetches data from the WebSocketManager and formats it for prediction models.
+        
+        *** UPDATED: Now uses centralized MarketDataPipeline for data access ***
+        This eliminates direct websocket_manager access and ensures consistent data flow.
         """
         logger.info(f"🧠 [ML-CONTEXT] Gathering ML context for {symbol}...")
         context = {
@@ -423,52 +428,31 @@ class MLStrategyIntegrationManager:
             'reason': "Initialization failed"
         }
 
-        # Adım 1: Rejim tahmini için gerekli veriyi WebSocketManager'dan al.
-        if not self.websocket_manager:
-            context['reason'] = "WebSocketManager is not available."
+        # Adım 1: Check if MarketDataPipeline is available
+        if not self.market_data_pipeline:
+            context['reason'] = "MarketDataPipeline is not available."
             logger.warning(f"🧠 [ML-CONTEXT] {context['reason']}")
             return context
         
-        # Log collector status for debugging
-        if hasattr(self.websocket_manager, 'collector') and self.websocket_manager.collector:
-            collector = self.websocket_manager.collector
-            if hasattr(collector, 'ohlcv_data'):
-                exchanges_with_data = list(collector.ohlcv_data.keys())
-                logger.debug(f"🧠 [ML-CONTEXT] Collector has data for exchanges: {exchanges_with_data}")
-                for ex in exchanges_with_data[:1]:  # Log first exchange only
-                    symbols_in_ex = list(collector.ohlcv_data[ex].keys())[:3]  # First 3 symbols
-                    logger.debug(f"🧠 [ML-CONTEXT] {ex} has data for: {symbols_in_ex}...")
-        else:
-            logger.debug("🧠 [ML-CONTEXT] Collector not accessible for debug logging")
-
-        price_data_dict = self.websocket_manager.get_latest_data(symbol, timeframe=horizon)
-        
-        if not price_data_dict or not price_data_dict.get('ohlcv'):
-            # Fallback: Try alternative timeframes if requested timeframe has no data
-            fallback_timeframes = ['30m', '1h', '5m', '1m', '4h']
-            if horizon in fallback_timeframes:
-                fallback_timeframes.remove(horizon)  # Remove the already-tried one
+        # Adım 2: Get OHLCV data using centralized MarketDataPipeline
+        # This automatically handles WebSocket-first with REST fallback
+        try:
+            price_data = await self.market_data_pipeline.get_latest_ohlcv(
+                symbol=symbol, 
+                timeframe=horizon,
+                exchange=None  # Let pipeline choose best exchange
+            )
             
-            for alt_tf in fallback_timeframes:
-                price_data_dict = self.websocket_manager.get_latest_data(symbol, timeframe=alt_tf)
-                if price_data_dict and price_data_dict.get('ohlcv'):
-                    logger.info(f"🧠 [ML-CONTEXT] Using {alt_tf} data as fallback for {horizon} (original timeframe not available yet)")
-                    break
-            else:
-                # No data available in any timeframe
-                context['reason'] = f"Could not retrieve price data for {symbol} from WebSocketManager (tried {horizon} and fallbacks)."
+            if price_data is None or price_data.empty:
+                context['reason'] = f"Could not retrieve OHLCV data for {symbol} from MarketDataPipeline (tried {horizon})."
                 logger.warning(f"🧠 [ML-CONTEXT] {context['reason']}")
                 return context
-
-        # Adım 2: Gelen veriyi DataFrame'e dönüştür.
-        try:
-            ohlcv_list = price_data_dict['ohlcv']
-            price_data = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            price_data['timestamp'] = pd.to_datetime(price_data['timestamp'], unit='ms')
-            price_data.set_index('timestamp', inplace=True)
-        except (ValueError, KeyError) as e:
-            context['reason'] = f"Failed to parse OHLCV data into DataFrame: {e}"
-            logger.error(f"🧠 [ML-CONTEXT] {context['reason']}")
+            
+            logger.debug(f"🧠 [ML-CONTEXT] Retrieved {len(price_data)} candles for {symbol} via MarketDataPipeline")
+            
+        except Exception as e:
+            context['reason'] = f"Failed to fetch OHLCV data from MarketDataPipeline: {e}"
+            logger.error(f"🧠 [ML-CONTEXT] {context['reason']}", exc_info=False)
             return context
 
         # Adım 3: Fiyat Tahmini yap (mevcut mantık aynı kalıyor).
