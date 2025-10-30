@@ -465,6 +465,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
                     if base_signal:
                         base_signal['strategy_type'] = 'base_fallback'
                         base_signal['fallback_reason'] = str(e)
+                        base_signal['symbol'] = symbol  # Add symbol field for fallback signals
                         logger.info("✅ Fallback to base strategy successful")
                         return base_signal
             except Exception as fallback_error:
