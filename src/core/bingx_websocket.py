@@ -243,24 +243,24 @@ class BingXWebSocket:
             return False
 
     async def subscribe_kline(self, symbol: str, interval: str = "1m") -> bool:
-    """Subscribes to a kline/candlestick stream."""
-    try:
-        bingx_symbol = self._convert_symbol_to_bingx(symbol)
-        bingx_interval = self._convert_timeframe(interval)
-        data_type = f"{bingx_symbol}@kline_{bingx_interval}"
-        
-        sub_message = {"id": data_type, "reqType": "sub", "dataType": data_type}
-        self.subscriptions[data_type] = sub_message # Gelecekteki reconnect'ler için sakla
-        
-        # Eğer zaten bağlıysak, hemen gönder. Değilsek, _on_open'de gönderilecek.
-        if self._is_connected:
-            self._send_json_threadsafe(sub_message)
-        
-        logger.info(f"Subscription for kline '{data_type}' has been queued.")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to queue kline subscription for {symbol} {interval}: {e}")
-        return False
+        """Subscribes to a kline/candlestick stream."""
+        try:
+            bingx_symbol = self._convert_symbol_to_bingx(symbol)
+            bingx_interval = self._convert_timeframe(interval)
+            data_type = f"{bingx_symbol}@kline_{bingx_interval}"
+            
+            sub_message = {"id": data_type, "reqType": "sub", "dataType": data_type}
+            self.subscriptions[data_type] = sub_message # Gelecekteki reconnect'ler için sakla
+            
+            # Eğer zaten bağlıysak, hemen gönder. Değilsek, _on_open'de gönderilecek.
+            if self._is_connected:
+                self._send_json_threadsafe(sub_message)
+            
+            logger.info(f"Subscription for kline '{data_type}' has been queued.")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to queue kline subscription for {symbol} {interval}: {e}")
+            return False
 
     async def _resubscribe(self):
         """Resubscribes to all tracked channels after a reconnection."""
