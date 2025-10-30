@@ -32,7 +32,7 @@ class ConflictResolutionStrategy(Enum):
 class StrategyCoordinator:
     """Coordinate signals and positions across multiple strategies."""
     
-    def __init__(self, portfolio_manager, risk_manager, market_data_pipeline=None, config=None, **kwargs):
+    def __init__(self, portfolio_manager, risk_manager, market_data_pipeline=None, indicator_manager=None, config=None, **kwargs):
         """
         Initialize strategy coordinator.
     
@@ -40,12 +40,14 @@ class StrategyCoordinator:
             portfolio_manager: PortfolioManager instance
             risk_manager: RiskManager instance
             market_data_pipeline: Optional MarketDataPipeline instance (injected by production coordinator)
+            indicator_manager: Optional IndicatorManager instance (injected by production coordinator) # <-- YENİ
             config: Optional configuration dictionary
             **kwargs: Catches any other future arguments for forward compatibility.
         """
         self.portfolio_manager = portfolio_manager
         self.risk_manager = risk_manager
         self.market_data_pipeline = market_data_pipeline
+        self.indicator_manager = indicator_manager  # <-- YENİ ATAMA
         self.config = config or {}
     
         # Signal management
@@ -90,24 +92,20 @@ class StrategyCoordinator:
         and processes any generated signals.
         This method is called by the ProductionCoordinator.
         """
-        if not self.market_data_pipeline:
-            logger.error(f"Cannot run strategies for {symbol}: MarketDataPipeline is not available.")
+        # market_data_pipeline yerine indicator_manager'ı kontrol et
+        if not self.indicator_manager:
+            logger.error(f"Cannot run strategies for {symbol}: IndicatorManager is not available.")
             return
 
         # 1. Gerekli verileri ve ML context'i hazırla
         df_30m, df_1h, ml_context = None, None, None
         try:
-            # IndicatorManager'dan veriyi al
-            if hasattr(self.market_data_pipeline, 'indicator_manager'):
-                 df_30m = self.market_data_pipeline.indicator_manager.get_indicator_data(symbol, "30m")
-                 df_1h = self.market_data_pipeline.indicator_manager.get_indicator_data(symbol, "1h")
-            else:
-                 logger.error(f"IndicatorManager not found in MarketDataPipeline for {symbol}")
-                 return
+            # Veriyi doğrudan self.indicator_manager'dan al
+            df_30m = self.indicator_manager.get_indicator_data(symbol, "30m")
+            df_1h = self.indicator_manager.get_indicator_data(symbol, "1h")
 
             if df_30m is None or df_30m.empty:
                 logger.warning(f"No 30m indicator data available for {symbol} to run strategies.")
-                # 30m verisi olmadan çoğu strateji çalışamaz, bu yüzden burada durabiliriz.
                 return
 
             # ML verisini al (eğer varsa)
