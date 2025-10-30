@@ -1344,17 +1344,58 @@ class LiveTradingLauncher:
             
             # Phase 4.3: Strategy Optimization
             logger.info("Initializing strategy optimizer...")
-            config = OptimizationConfiguration.get_default_config()
-            self.strategy_optimizer = StrategyOptimizer(config)
+            from config.optimization_config import OptimizationConfiguration
+            opt_config = OptimizationConfiguration.get_default_config()
+            self.strategy_optimizer = StrategyOptimizer(opt_config)
             logger.info("✓ Strategy Optimizer initialized")
             
             # Phase 4.4: Price Prediction (YENİDEN YAPILANDIRILDI)
             logger.info("Initializing price prediction engine...")
             
             ml_config = self.config.get('ml', {})
-            timeframes = ml_config.get('timeframes', ['5m', '15m', '1h'])
-            model_types = ml_config.get('models', ['lstm', 'transformer'])
+
+            # 1. Merkezi config'den doğru zaman aralıklarını oku
+            timeframes_for_models = ml_config.get('timeframes', [])
+            if not timeframes_for_models:
+                logger.error("❌ ML timeframes list is empty in the configuration. Cannot initialize price prediction engine.")
+                return False
+
+            logger.info(f"Price Prediction Engine will be configured for timeframes: {timeframes_for_models}")
+
+            # 2. Merkezi config'den model tiplerini ve parametrelerini oku
+            model_types = ml_config.get('models', [])
             model_params = ml_config.get('model_params', {})
+
+            models_by_timeframe = {}
+            for tf in timeframes_for_models:
+                ensemble_models = {}
+                for model_type in model_types:
+                    # Modeli, YAML'dan gelen parametrelerle başlat
+                    params = model_params.get(model_type, {})
+                    if not params:
+                        logger.warning(f"No parameters found for model '{model_type}' in config. Using defaults.")
+
+                    if model_type == 'lstm':
+                        ensemble_models['lstm'] = LSTMPricePredictor(**params)
+                    elif model_type == 'transformer':
+                        # Transformer d_model çift olmalı, kontrol ekleyelim
+                        if 'd_model' in params and params['d_model'] % 2 != 0:
+                            original_d = params['d_model']
+                            params['d_model'] += 1
+                            logger.warning(f"Transformer d_model for {tf} must be even. Adjusted from {original_d} to {params['d_model']}.")
+                        ensemble_models['transformer'] = TransformerPricePredictor(**params)
+                
+                models_by_timeframe[tf] = EnsemblePricePredictor(ensemble_models)
+                logger.info(f"✓ Created model instances for timeframe '{tf}' with params from config.")
+
+            multi_timeframe_predictor = MultiTimeframePricePredictor(models_by_timeframe)
+            
+            self.price_engine = AdvancedPricePredictionEngine(multi_timeframe_predictor)
+            logger.info("✓ Price Prediction Engine initialized")
+
+            # 3. Modelleri yükle. Artık her şey (zaman aralıkları, input boyutları) eşleşiyor.
+            logger.info("Attempting to load pre-trained models for the price engine...")
+            self.price_engine.load_models()
 
             models_by_timeframe = {}
             for tf in timeframes:
