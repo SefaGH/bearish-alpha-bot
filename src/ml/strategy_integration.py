@@ -455,37 +455,37 @@ class MLStrategyIntegrationManager:
             logger.error(f"🧠 [ML-CONTEXT] {context['reason']}", exc_info=False)
             return context
 
-        # Adım 3: Fiyat Tahmini yap (mevcut mantık aynı kalıyor).
+        # --- Fiyat Tahmini ---
+        # ✅ DÜZELTME 1: `get_price_forecast` çağrılıyor ve `await` kaldırıldı.
         if self.price_engine:
             try:
-                # Not: price_engine.predict'in de 'await' gerektirdiğini varsayıyoruz.
-                prediction = await self.price_engine.predict(symbol, horizon=horizon)
-                if prediction and 'predicted_price' in prediction:
+                prediction = self.price_engine.get_price_forecast(symbol)
+                if prediction:
                     context['prediction'] = prediction
-                    context['confidence'] = prediction.get('confidence', 0.0)
+                    # Güven (confidence) genellikle tahminin kendisinden gelir.
+                    context['confidence'] = prediction.get('aggregated', {}).get('consensus_strength', 0.0)
             except Exception as e:
                 logger.error(f"🧠 [ML-CONTEXT] Price prediction crashed for {symbol}: {e}", exc_info=False)
 
-        # Adım 4: Rejim Tahmini yap (doğru veri formatıyla).
+        # --- Rejim Tahmini ---
+        # ✅ DÜZELTME 2: `predict` çağrılıyor, parametreler düzeltildi ve `await` kaldırıldı.
         if self.regime_predictor:
             try:
-                # Artık elimizde olan DataFrame'i veriyoruz.
-                regime = await self.regime_predictor.predict_regime_transition(
-                    symbol=symbol, 
-                    price_data=price_data, 
-                    horizon=horizon
-                )
+                regime = self.regime_predictor.predict(price_data)
                 context['regime'] = regime
-                logger.info(f"🧠 [ML-CONTEXT] Market regime for {symbol}: {regime.get('predicted_regime', 'unknown')}")
+                logger.info(f"🧠 [ML-CONTEXT] Market regime for {symbol}: {regime.get('regime', 'unknown')}")
             except Exception as e:
                 logger.error(f"🧠 [ML-CONTEXT] Regime prediction crashed for {symbol}: {e}", exc_info=False)
 
-        # Adım 5: Sağlık durumunu belirle.
+        # --- Sağlık Durumu ---
         if context['prediction'] and context['regime']:
             context['is_healthy'] = True
             context['reason'] = "ML context successfully gathered."
         else:
-            context['reason'] = "One or more ML components failed to produce output."
+            reasons = []
+            if not context['prediction']: reasons.append("Price prediction failed or unavailable")
+            if not context['regime']: reasons.append("Regime prediction failed")
+            context['reason'] = ". ".join(reasons)
         
         if not context['is_healthy']:
              logger.warning(f"🧠 [ML-CONTEXT] ML context for {symbol} is unhealthy. Reason: {context['reason']}")
