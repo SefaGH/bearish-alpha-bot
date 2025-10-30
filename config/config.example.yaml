@@ -280,16 +280,32 @@ ml:
   
   # Model Settings
   models:
-    lstm_enabled: true
-    transformer_enabled: true
-    ensemble_enabled: true
+    - 'lstm'
+    - 'transformer'
+    #ensemble_enabled: true
 
   # Timeframes for multi-timeframe price predictor
   # These determine which model files to load (e.g., lstm_1h.pth, transformer_4h.pth)
   # Override with ML_TIMEFRAMES environment variable (comma-separated)
   timeframes:
+    - '5m'
+    - '15m'
     - '1h'
     - '4h'
+
+  # --- DÜZENLEME 3: Model parametrelerini buraya taşıyalım ---
+  # Bu, launcher'ın modelleri doğru input_size ile başlatmasını sağlar.
+  model_params:
+    lstm:
+      input_size: 42 # ÖNEMLİ: Bu sayıyı kendi özellik sayınızla güncelleyin!
+      hidden_size: 128
+      num_layers: 3
+      forecast_horizon: 12
+    transformer:
+      d_model: 42 # ÖNEMLİ: Bu sayıyı kendi özellik sayınızla güncelleyin (çift olmalı)!
+      nhead: 2
+      num_layers: 6
+      forecast_horizon: 12
 
   # Prediction Settings
   prediction:
