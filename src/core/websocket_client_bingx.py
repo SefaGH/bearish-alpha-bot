@@ -142,13 +142,29 @@ class WebSocketClient:
         return self.bingx_ws.is_connected() if self.bingx_ws else False
     
     def get_health_status(self) -> Dict[str, Any]:
-        """Gets a reliable health status from the underlying BingXWebSocket instance."""
-        if not self.bingx_ws:
-            return {'status': 'uninitialized', 'connected': False}
+        """
+        Get the health status of the underlying BingX WebSocket connection.
+
+        Returns:
+            A dictionary containing health status information.
+        """
+        if not self.ws:
+            return {
+                'connected': False,
+                'listen_task_status': 'not_initialized',
+                'subscriptions': 0,
+                'message_count': 0
+            }
         
-        # Görevi doğrudan alt katmana devrediyoruz.
-        # Alt katmanın get_status metodu artık güvenilir olduğu için
-        # burada ek bir işlem yapmaya gerek yok.
-        status = self.bingx_ws.get_status()
-        status['wrapper_running'] = self._running
-        return status
+        # --- YENİ VE İYİLEŞTİRİLMİŞ SAĞLIK KONTROLÜ ---
+        # Altta yatan 'websocket-client' kütüphanesinin kendi durumunu kullanıyoruz.
+        # Bu, thread'in canlı olup olmadığını doğrudan kontrol eder.
+        listen_status = "running" if self.ws.is_listening() else "stopped"
+
+        return {
+            'connected': self.ws.is_connected(),
+            'listen_task_status': listen_status,
+            'subscriptions': self.ws.get_subscription_count(),
+            'message_count': self.ws.get_message_count(),
+            'last_message_time': self.ws.last_message_time
+        }
