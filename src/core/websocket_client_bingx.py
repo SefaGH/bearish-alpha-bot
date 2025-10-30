@@ -78,13 +78,30 @@ class WebSocketClient:
         """
         Ensures the underlying WebSocket client's 'start' method is called once.
         Uses a lock to prevent race conditions.
+        Waits for connection to establish before returning.
         """
         async with self._connection_lock:
             if not self._tasks_started:
                 self.bingx_ws.start()  # Yeni, thread-safe başlatma metodu
                 self._tasks_started = True
                 logger.info("BingXWebSocket client 'start' method called.")
-            # Bu mimaride, bağlantı thread'de kurulur, hemen True dönebiliriz.
+                
+                # Wait for connection to establish (max 10 seconds)
+                logger.info("Waiting for WebSocket connection to establish...")
+                for i in range(20):  # 20 iterations * 0.5s = 10 seconds max
+                    await asyncio.sleep(0.5)
+                    if self.bingx_ws.is_connected():
+                        logger.info(f"✅ WebSocket connected after {(i+1)*0.5:.1f}s")
+                        return True
+                
+                # Connection not established within timeout
+                logger.warning("⚠️ WebSocket connection not established within 10s, proceeding anyway (subscriptions will be queued)")
+                return True  # Return True to allow subscriptions to be queued
+            
+            # Already started, just verify connection
+            if not self.bingx_ws.is_connected():
+                logger.debug("WebSocket not yet connected, subscriptions will be queued")
+            
             return True
     
     async def watch_ohlcv_loop(self, symbol: str, timeframe: str = '1m',
