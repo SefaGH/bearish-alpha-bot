@@ -468,10 +468,11 @@ class MLStrategyIntegrationManager:
                 logger.error(f"🧠 [ML-CONTEXT] Price prediction crashed for {symbol}: {e}", exc_info=False)
 
         # --- Rejim Tahmini ---
-        # ✅ DÜZELTME 2: `predict` çağrılıyor, parametreler düzeltildi ve `await` kaldırıldı.
+        # ✅ DÜZELTME 2: Yanlış olan `predict` metodu yerine doğru olan `get_regime_prediction` metodu çağrılıyor.
         if self.regime_predictor:
             try:
-                regime = self.regime_predictor.predict(price_data)
+                # ÖNCEKİ YANLIŞ KOD: regime = self.regime_predictor.predict(price_data)
+                regime = self.regime_predictor.get_regime_prediction(symbol, price_data) # <-- TEK DEĞİŞİKLİK BU SATIRDA
                 context['regime'] = regime
                 logger.info(f"🧠 [ML-CONTEXT] Market regime for {symbol}: {regime.get('regime', 'unknown')}")
             except Exception as e:
