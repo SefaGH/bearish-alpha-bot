@@ -397,21 +397,11 @@ class MarketDataPipeline:
             limit_map = {'1m': 100, '5m': 100, '30m': 200, '1h': 200, '4h': 200, '1d': 200}
             limit = limit_map.get(timeframe, 200)
             
-            # Call the REST API (note: this may be async in some implementations)
+            # Call the REST API
+            # Note: We call the synchronous ohlcv method directly
+            # The CcxtClient provides a sync wrapper for async operations
             try:
-                # Try async version first
-                import asyncio
-                if asyncio.iscoroutinefunction(client.ohlcv):
-                    # If we're in async context, await it
-                    import inspect
-                    if inspect.iscoroutinefunction(self.get_latest_ohlcv):
-                        ohlcv_data = await client.ohlcv(symbol, timeframe, limit)
-                    else:
-                        # Sync context - can't await, try sync version
-                        logger.error("❌ Cannot call async ohlcv from sync context")
-                        return None
-                else:
-                    ohlcv_data = client.ohlcv(symbol, timeframe, limit)
+                ohlcv_data = client.ohlcv(symbol, timeframe, limit)
             except Exception as api_error:
                 logger.error(f"❌ REST API call failed for {symbol} {timeframe}: {api_error}")
                 return None
