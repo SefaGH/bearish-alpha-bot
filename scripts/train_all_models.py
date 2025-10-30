@@ -30,7 +30,8 @@ logger = setup_logger("model-trainer", level=logging.DEBUG, log_to_file=True, lo
 
 # --- EĞİTİM PARAMETRELERİ ---
 SYMBOLS_TO_TRAIN = ['BTC/USDT']
-TIMEFRAMES_TO_TRAIN = ['1h', '4h']
+# --- ÇÖZÜM: Eksik olan '5m' ve '15m' zaman aralıkları eklendi. Mevcutlar korundu. ---
+TIMEFRAMES_TO_TRAIN = ['5m', '15m', '1h', '4h']
 CANDLE_LIMIT = 1440
 
 async def main():
