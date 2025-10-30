@@ -144,7 +144,8 @@ class WebSocketClient:
     def get_health_status(self) -> Dict[str, Any]:
         """
         Get the health status of the underlying BingX WebSocket connection.
-        This now directly queries the underlying websocket-client thread and state.
+        This now directly queries the underlying websocket-client thread and state,
+        making it much more reliable for the health check loop.
         """
         if not self.ws:
             return {
@@ -154,8 +155,8 @@ class WebSocketClient:
                 'message_count': 0
             }
         
-        # Altta yatan 'websocket-client' kütüphanesinin kendi durumunu kullanıyoruz.
-        # Bu, thread'in canlı olup olmadığını doğrudan kontrol eder ve çok daha güvenilirdir.
+        # Altta yatan 'BingXWebSocket' nesnesinin kendi durumunu kullanıyoruz.
+        # Bu, thread'in canlı olup olmadığını ve bağlantı durumunu doğrudan kontrol eder.
         listen_status = "running" if self.ws.is_listening() else "stopped"
 
         return {
