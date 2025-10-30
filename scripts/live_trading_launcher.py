@@ -1323,12 +1323,14 @@ class LiveTradingLauncher:
     async def _initialize_ai_components(self) -> bool:
         """
         Initialize Phase 4 AI enhancement components.
-        
-        [... mevcut kod ...]
+        (GÜNCELLENDİ: Modelleri ve zaman dilimlerini config'den okur)
         """
         logger.info("\n[4/8] Initializing Phase 4 AI Components...")
         
         try:
+            # Config'i yükle (henüz yüklenmediyse)
+            self._load_config()
+            
             # Phase 4.1: ML Regime Prediction
             logger.info("Initializing regime predictor...")
             self.regime_predictor = MLRegimePredictor()
@@ -1343,21 +1345,29 @@ class LiveTradingLauncher:
             self.strategy_optimizer = StrategyOptimizer(config)
             logger.info("✓ Strategy Optimizer initialized")
             
-            # Phase 4.4: Price Prediction
+            # Phase 4.4: Price Prediction (YENİDEN YAPILANDIRILDI)
             logger.info("Initializing price prediction engine...")
             
-            # Initialize multi-timeframe predictor
-            models = {
-                '5m': EnsemblePricePredictor({'lstm': None, 'transformer': None}),
-                '15m': EnsemblePricePredictor({'lstm': None, 'transformer': None}),
-                '1h': EnsemblePricePredictor({'lstm': None, 'transformer': None})
-            }
-            multi_timeframe_predictor = MultiTimeframePricePredictor(models)
+            # --- ÇÖZÜM: Timeframes ve modelleri config'den oku ---
+            ml_config = self.config.get('ml', {})
+            timeframes = ml_config.get('timeframes', ['5m', '15m', '1h'])
+            model_types = ml_config.get('models', ['lstm', 'transformer'])
+
+            # Multi-timeframe predictor'ı dinamik olarak oluştur
+            models_by_timeframe = {}
+            for tf in timeframes:
+                # Her zaman dilimi için bir model sözlüğü oluştur
+                # Başlangıçta modeller None, `load_models` bunları dolduracak.
+                ensemble_models = {model_type: None for model_type in model_types}
+                models_by_timeframe[tf] = EnsemblePricePredictor(ensemble_models)
             
-            # Correct initialization with required parameter
+            multi_timeframe_predictor = MultiTimeframePricePredictor(models_by_timeframe)
+            
+            # AdvancedPricePredictionEngine'i doğru yapılandırılmış predictor ile başlat
             self.price_engine = AdvancedPricePredictionEngine(multi_timeframe_predictor)
             logger.info("✓ Price Prediction Engine initialized")
-            
+            # --- ÇÖZÜM SONU ---
+
             # Strategy integration adapter
             if self.regime_predictor and self.price_engine:
                 self.strategy_adapter = AIEnhancedStrategyAdapter(
@@ -1375,9 +1385,9 @@ class LiveTradingLauncher:
             return True
             
         except Exception as e:
-            logger.error(f"❌ Failed to initialize AI components: {e}")
+            logger.error(f"❌ Failed to initialize AI components: {e}", exc_info=True)
             logger.warning("⚠ Continuing with limited AI features")
-            return False  # Non-critical, can continue
+            return False
     
     async def _initialize_strategies(self) -> bool:
         """Initialize adaptive trading strategies."""
@@ -1486,7 +1496,6 @@ class LiveTradingLauncher:
             self.ws_optimizer.setup_from_config(self.config)
             
             # Adım B: WebSocket bağlantılarını ve stream'lerini BAŞLAT.
-            # Bu çağrı, ws_optimizer içinde ws_manager'ı oluşturur, bağlantıyı kurar ve veri akışını başlatır.
             ws_success = await self.ws_optimizer.initialize_and_subscribe(
                 self.exchange_clients,
                 self.TRADING_PAIRS
@@ -1499,18 +1508,16 @@ class LiveTradingLauncher:
             from core.production_coordinator import ProductionCoordinator
             self.coordinator = ProductionCoordinator()
             
-            # Adım D: ProductionCoordinator'ı, HER KOŞULDA WebSocket yöneticisiyle başlat.
-            # WebSocket bağlantısı başarısız olsa bile, `ws_manager` nesnesi var olduğu için
-            # `ProductionCoordinator` ve alt bileşenleri (MarketDataPipeline) ondan haberdar olacak.
+            # Adım D: ProductionCoordinator'ı, WebSocket yöneticisi ve ML bileşenleriyle başlat.
             init_result = await self.coordinator.initialize_production_system(
                 exchange_clients=self.exchange_clients,
                 portfolio_config=portfolio_config,
                 mode=self.mode,
                 trading_symbols=self.TRADING_PAIRS,
-                # *** KRİTİK DÜZELTME: `if ws_success` koşulunu kaldırıyoruz. ***
-                # ws_manager nesnesini, bağlantı başarılı olmasa bile veriyoruz.
-                # Böylece MarketDataPipeline, en azından bir collector'ın varlığından haberdar olur.
-                websocket_manager=self.ws_optimizer.ws_manager
+                websocket_manager=self.ws_optimizer.ws_manager,
+                # --- ÇÖZÜM: Hazır ML nesnelerini parametre olarak veriyoruz ---
+                price_engine=self.price_engine,
+                regime_predictor=self.regime_predictor
             )
     
             if not init_result.get('success'):
