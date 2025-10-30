@@ -690,6 +690,11 @@ class ProductionCoordinator:
         signal_count = 0
         error_count = 0
 
+        # Strateji koordinatörünün varlığını kontrol et
+        if not self.strategy_coordinator:
+            logger.error("❌ StrategyCoordinator is not initialized. Cannot run strategies.")
+            return
+
         for symbol in self.active_symbols:
             try:
                 logger.info(f"⚙️ [PROCESS] Processing symbol: {symbol}")
@@ -698,20 +703,25 @@ class ProductionCoordinator:
                 if self.ml_integration:
                     try:
                         context_dict = await self.ml_integration.get_ml_context(symbol)
-                        
                         if context_dict and context_dict.get('is_healthy'):
                             ml_context = context_dict
                             logger.info(f"🧠 [ML] {symbol}: ML context successfully generated.")
                         else:
                             reason = context_dict.get('reason', 'unknown reason')
                             logger.warning(f"🧠 [ML] {symbol}: ML context is unhealthy or unavailable. Reason: {reason}")
-
                     except Exception as e:
-                        logger.error(f"🧠 [ML] {symbol}: Critical error during ML context generation: {e}", exc_info=True)
+                        logger.error(f"🧠 [ML] {symbol}: Critical error during ML context generation: {e}", exc_info=False)
                         error_count += 1
 
-                signals_generated = await self._run_strategies_for_symbol(symbol, ml_context)
-                signal_count += len(signals_generated)
+                # DOĞRU ÇAĞRI: Stratejileri çalıştırma görevini StrategyCoordinator'a devret.
+                signals = await self.strategy_coordinator.run_strategies_for_symbol(symbol, ml_context)
+                
+                if signals:
+                    signal_count += len(signals)
+                    for signal in signals:
+                        # Sinyal işleme ve loglama mantığı burada olabilir (opsiyonel)
+                        logger.info(f"💡 [SIGNAL-QUEUED] {signal.get('strategy','UNKNOWN').upper()} signal for {symbol} queued in StrategyCoordinator")
+
                 processed_count += 1
 
             except Exception as e:
@@ -722,7 +732,6 @@ class ProductionCoordinator:
         logger.info(f"✅ [PROCESSING] Completed processing loop in {end_time - start_time:.2f}s")
         logger.info(f"   Processed: {processed_count}/{len(self.active_symbols)} symbols")
         logger.info(f"   Signals: {signal_count} | Errors: {error_count}")
-        self.loop_iteration += 1
 
     def _get_default_symbols(self) -> List[str]:
         """
