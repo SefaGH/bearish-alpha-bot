@@ -262,6 +262,15 @@ class LiveTradingConfiguration:
             'ema_slow': cls.get_env_int('INDICATOR_EMA_SLOW', 200),
         }
 
+        # ============= ML CONFIG (Issue #135) =============
+        env_config['ml'] = {
+            'enabled': cls.get_env_bool('ML_ENABLED', True),
+            'timeframes': cls.get_env_list(
+                'ML_TIMEFRAMES',
+                ['1h', '4h']
+            )
+        }
+        
         # ==========================================================
         # DEBUG AYARLARI
         # ==========================================================
