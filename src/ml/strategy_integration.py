@@ -456,25 +456,26 @@ class MLStrategyIntegrationManager:
             return context
 
         # --- Fiyat Tahmini ---
-        # ✅ DÜZELTME 1: `get_price_forecast` çağrılıyor ve `await` kaldırıldı.
         if self.price_engine:
             try:
+                # `await` kaldırıldı çünkü get_price_forecast async değil.
                 prediction = self.price_engine.get_price_forecast(symbol)
                 if prediction:
                     context['prediction'] = prediction
-                    # Güven (confidence) genellikle tahminin kendisinden gelir.
                     context['confidence'] = prediction.get('aggregated', {}).get('consensus_strength', 0.0)
             except Exception as e:
                 logger.error(f"🧠 [ML-CONTEXT] Price prediction crashed for {symbol}: {e}", exc_info=False)
 
         # --- Rejim Tahmini ---
-        # ✅ DÜZELTME 2: Yanlış olan `predict` metodu yerine doğru olan `get_regime_prediction` metodu çağrılıyor.
+        # ✅ KESİN ÇÖZÜM: `regime_predictor.py` dosyasındaki doğru metot olan `predict_regime_transition` çağrılıyor.
         if self.regime_predictor:
             try:
-                # ÖNCEKİ YANLIŞ KOD: regime = self.regime_predictor.predict(price_data)
-                regime = self.regime_predictor.get_regime_prediction(symbol, price_data) # <-- TEK DEĞİŞİKLİK BU SATIRDA
+                # ÖNCEKİ YANLIŞ ÇAĞRILAR: .predict() veya .get_regime_prediction()
+                # DOĞRU ÇAĞRI:
+                regime = await self.regime_predictor.predict_regime_transition(symbol=symbol, price_data=price_data, horizon=horizon)
+                
                 context['regime'] = regime
-                logger.info(f"🧠 [ML-CONTEXT] Market regime for {symbol}: {regime.get('regime', 'unknown')}")
+                logger.info(f"🧠 [ML-CONTEXT] Market regime for {symbol}: {regime.get('predicted_regime', 'unknown')}")
             except Exception as e:
                 logger.error(f"🧠 [ML-CONTEXT] Regime prediction crashed for {symbol}: {e}", exc_info=False)
 
