@@ -90,6 +90,8 @@ class BingXWebSocket:
         # Sağlık kontrolü için _last_ping_time özelliğini burada başlatıyoruz.
         self._last_ping_time: Optional[float] = None
         # === EKLEME SONU ===
+        self._loop = asyncio.get_event_loop() # Ana programın döngüsünü sakla
+        logger.info(f"BingX WebSocket initialized (futures market, using 'websocket-client' library)")
         
         logger.info(f"BingX WebSocket initialized ({'futures' if futures else 'spot'} market)")
 
@@ -144,8 +146,8 @@ class BingXWebSocket:
         self._is_connected = True
         self.connection_start_time = datetime.now(timezone.utc)
         self._reconnect_attempts = 0
-        # Ana loop'a yeniden abone olma görevini güvenli bir şekilde gönder
-        asyncio.run_coroutine_threadsafe(self._resubscribe_async(), asyncio.get_event_loop())
+        # Ana loop'a yeniden abone olma görevini, sakladığımız döngüyü kullanarak gönder
+        asyncio.run_coroutine_threadsafe(self._resubscribe_async(), self._loop)
     
     def _on_message(self, ws, message):
         """Callback for incoming messages (runs in thread)."""
