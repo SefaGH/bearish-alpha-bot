@@ -3,6 +3,7 @@ Indicator Warmup Validation Module
 Ensures all technical indicators are properly calculated before trading begins.
 """
 
+import asyncio
 import numpy as np
 import pandas as pd
 import logging
