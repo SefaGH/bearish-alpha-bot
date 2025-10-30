@@ -713,9 +713,9 @@ class ProductionCoordinator:
                 # 2. İndikatörlü verileri doğrudan MarketDataPipeline'dan al.
                 # Bu sınıf, veriyi merkezi yerden (WebSocket veya REST) alıp indikatör eklemekle sorumlu.
                 if self.market_data_pipeline:
-                    # get_latest_ohlcv metodu zaten indikatörleri ekleyip DataFrame döndürüyor.
-                    df_30m = self.market_data_pipeline.get_latest_ohlcv(symbol, "30m")
-                    df_1h = self.market_data_pipeline.get_latest_ohlcv(symbol, "1h")
+                    # get_latest_ohlcv metodu async olarak indikatörleri ekleyip DataFrame döndürüyor.
+                    df_30m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "30m")
+                    df_1h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "1h")
                 else:
                     logger.error("❌ MarketDataPipeline is not available in ProductionCoordinator.")
                     error_count += len(strategies_to_run)

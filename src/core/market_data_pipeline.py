@@ -339,9 +339,9 @@ class MarketDataPipeline:
         # logger.warning(f"DEPRECATED: _store_data for {exchange}:{symbol}:{timeframe} was called. This is a no-op.")
         pass
     
-    def get_latest_ohlcv(self, symbol: str, timeframe: str, exchange: str = None) -> Optional[pd.DataFrame]:
+    async def get_latest_ohlcv(self, symbol: str, timeframe: str, exchange: str = None) -> Optional[pd.DataFrame]:
         """
-        Get latest OHLCV data with REST API fallback.
+        Get latest OHLCV data with REST API fallback (async).
         
         Priority:
         1. Try to get data from WebSocket (real-time)
@@ -349,6 +349,8 @@ class MarketDataPipeline:
         3. Return None only if both sources fail
         
         This ensures strategies always receive valid data when possible.
+        
+        Note: This method is async to properly handle the async REST API fallback.
         """
         df = None
         
@@ -397,11 +399,9 @@ class MarketDataPipeline:
             limit_map = {'1m': 100, '5m': 100, '30m': 200, '1h': 200, '4h': 200, '1d': 200}
             limit = limit_map.get(timeframe, 200)
             
-            # Call the REST API
-            # Note: We call the synchronous ohlcv method directly
-            # The CcxtClient provides a sync wrapper for async operations
+            # Call the REST API (async method - we can await it now)
             try:
-                ohlcv_data = client.ohlcv(symbol, timeframe, limit)
+                ohlcv_data = await client.ohlcv(symbol, timeframe, limit, add_indicators=False)
             except Exception as api_error:
                 logger.error(f"❌ REST API call failed for {symbol} {timeframe}: {api_error}")
                 return None
