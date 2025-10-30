@@ -283,7 +283,14 @@ ml:
     lstm_enabled: true
     transformer_enabled: true
     ensemble_enabled: true
-  
+
+  # Timeframes for multi-timeframe price predictor
+  # These determine which model files to load (e.g., lstm_1h.pth, transformer_4h.pth)
+  # Override with ML_TIMEFRAMES environment variable (comma-separated)
+  timeframes:
+    - '1h'
+    - '4h'
+
   # Prediction Settings
   prediction:
     update_interval: 60        # Seconds between prediction updates
