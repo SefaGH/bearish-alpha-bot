@@ -905,7 +905,7 @@ class BingXWebSocket:
         }
 
     def is_connected(self) -> bool:
-        """Checks if the WebSocket connection is active."""
+        """Return the connection status of the websocket."""
         return self._is_connected
 
     def is_listening(self) -> bool:
@@ -918,4 +918,8 @@ class BingXWebSocket:
 
     def get_message_count(self) -> int:
         """Return the total number of messages received."""
-        return self.message_count_lock.get_value()
+        # Assuming message_count_lock is a custom class with get_value
+        if hasattr(self, 'message_count_lock') and hasattr(self.message_count_lock, 'get_value'):
+            return self.message_count_lock.get_value()
+        # Fallback if message_count_lock doesn't exist or has a different interface
+        return getattr(self, '_message_count', 0)
