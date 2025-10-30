@@ -428,13 +428,37 @@ class MLStrategyIntegrationManager:
             context['reason'] = "WebSocketManager is not available."
             logger.warning(f"🧠 [ML-CONTEXT] {context['reason']}")
             return context
+        
+        # Log collector status for debugging
+        if hasattr(self.websocket_manager, 'collector') and self.websocket_manager.collector:
+            collector = self.websocket_manager.collector
+            if hasattr(collector, 'ohlcv_data'):
+                exchanges_with_data = list(collector.ohlcv_data.keys())
+                logger.debug(f"🧠 [ML-CONTEXT] Collector has data for exchanges: {exchanges_with_data}")
+                for ex in exchanges_with_data[:1]:  # Log first exchange only
+                    symbols_in_ex = list(collector.ohlcv_data[ex].keys())[:3]  # First 3 symbols
+                    logger.debug(f"🧠 [ML-CONTEXT] {ex} has data for: {symbols_in_ex}...")
+        else:
+            logger.debug("🧠 [ML-CONTEXT] Collector not accessible for debug logging")
 
         price_data_dict = self.websocket_manager.get_latest_data(symbol, timeframe=horizon)
         
         if not price_data_dict or not price_data_dict.get('ohlcv'):
-            context['reason'] = f"Could not retrieve price data for {symbol} from WebSocketManager."
-            logger.warning(f"🧠 [ML-CONTEXT] {context['reason']}")
-            return context
+            # Fallback: Try alternative timeframes if requested timeframe has no data
+            fallback_timeframes = ['30m', '1h', '5m', '1m', '4h']
+            if horizon in fallback_timeframes:
+                fallback_timeframes.remove(horizon)  # Remove the already-tried one
+            
+            for alt_tf in fallback_timeframes:
+                price_data_dict = self.websocket_manager.get_latest_data(symbol, timeframe=alt_tf)
+                if price_data_dict and price_data_dict.get('ohlcv'):
+                    logger.info(f"🧠 [ML-CONTEXT] Using {alt_tf} data as fallback for {horizon} (original timeframe not available yet)")
+                    break
+            else:
+                # No data available in any timeframe
+                context['reason'] = f"Could not retrieve price data for {symbol} from WebSocketManager (tried {horizon} and fallbacks)."
+                logger.warning(f"🧠 [ML-CONTEXT] {context['reason']}")
+                return context
 
         # Adım 2: Gelen veriyi DataFrame'e dönüştür.
         try:

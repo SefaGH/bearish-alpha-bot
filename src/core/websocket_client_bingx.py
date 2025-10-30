@@ -78,13 +78,30 @@ class WebSocketClient:
         """
         Ensures the underlying WebSocket client's 'start' method is called once.
         Uses a lock to prevent race conditions.
+        Waits for connection to establish before returning.
         """
         async with self._connection_lock:
             if not self._tasks_started:
                 self.bingx_ws.start()  # Yeni, thread-safe başlatma metodu
                 self._tasks_started = True
                 logger.info("BingXWebSocket client 'start' method called.")
-            # Bu mimaride, bağlantı thread'de kurulur, hemen True dönebiliriz.
+                
+                # Wait for connection to establish (max 10 seconds)
+                logger.info("Waiting for WebSocket connection to establish...")
+                for i in range(20):  # 20 iterations * 0.5s = 10 seconds max
+                    await asyncio.sleep(0.5)
+                    if self.bingx_ws.is_connected():
+                        logger.info(f"✅ WebSocket connected after {(i+1)*0.5:.1f}s")
+                        return True
+                
+                # Connection not established within timeout
+                logger.warning("⚠️ WebSocket connection not established within 10s, proceeding anyway (subscriptions will be queued)")
+                return True  # Return True to allow subscriptions to be queued
+            
+            # Already started, just verify connection
+            if not self.bingx_ws.is_connected():
+                logger.debug("WebSocket not yet connected, subscriptions will be queued")
+            
             return True
     
     async def watch_ohlcv_loop(self, symbol: str, timeframe: str = '1m',
@@ -146,7 +163,7 @@ class WebSocketClient:
         Get the health status of the underlying BingX WebSocket connection.
         This version is more robust and directly checks the underlying library's state.
         """
-        if not self.ws or not hasattr(self.ws, 'ws'):
+        if not self.bingx_ws:
             return {
                 'connected': False,
                 'listen_task_status': 'not_initialized',
@@ -154,19 +171,27 @@ class WebSocketClient:
                 'message_count': 0
             }
 
-        # Altta yatan 'websocket-client' nesnesine doğrudan erişiyoruz.
-        underlying_ws = self.ws.ws
+        # Check connection status from BingXWebSocket
+        # Use the _is_connected flag which is set in on_open/on_close callbacks
+        is_connected = getattr(self.bingx_ws, '_is_connected', False)
         
-        # Bağlantı durumunu doğrudan soketten alıyoruz.
-        is_connected = underlying_ws and underlying_ws.sock and underlying_ws.sock.connected
+        # Check if WebSocket thread is running
+        ws_thread = getattr(self.bingx_ws, '_ws_thread', None)
+        listen_status = "running" if ws_thread and ws_thread.is_alive() else "stopped"
         
-        # Dinleme thread'inin canlı olup olmadığını kontrol ediyoruz.
-        listen_status = "running" if self.ws.thread and self.ws.thread.is_alive() else "stopped"
+        # Get subscription count
+        subscriptions = len(getattr(self.bingx_ws, 'subscriptions', {}))
+        
+        # Get message count
+        message_count = getattr(self.bingx_ws, 'message_count', 0)
+        
+        # Get last message time
+        last_msg_time = getattr(self.bingx_ws, 'last_message_time', None)
 
         return {
             'connected': is_connected,
             'listen_task_status': listen_status,
-            'subscriptions': len(self.ws.subscriptions) if hasattr(self.ws, 'subscriptions') else 0,
-            'message_count': getattr(self.ws, '_message_count', 0),
-            'last_message_time': getattr(self.ws, 'last_message_time', None)
+            'subscriptions': subscriptions,
+            'message_count': message_count,
+            'last_message_time': last_msg_time
         }
