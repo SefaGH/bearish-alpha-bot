@@ -348,9 +348,16 @@ class MarketDataPipeline:
         2. Fall back to REST API if WebSocket unavailable or returns no data
         3. Return None only if both sources fail
         
+        Technical indicators (RSI, MACD, Bollinger Bands, EMAs, ATR) are automatically
+        added to the DataFrame before returning, ensuring strategies always receive
+        complete data with all required indicators.
+        
         This ensures strategies always receive valid data when possible.
         
         Note: This method is async to properly handle the async REST API fallback.
+        
+        Returns:
+            DataFrame with OHLCV data and technical indicators, or None if both sources fail
         """
         df = None
         
@@ -400,6 +407,7 @@ class MarketDataPipeline:
             limit = limit_map.get(timeframe, 200)
             
             # Call the REST API (async method - we can await it now)
+            # Note: add_indicators=False because we add them ourselves below for consistency
             try:
                 ohlcv_data = await client.ohlcv(symbol, timeframe, limit, add_indicators=False)
             except Exception as api_error:
