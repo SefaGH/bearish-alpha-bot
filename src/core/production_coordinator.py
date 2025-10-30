@@ -811,11 +811,16 @@ class ProductionCoordinator:
         logger.info(f"[SYMBOL_DISCOVERY] Using {len(default_symbols)} hardcoded default symbols")
         return default_symbols
     
-    async def _initialize_ml_components(self) -> Dict[str, Any]:
+    async def _initialize_ml_components(self, price_engine: Optional[Any] = None, regime_predictor: Optional[Any] = None) -> Dict[str, Any]:
         """
         Initialize and connect ALL ML components from src/ml/.
         This connects the fully implemented but disconnected ML layer.
+        (GÜNCELLENDİ: Dışarıdan hazır nesneler alır)
         
+        Args:
+            price_engine: Önceden başlatılmış AdvancedPricePredictionEngine nesnesi.
+            regime_predictor: Önceden başlatılmış MLRegimePredictor nesnesi.
+
         Returns:
             Dict with 'success' and optional 'reason' keys
         """
@@ -826,13 +831,7 @@ class ProductionCoordinator:
         try:
             # Import ML components (optional - won't fail if not available)
             try:
-                from ml.strategy_integration import (
-                    MLStrategyIntegrationManager,
-                    AIEnhancedStrategyAdapter
-                )
-                from ml.price_predictor import AdvancedPricePredictionEngine
-                from ml.regime_predictor import MLRegimePredictor
-                from ml.prediction_engine import RealTimePredictionEngine
+                from ml.strategy_integration import MLStrategyIntegrationManager
                 from ml.reinforcement_learning import TradingRLAgent
                 from ml.experience_replay import ExperienceReplay
                 from ml.feature_engineering import FeatureEngineeringPipeline
@@ -840,52 +839,34 @@ class ProductionCoordinator:
                 logger.info("🧠 [ML-INIT] All ML modules imported successfully")
             except ImportError as e:
                 logger.warning(f"🧠 [ML-INIT] ML modules not available: {e}")
-                return {
-                    'success': False,
-                    'reason': f'ML modules not available: {e}'
-                }
+                return {'success': False, 'reason': f'ML modules not available: {e}'}
             
             # 1. Initialize Feature Engineering Pipeline
             self.feature_pipeline = FeatureEngineeringPipeline()
             ml_components.append('feature_pipeline')
             logger.info("✅ Feature engineering pipeline ready")
-            
-            # 2. Initialize Price Prediction Engine (simplified - no complex models for now)
-            try:
-                # AdvancedPricePredictionEngine bazı ortamlarda predictor keyword'ünü kabul etmiyor.
-                # Dayanıklı kurulum: önce positional None, TypeError olursa argsız deneyin.
-                try:
-                    self.price_engine = AdvancedPricePredictionEngine(None)
-                except TypeError:
-                    self.price_engine = AdvancedPricePredictionEngine()
+
+            # 2. Use pre-initialized Price Prediction Engine
+            self.price_engine = price_engine
+            if self.price_engine:
                 ml_components.append('price_engine')
                 logger.info("✅ Price prediction engine initialized")
-            except Exception as e:
-                logger.warning(f"⚠️ Price engine init failed: {e}")
-            
-            # 3. Initialize Regime Predictor
-            try:
-                self.regime_predictor = MLRegimePredictor(
-                    regime_analyzer=self.market_regime_analyzer,
-                    websocket_manager=self.websocket_manager
-                )
+            else:
+                logger.warning("⚠️ Price engine not provided to coordinator.")
+
+            # 3. Use pre-initialized Regime Predictor
+            self.regime_predictor = regime_predictor
+            if self.regime_predictor:
                 ml_components.append('regime_predictor')
                 logger.info("✅ Regime predictor initialized")
-            except Exception as e:
-                logger.warning(f"⚠️ Regime predictor init failed: {e}")
+            else:
+                 logger.warning("⚠️ Regime predictor not provided to coordinator.")
             
             # 4. Initialize Reinforcement Learning Agent
             try:
-                self.rl_agent = TradingRLAgent(
-                    state_size=50,   # Feature dimension
-                    action_size=3,   # Buy/Hold/Sell
-                    learning_rate=0.001
-                )
-                
-                # Initialize experience replay buffer
+                self.rl_agent = TradingRLAgent(state_size=50, action_size=3, learning_rate=0.001)
                 self.experience_replay = ExperienceReplay(max_size=100000)
                 self.rl_agent.set_memory(self.experience_replay)
-                
                 ml_components.append('rl_agent')
                 logger.info("✅ Reinforcement learning agent initialized")
             except Exception as e:
@@ -893,12 +874,11 @@ class ProductionCoordinator:
             
             # 5. Initialize ML Strategy Integration Manager
             try:
-                if hasattr(self, 'price_engine') and hasattr(self, 'regime_predictor'):
-                    # *** UPDATED: Pass MarketDataPipeline instead of websocket_manager ***
+                if self.price_engine and self.regime_predictor:
                     self.ml_integration = MLStrategyIntegrationManager(
                         self.price_engine,
                         self.regime_predictor,
-                        self.market_data_pipeline  # Use centralized MarketDataPipeline
+                        self.market_data_pipeline
                     )
                     ml_components.append('ml_integration')
                     logger.info("✅ ML strategy integration manager initialized with MarketDataPipeline")
@@ -908,21 +888,16 @@ class ProductionCoordinator:
                 logger.warning(f"⚠️ ML integration init failed: {e}")
             
             # 6. Connect ML to Strategy Coordinator
-            if hasattr(self, 'strategy_coordinator') and self.strategy_coordinator:
-                if hasattr(self, 'ml_integration'):
-                    self.strategy_coordinator.ml_integration = self.ml_integration.adapter
-                if hasattr(self, 'feature_pipeline'):
-                    self.strategy_coordinator.feature_pipeline = self.feature_pipeline
-                if hasattr(self, 'rl_agent'):
-                    self.strategy_coordinator.rl_agent = self.rl_agent
+            if self.strategy_coordinator and self.ml_integration:
+                self.strategy_coordinator.ml_integration = self.ml_integration.adapter
+                self.strategy_coordinator.feature_pipeline = self.feature_pipeline
+                self.strategy_coordinator.rl_agent = self.rl_agent
                 logger.info("🔗 ML connected to StrategyCoordinator")
             
             # 7. Connect ML to LiveTradingEngine
-            if hasattr(self, 'trading_engine') and self.trading_engine:
-                if hasattr(self, 'rl_agent'):
-                    self.trading_engine.rl_agent = self.rl_agent
-                if hasattr(self, 'ml_integration'):
-                    self.trading_engine.ml_integration = self.ml_integration
+            if self.trading_engine and self.rl_agent:
+                self.trading_engine.rl_agent = self.rl_agent
+                self.trading_engine.ml_integration = self.ml_integration
                 logger.info("🔗 ML connected to LiveTradingEngine")
             
             logger.info("🧠 [ML-INIT] ✅ ML SYSTEM INITIALIZED")
@@ -932,18 +907,11 @@ class ProductionCoordinator:
             # Perform pre-flight health checks
             health_check_result = await self._ml_preflight_health_check()
             
-            return {
-                'success': True,
-                'components': ml_components,
-                'health_check': health_check_result
-            }
+            return {'success': True, 'components': ml_components, 'health_check': health_check_result}
             
         except Exception as e:
             logger.error(f"🧠 [ML-INIT] Initialization error: {e}", exc_info=True)
-            return {
-                'success': False,
-                'reason': str(e)
-            }
+            return {'success': False, 'reason': str(e)}
     
     async def _ml_preflight_health_check(self) -> Dict[str, Any]:
         """
@@ -1068,11 +1036,15 @@ class ProductionCoordinator:
                                           portfolio_config: Optional[Dict] = None,
                                           mode: str = 'paper',
                                           trading_symbols: Optional[List[str]] = None,
-                                          websocket_manager: Optional[Any] = None) -> Dict[str, Any]:
+                                          websocket_manager: Optional[Any] = None,
+                                          # --- YENİ PARAMETRELER ---
+                                          price_engine: Optional[Any] = None,
+                                          regime_predictor: Optional[Any] = None) -> Dict[str, Any]:
         """
         Initializes the production system by assembling pre-configured components.
         This method strictly follows the Dependency Injection principle and does NOT
         create its own major components like WebSocketManager.
+        (GÜNCELLENDİ: ML nesnelerini dışarıdan alır)
         """
         logger.info("="*70)
         logger.info("INITIALIZING PRODUCTION SYSTEM (Dependency Injection Mode)")
@@ -1084,24 +1056,17 @@ class ProductionCoordinator:
                 self.exchange_clients = {k.lower(): v for k, v in exchange_clients.items()}
                 logger.info(f"✓ Received {len(self.exchange_clients)} exchange client(s): {list(self.exchange_clients.keys())}")
             
-            # Dışarıdan gelen WebSocket yöneticisini ata.
             self.websocket_manager = websocket_manager
             if self.websocket_manager:
                 logger.info("✓ WebSocket manager received from launcher (external).")
             else:
-                # ARTIK YENİSİNİ OLUŞTURMUYOR, SADECE UYARIYOR.
                 logger.warning("⚠️ No WebSocket manager provided by launcher. Continuing without WebSocket (REST API fallback).")
             
             # === ADIM 2: DİĞER YÖNETİCİLERİ BU HAZIR BİLEŞENLERLE OLUŞTUR ===
-            # MarketDataPipeline, RiskManager, PortfolioManager, LiveTradingEngine vb.
-            # oluşturma mantığı, artık her zaman doğru ve tek bir `websocket_manager`
-            # referansına sahip olacağı için sorunsuz çalışacaktır.
-            
-            # Market Data Pipeline'ı başlat
             self.market_data_pipeline = MarketDataPipeline(
                 exchanges=self.exchange_clients,
                 config=self.config,
-                websocket_manager=self.websocket_manager  # Burası artık güvenli.
+                websocket_manager=self.websocket_manager
             )
             logger.info("✓ Market data pipeline initialized")
  
@@ -1123,12 +1088,8 @@ class ProductionCoordinator:
             config = self.config
             risk_config = config.get('risk', {})
             
-            # Merge portfolio_config with config file settings
             risk_manager_config = {
-                'equity_usd': float(
-                    portfolio_config.get('equity_usd') or 
-                    risk_config.get('equity_usd', 100)
-                ),
+                'equity_usd': float(portfolio_config.get('equity_usd') or risk_config.get('equity_usd', 100)),
                 'per_trade_risk_pct': float(risk_config.get('per_trade_risk_pct', 0.01)),
                 'daily_loss_limit_pct': float(risk_config.get('daily_loss_limit_pct', 0.02)),
                 'risk_usd_cap': float(risk_config.get('risk_usd_cap', 5)),
@@ -1152,16 +1113,14 @@ class ProductionCoordinator:
             logger.info(f"✓ Risk manager initialized (portfolio value: ${self.risk_manager.portfolio_value:.2f})")
 
             # ========================================
-            # STEP 7: INITIALIZE EXECUTION MANAGERS (YENİ VE KRİTİK ADIM)
+            # STEP 7: INITIALIZE EXECUTION MANAGERS
             # ========================================
-            # Önce OrderManager'ı oluşturun. Henüz exchange_clients vermiyoruz.
             self.order_manager = SmartOrderManager(risk_manager=self.risk_manager)
             logger.info("✓ Order manager initialized (dependencies pending)")
             
-            # Sonra PositionManager'ı, order_manager'ı bir bağımlılık olarak vererek oluşturun.
             self.position_manager = AdvancedPositionManager(
                 risk_manager=self.risk_manager,
-                order_manager=self.order_manager, # <<< İŞTE BAĞLANTI NOKTASI!
+                order_manager=self.order_manager,
                 websocket_manager=self.websocket_manager
             )
             logger.info("✓ Position manager initialized and linked with OrderManager")
@@ -1178,49 +1137,30 @@ class ProductionCoordinator:
             self.portfolio_manager.cfg = self.config
             logger.info("✓ Portfolio manager initialized")
 
-            
             # ========================================
-            # STEP 9: INITIALIZE MARKET DATA PIPELINE (YENİ ADIM)
+            # STEP 9: (Artık gereksiz, pipeline başta oluşturuldu)
             # ========================================
-            self.market_data_pipeline = MarketDataPipeline(
-                exchanges=self.exchange_clients,
-                config=self.config,
-                websocket_manager=self.websocket_manager  # ÖNEMLİ: WS Manager'ı pipeline'a tanıtıyoruz.
-            )
-            logger.info("✓ Market data pipeline initialized")
 
             # ========================================
-            # STEP 10: LINK MANAGERS (YENİ VE KRİTİK ADIM)
+            # STEP 10: LINK MANAGERS
             # ========================================
-            # Şimdi tüm yöneticileri birbirine bağlayın.
             self.portfolio_manager.set_execution_managers(self.order_manager, self.position_manager)
             self.order_manager.set_dependencies(
                 risk_manager=self.risk_manager,
-                exchange_clients=self.exchange_clients # <<< exchange_clients'ı enjekte et!
+                exchange_clients=self.exchange_clients
             )
             logger.info("✓ All managers have been interlinked")
 
-            
             # ========================================
             # STEP 11: VERIFY WEBSOCKET COLLECTOR READY
             # ========================================
-            if self.websocket_manager:
-                if hasattr(self.websocket_manager, 'is_collector_ready'):
-                    if self.websocket_manager.is_collector_ready():
-                        logger.info("✓ WebSocket collector verified ready")
-                    else:
-                        logger.warning("⚠️ WebSocket manager exists but collector not ready")
-                else:
-                    # Fallback check
-                    if hasattr(self.websocket_manager, 'collector') and self.websocket_manager.collector:
-                        logger.info("✓ WebSocket collector verified ready (fallback check)")
-                    else:
-                        logger.warning("⚠️ WebSocket collector not found - data injection may fail")
+            if self.websocket_manager and hasattr(self.websocket_manager, 'is_collector_ready') and self.websocket_manager.is_collector_ready():
+                logger.info("✓ WebSocket collector verified ready")
             else:
-                logger.info("ℹ️ No WebSocket manager - pipeline will use REST API only")
+                logger.info("ℹ️ WebSocket manager/collector not ready - pipeline will use REST API only")
             
             # ========================================
-            # STEP 12: INITIALIZE STRATEGY COORDINATOR (GÜNCELLENDİ)
+            # STEP 12: INITIALIZE STRATEGY COORDINATOR
             # ========================================
             self.strategy_coordinator = StrategyCoordinator(
                 portfolio_manager=self.portfolio_manager,
@@ -1250,26 +1190,17 @@ class ProductionCoordinator:
                 position_manager=self.position_manager,
                 exchange_clients=self.exchange_clients,
                 strategy_coordinator=self.strategy_coordinator,
-                market_data_pipeline=self.market_data_pipeline # Pipeline'ı direkt ver.
+                market_data_pipeline=self.market_data_pipeline
             )
             logger.info(f"✓ Live trading engine initialized (mode: {mode})")
             
             # ========================================
-            # STEP 15: SET ACTIVE SYMBOLS (CRITICAL!)
+            # STEP 15: SET ACTIVE SYMBOLS
             # ========================================
-            if trading_symbols:
-                # Priority 1: Use provided parameter
-                self.active_symbols = trading_symbols
-                logger.info(f"✓ Active symbols set from parameter: {len(trading_symbols)} symbols")
-                logger.info(f"  Symbols: {', '.join(trading_symbols)}")
-            else:
-                # Priority 2+: Use default symbol discovery
-                self.active_symbols = self._get_default_symbols()
-                logger.info(f"✓ Active symbols discovered: {len(self.active_symbols)} symbols")
-                logger.info(f"  Symbols: {', '.join(self.active_symbols)}")
+            self.active_symbols = trading_symbols or self._get_default_symbols()
+            logger.info(f"✓ Active symbols set: {len(self.active_symbols)} symbols")
             
-            # Set symbols on trading engine for prefetch and other operations
-            if self.trading_engine and self.active_symbols:
+            if self.trading_engine:
                 self.trading_engine._cached_symbols = self.active_symbols
                 logger.info(f"✓ Trading engine symbols cache set: {len(self.active_symbols)} symbols")
             
@@ -1280,10 +1211,6 @@ class ProductionCoordinator:
                 logger.error("="*70)
                 logger.error("❌ CRITICAL: NO ACTIVE SYMBOLS CONFIGURED!")
                 logger.error("="*70)
-                logger.error("The bot cannot trade without active symbols.")
-                logger.error("Please provide trading_symbols parameter or configure fixed_symbols in config.")
-                logger.error("="*70)
-                # Don't fail initialization, but warn heavily
             else:
                 logger.info("="*70)
                 logger.info(f"✅ ACTIVE SYMBOLS CONFIGURED: {len(self.active_symbols)} symbols")
@@ -1301,7 +1228,11 @@ class ProductionCoordinator:
                 logger.info("🧠 INITIALIZING ML COMPONENTS")
                 logger.info("="*70)
                 try:
-                    ml_init_result = await self._initialize_ml_components()
+                    # --- ÇÖZÜM: Hazır nesneleri _initialize_ml_components'e veriyoruz ---
+                    ml_init_result = await self._initialize_ml_components(
+                        price_engine=price_engine,
+                        regime_predictor=regime_predictor
+                    )
                     if ml_init_result.get('success'):
                         logger.info("✅ ML components initialized successfully")
                     else:
@@ -1321,13 +1252,8 @@ class ProductionCoordinator:
             self.is_initialized = True
             
             components = [
-                'websocket_manager',
-                'performance_monitor',
-                'risk_manager',
-                'portfolio_manager',
-                'strategy_coordinator',
-                'circuit_breaker',
-                'trading_engine'
+                'websocket_manager', 'performance_monitor', 'risk_manager',
+                'portfolio_manager', 'strategy_coordinator', 'circuit_breaker', 'trading_engine'
             ]
             
             logger.info("="*70)
@@ -1339,13 +1265,7 @@ class ProductionCoordinator:
             logger.info(f"Mode: {mode}")
             logger.info("="*70)
             
-            # Tüm işlemler bittikten sonra, en sonda return ifadesi çağrılır.
-            return {
-                'success': True,
-                'components': components,
-                'is_initialized': self.is_initialized,
-                'active_symbols_count': len(self.active_symbols)
-            }
+            return {'success': True, 'components': components, 'is_initialized': self.is_initialized, 'active_symbols_count': len(self.active_symbols)}
             
         except Exception as e:
             logger.error("="*70)
@@ -1353,14 +1273,8 @@ class ProductionCoordinator:
             logger.error("="*70)
             logger.error(f"Error: {e}", exc_info=True)
             logger.error("="*70)
-            
             self.is_initialized = False
-            
-            return {
-                'success': False,
-                'reason': str(e),
-                'is_initialized': False
-            }
+            return {'success': False, 'reason': str(e), 'is_initialized': False}
     
     async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
                                   continuous: bool = False):
