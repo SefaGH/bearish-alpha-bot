@@ -1466,35 +1466,37 @@ class LiveTradingLauncher:
                 'max_drawdown': self.RISK_PARAMS['max_drawdown']
             }
     
-            # === MİMARİ DÜZELTME: DOĞRU BAŞLANGIÇ AKIŞI ===
+            # === BU SEFER DOĞRU MİMARİ DÜZELTME ===
     
             # Adım A: WebSocket Optimizer'ı yapılandır.
-            # Bu, hangi sembollere ve zaman dilimlerine abone olacağımızı belirler.
             self.ws_optimizer.setup_from_config(self.config)
             
             # Adım B: WebSocket bağlantılarını ve stream'lerini BAŞLAT.
-            # Bu çağrı, WebSocketManager'ı (ws_manager) oluşturur, bağlantıyı kurar ve veri akışını başlatır.
+            # Bu çağrı, ws_optimizer içinde ws_manager'ı oluşturur, bağlantıyı kurar ve veri akışını başlatır.
             ws_success = await self.ws_optimizer.initialize_and_subscribe(
                 self.exchange_clients,
                 self.TRADING_PAIRS
             )
     
             if not ws_success:
-                 logger.warning("⚠️ [WS] WebSocket initialization failed - using REST API fallback")
+                 logger.warning("⚠️ [WS] WebSocket initialization was not successful, but we will proceed. The system may rely on REST API.")
     
-            # Adım C: ProductionCoordinator'ı, DIŞARIDA oluşturulan ve ÇALIŞAN WebSocket yöneticisiyle başlat.
-            # Artık coordinator'a hazır ve çalışır bir bileşen enjekte ediyoruz.
-            # WebSocket başarısız olsa bile ws_manager=None geçerek sistemin REST ile devam etmesini sağlıyoruz.
+            # Adım C: ProductionCoordinator'ı oluştur.
             from core.production_coordinator import ProductionCoordinator
             self.coordinator = ProductionCoordinator()
             
+            # Adım D: ProductionCoordinator'ı, HER KOŞULDA WebSocket yöneticisiyle başlat.
+            # WebSocket bağlantısı başarısız olsa bile, `ws_manager` nesnesi var olduğu için
+            # `ProductionCoordinator` ve alt bileşenleri (MarketDataPipeline) ondan haberdar olacak.
             init_result = await self.coordinator.initialize_production_system(
                 exchange_clients=self.exchange_clients,
                 portfolio_config=portfolio_config,
                 mode=self.mode,
                 trading_symbols=self.TRADING_PAIRS,
-                # ws_optimizer.ws_manager, initialize_and_subscribe içinde başarıyla oluşturulmuş olan yöneticiyi içerir.
-                websocket_manager=self.ws_optimizer.ws_manager if ws_success else None
+                # *** KRİTİK DÜZELTME: `if ws_success` koşulunu kaldırıyoruz. ***
+                # ws_manager nesnesini, bağlantı başarılı olmasa bile veriyoruz.
+                # Böylece MarketDataPipeline, en azından bir collector'ın varlığından haberdar olur.
+                websocket_manager=self.ws_optimizer.ws_manager
             )
     
             if not init_result.get('success'):
