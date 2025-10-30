@@ -83,6 +83,67 @@ class StrategyCoordinator:
         self.rl_agent = None
     
         logger.info("StrategyCoordinator initialized (market_data_pipeline=%s)", bool(self.market_data_pipeline))
+
+    async def run_strategies_for_symbol(self, symbol: str):
+        """
+        Fetches data, runs all registered strategies for a given symbol,
+        and processes any generated signals.
+        This method is called by the ProductionCoordinator.
+        """
+        if not self.market_data_pipeline:
+            logger.error(f"Cannot run strategies for {symbol}: MarketDataPipeline is not available.")
+            return
+
+        # 1. Gerekli verileri ve ML context'i hazırla
+        df_30m, df_1h, ml_context = None, None, None
+        try:
+            # IndicatorManager'dan veriyi al
+            if hasattr(self.market_data_pipeline, 'indicator_manager'):
+                 df_30m = self.market_data_pipeline.indicator_manager.get_indicator_data(symbol, "30m")
+                 df_1h = self.market_data_pipeline.indicator_manager.get_indicator_data(symbol, "1h")
+            else:
+                 logger.error(f"IndicatorManager not found in MarketDataPipeline for {symbol}")
+                 return
+
+            if df_30m is None or df_30m.empty:
+                logger.warning(f"No 30m indicator data available for {symbol} to run strategies.")
+                # 30m verisi olmadan çoğu strateji çalışamaz, bu yüzden burada durabiliriz.
+                return
+
+            # ML verisini al (eğer varsa)
+            if self.ml_integration:
+                ml_context = await self.ml_integration.get_ml_context(symbol)
+
+        except Exception as e:
+            logger.error(f"Failed to prepare data for {symbol} in StrategyCoordinator: {e}", exc_info=True)
+            return
+
+        # 2. Kayıtlı tüm stratejileri bu sembol için çalıştır
+        strategies_to_run = list(self.portfolio_manager.strategies.items())
+        logger.debug(f"Running {len(strategies_to_run)} strategies for {symbol}...")
+
+        for strategy_name, strategy_instance in strategies_to_run:
+            try:
+                if not self.portfolio_manager.strategy_metadata.get(strategy_name, {}).get('active', False):
+                    continue
+
+                if hasattr(strategy_instance, 'signal') and callable(getattr(strategy_instance, 'signal')):
+                    # Stratejinin 'signal' metodunu doğru argümanlarla çağır
+                    signal = strategy_instance.signal(
+                        df_30m=df_30m,
+                        df_1h=df_1h,
+                        regime_data=ml_context,
+                        symbol=symbol,
+                        ml_context=ml_context
+                    )
+
+                    # 3. Eğer bir sinyal üretildiyse, mevcut sinyal işleme akışına dahil et
+                    if signal:
+                        logger.info(f"'{strategy_name}' produced a signal for {symbol}. Processing...")
+                        await self.process_strategy_signal(strategy_name, signal)
+                
+            except Exception as e:
+                logger.error(f"Error executing strategy '{strategy_name}' for {symbol}: {e}", exc_info=True)
     
     def validate_duplicate(self, signal: Dict, strategy_name: str) -> Tuple[bool, str]:
         """
