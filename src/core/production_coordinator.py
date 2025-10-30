@@ -894,13 +894,14 @@ class ProductionCoordinator:
             # 5. Initialize ML Strategy Integration Manager
             try:
                 if hasattr(self, 'price_engine') and hasattr(self, 'regime_predictor'):
+                    # *** UPDATED: Pass MarketDataPipeline instead of websocket_manager ***
                     self.ml_integration = MLStrategyIntegrationManager(
                         self.price_engine,
                         self.regime_predictor,
-                        self.websocket_manager  # *** DEĞİŞİKLİK: Eksik parametre eklendi ***
+                        self.market_data_pipeline  # Use centralized MarketDataPipeline
                     )
                     ml_components.append('ml_integration')
-                    logger.info("✅ ML strategy integration manager initialized")
+                    logger.info("✅ ML strategy integration manager initialized with MarketDataPipeline")
                 else:
                     logger.warning("⚠️ Cannot init ML integration without price/regime engines")
             except Exception as e:

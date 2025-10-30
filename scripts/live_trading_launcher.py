@@ -941,6 +941,10 @@ class LiveTradingLauncher:
         self.max_restarts = max_restarts
         self.restart_delay = restart_delay
         
+        # *** NEW: Cached health status from pre-flight checks ***
+        self._cached_exchange_status = None
+        self._cached_ws_status = None
+        
         # Debug logger
         self.debug_logger = None
         
@@ -1578,11 +1582,38 @@ class LiveTradingLauncher:
                     client = self.exchange_clients[available_exchange_name]
                     ticker = client.ticker('BTC/USDT')
                     logger.info(f"✓ BTC/USDT price via '{available_exchange_name}': ${ticker.get('last', 0):.2f}")
+                    
+                    # *** Cache successful exchange status ***
+                    self._cached_exchange_status = {
+                        'connected': True,
+                        'status_emoji': '✅',
+                        'status_text': 'CONNECTED',
+                        'latency_ms': None,  # We don't measure latency here
+                        'error': None
+                    }
                 except Exception as e:
                     logger.error(f"❌ Exchange connectivity failed: {e}")
                     failed_checks.append("Exchange connectivity")
+                    
+                    # *** Cache failed exchange status ***
+                    self._cached_exchange_status = {
+                        'connected': False,
+                        'status_emoji': '❌',
+                        'status_text': 'FAILED',
+                        'latency_ms': None,
+                        'error': str(e)
+                    }
             else:
                 logger.warning("⚠️ Exchange client not available, skipping connectivity check.")
+                
+                # *** Cache no exchange status ***
+                self._cached_exchange_status = {
+                    'connected': False,
+                    'status_emoji': '❌',
+                    'status_text': 'NO EXCHANGE CLIENT',
+                    'latency_ms': None,
+                    'error': 'No exchange clients configured'
+                }
             
             # Check 2: System state
             logger.info("Check 2/7: System state...")
@@ -1636,12 +1667,40 @@ class LiveTradingLauncher:
 
                 if working_symbols > 0:
                     logger.info(f"✅ WebSocket data flow confirmed for {working_symbols}/{min(3, len(symbols))} symbols")
+                    
+                    # *** Cache successful WebSocket status ***
+                    stream_count = working_symbols  # Simplified - at least this many streams are working
+                    self._cached_ws_status = {
+                        'enabled': True,
+                        'status_emoji': '✅',
+                        'status_text': 'CONNECTED',
+                        'stream_count': stream_count,
+                        'mode': 'websocket'
+                    }
                 else:
                     logger.error("❌ WebSocket connected but no data is flowing for initial symbols")
                     failed_checks.append("WebSocket data flow")
+                    
+                    # *** Cache failed WebSocket status ***
+                    self._cached_ws_status = {
+                        'enabled': True,
+                        'status_emoji': '⚠️',
+                        'status_text': 'INITIALIZED (no data)',
+                        'stream_count': 0,
+                        'mode': 'rest_fallback'
+                    }
             else:
                 logger.error("❌ WebSocket not initialized or manager is missing")
                 failed_checks.append("WebSocket initialization")
+                
+                # *** Cache disconnected WebSocket status ***
+                self._cached_ws_status = {
+                    'enabled': False,
+                    'status_emoji': '⚠️',
+                    'status_text': 'DISCONNECTED',
+                    'stream_count': 0,
+                    'mode': 'rest_fallback'
+                }
 
             # Indicator Warmup Validation (Artık daha güvenli)
             logger.info("Check 6/7: Indicator Warmup Validation...")
@@ -2167,22 +2226,22 @@ class LiveTradingLauncher:
         if self.coordinator and hasattr(self.coordinator, 'risk_manager'):
             risk_manager = self.coordinator.risk_manager
         
-        # --- HATA DÜZELTMESİ: `api_health_status` parametresi, fonksiyonun tanımında olmadığı için çağrıdan kaldırıldı. ---
+        # *** UPDATED: Pass cached health status from pre-flight checks ***
         header = format_startup_header(
             system_info=system_info,
             mode=self.mode,
             dry_run=self.dry_run,
             debug_mode=self.debug_mode,
             exchange_clients=self.exchange_clients,
-            # api_health_status=self._api_health_status, # <-- BU SATIR KALDIRILDI
             ws_manager=(self.ws_optimizer.ws_manager if self._is_ws_initialized() else None),
             capital=self.CAPITAL_USDT,
             trading_pairs=self.TRADING_PAIRS,
             strategies=self.strategies if hasattr(self, 'strategies') else {},
             risk_params=self.RISK_PARAMS,
-            risk_manager=risk_manager
+            risk_manager=risk_manager,
+            cached_exchange_status=self._cached_exchange_status,  # *** NEW ***
+            cached_ws_status=self._cached_ws_status  # *** NEW ***
         )
-        # --- DÜZELTME SONU ---
         
         logger.info("\n" + header + "\n")
     

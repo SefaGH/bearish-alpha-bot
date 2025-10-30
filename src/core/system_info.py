@@ -394,7 +394,9 @@ def format_startup_header(
     trading_pairs: List[str],
     strategies: Dict[str, Any],
     risk_params: Dict[str, Any],
-    risk_manager: Any = None
+    risk_manager: Any = None,
+    cached_exchange_status: Dict[str, Any] = None,
+    cached_ws_status: Dict[str, Any] = None
 ) -> str:
     """
     Format comprehensive startup header with system information.
@@ -411,6 +413,8 @@ def format_startup_header(
         strategies: Dictionary of strategies
         risk_params: Risk parameters dictionary
         risk_manager: Risk manager instance (optional)
+        cached_exchange_status: Pre-checked exchange status from pre-flight checks (optional)
+        cached_ws_status: Pre-checked WebSocket status from pre-flight checks (optional)
     
     Returns:
         Formatted multi-line header string
@@ -448,15 +452,23 @@ def format_startup_header(
     else:
         lines.append("Exchange:          None")
     
-    # Exchange status
-    exchange_status = SystemInfoCollector.get_exchange_status(exchange_clients)
+    # Exchange status - use cached status if available, otherwise perform fresh check
+    if cached_exchange_status:
+        exchange_status = cached_exchange_status
+    else:
+        exchange_status = SystemInfoCollector.get_exchange_status(exchange_clients)
+    
     if exchange_status['latency_ms'] is not None:
         lines.append(f"API Status:        {exchange_status['status_emoji']} {exchange_status['status_text']} (Latency: {exchange_status['latency_ms']}ms)")
     else:
         lines.append(f"API Status:        {exchange_status['status_emoji']} {exchange_status['status_text']}")
     
-    # WebSocket status
-    ws_status = SystemInfoCollector.get_websocket_status(ws_manager)
+    # WebSocket status - use cached status if available, otherwise perform fresh check
+    if cached_ws_status:
+        ws_status = cached_ws_status
+    else:
+        ws_status = SystemInfoCollector.get_websocket_status(ws_manager)
+    
     if ws_status['stream_count'] > 0:
         lines.append(f"WebSocket:         {ws_status['status_emoji']} {ws_status['status_text']} ({ws_status['stream_count']} streams active)")
     else:
