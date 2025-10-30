@@ -206,7 +206,8 @@ class BingXWebSocket:
         if not self.subscriptions: return
         logger.info(f"Resubscribing to {len(self.subscriptions)} channels...")
         for sub_msg in self.subscriptions.values():
-            self._send_json_threadsafe(sub_message)
+            # Döngünün doğru değişkenini kullanıyoruz: sub_msg
+            self._send_json_threadsafe(sub_msg)
     
     def _send_json_threadsafe(self, data: dict):
         """Thread-safe method to send a JSON message."""
