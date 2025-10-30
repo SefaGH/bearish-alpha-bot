@@ -146,7 +146,7 @@ class WebSocketClient:
         Get the health status of the underlying BingX WebSocket connection.
         This version is more robust and directly checks the underlying library's state.
         """
-        if not self.ws or not hasattr(self.ws, 'ws'):
+        if not self.bingx_ws:
             return {
                 'connected': False,
                 'listen_task_status': 'not_initialized',
@@ -154,19 +154,27 @@ class WebSocketClient:
                 'message_count': 0
             }
 
-        # Altta yatan 'websocket-client' nesnesine doğrudan erişiyoruz.
-        underlying_ws = self.ws.ws
+        # Check connection status from BingXWebSocket
+        # Use the _is_connected flag which is set in on_open/on_close callbacks
+        is_connected = getattr(self.bingx_ws, '_is_connected', False)
         
-        # Bağlantı durumunu doğrudan soketten alıyoruz.
-        is_connected = underlying_ws and underlying_ws.sock and underlying_ws.sock.connected
+        # Check if WebSocket thread is running
+        ws_thread = getattr(self.bingx_ws, '_ws_thread', None)
+        listen_status = "running" if ws_thread and ws_thread.is_alive() else "stopped"
         
-        # Dinleme thread'inin canlı olup olmadığını kontrol ediyoruz.
-        listen_status = "running" if self.ws.thread and self.ws.thread.is_alive() else "stopped"
+        # Get subscription count
+        subscriptions = len(getattr(self.bingx_ws, 'subscriptions', {}))
+        
+        # Get message count
+        message_count = getattr(self.bingx_ws, 'message_count', 0)
+        
+        # Get last message time
+        last_msg_time = getattr(self.bingx_ws, 'last_message_time', None)
 
         return {
             'connected': is_connected,
             'listen_task_status': listen_status,
-            'subscriptions': len(self.ws.subscriptions) if hasattr(self.ws, 'subscriptions') else 0,
-            'message_count': getattr(self.ws, '_message_count', 0),
-            'last_message_time': getattr(self.ws, 'last_message_time', None)
+            'subscriptions': subscriptions,
+            'message_count': message_count,
+            'last_message_time': last_msg_time
         }
