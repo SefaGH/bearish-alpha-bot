@@ -147,50 +147,39 @@ class MarketDataPipeline:
             self.total_requests += 1
             
             # Fetch OHLCV data
-            # --- DEĞİŞİKLİK 1: Hatalı asyncio.to_thread kaldırıldı ---
             ohlcv_data = await client.ohlcv(symbol, timeframe, limit)
             
-            # --- DEĞİŞİKLİK 2: Güvenli DataFrame kontrolü eklendi ---
             if ohlcv_data is None or ohlcv_data.empty:
                 logger.warning(f"⚠️ [PRIME] Empty data for {symbol} {timeframe} from {exchange_name}")
                 self.failed_requests += 1
                 return False
-
-            # Gelen verinin DataFrame olduğunu varsayıyoruz, ccxt_client artık hep df döndürüyor.
+    
             df = ohlcv_data
-            
-            # Add indicators
             df = add_indicators(df, self.config.get('indicators'))
         
             logger.info(f"✅ [PRIME] Loaded {len(df)} historical candles for {exchange_name} {symbol} {timeframe}")
             
-            # YENİ BLOK: Çekilen veriyi WebSocketManager'ın önbelleğine aktar.
-            # DEFENSIVE: Check both websocket_manager AND collector existence
-            if not self.websocket_manager:
-                logger.debug(f"[INJECT] No WebSocket manager - skipping data injection for {symbol} {timeframe}")
-                return True
-            
-            if not hasattr(self.websocket_manager, 'collector') or not self.websocket_manager.collector:
-                logger.warning(f"⚠️ [INJECT] WebSocket manager exists but collector not found. Skipping data injection for {symbol} {timeframe}")
-                return True
-            
-            try:
-                # CCXT sembol formatını ('BTC/USDT') WebSocket formatına ('BTC/USDT:USDT') çevir.
-                ws_symbol = f"{symbol}:{symbol.split('/')[-1]}" if ':' not in symbol and symbol.endswith('/USDT') else symbol
-                
-                # Collector'a DataFrame'i doğrudan gönder.
-                self.websocket_manager.collector.prime_buffer_with_dataframe(exchange_name, ws_symbol, timeframe, df)
-                logger.info(f"✅ [INJECT] Injected {len(df)} candles into WebSocket buffer for {ws_symbol} {timeframe}")
-            except Exception as e:
-                logger.error(f"❌ [INJECT] Failed to inject data into WebSocket buffer for {symbol} {timeframe}: {e}")
-                # Don't fail the entire prime operation if injection fails
-                pass
+            # --- VERİ ENJEKSİYON BLOĞU ---
+            # Bu blok, verinin WebSocket deposuna aktarılmasını sağlar.
+            if self.websocket_manager and hasattr(self.websocket_manager, 'collector') and self.websocket_manager.collector:
+                try:
+                    # CCXT sembol formatını ('BTC/USDT') WebSocket formatına ('BTC/USDT:USDT') çevir.
+                    ws_symbol = f"{symbol}:{symbol.split('/')[-1]}" if ':' not in symbol and symbol.endswith('/USDT') else symbol
+                    
+                    # Collector'a DataFrame'i doğrudan gönder.
+                    self.websocket_manager.collector.prime_buffer_with_dataframe(exchange_name, ws_symbol, timeframe, df)
+                    logger.info(f"✅ [INJECT] Successfully injected {len(df)} candles into WebSocket buffer for {ws_symbol} {timeframe}")
+                except Exception as e:
+                    logger.error(f"❌ [INJECT] Failed to inject data into WebSocket buffer for {symbol} {timeframe}: {e}", exc_info=True)
+                    # Enjeksiyon başarısız olursa bile prime işlemini başarısız sayma, sadece logla.
+            else:
+                logger.debug(f"[INJECT] No WebSocket manager or collector available - skipping data injection for {symbol} {timeframe}")
     
             return True
             
         except Exception as e:
             self.failed_requests += 1
-            logger.error(f"❌ [PRIME] Failed to fetch {symbol} {timeframe} on {exchange_name}: {e}")
+            logger.error(f"❌ [PRIME] Failed to fetch {symbol} {timeframe} on {exchange_name}: {e}", exc_info=True)
             return False
 
     def start_feeds(self, symbols: List[str], timeframes: List[str] = ['30m', '1h']) -> Dict[str, Any]:
