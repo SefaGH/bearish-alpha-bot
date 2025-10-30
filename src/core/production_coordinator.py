@@ -678,36 +678,51 @@ class ProductionCoordinator:
             return None 
 
     async def _process_trading_loop(self):
-        """Main trading loop processing with timeout protection and detailed logging."""
+        """The core processing logic for a single trading loop iteration."""
+        if not self.active_symbols:
+            logger.warning("[PROCESS] No active symbols to process.")
+            return
+
         logger.info(f"📋 [PROCESSING] Starting processing loop for {len(self.active_symbols)} symbols")
         start_time = time.time()
-        
-        # Artık tüm semboller için görevleri paralel başlatabiliriz. Bu, hızı artırır.
-        tasks = [self.process_symbol(symbol) for symbol in self.active_symbols]
-        signals = await asyncio.gather(*tasks, return_exceptions=True)
 
         processed_count = 0
         signal_count = 0
         error_count = 0
 
-        for i, result in enumerate(signals):
-            symbol = self.active_symbols[i]
-            processed_count += 1
-            if isinstance(result, Exception):
-                logger.error(f"❌ Error processing {symbol}: {result}", exc_info=False)
+        for symbol in self.active_symbols:
+            try:
+                logger.info(f"⚙️ [PROCESS] Processing symbol: {symbol}")
+                
+                ml_context = None
+                if self.ml_integration:
+                    try:
+                        context_dict = await self.ml_integration.get_ml_context(symbol)
+                        
+                        if context_dict and context_dict.get('is_healthy'):
+                            ml_context = context_dict
+                            logger.info(f"🧠 [ML] {symbol}: ML context successfully generated.")
+                        else:
+                            reason = context_dict.get('reason', 'unknown reason')
+                            logger.warning(f"🧠 [ML] {symbol}: ML context is unhealthy or unavailable. Reason: {reason}")
+
+                    except Exception as e:
+                        logger.error(f"🧠 [ML] {symbol}: Critical error during ML context generation: {e}", exc_info=True)
+                        error_count += 1
+
+                signals_generated = await self._run_strategies_for_symbol(symbol, ml_context)
+                signal_count += len(signals_generated)
+                processed_count += 1
+
+            except Exception as e:
+                logger.error(f"❌ Unhandled error processing symbol {symbol}: {e}", exc_info=True)
                 error_count += 1
-            elif result:
-                logger.info(f"✅ Signal generated for {symbol}, submitting to execution engine")
-                submission_result = await self.submit_signal(result)
-                if not submission_result.get('success'):
-                    logger.warning(f"Failed to submit signal for {symbol}: {submission_result.get('reason')}")
-                else:
-                    signal_count += 1
-        
-        total_duration = time.time() - start_time
-        logger.info(f"✅ [PROCESSING] Completed processing loop in {total_duration:.2f}s")
+
+        end_time = time.time()
+        logger.info(f"✅ [PROCESSING] Completed processing loop in {end_time - start_time:.2f}s")
         logger.info(f"   Processed: {processed_count}/{len(self.active_symbols)} symbols")
         logger.info(f"   Signals: {signal_count} | Errors: {error_count}")
+        self.loop_iteration += 1
 
     def _get_default_symbols(self) -> List[str]:
         """
