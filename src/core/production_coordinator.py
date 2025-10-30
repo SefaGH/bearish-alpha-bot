@@ -1215,7 +1215,6 @@ class ProductionCoordinator:
                 portfolio_manager=self.portfolio_manager,
                 risk_manager=self.risk_manager,
                 market_data_pipeline=self.market_data_pipeline,
-                indicator_manager=self.indicator_manager,  # <-- EKLENECEK SATIR
                 config=self.config
             )
             logger.info("✓ Strategy coordinator initialized")
