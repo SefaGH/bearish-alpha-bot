@@ -1166,9 +1166,10 @@ class ProductionCoordinator:
             # STEP 12: INITIALIZE STRATEGY COORDINATOR (GÜNCELLENDİ)
             # ========================================
             self.strategy_coordinator = StrategyCoordinator(
-                self.portfolio_manager,
-                self.risk_manager,
-                market_data_pipeline=self.market_data_pipeline, # ÖNEMLİ: Doğru yapılandırılmış pipeline'ı coordinator'a veriyoruz.
+                portfolio_manager=self.portfolio_manager,
+                risk_manager=self.risk_manager,
+                market_data_pipeline=self.market_data_pipeline,
+                indicator_manager=self.indicator_manager,  # <-- EKLENECEK SATIR
                 config=self.config
             )
             logger.info("✓ Strategy coordinator initialized")
