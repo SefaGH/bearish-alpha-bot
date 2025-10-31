@@ -173,16 +173,32 @@ class WebSocketManager:
         Returns the number of active WebSocket streams.
         Used by LiveTradingLauncher for pre-flight checks.
         
+        FIXED: Now queries actual subscription counts from clients instead of
+        relying on task completion status. This ensures subscription confirmations
+        are properly counted as active streams.
+        
         Returns:
-            int: Number of active (non-completed) stream tasks
+            int: Number of confirmed subscriptions across all clients
         """
-        if hasattr(self, '_tasks'):
-            try:
-                return len([t for t in self._tasks if not t.done()])
-            except Exception as e:
-                logger.warning(f"Error checking stream task status: {e}")
-                return 0
-        return 0
+        try:
+            total_subscriptions = 0
+            
+            # Query subscription count from each client
+            for client_name, client in self.clients.items():
+                if hasattr(client, 'get_subscription_count') and callable(client.get_subscription_count):
+                    try:
+                        count = client.get_subscription_count()
+                        total_subscriptions += count
+                        logger.debug(f"Client '{client_name}' has {count} active subscriptions")
+                    except Exception as e:
+                        logger.warning(f"Error getting subscription count from '{client_name}': {e}")
+            
+            logger.debug(f"Total active subscriptions: {total_subscriptions}")
+            return total_subscriptions
+            
+        except Exception as e:
+            logger.warning(f"Error checking subscription counts: {e}")
+            return 0
 
     def is_any_client_connected(self) -> bool:
         """
