@@ -1139,7 +1139,12 @@ class LiveTradingLauncher:
                 else:
                     logger.info("ℹ️ No open positions to close")
                 
-                result = await self.coordinator.position_manager.close_all_positions("shutdown")
+                # CRITICAL FIX: Pass LIVE exchange_clients to ensure positions can be closed
+                logger.info(f"🔑 Injecting {len(self.exchange_clients)} live exchange client(s) for position closure")
+                result = await self.coordinator.position_manager.close_all_positions(
+                    exchange_clients=self.exchange_clients,  # *** CRITICAL: Pass live clients ***
+                    reason="shutdown"
+                )
                 logger.info(f"✅ Position closure completed. Result: {result}")
                 
                 # Verify positions were closed
