@@ -311,7 +311,14 @@ class EnsemblePricePredictor:
             
             if hasattr(model, 'predict'):
                 try:
-                    pred, unc = model.predict(X)
+                    # Gelen 2D veriyi (örn: [1, 42]) modelin beklediği 3D formata çevir (örn: [1, 1, 42])
+                    if X.ndim == 2:
+                        X_reshaped = np.reshape(X, (X.shape[0], 1, X.shape[1]))
+                    else:
+                        X_reshaped = X
+                    
+                    # Modeli, yeniden şekillendirilmiş veri ile çağır
+                    pred, unc = model.predict(X_reshaped) 
                 except Exception as e:
                     # Fallback if predict fails (e.g., input size mismatch)
                     logger.warning(f"Model {model_name} prediction failed: {e}. Using fallback.")
