@@ -5,6 +5,7 @@ Implements LSTM and Transformer models for real-time price movement prediction
 with multi-timeframe forecasting, ensemble predictions, and confidence intervals.
 """
 
+import asyncio
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
@@ -601,6 +602,60 @@ class AdvancedPricePredictionEngine:
             self.is_trained = False
             logger.warning("No pre-trained models were found or loaded. The system will rely on fallback mechanisms.")
 
+    async def _update_predictions(self, symbols: List[str], 
+                                  timeframes: List[str]) -> None:
+        """
+        Update predictions for all symbols.
+        
+        Args:
+            symbols: List of trading symbols to update
+            timeframes: List of timeframes to use
+        """
+        for symbol in symbols:
+            try:
+                # Get data for each timeframe
+                data_by_timeframe = {}
+                
+                # Try to get data from websocket manager if available
+                if self.ws_manager and hasattr(self.ws_manager, 'collector'):
+                    for tf in timeframes:
+                        try:
+                            # Get latest OHLCV data from websocket collector
+                            # Note: 'bingx' is hardcoded for consistency with rest of codebase
+                            # TODO: Make exchange configurable via config
+                            ohlcv_list = self.ws_manager.collector.get_latest_ohlcv(
+                                exchange='bingx',
+                                symbol=symbol,
+                                timeframe=tf
+                            )
+                            
+                            if ohlcv_list and len(ohlcv_list) > 0:
+                                # Convert to DataFrame
+                                df = pd.DataFrame(
+                                    ohlcv_list,
+                                    columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+                                )
+                                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                                df.set_index('timestamp', inplace=True)
+                                data_by_timeframe[tf] = df
+                        except Exception as e:
+                            logger.debug(f"Could not get {tf} data for {symbol}: {e}")
+                
+                # Only make predictions if we have data for at least one timeframe
+                if data_by_timeframe:
+                    # Generate multi-timeframe prediction
+                    prediction = self.predictor.predict_multi_timeframe(data_by_timeframe)
+                    
+                    # Cache the prediction
+                    self.prediction_cache[symbol] = prediction
+                    
+                    logger.debug(f"✅ Updated prediction for {symbol} using {len(data_by_timeframe)} timeframes")
+                else:
+                    logger.debug(f"⚠️ No data available for {symbol}, skipping prediction update")
+                    
+            except Exception as e:
+                logger.error(f"Error updating prediction for {symbol}: {e}", exc_info=False)
+    
     async def start_prediction_loop(self, symbols: List[str],
                                    timeframes: List[str] = ['5m', '15m', '1h']):
         """
@@ -617,12 +672,34 @@ class AdvancedPricePredictionEngine:
                 tf: deque(maxlen=200) for tf in timeframes
             }
         
-        logger.info(f"Started prediction loop for {len(symbols)} symbols")
+        logger.info(f"🧠 [PRICE-ENGINE] Starting prediction loop for {len(symbols)} symbols")
+        logger.info(f"   Timeframes: {timeframes}")
+        logger.info(f"   Update interval: {self.update_interval}s")
+        
+        # Run the update loop in the background
+        while self.is_running:
+            try:
+                # Update predictions for all symbols
+                await self._update_predictions(symbols, timeframes)
+                
+                # Wait for next update cycle
+                await asyncio.sleep(self.update_interval)
+                
+            except asyncio.CancelledError:
+                logger.info("🧠 [PRICE-ENGINE] Prediction loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in prediction loop: {e}", exc_info=True)
+                # Continue running despite errors
+                # Note: Could implement exponential backoff here for production robustness
+                await asyncio.sleep(self.update_interval)
+        
+        logger.info("🧠 [PRICE-ENGINE] Prediction loop stopped")
     
     async def stop_prediction_loop(self):
         """Stop the prediction loop."""
         self.is_running = False
-        logger.info("Stopped prediction loop")
+        logger.info("🧠 [PRICE-ENGINE] Stopping prediction loop...")
     
     def get_price_forecast(self, symbol: str,
                           horizon: int = 12) -> Optional[Dict[str, Any]]:

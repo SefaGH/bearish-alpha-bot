@@ -939,6 +939,7 @@ class LiveTradingLauncher:
         self.price_engine = None
         self.strategy_adapter = None
         self.strategy_optimizer = None
+        self._prediction_loop_task = None  # Background task for price predictions
         
         # Ultimate mode settings
         self.max_restarts = max_restarts
@@ -1123,6 +1124,22 @@ class LiveTradingLauncher:
             except Exception as e:
                 errors.append(f"Error stopping coordinator: {e}")
                 logger.error(f"Error stopping coordinator: {e}", exc_info=True)
+        
+        # Stop price prediction loop
+        logger.info("\nStopping price prediction loop...")
+        if self._prediction_loop_task:
+            try:
+                if self.price_engine:
+                    await self.price_engine.stop_prediction_loop()
+                self._prediction_loop_task.cancel()
+                try:
+                    await self._prediction_loop_task
+                except asyncio.CancelledError:
+                    pass
+                logger.info("✅ Price prediction loop stopped")
+            except Exception as e:
+                errors.append(f"Error stopping prediction loop: {e}")
+                logger.error(f"Error stopping prediction loop: {e}", exc_info=True)
 
         # ========================================================================
         # STEP 2: Close All Open Positions (CRITICAL - Must happen BEFORE closing connections)
@@ -2730,6 +2747,23 @@ class LiveTradingLauncher:
             if not ml_init_success:
                 # ML failure is not critical - continue with degraded functionality
                 logger.warning("⚠️ ML initialization failed - continuing with limited AI features")
+            
+            # Start price prediction loop if price engine is available
+            if self.price_engine and ml_init_success:
+                try:
+                    # Get symbols and timeframes from config
+                    symbols = self.config.get('universe', {}).get('fixed_symbols', ['BTC/USDT:USDT'])
+                    timeframes = self.config.get('ml', {}).get('prediction', {}).get('timeframes', ['5m', '15m', '1h'])
+                    
+                    # Start prediction loop as a background task
+                    logger.info("🧠 [ML] Starting price prediction background loop...")
+                    self._prediction_loop_task = asyncio.create_task(
+                        self.price_engine.start_prediction_loop(symbols, timeframes)
+                    )
+                    logger.info("✅ Price prediction loop started as background task")
+                except Exception as e:
+                    logger.error(f"❌ Failed to start prediction loop: {e}", exc_info=True)
+                    logger.warning("   Continuing without prediction loop")
             
             # ====================================================================
             # MARK SYSTEM AS INITIALIZED (Critical for pre-flight checks)
