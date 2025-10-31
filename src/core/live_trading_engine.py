@@ -438,6 +438,10 @@ class LiveTradingEngine:
                     'stage': 'exchange_selection'
                 }
             
+            # CRITICAL FIX: Add exchange to signal to ensure position tracking has valid exchange
+            # This prevents "Exchange not available: unknown" error during shutdown position closure
+            signal['exchange'] = exchange
+            
             # Step 4: Determine execution algorithm
             notional_value = position_size * signal.get('entry', 0)
             urgency = signal.get('urgency', 'normal')
