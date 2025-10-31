@@ -354,6 +354,9 @@ jobs:
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
           TRADING_SYMBOLS_PRIORITY: ${{ vars.TRADING_SYMBOLS_PRIORITY || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
           UNIVERSE_AUTO_SELECT: ${{ vars.UNIVERSE_AUTO_SELECT || 'false' }}
+
+          # ============= MACHINE LEARNING =============
+          ML_TIMEFRAMES: ${{ vars.ML_TIMEFRAMES || '5m,15m,1h,4h' }}
           
           # ============= SYMBOL-SPECIFIC RSI =============
           RSI_THRESHOLD_BTC: ${{ vars.RSI_THRESHOLD_BTC || '55' }}
