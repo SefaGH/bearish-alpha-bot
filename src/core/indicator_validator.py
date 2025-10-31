@@ -100,12 +100,17 @@ class IndicatorValidator:
         
         # Adım 1: Veri Varlığını Doğrudan Collector'dan Kontrol Et
         try:
-            # Collector'dan veriyi al. Bu metot, prefetch adımında doldurulan hafızayı okur.
-            # Artık `asyncio.sleep`'e gerek yok çünkü prefetch adımı bittiğinde veri burada hazır olmalıdır.
-            all_data_for_symbol = self.collector.get_data(symbol, validation_tf)
+            # --- DÜZELTME: Artık collector'ın doğru metodu olan get_latest_ohlcv çağrılıyor ---
+            # Bu metot doğrudan mum listesini ([timestamp, o, h, l, c, v]) döndürür.
+            ohlcv_list = self.collector.get_latest_ohlcv(
+                exchange='bingx',  # veya dinamik bir exchange adı
+                symbol=symbol, 
+                timeframe=validation_tf, 
+                limit=self.REQUIRED_CANDLES
+            )
             
-            if not all_data_for_symbol or 'ohlcv' not in all_data_for_symbol or len(all_data_for_symbol['ohlcv']) < self.REQUIRED_CANDLES:
-                live_data_count = len(all_data_for_symbol['ohlcv']) if all_data_for_symbol and 'ohlcv' in all_data_for_symbol else 0
+            if not ohlcv_list or len(ohlcv_list) < self.REQUIRED_CANDLES:
+                live_data_count = len(ohlcv_list) if ohlcv_list else 0
                 reason = (f"Insufficient data in collector for '{validation_tf}': "
                           f"found {live_data_count}, required {self.REQUIRED_CANDLES}. "
                           "This usually means the prefetch/priming step failed.")
@@ -113,14 +118,9 @@ class IndicatorValidator:
                 results['reason'] = reason
                 return results
 
-            logger.info(f"✅ Data availability check passed: {len(all_data_for_symbol['ohlcv'])} candles found in collector for validation.")
-            ohlcv_list = all_data_for_symbol['ohlcv']
+            logger.info(f"✅ Data availability check passed: {len(ohlcv_list)} candles found in collector for validation.")
             
         except Exception as e:
-            reason = f"Failed to retrieve data from collector: {e}"
-            logger.error(f"❌ {symbol}: {reason}", exc_info=True)
-            results['reason'] = reason
-            return results
 
         # Adım 2: Veriyi DataFrame'e Çevir ve İndikatörleri Hesapla
         try:
