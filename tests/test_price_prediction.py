@@ -264,10 +264,14 @@ class TestAdvancedPricePredictionEngine:
         models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
         mt_predictor = MultiTimeframePricePredictor(models)
         
-        engine = AdvancedPricePredictionEngine(mt_predictor)
+        # Create mock market_data_pipeline
+        mock_pipeline = Mock()
+        
+        engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
         
         assert engine is not None
         assert engine.predictor is not None
+        assert engine.market_data_pipeline is not None
         logger.info("✓ Prediction engine initialized successfully")
     
     @pytest.mark.asyncio
@@ -277,7 +281,12 @@ class TestAdvancedPricePredictionEngine:
         
         models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
         mt_predictor = MultiTimeframePricePredictor(models)
-        engine = AdvancedPricePredictionEngine(mt_predictor)
+        
+        # Create mock market_data_pipeline
+        mock_pipeline = Mock()
+        mock_pipeline.get_latest_ohlcv = Mock(return_value=None)
+        
+        engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
         
         await engine.start_prediction_loop(['BTC/USDT'], ['5m'])
         assert engine.is_running is True
@@ -293,7 +302,11 @@ class TestAdvancedPricePredictionEngine:
         
         models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
         mt_predictor = MultiTimeframePricePredictor(models)
-        engine = AdvancedPricePredictionEngine(mt_predictor)
+        
+        # Create mock market_data_pipeline
+        mock_pipeline = Mock()
+        
+        engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
         
         # Mock a forecast in cache
         engine.prediction_cache['BTC/USDT'] = {
@@ -324,7 +337,8 @@ class TestAIEnhancedStrategyAdapter:
         # Create engines
         models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
         mt_predictor = MultiTimeframePricePredictor(models)
-        price_engine = AdvancedPricePredictionEngine(mt_predictor)
+        mock_pipeline = Mock()
+        price_engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
         regime_predictor = MLRegimePredictor()
         
         adapter = AIEnhancedStrategyAdapter(price_engine, regime_predictor)
@@ -342,7 +356,8 @@ class TestAIEnhancedStrategyAdapter:
         # Setup
         models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
         mt_predictor = MultiTimeframePricePredictor(models)
-        price_engine = AdvancedPricePredictionEngine(mt_predictor)
+        mock_pipeline = Mock()
+        price_engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
         regime_predictor = MLRegimePredictor()
         
         adapter = AIEnhancedStrategyAdapter(price_engine, regime_predictor)
@@ -369,7 +384,8 @@ class TestAIEnhancedStrategyAdapter:
         
         models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
         mt_predictor = MultiTimeframePricePredictor(models)
-        price_engine = AdvancedPricePredictionEngine(mt_predictor)
+        mock_pipeline = Mock()
+        price_engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
         regime_predictor = MLRegimePredictor()
         
         adapter = AIEnhancedStrategyAdapter(price_engine, regime_predictor)
@@ -453,7 +469,8 @@ class TestMLStrategyIntegrationManager:
         
         models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
         mt_predictor = MultiTimeframePricePredictor(models)
-        price_engine = AdvancedPricePredictionEngine(mt_predictor)
+        mock_pipeline = Mock()
+        price_engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
         regime_predictor = MLRegimePredictor()
         
         manager = MLStrategyIntegrationManager(price_engine, regime_predictor)
@@ -470,7 +487,8 @@ class TestMLStrategyIntegrationManager:
         
         models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
         mt_predictor = MultiTimeframePricePredictor(models)
-        price_engine = AdvancedPricePredictionEngine(mt_predictor)
+        mock_pipeline = Mock()
+        price_engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
         regime_predictor = MLRegimePredictor()
         
         manager = MLStrategyIntegrationManager(price_engine, regime_predictor)
@@ -496,7 +514,8 @@ class TestMLStrategyIntegrationManager:
         
         models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
         mt_predictor = MultiTimeframePricePredictor(models)
-        price_engine = AdvancedPricePredictionEngine(mt_predictor)
+        mock_pipeline = Mock()
+        price_engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
         regime_predictor = MLRegimePredictor()
         
         manager = MLStrategyIntegrationManager(price_engine, regime_predictor)

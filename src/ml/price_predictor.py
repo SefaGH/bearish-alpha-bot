@@ -482,10 +482,16 @@ class AdvancedPricePredictionEngine:
     MODEL_SAVE_DIR = "data/models" # Modellerin kaydedileceği dizin
     
     def __init__(self, multi_timeframe_predictor: MultiTimeframePricePredictor,
-                 websocket_manager=None):
+                 websocket_manager=None,
+                 market_data_pipeline=None):
         """
         Initialize advanced prediction engine.
-        (GÜNCELLENDİ: `load_models` çağrısı kaldırıldı)
+        (GÜNCELLENDİ: `market_data_pipeline` parametresi eklendi)
+        
+        Args:
+            multi_timeframe_predictor: MultiTimeframePricePredictor instance
+            websocket_manager: Optional WebSocket manager (deprecated, kept for compatibility)
+            market_data_pipeline: MarketDataPipeline instance for data fetching (REQUIRED)
         """
         if not isinstance(multi_timeframe_predictor, MultiTimeframePricePredictor):
             raise TypeError(
@@ -493,7 +499,8 @@ class AdvancedPricePredictionEngine:
             )
         
         self.predictor = multi_timeframe_predictor
-        self.ws_manager = websocket_manager
+        self.ws_manager = websocket_manager  # Deprecated but kept for backward compatibility
+        self.market_data_pipeline = market_data_pipeline
         self.prediction_cache = {}
         self.data_buffers = {}
         self.is_running = False
@@ -503,6 +510,9 @@ class AdvancedPricePredictionEngine:
         self.update_interval = 60  # seconds
         
         self.is_trained = False # Modelin eğitimli olup olmadığını izler
+        
+        if not self.market_data_pipeline:
+            logger.warning("⚠️ MarketDataPipeline not provided. Prediction updates may fail.")
         
         logger.info("Advanced Price Prediction Engine initialized")
         # --- KALDIRILDI: Başlangıçta modelleri yükleme ---
@@ -605,41 +615,47 @@ class AdvancedPricePredictionEngine:
     async def _update_predictions(self, symbols: List[str], 
                                   timeframes: List[str]) -> None:
         """
-        Update predictions for all symbols.
+        Update predictions for all symbols using MarketDataPipeline.
+        
+        This method fetches data through the central MarketDataPipeline,
+        which provides consistent data format and handles WebSocket/REST fallback.
         
         Args:
             symbols: List of trading symbols to update
             timeframes: List of timeframes to use
         """
+        if not self.market_data_pipeline:
+            logger.error("❌ MarketDataPipeline not available. Cannot update predictions.")
+            return
+        
         for symbol in symbols:
             try:
-                # Get data for each timeframe
+                # Get data for each timeframe from MarketDataPipeline
                 data_by_timeframe = {}
                 
-                # Try to get data from websocket manager if available
-                if self.ws_manager and hasattr(self.ws_manager, 'collector'):
-                    for tf in timeframes:
-                        try:
-                            # Get latest OHLCV data from websocket collector
-                            # Note: 'bingx' is hardcoded for consistency with rest of codebase
-                            # TODO: Make exchange configurable via config
-                            ohlcv_list = self.ws_manager.collector.get_latest_ohlcv(
-                                exchange='bingx',
-                                symbol=symbol,
-                                timeframe=tf
-                            )
-                            
-                            if ohlcv_list and len(ohlcv_list) > 0:
-                                # Convert to DataFrame
-                                df = pd.DataFrame(
-                                    ohlcv_list,
-                                    columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
-                                )
-                                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                                df.set_index('timestamp', inplace=True)
+                for tf in timeframes:
+                    try:
+                        # Fetch data through MarketDataPipeline (central data source)
+                        # Request sufficient candles for model predictions (200 candles)
+                        df = await self.market_data_pipeline.get_latest_ohlcv(
+                            symbol=symbol,
+                            timeframe=tf,
+                            exchange=None  # Let pipeline choose best exchange
+                        )
+                        
+                        # Validate received data
+                        if df is not None and not df.empty:
+                            # Ensure we have minimum required data for predictions
+                            if len(df) >= 50:  # Minimum threshold for meaningful predictions
                                 data_by_timeframe[tf] = df
-                        except Exception as e:
-                            logger.debug(f"Could not get {tf} data for {symbol}: {e}")
+                                logger.debug(f"✅ Retrieved {len(df)} candles for {symbol} {tf}")
+                            else:
+                                logger.warning(f"⚠️ Insufficient data for {symbol} {tf}: only {len(df)} candles")
+                        else:
+                            logger.debug(f"⚠️ No data returned for {symbol} {tf}")
+                            
+                    except Exception as e:
+                        logger.debug(f"Could not get {tf} data for {symbol}: {e}")
                 
                 # Only make predictions if we have data for at least one timeframe
                 if data_by_timeframe:
@@ -649,12 +665,12 @@ class AdvancedPricePredictionEngine:
                     # Cache the prediction
                     self.prediction_cache[symbol] = prediction
                     
-                    logger.debug(f"✅ Updated prediction for {symbol} using {len(data_by_timeframe)} timeframes")
+                    logger.info(f"✅ Updated prediction for {symbol} using {len(data_by_timeframe)} timeframes: {list(data_by_timeframe.keys())}")
                 else:
-                    logger.debug(f"⚠️ No data available for {symbol}, skipping prediction update")
+                    logger.warning(f"⚠️ No data available for {symbol} across any timeframe. Prediction cache not updated.")
                     
             except Exception as e:
-                logger.error(f"Error updating prediction for {symbol}: {e}", exc_info=False)
+                logger.error(f"❌ Error updating prediction for {symbol}: {e}", exc_info=True)
     
     async def start_prediction_loop(self, symbols: List[str],
                                    timeframes: List[str] = ['5m', '15m', '1h']):

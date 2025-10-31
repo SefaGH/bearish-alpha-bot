@@ -1456,7 +1456,19 @@ class LiveTradingLauncher:
 
             multi_timeframe_predictor = MultiTimeframePricePredictor(models_by_timeframe)
             
-            self.price_engine = AdvancedPricePredictionEngine(multi_timeframe_predictor)
+            # Get market_data_pipeline from coordinator if available
+            market_data_pipeline = None
+            if self.coordinator and hasattr(self.coordinator, 'market_data_pipeline'):
+                market_data_pipeline = self.coordinator.market_data_pipeline
+                logger.info("✓ Using MarketDataPipeline from coordinator")
+            else:
+                logger.warning("⚠️ MarketDataPipeline not available yet - prediction updates may fail")
+            
+            self.price_engine = AdvancedPricePredictionEngine(
+                multi_timeframe_predictor,
+                websocket_manager=self.ws_optimizer.ws_manager if self.ws_optimizer else None,
+                market_data_pipeline=market_data_pipeline
+            )
             logger.info("✓ Price Prediction Engine initialized")
 
             # 3. Modelleri yükle
