@@ -38,6 +38,12 @@ class MarketDataPipeline:
         '1d': 100
     }
     
+    # Default exchange for WebSocket collector when not specified
+    DEFAULT_EXCHANGE = 'bingx'
+    
+    # Extra candles buffer for indicator warmup to ensure sufficient historical data
+    INDICATOR_WARMUP_BUFFER = 50
+    
     def __init__(self, exchanges: Dict[str, CcxtClient], config: Dict[str, Any] = None, websocket_manager: Optional[Any] = None):
         """
         Initialize MarketDataPipeline.
@@ -118,7 +124,7 @@ class MarketDataPipeline:
         
         tasks = []
         # We need enough data for indicators like EMA(200)
-        limit = self.config.get('indicators', {}).get('ema_slow', 200) + 50  # 250 bars
+        limit = self.config.get('indicators', {}).get('ema_slow', 200) + self.INDICATOR_WARMUP_BUFFER
 
         for symbol in symbols:
             for timeframe in timeframes:
@@ -358,10 +364,11 @@ class MarketDataPipeline:
         if self.websocket_manager and self.websocket_manager.collector:
             try:
                 # Determine which exchange to use
-                ws_exchange = exchange if exchange else (next(iter(self.exchanges.keys())) if self.exchanges else 'bingx')
+                ws_exchange = exchange if exchange else (next(iter(self.exchanges.keys())) if self.exchanges else self.DEFAULT_EXCHANGE)
                 
                 # Get required number of candles for indicators
-                limit = self.config.get('indicators', {}).get('ema_slow', 200) + 50  # 250
+                # Adding buffer to ensure sufficient data for indicator calculations
+                limit = self.config.get('indicators', {}).get('ema_slow', 200) + self.INDICATOR_WARMUP_BUFFER
                 
                 # WebSocket collector'dan ham OHLCV listesini al
                 ohlcv_list = self.websocket_manager.collector.get_latest_ohlcv(
@@ -404,7 +411,7 @@ class MarketDataPipeline:
             client = self.exchanges[exchange]
             
             # Gerekli mum sayısını belirle
-            limit = self.config.get('indicators', {}).get('ema_slow', 200) + 50 # 250
+            limit = self.config.get('indicators', {}).get('ema_slow', 200) + self.INDICATOR_WARMUP_BUFFER
 
             # REST API'yi çağır (zaten async)
             ohlcv_df = await client.ohlcv(symbol, timeframe, limit, add_indicators=False)
