@@ -339,60 +339,50 @@ class MarketDataPipeline:
         # logger.warning(f"DEPRECATED: _store_data for {exchange}:{symbol}:{timeframe} was called. This is a no-op.")
         pass
     
+    # ------------------- DÜZELTİLMİŞ METOT -------------------
     async def get_latest_ohlcv(self, symbol: str, timeframe: str, exchange: str = None) -> Optional[pd.DataFrame]:
         """
-        Get latest OHLCV data with REST API fallback (async).
-        
+        Get latest OHLCV data with a robust WebSocket-first approach.
+        (GÜNCELLENDİ: WebSocket verisini doğru işler ve REST fallback'i sadece gerektiğinde kullanır.)
+
         Priority:
-        1. Try to get data from WebSocket (real-time)
-        2. Fall back to REST API if WebSocket unavailable or returns no data
-        3. Return None only if both sources fail
+        1. Try to get data from WebSocket collector (fastest, real-time).
+        2. Fall back to REST API only if WebSocket data is insufficient or unavailable.
+        3. Return None only if both sources fail.
         
-        Technical indicators (RSI, ATR, EMA21, EMA50, EMA200) are automatically
-        added to the DataFrame before returning, ensuring strategies always receive
-        complete data with all required indicators.
-        
-        This ensures strategies always receive valid data when possible.
-        
-        Note: This method is async to properly handle the async REST API fallback.
-        
-        Returns:
-            DataFrame with OHLCV data and technical indicators, or None if both sources fail
+        Technical indicators are added consistently before returning.
         """
         df = None
         
         # STEP 1: Try WebSocket first (real-time data)
-        if self.websocket_manager:
+        if self.websocket_manager and self.websocket_manager.collector:
             try:
-                if hasattr(self.websocket_manager, 'get_latest_dataframe'):
-                    df = self.websocket_manager.get_latest_dataframe(symbol, timeframe, exchange)
-                elif hasattr(self.websocket_manager, 'get_latest_data'):
-                    raw_data = self.websocket_manager.get_latest_data(symbol, timeframe, exchange)
-                    if raw_data:
-                        if isinstance(raw_data, pd.DataFrame):
-                            df = raw_data
-                        elif 'ohlcv' in raw_data and raw_data['ohlcv']:
-                            df = self._ohlcv_to_dataframe(raw_data['ohlcv'])
+                # WebSocket collector'dan ham veriyi al (bu bir dict döndürmeli)
+                ws_data = self.websocket_manager.collector.get_data(symbol, timeframe)
                 
-                # Check if we got valid data from WebSocket
-                if df is not None and not df.empty:
-                    logger.debug(f"✅ Retrieved {len(df)} candles from WebSocket for {symbol} {timeframe}")
-                    # Add indicators and return
-                    df = add_indicators(df, self.config.get('indicators'))
-                    return df
+                # Gelen verinin doğru formatta olduğunu doğrula
+                if ws_data and isinstance(ws_data, dict) and 'ohlcv' in ws_data and ws_data['ohlcv']:
+                    # Ham OHLCV listesini DataFrame'e çevir
+                    df = self._ohlcv_to_dataframe(ws_data['ohlcv'])
+                    
+                    if df is not None and not df.empty:
+                        logger.debug(f"✅ Retrieved {len(df)} candles from WebSocket for {symbol} {timeframe}")
+                        # İndikatörleri ekle ve hemen döndür. REST API'ye gitme.
+                        df = add_indicators(df, self.config.get('indicators'))
+                        return df
                 else:
-                    logger.debug(f"⚠️ WebSocket returned empty/None data for {symbol} {timeframe}")
+                    logger.debug(f"⚠️ WebSocket collector returned empty or invalid data for {symbol} {timeframe}")
                     
             except Exception as e:
-                logger.warning(f"⚠️ Error getting data from WebSocket for {symbol} {timeframe}: {e}")
+                logger.warning(f"⚠️ Error getting data from WebSocket collector for {symbol} {timeframe}: {e}")
         else:
-            logger.debug(f"ℹ️ WebSocketManager not available for {symbol} {timeframe}")
+            logger.debug(f"ℹ️ WebSocketManager or its collector not available for {symbol} {timeframe}")
         
-        # STEP 2: REST API Fallback - Critical fix for issue
+        # STEP 2: REST API Fallback (Sadece WebSocket başarısız olursa bu blok çalışır)
         logger.info(f"🔄 Falling back to REST API for {symbol} {timeframe}")
         
         try:
-            # Determine which exchange to use
+            # Kullanılacak exchange'i belirle
             if not exchange and self.exchanges:
                 exchange = next(iter(self.exchanges.keys()))
             
@@ -402,42 +392,26 @@ class MarketDataPipeline:
             
             client = self.exchanges[exchange]
             
-            # Fetch from REST API - use appropriate limit for timeframe
-            limit_map = {'1m': 100, '5m': 100, '30m': 200, '1h': 200, '4h': 200, '1d': 200}
-            limit = limit_map.get(timeframe, 200)
+            # Gerekli mum sayısını belirle
+            limit = self.config.get('indicators', {}).get('ema_slow', 200) + 50 # 250
+
+            # REST API'yi çağır (zaten async)
+            ohlcv_df = await client.ohlcv(symbol, timeframe, limit, add_indicators=False)
             
-            # Call the REST API (async method - we can await it now)
-            # Note: add_indicators=False because we add them ourselves below for consistency
-            try:
-                ohlcv_data = await client.ohlcv(symbol, timeframe, limit, add_indicators=False)
-            except Exception as api_error:
-                logger.error(f"❌ REST API call failed for {symbol} {timeframe}: {api_error}")
-                return None
-            
-            # Validate and convert data
-            if ohlcv_data is None or (hasattr(ohlcv_data, 'empty') and ohlcv_data.empty):
+            if ohlcv_df is None or ohlcv_df.empty:
                 logger.warning(f"⚠️ REST API returned empty data for {symbol} {timeframe}")
                 return None
             
-            # If it's already a DataFrame, use it; otherwise convert
-            if isinstance(ohlcv_data, pd.DataFrame):
-                df = ohlcv_data
-            else:
-                df = self._ohlcv_to_dataframe(ohlcv_data)
-            
-            # Add indicators
-            if df is not None and not df.empty:
-                df = add_indicators(df, self.config.get('indicators'))
-                logger.info(f"✅ Retrieved {len(df)} candles from REST API for {symbol} {timeframe}")
-                return df
-            else:
-                logger.warning(f"⚠️ DataFrame conversion failed for {symbol} {timeframe}")
-                return None
+            # İndikatörleri ekle
+            df = add_indicators(ohlcv_df, self.config.get('indicators'))
+            logger.info(f"✅ Retrieved {len(df)} candles from REST API for {symbol} {timeframe}")
+            return df
                 
         except Exception as e:
             logger.error(f"❌ REST API fallback failed for {symbol} {timeframe}: {e}", exc_info=True)
             return None
-    
+    # ------------------- DÜZELTME SONU -------------------
+
     async def get_latest_price(self, symbol: str, timeframe: str = '1m', exchange: str = None) -> Optional[float]:
         """
         Get latest price for a symbol with WebSocket-first approach and REST fallback.
