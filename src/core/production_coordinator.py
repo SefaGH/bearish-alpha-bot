@@ -2013,13 +2013,20 @@ class ProductionCoordinator:
             logger.warning("'stop_system()' method not found on coordinator during shutdown.")
     
     async def stop_system(self):
-        """Stop the production system gracefully."""
+        """
+        Stop the production system gracefully.
+        
+        CRITICAL FIX: This method ONLY stops the trading loop and background tasks.
+        It does NOT close positions or connections. The shutdown order is:
+        1. Stop trading loop (this method) - prevents new signals
+        2. Close positions (handled by launcher) - requires live connections
+        3. Close WebSocket/exchange connections (handled by launcher)
+        
+        This ensures positions can be closed successfully before connections die.
+        """
         logger.info("Stopping production system...")
         self.is_running = False
         
-        # *** DÜZELTME: Pozisyon kapatma mantığı buradan kaldırıldı. ***
-        # Kapanış, artık daha üst seviyede (launcher) yönetilecek.
-
         # Cancel monitoring task
         if hasattr(self, '_monitoring_task') and self._monitoring_task:
             self._monitoring_task.cancel()
@@ -2036,12 +2043,12 @@ class ProductionCoordinator:
             except asyncio.CancelledError:
                 pass
         
+        # Stop trading engine (but keep connections alive)
         if self.trading_engine:
             await self.trading_engine.stop_live_trading()
         
-        if self.websocket_manager:
-            await self.websocket_manager.close()
-            # Allow graceful shutdown with small delay
-            await asyncio.sleep(0.05)
+        # *** CRITICAL FIX: WebSocket/exchange connections are NOT closed here ***
+        # They must remain open until positions are closed by the launcher's cleanup()
+        # The launcher will close connections in the correct order after positions are closed
         
-        logger.info("Production system stopped")
+        logger.info("Production system stopped (connections remain open for position closure)")

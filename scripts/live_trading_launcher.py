@@ -1088,76 +1088,122 @@ class LiveTradingLauncher:
         return self.trading_pairs
     
     async def cleanup(self, signum=None, frame=None):
-        """Graceful shutdown procedure in the correct order."""
+        """
+        Graceful shutdown procedure in the CRITICAL CORRECT ORDER.
+        
+        SHUTDOWN ORDER (DO NOT CHANGE):
+        1. Stop trading loop - prevents new signals from being processed
+        2. Close all positions - MUST happen while exchange connections are ALIVE
+        3. Stop WebSocket streams - can now safely disconnect
+        4. Close exchange connections - final cleanup
+        
+        This order ensures positions are closed successfully before connections die.
+        """
         if self._cleanup_completed:
             logger.info("Cleanup already completed, skipping.")
             return
 
         logger.info("\n" + "="*70)
-        logger.info("🧹 STARTING GRACEFUL SHUTDOWN (Corrected Order)")
+        logger.info("🧹 STARTING GRACEFUL SHUTDOWN")
+        logger.info("="*70)
+        logger.info("CRITICAL: Following correct shutdown order to prevent orphaned positions")
         logger.info("="*70)
 
         errors = []
         self._cleanup_completed = True
 
-        logger.info("Step 1: Stopping main trading loop...")
+        # ========================================================================
+        # STEP 1: Stop Trading Loop (Prevent New Signals)
+        # ========================================================================
+        logger.info("\nStep 1: Stopping main trading loop (no new signals)...")
         if self.coordinator:
             try:
                 await self.coordinator.stop()
-                logger.info("✅ Main trading loop stopped.")
+                logger.info("✅ Main trading loop stopped - no new signals will be processed")
             except Exception as e:
                 errors.append(f"Error stopping coordinator: {e}")
                 logger.error(f"Error stopping coordinator: {e}", exc_info=True)
 
-        logger.info("Step 2: Closing all open positions...")
+        # ========================================================================
+        # STEP 2: Close All Open Positions (CRITICAL - Must happen BEFORE closing connections)
+        # ========================================================================
+        logger.info("\nStep 2: Closing all open positions (exchange connections ALIVE)...")
         if self.coordinator and hasattr(self.coordinator, 'position_manager') and self.coordinator.position_manager:
             try:
-                # --- İYİLEŞTİRME: Artık tek bir değer beklendiği için try/except kaldırıldı ---
+                # Get position count before closing
+                positions = getattr(self.coordinator.position_manager, 'positions', {})
+                position_count = len(positions)
+                
+                if position_count > 0:
+                    logger.info(f"🔄 Attempting to close {position_count} open position(s)...")
+                else:
+                    logger.info("ℹ️ No open positions to close")
+                
                 result = await self.coordinator.position_manager.close_all_positions("shutdown")
-                logger.info(f"✅ Position closure attempt finished. Result: {result}")
-                # --- İYİLEŞTİRME SONU ---
+                logger.info(f"✅ Position closure completed. Result: {result}")
+                
+                # Verify positions were closed
+                remaining = len(getattr(self.coordinator.position_manager, 'positions', {}))
+                if remaining > 0:
+                    logger.warning(f"⚠️ Warning: {remaining} position(s) may still be open")
+                else:
+                    logger.info("✅ All positions successfully closed")
+                    
             except Exception as e:
                 error_msg = f"Critical error during position closure: {e}"
                 logger.error(error_msg, exc_info=True)
                 errors.append(error_msg)
+                logger.error("❌ CRITICAL: Positions may still be open on the exchange!")
         else:
-            logger.info("Position manager not available, skipping position closure.")
+            logger.info("ℹ️ Position manager not available, skipping position closure")
 
-        logger.info("Step 3: Stopping WebSocket streams...")
+        # ========================================================================
+        # STEP 3: Stop WebSocket Streams (Safe to disconnect now)
+        # ========================================================================
+        logger.info("\nStep 3: Stopping WebSocket streams...")
         if self.ws_optimizer:
             try:
                 await self.ws_optimizer.stop_streaming()
-                logger.info("✅ WebSocket streams stopped.")
+                logger.info("✅ WebSocket streams stopped")
             except Exception as e:
                 errors.append(f"Error stopping WebSocket: {e}")
                 logger.error(f"Error stopping WebSocket: {e}", exc_info=True)
         
+        # ========================================================================
+        # STEP 4: Stop Health Monitor
+        # ========================================================================
         if self.health_monitor:
-            logger.info("Step 4: Stopping health monitor...")
+            logger.info("\nStep 4: Stopping health monitor...")
             try:
                 await self.health_monitor.stop_monitoring()
-                logger.info("✅ Health monitor stopped.")
+                logger.info("✅ Health monitor stopped")
             except Exception as e:
                  errors.append(f"Error stopping health monitor: {e}")
                  logger.error(f"Error stopping health monitor: {e}", exc_info=True)
 
-
-        logger.info("Step 5: Closing exchange connections...")
+        # ========================================================================
+        # STEP 5: Close Exchange Connections (Final cleanup)
+        # ========================================================================
+        logger.info("\nStep 5: Closing exchange connections...")
         if self.exchange_clients:
             for name, client in self.exchange_clients.items():
                 try:
                     if hasattr(client, 'close'):
                          await client.close()
-                    logger.info(f"✅ {name} connection closed.")
+                    logger.info(f"✅ {name} exchange connection closed")
                 except Exception as e:
                     errors.append(f"Failed to close {name}: {e}")
                     logger.error(f"Failed to close {name}: {e}", exc_info=True)
         
-        logger.info("="*70)
+        # ========================================================================
+        # Shutdown Summary
+        # ========================================================================
+        logger.info("\n" + "="*70)
         if not errors:
             logger.info("✅ GRACEFUL SHUTDOWN COMPLETED SUCCESSFULLY")
+            logger.info("✅ All positions closed, all connections terminated")
         else:
-            logger.warning(f"⚠️ GRACEFUL SHUTDOWN COMPLETED WITH {len(errors)} ERRORS")
+            logger.warning(f"⚠️ GRACEFUL SHUTDOWN COMPLETED WITH {len(errors)} ERROR(S)")
             for i, err in enumerate(errors, 1):
                 logger.warning(f"  - Error {i}: {err}")
         logger.info("="*70)
