@@ -21,34 +21,26 @@ async def test_prediction_loop_populates_cache():
     models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
     mt_predictor = MultiTimeframePricePredictor(models)
     
-    # Mock websocket manager with collector
-    mock_ws_manager = Mock()
-    mock_collector = Mock()
-    
     # Constants for test data
-    MILLIS_PER_MINUTE = 60000
-    BASE_PRICE = 100.0
-    PRICE_INCREMENT = 0.1
-    BASE_VOLUME = 1000
     NUM_CANDLES = 100
     
-    # Create sample OHLCV data
-    sample_data = [
-        [int(pd.Timestamp.now().timestamp() * 1000) - i * MILLIS_PER_MINUTE, 
-         BASE_PRICE + i * PRICE_INCREMENT, 
-         BASE_PRICE + 1 + i * PRICE_INCREMENT, 
-         BASE_PRICE - 1 + i * PRICE_INCREMENT, 
-         BASE_PRICE + 0.5 + i * PRICE_INCREMENT, 
-         BASE_VOLUME]
-        for i in range(NUM_CANDLES)
-    ]
-    sample_data.reverse()  # Oldest first
+    # Create sample OHLCV DataFrame
+    dates = pd.date_range(start='2024-01-01', periods=NUM_CANDLES, freq='5min')
+    sample_df = pd.DataFrame({
+        'open': np.linspace(100, 110, NUM_CANDLES),
+        'high': np.linspace(101, 111, NUM_CANDLES),
+        'low': np.linspace(99, 109, NUM_CANDLES),
+        'close': np.linspace(100.5, 110.5, NUM_CANDLES),
+        'volume': [1000] * NUM_CANDLES
+    }, index=dates)
     
-    mock_collector.get_latest_ohlcv = Mock(return_value=sample_data)
-    mock_ws_manager.collector = mock_collector
+    # Mock market_data_pipeline with AsyncMock for cleaner async testing
+    from unittest.mock import AsyncMock
+    mock_pipeline = MagicMock()
+    mock_pipeline.get_latest_ohlcv = AsyncMock(return_value=sample_df.copy())
     
-    # Create engine with mocked websocket manager
-    engine = AdvancedPricePredictionEngine(mt_predictor, websocket_manager=mock_ws_manager)
+    # Create engine with mocked market_data_pipeline
+    engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
     
     # Verify cache is empty initially
     assert len(engine.prediction_cache) == 0
@@ -91,7 +83,8 @@ async def test_get_price_forecast_returns_cached_prediction():
     """Test that get_price_forecast returns the cached prediction."""
     models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
     mt_predictor = MultiTimeframePricePredictor(models)
-    engine = AdvancedPricePredictionEngine(mt_predictor)
+    mock_pipeline = Mock()
+    engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
     
     # Mock a prediction in the cache
     engine.prediction_cache['BTC/USDT'] = {
@@ -120,7 +113,8 @@ async def test_get_price_forecast_returns_none_when_cache_empty():
     """Test that get_price_forecast returns None when cache is empty."""
     models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
     mt_predictor = MultiTimeframePricePredictor(models)
-    engine = AdvancedPricePredictionEngine(mt_predictor)
+    mock_pipeline = Mock()
+    engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
     
     # Get forecast for symbol not in cache
     forecast = engine.get_price_forecast('BTC/USDT')

@@ -53,7 +53,9 @@ async def test_launcher_initialization_flow():
         print("  ✓ MultiTimeframePricePredictor initialized")
         
         # Correct initialization with required parameter (the fix!)
-        price_engine = AdvancedPricePredictionEngine(multi_timeframe_predictor)
+        from unittest.mock import Mock
+        mock_pipeline = Mock()
+        price_engine = AdvancedPricePredictionEngine(multi_timeframe_predictor, market_data_pipeline=mock_pipeline)
         print("  ✓ AdvancedPricePredictionEngine initialized")
         
         # Simulate Phase 4.3: Strategy Optimizer initialization
