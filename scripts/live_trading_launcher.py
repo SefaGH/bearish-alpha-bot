@@ -1613,10 +1613,64 @@ class LiveTradingLauncher:
             logger.error(f"❌ Failed to initialize core production systems: {e}", exc_info=True)
             return False
     
+    async def _wait_for_subscription_confirmations(self, timeout: int = 30) -> bool:
+        """
+        Wait for WebSocket subscriptions to be confirmed before health check.
+        
+        This fixes the race condition where health check runs before subscription
+        confirmations arrive, causing false negatives.
+        
+        Args:
+            timeout: Maximum seconds to wait (default: 30)
+            
+        Returns:
+            True if subscriptions confirmed, False if timeout
+        """
+        logger.info(f"[SUBSCRIPTION-WAIT] Waiting up to {timeout}s for WebSocket subscription confirmations...")
+        
+        start_time = asyncio.get_event_loop().time()
+        check_interval = 1.0  # Check every second
+        
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            
+            # Check timeout
+            if elapsed >= timeout:
+                logger.warning(f"[SUBSCRIPTION-WAIT] ⏱️ Timeout after {elapsed:.1f}s")
+                logger.warning("[SUBSCRIPTION-WAIT] Proceeding with health check despite timeout")
+                return False
+            
+            # Check if subscriptions are active
+            try:
+                if self.ws_optimizer and self.ws_optimizer.ws_manager:
+                    stream_count = self.ws_optimizer.ws_manager.get_active_stream_count()
+                    
+                    # Log progress every 5 seconds
+                    if int(elapsed) % 5 == 0 and int(elapsed) > 0:
+                        logger.info(f"[SUBSCRIPTION-WAIT] t+{int(elapsed)}s: {stream_count} active streams")
+                    
+                    # Success condition: at least one active stream
+                    if stream_count > 0:
+                        logger.info(f"[SUBSCRIPTION-WAIT] ✅ Subscriptions confirmed after {elapsed:.1f}s ({stream_count} streams)")
+                        return True
+                else:
+                    logger.warning("[SUBSCRIPTION-WAIT] WebSocket manager not available")
+                    return False
+            except Exception as e:
+                logger.warning(f"[SUBSCRIPTION-WAIT] Error checking subscriptions: {e}")
+            
+            # Wait before next check
+            await asyncio.sleep(check_interval)
+    
     async def _perform_data_health_check(self) -> bool:
         """
         Perform data layer health check (Phase 1.5).
         Validates that WebSocket connections are active and data is flowing.
+        
+        CRITICAL FIX (Issue #259 followup):
+        - Health check gate now actually BLOCKS on failure
+        - Waits for WebSocket subscription confirmations before checking
+        - Prevents race condition where check runs before subscriptions confirm
         """
         logger.info("\n[PHASE 1.5] Performing Data Layer Health Check...")
         
@@ -1625,7 +1679,14 @@ class LiveTradingLauncher:
                 logger.error("❌ Coordinator not initialized")
                 return False
             
-            # Perform health check
+            # STEP 1: Wait for WebSocket subscriptions to confirm (fixes race condition)
+            if self.ws_optimizer and self.ws_optimizer.ws_manager:
+                logger.info("⏳ Waiting for WebSocket subscription confirmations...")
+                await self._wait_for_subscription_confirmations(timeout=30)
+            else:
+                logger.info("ℹ️ No WebSocket manager - skipping subscription wait")
+            
+            # STEP 2: Perform health check
             health_result = await self.coordinator.is_data_layer_healthy()
             
             # Log detailed results
@@ -1643,24 +1704,36 @@ class LiveTradingLauncher:
                 else:
                     logger.error(f"  ❌ {check_name}: {details}")
             
-            # Determine if we should continue
+            # STEP 3: Enforce health check gate (CRITICAL FIX)
+            # Previously always returned True - now properly enforces the gate
             is_healthy = health_result.get('healthy', False)
             
             if is_healthy:
                 logger.info("\n✅ [HEALTH-CHECK] Data layer is HEALTHY")
-                logger.info("   All systems ready for ML initialization")
+                logger.info("   Proceeding to ML initialization")
                 return True
             else:
-                logger.warning("\n⚠️ [HEALTH-CHECK] Data layer has issues")
-                logger.warning("   System will continue with REST API fallback")
-                logger.warning("   ML features may be limited")
-                # Don't fail - allow system to continue with degraded functionality
-                return True
+                # CRITICAL CHANGE: Actually fail when unhealthy
+                # This prevents ML phase from starting with broken data layer
+                logger.error("\n❌ [HEALTH-CHECK] Data layer is UNHEALTHY")
+                logger.error("   Cannot proceed to ML initialization")
+                logger.error("   System requires working data layer for ML features")
+                
+                # Check individual components to provide actionable feedback
+                checks = health_result.get('checks', {})
+                if checks.get('websocket_connection', {}).get('status') == 'unhealthy':
+                    logger.error("   - WebSocket connection failed")
+                if checks.get('subscriptions', {}).get('status') == 'unhealthy':
+                    logger.error("   - WebSocket subscriptions not active")
+                if checks.get('data_flow', {}).get('status') in ['unhealthy', 'degraded']:
+                    logger.error("   - Data flow not confirmed")
+                
+                return False  # GATE BLOCKS: Do not proceed to ML phase
                 
         except Exception as e:
-            logger.error(f"❌ Data health check failed: {e}", exc_info=True)
-            logger.warning("⚠️ Continuing despite health check failure (REST API fallback)")
-            return True  # Don't fail - allow system to try with REST API
+            logger.error(f"❌ Data health check failed with exception: {e}", exc_info=True)
+            logger.error("   Cannot proceed to ML initialization due to health check failure")
+            return False  # GATE BLOCKS on exception
     
     async def _initialize_production_system_ml(self) -> bool:
         """
@@ -1895,12 +1968,16 @@ class LiveTradingLauncher:
                     'mode': 'rest_fallback'
                 }
 
-            # Indicator Warmup Validation (Artık daha güvenli)
+            # Indicator Warmup Validation
+            # CRITICAL FIX (Issue #259 followup): Removed duplicate prefetch
+            # Historical data is already fetched during initialize_core_systems()
+            # via market_data_pipeline.prime_data_buffers_async()
+            # Calling prefetch_data() here was redundant and caused double data fetching
             logger.info("Check 7/8: Indicator Warmup Validation...")
             if not available_exchange_name:
                 logger.warning("⚠️ Skipping Indicator Warmup Validation: No exchange client available.")
             elif not self.coordinator or not self.coordinator.trading_engine:
-                reason = "Coordinator or Trading Engine not available for prefetch."
+                reason = "Coordinator or Trading Engine not available for validation."
                 logger.error(f"❌ {reason}")
                 failed_checks.append(f"IndicatorValidator: {reason}")
             elif not self.ws_optimizer or not self.ws_optimizer.ws_manager or not self.ws_optimizer.ws_manager.collector:
@@ -1909,11 +1986,11 @@ class LiveTradingLauncher:
                 failed_checks.append(f"IndicatorValidator: {reason}")
             else:
                 try:
-                    logger.info("  -> Step 1: Prefetching historical data...")
-                    await self.coordinator.trading_engine.prefetch_data()
-                    logger.info("  -> Prefetch complete.")
-    
-                    logger.info("  -> Step 2: Validating prefetched data...")
+                    # REMOVED: Duplicate prefetch call
+                    # OLD CODE: await self.coordinator.trading_engine.prefetch_data()
+                    # Historical data was already fetched in initialize_core_systems()
+                    
+                    logger.info("  -> Validating indicator data (prefetch already completed in Phase 1)...")
                     # --- DÜZELTME 1: Validator'a artık ws_manager yerine doğrudan collector veriliyor ---
                     validator = IndicatorValidator(self.ws_optimizer.ws_manager.collector)
                     

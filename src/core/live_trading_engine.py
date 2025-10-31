@@ -248,10 +248,11 @@ class LiveTradingEngine:
             
             logger.info("\n[Phase 3.4] Starting Live Trading Components...")
             
-            # [Phase 3.4.1] Prefetch historical data for indicator warmup
-            logger.info("\n[Phase 3.4.1] Prefetching historical data for indicator warmup...")
-            await self._prefetch_historical_data()
-            logger.info("  ✓ Historical data prefetch complete")
+            # REMOVED: Duplicate prefetch (Issue #259 followup fix)
+            # Historical data is now fetched ONCE in production_coordinator.initialize_core_systems()
+            # via market_data_pipeline.prime_data_buffers_async()
+            # OLD CODE: await self._prefetch_historical_data()
+            logger.info("[Phase 3.4.1] Historical data prefetch skipped (already completed in Phase 1)")
             
             # Transition the engine state before background loops execute so they observe RUNNING.
             self.state = EngineState.RUNNING

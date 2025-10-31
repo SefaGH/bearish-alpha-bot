@@ -1326,10 +1326,31 @@ class ProductionCoordinator:
                     logger.info(f"  {idx}. {symbol}")
                 logger.info("="*70)
             
+            # === STEP 15: PRIME DATA BUFFERS (CRITICAL FIX - Issue #259 followup) ===
+            # This step fetches historical data ONCE at startup to warm up indicators
+            # Previously this was done twice: once in trading engine start and once in preflight checks
+            # Now it happens ONLY here in Phase 1, ensuring single data fetch
+            logger.info("\n[STEP 15] Priming data buffers with historical data...")
+            try:
+                # Get timeframes from config
+                timeframes_str = self.config.get('websocket', {}).get('stream_timeframes', '1m,5m,30m,1h,4h')
+                if isinstance(timeframes_str, list):
+                    timeframes = [item.strip() for sublist in (tf.split(',') for tf in timeframes_str) for item in sublist]
+                else:
+                    timeframes = [tf.strip() for tf in timeframes_str.split(',')]
+                
+                logger.info(f"[PRIME] Fetching historical data for {len(self.active_symbols)} symbols, {len(timeframes)} timeframes")
+                await self.market_data_pipeline.prime_data_buffers_async(self.active_symbols, timeframes)
+                logger.info("[PRIME] ✅ Historical data priming complete")
+            except Exception as e:
+                logger.error(f"[PRIME] ❌ Failed to prime data buffers: {e}", exc_info=True)
+                logger.warning("[PRIME] Continuing without pre-primed data - may cause delays")
+            
             # Mark core systems as initialized
             core_components = [
                 'websocket_manager', 'performance_monitor', 'risk_manager',
-                'portfolio_manager', 'strategy_coordinator', 'circuit_breaker', 'trading_engine'
+                'portfolio_manager', 'strategy_coordinator', 'circuit_breaker', 'trading_engine',
+                'data_priming'  # Added to track that data priming completed
             ]
             
             logger.info("="*70)
@@ -1339,6 +1360,7 @@ class ProductionCoordinator:
             logger.info(f"Portfolio value: ${self.risk_manager.portfolio_value:.2f}")
             logger.info(f"Active symbols: {len(self.active_symbols)}")
             logger.info(f"Mode: {mode}")
+            logger.info(f"Data priming: Completed")
             logger.info("="*70)
             
             return {'success': True, 'components': core_components, 'active_symbols_count': len(self.active_symbols)}
