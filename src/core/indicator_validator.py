@@ -121,6 +121,10 @@ class IndicatorValidator:
             logger.info(f"✅ Data availability check passed: {len(ohlcv_list)} candles found in collector for validation.")
             
         except Exception as e:
+            reason = f"Failed to retrieve data from collector: {e}"
+            logger.error(f"❌ {symbol}: {reason}", exc_info=True)
+            results['reason'] = reason
+            return results
 
         # Adım 2: Veriyi DataFrame'e Çevir ve İndikatörleri Hesapla
         try:
