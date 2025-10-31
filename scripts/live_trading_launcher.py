@@ -2657,6 +2657,12 @@ class LiveTradingLauncher:
             # ====================================================================
             # After Phase 1 (Core) and Phase 2 (ML) complete, mark coordinator as initialized
             # This flag is checked by pre-flight checks to verify system readiness
+            # 
+            # Note: We set this directly at the launcher level as a safety net to ensure
+            # the flag is set before pre-flight checks, even if the coordinator's internal
+            # ML initialization didn't set it (e.g., if ML is disabled in config).
+            # The coordinator also sets this flag internally via _mark_as_initialized_if_ready()
+            # during ML initialization, making this a redundant safety measure.
             self.coordinator.is_initialized = True
             logger.info("✅ Production coordinator marked as initialized (is_initialized = True)")
             

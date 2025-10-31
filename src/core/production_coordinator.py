@@ -1364,6 +1364,20 @@ class ProductionCoordinator:
         """
         return hasattr(self, 'risk_manager') and self.risk_manager is not None
     
+    def _mark_as_initialized_if_ready(self, status_message: str) -> None:
+        """
+        Mark coordinator as initialized if core systems are ready.
+        
+        This method encapsulates the pattern of checking if core systems are
+        initialized and then setting the is_initialized flag with appropriate logging.
+        
+        Args:
+            status_message: Status message to log when marking as initialized
+        """
+        if self._has_core_systems_initialized():
+            self.is_initialized = True
+            logger.info(f"✅ {status_message}")
+    
     async def initialize_ml_systems(self, price_engine: Optional[Any] = None, regime_predictor: Optional[Any] = None) -> Dict[str, Any]:
         """
         Initialize ML systems (Phase 2): ML prediction engines, RL agent, integrations.
@@ -1404,9 +1418,7 @@ class ProductionCoordinator:
                 
                 # Mark coordinator as fully initialized after successful ML init
                 # (only if core systems were already initialized)
-                if self._has_core_systems_initialized():
-                    self.is_initialized = True
-                    logger.info("✅ Coordinator fully initialized (core + ML complete)")
+                self._mark_as_initialized_if_ready("Coordinator fully initialized (core + ML complete)")
                 
                 return ml_init_result
             else:
@@ -1419,9 +1431,7 @@ class ProductionCoordinator:
                 
                 # Mark coordinator as initialized even with degraded ML
                 # (only if core systems were already initialized)
-                if self._has_core_systems_initialized():
-                    self.is_initialized = True
-                    logger.info("✅ Coordinator initialized (core complete, ML degraded)")
+                self._mark_as_initialized_if_ready("Coordinator initialized (core complete, ML degraded)")
                 
                 return ml_init_result
                 
@@ -1435,9 +1445,7 @@ class ProductionCoordinator:
             
             # Mark coordinator as initialized even with ML failure
             # (only if core systems were already initialized)
-            if self._has_core_systems_initialized():
-                self.is_initialized = True
-                logger.info("✅ Coordinator initialized (core complete, ML failed)")
+            self._mark_as_initialized_if_ready("Coordinator initialized (core complete, ML failed)")
             
             return {'success': False, 'reason': str(e), 'components': []}
     
