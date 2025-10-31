@@ -185,16 +185,17 @@ async def test_full_phased_initialization(coordinator, mock_exchange_clients, mo
     health_result = await coordinator.is_data_layer_healthy()
     assert 'healthy' in health_result
     
-    # Phase 2: ML Systems (only if healthy or with fallback)
-    if health_result['healthy'] or True:  # Always proceed for test
-        mock_price_engine = Mock()
-        mock_regime_predictor = Mock()
-        
-        ml_result = await coordinator.initialize_ml_systems(
-            price_engine=mock_price_engine,
-            regime_predictor=mock_regime_predictor
-        )
-        assert 'success' in ml_result
+    # Phase 2: ML Systems (only if healthy)
+    # Note: In production, system proceeds even if unhealthy (REST fallback)
+    # For testing, we always proceed to test ML initialization
+    mock_price_engine = Mock()
+    mock_regime_predictor = Mock()
+    
+    ml_result = await coordinator.initialize_ml_systems(
+        price_engine=mock_price_engine,
+        regime_predictor=mock_regime_predictor
+    )
+    assert 'success' in ml_result
 
 
 @pytest.mark.asyncio

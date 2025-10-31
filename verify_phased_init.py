@@ -1,7 +1,10 @@
-#!/usr/bin/env python3.11
+#!/usr/bin/env python3
 """
 Verification script for phased initialization flow.
 This script demonstrates the new phased initialization with clear logging.
+
+IMPORTANT: This project requires Python 3.11 specifically.
+Python 3.12+ is not supported due to aiohttp compatibility issues.
 
 Usage:
     python3.11 verify_phased_init.py
