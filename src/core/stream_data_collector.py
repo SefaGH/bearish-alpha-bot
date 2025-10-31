@@ -152,4 +152,5 @@ class StreamDataCollector:
             logger.info(f"[PRIME] ✅ Primed buffer with {len(ohlcv_list)} candles for {exchange} {key}. Buffer size: {len(self.ohlcv_data[exchange][key])}")
 
         except Exception as e:
-            logger.error(f"[PRIME] ❌ Failed to prime buffer for {exchange} {symbol}_{timeframe}: {e}", exc_info=True)
+            key = f"{symbol}_{timeframe}"
+            logger.error(f"[PRIME] ❌ Failed to prime buffer for {exchange} {key}: {e}", exc_info=True)

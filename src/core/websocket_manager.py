@@ -177,7 +177,11 @@ class WebSocketManager:
             int: Number of active (non-completed) stream tasks
         """
         if hasattr(self, '_tasks'):
-            return len([t for t in self._tasks if not t.done()])
+            try:
+                return len([t for t in self._tasks if not t.done()])
+            except Exception as e:
+                logger.warning(f"Error checking stream task status: {e}")
+                return 0
         return 0
 
     def is_any_client_connected(self) -> bool:
