@@ -111,7 +111,19 @@ class StreamDataCollector:
         logger.info("StreamDataCollector cleared")
     
     def prime_buffer_with_dataframe(self, exchange: str, symbol: str, timeframe: str, df):
-        """Prime the buffer with historical data from a DataFrame."""
+        """
+        Prime the buffer with historical data from a DataFrame.
+        
+        This method converts a pandas DataFrame to OHLCV list format and stores it
+        in the main data buffer (self.ohlcv_data) so that IndicatorValidator and
+        other components can access the primed data.
+        
+        Args:
+            exchange: Exchange name (e.g., 'bingx')
+            symbol: Trading symbol (e.g., 'BTC/USDT:USDT')
+            timeframe: Timeframe (e.g., '1m', '1h')
+            df: DataFrame with OHLCV data
+        """
         import pandas as pd
 
         try:
@@ -124,9 +136,7 @@ class StreamDataCollector:
             
             key = f"{symbol}_{timeframe}"
             
-            if key not in self.ohlcv_data[exchange]:
-                self.ohlcv_data[exchange][key] = deque(maxlen=self.buffer_size)
-
+            # Convert DataFrame to OHLCV list format
             ohlcv_list = []
             for timestamp, row in df.iterrows():
                 timestamp_ms = int(pd.Timestamp(timestamp).timestamp() * 1000)
@@ -135,10 +145,11 @@ class StreamDataCollector:
                     row['open'], row['high'], row['low'], row['close'], row['volume']
                 ])
             
-            self.ohlcv_data[exchange][key].clear()
-            self.ohlcv_data[exchange][key].extend(ohlcv_list)
+            # Create a new deque with the primed data to avoid race conditions
+            # This ensures atomic replacement of the buffer
+            self.ohlcv_data[exchange][key] = deque(ohlcv_list, maxlen=self.buffer_size)
             
             logger.info(f"[PRIME] ✅ Primed buffer with {len(ohlcv_list)} candles for {exchange} {key}. Buffer size: {len(self.ohlcv_data[exchange][key])}")
 
         except Exception as e:
-            logger.error(f"[PRIME] ❌ Failed to prime buffer for {exchange} {key}: {e}", exc_info=True)
+            logger.error(f"[PRIME] ❌ Failed to prime buffer for {exchange} {symbol}_{timeframe}: {e}", exc_info=True)
