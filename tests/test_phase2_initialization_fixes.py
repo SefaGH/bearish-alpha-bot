@@ -58,12 +58,16 @@ class TestPhase2InitializationFixes(unittest.TestCase):
         }
         multi_timeframe_predictor = MultiTimeframePricePredictor(models)
         
+        # Create mock market_data_pipeline
+        mock_pipeline = Mock()
+        
         # Should not raise TypeError about missing parameter
-        engine = AdvancedPricePredictionEngine(multi_timeframe_predictor)
+        engine = AdvancedPricePredictionEngine(multi_timeframe_predictor, market_data_pipeline=mock_pipeline)
         
         self.assertIsNotNone(engine)
         self.assertIsNotNone(engine.predictor)
         self.assertEqual(engine.predictor, multi_timeframe_predictor)
+        self.assertIsNotNone(engine.market_data_pipeline)
     
     def test_advanced_price_prediction_engine_requires_parameter(self):
         """Test that AdvancedPricePredictionEngine raises error without required parameter."""

@@ -49,7 +49,9 @@ def test_fix_1_price_engine_initialization():
         print("  ✓ MultiTimeframePricePredictor initialized")
         
         print("  - Creating AdvancedPricePredictionEngine with required parameter...")
-        engine = AdvancedPricePredictionEngine(multi_timeframe_predictor)
+        from unittest.mock import Mock
+        mock_pipeline = Mock()
+        engine = AdvancedPricePredictionEngine(multi_timeframe_predictor, market_data_pipeline=mock_pipeline)
         print("  ✓ AdvancedPricePredictionEngine initialized successfully!")
         
         print("\n✅ Fix 1 VERIFIED: Price engine initialization works correctly")
