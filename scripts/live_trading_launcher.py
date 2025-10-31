@@ -1554,12 +1554,16 @@ class LiveTradingLauncher:
             logger.error(traceback.format_exc())
             return False
     
-    async def _initialize_production_system(self) -> bool:
-        """Initialize Phase 3 production coordinator with all components."""
-        logger.info("\n[6/8] Initializing Production Trading System...")
+    async def _initialize_production_system_core(self) -> bool:
+        """
+        Initialize CORE production systems only (Phase 1).
+        This initializes exchange, WebSocket, data pipeline, risk, portfolio, trading engine.
+        ML systems are initialized separately in Phase 2.
+        """
+        logger.info("\n[PHASE 1] Initializing Core Production Systems...")
         
         try:
-            # 1. Gerekli config'i hazırla
+            # 1. Prepare config
             if not self.config:
                 self._load_config()
     
@@ -1570,47 +1574,149 @@ class LiveTradingLauncher:
                 'max_drawdown': self.RISK_PARAMS['max_drawdown']
             }
     
-            # === BU SEFER DOĞRU MİMARİ DÜZELTME ===
-    
-            # Adım A: WebSocket Optimizer'ı yapılandır.
+            # 2. Configure WebSocket Optimizer
             self.ws_optimizer.setup_from_config(self.config)
             
-            # Adım B: WebSocket bağlantılarını ve stream'lerini BAŞLAT.
+            # 3. Start WebSocket connections and streams
+            logger.info("Starting WebSocket connections and data streams...")
             ws_success = await self.ws_optimizer.initialize_and_subscribe(
                 self.exchange_clients,
                 self.TRADING_PAIRS
             )
     
             if not ws_success:
-                 logger.warning("⚠️ [WS] WebSocket initialization was not successful, but we will proceed. The system may rely on REST API.")
+                logger.warning("⚠️ [WS] WebSocket initialization was not successful, but we will proceed. The system may rely on REST API.")
     
-            # Adım C: ProductionCoordinator'ı oluştur.
+            # 4. Create ProductionCoordinator
             from core.production_coordinator import ProductionCoordinator
             self.coordinator = ProductionCoordinator()
             
-            # Adım D: ProductionCoordinator'ı, WebSocket yöneticisi ve ML bileşenleriyle başlat.
-            init_result = await self.coordinator.initialize_production_system(
+            # 5. Initialize CORE systems only (no ML)
+            logger.info("Initializing core production systems...")
+            core_result = await self.coordinator.initialize_core_systems(
                 exchange_clients=self.exchange_clients,
                 portfolio_config=portfolio_config,
                 mode=self.mode,
                 trading_symbols=self.TRADING_PAIRS,
-                websocket_manager=self.ws_optimizer.ws_manager,
-                # --- ÇÖZÜM: Hazır ML nesnelerini parametre olarak veriyoruz ---
-                price_engine=self.price_engine,
-                regime_predictor=self.regime_predictor
+                websocket_manager=self.ws_optimizer.ws_manager
             )
     
-            if not init_result.get('success'):
-                logger.error(f"❌ Production system initialization failed: {init_result.get('reason')}")
+            if not core_result.get('success'):
+                logger.error(f"❌ Core systems initialization failed: {core_result.get('reason')}")
                 return False
     
-            logger.info("✓ Production system initialized")
-            logger.info(f"  Components: {init_result.get('components', [])}")
+            logger.info("✅ Core production systems initialized")
+            logger.info(f"  Components: {', '.join(core_result.get('components', []))}")
             return True
     
         except Exception as e:
-            logger.error(f"❌ Failed to initialize production system: {e}", exc_info=True)
+            logger.error(f"❌ Failed to initialize core production systems: {e}", exc_info=True)
             return False
+    
+    async def _perform_data_health_check(self) -> bool:
+        """
+        Perform data layer health check (Phase 1.5).
+        Validates that WebSocket connections are active and data is flowing.
+        """
+        logger.info("\n[PHASE 1.5] Performing Data Layer Health Check...")
+        
+        try:
+            if not self.coordinator:
+                logger.error("❌ Coordinator not initialized")
+                return False
+            
+            # Perform health check
+            health_result = await self.coordinator.is_data_layer_healthy()
+            
+            # Log detailed results
+            logger.info("\n📊 Health Check Results:")
+            for check_name, check_result in health_result.get('checks', {}).items():
+                status = check_result.get('status', 'unknown')
+                details = check_result.get('details', 'No details')
+                
+                if status == 'healthy':
+                    logger.info(f"  ✅ {check_name}: {details}")
+                elif status == 'degraded':
+                    logger.warning(f"  ⚠️ {check_name}: {details}")
+                elif status == 'not_available':
+                    logger.info(f"  ℹ️ {check_name}: {details}")
+                else:
+                    logger.error(f"  ❌ {check_name}: {details}")
+            
+            # Determine if we should continue
+            is_healthy = health_result.get('healthy', False)
+            
+            if is_healthy:
+                logger.info("\n✅ [HEALTH-CHECK] Data layer is HEALTHY")
+                logger.info("   All systems ready for ML initialization")
+                return True
+            else:
+                logger.warning("\n⚠️ [HEALTH-CHECK] Data layer has issues")
+                logger.warning("   System will continue with REST API fallback")
+                logger.warning("   ML features may be limited")
+                # Don't fail - allow system to continue with degraded functionality
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ Data health check failed: {e}", exc_info=True)
+            logger.warning("⚠️ Continuing despite health check failure (REST API fallback)")
+            return True  # Don't fail - allow system to try with REST API
+    
+    async def _initialize_production_system_ml(self) -> bool:
+        """
+        Initialize ML systems in production coordinator (Phase 2).
+        This should only be called after core systems are initialized and data layer is healthy.
+        """
+        logger.info("\n[PHASE 2] Initializing ML Systems in Production Coordinator...")
+        
+        try:
+            if not self.coordinator:
+                logger.error("❌ Coordinator not initialized")
+                return False
+            
+            # Initialize ML systems in coordinator
+            ml_result = await self.coordinator.initialize_ml_systems(
+                price_engine=self.price_engine,
+                regime_predictor=self.regime_predictor
+            )
+            
+            if ml_result.get('success'):
+                logger.info("✅ ML systems initialized in coordinator")
+                logger.info(f"  Components: {', '.join(ml_result.get('components', []))}")
+                return True
+            else:
+                logger.warning(f"⚠️ ML initialization partial or failed: {ml_result.get('reason')}")
+                logger.warning("   Continuing with limited ML features")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize ML systems: {e}", exc_info=True)
+            return False
+    
+    async def _initialize_production_system(self) -> bool:
+        """
+        DEPRECATED: Use phased initialization methods instead.
+        This method is kept for backward compatibility.
+        
+        Use instead:
+        - _initialize_production_system_core() for Phase 1
+        - _perform_data_health_check() for Phase 1.5
+        - _initialize_production_system_ml() for Phase 2
+        """
+        logger.warning("⚠️ Using deprecated _initialize_production_system() method")
+        logger.warning("   Consider using phased initialization methods instead")
+        
+        # Call phased methods in sequence
+        if not await self._initialize_production_system_core():
+            return False
+        
+        if not await self._perform_data_health_check():
+            return False
+        
+        if not await self._initialize_production_system_ml():
+            logger.warning("⚠️ ML initialization failed - continuing with limited features")
+        
+        return True
         
     async def _register_strategies(self) -> bool:
         """Initialize adaptive trading strategies."""
@@ -2501,18 +2607,59 @@ class LiveTradingLauncher:
             if not self._initialize_risk_management():
                 return 1
             
-            # Step 4: Initialize AI components (non-critical)
-            await self._initialize_ai_components()
+            # ====================================================================
+            # PHASE 1: INITIALIZE CORE SYSTEMS (Exchange, WebSocket, Data Layer)
+            # ====================================================================
+            logger.info("")
+            logger.info("="*70)
+            logger.info("[PHASE 1] INITIALIZING CORE SYSTEMS")
+            logger.info("="*70)
             
-            # Step 5: Initialize strategies
+            # Step 4: Initialize strategies (need them before production system)
             if not await self._initialize_strategies():
                 return 1
             
-            # Step 6: Initialize production system (includes WebSocket)
-            if not await self._initialize_production_system():
+            # Step 5: Initialize production system CORE ONLY (no ML yet)
+            if not await self._initialize_production_system_core():
                 return 1
             
-            # Step 7: Register strategies
+            # ====================================================================
+            # PHASE 1.5: DATA LAYER HEALTH CHECK
+            # ====================================================================
+            logger.info("")
+            logger.info("="*70)
+            logger.info("[PHASE 1.5] DATA LAYER HEALTH CHECK")
+            logger.info("="*70)
+            
+            if not await self._perform_data_health_check():
+                logger.error("\n❌ Data layer health check failed - aborting launch")
+                return 1
+            
+            # ====================================================================
+            # PHASE 2: INITIALIZE ML SYSTEMS (Only after data layer is healthy)
+            # ====================================================================
+            logger.info("")
+            logger.info("="*70)
+            logger.info("[PHASE 2] INITIALIZING ML SYSTEMS")
+            logger.info("="*70)
+            
+            # Initialize AI components
+            await self._initialize_ai_components()
+            
+            # Initialize ML systems in coordinator
+            if not await self._initialize_production_system_ml():
+                # ML failure is not critical - continue with degraded functionality
+                logger.warning("⚠️ ML initialization failed - continuing with limited AI features")
+            
+            # ====================================================================
+            # PHASE 3: FINALIZE SETUP
+            # ====================================================================
+            logger.info("")
+            logger.info("="*70)
+            logger.info("[PHASE 3] FINALIZING SETUP")
+            logger.info("="*70)
+            
+            # Register strategies with coordinator
             if not await self._register_strategies():
                 return 1
             
