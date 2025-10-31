@@ -203,11 +203,17 @@ class AdvancedPositionManager:
             if not exchange or exchange == 'unknown':
                 # Try to get from execution_result order object
                 order_obj = execution_result.get('order', {})
-                exchange = order_obj.get('exchange', 'unknown')
+                exchange = order_obj.get('exchange')
                 
-                # If still unknown, log warning
-                if exchange == 'unknown':
-                    logger.warning(f"⚠️ Position {position_id}: Exchange is 'unknown' - shutdown position closure may fail!")
+                # If still missing or unknown, log critical warning
+                if not exchange or exchange == 'unknown':
+                    # This should never happen with the LiveTradingEngine fix, but log for debugging
+                    logger.warning(
+                        f"⚠️ Position {position_id}: Exchange is 'unknown' - shutdown position closure may fail! "
+                        f"Signal: {signal.get('symbol')}, Strategy: {signal.get('strategy')}"
+                    )
+                    # Set to unknown but continue - better to track the position than fail creation
+                    exchange = 'unknown'
             
             # Create position record
             position = {
