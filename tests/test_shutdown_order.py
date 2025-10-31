@@ -51,24 +51,38 @@ class MockPositionManager:
     def __init__(self, exchange_client):
         self.exchange_client = exchange_client
         self.positions = {
-            'pos_1': {'symbol': 'BTC/USDT:USDT', 'side': 'long'},
-            'pos_2': {'symbol': 'ETH/USDT:USDT', 'side': 'short'},
-            'pos_3': {'symbol': 'SOL/USDT:USDT', 'side': 'long'},
+            'pos_1': {'symbol': 'BTC/USDT:USDT', 'side': 'long', 'exchange': 'bingx'},
+            'pos_2': {'symbol': 'ETH/USDT:USDT', 'side': 'short', 'exchange': 'bingx'},
+            'pos_3': {'symbol': 'SOL/USDT:USDT', 'side': 'long', 'exchange': 'bingx'},
         }
         self.close_called = False
         self.operations_log = []
         self.closure_errors = []
+        self.injected_clients_used = False
     
-    async def close_all_positions(self, reason):
-        """Attempt to close all positions."""
+    async def close_all_positions(self, exchange_clients=None, reason="shutdown"):
+        """Attempt to close all positions with optional injected exchange clients."""
         self.close_called = True
         self.operations_log.append(('close_all_positions', datetime.now(timezone.utc), reason))
+        
+        # CRITICAL FIX: Use injected exchange_clients if provided
+        if exchange_clients is not None:
+            self.injected_clients_used = True
+            print(f"   🔑 Using {len(exchange_clients)} injected exchange client(s)")
         
         closed_count = 0
         for pos_id, pos_data in list(self.positions.items()):
             try:
+                # Determine which client to use
+                if exchange_clients is not None and pos_data['exchange'] in exchange_clients:
+                    # Use injected client (NEW behavior - the fix!)
+                    client = exchange_clients[pos_data['exchange']]
+                else:
+                    # Use instance client (OLD behavior - may be dead during shutdown)
+                    client = self.exchange_client
+                
                 # Try to place order - will fail if exchange is closed
-                self.exchange_client.place_order(
+                client.place_order(
                     pos_data['symbol'], 
                     'buy' if pos_data['side'] == 'short' else 'sell',
                     0.001
@@ -80,7 +94,7 @@ class MockPositionManager:
                 self.closure_errors.append({
                     'position_id': pos_id,
                     'error': str(e),
-                    'exchange_was_open': self.exchange_client.is_open
+                    'exchange_was_open': client.is_open if 'client' in locals() else False
                 })
         
         return {
@@ -154,13 +168,17 @@ async def test_correct_shutdown_order():
     print(f"   ✅ Exchange still open: {exchange.is_open}")
     print(f"   ✅ WebSocket still streaming: {ws_manager.is_streaming}")
     
-    print("\n3. STEP 2: Close all positions")
-    result = await position_mgr.close_all_positions("shutdown")
+    print("\n3. STEP 2: Close all positions (WITH INJECTED CLIENTS)")
+    # CRITICAL: Pass live exchange_clients to ensure positions can be closed
+    exchange_clients = {'bingx': exchange}
+    result = await position_mgr.close_all_positions(exchange_clients=exchange_clients, reason="shutdown")
     assert result['success'], "Position closure failed!"
     assert len(position_mgr.closure_errors) == 0, f"Errors during closure: {position_mgr.closure_errors}"
     assert result['closed'] == 3, f"Expected 3 positions closed, got {result['closed']}"
+    assert position_mgr.injected_clients_used, "Injected clients should have been used!"
     print(f"   ✅ All {result['closed']} positions closed successfully")
     print(f"   ✅ No errors: exchange was available during closure")
+    print(f"   ✅ Injected exchange_clients were used correctly")
     
     print("\n4. STEP 3: Stop WebSocket")
     await ws_manager.close()
@@ -227,6 +245,56 @@ async def test_incorrect_shutdown_order():
     print("="*70)
 
 
+async def test_dependency_injection_fix():
+    """
+    Test the dependency injection fix: positions close successfully even if
+    internal exchange client would be dead, because live clients are injected.
+    """
+    print("\n" + "="*70)
+    print("TEST: Dependency Injection Fix (New Behavior)")
+    print("="*70)
+    
+    # Setup mocks
+    dead_exchange = MockExchangeClient('dead_exchange')
+    live_exchange = MockExchangeClient('bingx')
+    
+    # Position manager has reference to a "dead" exchange
+    position_mgr = MockPositionManager(dead_exchange)
+    
+    print("\n1. System initialized")
+    print(f"   • Positions: {len(position_mgr.positions)}")
+    print(f"   • Internal exchange (dead): {dead_exchange.name}")
+    print(f"   • Live exchange (injected): {live_exchange.name}")
+    
+    # Close the internal exchange early (simulating the bug scenario)
+    await dead_exchange.close()
+    print(f"\n2. Internal exchange closed prematurely: {not dead_exchange.is_open}")
+    
+    print("\n3. Attempting position closure WITH INJECTED LIVE CLIENT")
+    # CRITICAL: Inject the LIVE exchange client
+    exchange_clients = {'bingx': live_exchange}
+    result = await position_mgr.close_all_positions(
+        exchange_clients=exchange_clients,
+        reason="shutdown"
+    )
+    
+    # Should succeed because we injected live client!
+    assert result['success'], f"Position closure failed! Errors: {position_mgr.closure_errors}"
+    assert len(position_mgr.closure_errors) == 0, f"Unexpected errors: {position_mgr.closure_errors}"
+    assert result['closed'] == 3, f"Expected 3 positions closed, got {result['closed']}"
+    assert position_mgr.injected_clients_used, "Injected clients should have been used!"
+    
+    print(f"   ✅ All {result['closed']} positions closed successfully")
+    print(f"   ✅ Used injected LIVE client instead of dead internal client")
+    print(f"   ✅ No 'Exchange not available' errors!")
+    
+    print("\n" + "="*70)
+    print("✅ TEST PASSED: Dependency injection fix works!")
+    print("   Even though internal client was dead, injected live")
+    print("   client allowed successful position closure.")
+    print("="*70)
+
+
 async def test_order_verification():
     """
     Verify the specific order of operations using timestamps.
@@ -280,11 +348,12 @@ async def run_all_tests():
     """Run all shutdown order tests."""
     print("\n" + "="*70)
     print("SHUTDOWN ORDER TEST SUITE")
-    print("Testing Critical Bug Fix")
+    print("Testing Critical Bug Fix V2 - Dependency Injection")
     print("="*70)
     
     await test_correct_shutdown_order()
     await test_incorrect_shutdown_order()
+    await test_dependency_injection_fix()
     await test_order_verification()
     
     print("\n" + "="*70)
@@ -294,6 +363,7 @@ async def run_all_tests():
     print("  ✅ Correct shutdown order prevents 'Exchange not available' errors")
     print("  ✅ Positions close successfully when exchange is alive")
     print("  ✅ Bug scenario correctly demonstrates the problem")
+    print("  ✅ Dependency injection allows positions to close with injected live clients")
     print("  ✅ Operation timeline follows expected sequence")
     print("="*70)
 
