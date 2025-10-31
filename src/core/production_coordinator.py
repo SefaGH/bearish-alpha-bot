@@ -124,6 +124,9 @@ class ProductionCoordinator:
         # Phase 1 components
         self.exchange_clients = {}          # Phase 1
         
+        # ML integration (Phase 4)
+        self.ml_integration = None          # Prevents AttributeError during ML initialization
+        
         # Registered strategies
         self.strategies = {}  # strategy_name -> strategy_instance
         self.strategy_capabilities = {}  # strategy_name -> {supports_regime_data, is_async}

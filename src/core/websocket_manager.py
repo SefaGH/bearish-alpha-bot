@@ -168,6 +168,22 @@ class WebSocketManager:
             'exchanges': list(self.clients.keys()),
         }
 
+    def get_active_stream_count(self) -> int:
+        """
+        Returns the number of active WebSocket streams.
+        Used by LiveTradingLauncher for pre-flight checks.
+        
+        Returns:
+            int: Number of active (non-completed) stream tasks
+        """
+        if hasattr(self, '_tasks'):
+            try:
+                return len([t for t in self._tasks if not t.done()])
+            except Exception as e:
+                logger.warning(f"Error checking stream task status: {e}")
+                return 0
+        return 0
+
     def is_any_client_connected(self) -> bool:
         """
         Launcher'ın pre-flight kontrolü tarafından kullanılır.
