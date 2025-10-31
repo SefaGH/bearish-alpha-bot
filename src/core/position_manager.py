@@ -90,10 +90,17 @@ class AdvancedPositionManager:
         
         logger.info("AdvancedPositionManager initialized")
 
-    # *** YENİ METOT: Tüm açık pozisyonları kapatmak için ***
-    async def close_all_positions(self, reason: str = ExitReason.SHUTDOWN.value) -> Dict[str, Any]:
+    # *** UPDATED: Tüm açık pozisyonları kapatmak için (exchange_clients dependency injection ile) ***
+    async def close_all_positions(self, exchange_clients: Optional[Dict] = None, reason: str = ExitReason.SHUTDOWN.value) -> Dict[str, Any]:
         """
-        Force-close all open positions using the injected OrderManager.
+        Force-close all open positions using the injected exchange clients.
+        
+        Args:
+            exchange_clients: Dictionary of live exchange client instances (CRITICAL for shutdown)
+            reason: Reason for closing positions
+            
+        Returns:
+            Dictionary with closure results
         """
         if not self.positions:
             logger.info("No open positions to close.")
@@ -119,8 +126,7 @@ class AdvancedPositionManager:
             close_side = 'buy' if side.lower() in ['short', 'sell'] else 'sell'
             
             try:
-                # --- DÜZELTİLMİŞ MANTIK ---
-                # Artık order_manager'ı doğrudan kullanıyoruz.
+                # --- CRITICAL FIX: Use injected exchange_clients ---
                 if not self.order_manager:
                     logger.error(f"Cannot close {symbol}: OrderManager is not available.")
                     errors.append({'position_id': position_id, 'reason': 'OrderManager not found'})
@@ -136,9 +142,11 @@ class AdvancedPositionManager:
                     'exchange': exchange, # Borsa bilgisini emre ekle
                 }
                 
+                # CRITICAL: Pass live exchange_clients to OrderManager
                 execution_result = await self.order_manager.place_order(
                     close_order_request, 
-                    execution_algo='market' # Kapatma emirleri genellikle market olur
+                    execution_algo='market', # Kapatma emirleri genellikle market olur
+                    exchange_clients=exchange_clients  # *** CRITICAL: Inject live clients ***
                 )
 
                 if execution_result and execution_result.get('success'):

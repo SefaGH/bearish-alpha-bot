@@ -79,13 +79,15 @@ class SmartOrderManager:
         self.exchange_clients = exchange_clients
         logger.info(f"OrderManager dependencies set. {len(exchange_clients)} exchange client(s) registered.")
     
-    async def place_order(self, order_request: Dict, execution_algo: str = 'limit') -> Dict[str, Any]:
+    async def place_order(self, order_request: Dict, execution_algo: str = 'limit', 
+                         exchange_clients: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Place order with specified execution algorithm.
         
         Args:
             order_request: Order request dictionary with symbol, side, amount, etc.
             execution_algo: Execution algorithm to use ('market', 'limit', 'iceberg', 'twap')
+            exchange_clients: Optional live exchange clients (overrides self.exchange_clients if provided)
             
         Returns:
             Order execution result
@@ -97,8 +99,11 @@ class SmartOrderManager:
                        f"{order_request.get('amount')} using {execution_algo} algorithm")
             logger.debug(f"🎪 [ORDER-MGR] Signal received: {order_request}")
             
-            # Validate order request
-            validation = self._validate_order_request(order_request)
+            # CRITICAL: Use injected exchange_clients if provided (e.g., during shutdown)
+            active_clients = exchange_clients if exchange_clients is not None else self.exchange_clients
+            
+            # Validate order request with active clients
+            validation = self._validate_order_request(order_request, active_clients)
             logger.debug(f"🎪 [ORDER-MGR] Pre-execution checks: {validation}")
             
             if not validation['valid']:
@@ -117,8 +122,8 @@ class SmartOrderManager:
             logger.debug(f"🎪 [ORDER-MGR] Order parameters: algo={execution_algo}, symbol={order_request.get('symbol')}, "
                         f"side={order_request.get('side')}, amount={order_request.get('amount')}")
             
-            # Execute order
-            result = await exec_func(order_request)
+            # Execute order with active clients
+            result = await exec_func(order_request, active_clients)
             
             logger.debug(f"🎪 [ORDER-MGR] Execution result: {'SUCCESS' if result.get('success') else 'FAILED'}")
             
@@ -212,8 +217,16 @@ class SmartOrderManager:
         """
         return self.active_orders.get(order_id)
     
-    def _validate_order_request(self, order_request: Dict) -> Dict[str, Any]:
-        """Validate order request format and parameters."""
+    def _validate_order_request(self, order_request: Dict, active_clients: Optional[Dict] = None) -> Dict[str, Any]:
+        """Validate order request format and parameters.
+        
+        Args:
+            order_request: Order request dictionary
+            active_clients: Active exchange clients to validate against (defaults to self.exchange_clients)
+            
+        Returns:
+            Validation result
+        """
         required_fields = ['symbol', 'side', 'amount', 'exchange']
         
         for field in required_fields:
@@ -228,18 +241,20 @@ class SmartOrderManager:
         if order_request['amount'] <= 0:
             return {'valid': False, 'reason': 'Amount must be positive'}
         
-        # Validate exchange
-        if order_request['exchange'] not in self.exchange_clients:
+        # Validate exchange (use active_clients if provided, else self.exchange_clients)
+        clients_to_check = active_clients if active_clients is not None else self.exchange_clients
+        if order_request['exchange'] not in clients_to_check:
             return {'valid': False, 'reason': f"Exchange not available: {order_request['exchange']}"}
         
         return {'valid': True, 'reason': ''}
     
-    async def _market_order_execution(self, order_request: Dict) -> Dict[str, Any]:
+    async def _market_order_execution(self, order_request: Dict, active_clients: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Execute market order with slippage control.
         
         Args:
             order_request: Order request dictionary
+            active_clients: Active exchange clients (defaults to self.exchange_clients)
             
         Returns:
             Execution result
@@ -250,7 +265,9 @@ class SmartOrderManager:
             amount = order_request['amount']
             exchange = order_request['exchange']
             
-            client = self.exchange_clients[exchange]
+            # CRITICAL: Use active_clients if provided
+            clients = active_clients if active_clients is not None else self.exchange_clients
+            client = clients[exchange]
             
             # Get current market price for slippage monitoring
             ticker = client.ticker(symbol)
@@ -314,12 +331,13 @@ class SmartOrderManager:
                 'order_id': None
             }
     
-    async def _limit_order_execution(self, order_request: Dict) -> Dict[str, Any]:
+    async def _limit_order_execution(self, order_request: Dict, active_clients: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Execute limit order with smart pricing.
         
         Args:
             order_request: Order request dictionary
+            active_clients: Active exchange clients (defaults to self.exchange_clients)
             
         Returns:
             Execution result
@@ -330,7 +348,9 @@ class SmartOrderManager:
             amount = order_request['amount']
             exchange = order_request['exchange']
             
-            client = self.exchange_clients[exchange]
+            # CRITICAL: Use active_clients if provided
+            clients = active_clients if active_clients is not None else self.exchange_clients
+            client = clients[exchange]
             
             # Get current market price
             ticker = client.ticker(symbol)
@@ -397,12 +417,13 @@ class SmartOrderManager:
                 'order_id': None
             }
     
-    async def _iceberg_order_execution(self, order_request: Dict) -> Dict[str, Any]:
+    async def _iceberg_order_execution(self, order_request: Dict, active_clients: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Execute iceberg order (large orders split into smaller slices).
         
         Args:
             order_request: Order request dictionary
+            active_clients: Active exchange clients (defaults to self.exchange_clients)
             
         Returns:
             Execution result
@@ -419,7 +440,7 @@ class SmartOrderManager:
             
             for i in range(num_slices):
                 slice_request = {**order_request, 'amount': slice_size}
-                result = await self._limit_order_execution(slice_request)
+                result = await self._limit_order_execution(slice_request, active_clients)
                 
                 if result['success']:
                     fills.append(result)
@@ -456,12 +477,13 @@ class SmartOrderManager:
                 'order_id': None
             }
     
-    async def _twap_order_execution(self, order_request: Dict, time_window: int = 300) -> Dict[str, Any]:
+    async def _twap_order_execution(self, order_request: Dict, active_clients: Optional[Dict] = None, time_window: int = 300) -> Dict[str, Any]:
         """
         Time-Weighted Average Price execution.
         
         Args:
             order_request: Order request dictionary
+            active_clients: Active exchange clients (defaults to self.exchange_clients)
             time_window: Execution time window in seconds (default 5 minutes)
             
         Returns:
@@ -480,7 +502,7 @@ class SmartOrderManager:
             
             for i in range(num_slices):
                 slice_request = {**order_request, 'amount': slice_size}
-                result = await self._market_order_execution(slice_request)
+                result = await self._market_order_execution(slice_request, active_clients)
                 
                 if result['success']:
                     fills.append(result)
