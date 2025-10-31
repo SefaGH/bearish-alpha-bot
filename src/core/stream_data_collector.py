@@ -36,6 +36,33 @@ class StreamDataCollector:
         
         logger.info(f"StreamDataCollector initialized with buffer_size={self.buffer_size} and throttle_interval={self.throttle_interval_ms}ms")
     
+    def _normalize_symbol(self, symbol: str) -> str:
+        """
+        Normalize symbol to consistent format with settlement currency.
+        
+        This ensures symbols are always in the format 'BASE/QUOTE:SETTLE' for futures.
+        For example: 'BTC/USDT' -> 'BTC/USDT:USDT', 'BTC/USDT:USDT' -> 'BTC/USDT:USDT'
+        
+        Args:
+            symbol: Trading symbol in any format
+            
+        Returns:
+            Normalized symbol with settlement currency
+        """
+        if not symbol:
+            return symbol
+            
+        # If already has settlement currency, return as-is
+        if ':' in symbol:
+            return symbol
+            
+        # Add USDT settlement for USDT pairs (futures/perpetuals)
+        if symbol.endswith('/USDT'):
+            return f"{symbol}:USDT"
+            
+        # For other pairs, return as-is
+        return symbol
+    
     def _get_buffer_key(self, symbol: str, timeframe: str) -> str:
         """
         Generate consistent buffer key for symbol and timeframe.
@@ -43,14 +70,18 @@ class StreamDataCollector:
         This ensures both prime_buffer_with_dataframe and get_latest_ohlcv
         use the same key format to access the same data.
         
+        Note: Automatically normalizes symbols to ensure consistent format with
+        settlement currency (e.g., 'BTC/USDT' becomes 'BTC/USDT:USDT').
+        
         Args:
-            symbol: Trading symbol (e.g., 'BTC/USDT:USDT')
+            symbol: Trading symbol (e.g., 'BTC/USDT' or 'BTC/USDT:USDT')
             timeframe: Timeframe (e.g., '1m', '1h')
         
         Returns:
-            Buffer key in format 'symbol_timeframe'
+            Buffer key in format 'normalized_symbol_timeframe'
         """
-        return f"{symbol}_{timeframe}"
+        normalized_symbol = self._normalize_symbol(symbol)
+        return f"{normalized_symbol}_{timeframe}"
     
     async def ohlcv_callback(self, exchange: str, symbol: str, timeframe: str, ohlcv: List):
         """Callback to collect OHLCV data with throttling/debouncing."""

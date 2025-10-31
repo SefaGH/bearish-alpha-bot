@@ -56,3 +56,6 @@ test_results.txt
 .DS_Store
 Thumbs.db
 venv311/
+
+# Local configuration (users should copy from config.example.yaml)
+config/config.yaml
