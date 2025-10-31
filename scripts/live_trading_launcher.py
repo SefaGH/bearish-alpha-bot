@@ -1326,7 +1326,7 @@ class LiveTradingLauncher:
     async def _initialize_ai_components(self) -> bool:
         """
         Initialize Phase 4 AI enhancement components.
-        (GÜNCELLENDİ: Modelleri ve zaman dilimlerini config'den okur ve modelleri yükler)
+        (GÜNCELLENDİ: Tekrarlanan ve hatalı kod bloğu kaldırıldı)
         """
         logger.info("\n[4/8] Initializing Phase 4 AI Components...")
         
@@ -1349,7 +1349,7 @@ class LiveTradingLauncher:
             self.strategy_optimizer = StrategyOptimizer(opt_config)
             logger.info("✓ Strategy Optimizer initialized")
             
-            # Phase 4.4: Price Prediction (YENİDEN YAPILANDIRILDI)
+            # Phase 4.4: Price Prediction (TEMİZLENMİŞ VERSİYON)
             logger.info("Initializing price prediction engine...")
             
             ml_config = self.config.get('ml', {})
@@ -1370,7 +1370,6 @@ class LiveTradingLauncher:
             for tf in timeframes_for_models:
                 ensemble_models = {}
                 for model_type in model_types:
-                    # Modeli, YAML'dan gelen parametrelerle başlat
                     params = model_params.get(model_type, {})
                     if not params:
                         logger.warning(f"No parameters found for model '{model_type}' in config. Using defaults.")
@@ -1378,7 +1377,6 @@ class LiveTradingLauncher:
                     if model_type == 'lstm':
                         ensemble_models['lstm'] = LSTMPricePredictor(**params)
                     elif model_type == 'transformer':
-                        # Transformer d_model çift olmalı, kontrol ekleyelim
                         if 'd_model' in params and params['d_model'] % 2 != 0:
                             original_d = params['d_model']
                             params['d_model'] += 1
@@ -1393,34 +1391,12 @@ class LiveTradingLauncher:
             self.price_engine = AdvancedPricePredictionEngine(multi_timeframe_predictor)
             logger.info("✓ Price Prediction Engine initialized")
 
-            # 3. Modelleri yükle. Artık her şey (zaman aralıkları, input boyutları) eşleşiyor.
+            # 3. Modelleri yükle
             logger.info("Attempting to load pre-trained models for the price engine...")
             self.price_engine.load_models()
-
-            models_by_timeframe = {}
-            for tf in timeframes:
-                ensemble_models = {}
-                for model_type in model_types:
-                    if model_type == 'lstm':
-                        params = model_params.get('lstm', {})
-                        ensemble_models['lstm'] = LSTMPricePredictor(**params)
-                    elif model_type == 'transformer':
-                        params = model_params.get('transformer', {})
-                        ensemble_models['transformer'] = TransformerPricePredictor(**params)
-                
-                models_by_timeframe[tf] = EnsemblePricePredictor(ensemble_models)
-                logger.info(f"✓ Created ensemble models for timeframe '{tf}'")
-
-            multi_timeframe_predictor = MultiTimeframePricePredictor(models_by_timeframe)
             
-            self.price_engine = AdvancedPricePredictionEngine(multi_timeframe_predictor)
-            logger.info("✓ Price Prediction Engine initialized")
+            # --- HATALI VE TEKRARLANAN BLOK BURADAN TAMAMEN KALDIRILDI ---
 
-            # --- ÇÖZÜM: Modelleri burada, her şey hazır olduktan sonra yükle ---
-            logger.info("Attempting to load pre-trained models for the price engine...")
-            self.price_engine.load_models()
-            # --- ÇÖZÜM SONU ---
-            
             # Strategy integration adapter
             if self.regime_predictor and self.price_engine:
                 self.strategy_adapter = AIEnhancedStrategyAdapter(
@@ -1430,10 +1406,10 @@ class LiveTradingLauncher:
                 logger.info("✓ AI-Enhanced Strategy Adapter initialized")
             
             logger.info("\n✓ Phase 4 AI Components fully integrated:")
-            logger.info("  - ML Regime Prediction: ACTIVE")
+            logger.info(f"  - ML Regime Prediction: {'ACTIVE' if self.regime_predictor else 'INACTIVE'}")
             logger.info("  - Adaptive Learning: ACTIVE")
-            logger.info("  - Strategy Optimization: ACTIVE")
-            logger.info("  - Price Prediction: ACTIVE")
+            logger.info(f"  - Strategy Optimization: {'ACTIVE' if self.strategy_optimizer else 'INACTIVE'}")
+            logger.info(f"  - Price Prediction: {'ACTIVE' if self.price_engine and self.price_engine.is_trained else 'INACTIVE (Models not loaded)'}")
             
             return True
             
