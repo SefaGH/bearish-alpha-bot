@@ -1351,6 +1351,19 @@ class ProductionCoordinator:
             logger.error("="*70)
             return {'success': False, 'reason': str(e)}
     
+    def _has_core_systems_initialized(self) -> bool:
+        """
+        Check if core systems are initialized.
+        
+        Used to determine if it's safe to mark the coordinator as fully initialized
+        after ML initialization completes. Core systems (Phase 1) must be present
+        before the coordinator can be considered operational.
+        
+        Returns:
+            True if risk_manager (core system indicator) exists and is initialized
+        """
+        return hasattr(self, 'risk_manager') and self.risk_manager is not None
+    
     async def initialize_ml_systems(self, price_engine: Optional[Any] = None, regime_predictor: Optional[Any] = None) -> Dict[str, Any]:
         """
         Initialize ML systems (Phase 2): ML prediction engines, RL agent, integrations.
@@ -1391,7 +1404,7 @@ class ProductionCoordinator:
                 
                 # Mark coordinator as fully initialized after successful ML init
                 # (only if core systems were already initialized)
-                if hasattr(self, 'risk_manager') and self.risk_manager:
+                if self._has_core_systems_initialized():
                     self.is_initialized = True
                     logger.info("✅ Coordinator fully initialized (core + ML complete)")
                 
@@ -1406,7 +1419,7 @@ class ProductionCoordinator:
                 
                 # Mark coordinator as initialized even with degraded ML
                 # (only if core systems were already initialized)
-                if hasattr(self, 'risk_manager') and self.risk_manager:
+                if self._has_core_systems_initialized():
                     self.is_initialized = True
                     logger.info("✅ Coordinator initialized (core complete, ML degraded)")
                 
@@ -1422,7 +1435,7 @@ class ProductionCoordinator:
             
             # Mark coordinator as initialized even with ML failure
             # (only if core systems were already initialized)
-            if hasattr(self, 'risk_manager') and self.risk_manager:
+            if self._has_core_systems_initialized():
                 self.is_initialized = True
                 logger.info("✅ Coordinator initialized (core complete, ML failed)")
             
