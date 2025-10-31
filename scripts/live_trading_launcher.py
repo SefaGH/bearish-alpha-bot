@@ -1687,7 +1687,7 @@ class LiveTradingLauncher:
                 logger.warning("⚠ Circuit breaker not available")
             
             # Check 6/7: WebSocket data flow (Bu blok büyük ölçüde aynı kalabilir)
-            logger.info("Check 6/7: WebSocket data flow...")
+            logger.info("Check 6/8: WebSocket data flow...")
             if self._is_ws_initialized() and self.ws_optimizer.ws_manager:
                 timeframes = self.ws_optimizer._parse_stream_timeframes()
                 symbols = self.ws_optimizer._normalize_ccxt_futures_symbols(self.TRADING_PAIRS)
@@ -1739,12 +1739,15 @@ class LiveTradingLauncher:
                 }
 
             # Indicator Warmup Validation (Artık daha güvenli)
-            logger.info("Check 6/7: Indicator Warmup Validation...")
-            # --- YENİ SAVUNMACI KONTROL ---
+            logger.info("Check 7/8: Indicator Warmup Validation...")
             if not available_exchange_name:
                 logger.warning("⚠️ Skipping Indicator Warmup Validation: No exchange client available.")
             elif not self.coordinator or not self.coordinator.trading_engine:
                 reason = "Coordinator or Trading Engine not available for prefetch."
+                logger.error(f"❌ {reason}")
+                failed_checks.append(f"IndicatorValidator: {reason}")
+            elif not self.ws_optimizer or not self.ws_optimizer.ws_manager or not self.ws_optimizer.ws_manager.collector:
+                reason = "WebSocket Manager or Collector not available for validation."
                 logger.error(f"❌ {reason}")
                 failed_checks.append(f"IndicatorValidator: {reason}")
             else:
@@ -1754,17 +1757,22 @@ class LiveTradingLauncher:
                     logger.info("  -> Prefetch complete.")
     
                     logger.info("  -> Step 2: Validating prefetched data...")
-                    validator = IndicatorValidator(self.ws_optimizer.ws_manager)
+                    # --- DÜZELTME 1: Validator'a artık ws_manager yerine doğrudan collector veriliyor ---
+                    validator = IndicatorValidator(self.ws_optimizer.ws_manager.collector)
                     
-                    # Dinamik olarak belirlenen borsa adını kullan
-                    all_valid, validation_results = await validator.validate_all_symbols(
+                    # --- DÜZELTME 2: Yeni `validate_all` metodu çağrılıyor ---
+                    timeframes = self.ws_optimizer._parse_stream_timeframes()
+                    validation_results = await validator.validate_all(
                         symbols=self.TRADING_PAIRS,
-                        exchange=available_exchange_name
+                        timeframes=timeframes
                     )
                     
+                    # Sonuçları kontrol et
+                    all_valid = all(res.get('status') == 'OK' for res in validation_results.values())
+                    
                     if not all_valid:
-                        failed_reasons = [f"{s}: {', '.join(r['errors'])}" for s, r in validation_results.items() if not r['overall_valid']]
-                        reason = f"Indicator validation failed after prefetch. Details: {'; '.join(failed_reasons)}"
+                        failed_reasons = [f"{s}: {r.get('reason', 'Unknown')}" for s, r in validation_results.items() if r.get('status') != 'OK']
+                        reason = f"Indicator validation failed. Details: {'; '.join(failed_reasons)}"
                         logger.critical(f"❌ {reason}")
                         failed_checks.append(f"IndicatorValidator: {reason}")
                     else:
@@ -1774,15 +1782,22 @@ class LiveTradingLauncher:
                     reason = f"Indicator validation crashed: {e}"
                     logger.critical(f"❌ {reason}", exc_info=True)
                     failed_checks.append(f"IndicatorValidatorCrash: {reason}")
-            # --- YENİ KONTROL SONU ---
             
             # Check 7: WebSocket optimization
-            logger.info("Check 7/7: WebSocket optimization...")
-            if self._is_ws_initialized():
-                ws_status = await self.ws_optimizer.get_stream_status()
-                logger.info(f"✓ WebSocket optimized: {ws_status.get('active_streams', 0)} streams active")
+            logger.info("Check 8/8: WebSocket optimization...")
+            if self.ws_optimizer and self.ws_optimizer.ws_manager:
+                is_connected = self.ws_optimizer.ws_manager.is_any_client_connected()
+                if is_connected:
+                    # Bağlantı varsa, gerçek aktif stream sayısını alıp loglayalım.
+                    stream_count = self.ws_optimizer.ws_manager.get_active_stream_count()
+                    logger.info(f"✓ WebSocket connected. Active streams: {stream_count}")
+                else:
+                    # Bağlantı yoksa, bunu bir uyarı olarak belirtelim.
+                    logger.warning("⚠️ WebSocket initialized but not connected. System may rely on REST API.")
+                    # Bu durumu bir hata olarak saymak istemeyebiliriz, çünkü sistem REST ile devam edebilir.
             else:
-                logger.warning("⚠ WebSocket not initialized (will use REST API)")
+                logger.error("❌ WebSocket manager not initialized.")
+                failed_checks.append("WebSocket manager initialization")
             
             # --- FINAL SUMMARY ---
             logger.info("\n" + "="*70)
