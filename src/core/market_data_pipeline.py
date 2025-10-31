@@ -357,13 +357,24 @@ class MarketDataPipeline:
         # STEP 1: Try WebSocket first (real-time data)
         if self.websocket_manager and self.websocket_manager.collector:
             try:
-                # WebSocket collector'dan ham veriyi al (bu bir dict döndürmeli)
-                ws_data = self.websocket_manager.collector.get_data(symbol, timeframe)
+                # Determine which exchange to use
+                ws_exchange = exchange if exchange else (next(iter(self.exchanges.keys())) if self.exchanges else 'bingx')
+                
+                # Get required number of candles for indicators
+                limit = self.config.get('indicators', {}).get('ema_slow', 200) + 50  # 250
+                
+                # WebSocket collector'dan ham OHLCV listesini al
+                ohlcv_list = self.websocket_manager.collector.get_latest_ohlcv(
+                    exchange=ws_exchange,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    limit=limit
+                )
                 
                 # Gelen verinin doğru formatta olduğunu doğrula
-                if ws_data and isinstance(ws_data, dict) and 'ohlcv' in ws_data and ws_data['ohlcv']:
+                if ohlcv_list and isinstance(ohlcv_list, list) and len(ohlcv_list) > 0:
                     # Ham OHLCV listesini DataFrame'e çevir
-                    df = self._ohlcv_to_dataframe(ws_data['ohlcv'])
+                    df = self._ohlcv_to_dataframe(ohlcv_list)
                     
                     if df is not None and not df.empty:
                         logger.debug(f"✅ Retrieved {len(df)} candles from WebSocket for {symbol} {timeframe}")
