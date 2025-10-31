@@ -1388,6 +1388,13 @@ class ProductionCoordinator:
                 logger.info("="*70)
                 logger.info(f"Components: {', '.join(ml_init_result.get('components', []))}")
                 logger.info("="*70)
+                
+                # Mark coordinator as fully initialized after successful ML init
+                # (only if core systems were already initialized)
+                if hasattr(self, 'risk_manager') and self.risk_manager:
+                    self.is_initialized = True
+                    logger.info("✅ Coordinator fully initialized (core + ML complete)")
+                
                 return ml_init_result
             else:
                 logger.warning("="*70)
@@ -1396,6 +1403,13 @@ class ProductionCoordinator:
                 logger.warning(f"Reason: {ml_init_result.get('reason')}")
                 logger.warning("Continuing with limited ML features")
                 logger.warning("="*70)
+                
+                # Mark coordinator as initialized even with degraded ML
+                # (only if core systems were already initialized)
+                if hasattr(self, 'risk_manager') and self.risk_manager:
+                    self.is_initialized = True
+                    logger.info("✅ Coordinator initialized (core complete, ML degraded)")
+                
                 return ml_init_result
                 
         except Exception as e:
@@ -1405,6 +1419,13 @@ class ProductionCoordinator:
             logger.error(f"Error: {e}", exc_info=True)
             logger.error("Continuing without ML features")
             logger.error("="*70)
+            
+            # Mark coordinator as initialized even with ML failure
+            # (only if core systems were already initialized)
+            if hasattr(self, 'risk_manager') and self.risk_manager:
+                self.is_initialized = True
+                logger.info("✅ Coordinator initialized (core complete, ML failed)")
+            
             return {'success': False, 'reason': str(e), 'components': []}
     
     async def _initialize_production_system(self) -> bool:

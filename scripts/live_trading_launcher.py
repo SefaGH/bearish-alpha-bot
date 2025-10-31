@@ -2647,9 +2647,18 @@ class LiveTradingLauncher:
             await self._initialize_ai_components()
             
             # Initialize ML systems in coordinator
-            if not await self._initialize_production_system_ml():
+            ml_init_success = await self._initialize_production_system_ml()
+            if not ml_init_success:
                 # ML failure is not critical - continue with degraded functionality
                 logger.warning("⚠️ ML initialization failed - continuing with limited AI features")
+            
+            # ====================================================================
+            # MARK SYSTEM AS INITIALIZED (Critical for pre-flight checks)
+            # ====================================================================
+            # After Phase 1 (Core) and Phase 2 (ML) complete, mark coordinator as initialized
+            # This flag is checked by pre-flight checks to verify system readiness
+            self.coordinator.is_initialized = True
+            logger.info("✅ Production coordinator marked as initialized (is_initialized = True)")
             
             # ====================================================================
             # PHASE 3: FINALIZE SETUP
