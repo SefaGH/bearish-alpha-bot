@@ -168,6 +168,23 @@ class WebSocketManager:
             'exchanges': list(self.clients.keys()),
         }
 
+    def is_any_client_connected(self) -> bool:
+        """
+        Launcher'ın pre-flight kontrolü tarafından kullanılır.
+        En az bir bağlı WebSocket istemcisi olup olmadığını kontrol eder.
+        """
+        if not self.clients:
+            return False
+        
+        # İstemcilerden herhangi birinin 'connected' durumunda olup olmadığını kontrol et
+        for client in self.clients.values():
+            if hasattr(client, 'is_connected') and callable(client.is_connected) and client.is_connected():
+                 return True
+            # Veya bir özellik olarak saklanıyorsa
+            if hasattr(client, '_is_connected') and client._is_connected:
+                 return True
+        return False
+
     def get_connection_health(self) -> Dict[str, Any]:
         """Gets connection health from underlying clients."""
         health_reports = {}
