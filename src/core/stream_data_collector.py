@@ -70,7 +70,8 @@ class StreamDataCollector:
         This ensures both prime_buffer_with_dataframe and get_latest_ohlcv
         use the same key format to access the same data.
         
-        CRITICAL: Normalizes symbol to ensure consistent format with settlement currency.
+        Note: Automatically normalizes symbols to ensure consistent format with
+        settlement currency (e.g., 'BTC/USDT' becomes 'BTC/USDT:USDT').
         
         Args:
             symbol: Trading symbol (e.g., 'BTC/USDT' or 'BTC/USDT:USDT')
