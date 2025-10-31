@@ -1,7 +1,7 @@
-#!/usr/bin/env python3.11
+#!/usr/bin/env python3
 """
 Test shutdown order to ensure positions close before connections die.
-Issue: [CRITICAL BUG] Pozisyonlar Kapanış (Shutdown) Sırasında "Exchange Not Available" Hatası
+Issue: [CRITICAL BUG] Positions Cannot Be Closed During Shutdown - "Exchange Not Available" Error
 
 This test verifies that the graceful shutdown follows the correct order:
 1. Stop trading loop (no new signals)

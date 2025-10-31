@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.11
+#!/usr/bin/env python3
 """
 Integration test to simulate a real paper-mode scenario with shutdown.
 This test ensures that positions can be closed successfully during shutdown

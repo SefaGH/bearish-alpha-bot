@@ -1178,8 +1178,8 @@ class LiveTradingLauncher:
                 await self.health_monitor.stop_monitoring()
                 logger.info("✅ Health monitor stopped")
             except Exception as e:
-                 errors.append(f"Error stopping health monitor: {e}")
-                 logger.error(f"Error stopping health monitor: {e}", exc_info=True)
+                errors.append(f"Error stopping health monitor: {e}")
+                logger.error(f"Error stopping health monitor: {e}", exc_info=True)
 
         # ========================================================================
         # STEP 5: Close Exchange Connections (Final cleanup)
@@ -1189,7 +1189,7 @@ class LiveTradingLauncher:
             for name, client in self.exchange_clients.items():
                 try:
                     if hasattr(client, 'close'):
-                         await client.close()
+                        await client.close()
                     logger.info(f"✅ {name} exchange connection closed")
                 except Exception as e:
                     errors.append(f"Failed to close {name}: {e}")

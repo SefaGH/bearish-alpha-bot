@@ -2047,7 +2047,7 @@ class ProductionCoordinator:
         if self.trading_engine:
             await self.trading_engine.stop_live_trading()
         
-        # *** CRITICAL FIX: WebSocket/exchange connections are NOT closed here ***
+        # CRITICAL FIX: WebSocket/exchange connections are NOT closed here
         # They must remain open until positions are closed by the launcher's cleanup()
         # The launcher will close connections in the correct order after positions are closed
         
