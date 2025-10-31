@@ -49,23 +49,20 @@ class TestConfigurationLoading:
         
         print(f"✓ ML timeframes loaded from YAML: {timeframes}")
     
-    def test_ml_timeframes_from_env_when_set(self):
+    def test_ml_timeframes_from_env_when_set(self, monkeypatch):
         """
         Test that ML timeframes load from environment variable when set.
         
         This ensures env var takes priority over YAML.
-        """
-        # Set ML_TIMEFRAMES env var
-        test_timeframes = '1m,5m,15m'
-        os.environ['ML_TIMEFRAMES'] = test_timeframes
         
-        # Need to reload the module to pick up env var changes
-        import importlib
-        import config.live_trading_config
-        importlib.reload(config.live_trading_config)
+        Note: Using monkeypatch for proper test isolation.
+        """
+        # Set ML_TIMEFRAMES env var using monkeypatch for proper cleanup
+        test_timeframes = '1m,5m,15m'
+        monkeypatch.setenv('ML_TIMEFRAMES', test_timeframes)
         
         # Load configuration
-        config = config.live_trading_config.LiveTradingConfiguration.load(log_summary=False)
+        config = LiveTradingConfiguration.load(log_summary=False)
         
         # Get ML timeframes
         ml_config = config.get('ml', {})
@@ -76,9 +73,6 @@ class TestConfigurationLoading:
         assert timeframes == expected, f"Expected {expected}, got {timeframes}"
         
         print(f"✓ ML timeframes loaded from env var: {timeframes}")
-        
-        # Cleanup
-        del os.environ['ML_TIMEFRAMES']
 
 
 class TestDataIntegration:

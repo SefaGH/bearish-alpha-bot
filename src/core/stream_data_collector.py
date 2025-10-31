@@ -201,5 +201,10 @@ class StreamDataCollector:
             logger.info(f"[PRIME] ✅ Primed buffer with {len(ohlcv_list)} candles for {exchange} {key}. Buffer size: {len(self.ohlcv_data[exchange][key])}")
             logger.debug(f"[PRIME] Buffer stored at: self.ohlcv_data['{exchange}']['{key}']")
 
-        except Exception as e:
+        except (ValueError, TypeError, KeyError) as e:
+            # Handle expected data conversion and access errors
             logger.error(f"[PRIME] ❌ Failed to prime buffer for {exchange} {key}: {e}", exc_info=True)
+        except Exception as e:
+            # Catch any other unexpected errors but log with full stack trace
+            logger.error(f"[PRIME] ❌ Unexpected error priming buffer for {exchange} {key}: {e}", exc_info=True)
+            raise  # Re-raise unexpected errors
