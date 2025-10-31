@@ -263,15 +263,21 @@ class LiveTradingConfiguration:
         }
 
         # ============= ML CONFIG (Issue #135) =============
+        # CRITICAL FIX: Only add ml.timeframes to env_config if ML_TIMEFRAMES env var is set
+        # This prevents overwriting YAML values with empty list
         env_config['ml'] = {
             'enabled': cls.get_env_bool('ML_ENABLED', True),
-            # --- ÇÖZÜM: Buradaki varsayılan liste kaldırıldı. ---
-            # Artık environment değişkeni yoksa, YAML'daki değer kullanılacak.
-            'timeframes': cls.get_env_list(
-                'ML_TIMEFRAMES',
-                [] # Boş liste, böylece YAML'ı ezerse bile sorun olmaz.
-            )
         }
+        
+        # Only add timeframes if environment variable is explicitly set
+        ml_timeframes_env = os.getenv('ML_TIMEFRAMES')
+        if ml_timeframes_env:
+            timeframes = cls.get_env_list('ML_TIMEFRAMES', [])
+            if timeframes:  # Only add if we got a non-empty list
+                env_config['ml']['timeframes'] = timeframes
+                logger.debug(f"✓ ENV: ML_TIMEFRAMES = {timeframes}")
+            else:
+                logger.warning("⚠️ ML_TIMEFRAMES env var is set but empty, using YAML defaults")
         
         # ==========================================================
         # DEBUG AYARLARI
