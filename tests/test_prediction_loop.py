@@ -34,11 +34,10 @@ async def test_prediction_loop_populates_cache():
         'volume': [1000] * NUM_CANDLES
     }, index=dates)
     
-    # Mock market_data_pipeline
+    # Mock market_data_pipeline with AsyncMock for cleaner async testing
+    from unittest.mock import AsyncMock
     mock_pipeline = MagicMock()
-    async def mock_get_ohlcv(symbol, timeframe, exchange=None):
-        return sample_df.copy()
-    mock_pipeline.get_latest_ohlcv = mock_get_ohlcv
+    mock_pipeline.get_latest_ohlcv = AsyncMock(return_value=sample_df.copy())
     
     # Create engine with mocked market_data_pipeline
     engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)

@@ -490,8 +490,8 @@ class AdvancedPricePredictionEngine:
         
         Args:
             multi_timeframe_predictor: MultiTimeframePricePredictor instance
-            websocket_manager: Optional WebSocket manager (deprecated, kept for compatibility)
-            market_data_pipeline: MarketDataPipeline instance for data fetching (REQUIRED)
+            websocket_manager: Optional WebSocket manager (DEPRECATED - use market_data_pipeline instead)
+            market_data_pipeline: MarketDataPipeline instance for data fetching (strongly recommended)
         """
         if not isinstance(multi_timeframe_predictor, MultiTimeframePricePredictor):
             raise TypeError(
@@ -499,7 +499,12 @@ class AdvancedPricePredictionEngine:
             )
         
         self.predictor = multi_timeframe_predictor
+        
+        # Handle deprecated websocket_manager parameter
+        if websocket_manager is not None:
+            logger.warning("⚠️ websocket_manager parameter is deprecated. Please use market_data_pipeline instead.")
         self.ws_manager = websocket_manager  # Deprecated but kept for backward compatibility
+        
         self.market_data_pipeline = market_data_pipeline
         self.prediction_cache = {}
         self.data_buffers = {}
@@ -636,7 +641,8 @@ class AdvancedPricePredictionEngine:
                 for tf in timeframes:
                     try:
                         # Fetch data through MarketDataPipeline (central data source)
-                        # Request sufficient candles for model predictions (200 candles)
+                        # Pipeline will automatically fetch sufficient candles based on its config
+                        # (typically ~250 candles to ensure enough for indicator calculations)
                         df = await self.market_data_pipeline.get_latest_ohlcv(
                             symbol=symbol,
                             timeframe=tf,
