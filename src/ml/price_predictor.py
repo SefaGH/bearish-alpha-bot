@@ -621,6 +621,8 @@ class AdvancedPricePredictionEngine:
                     for tf in timeframes:
                         try:
                             # Get latest OHLCV data from websocket collector
+                            # Note: 'bingx' is hardcoded for consistency with rest of codebase
+                            # TODO: Make exchange configurable via config
                             ohlcv_list = self.ws_manager.collector.get_latest_ohlcv(
                                 exchange='bingx',
                                 symbol=symbol,
@@ -689,6 +691,7 @@ class AdvancedPricePredictionEngine:
             except Exception as e:
                 logger.error(f"Error in prediction loop: {e}", exc_info=True)
                 # Continue running despite errors
+                # Note: Could implement exponential backoff here for production robustness
                 await asyncio.sleep(self.update_interval)
         
         logger.info("🧠 [PRICE-ENGINE] Prediction loop stopped")

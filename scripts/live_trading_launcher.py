@@ -1127,7 +1127,7 @@ class LiveTradingLauncher:
         
         # Stop price prediction loop
         logger.info("\nStopping price prediction loop...")
-        if hasattr(self, '_prediction_loop_task') and self._prediction_loop_task:
+        if self._prediction_loop_task:
             try:
                 if self.price_engine:
                     await self.price_engine.stop_prediction_loop()

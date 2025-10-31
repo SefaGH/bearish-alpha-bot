@@ -25,11 +25,22 @@ async def test_prediction_loop_populates_cache():
     mock_ws_manager = Mock()
     mock_collector = Mock()
     
+    # Constants for test data
+    MILLIS_PER_MINUTE = 60000
+    BASE_PRICE = 100.0
+    PRICE_INCREMENT = 0.1
+    BASE_VOLUME = 1000
+    NUM_CANDLES = 100
+    
     # Create sample OHLCV data
     sample_data = [
-        [int(pd.Timestamp.now().timestamp() * 1000) - i * 60000, 
-         100 + i * 0.1, 101 + i * 0.1, 99 + i * 0.1, 100.5 + i * 0.1, 1000]
-        for i in range(100)
+        [int(pd.Timestamp.now().timestamp() * 1000) - i * MILLIS_PER_MINUTE, 
+         BASE_PRICE + i * PRICE_INCREMENT, 
+         BASE_PRICE + 1 + i * PRICE_INCREMENT, 
+         BASE_PRICE - 1 + i * PRICE_INCREMENT, 
+         BASE_PRICE + 0.5 + i * PRICE_INCREMENT, 
+         BASE_VOLUME]
+        for i in range(NUM_CANDLES)
     ]
     sample_data.reverse()  # Oldest first
     
