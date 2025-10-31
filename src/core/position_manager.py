@@ -197,6 +197,24 @@ class AdvancedPositionManager:
             stop_loss = signal.get('stop', entry_price * 0.95)  # Default 5% stop
             take_profit = signal.get('target', entry_price * 1.05)  # Default 5% target
             
+            # CRITICAL FIX: Get exchange from execution_result if not in signal
+            # This ensures we always have a valid exchange name for position closure during shutdown
+            exchange = signal.get('exchange')
+            if not exchange or exchange == 'unknown':
+                # Try to get from execution_result order object
+                order_obj = execution_result.get('order', {})
+                exchange = order_obj.get('exchange')
+                
+                # If still missing or unknown, log critical warning
+                if not exchange or exchange == 'unknown':
+                    # This should never happen with the LiveTradingEngine fix, but log for debugging
+                    logger.warning(
+                        f"⚠️ Position {position_id}: Exchange is 'unknown' - shutdown position closure may fail! "
+                        f"Signal: {signal.get('symbol')}, Strategy: {signal.get('strategy')}"
+                    )
+                    # Set to unknown but continue - better to track the position than fail creation
+                    exchange = 'unknown'
+            
             # Create position record
             position = {
                 'position_id': position_id,
@@ -211,7 +229,7 @@ class AdvancedPositionManager:
                 'status': PositionStatus.OPEN.value,
                 'opened_at': datetime.now(timezone.utc),
                 'strategy': signal.get('strategy', 'unknown'),
-                'exchange': signal.get('exchange', 'unknown'),
+                'exchange': exchange,  # Now guaranteed to be valid or logged as warning
                 'unrealized_pnl': 0.0,
                 'realized_pnl': 0.0,
                 'trailing_stop_enabled': False,
