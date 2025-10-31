@@ -91,10 +91,17 @@ class MockPositionManager:
                 del self.positions[pos_id]
             except Exception as e:
                 # This is the bug we're testing for!
+                # Safely check if client was initialized
+                exchange_was_open = False
+                try:
+                    exchange_was_open = client.is_open
+                except NameError:
+                    pass  # client wasn't defined, so it's definitely not open
+                
                 self.closure_errors.append({
                     'position_id': pos_id,
                     'error': str(e),
-                    'exchange_was_open': client.is_open if 'client' in locals() else False
+                    'exchange_was_open': exchange_was_open
                 })
         
         return {

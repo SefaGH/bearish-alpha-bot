@@ -134,18 +134,18 @@ class AdvancedPositionManager:
 
                 logger.info(f"Submitting market order to close {position_id}: {close_side} {amount} {symbol}")
                 
-                # Kapatma emrini oluştur ve OrderManager'a gönder
+                # Create close order request and submit to OrderManager
                 close_order_request = {
                     'symbol': symbol,
                     'side': close_side,
                     'amount': amount,
-                    'exchange': exchange, # Borsa bilgisini emre ekle
+                    'exchange': exchange,  # Include exchange info in order
                 }
                 
                 # CRITICAL: Pass live exchange_clients to OrderManager
                 execution_result = await self.order_manager.place_order(
                     close_order_request, 
-                    execution_algo='market', # Kapatma emirleri genellikle market olur
+                    execution_algo='market',  # Close orders are typically market orders
                     exchange_clients=exchange_clients  # *** CRITICAL: Inject live clients ***
                 )
 
