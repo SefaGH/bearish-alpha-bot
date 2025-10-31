@@ -1630,6 +1630,7 @@ class LiveTradingLauncher:
         
         start_time = asyncio.get_event_loop().time()
         check_interval = 1.0  # Check every second
+        last_log_time = 0  # Track when we last logged progress
         
         while True:
             elapsed = asyncio.get_event_loop().time() - start_time
@@ -1645,9 +1646,10 @@ class LiveTradingLauncher:
                 if self.ws_optimizer and self.ws_optimizer.ws_manager:
                     stream_count = self.ws_optimizer.ws_manager.get_active_stream_count()
                     
-                    # Log progress every 5 seconds
-                    if int(elapsed) % 5 == 0 and int(elapsed) > 0:
+                    # Log progress every 5 seconds (only once per interval)
+                    if int(elapsed) >= last_log_time + 5 and int(elapsed) > 0:
                         logger.info(f"[SUBSCRIPTION-WAIT] t+{int(elapsed)}s: {stream_count} active streams")
+                        last_log_time = int(elapsed)
                     
                     # Success condition: at least one active stream
                     if stream_count > 0:

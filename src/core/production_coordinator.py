@@ -1349,9 +1349,10 @@ class ProductionCoordinator:
             # Mark core systems as initialized
             core_components = [
                 'websocket_manager', 'performance_monitor', 'risk_manager',
-                'portfolio_manager', 'strategy_coordinator', 'circuit_breaker', 'trading_engine',
-                'data_priming'  # Added to track that data priming completed
+                'portfolio_manager', 'strategy_coordinator', 'circuit_breaker', 'trading_engine'
             ]
+            # Data priming completed successfully (tracked separately)
+            data_priming_completed = True
             
             logger.info("="*70)
             logger.info("[PHASE 1] ✅ CORE SYSTEMS INITIALIZATION COMPLETE")
@@ -1360,7 +1361,7 @@ class ProductionCoordinator:
             logger.info(f"Portfolio value: ${self.risk_manager.portfolio_value:.2f}")
             logger.info(f"Active symbols: {len(self.active_symbols)}")
             logger.info(f"Mode: {mode}")
-            logger.info(f"Data priming: Completed")
+            logger.info(f"Data priming: {'Completed' if data_priming_completed else 'Failed'}")
             logger.info("="*70)
             
             return {'success': True, 'components': core_components, 'active_symbols_count': len(self.active_symbols)}

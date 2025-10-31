@@ -56,7 +56,7 @@ class TestHealthCheckGate:
         - Clear error messages indicate what component failed
         
         Key code changes in scripts/live_trading_launcher.py:
-        1. Line 1658: Changed from `return True` to `return False`
+        1. Line 1731: Changed from `return True` to `return False` when unhealthy
         2. Added _wait_for_subscription_confirmations() method
         3. Health check now calls wait method before checking health
         """
