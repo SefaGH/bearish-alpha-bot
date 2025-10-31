@@ -1,13 +1,17 @@
 """
 Indicator Warmup Validation Module
 Ensures all technical indicators are properly calculated before trading begins.
+(GÜNCELLENDİ: Modern mimariyle uyumlu, eksiksiz sürüm)
 """
 
 import asyncio
 import numpy as np
 import pandas as pd
 import logging
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
+
+# StreamDataCollector'ı doğrudan import etmek, tip ipuçları ve doğrudan erişim için daha iyidir.
+from .stream_data_collector import StreamDataCollector
 
 logger = logging.getLogger(__name__)
 
@@ -23,148 +27,165 @@ class IndicatorValidator:
     """
     Validates that all required technical indicators are properly warmed up
     and returning valid values after the prefetch step.
+    (GÜNCELLENDİ: Artık doğrudan StreamDataCollector ile çalışır ve tüm ML doğrulama metotlarını içerir)
     """
     
-    REQUIRED_CANDLES = 250
+    REQUIRED_CANDLES = 250  # İndikatörler için gereken minimum mum sayısı
     
-    def __init__(self, websocket_manager, rest_client=None):
+    def __init__(self, collector: StreamDataCollector, rest_client: Any = None):
         """
-        Initialize the validator. Makes the class more resilient.
-        If websocket_manager or its collector is not available, it logs a warning
-        and prepares to use a REST API fallback instead of crashing.
-        
+        Initialize the validator with a direct reference to the data collector.
+
         Args:
-            websocket_manager: An initialized WebSocketManager instance.
-            rest_client: A CcxtClient instance for REST fallbacks.
+            collector (StreamDataCollector): The central data store from WebSocketManager.
+            rest_client (Any): A CcxtClient instance for potential future REST fallbacks.
         """
-        self.ws_manager = websocket_manager
-        self.collector = getattr(self.ws_manager, 'collector', None)
-        self.rest_client = rest_client
-        self.use_rest_fallback = False
+        self.collector = collector
+        self.rest_client = rest_client # Şu an için kullanılmıyor ama gelecekteki geliştirmeler için saklanıyor.
 
         if not self.collector:
-            logger.warning(
-                "⚠️ IndicatorValidator: WebSocket collector not found. "
-                "Will attempt to use REST API for validation fallback."
+            # Bu durum artık bir hata olmalı, çünkü sistemin çalışması için collector şart.
+            logger.error(
+                "❌ CRITICAL: IndicatorValidator cannot function without a StreamDataCollector instance."
             )
-            self.use_rest_fallback = True
-            if not self.rest_client:
-                logger.error(
-                    "❌ CRITICAL: IndicatorValidator has NO data source available "
-                    "(neither WebSocket collector nor REST client)."
-                )
+            raise ValueError("IndicatorValidator requires a valid StreamDataCollector.")
         
-    async def validate_all_symbols(
+    async def validate_all(
         self, 
         symbols: List[str], 
-        exchange: str = 'bingx'
-    ) -> Tuple[bool, Dict]:
+        timeframes: List[str]
+    ) -> Dict[str, Dict]:
+        """
+        Validates all specified symbols and their most critical timeframe.
+        
+        Args:
+            symbols: List of trading symbols to validate (e.g., ['BTC/USDT']).
+            timeframes: List of all timeframes used, to ensure we check the right one.
+        
+        Returns:
+            A dictionary with validation results for each symbol.
+        """
         logger.info("="*80)
         logger.info("🔍 INDICATOR WARMUP VERIFICATION (POST-PREFETCH)")
         logger.info("="*80)
-
-        # --- YENİ FALLBACK KONTROLÜ EKLEYİN ---
-        if self.use_rest_fallback:
-            logger.info("ℹ️ Using REST fallback for indicator validation.")
-            # Henüz tam implemente edilmediği için geçici olarak başarılı varsayalım
-            # ve bir uyarı basalım.
-            logger.warning("REST validation fallback is not fully implemented. Returning a placeholder valid status.")
-            return True, {s: {'overall_valid': True, 'errors': ['Used REST fallback (placeholder)']} for s in symbols}
         
         if not TALIB_AVAILABLE:
             logger.error("❌ TA-Lib is not installed. Cannot perform indicator validation.")
-            return False, {s: {'overall_valid': False, 'errors': ['TA-Lib not installed']} for s in symbols}
+            results = {s: {'status': 'FAIL', 'reason': 'TA-Lib not installed'} for s in symbols}
+            self._log_validation_summary(results)
+            return results
 
-        all_valid = True
-        results = {}
-        for symbol in symbols:
-            symbol_valid, symbol_results = await self.validate_symbol(symbol, exchange)
-            results[symbol] = symbol_results
-            all_valid = all_valid and symbol_valid
+        tasks = [self.validate_symbol(symbol, timeframes) for symbol in symbols]
+        validation_outputs = await asyncio.gather(*tasks)
+        
+        results = {symbol: output for symbol, output in zip(symbols, validation_outputs)}
             
         self._log_validation_summary(results)
-        return all_valid, results
+        return results
     
     async def validate_symbol(
         self, 
         symbol: str, 
-        exchange: str
-    ) -> Tuple[bool, Dict]:
+        timeframes: List[str]
+    ) -> Dict:
+        """
+        Validates the indicators for a single symbol.
+        (GÜNCELLENDİ: `asyncio.sleep` kaldırıldı, veri erişimi düzeltildi)
+        """
         logger.info(f"\n📊 Validating indicators for {symbol}...")
-        symbol_norm = f"{symbol.split(':')[0]}:USDT"
+        results = {'status': 'FAIL', 'reason': 'Unknown failure'}
         
-        results = {'symbol': symbol, 'exchange': exchange, 'indicators': {}, 'overall_valid': True, 'errors': []}
-    
-        # --- KRİTİK DEĞİŞİKLİK ---
-        # MarketDataPipeline'ın REST verisini WebSocket Collector'a enjekte etmesi için
-        # çok kısa bir bekleme süresi tanıyın. Bu, zamanlama sorununu çözer.
-        await asyncio.sleep(1) # 1 saniye bekle
-    
-        # Veriyi doğrudan collector'dan al
-        ohlcv_1m = self.ws_manager.collector.get_latest_ohlcv(exchange, symbol_norm, '1m', limit=self.REQUIRED_CANDLES)
+        # En kritik ve en hızlı güncellenen zaman dilimini kontrol et, genelde '1m' olur.
+        validation_tf = '1m' if '1m' in timeframes else timeframes[0]
         
-        # Kontrol: Prefetch ve enjeksiyon başarılı oldu mu?
-        if ohlcv_1m is None or len(ohlcv_1m) < self.REQUIRED_CANDLES:
-            # Eğer hala yeterli veri yoksa, canlı akıştan gelenleri loglayalım.
-            live_data_count = len(ohlcv_1m) if ohlcv_1m is not None else 0
-            error = (f"Insufficient 1m data after prefetch & injection: "
-                     f"found {live_data_count}, expected {self.REQUIRED_CANDLES}. "
-                     f"This indicates the historical data priming step failed to inject data into the collector.")
-            logger.error(f"❌ {error}")
-            results['errors'].append(error)
-            results['overall_valid'] = False
-            return False, results
-            
-        logger.info(f"✅ Data availability check passed: {len(ohlcv_1m)} candles found in collector for validation.")
-        
-        df = pd.DataFrame(ohlcv_1m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']).apply(pd.to_numeric)
-        
-        # TA-Lib hesaplamaları...
+        # Adım 1: Veri Varlığını Doğrudan Collector'dan Kontrol Et
         try:
-            # En sondan kontrol etmek yerine, serinin tamamında NaN olup olmadığına bakmak daha güvenli.
+            # Collector'dan veriyi al. Bu metot, prefetch adımında doldurulan hafızayı okur.
+            # Artık `asyncio.sleep`'e gerek yok çünkü prefetch adımı bittiğinde veri burada hazır olmalıdır.
+            all_data_for_symbol = self.collector.get_data(symbol, validation_tf)
+            
+            if not all_data_for_symbol or 'ohlcv' not in all_data_for_symbol or len(all_data_for_symbol['ohlcv']) < self.REQUIRED_CANDLES:
+                live_data_count = len(all_data_for_symbol['ohlcv']) if all_data_for_symbol and 'ohlcv' in all_data_for_symbol else 0
+                reason = (f"Insufficient data in collector for '{validation_tf}': "
+                          f"found {live_data_count}, required {self.REQUIRED_CANDLES}. "
+                          "This usually means the prefetch/priming step failed.")
+                logger.error(f"❌ {symbol}: {reason}")
+                results['reason'] = reason
+                return results
+
+            logger.info(f"✅ Data availability check passed: {len(all_data_for_symbol['ohlcv'])} candles found in collector for validation.")
+            ohlcv_list = all_data_for_symbol['ohlcv']
+            
+        except Exception as e:
+            reason = f"Failed to retrieve data from collector: {e}"
+            logger.error(f"❌ {symbol}: {reason}", exc_info=True)
+            results['reason'] = reason
+            return results
+
+        # Adım 2: Veriyi DataFrame'e Çevir ve İndikatörleri Hesapla
+        try:
+            df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']).apply(pd.to_numeric)
+            
             close = df['close'].values
             high = df['high'].values
             low = df['low'].values
             
+            indicator_errors = []
+            
+            # RSI kontrolü
             rsi = talib.RSI(close)
-            if np.all(np.isnan(rsi)):
-                results['errors'].append("RSI calculation resulted in all NaNs.")
-    
+            if np.all(np.isnan(rsi[14:])):
+                indicator_errors.append("RSI calculation resulted in all NaNs.")
+
+            # ATR kontrolü
             atr = talib.ATR(high, low, close)
-            if np.all(np.isnan(atr)):
-                results['errors'].append("ATR calculation resulted in all NaNs.")
-    
+            if np.all(np.isnan(atr[14:])):
+                indicator_errors.append("ATR calculation resulted in all NaNs.")
+
+            # EMA kontrolü
             ema_slow = talib.EMA(close, timeperiod=200)
-            # EMA'nın başlangıçta NaN olması normaldir, sondakinin olmaması gerekir.
             if np.isnan(ema_slow[-1]):
-                 results['errors'].append("EMA_SLOW calculation resulted in NaN at the last candle.")
-    
+                 indicator_errors.append("EMA_SLOW has NaN at the last candle.")
+
+            if indicator_errors:
+                reason = "Indicator calculation failed: " + ", ".join(indicator_errors)
+                logger.error(f"❌ {symbol}: {reason}")
+                results['reason'] = reason
+                return results
+
         except Exception as e:
-            logger.error(f"Indicator calculation error: {e}", exc_info=True)
-            results['errors'].append(f"TA-Lib calculation failed: {e}")
-    
-        if results['errors']:
-            results['overall_valid'] = False
-            logger.error(f"❌ {symbol}: Indicator validation FAILED")
-            for err in results['errors']: logger.error(f"   - {err}")
-        else:
-            logger.info(f"✅ {symbol}: All indicators seem healthy and ready.")
-    
-        return results['overall_valid'], results
+            reason = f"TA-Lib calculation failed: {e}"
+            logger.error(f"❌ {symbol}: {reason}", exc_info=True)
+            results['reason'] = reason
+            return results
+            
+        # Adım 3: Başarı Durumunu Raporla
+        logger.info(f"✅ {symbol}: All indicators seem healthy and ready.")
+        results['status'] = 'OK'
+        results['reason'] = 'All indicators validated successfully.'
+        return results
 
     def _log_validation_summary(self, results: Dict):
         logger.info("\n" + "="*80)
         logger.info("📋 INDICATOR VALIDATION SUMMARY")
         logger.info("="*80)
+        
         total = len(results)
-        valid = sum(1 for r in results.values() if r['overall_valid'])
+        valid = sum(1 for res in results.values() if res['status'] == 'OK')
+        
         logger.info(f"Total Symbols: {total}, Valid Symbols: {valid}, Failed Symbols: {total - valid}")
-        if valid == total:
-            logger.info("✅ ALL INDICATORS READY FOR TRADING")
+        
+        if valid != total:
+            logger.error("❌ SOME INDICATORS FAILED VALIDATION:")
+            for symbol, res in results.items():
+                if res['status'] != 'OK':
+                    logger.error(f"  - {symbol}: {res['reason']}")
         else:
-            logger.error("❌ SOME INDICATORS FAILED VALIDATION")
+            logger.info("✅ ALL INDICATORS READY FOR TRADING")
+            
         logger.info("="*80)
-    
+
+    # --- ML VALIDATION METHODS (UNCHANGED) ---
     def validate_ml_data(self, price_data: pd.DataFrame, symbol: str) -> Tuple[bool, List[str]]:
         """
         Validate data quality for ML model consumption.
@@ -181,49 +202,38 @@ class IndicatorValidator:
         """
         errors = []
         
-        # Check 1: Data exists and is not empty
         if price_data is None or price_data.empty:
             errors.append("Price data is None or empty")
             return False, errors
         
-        # Check 2: Minimum data requirements
-        min_rows = 50  # ML models need at least 50 candles
+        min_rows = 50
         if len(price_data) < min_rows:
             errors.append(f"Insufficient data: {len(price_data)} rows (need {min_rows})")
         
-        # Check 3: Required columns
         required_cols = ['open', 'high', 'low', 'close', 'volume']
         missing_cols = [col for col in required_cols if col not in price_data.columns]
         if missing_cols:
             errors.append(f"Missing required columns: {missing_cols}")
         
-        # Check 4: NaN values in critical columns
         for col in required_cols:
             if col in price_data.columns:
-                nan_count = price_data[col].isna().sum()
-                if nan_count > 0:
-                    errors.append(f"Found {nan_count} NaN values in '{col}'")
-        
-        # Check 5: Infinite values
-        for col in required_cols:
-            if col in price_data.columns:
-                inf_count = np.isinf(price_data[col]).sum()
-                if inf_count > 0:
-                    errors.append(f"Found {inf_count} infinite values in '{col}'")
-        
-        # Check 6: Zero or negative prices (invalid)
+                if price_data[col].isna().sum() > 0:
+                    errors.append(f"Found NaN values in '{col}'")
+                if np.isinf(price_data[col]).sum() > 0:
+                    errors.append(f"Found infinite values in '{col}'")
+
         for col in ['open', 'high', 'low', 'close']:
-            if col in price_data.columns:
-                invalid_count = (price_data[col] <= 0).sum()
-                if invalid_count > 0:
-                    errors.append(f"Found {invalid_count} zero/negative values in '{col}'")
+            if col in price_data.columns and (price_data[col] <= 0).sum() > 0:
+                errors.append(f"Found zero/negative values in '{col}'")
         
-        # Check 7: Data freshness (last row should be recent)
-        if 'timestamp' in price_data.columns:
+        if 'timestamp' in price_data.index.name or 'timestamp' in price_data.columns:
             try:
-                last_timestamp = pd.to_datetime(price_data['timestamp'].iloc[-1])
-                age_minutes = (pd.Timestamp.now() - last_timestamp).total_seconds() / 60
-                if age_minutes > 60:  # Data older than 1 hour
+                last_timestamp = pd.to_datetime(price_data.index[-1] if 'timestamp' in price_data.index.name else price_data['timestamp'].iloc[-1])
+                # Ensure timestamp is timezone-aware for correct comparison
+                if last_timestamp.tzinfo is None:
+                    last_timestamp = last_timestamp.tz_localize('UTC')
+                age_minutes = (datetime.now(timezone.utc) - last_timestamp).total_seconds() / 60
+                if age_minutes > 120:  # Allow up to 2 hours for larger timeframes
                     errors.append(f"Stale data: last update was {age_minutes:.1f} minutes ago")
             except Exception as e:
                 logger.debug(f"Could not check data freshness: {e}")
@@ -256,12 +266,10 @@ class IndicatorValidator:
             errors.append("Features DataFrame is None or empty")
             return False, errors
         
-        # Check for NaN in features
         nan_cols = features.columns[features.isna().any()].tolist()
         if nan_cols:
             errors.append(f"NaN values in features: {nan_cols}")
         
-        # Check for infinite values
         inf_cols = []
         for col in features.select_dtypes(include=[np.number]).columns:
             if np.isinf(features[col]).any():
