@@ -195,3 +195,18 @@ class WebSocketClient:
             'message_count': message_count,
             'last_message_time': last_msg_time
         }
+    
+    def get_subscription_count(self) -> int:
+        """
+        Get the number of active subscriptions.
+        
+        This method provides a direct way to query the subscription count
+        from the underlying BingX WebSocket client. Used by WebSocketManager
+        to report active stream counts for health checks.
+        
+        Returns:
+            int: Number of confirmed subscriptions
+        """
+        if not self.bingx_ws:
+            return 0
+        return len(getattr(self.bingx_ws, 'subscriptions', {}))
