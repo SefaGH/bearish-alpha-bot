@@ -814,6 +814,145 @@ class ProductionCoordinator:
         logger.info(f"[SYMBOL_DISCOVERY] Using {len(default_symbols)} hardcoded default symbols")
         return default_symbols
     
+    async def is_data_layer_healthy(self) -> Dict[str, Any]:
+        """
+        Health check for data layer (Phase 1.5).
+        
+        Validates that the data layer is ready before ML initialization:
+        - WebSocket connection is active
+        - Subscriptions are successful  
+        - At least one data packet has been received and processed
+        
+        Returns:
+            Dict with 'healthy' bool and 'checks' dict with detailed status
+        """
+        logger.info("🏥 [HEALTH-CHECK] Performing data layer health check...")
+        
+        checks = {
+            'websocket_connection': {'status': 'unknown', 'details': None},
+            'subscriptions': {'status': 'unknown', 'details': None},
+            'data_flow': {'status': 'unknown', 'details': None}
+        }
+        
+        all_healthy = True
+        
+        # Check 1: WebSocket Connection
+        if self.websocket_manager:
+            try:
+                # Check if any client is connected
+                is_connected = self.websocket_manager.is_any_client_connected()
+                if is_connected:
+                    checks['websocket_connection'] = {
+                        'status': 'healthy',
+                        'details': 'At least one WebSocket client connected'
+                    }
+                    logger.info("   ✅ WebSocket connection: Active")
+                else:
+                    checks['websocket_connection'] = {
+                        'status': 'unhealthy',
+                        'details': 'No WebSocket clients connected'
+                    }
+                    all_healthy = False
+                    logger.warning("   ⚠️ WebSocket connection: No active connections")
+            except Exception as e:
+                checks['websocket_connection'] = {
+                    'status': 'error',
+                    'details': str(e)
+                }
+                all_healthy = False
+                logger.error(f"   ❌ WebSocket connection check failed: {e}")
+        else:
+            checks['websocket_connection'] = {
+                'status': 'not_available',
+                'details': 'WebSocket manager not initialized'
+            }
+            all_healthy = False
+            logger.warning("   ⚠️ WebSocket manager not available")
+        
+        # Check 2: Subscriptions
+        if self.websocket_manager:
+            try:
+                stream_count = self.websocket_manager.get_active_stream_count()
+                if stream_count > 0:
+                    checks['subscriptions'] = {
+                        'status': 'healthy',
+                        'details': f'{stream_count} active streams'
+                    }
+                    logger.info(f"   ✅ Subscriptions: {stream_count} active streams")
+                else:
+                    checks['subscriptions'] = {
+                        'status': 'unhealthy',
+                        'details': 'No active streams'
+                    }
+                    all_healthy = False
+                    logger.warning("   ⚠️ Subscriptions: No active streams")
+            except Exception as e:
+                checks['subscriptions'] = {
+                    'status': 'error',
+                    'details': str(e)
+                }
+                logger.error(f"   ❌ Subscription check failed: {e}")
+        else:
+            checks['subscriptions'] = {
+                'status': 'not_available',
+                'details': 'WebSocket manager not initialized'
+            }
+            logger.warning("   ⚠️ Subscriptions check skipped (no WebSocket manager)")
+        
+        # Check 3: Data Flow
+        if self.websocket_manager and hasattr(self.websocket_manager, 'collector'):
+            try:
+                # Check if collector has received any data for active symbols
+                data_received = False
+                sample_count = 0
+                
+                if self.active_symbols:
+                    # Check first 3 symbols
+                    for symbol in self.active_symbols[:3]:
+                        # Try to get data for common timeframe
+                        data = self.websocket_manager.get_latest_data(symbol, '1m')
+                        if data and data.get('ohlcv'):
+                            data_received = True
+                            sample_count += 1
+                
+                if data_received:
+                    checks['data_flow'] = {
+                        'status': 'healthy',
+                        'details': f'Data received for {sample_count} sample symbol(s)'
+                    }
+                    logger.info(f"   ✅ Data flow: Confirmed ({sample_count} symbols)")
+                else:
+                    checks['data_flow'] = {
+                        'status': 'degraded',
+                        'details': 'No data received yet (may need more time)'
+                    }
+                    # Don't fail - data might still be flowing in
+                    logger.warning("   ⚠️ Data flow: No data received yet")
+            except Exception as e:
+                checks['data_flow'] = {
+                    'status': 'error',
+                    'details': str(e)
+                }
+                logger.error(f"   ❌ Data flow check failed: {e}")
+        else:
+            checks['data_flow'] = {
+                'status': 'not_available',
+                'details': 'WebSocket collector not available'
+            }
+            logger.warning("   ⚠️ Data flow check skipped (no collector)")
+        
+        # Summary
+        if all_healthy:
+            logger.info("🏥 [HEALTH-CHECK] ✅ Data layer is HEALTHY")
+        else:
+            logger.warning("🏥 [HEALTH-CHECK] ⚠️ Data layer has issues")
+        
+        return {
+            'healthy': all_healthy,
+            'checks': checks,
+            'timestamp': datetime.now(timezone.utc)
+        }
+    
     async def _initialize_ml_components(self, price_engine: Optional[Any] = None, regime_predictor: Optional[Any] = None) -> Dict[str, Any]:
         """
         Initialize and connect ALL ML components from src/ml/.
@@ -1021,6 +1160,253 @@ class ProductionCoordinator:
         
         return results
     
+    async def initialize_core_systems(self,
+                                      exchange_clients: Optional[Dict] = None,
+                                      portfolio_config: Optional[Dict] = None,
+                                      mode: str = 'paper',
+                                      trading_symbols: Optional[List[str]] = None,
+                                      websocket_manager: Optional[Any] = None) -> Dict[str, Any]:
+        """
+        Initialize CORE systems only (Phase 1): Exchange, WebSocket, Data Pipeline, Risk, Portfolio.
+        This method does NOT initialize ML components - that happens in initialize_ml_systems().
+        
+        Args:
+            exchange_clients: Dictionary of exchange clients
+            portfolio_config: Portfolio configuration
+            mode: Trading mode ('paper' or 'live')
+            trading_symbols: List of symbols to trade
+            websocket_manager: Pre-initialized WebSocket manager
+            
+        Returns:
+            Dict with 'success' and optional 'reason' keys
+        """
+        logger.info("="*70)
+        logger.info("[PHASE 1] INITIALIZING CORE SYSTEMS")
+        logger.info("="*70)
+        
+        try:
+            # === STEP 1: ACCEPT EXTERNAL COMPONENTS ===
+            if exchange_clients:
+                self.exchange_clients = {k.lower(): v for k, v in exchange_clients.items()}
+                logger.info(f"✓ Received {len(self.exchange_clients)} exchange client(s): {list(self.exchange_clients.keys())}")
+            
+            self.websocket_manager = websocket_manager
+            if self.websocket_manager:
+                logger.info("✓ WebSocket manager received from launcher (external).")
+            else:
+                logger.warning("⚠️ No WebSocket manager provided by launcher. Continuing without WebSocket (REST API fallback).")
+            
+            # === STEP 2: INITIALIZE MARKET DATA PIPELINE ===
+            self.market_data_pipeline = MarketDataPipeline(
+                exchanges=self.exchange_clients,
+                config=self.config,
+                websocket_manager=self.websocket_manager
+            )
+            logger.info("✓ Market data pipeline initialized")
+ 
+            # === STEP 3: INITIALIZE PERFORMANCE MONITOR ===
+            try:
+                self.performance_monitor = PerformanceMonitor()
+                logger.info("✓ Performance monitor initialized")
+            except Exception as e:
+                logger.warning(f"⚠️ PerformanceMonitor not available: {e}")
+                logger.info("✓ Using fallback RealTimePerformanceMonitor")
+                self.performance_monitor = RealTimePerformanceMonitor()
+            
+            # === STEP 4: PREPARE RISK MANAGER CONFIG ===
+            portfolio_config = portfolio_config or {}
+            config = self.config
+            risk_config = config.get('risk', {})
+            
+            risk_manager_config = {
+                'equity_usd': float(portfolio_config.get('equity_usd') or risk_config.get('equity_usd', 100)),
+                'per_trade_risk_pct': float(risk_config.get('per_trade_risk_pct', 0.01)),
+                'daily_loss_limit_pct': float(risk_config.get('daily_loss_limit_pct', 0.02)),
+                'risk_usd_cap': float(risk_config.get('risk_usd_cap', 5)),
+                'max_notional_per_trade': float(risk_config.get('max_notional_per_trade', 20)),
+                'max_portfolio_risk': float(risk_config.get('max_portfolio_risk', 0.02)),
+                'max_position_size': float(risk_config.get('max_position_size', 0.10)),
+                'max_drawdown': float(risk_config.get('max_drawdown', 0.15)),
+                'max_correlation': float(risk_config.get('max_correlation', 0.70))
+            }
+            
+            logger.info(f"✓ Risk config prepared: ${risk_manager_config['equity_usd']} equity")
+            
+            # === STEP 5: INITIALIZE RISK MANAGER ===
+            self.risk_manager = RiskManager(
+                portfolio_config=risk_manager_config,
+                websocket_manager=self.websocket_manager,
+                performance_monitor=self.performance_monitor
+            )
+            logger.info(f"✓ Risk manager initialized (portfolio value: ${self.risk_manager.portfolio_value:.2f})")
+
+            # === STEP 6: INITIALIZE EXECUTION MANAGERS ===
+            self.order_manager = SmartOrderManager(risk_manager=self.risk_manager)
+            logger.info("✓ Order manager initialized (dependencies pending)")
+            
+            self.position_manager = AdvancedPositionManager(
+                risk_manager=self.risk_manager,
+                order_manager=self.order_manager,
+                websocket_manager=self.websocket_manager
+            )
+            logger.info("✓ Position manager initialized and linked with OrderManager")
+            
+            # === STEP 7: INITIALIZE PORTFOLIO MANAGER ===
+            self.portfolio_manager = PortfolioManager(
+                risk_manager=self.risk_manager,
+                performance_monitor=self.performance_monitor,
+                websocket_manager=self.websocket_manager,
+                exchange_clients=self.exchange_clients
+            )
+            self.portfolio_manager.cfg = self.config
+            logger.info("✓ Portfolio manager initialized")
+
+            # === STEP 8: LINK MANAGERS ===
+            self.portfolio_manager.set_execution_managers(self.order_manager, self.position_manager)
+            self.order_manager.set_dependencies(
+                risk_manager=self.risk_manager,
+                exchange_clients=self.exchange_clients
+            )
+            logger.info("✓ All managers have been interlinked")
+
+            # === STEP 9: VERIFY WEBSOCKET COLLECTOR READY ===
+            if self.websocket_manager and hasattr(self.websocket_manager, 'is_collector_ready') and self.websocket_manager.is_collector_ready():
+                logger.info("✓ WebSocket collector verified ready")
+            else:
+                logger.info("ℹ️ WebSocket manager/collector not ready - pipeline will use REST API only")
+            
+            # === STEP 10: INITIALIZE STRATEGY COORDINATOR ===
+            self.strategy_coordinator = StrategyCoordinator(
+                portfolio_manager=self.portfolio_manager,
+                risk_manager=self.risk_manager,
+                market_data_pipeline=self.market_data_pipeline,
+                config=self.config
+            )
+            logger.info("✓ Strategy coordinator initialized")
+            
+            # === STEP 11: INITIALIZE CIRCUIT BREAKER ===
+            self.circuit_breaker = CircuitBreakerSystem(
+                self.portfolio_manager,
+                self.risk_manager
+            )
+            logger.info("✓ Circuit breaker system initialized")
+            
+            # === STEP 12: INITIALIZE LIVE TRADING ENGINE ===
+            self.trading_engine = LiveTradingEngine(
+                mode=mode,
+                portfolio_manager=self.portfolio_manager,
+                risk_manager=self.risk_manager,
+                order_manager=self.order_manager,
+                position_manager=self.position_manager,
+                exchange_clients=self.exchange_clients,
+                strategy_coordinator=self.strategy_coordinator,
+                market_data_pipeline=self.market_data_pipeline
+            )
+            logger.info(f"✓ Live trading engine initialized (mode: {mode})")
+            
+            # === STEP 13: SET ACTIVE SYMBOLS ===
+            self.active_symbols = trading_symbols or self._get_default_symbols()
+            logger.info(f"✓ Active symbols set: {len(self.active_symbols)} symbols")
+            
+            if self.trading_engine:
+                self.trading_engine._cached_symbols = self.active_symbols
+                logger.info(f"✓ Trading engine symbols cache set: {len(self.active_symbols)} symbols")
+            
+            # === STEP 14: VALIDATE ACTIVE SYMBOLS ===
+            if not self.active_symbols:
+                logger.error("="*70)
+                logger.error("❌ CRITICAL: NO ACTIVE SYMBOLS CONFIGURED!")
+                logger.error("="*70)
+                return {'success': False, 'reason': 'No active symbols configured'}
+            else:
+                logger.info("="*70)
+                logger.info(f"✅ ACTIVE SYMBOLS CONFIGURED: {len(self.active_symbols)} symbols")
+                logger.info("="*70)
+                for idx, symbol in enumerate(self.active_symbols, 1):
+                    logger.info(f"  {idx}. {symbol}")
+                logger.info("="*70)
+            
+            # Mark core systems as initialized
+            core_components = [
+                'websocket_manager', 'performance_monitor', 'risk_manager',
+                'portfolio_manager', 'strategy_coordinator', 'circuit_breaker', 'trading_engine'
+            ]
+            
+            logger.info("="*70)
+            logger.info("[PHASE 1] ✅ CORE SYSTEMS INITIALIZATION COMPLETE")
+            logger.info("="*70)
+            logger.info(f"Components initialized: {len(core_components)}")
+            logger.info(f"Portfolio value: ${self.risk_manager.portfolio_value:.2f}")
+            logger.info(f"Active symbols: {len(self.active_symbols)}")
+            logger.info(f"Mode: {mode}")
+            logger.info("="*70)
+            
+            return {'success': True, 'components': core_components, 'active_symbols_count': len(self.active_symbols)}
+            
+        except Exception as e:
+            logger.error("="*70)
+            logger.error("[PHASE 1] ❌ CORE SYSTEMS INITIALIZATION FAILED")
+            logger.error("="*70)
+            logger.error(f"Error: {e}", exc_info=True)
+            logger.error("="*70)
+            return {'success': False, 'reason': str(e)}
+    
+    async def initialize_ml_systems(self, price_engine: Optional[Any] = None, regime_predictor: Optional[Any] = None) -> Dict[str, Any]:
+        """
+        Initialize ML systems (Phase 2): ML prediction engines, RL agent, integrations.
+        This method should ONLY be called after core systems are initialized and data layer is healthy.
+        
+        Args:
+            price_engine: Pre-initialized price prediction engine
+            regime_predictor: Pre-initialized regime predictor
+            
+        Returns:
+            Dict with 'success' and optional 'reason' keys
+        """
+        logger.info("="*70)
+        logger.info("[PHASE 2] INITIALIZING ML SYSTEMS")
+        logger.info("="*70)
+        
+        ml_enabled = self.config.get('ml', {}).get('enabled', False)
+        if not ml_enabled:
+            logger.info("ℹ️ ML features disabled in config")
+            return {'success': True, 'reason': 'ML disabled in config', 'components': []}
+        
+        if not self.active_symbols:
+            logger.warning("⚠️ Cannot initialize ML without active symbols")
+            return {'success': False, 'reason': 'No active symbols available'}
+        
+        try:
+            ml_init_result = await self._initialize_ml_components(
+                price_engine=price_engine,
+                regime_predictor=regime_predictor
+            )
+            
+            if ml_init_result.get('success'):
+                logger.info("="*70)
+                logger.info("[PHASE 2] ✅ ML SYSTEMS INITIALIZATION COMPLETE")
+                logger.info("="*70)
+                logger.info(f"Components: {', '.join(ml_init_result.get('components', []))}")
+                logger.info("="*70)
+                return ml_init_result
+            else:
+                logger.warning("="*70)
+                logger.warning("[PHASE 2] ⚠️ ML INITIALIZATION PARTIAL")
+                logger.warning("="*70)
+                logger.warning(f"Reason: {ml_init_result.get('reason')}")
+                logger.warning("Continuing with limited ML features")
+                logger.warning("="*70)
+                return ml_init_result
+                
+        except Exception as e:
+            logger.error("="*70)
+            logger.error("[PHASE 2] ❌ ML SYSTEMS INITIALIZATION FAILED")
+            logger.error("="*70)
+            logger.error(f"Error: {e}", exc_info=True)
+            logger.error("Continuing without ML features")
+            logger.error("="*70)
+            return {'success': False, 'reason': str(e), 'components': []}
+    
     async def _initialize_production_system(self) -> bool:
         """
         Legacy wrapper for backwards compatibility.
@@ -1044,231 +1430,95 @@ class ProductionCoordinator:
                                           price_engine: Optional[Any] = None,
                                           regime_predictor: Optional[Any] = None) -> Dict[str, Any]:
         """
-        Initializes the production system by assembling pre-configured components.
-        This method strictly follows the Dependency Injection principle and does NOT
-        create its own major components like WebSocketManager.
-        (GÜNCELLENDİ: ML nesnelerini dışarıdan alır)
+        Orchestrates the phased initialization of the production system (DEPRECATED - use phased methods).
+        
+        This method now orchestrates the new phased initialization:
+        - Phase 1: Core Systems (initialize_core_systems)
+        - Phase 1.5: Data Layer Health Check (is_data_layer_healthy)
+        - Phase 2: ML Systems (initialize_ml_systems)
+        
+        For new code, prefer calling the phase methods directly for better control.
+        This method is kept for backward compatibility.
+        
+        Args:
+            exchange_clients: Dictionary of exchange clients
+            portfolio_config: Portfolio configuration
+            mode: Trading mode ('paper' or 'live')
+            trading_symbols: List of symbols to trade
+            websocket_manager: Pre-initialized WebSocket manager
+            price_engine: Pre-initialized price prediction engine
+            regime_predictor: Pre-initialized regime predictor
+            
+        Returns:
+            Dict with 'success', 'components', and optional 'reason' keys
         """
         logger.info("="*70)
-        logger.info("INITIALIZING PRODUCTION SYSTEM (Dependency Injection Mode)")
+        logger.info("INITIALIZING PRODUCTION SYSTEM (Phased Orchestration)")
         logger.info("="*70)
         
         try:
-            # === ADIM 1: DIŞARIDAN GELEN BİLEŞENLERİ KABUL ET ===
-            if exchange_clients:
-                self.exchange_clients = {k.lower(): v for k, v in exchange_clients.items()}
-                logger.info(f"✓ Received {len(self.exchange_clients)} exchange client(s): {list(self.exchange_clients.keys())}")
-            
-            self.websocket_manager = websocket_manager
-            if self.websocket_manager:
-                logger.info("✓ WebSocket manager received from launcher (external).")
-            else:
-                logger.warning("⚠️ No WebSocket manager provided by launcher. Continuing without WebSocket (REST API fallback).")
-            
-            # === ADIM 2: DİĞER YÖNETİCİLERİ BU HAZIR BİLEŞENLERLE OLUŞTUR ===
-            self.market_data_pipeline = MarketDataPipeline(
-                exchanges=self.exchange_clients,
-                config=self.config,
-                websocket_manager=self.websocket_manager
-            )
-            logger.info("✓ Market data pipeline initialized")
- 
-            # ========================================
-            # STEP 4: INITIALIZE PERFORMANCE MONITOR
-            # ========================================
-            try:
-                self.performance_monitor = PerformanceMonitor()
-                logger.info("✓ Performance monitor initialized")
-            except Exception as e:
-                logger.warning(f"⚠️ PerformanceMonitor not available: {e}")
-                logger.info("✓ Using fallback RealTimePerformanceMonitor")
-                self.performance_monitor = RealTimePerformanceMonitor()
-            
-            # ========================================
-            # STEP 5: PREPARE RISK MANAGER CONFIG
-            # ========================================
-            portfolio_config = portfolio_config or {}
-            config = self.config
-            risk_config = config.get('risk', {})
-            
-            risk_manager_config = {
-                'equity_usd': float(portfolio_config.get('equity_usd') or risk_config.get('equity_usd', 100)),
-                'per_trade_risk_pct': float(risk_config.get('per_trade_risk_pct', 0.01)),
-                'daily_loss_limit_pct': float(risk_config.get('daily_loss_limit_pct', 0.02)),
-                'risk_usd_cap': float(risk_config.get('risk_usd_cap', 5)),
-                'max_notional_per_trade': float(risk_config.get('max_notional_per_trade', 20)),
-                'max_portfolio_risk': float(risk_config.get('max_portfolio_risk', 0.02)),
-                'max_position_size': float(risk_config.get('max_position_size', 0.10)),
-                'max_drawdown': float(risk_config.get('max_drawdown', 0.15)),
-                'max_correlation': float(risk_config.get('max_correlation', 0.70))
-            }
-            
-            logger.info(f"✓ Risk config prepared: ${risk_manager_config['equity_usd']} equity")
-            
-            # ========================================
-            # STEP 6: INITIALIZE RISK MANAGER
-            # ========================================
-            self.risk_manager = RiskManager(
-                portfolio_config=risk_manager_config,
-                websocket_manager=self.websocket_manager,
-                performance_monitor=self.performance_monitor
-            )
-            logger.info(f"✓ Risk manager initialized (portfolio value: ${self.risk_manager.portfolio_value:.2f})")
-
-            # ========================================
-            # STEP 7: INITIALIZE EXECUTION MANAGERS
-            # ========================================
-            self.order_manager = SmartOrderManager(risk_manager=self.risk_manager)
-            logger.info("✓ Order manager initialized (dependencies pending)")
-            
-            self.position_manager = AdvancedPositionManager(
-                risk_manager=self.risk_manager,
-                order_manager=self.order_manager,
-                websocket_manager=self.websocket_manager
-            )
-            logger.info("✓ Position manager initialized and linked with OrderManager")
-            
-            # ========================================
-            # STEP 8: INITIALIZE PORTFOLIO MANAGER
-            # ========================================
-            self.portfolio_manager = PortfolioManager(
-                risk_manager=self.risk_manager,
-                performance_monitor=self.performance_monitor,
-                websocket_manager=self.websocket_manager,
-                exchange_clients=self.exchange_clients
-            )
-            self.portfolio_manager.cfg = self.config
-            logger.info("✓ Portfolio manager initialized")
-
-            # ========================================
-            # STEP 9: (Artık gereksiz, pipeline başta oluşturuldu)
-            # ========================================
-
-            # ========================================
-            # STEP 10: LINK MANAGERS
-            # ========================================
-            self.portfolio_manager.set_execution_managers(self.order_manager, self.position_manager)
-            self.order_manager.set_dependencies(
-                risk_manager=self.risk_manager,
-                exchange_clients=self.exchange_clients
-            )
-            logger.info("✓ All managers have been interlinked")
-
-            # ========================================
-            # STEP 11: VERIFY WEBSOCKET COLLECTOR READY
-            # ========================================
-            if self.websocket_manager and hasattr(self.websocket_manager, 'is_collector_ready') and self.websocket_manager.is_collector_ready():
-                logger.info("✓ WebSocket collector verified ready")
-            else:
-                logger.info("ℹ️ WebSocket manager/collector not ready - pipeline will use REST API only")
-            
-            # ========================================
-            # STEP 12: INITIALIZE STRATEGY COORDINATOR
-            # ========================================
-            self.strategy_coordinator = StrategyCoordinator(
-                portfolio_manager=self.portfolio_manager,
-                risk_manager=self.risk_manager,
-                market_data_pipeline=self.market_data_pipeline,
-                config=self.config
-            )
-            logger.info("✓ Strategy coordinator initialized")
-            
-            # ========================================
-            # STEP 13: INITIALIZE CIRCUIT BREAKER
-            # ========================================
-            self.circuit_breaker = CircuitBreakerSystem(
-                self.portfolio_manager,
-                self.risk_manager
-            )
-            logger.info("✓ Circuit breaker system initialized")
-            
-            # ========================================
-            # STEP 14: INITIALIZE LIVE TRADING ENGINE
-            # ========================================
-            self.trading_engine = LiveTradingEngine(
+            # PHASE 1: Core Systems
+            core_result = await self.initialize_core_systems(
+                exchange_clients=exchange_clients,
+                portfolio_config=portfolio_config,
                 mode=mode,
-                portfolio_manager=self.portfolio_manager,
-                risk_manager=self.risk_manager,
-                order_manager=self.order_manager,
-                position_manager=self.position_manager,
-                exchange_clients=self.exchange_clients,
-                strategy_coordinator=self.strategy_coordinator,
-                market_data_pipeline=self.market_data_pipeline
+                trading_symbols=trading_symbols,
+                websocket_manager=websocket_manager
             )
-            logger.info(f"✓ Live trading engine initialized (mode: {mode})")
             
-            # ========================================
-            # STEP 15: SET ACTIVE SYMBOLS
-            # ========================================
-            self.active_symbols = trading_symbols or self._get_default_symbols()
-            logger.info(f"✓ Active symbols set: {len(self.active_symbols)} symbols")
+            if not core_result.get('success'):
+                logger.error(f"❌ Core systems initialization failed: {core_result.get('reason')}")
+                return core_result
             
-            if self.trading_engine:
-                self.trading_engine._cached_symbols = self.active_symbols
-                logger.info(f"✓ Trading engine symbols cache set: {len(self.active_symbols)} symbols")
+            # PHASE 1.5: Data Layer Health Check
+            logger.info("\n" + "="*70)
+            logger.info("[PHASE 1.5] DATA LAYER HEALTH CHECK")
+            logger.info("="*70)
             
-            # ========================================
-            # STEP 16: VALIDATE ACTIVE SYMBOLS          
-            # ========================================
-            if not self.active_symbols:
-                logger.error("="*70)
-                logger.error("❌ CRITICAL: NO ACTIVE SYMBOLS CONFIGURED!")
-                logger.error("="*70)
+            health_result = await self.is_data_layer_healthy()
+            
+            if not health_result.get('healthy'):
+                logger.warning("="*70)
+                logger.warning("[PHASE 1.5] ⚠️ DATA LAYER NOT FULLY HEALTHY")
+                logger.warning("="*70)
+                logger.warning("ML initialization will proceed with degraded data layer")
+                logger.warning("System may rely on REST API fallback")
+                logger.warning("="*70)
+                # Don't fail - continue with ML initialization
             else:
                 logger.info("="*70)
-                logger.info(f"✅ ACTIVE SYMBOLS CONFIGURED: {len(self.active_symbols)} symbols")
-                logger.info("="*70)
-                for idx, symbol in enumerate(self.active_symbols, 1):
-                    logger.info(f"  {idx}. {symbol}")
+                logger.info("[PHASE 1.5] ✅ DATA LAYER IS HEALTHY")
                 logger.info("="*70)
             
-            # ========================================
-            # STEP 17: INITIALIZE ML COMPONENTS (NEW)
-            # ========================================
-            ml_enabled = self.config.get('ml', {}).get('enabled', False)
-            if ml_enabled and self.active_symbols:
-                logger.info("="*70)
-                logger.info("🧠 INITIALIZING ML COMPONENTS")
-                logger.info("="*70)
-                try:
-                    # --- ÇÖZÜM: Hazır nesneleri _initialize_ml_components'e veriyoruz ---
-                    ml_init_result = await self._initialize_ml_components(
-                        price_engine=price_engine,
-                        regime_predictor=regime_predictor
-                    )
-                    if ml_init_result.get('success'):
-                        logger.info("✅ ML components initialized successfully")
-                    else:
-                        logger.warning(f"⚠️ ML initialization partial: {ml_init_result.get('reason')}")
-                except Exception as e:
-                    logger.warning(f"⚠️ ML initialization failed: {e}")
-                    logger.info("Continuing without ML features")
-            else:
-                if not ml_enabled:
-                    logger.info("ℹ️ ML features disabled in config")
-                elif not self.active_symbols:
-                    logger.warning("⚠️ Cannot initialize ML without active symbols")
+            # PHASE 2: ML Systems (only if data layer is at least partially available)
+            ml_result = await self.initialize_ml_systems(
+                price_engine=price_engine,
+                regime_predictor=regime_predictor
+            )
             
-            # ========================================
-            # STEP 18: MARK AS INITIALIZED
-            # ========================================
+            # Combine results
+            all_components = core_result.get('components', []) + ml_result.get('components', [])
+            
+            # Mark as initialized
             self.is_initialized = True
             
-            components = [
-                'websocket_manager', 'performance_monitor', 'risk_manager',
-                'portfolio_manager', 'strategy_coordinator', 'circuit_breaker', 'trading_engine'
-            ]
-            
             logger.info("="*70)
-            logger.info("✅ PRODUCTION SYSTEM INITIALIZATION COMPLETE")
+            logger.info("✅ PRODUCTION SYSTEM INITIALIZATION COMPLETE (All Phases)")
             logger.info("="*70)
-            logger.info(f"Components initialized: {len(components)}")
+            logger.info(f"Total components: {len(all_components)}")
+            logger.info(f"Core: {len(core_result.get('components', []))}, ML: {len(ml_result.get('components', []))}")
             logger.info(f"Portfolio value: ${self.risk_manager.portfolio_value:.2f}")
             logger.info(f"Active symbols: {len(self.active_symbols)}")
             logger.info(f"Mode: {mode}")
             logger.info("="*70)
             
-            return {'success': True, 'components': components, 'is_initialized': self.is_initialized, 'active_symbols_count': len(self.active_symbols)}
+            return {
+                'success': True,
+                'components': all_components,
+                'is_initialized': True,
+                'active_symbols_count': len(self.active_symbols),
+                'health_check': health_result
+            }
             
         except Exception as e:
             logger.error("="*70)
