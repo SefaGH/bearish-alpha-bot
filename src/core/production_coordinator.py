@@ -167,11 +167,19 @@ class ProductionCoordinator:
             # Validator'ı burada oluşturuyoruz, çünkü her zaman en güncel ws_manager'a ihtiyacı var.
             validator = IndicatorValidator(self.websocket_manager)
             
-            all_valid, results = await validator.validate_all_symbols(
+            # 1. Gerekli zaman dilimlerini config'den alalım.
+            ws_config = self.config.get('websocket', {})
+            timeframes = ws_config.get('stream_timeframes', ['1m', '5m', '15m', '30m', '1h', '4h'])
+
+            # 2. Doğru metot adını ('validate_all') ve doğru parametreleri ('timeframes') kullanalım.
+            results = await validator.validate_all(
                 symbols=self.active_symbols,
-                exchange='bingx'
+                timeframes=timeframes
             )
-            
+
+            # validate_all metodu doğrudan {symbol: result} formatında bir sözlük döndürüyor.
+            valid_count = sum(1 for res in results.values() if res.get('status') == 'OK')
+            all_valid = valid_count == len(self.active_symbols)
             if not all_valid:
                 logger.warning("⚠️  [HEALTH-CHECK] Some indicators unhealthy")
                 
