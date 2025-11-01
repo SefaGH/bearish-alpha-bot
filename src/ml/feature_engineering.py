@@ -409,7 +409,7 @@ class FeatureEngineeringPipeline:
                            labels: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
         """
         Prepare features and labels for model training by aligning, cleaning, and converting them.
-        (En sağlamlaştırılmış versiyon)
+        (Nihai ve en sağlamlaştırılmış versiyon)
         """
         try:
             # 1. Özellikleri, sabit listeye göre hizala ve sırala.
@@ -418,13 +418,12 @@ class FeatureEngineeringPipeline:
             # 2. Etiketleri bir DataFrame'e dönüştür ve adını 'label' yap.
             labels_df = labels.to_frame(name='label')
             
-            # 3. Özellikler ve etiketleri endekslerine göre birleştir.
+            # 3. Özellikler ve etiketleri birleştir.
             combined_df = pd.concat([features_aligned, labels_df], axis=1)
             
-            # 4. SADECE etiketi olmayan (NaN) satırları sil. Bu, tüm veriyi kaybetmemizi önler.
+            # 4. SADECE etiketi olmayan (NaN) satırları sil.
             combined_df.dropna(subset=['label'], inplace=True)
             
-            # Eğer etiketleri sildikten sonra veri kalmazsa, çık.
             if combined_df.empty:
                 logger.warning("No data remains after dropping rows with missing labels.")
                 return np.array([]), np.array([])
@@ -432,23 +431,32 @@ class FeatureEngineeringPipeline:
             # 5. Etiketleri tamsayıya dönüştür.
             combined_df['label'] = combined_df['label'].astype(int)
             
-            # 6. Özellik (X) tarafındaki NaN değerlerini bir önceki geçerli değerle doldur (forward fill).
+            # --- 🔥🔥🔥 NİHAİ DÜZELTME: Veri Temizleme Mantığı ---
+            # 6. Özellik (X) tarafındaki NaN değerleri doldur.
+            # Önce ffill (ileri doldurma), sonra bfill (geri doldurma).
+            # Bu, hem baştaki hem de ortadaki boşlukları doldurmayı garanti eder.
             feature_columns = self.FEATURE_COLUMNS
-            combined_df[feature_columns] = combined_df[feature_columns].ffill()
+            combined_df[feature_columns] = combined_df[feature_columns].ffill().bfill()
             
-            # 7. ffill işleminden sonra hala NaN kalırsa (genellikle en baştaki satırlar),
-            # bu satırları tamamen sil. Bu adım artık çok daha az veri silecektir.
+            # 7. Bu adımdan sonra hala NaN kalıyorsa, bu satırlar gerçekten sorunludur.
+            # Bu yüzden bu satırları atıyoruz. Bu işlem artık tüm tabloyu silmemeli.
+            initial_shape = combined_df.shape[0]
             combined_df.dropna(inplace=True)
+            final_shape = combined_df.shape[0]
+
+            if initial_shape > final_shape:
+                 logger.warning(f"Dropped {initial_shape - final_shape} rows that still contained NaNs after ffill/bfill.")
+            # --- 🔥🔥🔥 DÜZELTME SONU ---
 
             # 8. Nihai X ve y'yi oluştur.
             if combined_df.empty:
-                logger.warning("After ffill and final dropna, no data remains for training.")
+                logger.warning("After all cleaning steps, no data remains for training.")
                 return np.array([]), np.array([])
                 
             X = combined_df[feature_columns].values
             y = combined_df['label'].values
             
-            logger.info(f"Prepared {len(X)} samples with {X.shape[1]} features for training")
+            logger.info(f"✅ Prepared {len(X)} samples with {X.shape[1]} features for training")
             return X, y
             
         except Exception as e:
