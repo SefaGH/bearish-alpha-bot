@@ -8,6 +8,8 @@ import logging
 import math
 from typing import Optional, Dict
 from .oversold_bounce import OversoldBounce
+# YENİ: BaseStrategy'i import ediyoruz
+from .base_strategy import BaseStrategy
 
 # Default market regime for fallback
 DEFAULT_MARKET_REGIME = {
@@ -41,7 +43,12 @@ class AdaptiveOversoldBounce(OversoldBounce):
             cfg: Strategy configuration dictionary
             regime_analyzer: MarketRegimeAnalyzer instance for regime detection
         """
-        super().__init__(cfg)
+        # ÖNCEKİ HATALI KOD: super().__init__(cfg)
+        # DOĞRU KOD: BaseStrategy'nin __init__'ini doğrudan ve doğru parametrelerle çağırıyoruz.
+        # Bu, OversoldBounce'un __init__'indeki olası eksiklikleri baypas eder ve
+        # self.strategy_name ve self.config özelliklerinin kesin olarak tanımlanmasını sağlar.
+        BaseStrategy.__init__(self, strategy_name="adaptive_ob", config=cfg)
+        
         self.regime_analyzer = regime_analyzer
         self.base_cfg = cfg.copy()
         self.debug_logging = self.base_cfg.get('debug', {}).get('strategy_logging', False)
@@ -431,7 +438,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
             
             # Build adaptive signal with ATR-based TP/SL
             signal = {
-                "strategy_name": self.strategy_name, # 🔥 BU SATIRI EKLEYİN
+                "strategy_name": self.strategy_name,
                 "side": "buy",
                 "entry": entry_price,
                 "stop": stop_price,
