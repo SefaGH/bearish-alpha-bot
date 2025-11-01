@@ -405,34 +405,54 @@ class FeatureEngineeringPipeline:
         
         return combined
     
-    def prepare_for_training(self, features: pd.DataFrame, 
-                           labels: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Prepare features and labels for model training.
-        
-        Args:
-            features: DataFrame with extracted features
-            labels: Series with regime labels
+        def prepare_for_training(self, features: pd.DataFrame, 
+                               labels: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
+            """
+            Prepare features and labels for model training by aligning, cleaning, and converting them.
             
-        Returns:
-            Tuple of (features_array, labels_array)
-        """
-        # ==================== KESİN ÇÖZÜM ADIM 4: EĞİTİM SÜRECİNE HİZALAMA EKLEME ====================
-        # Eğitim verisini de tahmin verisiyle aynı hizalama sürecinden geçir.
-        features_aligned = self.align_and_finalize_features(features)
-        # ===========================================================================================
-
-        common_idx = features_aligned.index.intersection(labels.index)
-        features_aligned = features_aligned.loc[common_idx]
-        labels_aligned = labels.loc[common_idx]
-        
-        valid_idx = ~(features_aligned.isna().any(axis=1) | labels_aligned.isna())
-        features_clean = features_aligned[valid_idx]
-        labels_clean = labels_aligned[valid_idx]
-        
-        X = features_clean.values
-        y = labels_clean.values
-        
-        logger.info(f"Prepared {len(X)} samples with {X.shape[1]} features for training")
-        
-        return X, y
+            Args:
+                features: DataFrame of features
+                labels: Series of labels
+                
+            Returns:
+                Tuple of (X, y) numpy arrays for training
+            """
+            try:
+                # 1. Özellikleri, sabit listeye göre hizala ve sırala.
+                features_aligned = self.align_and_finalize_features(features)
+                
+                # 2. Etiketleri bir DataFrame'e dönüştür ve adını 'label' yap.
+                labels_df = labels.to_frame(name='label')
+                
+                # 3. Özellikler ve etiketleri endekslerine göre birleştir. Bu, hizalamayı garanti eder.
+                combined_df = pd.concat([features_aligned, labels_df], axis=1)
+                
+                # 4. Sadece etiketi olmayan (NaN) satırları sil. Bu, tüm veriyi kaybetmemizi önler.
+                combined_df.dropna(subset=['label'], inplace=True)
+                
+                # 5. Etiketleri tamsayıya dönüştür.
+                combined_df['label'] = combined_df['label'].astype(int)
+                
+                # 6. Özellik (X) tarafındaki NaN değerlerini bir önceki geçerli değerle doldur (forward fill).
+                # Bu, özellikle indikatörlerin başlangıcındaki boşlukları doldurmak için kritiktir.
+                feature_columns = [col for col in combined_df.columns if col != 'label']
+                combined_df[feature_columns] = combined_df[feature_columns].ffill()
+                
+                # 7. ffill işleminden sonra hala NaN kalırsa (genellikle en baştaki satırlar),
+                # bu satırları tamamen sil.
+                combined_df.dropna(inplace=True)
+    
+                # 8. Nihai X ve y'yi oluştur.
+                if combined_df.empty:
+                    logger.warning("After cleaning, no data remains for training.")
+                    return np.array([]), np.array([])
+                    
+                X = combined_df[feature_columns].values
+                y = combined_df['label'].values
+                
+                logger.info(f"Prepared {len(X)} samples with {X.shape[1]} features for training")
+                return X, y
+                
+            except Exception as e:
+                logger.error(f"Veri hazırlama hatası: {e}", exc_info=True)
+                return np.array([]), np.array([])
