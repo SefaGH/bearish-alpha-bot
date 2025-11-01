@@ -1398,35 +1398,28 @@ class LiveTradingLauncher:
     async def _initialize_ai_components(self) -> bool:
         """
         Initialize Phase 4 AI enhancement components.
-        (GÜNCELLENDİ: Tekrarlanan ve hatalı kod bloğu kaldırıldı)
+        (GÜNCELLENDİ: `websocket_manager` parametresi kaldırıldı)
         """
         logger.info("\n[4/8] Initializing Phase 4 AI Components...")
         
         try:
-            # Config'i yükle (henüz yüklenmediyse)
             self._load_config()
             
-            # Phase 4.1: ML Regime Prediction
             logger.info("Initializing regime predictor...")
             self.regime_predictor = MLRegimePredictor()
             logger.info("✓ ML Regime Predictor initialized")
             
-            # Phase 4.2: Adaptive Learning - integrated with strategies
             logger.info("✓ Adaptive Learning ready (integrated with strategies)")
             
-            # Phase 4.3: Strategy Optimization
             logger.info("Initializing strategy optimizer...")
             from config.optimization_config import OptimizationConfiguration
             opt_config = OptimizationConfiguration.get_default_config()
             self.strategy_optimizer = StrategyOptimizer(opt_config)
             logger.info("✓ Strategy Optimizer initialized")
             
-            # Phase 4.4: Price Prediction (TEMİZLENMİŞ VERSİYON)
             logger.info("Initializing price prediction engine...")
             
             ml_config = self.config.get('ml', {})
-
-            # 1. Merkezi config'den doğru zaman aralıklarını oku
             timeframes_for_models = ml_config.get('timeframes', [])
             if not timeframes_for_models:
                 logger.error("❌ ML timeframes list is empty in the configuration. Cannot initialize price prediction engine.")
@@ -1434,7 +1427,6 @@ class LiveTradingLauncher:
 
             logger.info(f"Price Prediction Engine will be configured for timeframes: {timeframes_for_models}")
 
-            # 2. Merkezi config'den model tiplerini ve parametrelerini oku
             model_types = ml_config.get('models', [])
             model_params = ml_config.get('model_params', {})
 
@@ -1460,28 +1452,22 @@ class LiveTradingLauncher:
 
             multi_timeframe_predictor = MultiTimeframePricePredictor(models_by_timeframe)
             
-            # Get market_data_pipeline from coordinator if available
-            market_data_pipeline = None
-            if self.coordinator and hasattr(self.coordinator, 'market_data_pipeline'):
-                market_data_pipeline = self.coordinator.market_data_pipeline
-                logger.info("✓ Using MarketDataPipeline from coordinator")
+            market_data_pipeline = self.coordinator.market_data_pipeline if self.coordinator else None
+            if market_data_pipeline:
+                logger.info("✓ Using MarketDataPipeline from coordinator for Price Engine")
             else:
-                logger.warning("⚠️ MarketDataPipeline not available yet - prediction updates may fail")
+                logger.warning("⚠️ MarketDataPipeline not available yet for Price Engine - prediction updates may fail")
             
+            # --- DÜZELTME: Eskimiş `websocket_manager` parametresi kaldırıldı. ---
             self.price_engine = AdvancedPricePredictionEngine(
                 multi_timeframe_predictor,
-                websocket_manager=self.ws_optimizer.ws_manager if self.ws_optimizer else None,
                 market_data_pipeline=market_data_pipeline
             )
             logger.info("✓ Price Prediction Engine initialized")
 
-            # 3. Modelleri yükle
             logger.info("Attempting to load pre-trained models for the price engine...")
             self.price_engine.load_models()
             
-            # --- HATALI VE TEKRARLANAN BLOK BURADAN TAMAMEN KALDIRILDI ---
-
-            # Strategy integration adapter
             if self.regime_predictor and self.price_engine:
                 self.strategy_adapter = AIEnhancedStrategyAdapter(
                     self.price_engine,
@@ -3056,7 +3042,7 @@ Examples:
             try:
                 await launcher.cleanup()
             except Exception as e:
-                logger.error(f"❌ Final cleanup failed: {e}")
+                logger.error(f"❌ Cleanup failed: {e}")
                 if exit_code == 0:
                     exit_code = 1
         
