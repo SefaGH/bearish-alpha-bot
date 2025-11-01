@@ -165,32 +165,39 @@ class ProductionCoordinator:
         
         try:
             # Validator'ı burada oluşturuyoruz, çünkü her zaman en güncel ws_manager'a ihtiyacı var.
+            if not self.websocket_manager:
+                logger.error("❌ [HEALTH-CHECK] WebSocketManager not available. Cannot perform health check.")
+                return False
+
             validator = IndicatorValidator(self.websocket_manager)
             
-            all_valid, results = await validator.validate_all_symbols(
+            # --- ÇÖZÜM: 'validate_all_symbols' yerine 'validate_all' kullanıldı ve parametreler düzeltildi ---
+            
+            # 1. Gerekli 'timeframes' parametresini konfigürasyondan al
+            ws_config = self.config.get('websocket', {})
+            timeframes = ws_config.get('stream_timeframes', ['1m', '5m', '15m', '30m', '1h', '4h'])
+
+            # 2. Doğru metodu doğru parametrelerle çağır
+            results: Dict[str, Dict] = await validator.validate_all(
                 symbols=self.active_symbols,
-                exchange='bingx'
+                timeframes=timeframes
             )
             
+            # 3. Dönen sözlüğü (dict) işleyerek genel durumu (all_valid) belirle
+            all_valid = all(res.get('status') == 'OK' for res in results.values())
+
             if not all_valid:
                 logger.warning("⚠️  [HEALTH-CHECK] Some indicators unhealthy")
-                
-                # Log unhealthy indicators
-                for symbol, result in results.items():
-                    if not result['overall_valid']:
-                        logger.warning(f"   {symbol}:")
-                        for error in result['errors']:
-                            logger.warning(f"      - {error}")
-                
-                # Decide whether to pause trading
-                # (For now, just warn. Could implement auto-pause)
+                # Hatalı olanları loglamak için IndicatorValidator'ın kendi özet loguna güveniyoruz.
+                # O zaten detaylı bir şekilde loglama yapıyor.
                 return False
             
             logger.info("✅ [HEALTH-CHECK] All indicators healthy")
             return True
             
         except Exception as e:
-            logger.error(f"❌ [HEALTH-CHECK] Health check failed: {e}")
+            # Orijinal hata logu korunuyor.
+            logger.error(f"❌ [HEALTH-CHECK] Health check failed: {e}", exc_info=True)
             return False
 
     def _normalize_symbol_for_ws(self, symbol: str) -> str:
