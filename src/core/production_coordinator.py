@@ -164,8 +164,16 @@ class ProductionCoordinator:
         logger.info("🏥 [HEALTH-CHECK] Performing indicator health check...")
         
         try:
-            # Validator'ı burada oluşturuyoruz, çünkü her zaman en güncel ws_manager'a ihtiyacı var.
-            validator = IndicatorValidator(self.websocket_manager)
+            # --- NİHAİ DÜZELTME BAŞLANGICI ---
+            # HATA: Validator'a, 'get_latest_ohlcv' metodu olmayan websocket_manager nesnesi veriliyordu.
+            # DOĞRUSU: Validator, 'get_latest_ohlcv' metoduna sahip olan ve 
+            # websocket_manager'ın içinde bulunan 'collector' nesnesine ihtiyaç duyar.
+            if not self.websocket_manager or not hasattr(self.websocket_manager, 'collector'):
+                 logger.error("❌ [HEALTH-CHECK] WebSocket manager or collector not available!")
+                 return False
+            
+            validator = IndicatorValidator(self.websocket_manager.collector)
+            # --- NİHAİ DÜZELTME SONU ---
             
             # 1. Gerekli zaman dilimlerini config'den alalım.
             ws_config = self.config.get('websocket', {})
@@ -180,25 +188,30 @@ class ProductionCoordinator:
             # validate_all metodu doğrudan {symbol: result} formatında bir sözlük döndürüyor.
             valid_count = sum(1 for res in results.values() if res.get('status') == 'OK')
             all_valid = valid_count == len(self.active_symbols)
+
             if not all_valid:
                 logger.warning("⚠️  [HEALTH-CHECK] Some indicators unhealthy")
                 
+                # --- DETAYLI LOGLAMA KISMI (KORUNUYOR) ---
                 # Log unhealthy indicators
                 for symbol, result in results.items():
-                    if not result['overall_valid']:
-                        logger.warning(f"   {symbol}:")
-                        for error in result['errors']:
-                            logger.warning(f"      - {error}")
-                
-                # Decide whether to pause trading
-                # (For now, just warn. Could implement auto-pause)
+                    # 'status' != 'OK' kontrolü, result sözlüğünün yapısıyla daha uyumludur.
+                    if result.get('status') != 'OK':
+                        reason = result.get('reason', 'Unknown error')
+                        logger.warning(f"   - {symbol}: {reason}")
+                        # Eğer 'errors' adında daha detaylı bir liste varsa onu da loglayalım.
+                        if 'errors' in result and isinstance(result['errors'], list):
+                             for error_detail in result['errors']:
+                                 logger.warning(f"     - Detail: {error_detail}")
+
                 return False
             
             logger.info("✅ [HEALTH-CHECK] All indicators healthy")
             return True
             
         except Exception as e:
-            logger.error(f"❌ [HEALTH-CHECK] Health check failed: {e}")
+            # Hatanın tam olarak nerede ve neden olduğunu anlamak için exc_info=True ekliyoruz.
+            logger.error(f"❌ [HEALTH-CHECK] Health check failed critically: {e}", exc_info=True)
             return False
 
     def _normalize_symbol_for_ws(self, symbol: str) -> str:
