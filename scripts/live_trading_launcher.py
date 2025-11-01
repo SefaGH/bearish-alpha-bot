@@ -180,24 +180,28 @@ class OptimizedWebSocketManager:
     def _parse_stream_timeframes(self) -> List[str]:
         """
         Normalize timeframe list from config (supports:
-        - '1m,5m,30m,1h,4h'
-        - ['1m,5m,30m,1h,4h']
-        - ['1m','5m','30m','1h','4h'])
+        - '1m,5m,15m,30m,1h,4h'
+        - ['1m,5m,15m,30m,1h,4h']
+        - ['1m','5m','15m','30m','1h','4h'])
         """
         try:
             raw = (self.config.get('websocket') or {}).get('stream_timeframes', None) \
                 if isinstance(self.config, dict) else None
+            
+            # ✅ ÇÖZÜM: '15m' eksikti, eklendi.
+            default_timeframes = ['1m', '5m', '15m', '30m', '1h', '4h']
+
             if raw is None:
-                return ['1m', '5m', '30m', '1h', '4h']
+                return default_timeframes
             if isinstance(raw, str):
                 return [x.strip() for x in raw.split(',') if x.strip()]
             if isinstance(raw, list):
                 if len(raw) == 1 and isinstance(raw[0], str) and ',' in raw[0]:
                     return [x.strip() for x in raw[0].split(',') if x.strip()]
                 return [str(x).strip() for x in raw if str(x).strip()]
-            return ['1m', '5m', '30m', '1h', '4h']
+            return default_timeframes
         except Exception:
-            return ['1m', '5m', '30m', '1h', '4h']
+            return ['1m', '5m', '15m', '30m', '1h', '4h'] # ✅ Hata durumunda da '15m' içerdiğinden emin ol.
 
     def _normalize_ccxt_futures_symbols(self, symbols: List[str]) -> List[str]:
         """
@@ -2840,6 +2844,8 @@ class LiveTradingLauncher:
                     await self.cleanup()
             except Exception as e:
                 logger.error(f"❌ Cleanup failed: {e}")
+                if exit_code == 0:
+                    exit_code = 1
     
     async def _run_with_auto_restart(self, duration: Optional[float] = None) -> int:
         """
