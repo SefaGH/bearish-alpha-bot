@@ -2,7 +2,6 @@ import asyncio
 import os
 import sys
 import pandas as pd
-import pandas_ta_classic as ta
 import numpy as np
 import logging
 
@@ -30,9 +29,12 @@ logger = setup_logger("model-trainer", level=logging.DEBUG, log_to_file=True, lo
 
 # --- EĞİTİM PARAMETRELERİ ---
 SYMBOLS_TO_TRAIN = ['BTC/USDT']
-# --- ÇÖZÜM: Eksik olan '5m' ve '15m' zaman aralıkları eklendi. Mevcutlar korundu. ---
-TIMEFRAMES_TO_TRAIN = ['5m', '15m', '1h', '4h']
-CANDLE_LIMIT = 1440
+ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h']
+
+# --- 🔥 IYILESTIRME: Rejim eğitimi için kullanılacak zaman dilimleri genişletildi ---
+# Stratejilerin kullandığı 30m'yi ve genel trend için 1h, 4h'yi dahil ediyoruz.
+REGIME_TRAINING_TIMEFRAMES = ['30m', '1h', '4h'] 
+CANDLE_LIMIT = 2500 # Veri miktarını artırarak modelin daha fazla desen öğrenmesini sağla
 
 async def main():
     logger.info("="*60)
@@ -45,16 +47,13 @@ async def main():
 
     training_data = {symbol: {} for symbol in SYMBOLS_TO_TRAIN}
     for symbol in SYMBOLS_TO_TRAIN:
-        for timeframe in TIMEFRAMES_TO_TRAIN:
+        for timeframe in ALL_TIMEFRAMES:
             logger.info(f"\n--- Veri Çekiliyor: {symbol} [{timeframe}] ---")
             try:
-                # *** DEĞİŞİKLİK: add_indicators=False olarak ayarlandı ***
-                # Bu, eğitim ortamının canlı ortamı birebir taklit etmesini sağlar.
-                # Özellik mühendisliği boru hattı (pipeline) zaten tüm indikatörleri hesaplayacaktır.
                 ohlcv_df = await exchange_client.ohlcv(symbol, timeframe=timeframe, limit=CANDLE_LIMIT, add_indicators=False)
                 
-                if ohlcv_df is None or ohlcv_df.empty:
-                    logger.warning(f"Veri çekilemedi. Atlanıyor.")
+                if ohlcv_df is None or ohlcv_df.empty or len(ohlcv_df) < 200:
+                    logger.warning(f"Veri çekilemedi veya yetersiz ({len(ohlcv_df) if ohlcv_df is not None else 0} mum). Atlanıyor.")
                     continue
                 logger.info(f"✅ {len(ohlcv_df)} adet HAM mum verisi çekildi.")
                 training_data[symbol][timeframe] = ohlcv_df
@@ -64,76 +63,80 @@ async def main():
     # 1. REJİM MODELLERİ EĞİTİMİ
     logger.info("\n" + "="*60)
     logger.info("🧠 ADIM 1: PİYASA REJİMİ MODELLERİ EĞİTİLİYOR 🧠")
+    logger.info(f"   Eğitim Zaman Dilimleri: {REGIME_TRAINING_TIMEFRAMES}")
     logger.info("="*60)
     
-    regime_training_tf = TIMEFRAMES_TO_TRAIN[-1]
-    if SYMBOLS_TO_TRAIN[0] in training_data and regime_training_tf in training_data[SYMBOLS_TO_TRAIN[0]]:
-        regime_training_data = training_data[SYMBOLS_TO_TRAIN[0]].get(regime_training_tf)
+    all_regime_features = []
+    all_regime_labels = []
 
-        if regime_training_data is not None and not regime_training_data.empty:
-            # === KÖK NEDEN ÇÖZÜMÜ BURADA ===
-            # 1. Önce sadece ham OHLCV verisinden özellikleri çıkar.
-            #    .copy() kullanarak orijinal verinin bozulmasını önle.
-            features_df = feature_engine.extract_features(regime_training_data.copy())
-            logger.info(f"Rejim modeli için {features_df.shape[1]} özellik çıkarıldı.")
-            
-            # 2. Ayrı bir şekilde, yine ham OHLCV verisinden etiketleri oluştur.
-            regime_labels = generate_regime_labels(regime_training_data.copy())
-            
-            # 3. Özellikleri ve etiketleri, `prepare_for_training` ile hizala ve temizle.
-            #    Bu metot, her ikisindeki NaN değerleri tutarlı bir şekilde temizleyerek
-            #    X (sadece özellikler) ve y (sadece etiketler) dizilerini döndürür.
-            X, y = feature_engine.prepare_for_training(features_df, regime_labels)
-            
-            # Artık X, sadece özellikleri içeriyor ve doğru sayıda sütuna sahip.
-            # === ÇÖZÜM SONU ===
-
-            if X.shape[0] > 100:
-                logger.info(f"Model {X.shape[1]} özellik ile eğitilecek. (Örnek sayısı: {X.shape[0]})")
-                regime_trainer = RegimeModelTrainer()
-                # `train_ensemble_models` metodu zaten doğru imzaya sahip, sadece X ve y göndermek yeterli.
-                training_results = regime_trainer.train_ensemble_models(X, y)
-                logger.info(f"✅ Rejim modelleri eğitildi ve kaydedildi.")
+    symbol_for_regime = SYMBOLS_TO_TRAIN[0]
+    if symbol_for_regime in training_data:
+        for tf in REGIME_TRAINING_TIMEFRAMES:
+            if tf in training_data[symbol_for_regime]:
+                logger.info(f"Rejim modeli için {tf} verisi işleniyor...")
+                regime_data_raw = training_data[symbol_for_regime][tf].copy()
+                
+                features_df = feature_engine.extract_features(regime_data_raw)
+                regime_labels = generate_regime_labels(regime_data_raw)
+                
+                X_prepared, y_prepared = feature_engine.prepare_for_training(features_df, regime_labels)
+                
+                if X_prepared.shape[0] > 0:
+                    all_regime_features.append(X_prepared)
+                    all_regime_labels.append(y_prepared)
+                    logger.info(f"✅ {tf} verisinden {X_prepared.shape[0]} örnek eklendi.")
+                else:
+                    logger.warning(f"{tf} verisinden geçerli eğitim örneği çıkarılamadı.")
             else:
-                logger.warning("Rejim modellerini eğitmek için yeterli veri bulunamadı.")
+                 logger.error(f"Rejim eğitimi için {symbol_for_regime} sembolüne ait {tf} verisi bulunamadı.")
+
+        if all_regime_features and all_regime_labels:
+            final_X = np.vstack(all_regime_features)
+            final_y = np.concatenate(all_regime_labels)
+            
+            logger.info(f"Toplamda {final_X.shape[0]} örnek ve {final_X.shape[1]} özellik ile rejim modeli eğitilecek.")
+
+            if final_X.shape[0] > 500: # Daha anlamlı bir eşik
+                regime_trainer = RegimeModelTrainer()
+                training_results = regime_trainer.train_ensemble_models(final_X, final_y)
+                logger.info(f"✅ Rejim modelleri birleşik veri seti ile eğitildi ve kaydedildi.")
+            else:
+                logger.warning("Rejim modellerini eğitmek için yeterli birleşik veri bulunamadı.")
         else:
-            logger.error(f"Rejim eğitimi için {regime_training_tf} verisi bulunamadı.")
+            logger.error("Rejim modeli eğitimi için işlenecek hiçbir veri bulunamadı.")
     else:
-        logger.error(f"Rejim eğitimi için {SYMBOLS_TO_TRAIN[0]} sembolüne ait {regime_training_tf} verisi bulunamadı.")
+        logger.error(f"Rejim eğitimi için {symbol_for_regime} sembolüne ait veri bulunamadı.")
 
 
-    # 2. FİYAT TAHMİN MODELLERİ EĞİTİMİ (Bu kısım doğru çalışıyor, değişiklik gerekmiyor)
+    # 2. FİYAT TAHMİN MODELLERİ EĞİTİMİ
     logger.info("\n" + "="*60)
     logger.info("📈 ADIM 2: FİYAT TAHMİN MODELLERİ EĞİTİLİYOR 📈")
     logger.info("="*60)
     
-    if SYMBOLS_TO_TRAIN[0] in training_data:
-        symbol_data_values = list(training_data[SYMBOLS_TO_TRAIN[0]].values())
-        if not symbol_data_values:
-            logger.error("Fiyat modeli eğitimi için hiç veri bulunamadı. Bu adım atlanıyor.")
-        else:
-            sample_features = feature_engine.extract_features(symbol_data_values[0])
-            input_feature_size = sample_features.shape[1]
-            logger.info(f"Fiyat tahmin modelleri için tutarlı girdi boyutu: {input_feature_size}")
+    price_timeframes = [tf for tf in ['5m', '15m', '1h'] if tf in training_data.get(SYMBOLS_TO_TRAIN[0], {})]
+    if SYMBOLS_TO_TRAIN[0] in training_data and price_timeframes:
+        sample_df = training_data[SYMBOLS_TO_TRAIN[0]][price_timeframes[0]].copy()
+        sample_features = feature_engine.extract_features(sample_df)
+        input_feature_size = sample_features.shape[1]
+        logger.info(f"Fiyat tahmin modelleri için tutarlı girdi boyutu: {input_feature_size}")
 
-            transformer_d_model = input_feature_size
-            if transformer_d_model % 2 != 0:
-                transformer_d_model += 1
-                logger.warning(f"Transformer d_model tek sayı ({input_feature_size}) olamaz. "
-                               f"{transformer_d_model}'e yükseltildi.")
+        transformer_d_model = input_feature_size
+        if transformer_d_model % 2 != 0:
+            transformer_d_model += 1
+            logger.warning(f"Transformer d_model tek sayı ({input_feature_size}) olamaz. {transformer_d_model}'e yükseltildi.")
 
-            timeframe_models = {}
-            for tf in TIMEFRAMES_TO_TRAIN:
-                base_models = {
-                    'lstm': LSTMPricePredictor(input_size=input_feature_size),
-                    'transformer': TransformerPricePredictor(d_model=transformer_d_model)
-                }
-                timeframe_models[tf] = EnsemblePricePredictor(base_models)
-            
-            multi_tf_predictor = MultiTimeframePricePredictor(timeframe_models)
-            price_engine = AdvancedPricePredictionEngine(multi_tf_predictor)
-            
-            price_engine.train_and_save_models(training_data)
+        timeframe_models = {}
+        for tf in price_timeframes:
+            base_models = {
+                'lstm': LSTMPricePredictor(input_size=input_feature_size),
+                'transformer': TransformerPricePredictor(d_model=transformer_d_model)
+            }
+            timeframe_models[tf] = EnsemblePricePredictor(base_models)
+        
+        multi_tf_predictor = MultiTimeframePricePredictor(timeframe_models)
+        price_engine = AdvancedPricePredictionEngine(multi_tf_predictor)
+        
+        price_engine.train_and_save_models(training_data)
     else:
         logger.error(f"Fiyat modeli eğitimi için {SYMBOLS_TO_TRAIN[0]} sembolüne ait veri bulunamadı.")
 
