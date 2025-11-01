@@ -312,9 +312,19 @@ class RegimeModelTrainer:
                             'num_classes': model.classifier[-1].out_features
                         }
                     elif name == 'transformer':
+                        # Extract nhead from the first encoder layer's attention module
+                        try:
+                            # Access the encoder layers through the correct path
+                            first_layer = model.transformer.layers[0]
+                            nhead = first_layer.self_attn.num_heads
+                        except (AttributeError, IndexError):
+                            # Fallback if structure is different
+                            nhead = 2  # Use a safe default
+                            logger.warning("Could not extract nhead from transformer, using default=2")
+                        
                         model_configs['transformer'] = {
                             'd_model': model.d_model,
-                            'nhead': model.transformer.layers[0].self_attn.num_heads,
+                            'nhead': nhead,
                             'num_layers': len(model.transformer.layers),
                             'num_classes': model.classifier[-1].out_features
                         }

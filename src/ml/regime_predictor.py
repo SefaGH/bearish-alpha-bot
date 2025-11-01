@@ -53,6 +53,29 @@ class EnsembleRegimePredictor:
             'random_forest': 0.2
         }
     
+    def _create_sequence_for_prediction(self, X: np.ndarray, seq_length: int) -> np.ndarray:
+        """
+        Convert 2D data to 3D sequence for PyTorch models during prediction.
+        
+        Args:
+            X: 2D input array (samples, features)
+            seq_length: Desired sequence length
+            
+        Returns:
+            3D array (1, seq_length, features) suitable for PyTorch models
+        """
+        if len(X.shape) == 2:
+            # If we have enough samples, create a sequence from recent data
+            if X.shape[0] >= seq_length:
+                # Use the last seq_length samples as a sequence
+                return X[-seq_length:].reshape(1, seq_length, X.shape[1])
+            else:
+                # Repeat the last sample to create a sequence
+                return np.repeat(X[-1:], seq_length, axis=0).reshape(1, seq_length, X.shape[1])
+        else:
+            # Already 3D
+            return X
+    
     def predict(self, X: np.ndarray, seq_length: int = 10) -> Tuple[np.ndarray, np.ndarray]:
         """
         Make ensemble predictions.
@@ -79,19 +102,8 @@ class EnsembleRegimePredictor:
                 elif hasattr(model, 'forward') and hasattr(model, 'eval'):
                     import torch
                     
-                    # Convert 2D data to 3D sequence for PyTorch models
-                    # For prediction, we use the most recent data as a sequence
-                    if len(X.shape) == 2:
-                        # If we have enough samples, create a sequence
-                        # Otherwise, repeat the single sample to create a sequence
-                        if X.shape[0] >= seq_length:
-                            # Use the last seq_length samples as a sequence
-                            X_seq = X[-seq_length:].reshape(1, seq_length, X.shape[1])
-                        else:
-                            # Repeat the sample to create a sequence
-                            X_seq = np.repeat(X[-1:], seq_length, axis=0).reshape(1, seq_length, X.shape[1])
-                    else:
-                        X_seq = X
+                    # Convert 2D data to 3D sequence using helper method
+                    X_seq = self._create_sequence_for_prediction(X, seq_length)
                     
                     # Convert to tensor
                     X_tensor = torch.from_numpy(X_seq).float()
