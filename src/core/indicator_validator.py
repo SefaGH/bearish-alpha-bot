@@ -1,7 +1,7 @@
 """
 Indicator Warmup Validation Module
 Ensures all technical indicators are properly calculated before trading begins.
-(GÜNCELLENDİ: Modern mimariyle uyumlu, eksiksiz sürüm)
+(MİMARİ GÜNCELLEME: Artık doğrudan MarketDataPipeline üzerinden çalışır)
 """
 
 import asyncio
@@ -9,9 +9,10 @@ import numpy as np
 import pandas as pd
 import logging
 from typing import Dict, List, Tuple, Any
+from datetime import datetime, timezone
 
-# StreamDataCollector'ı doğrudan import etmek, tip ipuçları ve doğrudan erişim için daha iyidir.
-from .stream_data_collector import StreamDataCollector
+# MarketDataPipeline'ı tip ipucu için import ediyoruz.
+from .market_data_pipeline import MarketDataPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -26,29 +27,26 @@ except ImportError:
 class IndicatorValidator:
     """
     Validates that all required technical indicators are properly warmed up
-    and returning valid values after the prefetch step.
-    (GÜNCELLENDİ: Artık doğrudan StreamDataCollector ile çalışır ve tüm ML doğrulama metotlarını içerir)
+    and returning valid values.
+    (MİMARİ GÜNCELLEME: Artık ana veri kaynağı olarak MarketDataPipeline kullanır)
     """
     
     REQUIRED_CANDLES = 250  # İndikatörler için gereken minimum mum sayısı
     
-    def __init__(self, collector: StreamDataCollector, rest_client: Any = None):
+    def __init__(self, pipeline: MarketDataPipeline):
         """
-        Initialize the validator with a direct reference to the data collector.
+        Initialize the validator with a reference to the MarketDataPipeline.
 
         Args:
-            collector (StreamDataCollector): The central data store from WebSocketManager.
-            rest_client (Any): A CcxtClient instance for potential future REST fallbacks.
+            pipeline (MarketDataPipeline): The central data pipeline for the bot.
         """
-        self.collector = collector
-        self.rest_client = rest_client # Şu an için kullanılmıyor ama gelecekteki geliştirmeler için saklanıyor.
+        self.pipeline = pipeline
 
-        if not self.collector:
-            # Bu durum artık bir hata olmalı, çünkü sistemin çalışması için collector şart.
+        if not self.pipeline:
             logger.error(
-                "❌ CRITICAL: IndicatorValidator cannot function without a StreamDataCollector instance."
+                "❌ CRITICAL: IndicatorValidator cannot function without a MarketDataPipeline instance."
             )
-            raise ValueError("IndicatorValidator requires a valid StreamDataCollector.")
+            raise ValueError("IndicatorValidator requires a valid MarketDataPipeline.")
         
     async def validate_all(
         self, 
@@ -57,13 +55,6 @@ class IndicatorValidator:
     ) -> Dict[str, Dict]:
         """
         Validates all specified symbols and their most critical timeframe.
-        
-        Args:
-            symbols: List of trading symbols to validate (e.g., ['BTC/USDT']).
-            timeframes: List of all timeframes used, to ensure we check the right one.
-        
-        Returns:
-            A dictionary with validation results for each symbol.
         """
         logger.info("="*80)
         logger.info("🔍 INDICATOR WARMUP VERIFICATION (POST-PREFETCH)")
@@ -89,76 +80,70 @@ class IndicatorValidator:
         timeframes: List[str]
     ) -> Dict:
         """
-        Validates the indicators for a single symbol.
-        (GÜNCELLENDİ: `asyncio.sleep` kaldırıldı, veri erişimi düzeltildi)
+        Validates the indicators for a single symbol using the MarketDataPipeline.
         """
         logger.info(f"\n📊 Validating indicators for {symbol}...")
         results = {'status': 'FAIL', 'reason': 'Unknown failure'}
         
-        # En kritik ve en hızlı güncellenen zaman dilimini kontrol et, genelde '1m' olur.
         validation_tf = '1m' if '1m' in timeframes else timeframes[0]
         
-        # Adım 1: Veri Varlığını Doğrudan Collector'dan Kontrol Et
+        # Adım 1: Veriyi MarketDataPipeline üzerinden talep et
+        df = None
         try:
-            # --- DÜZELTME: Artık collector'ın doğru metodu olan get_latest_ohlcv çağrılıyor ---
-            # Bu metot doğrudan mum listesini ([timestamp, o, h, l, c, v]) döndürür.
-            ohlcv_list = self.collector.get_latest_ohlcv(
-                exchange='bingx',  # veya dinamik bir exchange adı
+            # Pipeline, WebSocket veya REST API'den veriyi getirecektir.
+            df = await self.pipeline.get_latest_ohlcv(
                 symbol=symbol, 
-                timeframe=validation_tf, 
-                limit=self.REQUIRED_CANDLES
+                timeframe=validation_tf
             )
             
-            if not ohlcv_list or len(ohlcv_list) < self.REQUIRED_CANDLES:
-                live_data_count = len(ohlcv_list) if ohlcv_list else 0
-                reason = (f"Insufficient data in collector for '{validation_tf}': "
+            if df is None or df.empty or len(df) < self.REQUIRED_CANDLES:
+                live_data_count = len(df) if df is not None else 0
+                reason = (f"Insufficient data from pipeline for '{validation_tf}': "
                           f"found {live_data_count}, required {self.REQUIRED_CANDLES}. "
-                          "This usually means the prefetch/priming step failed.")
+                          "This could mean both WebSocket priming and REST fallback failed.")
                 logger.error(f"❌ {symbol}: {reason}")
                 results['reason'] = reason
                 return results
 
-            logger.info(f"✅ Data availability check passed: {len(ohlcv_list)} candles found in collector for validation.")
+            logger.info(f"✅ Data availability check passed: {len(df)} candles found via pipeline for validation.")
             
         except Exception as e:
-            reason = f"Failed to retrieve data from collector: {e}"
+            reason = f"Failed to retrieve data from MarketDataPipeline: {e}"
             logger.error(f"❌ {symbol}: {reason}", exc_info=True)
             results['reason'] = reason
             return results
 
-        # Adım 2: Veriyi DataFrame'e Çevir ve İndikatörleri Hesapla
+        # Adım 2: İndikatörleri Doğrula
         try:
-            df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']).apply(pd.to_numeric)
-            
-            close = df['close'].values
-            high = df['high'].values
-            low = df['low'].values
-            
+            # MarketDataPipeline zaten indikatörleri eklemiş olmalı.
+            # Burada bu indikatörlerin varlığını ve geçerliliğini kontrol ediyoruz.
+            required_indicators = ['RSI_14', 'ATR_14', 'EMA_200']
+            missing_indicators = [ind for ind in required_indicators if ind not in df.columns]
+
+            if missing_indicators:
+                reason = f"Indicators missing from DataFrame: {missing_indicators}. Pipeline may have failed to add them."
+                logger.error(f"❌ {symbol}: {reason}")
+                results['reason'] = reason
+                return results
+
             indicator_errors = []
             
-            # RSI kontrolü
-            rsi = talib.RSI(close)
-            if np.all(np.isnan(rsi[14:])):
-                indicator_errors.append("RSI calculation resulted in all NaNs.")
-
-            # ATR kontrolü
-            atr = talib.ATR(high, low, close)
-            if np.all(np.isnan(atr[14:])):
-                indicator_errors.append("ATR calculation resulted in all NaNs.")
-
-            # EMA kontrolü
-            ema_slow = talib.EMA(close, timeperiod=200)
-            if np.isnan(ema_slow[-1]):
-                 indicator_errors.append("EMA_SLOW has NaN at the last candle.")
+            # Son değerlerin NaN olup olmadığını kontrol et
+            if pd.isna(df['RSI_14'].iloc[-1]):
+                indicator_errors.append("RSI is NaN at the last candle.")
+            if pd.isna(df['ATR_14'].iloc[-1]):
+                indicator_errors.append("ATR is NaN at the last candle.")
+            if pd.isna(df['EMA_200'].iloc[-1]):
+                indicator_errors.append("EMA_200 is NaN at the last candle.")
 
             if indicator_errors:
-                reason = "Indicator calculation failed: " + ", ".join(indicator_errors)
+                reason = "Indicator validation failed: " + ", ".join(indicator_errors)
                 logger.error(f"❌ {symbol}: {reason}")
                 results['reason'] = reason
                 return results
 
         except Exception as e:
-            reason = f"TA-Lib calculation failed: {e}"
+            reason = f"Indicator validation on DataFrame failed: {e}"
             logger.error(f"❌ {symbol}: {reason}", exc_info=True)
             results['reason'] = reason
             return results
@@ -189,20 +174,10 @@ class IndicatorValidator:
             
         logger.info("="*80)
 
-    # --- ML VALIDATION METHODS (UNCHANGED) ---
+    # --- ML VALIDATION METHODS (UNCHANGED from original) ---
     def validate_ml_data(self, price_data: pd.DataFrame, symbol: str) -> Tuple[bool, List[str]]:
         """
         Validate data quality for ML model consumption.
-        
-        This is the ML data validation gateway - ensures data is clean and complete
-        before feeding to ML models.
-        
-        Args:
-            price_data: Price DataFrame to validate
-            symbol: Trading symbol (for logging)
-            
-        Returns:
-            Tuple of (is_valid, list_of_errors)
         """
         errors = []
         
@@ -230,17 +205,21 @@ class IndicatorValidator:
             if col in price_data.columns and (price_data[col] <= 0).sum() > 0:
                 errors.append(f"Found zero/negative values in '{col}'")
         
-        if 'timestamp' in price_data.index.name or 'timestamp' in price_data.columns:
-            try:
-                last_timestamp = pd.to_datetime(price_data.index[-1] if 'timestamp' in price_data.index.name else price_data['timestamp'].iloc[-1])
-                # Ensure timestamp is timezone-aware for correct comparison
-                if last_timestamp.tzinfo is None:
-                    last_timestamp = last_timestamp.tz_localize('UTC')
-                age_minutes = (datetime.now(timezone.utc) - last_timestamp).total_seconds() / 60
-                if age_minutes > 120:  # Allow up to 2 hours for larger timeframes
-                    errors.append(f"Stale data: last update was {age_minutes:.1f} minutes ago")
-            except Exception as e:
-                logger.debug(f"Could not check data freshness: {e}")
+        # Datetime index kontrolü daha sağlam hale getirildi.
+        try:
+            if isinstance(price_data.index, pd.DatetimeIndex):
+                last_timestamp = price_data.index[-1]
+            else:
+                last_timestamp = pd.to_datetime(price_data['timestamp'].iloc[-1])
+            
+            if last_timestamp.tzinfo is None:
+                last_timestamp = last_timestamp.tz_localize('UTC')
+            
+            age_minutes = (datetime.now(timezone.utc) - last_timestamp).total_seconds() / 60
+            if age_minutes > 120:  # Allow up to 2 hours for larger timeframes
+                errors.append(f"Stale data: last update was {age_minutes:.1f} minutes ago")
+        except Exception as e:
+            logger.debug(f"Could not check data freshness: {e}")
         
         is_valid = len(errors) == 0
         
@@ -256,13 +235,6 @@ class IndicatorValidator:
     def validate_ml_features(self, features: pd.DataFrame, symbol: str) -> Tuple[bool, List[str]]:
         """
         Validate extracted ML features.
-        
-        Args:
-            features: Feature DataFrame
-            symbol: Trading symbol
-            
-        Returns:
-            Tuple of (is_valid, list_of_errors)
         """
         errors = []
         
