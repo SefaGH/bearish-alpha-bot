@@ -203,6 +203,21 @@ class MLRegimePredictor:
             if len(feature_values) == 0:
                 logger.debug(f"🧠 [ML-REGIME] No valid feature values after cleanup")
                 return self._default_prediction()
+
+            # Ham özellikleri, modelin anlayacağı dile çevir (ölçeklendir).
+            # Bu adım olmadan, model tamamen anlamsız verilerle tahmin yapmaya çalışır.
+            if self.scaler is not None and self.is_trained:
+                try:
+                    feature_values = self.scaler.transform(feature_values)
+                    logger.debug("🧠 [ML-REGIME] Feature values successfully scaled for prediction.")
+                except Exception as e:
+                    logger.error(f"Failed to scale features for prediction: {e}", exc_info=True)
+                    # Ölçeklendirme başarısız olursa güvenli moda geç
+                    return self._default_prediction()
+            else:
+                # Bu durum, scaler'ın yüklenmediği veya modelin eğitilmediği anlamına gelir.
+                logger.warning("Scaler not loaded or model not trained. Prediction will use fallback.")
+                return self._fallback_prediction(symbol, price_data)
             
             # Model ensemble prediction
             if self.models['ensemble'] is not None and self.is_trained:
