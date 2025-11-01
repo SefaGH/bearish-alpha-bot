@@ -13,8 +13,8 @@ sys.path.insert(0, project_root)
 # Gerekli modüllerin import edilmesi
 from src.core.ccxt_client import CcxtClient
 from src.core.logger import setup_logger
-# --- 🔥 DÜZELTME: Hem Sınıfı hem de bağımsız fonksiyonu import et ---
-from src.ml.feature_engineering import FeatureEngineeringPipeline, prepare_for_training
+# --- 🔥 DÜZELTME: Sadece sınıfı import et ---
+from src.ml.feature_engineering import FeatureEngineeringPipeline
 from src.ml.model_trainer import RegimeModelTrainer
 from src.ml.price_predictor import (
     AdvancedPricePredictionEngine,
@@ -32,9 +32,8 @@ logger = setup_logger("model-trainer", level=logging.DEBUG, log_to_file=True, lo
 SYMBOLS_TO_TRAIN = ['BTC/USDT']
 ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h']
 REGIME_TRAINING_TIMEFRAMES = ['30m', '1h', '4h'] 
-CANDLE_LIMIT = 1400 # API limitine uygun hale getirildi
+CANDLE_LIMIT = 1400
 
-# --- Rejim modelleri için minimum veri eşikleri ---
 MIN_SAMPLES_FOR_RF = 100
 MIN_SAMPLES_FOR_NN = 500
 
@@ -82,12 +81,10 @@ async def main():
                 features_df = feature_engine.extract_features(regime_data_raw)
                 regime_labels = generate_regime_labels(regime_data_raw)
                 
-                # --- 🔥 DÜZELTME: Fonksiyonu nesne üzerinden değil, doğrudan modülden çağır. ---
-                # Ayrıca, hizalama için gerekli olan `FEATURE_COLUMNS` listesini de parametre olarak ver.
-                X_prepared, y_prepared = prepare_for_training(
+                # --- 🔥 DÜZELTME: Fonksiyonu doğrudan Sınıf üzerinden çağır ---
+                X_prepared, y_prepared = FeatureEngineeringPipeline.prepare_for_training(
                     features_df, 
-                    regime_labels, 
-                    feature_engine.FEATURE_COLUMNS
+                    regime_labels
                 )
                 
                 if X_prepared.shape[0] > 0:
@@ -108,13 +105,8 @@ async def main():
 
             if total_samples >= MIN_SAMPLES_FOR_RF:
                 regime_trainer = RegimeModelTrainer()
-                
-                # train_ensemble_models metodu zaten içinde yeterli veri kontrolü yapıyor.
                 training_results = regime_trainer.train_ensemble_models(final_X, final_y)
-                
-                # `save_models` metodu train_ensemble_models içinde çağrıldığı için burada tekrar çağırmaya gerek yok.
                 logger.info(f"✅ Rejim modelleri birleşik veri seti ile eğitildi ve kaydedildi.")
-                
             else:
                 logger.warning(
                     f"Rejim modellerini eğitmek için yeterli birleşik veri bulunamadı. "
