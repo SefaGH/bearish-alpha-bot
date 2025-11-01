@@ -405,49 +405,52 @@ class FeatureEngineeringPipeline:
         
         return combined
 
-    def prepare_for_training(features: pd.DataFrame, 
+    def prepare_for_training(self, features: pd.DataFrame, 
                            labels: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Prepare features and labels for model training.
-        
-        Args:
-            features: DataFrame with extracted features
-            labels: Series with regime labels
-            
-        Returns:
-            Tuple of (features_array, labels_array)
+        Prepare features and labels for model training by aligning, cleaning, and converting them.
+        (En sağlamlaştırılmış versiyon)
         """
-        # Bağımsız bir fonksiyon olduğu için, pipeline'ı burada oluşturuyoruz.
-        pipeline = FeatureEngineeringPipeline()
-        features_aligned = pipeline.align_and_finalize_features(features)
-    
-        common_idx = features_aligned.index.intersection(labels.index)
-        features_aligned = features_aligned.loc[common_idx]
-        labels_aligned = labels.loc[common_idx]
-        
-        # --- "Sıfır Örnek" Sorununu Çözen Sağlam Mantık ---
-        # Sadece etiketi olmayanları at
-        combined_df = pd.concat([features_aligned, labels_aligned.to_frame(name='label')], axis=1)
-        combined_df.dropna(subset=['label'], inplace=True)
-    
-        if combined_df.empty:
-            logger.warning("No data remains after dropping rows with missing labels.")
-            return np.array([]), np.array([])
+        try:
+            # 1. Özellikleri, sabit listeye göre hizala ve sırala.
+            features_aligned = self.align_and_finalize_features(features)
             
-        # Kalan NaN değerleri doldur
-        feature_columns = pipeline.FEATURE_COLUMNS
-        combined_df[feature_columns] = combined_df[feature_columns].ffill()
-        
-        # Doldurmadan sonra hala NaN varsa at
-        combined_df.dropna(inplace=True)
-    
-        if combined_df.empty:
-            logger.warning("No data remains after ffill and dropna.")
+            # 2. Etiketleri bir DataFrame'e dönüştür ve adını 'label' yap.
+            labels_df = labels.to_frame(name='label')
+            
+            # 3. Özellikler ve etiketleri endekslerine göre birleştir.
+            combined_df = pd.concat([features_aligned, labels_df], axis=1)
+            
+            # 4. SADECE etiketi olmayan (NaN) satırları sil. Bu, tüm veriyi kaybetmemizi önler.
+            combined_df.dropna(subset=['label'], inplace=True)
+            
+            # Eğer etiketleri sildikten sonra veri kalmazsa, çık.
+            if combined_df.empty:
+                logger.warning("No data remains after dropping rows with missing labels.")
+                return np.array([]), np.array([])
+            
+            # 5. Etiketleri tamsayıya dönüştür.
+            combined_df['label'] = combined_df['label'].astype(int)
+            
+            # 6. Özellik (X) tarafındaki NaN değerlerini bir önceki geçerli değerle doldur (forward fill).
+            feature_columns = self.FEATURE_COLUMNS
+            combined_df[feature_columns] = combined_df[feature_columns].ffill()
+            
+            # 7. ffill işleminden sonra hala NaN kalırsa (genellikle en baştaki satırlar),
+            # bu satırları tamamen sil. Bu adım artık çok daha az veri silecektir.
+            combined_df.dropna(inplace=True)
+
+            # 8. Nihai X ve y'yi oluştur.
+            if combined_df.empty:
+                logger.warning("After ffill and final dropna, no data remains for training.")
+                return np.array([]), np.array([])
+                
+            X = combined_df[feature_columns].values
+            y = combined_df['label'].values
+            
+            logger.info(f"Prepared {len(X)} samples with {X.shape[1]} features for training")
+            return X, y
+            
+        except Exception as e:
+            logger.error(f"Veri hazırlama hatası: {e}", exc_info=True)
             return np.array([]), np.array([])
-    
-        X = combined_df[feature_columns].values
-        y = combined_df['label'].values
-        
-        logger.info(f"Prepared {len(X)} samples with {X.shape[1]} features for training")
-        
-        return X, y
