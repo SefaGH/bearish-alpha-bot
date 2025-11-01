@@ -11,6 +11,11 @@ from typing import Dict, List, Optional, Tuple, Any
 import logging
 import os
 
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.model_selection import train_test_split
+
 # ML_ENABLED ortam değişkenini oku
 ML_ENABLED = os.getenv("ML_ENABLED", "false").lower() in ("1", "true", "yes")
 
@@ -248,14 +253,16 @@ class RegimeModelTrainer:
                 if model is None:
                     continue
                 
-                # Sadece .pkl olarak kaydedilebilecek modelleri kaydet
-                if name == 'random_forest' and RandomForestClassifier is not None and hasattr(model, 'fit'):
-                    model_path = os.path.join(self.MODEL_SAVE_DIR, f"{name}.pkl")
+                # === 🔥 GÜNCELLENMİŞ KAYDETME MANTIĞI ===
+                if name == 'random_forest' and hasattr(model, 'fit'):
+                    model_path = os.path.join(self.MODEL_SAVE_DIR, "random_forest.pkl")
                     joblib.dump(model, model_path)
-                    logger.info(f"✅ Saved regime model to {model_path}")
-                # Not: LSTM ve Transformer modelleri bu trainer'da sadece placeholder.
-                # Gerçek eğitimleri ve kaydetmeleri kendi sınıflarında (price_predictor.py) yapılıyor.
-                # Bu yüzden burada .pth kaydetme koduna gerek yok.
+                    logger.info(f"✅ Saved 'random_forest' model to {model_path}")
+                elif hasattr(model, 'state_dict'):  # PyTorch modeli olup olmadığını kontrol et
+                    model_path = os.path.join(self.MODEL_SAVE_DIR, f"{name}_regime.pth")
+                    torch.save(model.state_dict(), model_path)
+                    logger.info(f"✅ Saved '{name}' model to {model_path}")
+                # =========================================
 
         except Exception as e:
             logger.error(f"Failed to save regime models: {e}", exc_info=True)
@@ -298,8 +305,17 @@ class RegimeModelTrainer:
     
     def _train_lstm(self, X: np.ndarray, y: np.ndarray,
                    validation_method: str) -> Tuple[Any, Dict[str, float]]:
-        """Train LSTM model (placeholder implementation)."""
-        from .neural_networks import LSTMRegimePredictor
+        """Train LSTM model with a real training loop."""
+        from .neural_networks import LSTMRegimePredictor # Yerel import
+        
+        # Veriyi PyTorch tensörlerine dönüştür
+        X_tensor = torch.from_numpy(X).float().unsqueeze(1) # (batch, seq_len=1, features)
+        y_tensor = torch.from_numpy(y).long()
+        
+        X_train, X_val, y_train, y_val = train_test_split(X_tensor, y_tensor, test_size=0.2, shuffle=False)
+
+        train_dataset = TensorDataset(X_train, y_train)
+        train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
         
         model = LSTMRegimePredictor(
             input_size=X.shape[1],
@@ -308,35 +324,91 @@ class RegimeModelTrainer:
             num_classes=len(np.unique(y))
         )
         
-        metrics = {
-            'mean_cv_score': 0.65,  # Placeholder
-            'std_cv_score': 0.05,
-            'n_features': X.shape[1]
-        }
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         
-        logger.info(f"LSTM initialized with {X.shape[1]} features")
+        logger.info(f"Starting LSTM training for 5 epochs...")
+        model.train()
+        for epoch in range(5): # Örnek olarak 5 epoch
+            epoch_loss = 0
+            for i, (features, labels) in enumerate(train_loader):
+                optimizer.zero_grad()
+                outputs = model(features)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+                epoch_loss += loss.item()
+            logger.info(f"  LSTM Epoch {epoch+1}/5, Loss: {epoch_loss/len(train_loader):.4f}")
+
+        # Basit bir validation metriği hesapla
+        model.eval()
+        with torch.no_grad():
+            val_outputs = model(X_val)
+            _, predicted = torch.max(val_outputs.data, 1)
+            accuracy = (predicted == y_val).sum().item() / y_val.size(0)
+
+        metrics = {'accuracy': accuracy, 'n_features': X.shape[1]}
+        logger.info(f"LSTM validation accuracy: {accuracy:.4f}")
         
         return model, metrics
-    
+
     def _train_transformer(self, X: np.ndarray, y: np.ndarray,
                          validation_method: str) -> Tuple[Any, Dict[str, float]]:
-        """Train Transformer model (placeholder implementation)."""
-        from .neural_networks import TransformerRegimePredictor
+        """Train Transformer model with a real training loop."""
+        from .neural_networks import TransformerRegimePredictor # Yerel import
         
+        X_tensor = torch.from_numpy(X).float().unsqueeze(1) # (batch, seq_len=1, features)
+        y_tensor = torch.from_numpy(y).long()
+
+        X_train, X_val, y_train, y_val = train_test_split(X_tensor, y_tensor, test_size=0.2, shuffle=False)
+
+        train_dataset = TensorDataset(X_train, y_train)
+        train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+        
+        # Transformer d_model çift sayı olmalı
+        d_model = X.shape[1] if X.shape[1] % 2 == 0 else X.shape[1] + 1
+
         model = TransformerRegimePredictor(
-            d_model=256,
-            nhead=8,
-            num_layers=6,
+            input_dim=d_model, # d_model olarak kullanılıyor
+            d_model=d_model,
+            nhead=4, # Daha küçük bir nhead
+            num_layers=2, # Daha basit bir model
             num_classes=len(np.unique(y))
         )
         
-        metrics = {
-            'mean_cv_score': 0.67,  # Placeholder
-            'std_cv_score': 0.04,
-            'n_features': X.shape[1]
-        }
-        
-        logger.info(f"Transformer initialized with {X.shape[1]} features")
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+        logger.info(f"Starting Transformer training for 5 epochs...")
+        model.train()
+        for epoch in range(5): # Örnek olarak 5 epoch
+            epoch_loss = 0
+            for features, labels in train_loader:
+                # Girdi boyutunu d_model'e uyarla
+                if features.shape[2] != d_model:
+                    padding = torch.zeros(features.shape[0], features.shape[1], d_model - features.shape[2])
+                    features = torch.cat([features, padding], dim=2)
+
+                optimizer.zero_grad()
+                outputs = model(features)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+                epoch_loss += loss.item()
+            logger.info(f"  Transformer Epoch {epoch+1}/5, Loss: {epoch_loss/len(train_loader):.4f}")
+
+        # Basit bir validation metriği hesapla
+        model.eval()
+        with torch.no_grad():
+            if X_val.shape[2] != d_model:
+                padding = torch.zeros(X_val.shape[0], X_val.shape[1], d_model - X_val.shape[2])
+                X_val = torch.cat([X_val, padding], dim=2)
+            val_outputs = model(X_val)
+            _, predicted = torch.max(val_outputs.data, 1)
+            accuracy = (predicted == y_val).sum().item() / y_val.size(0)
+
+        metrics = {'accuracy': accuracy, 'n_features': X.shape[1]}
+        logger.info(f"Transformer validation accuracy: {accuracy:.4f}")
         
         return model, metrics
     
