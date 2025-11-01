@@ -1,44 +1,45 @@
 # ==============================================================================
-# BEARISH ALPHA BOT - Configuration File
+# BEARISH ALPHA BOT - Configuration File (v3.0 - Fully Documented)
 # ==============================================================================
-# This file serves as a template and fallback for environment variables.
-# 
-# Priority Order:
-# 1. Environment Variables (GitHub Secrets/Variables) - HIGHEST
-# 2. This file (config.example.yaml) - MIDDLE  
-# 3. Hardcoded defaults in live_trading_config.py - LOWEST
+# This file serves as a template and documents the default values.
 #
-# For production deployment, override these values using GitHub Variables:
-# Repository → Settings → Secrets and variables → Actions → Variables
+# PRIORITY ORDER (Highest to Lowest):
+# 1. GitHub Variables (Repository → Settings → Secrets and variables → Actions)
+# 2. Environment Variables (local .env file)
+# 3. This file (config.example.yaml)
+# 4. Hardcoded defaults in the Python code
+#
+# To change a setting for production, create a "Repository Variable" in GitHub.
+# The comment next to each setting shows the corresponding GitHub Variable name.
 # ==============================================================================
 
 # ==============================================================================
 # EXECUTION SETTINGS
 # ==============================================================================
 execution:
-  enable_live: true              # Enable live trading (can override with ENABLE_LIVE_TRADING env var)
-  order_type: market             # Order type: market, limit (override with ORDER_TYPE)
-  time_in_force: IOC             # Time in force: IOC, GTC, FOK (override with TIME_IN_FORCE)
-  fee_pct: 0.0006                # Trading fee percentage (override with FEE_PCT)
-  max_slippage_pct: 0.001        # Maximum slippage tolerance (override with MAX_SLIPPAGE_PCT)
+  enable_live: true              # Override with: ENABLE_LIVE_TRADING
+  order_type: market             # Override with: ORDER_TYPE
+  time_in_force: IOC             # Override with: TIME_IN_FORCE
+  fee_pct: 0.0006                # Override with: FEE_PCT
+  max_slippage_pct: 0.001        # Override with: MAX_SLIPPAGE_PCT
   leverage:
-    default: 5                   # Default leverage (override with LEVERAGE_DEFAULT)
+    default: 5                   # Override with: LEVERAGE_DEFAULT
     overrides:
-      "BTC/USDT:USDT": 10        # Example: BTC için 10x kaldıraç kullan
+      "BTC/USDT:USDT": 10
 
 # ==============================================================================
 # RISK MANAGEMENT
 # ==============================================================================
 risk:
-  equity_usd: 100                     # Total capital in USDT (override with CAPITAL_USDT)
-  per_trade_risk_pct: 0.01            # Risk per trade: 1% (override with PER_TRADE_RISK_PCT)
-  daily_loss_limit_pct: 0.02          # Daily loss limit: 2% (override with DAILY_LOSS_LIMIT_PCT)
-  risk_usd_cap: 5                     # Max risk per trade in USDT (override with RISK_USD_CAP)
-  max_notional_per_trade: 20          # Max position size in USDT (override with MAX_NOTIONAL_PER_TRADE)
-  min_stop_pct: 0.003                 # Minimum stop loss: 0.3% (override with MIN_STOP_PCT)
-  min_amount_behavior: skip           # Behavior for minimum amount violations
-  min_notional_behavior: skip         # Behavior for minimum notional violations
-  daily_max_trades: 5                 # Maximum trades per day (override with DAILY_MAX_TRADES)
+  equity_usd: 100                     # Override with: CAPITAL_USDT
+  per_trade_risk_pct: 0.01            # Override with: PER_TRADE_RISK_PCT
+  daily_loss_limit_pct: 0.02          # Override with: DAILY_LOSS_LIMIT_PCT
+  risk_usd_cap: 5                     # Override with: RISK_USD_CAP
+  max_notional_per_trade: 20          # Override with: MAX_NOTIONAL_PER_TRADE
+  min_stop_pct: 0.003                 # Override with: MIN_STOP_PCT
+  min_amount_behavior: skip
+  min_notional_behavior: skip
+  daily_max_trades: 5                 # Override with: DAILY_MAX_TRADES
 
 # Asset class-specific risk limits (optional, not commonly overridden)
 class_limits:
@@ -56,98 +57,80 @@ class_limits:
 # NOTIFICATIONS
 # ==============================================================================
 notify:
-  send_all: true                      # Send all notifications
-  push_no_signal: true                # Notify when no signals generated
-  push_debug: true                    # Send debug notifications
-  min_cooldown_sec: 300               # Minimum time between notifications
-  push_trail_updates: false           # Notify on trailing stop updates
+  send_all: true
+  push_no_signal: true
+  push_debug: true
+  min_cooldown_sec: 300
+  push_trail_updates: false
 
 # ==============================================================================
 # MARKET REGIME
 # ==============================================================================
 regime:
-  min_slow_candles: 90                # Minimum candles for regime analysis
+  min_slow_candles: 90
 
 # ==============================================================================
-# WEBSOCKET OPTIMIZATION
+# WEBSOCKET & DATA
 # ==============================================================================
 websocket:
-  enabled: true                       # Enable WebSocket (override with WEBSOCKET_ENABLED)
-  priority_enabled: true              # Enable WebSocket priority (override with WEBSOCKET_PRIORITY_ENABLED)
-  max_data_age: 60                    # Max data age in seconds (override with WEBSOCKET_MAX_DATA_AGE)
-  fallback_threshold: 3               # Failures before REST fallback (override with WEBSOCKET_FALLBACK_THRESHOLD)
-  buffer_size: 300                    # Stratejilerin ihtiyaç duyduğu mum sayısı
+  enabled: true                       # Override with: WEBSOCKET_ENABLED
+  priority_enabled: true              # Override with: WEBSOCKET_PRIORITY_ENABLED
+  max_data_age: 60                    # Override with: WEBSOCKET_MAX_DATA_AGE
+  fallback_threshold: 3               # Override with: WEBSOCKET_FALLBACK_THRESHOLD
+  buffer_size: 300
   
-  # Maximum streams per exchange (override with WS_MAX_STREAMS_*)
+  # Maximum streams per exchange
   max_streams_per_exchange:
-    bingx: 10                         # BingX max streams (conservative) - WS_MAX_STREAMS_BINGX
-    binance: 20                       # Binance supports more - WS_MAX_STREAMS_BINANCE
-    kucoinfutures: 15                 # KuCoin Futures - WS_MAX_STREAMS_KUCOIN
-    default: 10                       # Default for other exchanges - WS_MAX_STREAMS_DEFAULT
+    bingx: 10                         # Override with: WS_MAX_STREAMS_BINGX
+    binance: 20                       # Override with: WS_MAX_STREAMS_BINANCE
+    kucoinfutures: 15                 # Override with: WS_MAX_STREAMS_KUCOIN
+    default: 10                       # Override with: WS_MAX_STREAMS_DEFAULT
   
-  stream_timeframes:
-    - 1m                              # 1-minute candles
-    - 5m                              # 5-minute candles
-    - 30m                             # 30-minute candles (production needs)
-    - 1h                              # 1-hour candles (production needs)
-    - 4h                              # 4-hour candles (production needs)
+  # Comma-separated string of timeframes for WebSocket streams.
+  stream_timeframes: "1m,5m,15m,30m,1h,4h" # Override with: WS_STREAM_TIMEFRAMES
   
-  reconnect_delay: 5                  # Reconnection delay in seconds (override with WS_RECONNECT_DELAY)
-  max_reconnect_attempts: 3           # Max reconnection attempts (override with WS_MAX_RECONNECT_ATTEMPTS)
+  reconnect_delay: 5                  # Override with: WS_RECONNECT_DELAY
+  max_reconnect_attempts: 3           # Override with: WS_MAX_RECONNECT_ATTEMPTS
 
 # ==============================================================================
 # TRADING UNIVERSE
 # ==============================================================================
 universe:
-  # NEW: Configuration for pre-fetching historical data at startup
   prefetch:
     enabled: true
-    # Number of candles to fetch at startup for strategy analysis.
-    # At least 250 is recommended for indicators like EMA(200) to calculate correctly.
     startup_candle_count: 500
 
-  # Fixed symbol list - ONLY THESE WILL BE TRADED
-  # Override with TRADING_SYMBOLS environment variable (comma-separated)
-  fixed_symbols:
-    - BTC/USDT:USDT                   # Bitcoin
-    - ETH/USDT:USDT                   # Ethereum
-    - SOL/USDT:USDT                   # Solana
+  # Comma-separated string of symbols to trade.
+  fixed_symbols: "BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT" # Override with: TRADING_SYMBOLS
   
-  # Auto-select MUST be false for fixed symbols
-  auto_select: false                  # Override with UNIVERSE_AUTO_SELECT (should be false)
+  auto_select: false                  # Override with: UNIVERSE_AUTO_SELECT
   
-  # Priority order for WebSocket subscriptions
-  # Override with TRADING_SYMBOLS_PRIORITY (comma-separated)
-  priority_order:
-    - BTC/USDT:USDT                   # Highest priority
-    - ETH/USDT:USDT
-    - SOL/USDT:USDT
+  # Comma-separated string for priority order in WebSocket subscriptions.
+  priority_order: "BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT" # Override with: TRADING_SYMBOLS_PRIORITY
 
 # ==============================================================================
 # TECHNICAL INDICATORS
 # ==============================================================================
 indicators:
-  rsi_period: 14                      # RSI period (override with INDICATOR_RSI_PERIOD)
-  atr_period: 14                      # ATR period (override with INDICATOR_ATR_PERIOD)
-  ema_fast: 21                        # Fast EMA period (override with INDICATOR_EMA_FAST)
-  ema_mid: 50                         # Mid EMA period (override with INDICATOR_EMA_MID)
-  ema_slow: 200                       # Slow EMA period (override with INDICATOR_EMA_SLOW)
+  rsi_period: 14                      # Override with: INDICATOR_RSI_PERIOD
+  atr_period: 14                      # Override with: INDICATOR_ATR_PERIOD
+  ema_fast: 21                        # Override with: INDICATOR_EMA_FAST
+  ema_mid: 50                         # Override with: INDICATOR_EMA_MID
+  ema_slow: 200                       # Override with: INDICATOR_EMA_SLOW
 
 # ==============================================================================
 # ADAPTIVE STRATEGIES CONTROL
 # ==============================================================================
 adaptive_strategies:
-  enable: true                        # Enable adaptive strategy features
+  enable: true
   
-  # Monitoring configuration
   monitoring:
     enabled: true
-    report_interval: 300              # Report every 5 minutes
+    report_interval: 300
     track_performance: true
   
-  # Performance tuning
   performance:
-    min_volatility_for_adjustment: 0.02    # 2% volatility threshold
+    min_volatility_for_adjustment: 0.02
     max_position_multiplier: 2.0
     min_position_multiplier: 0.5
 
@@ -156,180 +139,128 @@ adaptive_strategies:
 # ==============================================================================
 signals:
   # ============================================================================
-  # DUPLICATE PREVENTION (CRITICAL - Issue #129, #130)
-  # ============================================================================
-  # Controls how aggressively signals are filtered to prevent duplicates
-  # Override with environment variables for production tuning:
-  #   DUPLICATE_PREVENTION_THRESHOLD - min_price_change_pct
-  #   DUPLICATE_PREVENTION_COOLDOWN - cooldown_seconds
-  #   PRICE_DELTA_BYPASS_THRESHOLD - price_delta_bypass_threshold
-  #   PRICE_DELTA_BYPASS_ENABLED - price_delta_bypass_enabled
+  # DUPLICATE PREVENTION
   # ============================================================================
   duplicate_prevention:
-    min_price_change_pct: 0.0005      # 0.05% min price change to accept signal (CORRECTED from 5%)
-    cooldown_seconds: 60              # 60s cooldown between signals (increased for stability)
-    price_delta_bypass_threshold: 0.001   # 0.1% bypass threshold
-    price_delta_bypass_enabled: true  # Enable bypass feature
-    ml_duplicate_detection_enabled: true  # ML-enhanced duplicate detection
+    min_price_change_pct: 0.0005      # Override with: DUPLICATE_PREVENTION_THRESHOLD
+    cooldown_seconds: 60              # Override with: DUPLICATE_PREVENTION_COOLDOWN
+    price_delta_bypass_threshold: 0.0015 # Override with: PRICE_DELTA_BYPASS_THRESHOLD
+    price_delta_bypass_enabled: false # Override with: PRICE_DELTA_BYPASS_ENABLED (MUST BE 'false' for production)
+    ml_duplicate_detection_enabled: true
   
   # ============================================================================
   # OVERSOLD BOUNCE STRATEGY (LONG)
   # ============================================================================
-  # Override with environment variables:
-  #   STRATEGY_OB_ENABLED - enable
-  #   STRATEGY_OB_IGNORE_REGIME - ignore_regime
-  #   RSI_BASE_OB - adaptive_rsi_base
-  #   RSI_RANGE_OB - adaptive_rsi_range
-  #   ... (see live_trading_config.py for full list)
-  # ============================================================================
   oversold_bounce:
-    enable: true                      # Enable strategy
-    ignore_regime: true               # Ignore market regime (adaptive handles it)
-    
-    # Base parameters (backward compatibility)
-    rsi_max: 45                       # Maximum RSI for entry
-    
-    # Adaptive parameters
-    adaptive_rsi_base: 45             # Base RSI threshold
-    adaptive_rsi_range: 10            # Adjustment range (±10)
-    
-    # Adaptive fine-tuning
-    adaptive_mode: "dynamic"          # Options: dynamic, conservative, aggressive
-    volatility_sensitivity: "medium"  # Options: low, medium, high
-    
-    # ATR-based TP/SL (Phase 3.4 - Issue #102)
-    tp_atr_mult: 2.5                  # TP = entry + (ATR × 2.5)
-    sl_atr_mult: 1.2                  # SL = entry - (ATR × 1.2)
-    min_tp_pct: 0.008                 # Minimum 0.8% TP
-    max_sl_pct: 0.015                 # Maximum 1.5% SL
+    enable: true                      # Override with: STRATEGY_OB_ENABLED
+    ignore_regime: true               # Override with: STRATEGY_OB_IGNORE_REGIME
+    rsi_max: 45
+    adaptive_rsi_base: 45             # Override with: RSI_BASE_OB
+    adaptive_rsi_range: 10            # Override with: RSI_RANGE_OB
+    adaptive_mode: "dynamic"          # Override with: ADAPTIVE_MODE_OB
+    volatility_sensitivity: "medium"  # Override with: VOLATILITY_SENSITIVITY_OB
+    tp_atr_mult: 2.5                  # Override with: TP_ATR_MULT_OB
+    sl_atr_mult: 1.2                  # Override with: SL_ATR_MULT_OB
+    min_tp_pct: 0.008                 # Override with: MIN_TP_PCT_OB
+    max_sl_pct: 0.015                 # Override with: MAX_SL_PCT_OB
 
   # ============================================================================
   # SHORT THE RIP STRATEGY (SHORT)
   # ============================================================================
-  # Override with environment variables:
-  #   STRATEGY_STR_ENABLED - enable
-  #   STRATEGY_STR_IGNORE_REGIME - ignore_regime
-  #   RSI_BASE_STR - adaptive_rsi_base
-  #   RSI_RANGE_STR - adaptive_rsi_range
-  #   RSI_THRESHOLD_BTC - BTC symbol-specific threshold
-  #   RSI_THRESHOLD_ETH - ETH symbol-specific threshold
-  #   RSI_THRESHOLD_SOL - SOL symbol-specific threshold
-  # ============================================================================
   short_the_rip:
-    enable: true                      # Enable strategy
-    ignore_regime: true               # Ignore market regime
+    enable: true                      # Override with: STRATEGY_STR_ENABLED
+    ignore_regime: true               # Override with: STRATEGY_STR_IGNORE_REGIME
+    rsi_min: 55
+    adaptive_rsi_base: 55             # Override with: RSI_BASE_STR
+    adaptive_rsi_range: 10            # Override with: RSI_RANGE_STR
+    adaptive_mode: "dynamic"          # Override with: ADAPTIVE_MODE_STR
+    volatility_sensitivity: "medium"  # Override with: VOLATILITY_SENSITIVITY_STR
+    tp_atr_mult: 3.0                  # Override with: TP_ATR_MULT_STR
+    sl_atr_mult: 1.5                  # Override with: SL_ATR_MULT_STR
+    min_tp_pct: 0.010                 # Override with: MIN_TP_PCT_STR
+    max_sl_pct: 0.020                 # Override with: MAX_SL_PCT_STR
     
-    # Base parameters (backward compatibility)
-    rsi_min: 55                       # Minimum RSI for entry
-    
-    # Adaptive parameters  
-    adaptive_rsi_base: 55             # Base RSI threshold
-    adaptive_rsi_range: 10            # Adjustment range (±10)
-    
-    # Adaptive fine-tuning
-    adaptive_mode: "dynamic"          # Options: dynamic, conservative, aggressive
-    volatility_sensitivity: "medium"  # Options: low, medium, high
-    
-    # ATR-based TP/SL (Phase 3.4 - Issue #102)
-    tp_atr_mult: 3.0                  # TP = entry - (ATR × 3.0) for shorts
-    sl_atr_mult: 1.5                  # SL = entry + (ATR × 1.5) for shorts
-    min_tp_pct: 0.010                 # Minimum 1.0% TP
-    max_sl_pct: 0.020                 # Maximum 2.0% SL
-    
-    # Symbol-specific RSI threshold overrides (Issue #131, #133)
-    # Allows different RSI thresholds per symbol for better signal generation
-    # Override with RSI_THRESHOLD_* environment variables
+    # Symbol-specific RSI threshold overrides
     symbols:
       "BTC/USDT:USDT":
-        rsi_threshold: 55             # BTC: More selective (higher threshold)
-      #"ETH/USDT:USDT":
-      #  rsi_threshold: 50             # ETH: More sensitive (lower threshold)
-      #"SOL/USDT:USDT":
-      #  rsi_threshold: 50             # SOL: More sensitive (lower threshold)
+        rsi_threshold: 55             # Override with: RSI_THRESHOLD_BTC
+      "ETH/USDT:USDT":
+        rsi_threshold: 50             # Override with: RSI_THRESHOLD_ETH
+      "SOL/USDT:USDT":
+        rsi_threshold: 50             # Override with: RSI_THRESHOLD_SOL
 
 # ==============================================================================
-# POSITION EXIT MANAGEMENT (Phase 3.4 - Issue #100)
+# POSITION EXIT MANAGEMENT
 # ==============================================================================
 position_management:
   exit_monitoring:
-    enabled: true                     # Enable exit monitoring
-    check_frequency: 5                # Check exits every 5 seconds
+    enabled: true
+    check_frequency: 5
   
   time_based_exit:
-    max_position_duration: 3600       # Max position duration: 1 hour (3600s)
+    max_position_duration: 3600
 
 # ==============================================================================
 # QUARANTINE SYSTEM
 # ==============================================================================
 quarantine:
-  enable: true                        # Enable quarantine for problematic symbols
-  days: 7                             # Quarantine duration in days
-  file: data/quarantine.json          # Quarantine data file path
+  enable: true
+  days: 7
+  file: data/quarantine.json
 
 # ==============================================================================
 # ML (MACHINE LEARNING) CONFIGURATION
 # ==============================================================================
 ml:
-  enabled: true  # Set to true to enable ML features
+  enabled: true                       # Master switch. Override with: ML_ENABLED
   
-  # Price Prediction Settings
+  # Individual ML component toggles
   price_prediction_enabled: true
   regime_prediction_enabled: true
   reinforcement_learning_enabled: true
   strategy_optimization_enabled: true
   
-  # Model Settings
+  # Model types to load
   models:
     - 'lstm'
     - 'transformer'
-    #ensemble_enabled: true
 
-  # Timeframes for multi-timeframe price predictor
-  # These determine which model files to load (e.g., lstm_1h.pth, transformer_4h.pth)
-  # Override with ML_TIMEFRAMES environment variable (comma-separated)
-  timeframes:
-    - '5m'
-    - '15m'
-    - '1h'
-    - '4h'
+  # Comma-separated string of timeframes for ML price prediction.
+  timeframes: "5m,15m,1h,4h"           # Override with: ML_TIMEFRAMES
 
-  # --- DÜZENLEME 3: Model parametrelerini buraya taşıyalım ---
-  # Bu, launcher'ın modelleri doğru input_size ile başlatmasını sağlar.
+  # Model parameters are now defined in the code for robustness.
+  # These values are for reference only.
   model_params:
     lstm:
-      input_size: 42 # ÖNEMLİ: Bu sayıyı kendi özellik sayınızla güncelleyin!
+      input_size: 42
       hidden_size: 128
       num_layers: 3
       forecast_horizon: 12
     transformer:
-      d_model: 42 # ÖNEMLİ: Bu sayıyı kendi özellik sayınızla güncelleyin (çift olmalı)!
+      d_model: 42
       nhead: 2
       num_layers: 6
       forecast_horizon: 12
 
-  # Prediction Settings
+  # Prediction engine settings
   prediction:
-    update_interval: 60        # Seconds between prediction updates
-    cache_ttl: 300            # Time-to-live for cached predictions
-    min_confidence: 0.6       # Minimum confidence threshold
-    min_consensus: 0.7        # Minimum model consensus threshold
+    update_interval: 60
+    cache_ttl: 300
+    min_confidence: 0.6
+    min_consensus: 0.7
   
-  # Reinforcement Learning Settings
+  # Reinforcement Learning settings
   rl:
-    state_size: 50            # Feature vector dimension
-    action_size: 3            # Buy/Hold/Sell
-    learning_rate: 0.001      # RL learning rate
-    memory_size: 100000       # Experience replay buffer size
-    batch_size: 32            # Training batch size
-    gamma: 0.95               # Discount factor
+    state_size: 50
+    action_size: 3
+    learning_rate: 0.001
+    memory_size: 100000
+    batch_size: 32
+    gamma: 0.95
   
-  # Feature Engineering
+  # Feature Engineering settings
   features:
-    lookback_periods: [5, 10, 20, 50]  # Historical periods for features
-    include_technical: true             # Include technical indicators
-    include_volume: true                # Include volume features
-    include_sentiment: false            # Include sentiment data (if available)
-
-# ==============================================================================
-# ENVIRONMENT VARIABLE REFERENCE (REMOVED - Artık dosyanın sonunda değil, ilgili bölümlerin üstünde yer alıyor)
-# ==============================================================================
+    lookback_periods: [5, 10, 20, 50]
+    include_technical: true
+    include_volume: true
+    include_sentiment: false
