@@ -368,7 +368,12 @@ class AdaptiveShortTheRip(ShortTheRip):
             ml_enhanced = False
             
             # Check if we have healthy ML context
-            if ml_context and ml_context.get('is_healthy', False):
+            MIN_ML_CONFIDENCE_THRESHOLD = 0.60 # Güvenilir ML tahmini için minimum eşik
+
+            if ml_context and \
+               ml_context.get('is_healthy', False) and \
+               ml_context.get('regime_confidence', 0) >= MIN_ML_CONFIDENCE_THRESHOLD:
+                
                 ml_enhanced = True
                 
                 # VETO: ML strongly disagrees with our short signal
@@ -472,6 +477,7 @@ class AdaptiveShortTheRip(ShortTheRip):
             
             # Build adaptive signal with ATR-based TP/SL
             signal = {
+                "strategy_name": self.strategy_name, # 🔥 BU SATIRI EKLEYİN
                 "side": "sell",
                 "entry": entry_price,
                 "stop": stop_price,
