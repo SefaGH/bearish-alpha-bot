@@ -248,6 +248,27 @@ class FeatureEngineeringPipeline:
     Combines multiple feature extraction methods to create a comprehensive
     feature set for machine learning models.
     """
+
+    # ==================== KESİN ÇÖZÜM ADIM 1: SABİT ÖZELLİK LİSTESİ ====================
+    # Bu liste, modelin eğitildiği özelliklerin tam ve sıralı listesidir.
+    # Scaler'ın ve modelin beklediği "altın standart" budur.
+    # ÖNEMLİ: Eğer train_all_models.py'de yeni özellikler eklenirse, bu liste güncellenmelidir!
+    FEATURE_COLUMNS = [
+        'technical_rsi', 'technical_rsi_oversold', 'technical_rsi_overbought', 'technical_macd',
+        'technical_macd_signal', 'technical_macd_histogram', 'technical_macd_cross', 'technical_ema_20',
+        'technical_ema_50', 'technical_ema_cross', 'technical_bb_upper', 'technical_bb_lower',
+        'technical_bb_width', 'technical_bb_position', 'technical_atr', 'technical_atr_pct',
+        'microstructure_price_range', 'microstructure_close_position', 'microstructure_volume',
+        'microstructure_volume_ma', 'microstructure_volume_ratio', 'microstructure_returns_1',
+        'microstructure_returns_5', 'microstructure_returns_10', 'volatility_vol_5',
+        'volatility_parkinson_vol_5', 'volatility_vol_10', 'volatility_parkinson_vol_10',
+        'volatility_vol_20', 'volatility_parkinson_vol_20', 'volatility_vol_50',
+        'volatility_parkinson_vol_50', 'volatility_vol_regime', 'momentum_roc_5',
+        'momentum_ma_slope_5', 'momentum_roc_10', 'momentum_ma_slope_10', 'momentum_roc_20',
+        'momentum_ma_slope_20', 'momentum_roc_50', 'momentum_ma_slope_50', 'momentum_trend_strength',
+        'momentum_momentum_regime'
+    ]
+    # =================================================================================
     
     def __init__(self):
         """Initialize the feature engineering pipeline."""
@@ -291,16 +312,51 @@ class FeatureEngineeringPipeline:
             # Combine all features
             combined_features = self._combine_features(features)
             
-            # Replace inf/-inf with NaN and drop rows with any NaN
-            combined_features.replace([np.inf, -np.inf], np.nan, inplace=True)
-            combined_features.dropna(inplace=True)
+            # ==================== KESİN ÇÖZÜM ADIM 3: FİNAL HİZALAMA ====================
+            # Özellikleri, scaler'ın beklediği kesin formata getir.
+            finalized_features = self.align_and_finalize_features(combined_features)
+            # ==========================================================================
 
-            logger.info(f"Extracted {len(combined_features.columns)} features from price data")
-            return combined_features
+            finalized_features.replace([np.inf, -np.inf], np.nan, inplace=True)
+            # NOT: Buradaki dropna(), tahmin sırasında en son satırı kaybedebileceği için
+            # regime_predictor içinde yapılması daha güvenlidir. Bu yüzden buradan kaldırıyoruz.
+            # finalized_features.dropna(inplace=True)
+
+            logger.info(f"Extracted and aligned {len(finalized_features.columns)} features from price data")
+            return finalized_features
             
         except Exception as e:
-            logger.error(f"Error in feature extraction pipeline: {e}")
+            logger.error(f"Error in feature extraction pipeline: {e}", exc_info=True)
             return pd.DataFrame()
+
+    # ==================== KESİN ÇÖZÜM ADIM 2: YENİ HİZALAMA METODU ====================
+    def align_and_finalize_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Aligns the DataFrame to match the FEATURE_COLUMNS structure.
+        
+        This ensures that the feature set is always consistent for the scaler and model.
+        It adds missing columns as NaN and reorders existing columns.
+        
+        Args:
+            df: The DataFrame with dynamically generated features.
+            
+        Returns:
+            A new DataFrame that is perfectly aligned with FEATURE_COLUMNS.
+        """
+        # Gelen DataFrame'i kopyalayarak orijinalini bozmayalım
+        aligned_df = df.copy()
+
+        # Eksik sütunları bul ve NaN olarak ekle
+        missing_cols = set(self.FEATURE_COLUMNS) - set(aligned_df.columns)
+        for col in missing_cols:
+            aligned_df[col] = np.nan
+            logger.debug(f"Added missing feature column '{col}' as NaN.")
+
+        # Sadece FEATURE_COLUMNS'da olanları ve doğru sırada al
+        # `reindex` metodu bu işi tek adımda ve güvenli bir şekilde yapar.
+        final_df = aligned_df.reindex(columns=self.FEATURE_COLUMNS)
+        
+        return final_df
     
     def _compute_volatility_features(self, price_data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -361,17 +417,19 @@ class FeatureEngineeringPipeline:
         Returns:
             Tuple of (features_array, labels_array)
         """
-        # Align features and labels on index
-        common_idx = features.index.intersection(labels.index)
-        features_aligned = features.loc[common_idx]
+        # ==================== KESİN ÇÖZÜM ADIM 4: EĞİTİM SÜRECİNE HİZALAMA EKLEME ====================
+        # Eğitim verisini de tahmin verisiyle aynı hizalama sürecinden geçir.
+        features_aligned = self.align_and_finalize_features(features)
+        # ===========================================================================================
+
+        common_idx = features_aligned.index.intersection(labels.index)
+        features_aligned = features_aligned.loc[common_idx]
         labels_aligned = labels.loc[common_idx]
         
-        # Remove NaN values
         valid_idx = ~(features_aligned.isna().any(axis=1) | labels_aligned.isna())
         features_clean = features_aligned[valid_idx]
         labels_clean = labels_aligned[valid_idx]
         
-        # Convert to numpy arrays
         X = features_clean.values
         y = labels_clean.values
         
