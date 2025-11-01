@@ -464,7 +464,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
             return signal
             
         except Exception as e:
-            logger.warning(f"Adaptive strategy failed: {e}, falling back to base")
+            logger.error(f"Adaptive strategy failed for {symbol_display}: {e}", exc_info=True)
             
             # FALLBACK TO BASE STRATEGY
             try:
