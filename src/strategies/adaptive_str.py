@@ -438,16 +438,16 @@ class AdaptiveShortTheRip(ShortTheRip):
             logger.info(f"  ATR: {atr_value:.4f}")
             
             # Get ATR multipliers from config
-            tp_atr_mult = float(self.cfg.get("tp_atr_mult", 3.0))
-            sl_atr_mult = float(self.cfg.get("sl_atr_mult", 1.5))
+            tp_atr_mult = float(self.config.get("tp_atr_mult", 3.0))
+            sl_atr_mult = float(self.config.get("sl_atr_mult", 1.5))
             
             # Calculate TP and SL from ATR (SHORT: TP below entry, SL above entry)
             target_price = entry_price - (atr_value * tp_atr_mult)
             stop_price = entry_price + (atr_value * sl_atr_mult)
             
             # Safety boundaries
-            min_tp_pct = float(self.cfg.get("min_tp_pct", 0.010))
-            max_sl_pct = float(self.cfg.get("max_sl_pct", 0.020))
+            min_tp_pct = float(self.config.get("min_tp_pct", 0.010))
+            max_sl_pct = float(self.config.get("max_sl_pct", 0.020))
             
             # Enforce minimum TP (for short, target is below entry)
             if (entry_price - target_price) / entry_price < min_tp_pct:
@@ -469,7 +469,7 @@ class AdaptiveShortTheRip(ShortTheRip):
                 rr_ratio = reward_amount / risk_amount
             
             # --- 🔥 YENİ EKLENECEK BÖLÜM BAŞLANGICI 🔥 ---
-            min_rr_ratio = self.cfg.get('min_rr_ratio', 1.2) # config'den min oranı oku, yoksa 1.2 kullan
+            min_rr_ratio = self.config.get('min_rr_ratio', 1.2) # config'den min oranı oku, yoksa 1.2 kullan
             if rr_ratio < min_rr_ratio:
                 if self.debug_logging: 
                     logger.info(f"  └─ ❌ REJECT: R/R ratio ({rr_ratio:.2f}) is below minimum required ({min_rr_ratio}).")
