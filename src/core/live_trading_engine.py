@@ -376,7 +376,7 @@ class LiveTradingEngine:
                 logger.info(f"📊 Executing signal for {symbol}")
             
             # Log signal details
-            logger.info(f"  Strategy: {signal.get('strategy', 'unknown')}")
+            logger.info(f"  Strategy: {signal.get('strategy_name', 'unknown')}")  
             logger.info(f"  Side: {signal.get('side', 'unknown').upper()}")
             logger.info(f"  Entry: ${signal.get('entry', 0):.2f}")
             logger.info(f"  Reason: {signal.get('reason', 'N/A')}")
