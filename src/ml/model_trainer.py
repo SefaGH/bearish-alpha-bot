@@ -193,8 +193,8 @@ class RegimeModelTrainer:
                 - y_sequences has shape (n_sequences,) containing the label for each sequence
         """
         if len(X) < seq_length:
-            logger.warning(f"Data length ({len(X)}) is less than sequence length ({seq_length}). Using available data.")
-            seq_length = max(1, len(X) // 2)
+            logger.warning(f"Data length ({len(X)}) is less than sequence length ({seq_length}). Cannot create sequences.")
+            return np.array([]), np.array([])
         
         n_sequences = len(X) - seq_length + 1
         X_sequences = np.zeros((n_sequences, seq_length, X.shape[1]))
@@ -291,6 +291,7 @@ class RegimeModelTrainer:
             model_configs = {}
             for name, model in self.models.items():
                 if model is None:
+                    logger.warning(f"Skipping save for '{name}' model as it is None.")
                     continue
                 
                 if name == 'random_forest' and hasattr(model, 'fit'):
@@ -387,6 +388,12 @@ class RegimeModelTrainer:
         Returns:
             Tuple of (trained_model, metrics_dict)
         """
+        # === YENİ KORUMA: YETERLİ VERİ KONTROLÜ ===
+        if X.shape[0] < 20: # Eğitim ve validasyon için makul bir alt sınır
+            logger.warning(f"LSTM training skipped: Insufficient sequences ({X.shape[0]}) available.")
+            return None, {}
+        # === KORUMA SONU ===
+        
         from .neural_networks import LSTMRegimePredictor # Local import
         
         logger.info(f"LSTM training - Input shape: X={X.shape}, y={y.shape}")
@@ -401,6 +408,12 @@ class RegimeModelTrainer:
 
         train_dataset = TensorDataset(X_train, y_train)
         train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+        
+        # === YENİ KORUMA: BOŞ DATALOADER KONTROLÜ ===
+        if len(train_loader) == 0:
+            logger.warning(f"LSTM training skipped: Not enough training samples ({len(X_train)}) for a single batch (size=64).")
+            return None, {}
+        # === KORUMA SONU ===
         
         # Initialize LSTM model with correct input size (number of features per timestep)
         model = LSTMRegimePredictor(
@@ -456,14 +469,31 @@ class RegimeModelTrainer:
         Returns:
             Tuple of (trained_model, metrics_dict)
         """
+        # === YENİ KORUMA: YETERLİ VERİ KONTROLÜ ===
+        if X.shape[0] < 20: # Eğitim ve validasyon için makul bir alt sınır
+            logger.warning(f"Transformer training skipped: Insufficient sequences ({X.shape[0]}) available.")
+            return None, {}
+        # === KORUMA SONU ===
+        
         from .neural_networks import TransformerRegimePredictor # Local import
         
         logger.info(f"Transformer training - Input shape: X={X.shape}, y={y.shape}")
         
-        # Transformer d_model must be even for proper multi-head attention
+        # Transformer d_model must be divisible by nhead.
         n_features = X.shape[2]
-        d_model = n_features if n_features % 2 == 0 else n_features + 1
-        logger.info(f"Transformer d_model: {d_model} (original features: {n_features})")
+        d_model = n_features
+        nhead = 2 # Start with a reasonable default
+        # Find the smallest d_model >= n_features that is divisible by a reasonable nhead
+        for h in [4, 2]: # Prefer 4 heads, fallback to 2
+            if (n_features % h) == 0:
+                d_model = n_features
+                nhead = h
+                break
+        else: # If not divisible by 4 or 2, pad it
+            nhead = 2
+            d_model = n_features + (nhead - n_features % nhead) % nhead
+        
+        logger.info(f"Transformer params: d_model={d_model}, nhead={nhead} (original features: {n_features})")
         
         # Convert to PyTorch tensors and pad if necessary
         X_tensor = torch.from_numpy(X).float()
@@ -481,10 +511,13 @@ class RegimeModelTrainer:
         train_dataset = TensorDataset(X_train, y_train)
         train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
         
-        # Initialize Transformer model
-        # Ensure nhead divides d_model evenly
-        nhead = 4 if d_model % 4 == 0 else 2
+        # === YENİ KORUMA: BOŞ DATALOADER KONTROLÜ ===
+        if len(train_loader) == 0:
+            logger.warning(f"Transformer training skipped: Not enough training samples ({len(X_train)}) for a single batch (size=64).")
+            return None, {}
+        # === KORUMA SONU ===
         
+        # Initialize Transformer model
         model = TransformerRegimePredictor(
             d_model=d_model,
             nhead=nhead,
