@@ -13,7 +13,8 @@ sys.path.insert(0, project_root)
 # Gerekli modüllerin import edilmesi
 from src.core.ccxt_client import CcxtClient
 from src.core.logger import setup_logger
-from src.ml.feature_engineering import FeatureEngineeringPipeline
+# --- 🔥 DÜZELTME: Hem Sınıfı hem de bağımsız fonksiyonu import et ---
+from src.ml.feature_engineering import FeatureEngineeringPipeline, prepare_for_training
 from src.ml.model_trainer import RegimeModelTrainer
 from src.ml.price_predictor import (
     AdvancedPricePredictionEngine,
@@ -30,17 +31,12 @@ logger = setup_logger("model-trainer", level=logging.DEBUG, log_to_file=True, lo
 # --- EĞİTİM PARAMETRELERİ ---
 SYMBOLS_TO_TRAIN = ['BTC/USDT']
 ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h']
-
-# --- 🔥 IYILESTIRME: Rejim eğitimi için kullanılacak zaman dilimleri genişletildi ---
-# Stratejilerin kullandığı 30m'yi ve genel trend için 1h, 4h'yi dahil ediyoruz.
 REGIME_TRAINING_TIMEFRAMES = ['30m', '1h', '4h'] 
+CANDLE_LIMIT = 1400 # API limitine uygun hale getirildi
 
-# --- 🔥 ÇÖZÜM: CANDLE_LIMIT değerini BingX API'sinin izin verdiği maksimum olan 1440'ın altına çekiyoruz. ---
-CANDLE_LIMIT = 1400 # Veri miktarını API limitine uygun hale getir
-
-# --- 🔥 YENİ: Rejim modelleri için minimum veri eşikleri ---
-MIN_SAMPLES_FOR_RF = 100      # RandomForest ve Scaler'ın eğitilmesi için gereken minimum örnek sayısı
-MIN_SAMPLES_FOR_NN = 500      # LSTM/Transformer gibi sinir ağlarının eğitilmesi için gereken minimum örnek sayısı
+# --- Rejim modelleri için minimum veri eşikleri ---
+MIN_SAMPLES_FOR_RF = 100
+MIN_SAMPLES_FOR_NN = 500
 
 
 async def main():
@@ -86,7 +82,13 @@ async def main():
                 features_df = feature_engine.extract_features(regime_data_raw)
                 regime_labels = generate_regime_labels(regime_data_raw)
                 
-                X_prepared, y_prepared = feature_engine.prepare_for_training(features_df, regime_labels)
+                # --- 🔥 DÜZELTME: Fonksiyonu nesne üzerinden değil, doğrudan modülden çağır. ---
+                # Ayrıca, hizalama için gerekli olan `FEATURE_COLUMNS` listesini de parametre olarak ver.
+                X_prepared, y_prepared = prepare_for_training(
+                    features_df, 
+                    regime_labels, 
+                    feature_engine.FEATURE_COLUMNS
+                )
                 
                 if X_prepared.shape[0] > 0:
                     all_regime_features.append(X_prepared)
@@ -104,24 +106,13 @@ async def main():
             total_samples = final_X.shape[0]
             logger.info(f"Toplamda {total_samples} örnek ve {final_X.shape[1]} özellik ile rejim modeli eğitilecek.")
 
-            # --- 🔥 GÜNCELLENMİŞ EĞİTİM MANTIĞI ---
             if total_samples >= MIN_SAMPLES_FOR_RF:
                 regime_trainer = RegimeModelTrainer()
                 
-                # Sinir ağları için yeterli veri olup olmadığını kontrol et
-                train_nn = total_samples >= MIN_SAMPLES_FOR_NN
-                if not train_nn:
-                    logger.warning(
-                        f"Toplam örnek sayısı ({total_samples}) sinir ağı eğitimi için "
-                        f"gereken minimum ({MIN_SAMPLES_FOR_NN}) değerden az. "
-                        "Sadece RandomForest ve Scaler eğitilecek."
-                    )
-                
-                # train_ensemble_models'a yeni bir parametre ekleyerek hangi modellerin eğitileceğini kontrol et
-                # Bu parametrenin model_trainer.py içinde ele alınması gerekecek.
-                # Şimdilik, model_trainer'daki korumaların yeterli olacağını varsayıyoruz.
+                # train_ensemble_models metodu zaten içinde yeterli veri kontrolü yapıyor.
                 training_results = regime_trainer.train_ensemble_models(final_X, final_y)
                 
+                # `save_models` metodu train_ensemble_models içinde çağrıldığı için burada tekrar çağırmaya gerek yok.
                 logger.info(f"✅ Rejim modelleri birleşik veri seti ile eğitildi ve kaydedildi.")
                 
             else:
@@ -129,7 +120,6 @@ async def main():
                     f"Rejim modellerini eğitmek için yeterli birleşik veri bulunamadı. "
                     f"Gereken minimum: {MIN_SAMPLES_FOR_RF}, bulunan: {total_samples}"
                 )
-            # --- GÜNCELLENMİŞ MANTIK SONU ---
         else:
             logger.error("Rejim modeli eğitimi için işlenecek hiçbir veri bulunamadı.")
     else:
