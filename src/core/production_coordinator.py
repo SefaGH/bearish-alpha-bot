@@ -164,39 +164,36 @@ class ProductionCoordinator:
         logger.info("🏥 [HEALTH-CHECK] Performing indicator health check...")
         
         try:
-            # Validator'ı burada oluşturuyoruz, çünkü her zaman en güncel ws_manager'a ihtiyacı var.
-            if not self.websocket_manager:
-                logger.error("❌ [HEALTH-CHECK] WebSocketManager not available. Cannot perform health check.")
+            # --- MİMARİ DÜZELTME: Validator artık MarketDataPipeline ile çalışıyor ---
+            if not self.market_data_pipeline:
+                logger.error("❌ [HEALTH-CHECK] MarketDataPipeline not available. Cannot perform health check.")
                 return False
 
-            validator = IndicatorValidator(self.websocket_manager)
+            # Validator'ı doğru bağımlılıkla (MarketDataPipeline) oluştur.
+            validator = IndicatorValidator(self.market_data_pipeline)
             
-            # --- ÇÖZÜM: 'validate_all_symbols' yerine 'validate_all' kullanıldı ve parametreler düzeltildi ---
-            
-            # 1. Gerekli 'timeframes' parametresini konfigürasyondan al
+            # Gerekli 'timeframes' parametresini konfigürasyondan al
             ws_config = self.config.get('websocket', {})
             timeframes = ws_config.get('stream_timeframes', ['1m', '5m', '15m', '30m', '1h', '4h'])
 
-            # 2. Doğru metodu doğru parametrelerle çağır
+            # Doğru metodu doğru parametrelerle çağır
             results: Dict[str, Dict] = await validator.validate_all(
                 symbols=self.active_symbols,
                 timeframes=timeframes
             )
             
-            # 3. Dönen sözlüğü (dict) işleyerek genel durumu (all_valid) belirle
+            # Dönen sözlüğü (dict) işleyerek genel durumu (all_valid) belirle
             all_valid = all(res.get('status') == 'OK' for res in results.values())
 
             if not all_valid:
                 logger.warning("⚠️  [HEALTH-CHECK] Some indicators unhealthy")
                 # Hatalı olanları loglamak için IndicatorValidator'ın kendi özet loguna güveniyoruz.
-                # O zaten detaylı bir şekilde loglama yapıyor.
                 return False
             
             logger.info("✅ [HEALTH-CHECK] All indicators healthy")
             return True
             
         except Exception as e:
-            # Orijinal hata logu korunuyor.
             logger.error(f"❌ [HEALTH-CHECK] Health check failed: {e}", exc_info=True)
             return False
 
@@ -2342,7 +2339,8 @@ class ProductionCoordinator:
         It does NOT close positions or connections. The shutdown order is:
         1. Stop trading loop (this method) - prevents new signals
         2. Close positions (handled by launcher) - requires live connections
-        3. Close WebSocket/exchange connections (handled by launcher)
+        3. Stop WebSocket streams - can now safely disconnect
+        4. Close exchange connections (handled by launcher)
         
         This ensures positions can be closed successfully before connections die.
         """
