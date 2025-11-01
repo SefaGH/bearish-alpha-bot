@@ -187,22 +187,26 @@ class MLRegimePredictor:
             logger.info(f"Predicting regime transition for {symbol} with {horizon} horizon")
             logger.debug(f"🧠 [ML-REGIME] Starting regime prediction for {symbol}")
             
-            # Feature extraction from multi-timeframe data
+            # 1. Özellikleri çıkar (Bu adımdan sonra dataframe'de NaN'ler olabilir)
             features = self.feature_engine.extract_features(price_data)
             
             if features.empty:
                 logger.warning("No features extracted, returning default prediction")
-                logger.debug(f"🧠 [ML-REGIME] No features extracted, using default")
                 return self._default_prediction()
-            
-            logger.debug(f"🧠 [ML-REGIME] Extracted {len(features.columns)} features from price data")
-            
-            # Prepare features for prediction
-            feature_values = features.dropna().tail(1).values
-            
-            if len(feature_values) == 0:
-                logger.debug(f"🧠 [ML-REGIME] No valid feature values after cleanup")
+
+            # 2. Sadece son satırı (en güncel veriyi) al
+            last_row_features = features.tail(1)
+
+            # 3. Şimdi, sadece bu son satırda NaN olup olmadığını kontrol et
+            if last_row_features.isnull().values.any():
+                # Eğer son satırda eksik veri varsa, bu satırı tahmin için kullanamayız.
+                nan_cols = last_row_features.columns[last_row_features.isnull().any()].tolist()
+                logger.warning(f"🧠 [ML-REGIME] Prediction skipped for {symbol}. Latest data contains NaN values in columns: {nan_cols[:5]}")
+                # Güvenli bir şekilde varsayılan tahmine geri dön.
                 return self._default_prediction()
+
+            # 4. Artık güvendeyiz, son satırı NumPy dizisine çevir.
+            feature_values = last_row_features.values
 
             # Ham özellikleri, modelin anlayacağı dile çevir (ölçeklendir).
             # Bu adım olmadan, model tamamen anlamsız verilerle tahmin yapmaya çalışır.
