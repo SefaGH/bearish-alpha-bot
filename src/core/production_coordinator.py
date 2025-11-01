@@ -164,37 +164,33 @@ class ProductionCoordinator:
         logger.info("🏥 [HEALTH-CHECK] Performing indicator health check...")
         
         try:
-            # --- MİMARİ DÜZELTME: Validator artık MarketDataPipeline ile çalışıyor ---
-            if not self.market_data_pipeline:
-                logger.error("❌ [HEALTH-CHECK] MarketDataPipeline not available. Cannot perform health check.")
-                return False
-
-            # Validator'ı doğru bağımlılıkla (MarketDataPipeline) oluştur.
-            validator = IndicatorValidator(self.market_data_pipeline)
+            # Validator'ı burada oluşturuyoruz, çünkü her zaman en güncel ws_manager'a ihtiyacı var.
+            validator = IndicatorValidator(self.websocket_manager)
             
-            # Gerekli 'timeframes' parametresini konfigürasyondan al
-            ws_config = self.config.get('websocket', {})
-            timeframes = ws_config.get('stream_timeframes', ['1m', '5m', '15m', '30m', '1h', '4h'])
-
-            # Doğru metodu doğru parametrelerle çağır
-            results: Dict[str, Dict] = await validator.validate_all(
+            all_valid, results = await validator.validate_all_symbols(
                 symbols=self.active_symbols,
-                timeframes=timeframes
+                exchange='bingx'
             )
             
-            # Dönen sözlüğü (dict) işleyerek genel durumu (all_valid) belirle
-            all_valid = all(res.get('status') == 'OK' for res in results.values())
-
             if not all_valid:
                 logger.warning("⚠️  [HEALTH-CHECK] Some indicators unhealthy")
-                # Hatalı olanları loglamak için IndicatorValidator'ın kendi özet loguna güveniyoruz.
+                
+                # Log unhealthy indicators
+                for symbol, result in results.items():
+                    if not result['overall_valid']:
+                        logger.warning(f"   {symbol}:")
+                        for error in result['errors']:
+                            logger.warning(f"      - {error}")
+                
+                # Decide whether to pause trading
+                # (For now, just warn. Could implement auto-pause)
                 return False
             
             logger.info("✅ [HEALTH-CHECK] All indicators healthy")
             return True
             
         except Exception as e:
-            logger.error(f"❌ [HEALTH-CHECK] Health check failed: {e}", exc_info=True)
+            logger.error(f"❌ [HEALTH-CHECK] Health check failed: {e}")
             return False
 
     def _normalize_symbol_for_ws(self, symbol: str) -> str:
@@ -2339,8 +2335,7 @@ class ProductionCoordinator:
         It does NOT close positions or connections. The shutdown order is:
         1. Stop trading loop (this method) - prevents new signals
         2. Close positions (handled by launcher) - requires live connections
-        3. Stop WebSocket streams - can now safely disconnect
-        4. Close exchange connections (handled by launcher)
+        3. Close WebSocket/exchange connections (handled by launcher)
         
         This ensures positions can be closed successfully before connections die.
         """
