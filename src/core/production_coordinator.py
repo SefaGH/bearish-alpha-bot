@@ -266,7 +266,7 @@ class ProductionCoordinator:
         
         # Get timeframes from config
         ws_config = self.config.get('websocket', {})
-        timeframes = ws_config.get('stream_timeframes', ['1m', '5m', '30m', '1h', '4h'])
+        timeframes = ws_config.get('stream_timeframes', ['1m', '5m', '15m', '30m', '1h', '4h'])
         
         # Step 3: Setup Streams with Limits
         total_streams_started = 0
