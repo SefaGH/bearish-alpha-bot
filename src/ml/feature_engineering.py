@@ -272,8 +272,7 @@ class FeatureEngineeringPipeline:
         'volatility_vol_20', 'volatility_parkinson_vol_20', 'volatility_vol_50',
         'volatility_parkinson_vol_50', 'volatility_vol_regime', 'momentum_roc_5',
         'momentum_ma_slope_5', 'momentum_roc_10', 'momentum_ma_slope_10', 'momentum_roc_20',
-        'momentum_ma_slope_20', 'momentum_roc_50', 'momentum_ma_slope_50', 'momentum_trend_strength',
-        'momentum_momentum_regime'
+        'momentum_ma_slope_20', 'momentum_roc_50', 'momentum_ma_slope_50', 'momentum_momentum_regime'
     ]
     # =================================================================================
     
