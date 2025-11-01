@@ -5,6 +5,7 @@ Dynamically adjusts parameters based on market conditions.
 
 import pandas as pd
 import logging
+import math
 from typing import Optional, Dict
 from .oversold_bounce import OversoldBounce
 
@@ -125,11 +126,11 @@ class AdaptiveOversoldBounce(OversoldBounce):
         """
         # High volatility: Reduce position size for risk management
         if volatility_regime == 'high':
-            return base_multiplier * 0.5
+            return base_multiplier * 0.75
         
         # Low volatility: Can increase position size slightly
         elif volatility_regime == 'low':
-            return base_multiplier * 1.5
+            return base_multiplier * 1.25
         
         # Normal volatility: Use base multiplier
         else:
@@ -410,6 +411,14 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 rr_ratio = float('nan')
             else:
                 rr_ratio = rr_numerator / rr_denominator
+
+            # --- 🔥 YENİ EKLENECEK BÖLÜM BAŞLANGICI 🔥 ---
+            min_rr_ratio = self.cfg.get('min_rr_ratio', 1.2)
+            if math.isnan(rr_ratio) or rr_ratio < min_rr_ratio:
+                if self.debug_logging: 
+                    logger.info(f"  └─ ❌ REJECT: R/R ratio ({rr_ratio:.2f}) is below minimum required ({min_rr_ratio}).")
+                return None
+            # --- 🔥 YENİ EKLENECEK BÖLÜM SONU 🔥 ---
             
             # Calculate percentages for signal
             tp_pct = (target_price - entry_price) / entry_price
