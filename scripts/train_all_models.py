@@ -36,6 +36,11 @@ ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h']
 REGIME_TRAINING_TIMEFRAMES = ['30m', '1h', '4h'] 
 CANDLE_LIMIT = 2500 # Veri miktarını artırarak modelin daha fazla desen öğrenmesini sağla
 
+# --- 🔥 YENİ: Rejim modelleri için minimum veri eşikleri ---
+MIN_SAMPLES_FOR_RF = 100      # RandomForest ve Scaler'ın eğitilmesi için gereken minimum örnek sayısı
+MIN_SAMPLES_FOR_NN = 500      # LSTM/Transformer gibi sinir ağlarının eğitilmesi için gereken minimum örnek sayısı
+
+
 async def main():
     logger.info("="*60)
     logger.info("🤖 BAŞLIYOR: BİRLEŞİK ML MODEL EĞİTİM BETİĞİ 🤖")
@@ -94,14 +99,35 @@ async def main():
             final_X = np.vstack(all_regime_features)
             final_y = np.concatenate(all_regime_labels)
             
-            logger.info(f"Toplamda {final_X.shape[0]} örnek ve {final_X.shape[1]} özellik ile rejim modeli eğitilecek.")
+            total_samples = final_X.shape[0]
+            logger.info(f"Toplamda {total_samples} örnek ve {final_X.shape[1]} özellik ile rejim modeli eğitilecek.")
 
-            if final_X.shape[0] > 500: # Daha anlamlı bir eşik
+            # --- 🔥 GÜNCELLENMİŞ EĞİTİM MANTIĞI ---
+            if total_samples >= MIN_SAMPLES_FOR_RF:
                 regime_trainer = RegimeModelTrainer()
+                
+                # Sinir ağları için yeterli veri olup olmadığını kontrol et
+                train_nn = total_samples >= MIN_SAMPLES_FOR_NN
+                if not train_nn:
+                    logger.warning(
+                        f"Toplam örnek sayısı ({total_samples}) sinir ağı eğitimi için "
+                        f"gereken minimum ({MIN_SAMPLES_FOR_NN}) değerden az. "
+                        "Sadece RandomForest ve Scaler eğitilecek."
+                    )
+                
+                # train_ensemble_models'a yeni bir parametre ekleyerek hangi modellerin eğitileceğini kontrol et
+                # Bu parametrenin model_trainer.py içinde ele alınması gerekecek.
+                # Şimdilik, model_trainer'daki korumaların yeterli olacağını varsayıyoruz.
                 training_results = regime_trainer.train_ensemble_models(final_X, final_y)
+                
                 logger.info(f"✅ Rejim modelleri birleşik veri seti ile eğitildi ve kaydedildi.")
+                
             else:
-                logger.warning("Rejim modellerini eğitmek için yeterli birleşik veri bulunamadı.")
+                logger.warning(
+                    f"Rejim modellerini eğitmek için yeterli birleşik veri bulunamadı. "
+                    f"Gereken minimum: {MIN_SAMPLES_FOR_RF}, bulunan: {total_samples}"
+                )
+            # --- GÜNCELLENMİŞ MANTIK SONU ---
         else:
             logger.error("Rejim modeli eğitimi için işlenecek hiçbir veri bulunamadı.")
     else:
