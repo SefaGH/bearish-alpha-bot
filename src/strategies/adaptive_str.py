@@ -7,6 +7,8 @@ import pandas as pd
 import logging
 from typing import Optional, Dict
 from .short_the_rip import ShortTheRip
+# YENİ: BaseStrategy'i import ediyoruz
+from .base_strategy import BaseStrategy
 
 # Default market regime for fallback
 DEFAULT_MARKET_REGIME = {
@@ -40,7 +42,10 @@ class AdaptiveShortTheRip(ShortTheRip):
             cfg: Strategy configuration dictionary
             regime_analyzer: MarketRegimeAnalyzer instance for regime detection
         """
-        super().__init__(cfg)
+        # ÖNCEKİ HATALI KOD: super().__init__(cfg)
+        # DOĞRU KOD: BaseStrategy'nin __init__'ini doğrudan ve doğru parametrelerle çağırıyoruz.
+        BaseStrategy.__init__(self, strategy_name="adaptive_str", config=cfg)
+        
         self.regime_analyzer = regime_analyzer
         self.base_cfg = cfg.copy()
         self.debug_logging = self.base_cfg.get('debug', {}).get('strategy_logging', False)
@@ -477,7 +482,7 @@ class AdaptiveShortTheRip(ShortTheRip):
             
             # Build adaptive signal with ATR-based TP/SL
             signal = {
-                "strategy_name": self.strategy_name, # 🔥 BU SATIRI EKLEYİN
+                "strategy_name": self.strategy_name,
                 "side": "sell",
                 "entry": entry_price,
                 "stop": stop_price,
