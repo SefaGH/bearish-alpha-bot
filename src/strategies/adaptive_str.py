@@ -145,11 +145,11 @@ class AdaptiveShortTheRip(ShortTheRip):
         """
         # High volatility: Reduce position size for risk management
         if volatility_regime == 'high':
-            return base_multiplier * 0.5
+            return base_multiplier * 0.75
         
         # Low volatility: Can increase position size slightly
         elif volatility_regime == 'low':
-            return base_multiplier * 1.5
+            return base_multiplier * 1.25
         
         # Normal volatility: Use base multiplier
         else:
@@ -449,6 +449,22 @@ class AdaptiveShortTheRip(ShortTheRip):
             
             # Calculate and validate R/R ratio
             rr_ratio = (entry_price - target_price) / (stop_price - entry_price)
+
+            # --- 🔥 IYILESTIRME: Olası 'division by zero' hatasını önle ---
+            risk_amount = stop_price - entry_price
+            reward_amount = entry_price - target_price
+            if risk_amount <= 0:
+                rr_ratio = float('inf') # Risk yoksa R/R sonsuzdur
+            else:
+                rr_ratio = reward_amount / risk_amount
+            
+            # --- 🔥 YENİ EKLENECEK BÖLÜM BAŞLANGICI 🔥 ---
+            min_rr_ratio = self.cfg.get('min_rr_ratio', 1.2) # config'den min oranı oku, yoksa 1.2 kullan
+            if rr_ratio < min_rr_ratio:
+                if self.debug_logging: 
+                    logger.info(f"  └─ ❌ REJECT: R/R ratio ({rr_ratio:.2f}) is below minimum required ({min_rr_ratio}).")
+                return None
+            # --- 🔥 YENİ EKLENECEK BÖLÜM SONU 🔥 ---
             
             # Calculate percentages for signal
             tp_pct = (entry_price - target_price) / entry_price
@@ -494,7 +510,7 @@ class AdaptiveShortTheRip(ShortTheRip):
             return signal
             
         except Exception as e:
-            logger.warning(f"Adaptive strategy failed: {e}, falling back to base")
+            logger.error(f"Adaptive strategy failed for {symbol_display}: {e}", exc_info=True)
             
             # FALLBACK TO BASE STRATEGY
             try:
