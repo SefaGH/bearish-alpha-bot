@@ -53,12 +53,13 @@ class EnsembleRegimePredictor:
             'random_forest': 0.2
         }
     
-    def predict(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def predict(self, X: np.ndarray, seq_length: int = 10) -> Tuple[np.ndarray, np.ndarray]:
         """
         Make ensemble predictions.
         
         Args:
-            X: Input features
+            X: Input features (2D array: samples x features)
+            seq_length: Sequence length for LSTM/Transformer models (default: 10)
             
         Returns:
             Tuple of (predictions, probabilities)
@@ -69,15 +70,53 @@ class EnsembleRegimePredictor:
         for model_name, model in self.models.items():
             weight = self.weights.get(model_name, 1.0 / len(self.models))
             
-            if hasattr(model, 'predict_proba'):
-                probs = model.predict_proba(X)
-            elif hasattr(model, 'predict'):
-                pred, probs = model.predict(X)
-            else:
-                # Fallback to uniform probabilities
+            try:
+                # Handle sklearn models (RandomForest)
+                if hasattr(model, 'predict_proba'):
+                    probs = model.predict_proba(X)
+                    
+                # Handle PyTorch models (LSTM, Transformer)
+                elif hasattr(model, 'forward') and hasattr(model, 'eval'):
+                    import torch
+                    
+                    # Convert 2D data to 3D sequence for PyTorch models
+                    # For prediction, we use the most recent data as a sequence
+                    if len(X.shape) == 2:
+                        # If we have enough samples, create a sequence
+                        # Otherwise, repeat the single sample to create a sequence
+                        if X.shape[0] >= seq_length:
+                            # Use the last seq_length samples as a sequence
+                            X_seq = X[-seq_length:].reshape(1, seq_length, X.shape[1])
+                        else:
+                            # Repeat the sample to create a sequence
+                            X_seq = np.repeat(X[-1:], seq_length, axis=0).reshape(1, seq_length, X.shape[1])
+                    else:
+                        X_seq = X
+                    
+                    # Convert to tensor
+                    X_tensor = torch.from_numpy(X_seq).float()
+                    
+                    # Get predictions
+                    model.eval()
+                    with torch.no_grad():
+                        logits, probs_tensor = model(X_tensor, return_probs=True)
+                        probs = probs_tensor.numpy()
+                        
+                elif hasattr(model, 'predict'):
+                    pred, probs = model.predict(X)
+                    
+                else:
+                    # Fallback to uniform probabilities
+                    logger.warning(f"Model {model_name} has no compatible predict method")
+                    probs = np.ones((len(X), 3)) / 3
+                
+                probabilities.append(probs * weight)
+                
+            except Exception as e:
+                logger.error(f"Error predicting with {model_name}: {e}", exc_info=True)
+                # Use uniform probabilities on error
                 probs = np.ones((len(X), 3)) / 3
-            
-            probabilities.append(probs * weight)
+                probabilities.append(probs * weight)
         
         # Weighted average of probabilities
         ensemble_probs = np.sum(probabilities, axis=0)
@@ -130,23 +169,73 @@ class MLRegimePredictor:
 
         models_loaded = 0
         try:
+            # Load model configurations
+            model_configs = {}
+            config_path = os.path.join(self.MODEL_DIR, "model_config.pkl")
+            if os.path.exists(config_path):
+                model_configs = joblib.load(config_path)
+                logger.info("✅ Model configurations loaded.")
+            
             # Scaler'ı yükle
             scaler_path = os.path.join(self.MODEL_DIR, "scaler.pkl")
             if os.path.exists(scaler_path):
                 self.scaler = joblib.load(scaler_path)
                 logger.info("✅ Regime feature scaler loaded.")
-
-            # Modelleri yükle
-            # ... (Bu kısma, model_trainer'daki gibi bir döngü ile tüm modelleri yükleme mantığı eklenir)
             
-            # Örnek: Random Forest yükleme
+            # Load Random Forest model
             rf_path = os.path.join(self.MODEL_DIR, "random_forest.pkl")
             if os.path.exists(rf_path) and RandomForestClassifier is not None:
                 self.models['random_forest'] = joblib.load(rf_path)
                 models_loaded += 1
                 logger.info("✅ Random Forest regime model loaded.")
             
-            # ... (LSTM ve Transformer yükleme mantığı da buraya eklenir) ...
+            # Load LSTM model (PyTorch)
+            lstm_path = os.path.join(self.MODEL_DIR, "lstm_regime.pth")
+            if os.path.exists(lstm_path):
+                try:
+                    import torch
+                    from .neural_networks import LSTMRegimePredictor
+                    
+                    # Get configuration from saved config or use defaults
+                    lstm_config = model_configs.get('lstm', {
+                        'input_size': 50,
+                        'hidden_size': 128,
+                        'num_layers': 3,
+                        'num_classes': 3
+                    })
+                    
+                    lstm_model = LSTMRegimePredictor(**lstm_config)
+                    lstm_model.load_state_dict(torch.load(lstm_path, map_location='cpu'))
+                    lstm_model.eval()  # Set to evaluation mode
+                    self.models['lstm'] = lstm_model
+                    models_loaded += 1
+                    logger.info(f"✅ LSTM regime model loaded with config: {lstm_config}")
+                except Exception as e:
+                    logger.error(f"Failed to load LSTM model: {e}", exc_info=True)
+            
+            # Load Transformer model (PyTorch)
+            transformer_path = os.path.join(self.MODEL_DIR, "transformer_regime.pth")
+            if os.path.exists(transformer_path):
+                try:
+                    import torch
+                    from .neural_networks import TransformerRegimePredictor
+                    
+                    # Get configuration from saved config or use defaults
+                    transformer_config = model_configs.get('transformer', {
+                        'd_model': 50,
+                        'nhead': 2,
+                        'num_layers': 2,
+                        'num_classes': 3
+                    })
+                    
+                    transformer_model = TransformerRegimePredictor(**transformer_config)
+                    transformer_model.load_state_dict(torch.load(transformer_path, map_location='cpu'))
+                    transformer_model.eval()  # Set to evaluation mode
+                    self.models['transformer'] = transformer_model
+                    models_loaded += 1
+                    logger.info(f"✅ Transformer regime model loaded with config: {transformer_config}")
+                except Exception as e:
+                    logger.error(f"Failed to load Transformer model: {e}", exc_info=True)
 
             if models_loaded > 0:
                 # === KÖK NEDEN ÇÖZÜMÜ BURADA ===

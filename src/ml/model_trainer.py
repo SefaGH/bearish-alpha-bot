@@ -288,20 +288,42 @@ class RegimeModelTrainer:
                 logger.info(f"✅ Regime feature scaler saved to {scaler_path}")
 
             # Modelleri kaydet
+            model_configs = {}
             for name, model in self.models.items():
                 if model is None:
                     continue
                 
-                # === 🔥 GÜNCELLENMİŞ KAYDETME MANTIĞI ===
                 if name == 'random_forest' and hasattr(model, 'fit'):
                     model_path = os.path.join(self.MODEL_SAVE_DIR, "random_forest.pkl")
                     joblib.dump(model, model_path)
                     logger.info(f"✅ Saved 'random_forest' model to {model_path}")
-                elif hasattr(model, 'state_dict'):  # PyTorch modeli olup olmadığını kontrol et
+                    
+                elif hasattr(model, 'state_dict'):  # PyTorch modeli
                     model_path = os.path.join(self.MODEL_SAVE_DIR, f"{name}_regime.pth")
                     torch.save(model.state_dict(), model_path)
                     logger.info(f"✅ Saved '{name}' model to {model_path}")
-                # =========================================
+                    
+                    # Save model configuration for loading later
+                    if name == 'lstm':
+                        model_configs['lstm'] = {
+                            'input_size': model.lstm.input_size,
+                            'hidden_size': model.hidden_size,
+                            'num_layers': model.num_layers,
+                            'num_classes': model.classifier[-1].out_features
+                        }
+                    elif name == 'transformer':
+                        model_configs['transformer'] = {
+                            'd_model': model.d_model,
+                            'nhead': model.transformer.layers[0].self_attn.num_heads,
+                            'num_layers': len(model.transformer.layers),
+                            'num_classes': model.classifier[-1].out_features
+                        }
+            
+            # Save model configurations
+            if model_configs:
+                config_path = os.path.join(self.MODEL_SAVE_DIR, "model_config.pkl")
+                joblib.dump(model_configs, config_path)
+                logger.info(f"✅ Saved model configurations to {config_path}")
 
         except Exception as e:
             logger.error(f"Failed to save regime models: {e}", exc_info=True)
