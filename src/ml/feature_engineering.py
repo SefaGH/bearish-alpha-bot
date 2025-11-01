@@ -186,12 +186,19 @@ class MomentumFeatures:
                 ma = price_data['close'].rolling(window=window).mean()
                 features[f'ma_slope_{window}'] = ma.pct_change(1)
             
-            # Trend strength
-            if 'ema_20' in price_data.columns and 'ema_50' in price_data.columns:
-                ema20 = ta.ema(price_data['close'], length=20)
-                ema50 = ta.ema(price_data['close'], length=50)
-                features['trend_strength'] = (ema20 - ema50) / price_data['close']
+            # --- 🔥🔥🔥 NİHAİ DÜZELTME: 'trend_strength' HESAPLAMASI ---
+            # 'ema_20' ve 'ema_50' sütunlarına bağımlı olmak yerine,
+            # bu değerleri doğrudan burada hesapla.
+            ema20 = ta.ema(price_data['close'], length=20)
+            ema50 = ta.ema(price_data['close'], length=50)
             
+            # `ema20` veya `ema50` NaN değilse hesapla
+            if ema20 is not None and ema50 is not None:
+                features['trend_strength'] = (ema20 - ema50) / price_data['close']
+            else:
+                features['trend_strength'] = np.nan # Hesaplama başarısız olursa NaN ata
+            # --- 🔥🔥🔥 DÜZELTME SONU ---
+
             # Momentum regime
             mom_mean = features['roc_20'].rolling(window=50).mean()
             mom_std = features['roc_20'].rolling(window=50).std()
