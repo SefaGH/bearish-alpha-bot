@@ -34,7 +34,9 @@ ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h']
 # --- 🔥 IYILESTIRME: Rejim eğitimi için kullanılacak zaman dilimleri genişletildi ---
 # Stratejilerin kullandığı 30m'yi ve genel trend için 1h, 4h'yi dahil ediyoruz.
 REGIME_TRAINING_TIMEFRAMES = ['30m', '1h', '4h'] 
-CANDLE_LIMIT = 2500 # Veri miktarını artırarak modelin daha fazla desen öğrenmesini sağla
+
+# --- 🔥 ÇÖZÜM: CANDLE_LIMIT değerini BingX API'sinin izin verdiği maksimum olan 1440'ın altına çekiyoruz. ---
+CANDLE_LIMIT = 1400 # Veri miktarını API limitine uygun hale getir
 
 # --- 🔥 YENİ: Rejim modelleri için minimum veri eşikleri ---
 MIN_SAMPLES_FOR_RF = 100      # RandomForest ve Scaler'ın eğitilmesi için gereken minimum örnek sayısı
