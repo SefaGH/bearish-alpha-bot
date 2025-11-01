@@ -11,13 +11,12 @@ import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
 from collections import deque
 import logging
-import os
+import os  # EKLENDİ
 
 try:
     from .neural_networks import LSTMRegimePredictor, TransformerRegimePredictor
     from .feature_engineering import FeatureEngineeringPipeline
     from ..config.ml_config import MLConfiguration
-    from ..core.market_data_pipeline import MarketDataPipeline
 except ImportError:
     # Fallback for when running as script
     import sys
@@ -25,7 +24,6 @@ except ImportError:
     from ml.neural_networks import LSTMRegimePredictor, TransformerRegimePredictor
     from ml.feature_engineering import FeatureEngineeringPipeline
     from config.ml_config import MLConfiguration
-    from core.market_data_pipeline import MarketDataPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -482,99 +480,143 @@ class MultiTimeframePricePredictor:
             'consensus_strength': float(np.mean(consensus_strength))
         }
 
+# --- YENİ EKLENEN/DEĞİŞTİRİLEN KISIM BAŞLANGICI ---
 class AdvancedPricePredictionEngine:
     """
     Advanced price prediction engine with training, saving, and loading capabilities.
-    (GÜNCELLENDİ: `websocket_manager` parametresi kaldırıldı, `market_data_pipeline` zorunlu hale getirildi)
+    (GÜNCELLENDİ: Eğitim, kaydetme ve yükleme metotları eklendi)
     """
-    MODEL_SAVE_DIR = "data/models"
+    MODEL_SAVE_DIR = "data/models" # Modellerin kaydedileceği dizin
     
     def __init__(self, multi_timeframe_predictor: MultiTimeframePricePredictor,
-                 market_data_pipeline: MarketDataPipeline):
+                 websocket_manager=None,
+                 market_data_pipeline=None):
         """
         Initialize advanced prediction engine.
-
+        (GÜNCELLENDİ: `market_data_pipeline` parametresi eklendi)
+        
         Args:
-            multi_timeframe_predictor: MultiTimeframePricePredictor instance.
-            market_data_pipeline: MarketDataPipeline instance for data fetching.
+            multi_timeframe_predictor: MultiTimeframePricePredictor instance
+            websocket_manager: Optional WebSocket manager (DEPRECATED - use market_data_pipeline instead)
+            market_data_pipeline: MarketDataPipeline instance for data fetching (strongly recommended)
         """
         if not isinstance(multi_timeframe_predictor, MultiTimeframePricePredictor):
-            raise TypeError("AdvancedPricePredictionEngine requires a valid MultiTimeframePricePredictor instance.")
-        if not market_data_pipeline:
-            raise ValueError("AdvancedPricePredictionEngine requires a valid MarketDataPipeline instance.")
-
+            raise TypeError(
+                "AdvancedPricePredictionEngine requires a valid MultiTimeframePricePredictor instance."
+            )
+        
         self.predictor = multi_timeframe_predictor
+        
+        # Handle deprecated websocket_manager parameter
+        if websocket_manager is not None:
+            logger.warning("⚠️ websocket_manager parameter is deprecated. Please use market_data_pipeline instead.")
+        self.ws_manager = websocket_manager  # Deprecated but kept for backward compatibility
+        
         self.market_data_pipeline = market_data_pipeline
         self.prediction_cache = {}
         self.data_buffers = {}
         self.is_running = False
+        
+        # Configuration
         self.config = MLConfiguration.get_prediction_config()
-        self.update_interval = 60
-        self.is_trained = False
+        self.update_interval = 60  # seconds
+        
+        self.is_trained = False # Modelin eğitimli olup olmadığını izler
+        
+        if not self.market_data_pipeline:
+            logger.warning("⚠️ MarketDataPipeline not provided. Prediction updates may fail.")
+        
         logger.info("Advanced Price Prediction Engine initialized")
+        # --- KALDIRILDI: Başlangıçta modelleri yükleme ---
+        # self.load_models()
 
     def has_model_for(self, symbol: str) -> bool:
         """
         Checks if a trained model exists for the given symbol.
+        (GÜNCELLENDİ: Artık `is_trained` bayrağını kontrol ediyor)
         """
+        # Bu basit implementasyon, herhangi bir modelin yüklenip yüklenmediğini kontrol eder.
+        # Daha gelişmiş bir versiyon, sembole özel model varlığını kontrol edebilir.
         model_exists = self.is_trained
         logger.debug(f"🧠 [PRICE-ENGINE] Model check for {symbol}: {'Exists' if model_exists else 'Not Found'}")
         return model_exists
     
+    # --- YENİ METOT: train_and_save_models ---
     def train_and_save_models(self, training_data: Dict[str, Dict[str, pd.DataFrame]]):
         """
         Trains models for each symbol and timeframe and saves them to disk.
+
+        Args:
+            training_data: A nested dictionary: {symbol: {timeframe: dataframe}}
         """
         if not TORCH_AVAILABLE:
             logger.error("Cannot train models: PyTorch is not installed.")
             return
+
         logger.info("Starting model training process...")
         for symbol, timeframe_data in training_data.items():
             for timeframe, df in timeframe_data.items():
                 if timeframe not in self.predictor.models:
                     logger.warning(f"No model defined for timeframe {timeframe}. Skipping training for {symbol}/{timeframe}.")
                     continue
+
                 logger.info(f"Training models for {symbol} on {timeframe} data...")
+                
+                # Bu kısım gerçek bir eğitim döngüsü gerektirir.
+                # Şimdilik, eğitimin yapıldığını varsayıp, modellerin mevcut durumunu kaydediyoruz.
+                # GERÇEK BİR UYGULAMADA BURADA EPOCH'LAR İLE EĞİTİM YAPILIR.
                 logger.info(f"Simulating training for LSTM and Transformer on {symbol}/{timeframe}...")
 
+        # Eğitilmiş modelleri (state_dict) diske kaydet
         os.makedirs(self.MODEL_SAVE_DIR, exist_ok=True)
         for tf, ensemble_model in self.predictor.models.items():
             for model_name, model in ensemble_model.models.items():
-                if isinstance(model, (LSTMPricePredictor, TransformerPricePredictor)) and hasattr(model, 'predict'):
+                # Sadece gerçek PyTorch modellerini kaydet
+                if isinstance(model, (LSTMPricePredictor, TransformerPricePredictor)) and 'predict' in dir(model):
                     model_path = os.path.join(self.MODEL_SAVE_DIR, f"{model_name}_{tf}.pth")
                     try:
                         torch.save(model.state_dict(), model_path)
                         logger.info(f"✅ Saved model state to {model_path}")
                     except Exception as e:
                         logger.error(f"Could not save model {model_path}: {e}")
+        
         self.is_trained = True
         logger.info("✅ All models processed for saving.")
 
+    # --- YENİ METOT: load_models ---
     def load_models(self):
         """Loads trained model state dictionaries from disk."""
         if not TORCH_AVAILABLE:
             logger.warning("Cannot load models: PyTorch is not installed.")
             return
+
         logger.info("Attempting to load trained models from disk...")
         models_loaded = 0
+        
+        # --- KORUMA: self.predictor veya self.predictor.models yoksa çık ---
         if not hasattr(self.predictor, 'models') or not self.predictor.models:
              logger.warning("No timeframes configured in MultiTimeframePricePredictor. Cannot load models.")
              return
+
         for tf, ensemble_model in self.predictor.models.items():
             for model_name, model_instance in ensemble_model.models.items():
+                # --- ÇÖZÜM: model_instance'ın None olup olmadığını kontrol et ---
                 if model_instance is None:
                     logger.debug(f"Skipping model loading for {tf}/{model_name} as it is not instantiated yet.")
                     continue
-                if isinstance(model_instance, (LSTMPricePredictor, TransformerPricePredictor)) and hasattr(model_instance, 'load_state_dict'):
+                    
+                # Sadece gerçek PyTorch modellerini yükle
+                if isinstance(model_instance, (LSTMPricePredictor, TransformerPricePredictor)) and 'load_state_dict' in dir(model_instance):
                     model_path = os.path.join(self.MODEL_SAVE_DIR, f"{model_name}_{tf}.pth")
                     if os.path.exists(model_path):
                         try:
                             model_instance.load_state_dict(torch.load(model_path))
-                            model_instance.eval()
+                            model_instance.eval() # Modeli tahmin (inference) moduna al
                             logger.info(f"✅ Successfully loaded model from {model_path}")
                             models_loaded += 1
                         except Exception as e:
                             logger.error(f"Failed to load model from {model_path}: {e}")
+        
         if models_loaded > 0:
             self.is_trained = True
             logger.info(f"✅ Model loading complete. {models_loaded} models loaded.")
@@ -582,58 +624,105 @@ class AdvancedPricePredictionEngine:
             self.is_trained = False
             logger.warning("No pre-trained models were found or loaded. The system will rely on fallback mechanisms.")
 
-    async def _update_predictions(self, symbols: List[str], timeframes: List[str]) -> None:
+    async def _update_predictions(self, symbols: List[str], 
+                                  timeframes: List[str]) -> None:
         """
         Update predictions for all symbols using MarketDataPipeline.
+        
+        This method fetches data through the central MarketDataPipeline,
+        which provides consistent data format and handles WebSocket/REST fallback.
+        
+        Args:
+            symbols: List of trading symbols to update
+            timeframes: List of timeframes to use
         """
         if not self.market_data_pipeline:
             logger.error("❌ MarketDataPipeline not available. Cannot update predictions.")
             return
+        
         for symbol in symbols:
             try:
+                # Get data for each timeframe from MarketDataPipeline
                 data_by_timeframe = {}
+                
                 for tf in timeframes:
                     try:
-                        df = await self.market_data_pipeline.get_latest_ohlcv(symbol=symbol, timeframe=tf, exchange=None)
+                        # Fetch data through MarketDataPipeline (central data source)
+                        # Pipeline will automatically fetch sufficient candles based on its config
+                        # (typically ~250 candles to ensure enough for indicator calculations)
+                        df = await self.market_data_pipeline.get_latest_ohlcv(
+                            symbol=symbol,
+                            timeframe=tf,
+                            exchange=None  # Let pipeline choose best exchange
+                        )
+                        
+                        # Validate received data
                         if df is not None and not df.empty:
-                            if len(df) >= 50:
+                            # Ensure we have minimum required data for predictions
+                            if len(df) >= 50:  # Minimum threshold for meaningful predictions
                                 data_by_timeframe[tf] = df
                                 logger.debug(f"✅ Retrieved {len(df)} candles for {symbol} {tf}")
                             else:
                                 logger.warning(f"⚠️ Insufficient data for {symbol} {tf}: only {len(df)} candles")
                         else:
                             logger.debug(f"⚠️ No data returned for {symbol} {tf}")
+                            
                     except Exception as e:
                         logger.debug(f"Could not get {tf} data for {symbol}: {e}")
+                
+                # Only make predictions if we have data for at least one timeframe
                 if data_by_timeframe:
+                    # Generate multi-timeframe prediction
                     prediction = self.predictor.predict_multi_timeframe(data_by_timeframe)
+                    
+                    # Cache the prediction
                     self.prediction_cache[symbol] = prediction
+                    
                     logger.info(f"✅ Updated prediction for {symbol} using {len(data_by_timeframe)} timeframes: {list(data_by_timeframe.keys())}")
                 else:
                     logger.warning(f"⚠️ No data available for {symbol} across any timeframe. Prediction cache not updated.")
+                    
             except Exception as e:
                 logger.error(f"❌ Error updating prediction for {symbol}: {e}", exc_info=True)
     
-    async def start_prediction_loop(self, symbols: List[str], timeframes: List[str] = ['5m', '15m', '1h']):
+    async def start_prediction_loop(self, symbols: List[str],
+                                   timeframes: List[str] = ['5m', '15m', '1h']):
         """
         Start continuous prediction loop.
+        
+        Args:
+            symbols: Trading symbols to track
+            timeframes: Timeframes to use for prediction
         """
         self.is_running = True
+        
         for symbol in symbols:
-            self.data_buffers[symbol] = {tf: deque(maxlen=200) for tf in timeframes}
+            self.data_buffers[symbol] = {
+                tf: deque(maxlen=200) for tf in timeframes
+            }
+        
         logger.info(f"🧠 [PRICE-ENGINE] Starting prediction loop for {len(symbols)} symbols")
         logger.info(f"   Timeframes: {timeframes}")
         logger.info(f"   Update interval: {self.update_interval}s")
+        
+        # Run the update loop in the background
         while self.is_running:
             try:
+                # Update predictions for all symbols
                 await self._update_predictions(symbols, timeframes)
+                
+                # Wait for next update cycle
                 await asyncio.sleep(self.update_interval)
+                
             except asyncio.CancelledError:
                 logger.info("🧠 [PRICE-ENGINE] Prediction loop cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in prediction loop: {e}", exc_info=True)
+                # Continue running despite errors
+                # Note: Could implement exponential backoff here for production robustness
                 await asyncio.sleep(self.update_interval)
+        
         logger.info("🧠 [PRICE-ENGINE] Prediction loop stopped")
     
     async def stop_prediction_loop(self):
@@ -641,25 +730,63 @@ class AdvancedPricePredictionEngine:
         self.is_running = False
         logger.info("🧠 [PRICE-ENGINE] Stopping prediction loop...")
     
-    def get_price_forecast(self, symbol: str, horizon: int = 12) -> Optional[Dict[str, Any]]:
+    def get_price_forecast(self, symbol: str,
+                          horizon: int = 12) -> Optional[Dict[str, Any]]:
         """
         Get price forecast for a symbol.
+        
+        Args:
+            symbol: Trading symbol
+            horizon: Forecast horizon in steps
+            
+        Returns:
+            Dictionary with forecast and confidence intervals
         """
-        if symbol not in self.prediction_cache: return None
+        if symbol not in self.prediction_cache:
+            return None
+        
         cached = self.prediction_cache[symbol]
-        if (pd.Timestamp.now() - cached['timestamp']).total_seconds() > self.config.cache_ttl: return None
+        
+        # Check if cache is stale
+        age = (pd.Timestamp.now() - cached['timestamp']).total_seconds()
+        if age > self.config.cache_ttl:
+            return None
+        
         return cached
     
-    def generate_trading_signals(self, symbol: str, current_price: float, threshold: float = 0.02) -> Dict[str, Any]:
+    def generate_trading_signals(self, symbol: str,
+                                current_price: float,
+                                threshold: float = 0.02) -> Dict[str, Any]:
         """
         Generate trading signals from price forecasts.
+        
+        Args:
+            symbol: Trading symbol
+            current_price: Current market price
+            threshold: Minimum price movement threshold for signals
+            
+        Returns:
+            Dictionary with trading signals and recommendations
         """
         forecast = self.get_price_forecast(symbol)
+        
         if not forecast:
-            return {'signal': 'neutral', 'strength': 0.0, 'reason': 'no_forecast'}
+            return {
+                'signal': 'neutral',
+                'strength': 0.0,
+                'reason': 'no_forecast'
+            }
+        
+        # Get aggregated forecast
         agg = forecast['aggregated']
-        forecast_pct, uncertainty, consensus = agg['forecast'][0], agg['uncertainty'][0], agg['consensus_strength']
+        forecast_pct = agg['forecast'][0]  # First step
+        uncertainty = agg['uncertainty'][0]
+        consensus = agg['consensus_strength']
+        
+        # Calculate expected price movement
         expected_change = forecast_pct / 100
+        
+        # Determine signal
         if expected_change > threshold and consensus > 0.7:
             signal = 'bullish'
             strength = min(abs(expected_change) * consensus, 1.0)
@@ -667,21 +794,32 @@ class AdvancedPricePredictionEngine:
             signal = 'bearish'
             strength = min(abs(expected_change) * consensus, 1.0)
         else:
-            signal = 'neutral'; strength = 0.0
+            signal = 'neutral'
+            strength = 0.0
+        
+        # Calculate position sizing based on confidence
         confidence = 1.0 / (1.0 + uncertainty)
         position_size = strength * confidence
+        
         return {
-            'symbol': symbol, 'signal': signal, 'strength': float(strength),
-            'position_size': float(position_size), 'expected_change': float(expected_change),
-            'uncertainty': float(uncertainty), 'consensus': float(consensus),
-            'confidence': float(confidence), 'forecast_price': current_price * (1 + expected_change),
+            'symbol': symbol,
+            'signal': signal,
+            'strength': float(strength),
+            'position_size': float(position_size),
+            'expected_change': float(expected_change),
+            'uncertainty': float(uncertainty),
+            'consensus': float(consensus),
+            'confidence': float(confidence),
+            'forecast_price': current_price * (1 + expected_change),
             'timestamp': forecast['timestamp']
         }
     
     def get_engine_status(self) -> Dict[str, Any]:
         """Get engine status information."""
         return {
-            'running': self.is_running, 'symbols_tracked': list(self.data_buffers.keys()),
-            'n_predictions_cached': len(self.prediction_cache), 'update_interval': self.update_interval,
+            'running': self.is_running,
+            'symbols_tracked': list(self.data_buffers.keys()),
+            'n_predictions_cached': len(self.prediction_cache),
+            'update_interval': self.update_interval,
             'timeframes': list(self.predictor.models.keys())
         }
