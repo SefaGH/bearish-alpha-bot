@@ -73,15 +73,16 @@ if TORCH_AVAILABLE:
                 nn.Linear(64, num_classes)
             )
             
-        def forward(self, x):
+        def forward(self, x, return_probs=False):
             """
             Forward pass with attention mechanism.
             
             Args:
                 x: Input tensor of shape (batch_size, sequence_length, input_size)
+                return_probs: If True, returns (logits, probs). If False, returns only logits.
                 
             Returns:
-                Tuple of (predictions, confidence)
+                logits or Tuple of (logits, probs) depending on return_probs
             """
             # LSTM feature extraction
             lstm_out, (hidden, cell) = self.lstm(x)
@@ -94,9 +95,11 @@ if TORCH_AVAILABLE:
             
             # Classification output
             logits = self.classifier(last_hidden)
-            probs = torch.softmax(logits, dim=1)
             
-            return logits, probs
+            if return_probs:
+                probs = torch.softmax(logits, dim=1)
+                return logits, probs
+            return logits
 
 
     class PositionalEncoding(nn.Module):
@@ -158,15 +161,16 @@ if TORCH_AVAILABLE:
                 nn.Linear(128, num_classes)
             )
             
-        def forward(self, x):
+        def forward(self, x, return_probs=False):
             """
             Transformer-based regime prediction.
             
             Args:
                 x: Input tensor of shape (batch_size, sequence_length, d_model)
+                return_probs: If True, returns (logits, probs). If False, returns only logits.
                 
             Returns:
-                Tuple of (predictions, confidence)
+                logits or Tuple of (logits, probs) depending on return_probs
             """
             # Positional encoding
             x = self.pos_encoding(x)
@@ -179,9 +183,11 @@ if TORCH_AVAILABLE:
             
             # Feed-forward prediction
             logits = self.classifier(last_hidden)
-            probs = torch.softmax(logits, dim=1)
             
-            return logits, probs
+            if return_probs:
+                probs = torch.softmax(logits, dim=1)
+                return logits, probs
+            return logits
 
 else:
     # Mock implementations when PyTorch is not available
