@@ -13,7 +13,6 @@ sys.path.insert(0, project_root)
 # Gerekli modüllerin import edilmesi
 from src.core.ccxt_client import CcxtClient
 from src.core.logger import setup_logger
-# --- 🔥 DÜZELTME: Sadece sınıfı import et ---
 from src.ml.feature_engineering import FeatureEngineeringPipeline
 from src.ml.model_trainer import RegimeModelTrainer
 from src.ml.price_predictor import (
@@ -81,8 +80,8 @@ async def main():
                 features_df = feature_engine.extract_features(regime_data_raw)
                 regime_labels = generate_regime_labels(regime_data_raw)
                 
-                # --- 🔥 DÜZELTME: Fonksiyonu doğrudan Sınıf üzerinden çağır ---
-                X_prepared, y_prepared = FeatureEngineeringPipeline.prepare_for_training(
+                # --- 🔥 NİHAİ DÜZELTME: Metodu, oluşturulmuş NESNE üzerinden çağır ---
+                X_prepared, y_prepared = feature_engine.prepare_for_training(
                     features_df, 
                     regime_labels
                 )
