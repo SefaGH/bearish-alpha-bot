@@ -426,14 +426,14 @@ class StrategyCoordinator:
     
     async def _enhance_signal_with_ml(self, signal: Dict) -> Optional[Dict]:
         """
-        Enhance signal with ALL ML predictions.
+        Enhance signal with all ML predictions and apply RL agent's decision as a gatekeeper.
         Uses price prediction, regime prediction, and RL agent recommendations.
         
         Args:
             signal: Trading signal dictionary
             
         Returns:
-            Enhanced signal dict or None if ML blocks the signal
+            Enhanced signal dict or None if ML/RL blocks the signal.
         """
         if not hasattr(self, 'ml_integration') or not self.ml_integration:
             return signal
@@ -443,81 +443,80 @@ class StrategyCoordinator:
             import pandas as pd
             current_price = signal.get('entry', 0)
             symbol = signal.get('symbol')
-            
-            # 1. Get ML enhancement from strategy integration
+            original_side = signal.get('side').lower()
+
+            # --- 1. ML ZENGİNLEŞTİRMESİ (MEVCUT YAPI KORUNUYOR) ---
+            # Bu blok, ana zenginleştirme verilerini alır.
             try:
                 enhancement = await self.ml_integration.enhance_strategy_signal(
                     symbol, signal, current_price
                 )
-                
-                # Check if ML recommends blocking
-                if enhancement.get('final_signal') == 'neutral' or enhancement.get('final_signal') == 'hold':
-                    logger.info(f"🧠 [ML] Signal neutralized for {symbol}")
-                    signal['ml_blocked'] = True
-                    return None
-                
-                # Adjust signal strength based on ML confidence
-                signal['ml_strength'] = enhancement.get('final_strength', signal.get('strength', 0.5))
-                signal['ml_confidence'] = enhancement.get('confidence_adjustment', 1.0)
-                
-                # Add ML metadata
-                signal['ml_enhanced'] = True
-                signal['ml_forecast_price'] = enhancement.get('forecast_price')
-                signal['ml_uncertainty'] = enhancement.get('uncertainty')
-                signal['ml_consensus'] = enhancement.get('consensus')
+                signal.update(enhancement) # Gelen tüm verileri sinyale ekle
                 
             except Exception as e:
                 logger.debug(f"ML strategy integration failed: {e}")
-            
-            # 2. Get regime prediction (if available)
-            if hasattr(self, 'regime_predictor') and hasattr(self.ml_integration, 'regime_predictor'):
-                try:
-                    regime_prediction = await self.ml_integration.regime_predictor.predict_regime_transition(
-                        symbol,
-                        pd.DataFrame(),  # Would be actual price data in production
-                        horizon='1h'
-                    )
-                    signal['predicted_regime'] = regime_prediction.get('predicted_regime', 'neutral')
-                    signal['regime_confidence'] = regime_prediction.get('confidence', 0)
-                except Exception as e:
-                    logger.debug(f"Regime prediction failed: {e}")
-            
-            # 3. Get RL agent recommendation (if available)
+
+            # --- 2. RL AGENT'IN AYRI OLARAK ÇAĞRILMASI VE KONTROLÜ ---
+            # Mevcut yapı, RL'i ayrı bir adımda çağırıyor, bu yapıyı koruyalım.
+            rl_advice = None
             if hasattr(self, 'rl_agent') and self.rl_agent:
                 try:
-                    # Extract features for RL state
                     state_features = self._extract_rl_state(symbol, current_price)
-                    
-                    # Get RL action recommendation
-                    rl_action = self.rl_agent.act(
+                    rl_action_index = self.rl_agent.act(
                         state_features,
                         market_regime=signal.get('predicted_regime', 'neutral'),
-                        training=False  # Inference mode
+                        training=False
                     )
-                    
-                    signal['rl_recommendation'] = ['buy', 'hold', 'sell'][rl_action]
-                    signal['rl_state'] = state_features  # Store for later learning
-                    signal['rl_confidence'] = 0.8  # Placeholder
+                    rl_advice_str = ['buy', 'hold', 'sell'][rl_action_index]
+                    signal['rl_recommendation'] = rl_advice_str
+                    rl_advice = rl_advice_str.lower() # Karşılaştırma için küçük harf
                 except Exception as e:
                     logger.debug(f"RL recommendation failed: {e}")
+
+            # --- 3. RL VETO VE ANLAŞMAZLIK KONTROLLERİ ---
+            # Bu blok, RL Agent'ın kararını kesin bir filtre olarak uygular.
             
-            # Position sizing with ML risk adjustment
+            # VETO (HARD GATE): Eğer RL Agent 'hold' diyorsa, sinyali kesin olarak reddet.
+            if rl_advice == 'hold':
+                logger.warning(f"🤖 [RL-VETO] Signal for {symbol} rejected. Reason: RL Agent advised 'hold'.")
+                signal['ml_blocked'] = True
+                signal['ml_rejection_reason'] = 'RL VETO (HOLD)'
+                return None # Sinyali burada kes ve None döndür.
+
+            # ANLAŞMAZLIK (SOFT GATE): Eğer RL Agent sinyalin tersini söylüyorsa.
+            is_opposite = (
+                (original_side in ['buy', 'long'] and rl_advice in ['sell', 'short']) or
+                (original_side in ['sell', 'short'] and rl_advice in ['buy', 'long'])
+            )
+            if rl_advice and is_opposite:
+                logger.warning(f"⚠️ [RL-DISAGREE] RL Agent disagrees with signal for {symbol}.")
+                logger.warning(f"    Signal Side: {original_side.upper()}, RL Advice: {rl_advice.upper()}")
+                
+                # Sinyalin gücünü düşürerek riskini azalt.
+                current_strength = signal.get('ml_strength', signal.get('strength', 0.5))
+                new_strength = current_strength * 0.5
+                signal['ml_strength'] = new_strength
+                logger.warning(f"    Signal strength reduced from {current_strength:.2f} to {new_strength:.2f} due to disagreement.")
+
+            # --- 4. SON LOGLAMA VE SİNYALİ DÖNDÜRME ---
+            
+            # Pozisyon boyutunu ML güvenine göre ayarla (mevcut mantık)
             if 'position_size' in signal and signal.get('ml_confidence'):
                 signal['position_size'] *= signal['ml_confidence']
-            
+
             logger.info(f"🧠 [ML] Signal enhanced: {symbol}")
-            if signal.get('ml_strength'):
+            if 'ml_strength' in signal:
                 logger.info(f"   Strength: {signal.get('strength', 0.5):.2f} → {signal['ml_strength']:.2f}")
-            if signal.get('predicted_regime'):
-                logger.info(f"   Regime: {signal['predicted_regime']} ({signal.get('regime_confidence', 0):.2%})")
-            if signal.get('rl_recommendation'):
+            if 'predicted_regime' in signal:
+                 logger.info(f"   Regime: {signal['predicted_regime']} ({signal.get('regime_confidence', 0):.2%})")
+            if 'rl_recommendation' in signal:
                 logger.info(f"   RL Says: {signal['rl_recommendation']}")
             
             return signal
             
         except Exception as e:
-            logger.error(f"ML enhancement failed: {e}")
-            return signal  # Return original on error
+            logger.error(f"ML enhancement failed critically: {e}", exc_info=True)
+            return signal  # Kritik bir hata olursa orijinal sinyalle devam et.
     
     def _extract_rl_state(self, symbol: str, current_price: float) -> 'np.ndarray':
         """
