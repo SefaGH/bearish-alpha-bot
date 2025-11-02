@@ -23,6 +23,52 @@ except ImportError:
     TORCH_AVAILABLE = False
     logger.warning("PyTorch not available. RL agent will use mock implementation.")
 
+# =========================================================================
+# === YENİ EKLENECEK BÖLÜM: Experience Replay Buffer ===
+# =========================================================================
+class ExperienceReplay:
+    """
+    A replay buffer for storing and sampling experiences for the RL agent.
+    Crucial for stabilizing the learning process by breaking correlations in data.
+    """
+    def __init__(self, buffer_size: int):
+        """
+        Initializes the experience replay buffer.
+
+        Args:
+            buffer_size (int): The maximum number of experiences to store.
+        """
+        self.buffer = deque(maxlen=buffer_size)
+        logger.info(f"Initialized ExperienceReplay buffer with max_size={buffer_size}")
+
+    def add_experience(self, state, action, reward, next_state, done):
+        """
+        Adds a new experience to the buffer.
+        """
+        self.buffer.append((state, action, reward, next_state, done))
+
+    def sample_batch(self, batch_size: int) -> List:
+        """
+        Samples a random batch of experiences from the buffer.
+
+        Args:
+            batch_size (int): The number of experiences to sample.
+
+        Returns:
+            A list of experience tuples, or an empty list if not enough samples.
+        """
+        if len(self.buffer) < batch_size:
+            return []
+        return random.sample(self.buffer, batch_size)
+
+    def __len__(self) -> int:
+        """
+        Returns the current number of experiences in the buffer.
+        """
+        return len(self.buffer)
+# =========================================================================
+# === YENİ BÖLÜM SONU ===
+# =========================================================================
 
 if TORCH_AVAILABLE:
     class DQNNetwork(nn.Module):
