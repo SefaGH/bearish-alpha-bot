@@ -186,20 +186,20 @@ class MLRegimePredictor:
             config_path = os.path.join(self.MODEL_DIR, "model_config.pkl")
             if os.path.exists(config_path):
                 model_configs = joblib.load(config_path)
-                logger.info("✅ Model configurations loaded.")
+                logger.info(f"✅ Model configurations loaded from: {config_path}")
             
             # Scaler'ı yükle
             scaler_path = os.path.join(self.MODEL_DIR, "scaler.pkl")
             if os.path.exists(scaler_path):
                 self.scaler = joblib.load(scaler_path)
-                logger.info("✅ Regime feature scaler loaded.")
+                logger.info(f"✅ Regime feature scaler loaded from: {scaler_path}")
             
             # Load Random Forest model
             rf_path = os.path.join(self.MODEL_DIR, "random_forest.pkl")
             if os.path.exists(rf_path) and RandomForestClassifier is not None:
                 self.models['random_forest'] = joblib.load(rf_path)
                 models_loaded += 1
-                logger.info("✅ Random Forest regime model loaded.")
+                logger.info(f"✅ Random Forest regime model loaded from: {rf_path}")
             
             # Load LSTM model (PyTorch)
             lstm_path = os.path.join(self.MODEL_DIR, "lstm_regime.pth")
@@ -208,22 +208,18 @@ class MLRegimePredictor:
                     import torch
                     from .neural_networks import LSTMRegimePredictor
                     
-                    # Get configuration from saved config or use defaults
                     lstm_config = model_configs.get('lstm', {
-                        'input_size': 50,
-                        'hidden_size': 128,
-                        'num_layers': 3,
-                        'num_classes': 3
+                        'input_size': 50, 'hidden_size': 128, 'num_layers': 3, 'num_classes': 3
                     })
                     
                     lstm_model = LSTMRegimePredictor(**lstm_config)
                     lstm_model.load_state_dict(torch.load(lstm_path, map_location='cpu'))
-                    lstm_model.eval()  # Set to evaluation mode
+                    lstm_model.eval()
                     self.models['lstm'] = lstm_model
                     models_loaded += 1
-                    logger.info(f"✅ LSTM regime model loaded with config: {lstm_config}")
+                    logger.info(f"✅ LSTM regime model loaded from: {lstm_path}")
                 except Exception as e:
-                    logger.error(f"Failed to load LSTM model: {e}", exc_info=True)
+                    logger.error(f"❌ Failed to load LSTM model from {lstm_path}: {e}", exc_info=True)
             
             # Load Transformer model (PyTorch)
             transformer_path = os.path.join(self.MODEL_DIR, "transformer_regime.pth")
@@ -232,36 +228,31 @@ class MLRegimePredictor:
                     import torch
                     from .neural_networks import TransformerRegimePredictor
                     
-                    # Get configuration from saved config or use defaults
                     transformer_config = model_configs.get('transformer', {
-                        'd_model': 50,
-                        'nhead': 2,
-                        'num_layers': 2,
-                        'num_classes': 3
+                        'd_model': 50, 'nhead': 2, 'num_layers': 2, 'num_classes': 3
                     })
                     
                     transformer_model = TransformerRegimePredictor(**transformer_config)
                     transformer_model.load_state_dict(torch.load(transformer_path, map_location='cpu'))
-                    transformer_model.eval()  # Set to evaluation mode
+                    transformer_model.eval()
                     self.models['transformer'] = transformer_model
                     models_loaded += 1
-                    logger.info(f"✅ Transformer regime model loaded with config: {transformer_config}")
+                    logger.info(f"✅ Transformer regime model loaded from: {transformer_path}")
                 except Exception as e:
-                    logger.error(f"Failed to load Transformer model: {e}", exc_info=True)
+                    logger.error(f"❌ Failed to load Transformer model from {transformer_path}: {e}", exc_info=True)
 
             if models_loaded > 0:
-                # === KÖK NEDEN ÇÖZÜMÜ BURADA ===
-                # 1. Sadece temel modelleri içeren bir kopya oluştur.
                 base_models_for_ensemble = {
-                    name: model for name, model in self.models.items() if name != 'ensemble'
+                    name: model for name, model in self.models.items() if model is not None and name != 'ensemble'
                 }
                 
-                # 2. Ensemble modelini SADECE bu temel modellerle oluştur.
-                self.models['ensemble'] = EnsembleRegimePredictor(base_models_for_ensemble)
-                # === ÇÖZÜM SONU ===
-
-                self.is_trained = True
-                logger.info(f"✅ {models_loaded} regime models loaded and ensemble created.")
+                if base_models_for_ensemble:
+                    self.models['ensemble'] = EnsembleRegimePredictor(base_models_for_ensemble)
+                    self.is_trained = True
+                    logger.info(f"✅ {len(base_models_for_ensemble)} regime models loaded and ensemble created.")
+                else:
+                    logger.warning("No base models were loaded, ensemble not created.")
+                    self.is_trained = False
             else:
                 logger.warning("No pre-trained regime models found.")
                 self.is_trained = False
