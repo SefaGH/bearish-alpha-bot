@@ -373,7 +373,7 @@ class MultiTimeframePricePredictor:
                 continue
                 
             # Extract features
-            features = self.feature_engine.extract_features(data)
+            features = self.feature_pipeline.extract_features(data)
             
             if features.empty:
                 logger.warning(f"No features extracted for timeframe {timeframe}")
@@ -389,7 +389,7 @@ class MultiTimeframePricePredictor:
                 'forecast': pred[0],
                 'uncertainty': unc[0],
                 'current_price': data['close'].iloc[-1],
-                'forecast_prices': data['close'].iloc[-1] * (1 + pred[0] / 100),  # Convert % to price
+                'forecast_prices': data['close'].iloc[-1] * (1 + pred[0] / 100),
                 'confidence_interval': self._calculate_confidence_interval(
                     data['close'].iloc[-1], pred[0], unc[0]
                 )
