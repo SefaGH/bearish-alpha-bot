@@ -988,23 +988,21 @@ class ProductionCoordinator:
             logger.error(f"🧠 [ML-INIT] Critical ML modules not found: {e}", exc_info=True)
             return {'success': False, 'reason': f'ML modules not available: {e}'}
 
-        # Get the entire 'ml' block from the main config
         ml_config = self.config.get('ml', {})
 
         # 1. Feature Engineering Pipeline (Dependency for other components)
         try:
-            self.feature_pipeline = FeatureEngineeringPipeline(config=ml_config)
+            # ✅ FIX: FeatureEngineeringPipeline does not take a 'config' argument.
+            self.feature_pipeline = FeatureEngineeringPipeline()
             ml_components.append('feature_pipeline')
             logger.info("✅ Feature engineering pipeline initialized.")
         except Exception as e:
             logger.error(f"❌ Failed to initialize FeatureEngineeringPipeline: {e}", exc_info=True)
-            # This is a critical component, so we should probably stop.
             return {'success': False, 'reason': 'Failed to initialize FeatureEngineeringPipeline'}
 
         # 2. Price Prediction Engine
         if ml_config.get('price_prediction_enabled', True):
             try:
-                # ✅ FIX: Instantiate AdvancedPricePredictionEngine here with required dependencies
                 self.price_engine = AdvancedPricePredictionEngine(
                     market_data_pipeline=self.market_data_pipeline,
                     feature_pipeline=self.feature_pipeline,
@@ -1022,7 +1020,6 @@ class ProductionCoordinator:
         # 3. Regime Predictor
         if ml_config.get('regime_prediction_enabled', True):
             try:
-                # ✅ FIX: Instantiate MLRegimePredictor here with required dependencies
                 self.regime_predictor = MLRegimePredictor(
                     feature_pipeline=self.feature_pipeline,
                     config=ml_config
@@ -1040,7 +1037,6 @@ class ProductionCoordinator:
         rl_config = ml_config.get('reinforcement_learning', {})
         if rl_config.get('enabled', True):
             try:
-                # Assuming state_size is known or can be derived from feature_pipeline
                 state_size = 42 
                 self.rl_agent = TradingRLAgent(state_size=state_size, action_size=3, config=rl_config)
                 model_path = self.config.get('model_path', 'data/models')
