@@ -1027,9 +1027,8 @@ class ProductionCoordinator:
             
             # 4. Initialize and Load Reinforcement Learning Agent
             try:
-                logger.info("🧠 [ML-INIT] Initializing Reinforcement Learning agent...")
                 self.rl_agent = TradingRLAgent(
-                    state_size=self.config.get('rl_state_size', 50), 
+                    state_size=42, # <-- DEĞİŞİKLİK BURADA: 50'den 42'ye düşürüldü.
                     action_size=self.config.get('rl_action_size', 3)
                 )
                 self.experience_replay = ExperienceReplay(max_size=100000)
