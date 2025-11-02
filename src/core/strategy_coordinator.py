@@ -518,23 +518,62 @@ class StrategyCoordinator:
             logger.error(f"ML enhancement failed critically: {e}", exc_info=True)
             return signal  # Kritik bir hata olursa orijinal sinyalle devam et.
     
-    def _extract_rl_state(self, symbol: str, current_price: float) -> 'np.ndarray':
+    async def _extract_rl_state(self, symbol: str, current_price: float) -> Optional['np.ndarray']:
         """
-        Extract feature vector for RL agent state.
+        Extracts a real feature vector from market data for the RL agent state.
         
+        This method replaces the random placeholder data with a standardized
+        feature set derived from the market data pipeline and feature engine.
+
         Args:
-            symbol: Trading symbol
-            current_price: Current price
-            
+            symbol: The trading symbol.
+            current_price: The current price of the asset (not used directly but good practice).
+
         Returns:
-            State feature vector
+            A numpy array representing the agent's state, or None if data is unavailable.
         """
         import numpy as np
-        
-        # In a real implementation, this would extract actual features
-        # For now, return a placeholder state
-        state = np.random.randn(50)  # 50-dimensional state
-        return state
+
+        # 1. Gerekli bileşenlerin varlığını kontrol et
+        if not hasattr(self, 'market_data_pipeline') or not self.market_data_pipeline:
+            logger.warning("[RL-STATE] MarketDataPipeline not available. Cannot create RL state.")
+            return None
+        if not hasattr(self, 'feature_pipeline') or not self.feature_pipeline:
+            logger.warning("[RL-STATE] FeatureEngineeringPipeline not available. Cannot create RL state.")
+            return None
+
+        try:
+            # 2. MarketDataPipeline'dan en güncel, indikatörlü veriyi al
+            # Stratejilerle tutarlı olması için '30m' zaman dilimini kullanıyoruz.
+            df = await self.market_data_pipeline.get_latest_ohlcv(symbol, "30m")
+
+            if df is None or df.empty:
+                logger.warning(f"[RL-STATE] No 30m data available for {symbol} to create RL state.")
+                return None
+
+            # 3. FeatureEngineeringPipeline kullanarak standart özellikleri çıkar
+            # NOT: Bu metot zaten içinde 'add_indicators' çağırıyor, bu yüzden ek indikatör eklemeye gerek yok.
+            features_df = self.feature_pipeline.extract_features(df)
+            
+            if features_df.empty:
+                logger.warning(f"[RL-STATE] Feature extraction failed for {symbol}.")
+                return None
+            
+            # 4. En son (en güncel) özellik satırını al ve eksik verileri temizle
+            latest_features = features_df.iloc[-1].values
+            
+            # NaN (Not a Number) değerler varsa, RL modeli hata verir.
+            # Şimdilik bu durumu loglayıp state oluşturmuyoruz.
+            if np.isnan(latest_features).any():
+                logger.warning(f"[RL-STATE] Latest features for {symbol} contain NaN values. Skipping state creation.")
+                return None
+            
+            logger.debug(f"[RL-STATE] Successfully created RL state for {symbol} with {len(latest_features)} features.")
+            return latest_features
+
+        except Exception as e:
+            logger.error(f"❌ [RL-STATE] Critical error extracting RL state for {symbol}: {e}", exc_info=True)
+            return None
     
     async def resolve_signal_conflicts(self, new_signal: Dict, 
                                       conflicting_signals: List[Dict],
