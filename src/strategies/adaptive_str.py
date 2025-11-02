@@ -198,344 +198,167 @@ class AdaptiveShortTheRip(ShortTheRip):
                market_data: Optional[Dict] = None,
                ml_context=None) -> Optional[Dict]:
         """
-        Generate adaptive trading signal based on market regime and ML insights.
-        
-        Args:
-            df_30m: 30-minute OHLCV dataframe with indicators
-            df_1h: Optional 1-hour OHLCV dataframe with indicators
-            regime_data: Optional market regime data for adaptation
-                        If None, falls back to base strategy
-            symbol: Symbol name for debug logging
-            market_data: Optional dictionary containing all available timeframes
-                        Format: {'1m': df, '5m': df, '30m': df, '1h': df, '4h': df}
-                        Allows strategies to access additional timeframes if needed
-            ml_context: Optional MLContext with ML predictions and insights
-        
-        Returns:
-            Signal dictionary or None
+        Generate adaptive trading signal for a short position based on market regime and ML insights.
+        Logs the specific reason if no signal is generated for transparency.
         """
-        # Log symbol for debugging multi-symbol trading
         symbol_display = symbol or "UNKNOWN"
-        logger.info(f"[STR-DEBUG] {symbol_display}")
-        
-        # --- Kapsamlı Veri Doğrulama ---
-        if self.debug_logging:
-            validation_passed, reason = self._validate_input_data(df_30m, df_1h, regime_data, symbol_display)
-            if not validation_passed:
-                logger.warning(f"[{self.strategy_name.upper()}-REJECT] {symbol_display} - {reason}")
-                return None
-        
-        # Safely get last row
+        # ✅ NEW: Consistent logging prefix for clarity.
+        log_prefix = f"[{self.strategy_name.upper()}/{symbol_display}]"
+
+        # --- Data Validation Step ---
+        validation_passed, reason = self._validate_input_data(df_30m, df_1h, regime_data, symbol_display)
+        if not validation_passed:
+            # ✅ NEW: Trace Log for Data Validation Failure
+            logger.info(f"🚫 {log_prefix} No Signal: {reason}")
+            return None
+
         try:
             last30 = df_30m.dropna().iloc[-1]
         except IndexError:
-            logger.info(f"  ❌ Insufficient 30m data")
+            # ✅ NEW: Trace Log for Insufficient Data
+            logger.info(f"🚫 {log_prefix} No Signal: Insufficient 30m data to generate a signal.")
             return None
-        
-        # 1h data is optional for adaptive strategy
-        last1h = None
-        if df_1h is not None and not df_1h.empty:
-            try:
-                last1h = df_1h.dropna().iloc[-1]
-            except IndexError:
-                # Continue without 1h data
-                pass
-        
-        # Analyze market regime with available data
+
         if regime_data is None:
-            if last1h is not None:
-                # Try to analyze regime if we have regime analyzer
-                if self.regime_analyzer:
-                    try:
-                        regime_data = self.regime_analyzer.analyze_regime(last30, last1h)
-                    except Exception as e:
-                        logger.debug(f"Failed to analyze regime: {e}")
-                        regime_data = None
-            
-            if regime_data is None:
-                # Use default neutral regime
-                regime_data = DEFAULT_MARKET_REGIME.copy()
-        
+            regime_data = DEFAULT_MARKET_REGIME.copy()
+
         try:
-            # Ensure we have valid data with critical columns
+            # --- Initial Data Extraction ---
             if 'rsi' not in last30.index or 'close' not in last30.index:
-                logger.info(f"  ❌ Missing required columns (RSI or close)")
+                # ✅ NEW: Trace Log for Missing Critical Columns
+                logger.warning(f"🚫 {log_prefix} No Signal: 'rsi' or 'close' column missing in the latest data.")
                 return None
             
-            # Get price and RSI data
             close_price = float(last30['close'])
             rsi_val = float(last30['rsi'])
-            ema_fast = float(last30.get('ema_fast', 0))
             
-            # Get adaptive RSI threshold
             market_regime = {
                 'trend': regime_data.get('trend', 'neutral'),
                 'momentum': regime_data.get('momentum', 'sideways'),
                 'volatility': regime_data.get('volatility', 'normal')
             }
             
-            adaptive_rsi_threshold = self.get_adaptive_rsi_threshold(market_regime)
+            # --- Adaptive Threshold Calculation ---
+            adaptive_rsi_threshold = self.get_symbol_specific_threshold(symbol_display)
+            if adaptive_rsi_threshold is not None:
+                if self.debug_logging: logger.info(f"ℹ️ {log_prefix} Using symbol-specific RSI threshold: {adaptive_rsi_threshold:.2f}")
+            else:
+                adaptive_rsi_threshold = self.get_adaptive_rsi_threshold(market_regime)
 
-            # --- Detaylı Teşhis Logları (Tam Hali) ---
+            # --- Core Signal Condition Checks with Tracing ---
             if self.debug_logging:
-                logger.info(f"🔍 [{self.strategy_name.upper()}-CHECK] {symbol_display}")
-                logger.info(f"  - Market Regime: {market_regime.get('trend', 'N/A')}")
-                logger.info(f"  - Current Price: ${close_price:,.2f}")
-                logger.info(f"  - Current 30m RSI: {rsi_val:.2f}")
-                logger.info(f"  - Adaptive RSI Threshold: {adaptive_rsi_threshold:.2f}")
+                logger.info(f"🔍 {log_prefix} Checking conditions...")
+                logger.info(f"  - Regime: {market_regime['trend']}, Volatility: {market_regime['volatility']}")
+                logger.info(f"  - Price: ${close_price:,.2f}, RSI: {rsi_val:.2f}")
+                logger.info(f"  - RSI Threshold: {adaptive_rsi_threshold:.2f}")
 
-            # 1. Ana Koşul: RSI
-            rsi_condition = rsi_val >= adaptive_rsi_threshold
-            if self.debug_logging:
-                logger.info(f"  - Condition 'RSI >= Threshold': {rsi_condition}")
-            
-            if not rsi_condition:
-                if self.debug_logging: logger.info(f"  └─ ❌ REJECT: RSI ({rsi_val:.2f}) is below the adaptive threshold ({adaptive_rsi_threshold:.2f}).")
+            # 1. RSI Condition Check
+            if rsi_val < adaptive_rsi_threshold:
+                # ✅ NEW: Trace Log for RSI Condition Failure
+                logger.info(f"🚫 {log_prefix} No Signal: RSI ({rsi_val:.2f}) is below the threshold ({adaptive_rsi_threshold:.2f}).")
                 return None
 
-            # 2. Teyit Koşulu: EMA Hizalaması
+            # 2. EMA Alignment Check
             trend_strength = regime_data.get('micro_trend_strength', 0.5)
             ema_params = self.adapt_ema_requirements(trend_strength)
-            ema_ok = True
             if ema_params['require_strict_ema_align']:
                 ema21 = float(last30['ema21'])
                 ema50 = float(last30['ema50'])
                 ema200 = float(last30['ema200'])
-                ema_ok = ema21 < ema50 <= ema200
-                if self.debug_logging:
-                    logger.info(f"  - Condition 'Strict EMA Align (21<50<=200)': {ema_ok} (Values: {ema21:.1f} < {ema50:.1f} <= {ema200:.1f})")
+                if not (ema21 < ema50 <= ema200):
+                    # ✅ NEW: Trace Log for EMA Alignment Failure
+                    logger.info(f"🚫 {log_prefix} No Signal: Strict EMA alignment failed (21={ema21:.1f}, 50={ema50:.1f}, 200={ema200:.1f}).")
+                    return None
             
-            if not ema_ok:
-                if self.debug_logging: logger.info(f"  └─ ❌ REJECT: EMA alignment check failed.")
-                return None
-            
-            if self.debug_logging: logger.info("  └─ ✅ ACCEPT: All conditions met. Proceeding to signal generation.")
-            
-            # Get symbol-specific threshold override if available
-            symbol_specific_threshold = self.get_symbol_specific_threshold(symbol_display)
-            if symbol_specific_threshold is not None:
-                adaptive_rsi_threshold = symbol_specific_threshold
-                logger.info(f"  📌 Using symbol-specific RSI threshold: {adaptive_rsi_threshold:.2f}")
-            
-            # Log current state
-            logger.info(f"  RSI: {rsi_val:.2f} (threshold: {adaptive_rsi_threshold:.2f})")
-            
-            # Check RSI condition
-            if rsi_val < adaptive_rsi_threshold:
-                logger.info(f"  ❌ Signal: NONE - RSI {rsi_val:.2f} < threshold {adaptive_rsi_threshold:.2f}")
-                return None
-            else:
-                logger.info(f"  ✅ RSI check passed: {rsi_val:.2f} >= {adaptive_rsi_threshold:.2f}")
-            
-            # Get trend strength for EMA adaptation
-            trend_strength = regime_data.get('micro_trend_strength', 0.5)
-            ema_params = self.adapt_ema_requirements(trend_strength)
-            
-            # Check EMA alignment if required
-            ema_ok = True
-            if ema_params['require_strict_ema_align']:
-                if all(col in last30.index for col in ('ema21','ema50','ema200')):
-                    ema21 = float(last30['ema21'])
-                    ema50 = float(last30['ema50'])
-                    ema200 = float(last30['ema200'])
-                    # Strict alignment: 21 < 50 <= 200 (bearish alignment)
-                    ema_ok = ema21 < ema50 <= ema200
-                    ema_status = "✅" if ema_ok else "❌"
-                    logger.info(f"  EMA Align: {ema_status} (21={ema21:.2f}, 50={ema50:.2f}, 200={ema200:.2f})")
-                else:
-                    logger.info(f"  ⚠️ EMA Align: Missing EMA columns")
-                    ema_ok = False
-            else:
-                logger.info(f"  EMA Align: ✅ (not required for this regime)")
-            
-            if not ema_ok:
-                logger.info(f"  ❌ Signal: NONE - EMA alignment check failed")
-                return None
-            
-            # Check volume if available
-            volume_ok = True
-            if 'volume' in last30.index:
-                volume_val = float(last30['volume'])
-                logger.info(f"  Volume: {volume_val:.2f}")
-                # Volume check can be added here if needed
-                volume_ok = volume_val > 0
-            else:
-                logger.info(f"  Volume: N/A")
-            
-            if not volume_ok:
-                logger.info(f"  ❌ Signal: NONE - Volume check failed")
-                return None
-            
-            # ===== ML-AWARE DECISION MAKING (NEW) =====
-            # Base signal would be SELL (short) since we passed all checks above
-            base_signal_direction = 'short'
-            position_size_modifier = 1.0  # Default: no adjustment
-            ml_enhanced = False
-            
-            # Check if we have healthy ML context
-            MIN_ML_CONFIDENCE_THRESHOLD = 0.60 # Güvenilir ML tahmini için minimum eşik
+            logger.info(f"✅ {log_prefix} Base conditions met. Proceeding to ML & Risk checks.")
 
-            if ml_context and \
-               ml_context.get('is_healthy', False) and \
-               ml_context.get('regime_confidence', 0) >= MIN_ML_CONFIDENCE_THRESHOLD:
-                
+            # --- ML-Aware Decision Making ---
+            position_size_modifier = 1.0
+            ml_enhanced = False
+            MIN_ML_CONFIDENCE_THRESHOLD = 0.60
+
+            if ml_context and ml_context.get('is_healthy', False) and ml_context.get('regime_confidence', 0) >= MIN_ML_CONFIDENCE_THRESHOLD:
                 ml_enhanced = True
                 
-                # VETO: ML strongly disagrees with our short signal
+                # ML VETO Check 1: Bullish Regime
                 if ml_context.get('regime_prediction') == 'bullish' and ml_context.get('regime_confidence', 0) > 0.7:
-                    if self.debug_logging:
-                        logger.info(
-                            f"  🧠 [ML-VETO] {symbol_display}: ML regime is BULLISH "
-                            f"(conf={ml_context.get('regime_confidence', 0):.2%}), vetoing SHORT signal"
-                        )
+                    # ✅ NEW: Trace Log for ML Veto
+                    logger.info(f"🚫 {log_prefix} No Signal: ML VETO - Strong bullish regime detected (confidence: {ml_context.get('regime_confidence', 0):.2%}).")
                     return None
                 
+                # ML VETO Check 2: Price Up Prediction
                 if ml_context.get('price_direction') == 'up' and ml_context.get('price_confidence', 0) > 0.7:
-                    if self.debug_logging:
-                        logger.info(
-                            f"  🧠 [ML-VETO] {symbol_display}: ML predicts price UP "
-                            f"(conf={ml_context.get('price_confidence', 0):.2%}), vetoing SHORT signal"
-                        )
+                    # ✅ NEW: Trace Log for ML Veto
+                    logger.info(f"🚫 {log_prefix} No Signal: ML VETO - Strong price up prediction (confidence: {ml_context.get('price_confidence', 0):.2%}).")
                     return None
                 
-                # CONFIRMATION: ML agrees with our short signal - increase position size
-                if (ml_context.get('regime_prediction') == 'bearish' and ml_context.get('regime_confidence', 0) > 0.6) or \
-                   (ml_context.get('price_direction') == 'down' and ml_context.get('price_confidence', 0) > 0.6):
-                    # Increase position size by up to 25% based on consensus
+                # ML Confirmation / Caution
+                if (ml_context.get('regime_prediction') == 'bearish') or (ml_context.get('price_direction') == 'down'):
                     position_size_modifier = 1.0 + (0.25 * ml_context.get('consensus_score', 0))
-                    if self.debug_logging:
-                        logger.info(
-                            f"  🧠 [ML-CONFIRM] {symbol_display}: ML confirms SHORT signal "
-                            f"(regime={ml_context.get('regime_prediction')}, price={ml_context.get('price_direction')}), "
-                            f"increasing position size by {(position_size_modifier - 1.0) * 100:.1f}%"
-                        )
-                
-                # WEAK CONSENSUS: Reduce position size if ML is uncertain
-                if ml_context.get('consensus_score', 1.0) < 0.5:
-                    position_size_modifier *= 0.75  # Reduce by 25%
-                    if self.debug_logging:
-                        logger.info(
-                            f"  🧠 [ML-CAUTION] {symbol_display}: Low ML consensus "
-                            f"({ml_context.get('consensus_score', 0):.2%}), reducing position size by 25%"
-                        )
-            elif ml_context and not ml_context.get('is_healthy', False):
-                if self.debug_logging:
-                    logger.info(
-                        f"  🧠 [ML-UNAVAILABLE] {symbol_display}: ML context unhealthy, "
-                        f"proceeding with base strategy only"
-                    )
-            
-            # Calculate position size adjustment
+                    if self.debug_logging: logger.info(f"🧠 {log_prefix} ML Confirmation: Increasing position size modifier to {position_size_modifier:.2f}x.")
+                elif ml_context.get('consensus_score', 1.0) < 0.5:
+                    position_size_modifier *= 0.75
+                    if self.debug_logging: logger.info(f"🧠 {log_prefix} ML Caution: Reducing position size modifier to {position_size_modifier:.2f}x.")
+
+            # --- Final Risk/Reward and Position Sizing ---
             volatility = regime_data.get('volatility', 'normal')
-            position_mult = self.calculate_dynamic_position_size(volatility)
+            position_mult = self.calculate_dynamic_position_size(volatility) * position_size_modifier
             
-            # Apply ML-based position size modifier
-            position_mult *= position_size_modifier
-            
-            # ===== ATR-BASED TP/SL CALCULATION FOR SHORT =====
             entry_price = float(last30['close'])
-            atr_value = float(last30['atr']) if 'atr' in last30.index else entry_price * 0.02
-            logger.info(f"  ATR: {atr_value:.4f}")
+            atr_value = float(last30.get('atr', entry_price * 0.02))
             
-            # Get ATR multipliers from config
             tp_atr_mult = float(self.config.get("tp_atr_mult", 3.0))
             sl_atr_mult = float(self.config.get("sl_atr_mult", 1.5))
             
-            # Calculate TP and SL from ATR (SHORT: TP below entry, SL above entry)
             target_price = entry_price - (atr_value * tp_atr_mult)
             stop_price = entry_price + (atr_value * sl_atr_mult)
             
-            # Safety boundaries
             min_tp_pct = float(self.config.get("min_tp_pct", 0.010))
             max_sl_pct = float(self.config.get("max_sl_pct", 0.020))
             
-            # Enforce minimum TP (for short, target is below entry)
-            if (entry_price - target_price) / entry_price < min_tp_pct:
-                target_price = entry_price * (1 - min_tp_pct)
+            target_price = min(target_price, entry_price * (1 - min_tp_pct))
+            stop_price = max(stop_price, entry_price * (1 + max_sl_pct))
             
-            # Enforce maximum SL (for short, stop is above entry)
-            if (stop_price - entry_price) / entry_price > max_sl_pct:
-                stop_price = entry_price * (1 + max_sl_pct)
-            
-            # Calculate and validate R/R ratio
-            rr_ratio = (entry_price - target_price) / (stop_price - entry_price)
-
-            # --- 🔥 IYILESTIRME: Olası 'division by zero' hatasını önle ---
             risk_amount = stop_price - entry_price
             reward_amount = entry_price - target_price
-            if risk_amount <= 0:
-                rr_ratio = float('inf') # Risk yoksa R/R sonsuzdur
-            else:
-                rr_ratio = reward_amount / risk_amount
-            
-            # --- 🔥 YENİ EKLENECEK BÖLÜM BAŞLANGICI 🔥 ---
-            min_rr_ratio = self.config.get('min_rr_ratio', 1.2) # config'den min oranı oku, yoksa 1.2 kullan
+            rr_ratio = (reward_amount / risk_amount) if risk_amount > 0 else float('inf')
+
+            # 3. R/R Ratio Check
+            min_rr_ratio = self.config.get('min_rr_ratio', 1.2)
             if rr_ratio < min_rr_ratio:
-                if self.debug_logging: 
-                    logger.info(f"  └─ ❌ REJECT: R/R ratio ({rr_ratio:.2f}) is below minimum required ({min_rr_ratio}).")
+                # ✅ NEW: Trace Log for R/R Ratio Failure
+                logger.info(f"🚫 {log_prefix} No Signal: Calculated R/R Ratio ({rr_ratio:.2f}) is below the minimum required ({min_rr_ratio}).")
                 return None
-            # --- 🔥 YENİ EKLENECEK BÖLÜM SONU 🔥 ---
+
+            # --- Signal Generation ---
+            logger.info(f"✅ {log_prefix} All checks passed. Generating SELL signal.")
             
-            # Calculate percentages for signal
-            tp_pct = (entry_price - target_price) / entry_price
-            sl_pct = (stop_price - entry_price) / entry_price
-            
-            # Build adaptive signal with ATR-based TP/SL
             signal = {
-                "strategy_name": self.strategy_name,
-                "side": "sell",
-                "entry": entry_price,
-                "stop": stop_price,
-                "target": target_price,
-                "reason": f"Adaptive RSI overbought {rsi_val:.1f} (threshold: {adaptive_rsi_threshold:.1f}, regime: {market_regime['trend']}, R/R: {rr_ratio:.2f})",
-                "tp_pct": tp_pct,
-                "sl_pct": sl_pct,
-                "tp_atr_mult": tp_atr_mult,
-                "sl_atr_mult": sl_atr_mult,
-                "atr": atr_value,
-                "rr_ratio": rr_ratio,
-                "is_adaptive": True,
-                "adaptive_threshold": adaptive_rsi_threshold,
-                "position_multiplier": position_mult,
-                "market_regime": market_regime,
-                "ema_params": ema_params,
-                "ml_enhanced": ml_enhanced
+                "strategy_name": self.strategy_name, "side": "sell", "symbol": symbol,
+                "entry": entry_price, "stop": stop_price, "target": target_price,
+                "reason": f"Adaptive RSI {rsi_val:.1f} >= {adaptive_rsi_threshold:.1f}",
+                "rr_ratio": rr_ratio, "is_adaptive": True, "position_multiplier": position_mult,
+                "ml_enhanced": ml_enhanced, "strategy_type": 'adaptive'
             }
             
-            # Add ML metadata if available
-            if ml_context and ml_context.get('is_healthy', False):
-                signal['ml_regime'] = ml_context.get('regime_prediction')
-                signal['ml_regime_confidence'] = ml_context.get('regime_confidence')
-                signal['ml_price_direction'] = ml_context.get('price_direction')
+            if ml_enhanced:
                 signal['ml_consensus'] = ml_context.get('consensus_score')
                 signal['ml_position_modifier'] = position_size_modifier
             
-            logger.info(f"  ✅ Signal: SELL (RSI {rsi_val:.1f} >= {adaptive_rsi_threshold:.1f}, regime={market_regime['trend']})")
-            if ml_enhanced:
-                logger.info(f"  🧠 ML-Enhanced: regime={ml_context.get('regime_prediction')}, price={ml_context.get('price_direction')}, modifier={position_size_modifier:.2f}x")
-            logger.info(f"  Entry: ${entry_price:.2f}, Target: ${target_price:.2f}, Stop: ${stop_price:.2f}, R/R: {rr_ratio:.2f}")
-            
-            # Strategy type ekle ve signal'i döndür
-            signal['strategy_type'] = 'adaptive'
-            signal['symbol'] = symbol  # Add symbol field required by StrategyCoordinator
             return signal
             
         except Exception as e:
-            logger.error(f"Adaptive strategy failed for {symbol_display}: {e}", exc_info=True)
-            
-            # FALLBACK TO BASE STRATEGY
+            logger.error(f"💥 {log_prefix} Critical error during signal generation: {e}", exc_info=True)
+            # Fallback logic remains unchanged
             try:
-                # Base ShortTheRip için
                 if hasattr(super(), 'signal'):
                     base_signal = super().signal(df_30m, df_1h)
                     if base_signal:
-                        base_signal['strategy_type'] = 'base_fallback'
-                        base_signal['fallback_reason'] = str(e)
-                        base_signal['symbol'] = symbol  # Add symbol field for fallback signals
-                        logger.info("✅ Fallback to base strategy successful")
+                        base_signal.update({'strategy_type': 'base_fallback', 'fallback_reason': str(e), 'symbol': symbol})
+                        logger.warning(f"⚠️ {log_prefix} Fallback to base strategy successful.")
                         return base_signal
             except Exception as fallback_error:
-                logger.error(f"Base strategy also failed: {fallback_error}")
+                logger.error(f"💥 {log_prefix} Fallback to base strategy also failed: {fallback_error}")
                 
         return None
     
