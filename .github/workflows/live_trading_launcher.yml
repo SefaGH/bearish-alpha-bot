@@ -431,27 +431,27 @@ jobs:
 
           if [ -n "$DUR_INPUT" ]; then
             NORMALIZED_DURATION=$(python - <<'PY' "$DUR_INPUT"
-import sys, re
-s = sys.argv[1].strip()
-# Accept integer, float, scientific, or suffix h/m/s
-m = re.match(r'^\s*([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*([hmsHMS])?\s*$', s)
-if not m:
-    # invalid format -> return empty (outer shell will treat as error)
-    sys.exit(0)
-num = float(m.group(1))
-unit = m.group(2)
-if not unit:
-    print(str(int(round(num))), end="")
-else:
-    unit = unit.lower()
-    if unit == 'h':
-        print(str(int(round(num * 3600))), end="")
-    elif unit == 'm':
-        print(str(int(round(num * 60))), end="")
-    else:
-        print(str(int(round(num))), end="")
-PY
-)
+          import sys, re
+          s = sys.argv[1].strip()
+          # Accept integer, float, scientific, or suffix h/m/s
+          m = re.match(r'^\s*([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*([hmsHMS])?\s*$', s)
+          if not m:
+              # invalid format -> return empty (outer shell will treat as error)
+              sys.exit(0)
+          num = float(m.group(1))
+          unit = m.group(2)
+          if not unit:
+              print(str(int(round(num))), end="")
+          else:
+              unit = unit.lower()
+              if unit == 'h':
+                  print(str(int(round(num * 3600))), end="")
+              elif unit == 'm':
+                  print(str(int(round(num * 60))), end="")
+              else:
+                  print(str(int(round(num))), end="")
+          PY
+          )
             if [ -n "$NORMALIZED_DURATION" ]; then
               duration_arg="--duration $NORMALIZED_DURATION"
             else
