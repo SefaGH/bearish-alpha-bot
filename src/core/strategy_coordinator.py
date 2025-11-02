@@ -446,23 +446,29 @@ class StrategyCoordinator:
             original_side = signal.get('side').lower()
 
             # --- 1. ML ZENGİNLEŞTİRMESİ (MEVCUT YAPI KORUNUYOR) ---
-            # Bu blok, ana zenginleştirme verilerini alır.
             try:
                 enhancement = await self.ml_integration.enhance_strategy_signal(
                     symbol, signal, current_price
                 )
-                signal.update(enhancement) # Gelen tüm verileri sinyale ekle
-                
+                signal.update(enhancement)
             except Exception as e:
                 logger.debug(f"ML strategy integration failed: {e}")
 
             # --- 2. RL AGENT'IN AYRI OLARAK ÇAĞRILMASI VE KONTROLÜ ---
-            # Mevcut yapı, RL'i ayrı bir adımda çağırıyor, bu yapıyı koruyalım.
             rl_advice = None
             if hasattr(self, 'rl_agent') and self.rl_agent:
                 try:
                     # ✅ DÜZELTME: 'await' eklendi.
                     state_features = await self._extract_rl_state(symbol, current_price)
+                    
+                    # 💡 YENİ LOGLAMA: Ajanın "gördüğü" durumu logla
+                    if state_features is not None:
+                        logger.info(f"🤖 [RL-DEBUG] State vector for {symbol} (first 5 features): {np.round(state_features[:5], 4)}")
+                        logger.info(f"🤖 [RL-DEBUG] Original Signal: {original_side.upper()}, Strategy: {signal.get('strategy_name')}")
+                        logger.info(f"🤖 [RL-DEBUG] Market Regime: {signal.get('predicted_regime', 'neutral')}")
+                    else:
+                        logger.warning(f"🤖 [RL-DEBUG] State features are None for {symbol}. RL Agent cannot make a decision.")
+
                     rl_action_index = self.rl_agent.act(
                         state_features,
                         market_regime=signal.get('predicted_regime', 'neutral'),
@@ -470,21 +476,21 @@ class StrategyCoordinator:
                     )
                     rl_advice_str = ['buy', 'hold', 'sell'][rl_action_index]
                     signal['rl_recommendation'] = rl_advice_str
-                    rl_advice = rl_advice_str.lower() # Karşılaştırma için küçük harf
+                    rl_advice = rl_advice_str.lower()
+                    
+                    # 💡 YENİ LOGLAMA: Ajanın kararını logla
+                    logger.info(f"🤖 [RL-DECISION] For {symbol}, Agent decided: {rl_advice.upper()}")
+
                 except Exception as e:
-                    logger.debug(f"RL recommendation failed: {e}")
+                    logger.warning(f"RL recommendation failed: {e}", exc_info=True)
 
             # --- 3. RL VETO VE ANLAŞMAZLIK KONTROLLERİ ---
-            # Bu blok, RL Agent'ın kararını kesin bir filtre olarak uygular.
-            
-            # VETO (HARD GATE): Eğer RL Agent 'hold' diyorsa, sinyali kesin olarak reddet.
             if rl_advice == 'hold':
                 logger.warning(f"🤖 [RL-VETO] Signal for {symbol} rejected. Reason: RL Agent advised 'hold'.")
                 signal['ml_blocked'] = True
                 signal['ml_rejection_reason'] = 'RL VETO (HOLD)'
-                return None # Sinyali burada kes ve None döndür.
+                return None
 
-            # ANLAŞMAZLIK (SOFT GATE): Eğer RL Agent sinyalin tersini söylüyorsa.
             is_opposite = (
                 (original_side in ['buy', 'long'] and rl_advice in ['sell', 'short']) or
                 (original_side in ['sell', 'short'] and rl_advice in ['buy', 'long'])
@@ -493,15 +499,12 @@ class StrategyCoordinator:
                 logger.warning(f"⚠️ [RL-DISAGREE] RL Agent disagrees with signal for {symbol}.")
                 logger.warning(f"    Signal Side: {original_side.upper()}, RL Advice: {rl_advice.upper()}")
                 
-                # Sinyalin gücünü düşürerek riskini azalt.
                 current_strength = signal.get('ml_strength', signal.get('strength', 0.5))
                 new_strength = current_strength * 0.5
                 signal['ml_strength'] = new_strength
                 logger.warning(f"    Signal strength reduced from {current_strength:.2f} to {new_strength:.2f} due to disagreement.")
 
             # --- 4. SON LOGLAMA VE SİNYALİ DÖNDÜRME ---
-            
-            # Pozisyon boyutunu ML güvenine göre ayarla (mevcut mantık)
             if 'position_size' in signal and signal.get('ml_confidence'):
                 signal['position_size'] *= signal['ml_confidence']
 
@@ -517,7 +520,7 @@ class StrategyCoordinator:
             
         except Exception as e:
             logger.error(f"ML enhancement failed critically: {e}", exc_info=True)
-            return signal  # Kritik bir hata olursa orijinal sinyalle devam et.
+            return signal
     
     async def _extract_rl_state(self, symbol: str, current_price: float) -> Optional['np.ndarray']:
         """
