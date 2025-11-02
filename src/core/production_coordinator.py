@@ -1025,15 +1025,28 @@ class ProductionCoordinator:
             else:
                  logger.warning("⚠️ Regime predictor not provided to coordinator.")
             
-            # 4. Initialize Reinforcement Learning Agent
+            # 4. Initialize and Load Reinforcement Learning Agent
             try:
-                self.rl_agent = TradingRLAgent(state_size=50, action_size=3, learning_rate=0.001)
+                logger.info("🧠 [ML-INIT] Initializing Reinforcement Learning agent...")
+                self.rl_agent = TradingRLAgent(
+                    state_size=self.config.get('rl_state_size', 50), 
+                    action_size=self.config.get('rl_action_size', 3)
+                )
                 self.experience_replay = ExperienceReplay(max_size=100000)
                 self.rl_agent.set_memory(self.experience_replay)
+                
+                # Load the trained model
+                model_path = os.path.join(self.config.get('model_path', 'data/models'), 'rl_agent_final.pth')
+                
+                # Bu metodun içinde artık detaylı hata kontrolü ve loglama var.
+                self.rl_agent.load_model(model_path)
+                
                 ml_components.append('rl_agent')
-                logger.info("✅ Reinforcement learning agent initialized")
+                # Başarı mesajı artık modelin yüklendiğini de belirtiyor.
+                logger.info("✅ Reinforcement learning agent initialized and model loaded.")
+
             except Exception as e:
-                logger.warning(f"⚠️ RL agent init failed: {e}")
+                logger.warning(f"⚠️ RL agent initialization or model loading failed: {e}")
             
             # 5. Initialize ML Strategy Integration Manager
             try:
