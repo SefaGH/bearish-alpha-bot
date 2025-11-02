@@ -258,4 +258,3 @@ ml:
       lstm: 0.4
       transformer: 0.4
       random_forest: 0.2
-```
