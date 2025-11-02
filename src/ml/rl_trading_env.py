@@ -40,8 +40,8 @@ class RLTradingEnv:
         self.initial_balance = initial_balance
         self.fee = fee
         
-        # State dimensions: features + portfolio state (1 for balance, 1 for position)
-        self.state_dim = len(features_df.columns) + 2 
+        # State dimensions: ONLY features. Portfolio state is removed.
+        self.state_dim = len(features_df.columns) 
         self.action_dim = 3  # 0: Hold, 1: Buy, 2: Sell
 
         self.reset()
@@ -64,18 +64,10 @@ class RLTradingEnv:
         """
         Constructs the state array for the current step.
 
-        The state includes market data (from features) and portfolio status.
+        The state now consists ONLY of the market features.
         """
-        # === GÜNCELLEME: Durum (state) sadece özelliklerden oluşur ===
         market_state = self.features_df.iloc[self._current_step].values
-        
-        # Portfolio state: normalized balance and position
-        portfolio_state = np.array([
-            self.balance / self.initial_balance,
-            self.position 
-        ])
-        
-        return np.concatenate([market_state, portfolio_state])
+        return market_state
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         """
