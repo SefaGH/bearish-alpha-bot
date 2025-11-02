@@ -15,7 +15,7 @@ import os
 ML_ENABLED = os.getenv("ML_ENABLED", "false").lower() in ("1", "true", "yes")
 
 from .feature_engineering import FeatureEngineeringPipeline
-from .neural_networks import LSTMRegimePredictor
+from .neural_networks import LSTMRegimePredictor, TransformerRegimePredictor
 
 # sklearn import işlemini koruma altına al
 if ML_ENABLED:
@@ -368,7 +368,7 @@ class MLRegimePredictor:
             
             # Initialize LSTM and Transformer (placeholders)
             self.models['lstm'] = LSTMRegimePredictor(input_size=X.shape[1])
-            self.models['transformer'] = TransformerRegimePredictor()
+            self.models['transformer'] = TransformerRegimePredictor(d_model=X.shape[1]) # `d_model` input ile aynı olmalı
             
             # Create ensemble
             self.models['ensemble'] = EnsembleRegimePredictor(
