@@ -154,23 +154,33 @@ async def main():
         rl_data_raw = training_data[symbol_for_rl][RL_TRAINING_TIMEFRAME].copy()
         rl_features_df = feature_engine.extract_features(rl_data_raw)
         
+        # === DÜZELTME: Veri setlerini hizala ve NaN'leri temizle ===
+        # Önce verileri hizala, sonra NaN'leri temizle
+        common_index = rl_data_raw.index.intersection(rl_features_df.index)
+        rl_data_raw = rl_data_raw.loc[common_index]
+        rl_features_df = rl_features_df.loc[common_index]
+
         rl_features_df.fillna(method='ffill', inplace=True)
         rl_features_df.fillna(method='bfill', inplace=True)
         rl_features_df.dropna(inplace=True)
+        
+        # Temizlenmiş özellikler DataFrame'inin index'ini kullanarak ham veriyi tekrar filtrele
+        final_index = rl_features_df.index
+        rl_data_raw = rl_data_raw.loc[final_index]
         
         if rl_features_df.empty:
             logger.error("RL eğitimi için özellik çıkarıldıktan sonra veri kalmadı.")
         else:
             logger.info(f"✅ RL eğitimi için {len(rl_features_df)} adet kullanılabilir veri noktası hazırlandı.")
             
-            env = RLTradingEnv(df=rl_features_df)
+            # === DÜZELTME: RLTradingEnv'e hem özellikleri hem de ham veriyi ver ===
+            env = RLTradingEnv(features_df=rl_features_df, raw_df=rl_data_raw)
             state_dim = env.state_dim
             action_dim = env.action_dim
             
             agent = TradingRLAgent(state_size=state_dim, action_size=action_dim)
             experience_replay = ExperienceReplay(buffer_size=RL_BUFFER_SIZE)
             
-            # Agent'a memory'yi (experience_replay) set et
             agent.set_memory(experience_replay)
             
             rl_trainer = RLModelTrainer(agent, env, experience_replay)
