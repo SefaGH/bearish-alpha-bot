@@ -248,7 +248,7 @@ class LiveTradingConfiguration:
                 'kucoinfutures': cls.get_env_int('WS_MAX_STREAMS_KUCOIN', 15),
                 'default': cls.get_env_int('WS_MAX_STREAMS_DEFAULT', 10),
             },
-            'stream_timeframes': cls.get_env_list('WS_STREAM_TIMEFRAMES', ['1m,5m,30m,1h,4h']),
+            'stream_timeframes': cls.get_env_list('WS_STREAM_TIMEFRAMES', ['1m', '5m', '30m', '1h', '4h']), # DÜZELTİLDİ
             'reconnect_delay': cls.get_env_int('WS_RECONNECT_DELAY', 5),
             'max_reconnect_attempts': cls.get_env_int('WS_MAX_RECONNECT_ATTEMPTS', 3),
         }
@@ -368,49 +368,73 @@ class LiveTradingConfiguration:
         logger.info("📊 CONFIGURATION SUMMARY")
         logger.info("="*70)
         
-        # Duplicate Prevention
-        if 'signals' in config and 'duplicate_prevention' in config['signals']:
-            dp = config['signals']['duplicate_prevention']
+        # Duplicate Prevention - More robust access and precise formatting
+        dp = config.get('signals', {}).get('duplicate_prevention')
+        if dp:
             logger.info("🚫 Duplicate Prevention:")
-            logger.info(f"   Threshold: {dp.get('min_price_change_pct', 'N/A'):.2%}")
-            logger.info(f"   Cooldown: {dp.get('cooldown_seconds', 'N/A')}s")
-            logger.info(f"   Bypass: {dp.get('price_delta_bypass_enabled', False)}")
+            
+            threshold = dp.get('min_price_change_pct')
+            if threshold is not None:
+                logger.info(f"   Threshold: {threshold:.4%}")
+            else:
+                logger.info("   Threshold: N/A")
+
+            cooldown = dp.get('cooldown_seconds')
+            if cooldown is not None:
+                logger.info(f"   Cooldown: {cooldown}s")
+            
+            bypass_enabled = dp.get('price_delta_bypass_enabled')
+            if bypass_enabled is not None:
+                logger.info(f"   Bypass: {bypass_enabled}")
         
         # Trading Symbols
-        if 'universe' in config:
-            symbols = config['universe'].get('fixed_symbols', [])
+        universe = config.get('universe', {})
+        if universe:
+            symbols = universe.get('fixed_symbols', [])
             logger.info(f"🎯 Trading Symbols: {len(symbols)}")
             for symbol in symbols:
                 logger.info(f"   - {symbol}")
         
         # Risk Parameters
-        if 'risk' in config:
-            risk = config['risk']
+        risk = config.get('risk', {})
+        if risk:
             logger.info("💰 Risk Management:")
-            logger.info(f"   Capital: ${risk.get('equity_usd', 'N/A'):.2f}")
-            logger.info(f"   Max Position: {risk.get('max_notional_per_trade', 'N/A'):.2f} USDT")
-            logger.info(f"   Daily Max Trades: {risk.get('daily_max_trades', 'N/A')}")
+            capital = risk.get('equity_usd')
+            if capital is not None:
+                logger.info(f"   Capital: ${capital:.2f}")
+
+            max_pos = risk.get('max_notional_per_trade')
+            if max_pos is not None:
+                logger.info(f"   Max Position: {max_pos:.2f} USDT")
+            
+            daily_trades = risk.get('daily_max_trades')
+            if daily_trades is not None:
+                logger.info(f"   Daily Max Trades: {daily_trades}")
         
         # Strategies
-        if 'signals' in config:
+        signals = config.get('signals', {})
+        if signals:
             logger.info("📈 Strategies:")
-            if 'oversold_bounce' in config['signals']:
-                ob = config['signals']['oversold_bounce']
+            ob = signals.get('oversold_bounce')
+            if ob:
                 logger.info(f"   OB: {'✅ Enabled' if ob.get('enable') else '❌ Disabled'}")
-            if 'short_the_rip' in config['signals']:
-                str_cfg = config['signals']['short_the_rip']
+
+            str_cfg = signals.get('short_the_rip')
+            if str_cfg:
                 logger.info(f"   STR: {'✅ Enabled' if str_cfg.get('enable') else '❌ Disabled'}")
                 if 'symbols' in str_cfg:
                     logger.info("   Symbol-specific RSI:")
-                    for symbol, params in str_cfg['symbols'].items():
+                    for symbol, params in str_cfg.get('symbols', {}).items():
                         logger.info(f"      {symbol}: {params.get('rsi_threshold', 'N/A')}")
         
         # WebSocket
-        if 'websocket' in config:
-            ws = config['websocket']
+        ws = config.get('websocket', {})
+        if ws:
             logger.info(f"🌐 WebSocket: {'✅ Enabled' if ws.get('enabled') else '❌ Disabled'}")
             if ws.get('enabled'):
-                logger.info(f"   Max streams (BingX): {ws['max_streams_per_exchange'].get('bingx', 'N/A')}")
+                max_streams = ws.get('max_streams_per_exchange', {}).get('bingx')
+                if max_streams is not None:
+                    logger.info(f"   Max streams (BingX): {max_streams}")
         
         logger.info("="*70)
     
