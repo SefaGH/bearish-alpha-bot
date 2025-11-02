@@ -589,7 +589,7 @@ class AdvancedPricePredictionEngine:
                 mtf_models[tf] = EnsemblePricePredictor(tf_models, weights=ensemble_weights)
 
         # feature_pipeline'ı MultiTimeframePricePredictor'a constructor'da ver
-        return MultiTimeframePricePredictor(mtf_models)
+        return MultiTimeframePricePredictor(mtf_models, self.feature_pipeline)
 
     def has_model_for(self, symbol: str) -> bool:
         """
