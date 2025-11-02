@@ -36,7 +36,9 @@ logger = setup_logger("model-trainer", level=logging.DEBUG, log_to_file=True, lo
 SYMBOLS_TO_TRAIN = ['BTC/USDT']
 ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h']
 REGIME_TRAINING_TIMEFRAMES = ['30m', '1h', '4h'] 
-CANDLE_LIMIT = 2000 # Daha fazla veri, daha iyi eğitim
+
+# === DÜZELTME: CANDLE_LIMIT, BingX API limitine (1440) uyacak şekilde güncellendi ===
+CANDLE_LIMIT = 1440 # Daha fazla veri, daha iyi eğitim
 
 MIN_SAMPLES_FOR_RF = 100
 MIN_SAMPLES_FOR_NN = 500
@@ -73,11 +75,10 @@ async def main():
             except Exception as e:
                 logger.error(f"❌ Veri çekme hatası: {e}", exc_info=True)
     
-    # 1. REJİM MODELLERİ EĞİTİMİ (Mevcut kodunuz aynı kalıyor)
+    # 1. REJİM MODELLERİ EĞİTİMİ
     logger.info("\n" + "="*60)
     logger.info("🧠 ADIM 1: PİYASA REJİMİ MODELLERİ EĞİTİLİYOR 🧠")
-    # ... (Bu bölümün tamamı sizin kodunuzla aynı)
-    # ...
+    logger.info(f"   Eğitim Zaman Dilimleri: {REGIME_TRAINING_TIMEFRAMES}")
     logger.info("="*60)
     
     all_regime_features = []
@@ -112,11 +113,9 @@ async def main():
                 regime_trainer.train_ensemble_models(final_X, final_y)
                 logger.info(f"✅ Rejim modelleri birleşik veri seti ile eğitildi ve kaydedildi.")
 
-    # 2. FİYAT TAHMİN MODELLERİ EĞİTİMİ (Mevcut kodunuz aynı kalıyor)
+    # 2. FİYAT TAHMİN MODELLERİ EĞİTİMİ
     logger.info("\n" + "="*60)
     logger.info("📈 ADIM 2: FİYAT TAHMİN MODELLERİ EĞİTİLİYOR 📈")
-    # ... (Bu bölümün tamamı sizin kodunuzla aynı)
-    # ...
     logger.info("="*60)
     
     price_timeframes = [tf for tf in ['5m', '15m', '1h'] if tf in training_data.get(SYMBOLS_TO_TRAIN[0], {})]
@@ -142,7 +141,6 @@ async def main():
         
         price_engine.train_and_save_models(training_data)
 
-    # --- YENİ: ADIM 3 ---
     # 3. REINFORCEMENT LEARNING AJANI EĞİTİMİ
     logger.info("\n" + "="*60)
     logger.info("🤖 ADIM 3: REINFORCEMENT LEARNING AJANI EĞİTİLİYOR 🤖")
@@ -156,7 +154,6 @@ async def main():
         rl_data_raw = training_data[symbol_for_rl][RL_TRAINING_TIMEFRAME].copy()
         rl_features_df = feature_engine.extract_features(rl_data_raw)
         
-        # NaN değerleri temizle
         rl_features_df.fillna(method='ffill', inplace=True)
         rl_features_df.fillna(method='bfill', inplace=True)
         rl_features_df.dropna(inplace=True)
@@ -166,7 +163,6 @@ async def main():
         else:
             logger.info(f"✅ RL eğitimi için {len(rl_features_df)} adet kullanılabilir veri noktası hazırlandı.")
             
-            # RL Ortamını ve Ajanını Başlat
             env = RLTradingEnv(df=rl_features_df)
             state_dim = env.state_dim
             action_dim = env.action_dim
@@ -174,7 +170,9 @@ async def main():
             agent = TradingRLAgent(state_size=state_dim, action_size=action_dim)
             experience_replay = ExperienceReplay(buffer_size=RL_BUFFER_SIZE)
             
-            # RL Eğiticisini Başlat ve Eğitimi Başlat
+            # Agent'a memory'yi (experience_replay) set et
+            agent.set_memory(experience_replay)
+            
             rl_trainer = RLModelTrainer(agent, env, experience_replay)
             
             try:
@@ -182,11 +180,8 @@ async def main():
                 logger.info("✅ RL Ajanı başarıyla eğitildi ve kaydedildi.")
             except Exception as e:
                 logger.error(f"❌ RL eğitimi sırasında bir hata oluştu: {e}", exc_info=True)
-
     else:
         logger.error(f"RL eğitimi için gerekli olan {symbol_for_rl} sembolüne ait {RL_TRAINING_TIMEFRAME} verisi bulunamadı.")
-    # --- YENİ ADIM 3 SONU ---
-
 
     logger.info("\n" + "="*60)
     logger.info("✅ TÜM MODEL EĞİTİMLERİ TAMAMLANDI ✅")
