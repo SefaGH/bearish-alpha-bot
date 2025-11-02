@@ -195,30 +195,38 @@ if TORCH_AVAILABLE:
             """
             # Epsilon-greedy exploration during training
             if training and random.random() < self.epsilon:
-                # Random exploration
                 action = random.randrange(self.action_size)
-                logger.debug(f"Exploration: random action {action}")
+                logger.debug(f"🤖 [RL-ACT] Exploration: Selected random action -> {['BUY', 'HOLD', 'SELL'][action]}")
                 return action
             
             # Exploitation: use Q-network
-            # Set to eval mode to disable dropout
             self.q_network.eval()
             with torch.no_grad():
                 state_tensor = torch.FloatTensor(state).unsqueeze(0)
-                q_values = self.q_network(state_tensor)
+                # 1. Ham Q-değerlerini al
+                raw_q_values = self.q_network(state_tensor)
                 
-                # Apply risk constraints if provided
+                q_values_for_log = raw_q_values[0].clone()
+                
+                # 2. Risk ve Rejim ayarlamalarını uygula
+                adjusted_q_values = raw_q_values.clone()
                 if risk_constraints:
-                    q_values = self._apply_risk_constraints(q_values, risk_constraints)
-                
-                # Apply market regime bias if provided
+                    adjusted_q_values = self._apply_risk_constraints(adjusted_q_values, risk_constraints)
                 if market_regime:
-                    q_values = self._apply_regime_bias(q_values, market_regime)
+                    adjusted_q_values = self._apply_regime_bias(adjusted_q_values, market_regime)
                 
-                action = q_values.argmax().item()
-                logger.debug(f"Exploitation: selected action {action} with Q-value {q_values[0][action]:.4f}")
-            
-            # Back to train mode for gradient updates
+                # 3. Nihai kararı ver
+                action = adjusted_q_values.argmax().item()
+                chosen_action_str = ['BUY', 'HOLD', 'SELL'][action]
+                
+                # 4. Detaylı Debug Log'u Oluştur
+                logger.debug(f"🤖 [RL-DECISION] Agent Decision Process:")
+                logger.debug(f"   - Market Regime: {market_regime or 'N/A'}")
+                logger.debug(f"   - Raw Q-Values:  [BUY: {q_values_for_log[0]:.4f}, HOLD: {q_values_for_log[1]:.4f}, SELL: {q_values_for_log[2]:.4f}]")
+                if market_regime or risk_constraints:
+                     logger.debug(f"   - Adj. Q-Values: [BUY: {adjusted_q_values[0][0]:.4f}, HOLD: {adjusted_q_values[0][1]:.4f}, SELL: {adjusted_q_values[0][2]:.4f}] (after adjustments)")
+                logger.debug(f"   - Final Choice: {chosen_action_str} (Q-Value: {adjusted_q_values[0][action]:.4f})")
+
             if training:
                 self.q_network.train()
             
