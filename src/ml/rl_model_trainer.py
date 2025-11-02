@@ -34,13 +34,6 @@ class RLModelTrainer:
                  model_name: str = 'rl_agent.pth'):
         """
         Initializes the RL Model Trainer.
-
-        Args:
-            agent (TradingRLAgent): The RL agent to be trained.
-            env (RLTradingEnv): The trading environment for simulation.
-            experience_replay (ExperienceReplay): The buffer to store and sample experiences.
-            model_save_path (str): Directory to save the trained model.
-            model_name (str): Filename for the saved model.
         """
         self.agent = agent
         self.env = env
@@ -48,29 +41,28 @@ class RLModelTrainer:
         self.model_save_path = model_save_path
         self.model_name = model_name
         
+        # Agent'ın hafızasını (experience_replay) ayarla
+        self.agent.set_memory(self.experience_replay)
+        
         if not os.path.exists(self.model_save_path):
             os.makedirs(self.model_save_path, exist_ok=True)
             logger.info(f"Created directory for saving models: {self.model_save_path}")
 
     def train(self,
               num_episodes: int,
-              batch_size: int = 64,
+              batch_size: int = 64, # Bu parametre artık doğrudan ajan tarafından kullanılıyor
               save_every: int = 10,
               checkpoint_path: Optional[str] = None):
         """
         Runs the main training loop for the specified number of episodes.
-
-        Args:
-            num_episodes (int): The total number of episodes to run for training.
-            batch_size (int): The number of experiences to sample from the replay buffer for each learning step.
-            save_every (int): Frequency (in episodes) to save the model checkpoint.
-            checkpoint_path (Optional[str]): Path to a model checkpoint to continue training from.
         """
+        # === GÜNCELLEME: Doğru metod adı 'load_model' ===
         if checkpoint_path and os.path.exists(checkpoint_path):
-            self.agent.load(checkpoint_path)
+            self.agent.load_model(checkpoint_path)
             logger.info(f"Resumed training from checkpoint: {checkpoint_path}")
 
-        scores = deque(maxlen=100) # Stores the total rewards for the last 100 episodes
+        scores = deque(maxlen=100)
+        latest_metrics = {}
 
         for e in range(1, num_episodes + 1):
             state = self.env.reset()
@@ -78,18 +70,15 @@ class RLModelTrainer:
             done = False
             
             while not done:
-                # Agent chooses an action
-                action = self.agent.act(state)
+                # === GÜNCELLEME: 'training=True' parametresi eklendi ===
+                action = self.agent.act(state, training=True)
                 
-                # Environment executes the action
                 next_state, reward, done, info = self.env.step(action)
                 
-                # Store the experience in the replay buffer
-                self.experience_replay.add(state, action, reward, next_state, done)
-                
-                # Agent learns from a batch of experiences
-                if len(self.experience_replay) > batch_size:
-                    self.agent.learn(self.experience_replay.sample(batch_size))
+                # === GÜNCELLEME: Deneyim ekleme ve öğrenme mantığı düzeltildi ===
+                # Ajanın kendi içindeki öğrenme metodu her adımda çağrılır.
+                # Bu metod hem deneyimi ekler hem de yeterli veri birikince öğrenir.
+                latest_metrics = self.agent.learn_from_experience(state, action, reward, next_state, done)
                 
                 state = next_state
                 total_reward += reward
@@ -97,22 +86,24 @@ class RLModelTrainer:
             scores.append(total_reward)
             avg_score = np.mean(scores)
 
+            # === GÜNCELLEME: Loglamaya 'Loss' eklendi ===
             logger.info(
                 f"Episode {e}/{num_episodes} | "
                 f"Total Reward: {total_reward:.4f} | "
                 f"Avg Reward (last 100): {avg_score:.4f} | "
                 f"PnL: {info.get('pnl', 0):.2f} | "
-                f"Epsilon: {self.agent.epsilon:.4f}"
+                f"Epsilon: {self.agent.epsilon:.4f} | "
+                f"Loss: {latest_metrics.get('loss', 0):.4f}"
             )
 
-            # Save the model periodically
+            # === GÜNCELLEME: Doğru metod adı 'save_model' ===
             if e % save_every == 0:
                 full_path = os.path.join(self.model_save_path, self.model_name)
-                self.agent.save(full_path)
+                self.agent.save_model(full_path)
                 logger.info(f"💾 Model checkpoint saved to {full_path}")
 
         logger.info("✅ RL model training completed.")
-        # Save the final model
-        full_path = os.path.join(self.model_save_path, self.model_name)
-        self.agent.save(full_path)
+        # === GÜNCELLEME: Doğru metod adı 'save_model' ===
+        full_path = os.path.join(self.model_save_path, 'rl_agent_final.pth') # Final modelini farklı kaydet
+        self.agent.save_model(full_path)
         logger.info(f"💾 Final RL model saved to {full_path}")
