@@ -279,151 +279,111 @@ class StrategyCoordinator:
             },
             'last_bypass_time': self.processing_stats.get('last_bypass_time')
         }
-    
+
     async def process_strategy_signal(self, strategy_name: str, signal: Dict) -> Dict[str, Any]:
         """
         Process incoming signals from registered strategies.
-        
-        Args:
-            strategy_name: Name of the strategy generating the signal
-            signal: Trading signal dictionary
-            
-        Returns:
-            Processing result with validation status and actions
+        (GÜNCELLENDİ: Analiz talebi doğrultusunda kapsamlı karar telemetrisi eklendi)
         """
         try:
+            symbol = signal.get('symbol', 'UNKNOWN')
+            log_prefix = f"[{strategy_name.upper()}/{symbol}]"
+
             self.processing_stats['total_signals'] += 1
             self.processing_stats['last_signal_time'] = datetime.now(timezone.utc)
             
-            logger.info(f"Processing signal from {strategy_name}: {signal.get('symbol', 'UNKNOWN')}")
+            # --- TELEMETRİ: Sinyal ilk alındığında logla ---
+            self.logger.info(f"➡️  {log_prefix} Signal Received. Side: {signal.get('side', 'N/A')}, Reason: '{signal.get('reason', 'N/A')}'")
             
-            # Step 1: Validate signal format
+            # Adım 1: Sinyal Formatını Doğrula
             validation_result = self._validate_signal_format(signal)
             if not validation_result['valid']:
                 self.processing_stats['rejected_signals'] += 1
-                logger.warning(f"Signal validation failed: {validation_result['reason']}")
-                return {
-                    'status': 'rejected',
-                    'reason': validation_result['reason'],
-                    'stage': 'validation'
-                }
+                # --- TELEMETRİ: Ret Sebebi ---
+                self.logger.warning(f"🛡️  {log_prefix} REJECTED (Invalid Format): {validation_result['reason']}")
+                return {'status': 'rejected', 'reason': validation_result['reason'], 'stage': 'validation'}
             
-            # Step 2: Enrich signal with metadata
+            # Adım 2: Sinyali Zenginleştir (giriş fiyatı, strateji bilgileri vb. ekle)
             enriched_signal = self._enrich_signal(strategy_name, signal)
             
-            # ✅ FIX: Step 2.5 is now Duplicate Prevention (MOVED UP)
+            # Adım 3: Duplikasyon ve Cooldown Kontrolü
             is_valid_duplicate, duplicate_reason = self.validate_duplicate(enriched_signal, strategy_name)
             if not is_valid_duplicate:
                 self.processing_stats['rejected_signals'] += 1
                 self.processing_stats['duplicate_rejections'] += 1
-                logger.info(f"Signal rejected due to duplicate prevention: {duplicate_reason}")
-                return {
-                    'status': 'rejected',
-                    'reason': f"Duplicate prevention: {duplicate_reason}",
-                    'stage': 'duplicate_validation'
-                }
+                # --- TELEMETRİ: Ret Sebebi (validate_duplicate metodu zaten detaylı logluyor) ---
+                # validate_duplicate metodu zaten "❌ [DUPLICATE-REJECT]..." şeklinde logladığı için burada ek loga gerek yok.
+                return {'status': 'rejected', 'reason': duplicate_reason, 'stage': 'duplicate_validation'}
             
-            # ✅ FIX: Step 2.6 is now ML Enhancement
+            # Adım 4: ML ile Sinyali Geliştirme ve RL Ajan Kontrolü
             if hasattr(self, 'ml_integration') and self.ml_integration:
                 enriched_signal = await self._enhance_signal_with_ml(enriched_signal)
                 if enriched_signal is None:
-                    # ML blocked the signal
                     self.processing_stats['rejected_signals'] += 1
-                    # Ensure the key exists before incrementing
                     self.processing_stats['ml_blocked_signals'] = self.processing_stats.get('ml_blocked_signals', 0) + 1
-                    logger.info(f"Signal rejected by ML enhancement")
-                    return {
-                        'status': 'rejected',
-                        'reason': 'ML enhancement blocked signal',
-                        'stage': 'ml_enhancement'
-                    }
+                    # --- TELEMETRİ: Ret Sebebi (_enhance_signal_with_ml metodu zaten detaylı logluyor) ---
+                    # _enhance_signal_with_ml metodu "🤖 [RL-VETO]..." şeklinde logladığı için burada ek loga gerek yok.
+                    return {'status': 'rejected', 'reason': 'ML/RL enhancement blocked signal', 'stage': 'ml_enhancement'}
             
-            # Step 3: Check for conflicts with existing positions/signals
+            # Adım 5: Çatışma Kontrolü
             conflict_check = await self._check_signal_conflicts(enriched_signal)
-            
             if conflict_check['has_conflict']:
                 self.processing_stats['conflicted_signals'] += 1
-                logger.info(f"Signal conflict detected: {conflict_check['conflicts']}")
+                self.logger.info(f"🚦 {log_prefix} Conflict Detected: {conflict_check['conflicts']}. Resolving...")
                 
-                # Resolve conflicts
-                resolution = await self.resolve_signal_conflicts(
-                    enriched_signal, 
-                    conflict_check['conflicting_signals']
-                )
+                resolution = await self.resolve_signal_conflicts(enriched_signal, conflict_check['conflicting_signals'])
                 
                 if resolution['action'] == 'reject':
                     self.processing_stats['rejected_signals'] += 1
-                    return {
-                        'status': 'rejected',
-                        'reason': resolution['reason'],
-                        'stage': 'conflict_resolution',
-                        'conflict_details': conflict_check
-                    }
+                    # --- TELEMETRİ: Ret Sebebi ---
+                    self.logger.warning(f"🛡️  {log_prefix} REJECTED (Conflict): {resolution['reason']}")
+                    return {'status': 'rejected', 'reason': resolution['reason'], 'stage': 'conflict_resolution'}
             
-            # Step 4: Risk assessment
+            # Adım 6: Risk Değerlendirmesi
             risk_assessment = await self._assess_signal_risk(enriched_signal)
-            
             if not risk_assessment['acceptable']:
                 self.processing_stats['rejected_signals'] += 1
-                logger.warning(f"Signal rejected by risk assessment: {risk_assessment['reason']}")
-                return {
-                    'status': 'rejected',
-                    'reason': risk_assessment['reason'],
-                    'stage': 'risk_assessment',
-                    'risk_metrics': risk_assessment.get('metrics', {})
-                }
+                # --- TELEMETRİ: Ret Sebebi ---
+                self.logger.warning(f"🛡️  {log_prefix} REJECTED (Risk Check): {risk_assessment['reason']}")
+                return {'status': 'rejected', 'reason': risk_assessment['reason'], 'stage': 'risk_assessment'}
             
-            # Step 5: Priority-based routing
+            # Adım 7: Sinyali ve Rota Bilgisini Hazırla
             routing_result = self._route_signal(enriched_signal, risk_assessment)
-            
-            # Step 6: Register signal
             signal_id = self._generate_signal_id(strategy_name, enriched_signal)
+            
             self.active_signals[signal_id] = {
-                'signal': enriched_signal,
-                'risk_assessment': risk_assessment,
-                'routing': routing_result,
-                'timestamp': datetime.now(timezone.utc),
-                'status': 'active'
+                'signal': enriched_signal, 'risk_assessment': risk_assessment,
+                'routing': routing_result, 'timestamp': datetime.now(timezone.utc), 'status': 'active'
             }
             
-            # Add to signal queue for execution
+            # --- TELEMETRİ: Sinyal kuyruğa eklenirken tüm detayları logla ---
+            self.logger.info(
+                f"✅ {log_prefix} ENQUEUED. Side: {enriched_signal.get('side')}, "
+                f"Entry: ${enriched_signal.get('entry'):.2f}, SL: ${enriched_signal.get('stop'):.2f}, TP: ${enriched_signal.get('target'):.2f}, "
+                f"Size: ${risk_assessment.get('position_size'):.2f}"
+            )
+
+            # Adım 8: Sinyali Yürütme Kuyruğuna Ekle
             await self.signal_queue.put({
-                'signal_id': signal_id,
-                'signal': enriched_signal,
-                'risk_assessment': risk_assessment,
-                'routing': routing_result
+                'signal_id': signal_id, 'signal': enriched_signal,
+                'risk_assessment': risk_assessment, 'routing': routing_result
             })
             
-            # Update stats
             self.processing_stats['accepted_signals'] += 1
-            
-            # Record in history
             self._add_signal_history_entry({
-                'signal_id': signal_id,
-                'strategy_name': strategy_name,
-                'symbol': enriched_signal.get('symbol'),
-                'timestamp': datetime.now(timezone.utc),
-                'status': 'accepted'
+                'signal_id': signal_id, 'strategy_name': strategy_name,
+                'symbol': enriched_signal.get('symbol'), 'timestamp': datetime.now(timezone.utc), 'status': 'accepted'
             })
-            
-            logger.info(f"Signal accepted and queued: {signal_id}")
             
             return {
-                'status': 'accepted',
-                'signal_id': signal_id,
-                'enriched_signal': enriched_signal,
-                'risk_assessment': risk_assessment,
-                'routing': routing_result
+                'status': 'accepted', 'signal_id': signal_id,
+                'enriched_signal': enriched_signal, 'risk_assessment': risk_assessment, 'routing': routing_result
             }
             
         except Exception as e:
-            logger.error(f"Error processing signal from {strategy_name}: {e}")
+            logger.error(f"💥 Error processing signal from {strategy_name}: {e}", exc_info=True)
             self.processing_stats['rejected_signals'] += 1
-            return {
-                'status': 'error',
-                'reason': str(e),
-                'stage': 'processing'
-            }
+            return {'status': 'error', 'reason': str(e), 'stage': 'processing'}
     
     async def _enhance_signal_with_ml(self, signal: Dict) -> Optional[Dict]:
         """
