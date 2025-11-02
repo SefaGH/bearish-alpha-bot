@@ -343,16 +343,16 @@ class MultiTimeframePricePredictor:
     Combines predictions from multiple timeframes for robust forecasting.
     """
     
-    def __init__(self, models: Dict[str, EnsemblePricePredictor]):
+    def __init__(self, models: Dict[str, EnsemblePricePredictor], feature_pipeline: FeatureEngineeringPipeline):
         """
         Initialize multi-timeframe predictor.
-        
+
         Args:
-            models: Dictionary mapping timeframes to ensemble predictors
-                   e.g., {'5m': model_5m, '15m': model_15m, '1h': model_1h}
+            models: Dictionary mapping timeframes to ensemble predictors.
+            feature_pipeline: The shared feature engineering pipeline instance.
         """
         self.models = models
-        self.feature_engine = FeatureEngineeringPipeline()
+        self.feature_pipeline = feature_pipeline
         
     def predict_multi_timeframe(self, data_by_timeframe: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
         """
