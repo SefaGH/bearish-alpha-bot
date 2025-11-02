@@ -332,6 +332,15 @@ class AdaptiveOversoldBounce(OversoldBounce):
             rr_denominator = entry_price - stop_price
             rr_ratio = (rr_numerator / rr_denominator) if rr_denominator > 0 else 0
 
+            # --- 🔥 YENİ EKLENEN TELEMETRİ LOG'U 🔥 ---
+            if self.debug_logging:
+                logger.info(
+                    f"🔍 {log_prefix} R/R Calculation: "
+                    f"Entry={entry_price:.2f}, TP={target_price:.2f}, SL={stop_price:.2f} | "
+                    f"Reward=${rr_numerator:.2f}, Risk=${rr_denominator:.2f} -> R/R={rr_ratio:.2f}"
+                )
+            # --- TELEMETRİ SONU ---
+
             # 4. R/R Ratio Check
             min_rr_ratio = self.config.get('min_rr_ratio', 1.2)
             if rr_ratio < min_rr_ratio:
