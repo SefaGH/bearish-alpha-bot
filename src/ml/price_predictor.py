@@ -796,6 +796,7 @@ class AdvancedPricePredictionEngine:
                           horizon: int = 12) -> Optional[Dict[str, Any]]:
         """
         Get price forecast for a symbol.
+        (GÜNCELLENDİ: cache_ttl değerini doğru yerden okuyor)
         
         Args:
             symbol: Trading symbol
@@ -811,7 +812,13 @@ class AdvancedPricePredictionEngine:
         
         # Check if cache is stale
         age = (pd.Timestamp.now() - cached['timestamp']).total_seconds()
-        if age > self.config.cache_ttl:
+        
+        # --- ANA DÜZELTME BURADA ---
+        # `cache_ttl` değeri, `self.config` sözlüğünden değil,
+        # __init__ içinde oluşturulan `self.cache_ttl` (timedelta nesnesi) özelliğinden okunmalıdır.
+        if age > self.cache_ttl.total_seconds():
+            logger.warning(f"Cache for {symbol} is stale (age: {age:.1f}s > ttl: {self.cache_ttl.total_seconds():.1f}s). Deleting cache.")
+            del self.prediction_cache[symbol] # Bayat veriyi silmek iyi bir pratiktir.
             return None
         
         return cached
