@@ -144,75 +144,78 @@ class MLRegimePredictor:
     """
     MODEL_DIR = "data/models/regime"
     
-    def __init__(self, regime_analyzer=None, websocket_manager=None):
+    def __init__(self, feature_pipeline, config: Dict[str, Any]):
         """
-        Initialize ML regime predictor.
-        
+        Initialize the ML regime predictor using a central configuration dictionary.
+
         Args:
-            regime_analyzer: Phase 2 MarketRegimeAnalyzer instance
-            websocket_manager: Phase 3.1 WebSocket manager for real-time data
+            feature_pipeline: Instance of FeatureEngineeringPipeline.
+            config (Dict[str, Any]): The 'ml' configuration block from the main YAML file.
         """
-        self.regime_analyzer = regime_analyzer
-        self.ws_manager = websocket_manager
-        self.scaler = None # Scaler için bir alan ekle
+        if not ML_ENABLED:
+            raise RuntimeError("MLRegimePredictor requires ML_ENABLED=true.")
+
+        # ✅ FIX: Store the passed-in dependencies and config.
+        self.feature_pipeline = feature_pipeline
+        self.config = config
         
-        # Initialize models
+        self.scaler = None
         self.models = {
             'lstm': None,
             'transformer': None,
             'random_forest': None,
             'ensemble': None
         }
-        
-        self.feature_engine = FeatureEngineeringPipeline()
         self.prediction_history = []
-        self.is_trained = False
         
-        logger.info("ML Regime Predictor initialized")
-        # Başlangıçta modelleri yüklemeyi dene
-        self.load_models()
+        logger.info("ML Regime Predictor initialized.")
+        # Load models and set training status.
+        self.is_trained = self.load_models()
 
-    def load_models(self):
-        """Eğitilmiş rejim modellerini ve scaler'ı diskten yükler."""
-        if not os.path.exists(self.MODEL_DIR):
-            logger.warning(f"Regime model directory not found: {self.MODEL_DIR}. Models are not loaded.")
-            self.is_trained = False
-            return
+    def load_models(self) -> bool:
+        """Loads trained regime models and the scaler from disk using central config."""
+        model_dir = self.config.get('model_path', 'data/models')
+        regime_model_dir = os.path.join(model_dir, 'regime')
+
+        if not os.path.exists(regime_model_dir):
+            logger.warning(f"Regime model directory not found: {regime_model_dir}. Models not loaded.")
+            return False
 
         models_loaded = 0
         try:
-            # Load model configurations
-            model_configs = {}
-            config_path = os.path.join(self.MODEL_DIR, "model_config.pkl")
-            if os.path.exists(config_path):
-                model_configs = joblib.load(config_path)
-                logger.info(f"✅ Model configurations loaded from: {config_path}")
-            
-            # Scaler'ı yükle
-            scaler_path = os.path.join(self.MODEL_DIR, "scaler.pkl")
+            # Load the feature scaler
+            scaler_path = os.path.join(regime_model_dir, "scaler.pkl")
             if os.path.exists(scaler_path):
                 self.scaler = joblib.load(scaler_path)
                 logger.info(f"✅ Regime feature scaler loaded from: {scaler_path}")
             
             # Load Random Forest model
-            rf_path = os.path.join(self.MODEL_DIR, "random_forest.pkl")
+            rf_path = os.path.join(regime_model_dir, "random_forest.pkl")
             if os.path.exists(rf_path) and RandomForestClassifier is not None:
                 self.models['random_forest'] = joblib.load(rf_path)
                 models_loaded += 1
                 logger.info(f"✅ Random Forest regime model loaded from: {rf_path}")
             
+            # ✅ FIX: Get model parameters from the central config
+            model_params = self.config.get('models', {})
+            feature_params = self.config.get('features', {})
+            # This should match your feature engineering output size
+            input_size = feature_params.get('input_size', 42) 
+
             # Load LSTM model (PyTorch)
-            lstm_path = os.path.join(self.MODEL_DIR, "lstm_regime.pth")
-            if os.path.exists(lstm_path):
+            lstm_path = os.path.join(regime_model_dir, "lstm_regime.pth")
+            if os.path.exists(lstm_path) and 'lstm' in model_params:
                 try:
                     import torch
                     from .neural_networks import LSTMRegimePredictor
                     
-                    lstm_config = model_configs.get('lstm', {
-                        'input_size': 50, 'hidden_size': 128, 'num_layers': 3, 'num_classes': 3
-                    })
-                    
-                    lstm_model = LSTMRegimePredictor(**lstm_config)
+                    lstm_config = model_params['lstm']
+                    lstm_model = LSTMRegimePredictor(
+                        input_size=input_size,
+                        hidden_size=lstm_config.get('hidden_size', 128),
+                        num_layers=lstm_config.get('num_layers', 3),
+                        num_classes=3 # Bull, Neutral, Bear
+                    )
                     lstm_model.load_state_dict(torch.load(lstm_path, map_location='cpu'))
                     lstm_model.eval()
                     self.models['lstm'] = lstm_model
@@ -221,45 +224,22 @@ class MLRegimePredictor:
                 except Exception as e:
                     logger.error(f"❌ Failed to load LSTM model from {lstm_path}: {e}", exc_info=True)
             
-            # Load Transformer model (PyTorch)
-            transformer_path = os.path.join(self.MODEL_DIR, "transformer_regime.pth")
-            if os.path.exists(transformer_path):
-                try:
-                    import torch
-                    from .neural_networks import TransformerRegimePredictor
-                    
-                    transformer_config = model_configs.get('transformer', {
-                        'd_model': 50, 'nhead': 2, 'num_layers': 2, 'num_classes': 3
-                    })
-                    
-                    transformer_model = TransformerRegimePredictor(**transformer_config)
-                    transformer_model.load_state_dict(torch.load(transformer_path, map_location='cpu'))
-                    transformer_model.eval()
-                    self.models['transformer'] = transformer_model
-                    models_loaded += 1
-                    logger.info(f"✅ Transformer regime model loaded from: {transformer_path}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to load Transformer model from {transformer_path}: {e}", exc_info=True)
-
+            # (Optional) Add Transformer loading logic here if you have it
+            
             if models_loaded > 0:
-                base_models_for_ensemble = {
-                    name: model for name, model in self.models.items() if model is not None and name != 'ensemble'
-                }
-                
-                if base_models_for_ensemble:
-                    self.models['ensemble'] = EnsembleRegimePredictor(base_models_for_ensemble)
-                    self.is_trained = True
-                    logger.info(f"✅ {len(base_models_for_ensemble)} regime models loaded and ensemble created.")
-                else:
-                    logger.warning("No base models were loaded, ensemble not created.")
-                    self.is_trained = False
-            else:
-                logger.warning("No pre-trained regime models found.")
-                self.is_trained = False
+                base_models = {name: model for name, model in self.models.items() if model and name != 'ensemble'}
+                if base_models:
+                    ensemble_weights = model_params.get('ensemble_weights')
+                    self.models['ensemble'] = EnsembleRegimePredictor(base_models, weights=ensemble_weights)
+                    logger.info(f"✅ {len(base_models)} regime models loaded and ensemble created.")
+                    return True
+            
+            logger.warning("No pre-trained regime models were found or loaded.")
+            return False
 
         except Exception as e:
             logger.error(f"Failed to load regime models: {e}", exc_info=True)
-            self.is_trained = False
+            return False
     
     async def predict_regime_transition(self, symbol: str, 
                                        price_data: pd.DataFrame,
