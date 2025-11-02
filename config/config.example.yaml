@@ -1,5 +1,5 @@
 # ==============================================================================
-# BEARISH ALPHA BOT - Configuration File (v3.0 - Fully Documented)
+# BEARISH ALPHA BOT - Configuration File (v3.5 - Centralized ML Config)
 # ==============================================================================
 # This file serves as a template and documents the default values.
 #
@@ -78,17 +78,12 @@ websocket:
   max_data_age: 60                    # Override with: WEBSOCKET_MAX_DATA_AGE
   fallback_threshold: 3               # Override with: WEBSOCKET_FALLBACK_THRESHOLD
   buffer_size: 300
-  
-  # Maximum streams per exchange
   max_streams_per_exchange:
     bingx: 10                         # Override with: WS_MAX_STREAMS_BINGX
     binance: 20                       # Override with: WS_MAX_STREAMS_BINANCE
     kucoinfutures: 15                 # Override with: WS_MAX_STREAMS_KUCOIN
     default: 10                       # Override with: WS_MAX_STREAMS_DEFAULT
-  
-  # Comma-separated string of timeframes for WebSocket streams.
   stream_timeframes: "1m,5m,15m,30m,1h,4h" # Override with: WS_STREAM_TIMEFRAMES
-  
   reconnect_delay: 5                  # Override with: WS_RECONNECT_DELAY
   max_reconnect_attempts: 3           # Override with: WS_MAX_RECONNECT_ATTEMPTS
 
@@ -99,13 +94,8 @@ universe:
   prefetch:
     enabled: true
     startup_candle_count: 500
-
-  # Comma-separated string of symbols to trade.
   fixed_symbols: "BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT" # Override with: TRADING_SYMBOLS
-  
   auto_select: false                  # Override with: UNIVERSE_AUTO_SELECT
-  
-  # Comma-separated string for priority order in WebSocket subscriptions.
   priority_order: "BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT" # Override with: TRADING_SYMBOLS_PRIORITY
 
 # ==============================================================================
@@ -123,64 +113,49 @@ indicators:
 # ==============================================================================
 adaptive_strategies:
   enable: true
-  
   monitoring:
     enabled: true
     report_interval: 300
     track_performance: true
-  
   performance:
     min_volatility_for_adjustment: 0.02
     max_position_multiplier: 2.0
     min_position_multiplier: 0.5
 
 # ==============================================================================
-# SIGNAL GENERATION & DUPLICATE PREVENTION
+# SIGNAL GENERATION & STRATEGIES
 # ==============================================================================
 signals:
-  # ============================================================================
-  # DUPLICATE PREVENTION
-  # ============================================================================
   duplicate_prevention:
     min_price_change_pct: 0.0005      # Override with: DUPLICATE_PREVENTION_THRESHOLD
     cooldown_seconds: 60              # Override with: DUPLICATE_PREVENTION_COOLDOWN
     price_delta_bypass_threshold: 0.0015 # Override with: PRICE_DELTA_BYPASS_THRESHOLD
-    price_delta_bypass_enabled: false # Override with: PRICE_DELTA_BYPASS_ENABLED (MUST BE 'false' for production)
+    price_delta_bypass_enabled: false # Override with: PRICE_DELTA_BYPASS_ENABLED
     ml_duplicate_detection_enabled: true
-  
-  # ============================================================================
-  # OVERSOLD BOUNCE STRATEGY (LONG)
-  # ============================================================================
   oversold_bounce:
     enable: true                      # Override with: STRATEGY_OB_ENABLED
     ignore_regime: true               # Override with: STRATEGY_OB_IGNORE_REGIME
     rsi_max: 45
     adaptive_rsi_base: 45             # Override with: RSI_BASE_OB
     adaptive_rsi_range: 10            # Override with: RSI_RANGE_OB
-    adaptive_mode: "dynamic"          # Override with: ADAPTIVE_MODE_OB
-    volatility_sensitivity: "medium"  # Override with: VOLATILITY_SENSITIVITY_OB
-    tp_atr_mult: 2.5                  # Override with: TP_ATR_MULT_OB
-    sl_atr_mult: 1.2                  # Override with: SL_ATR_MULT_OB
-    min_tp_pct: 0.008                 # Override with: MIN_TP_PCT_OB
-    max_sl_pct: 0.015                 # Override with: MAX_SL_PCT_OB
-
-  # ============================================================================
-  # SHORT THE RIP STRATEGY (SHORT)
-  # ============================================================================
+    adaptive_mode: "dynamic"
+    volatility_sensitivity: "medium"
+    tp_atr_mult: 2.5
+    sl_atr_mult: 1.2
+    min_tp_pct: 0.008
+    max_sl_pct: 0.015
   short_the_rip:
     enable: true                      # Override with: STRATEGY_STR_ENABLED
     ignore_regime: true               # Override with: STRATEGY_STR_IGNORE_REGIME
     rsi_min: 55
     adaptive_rsi_base: 55             # Override with: RSI_BASE_STR
     adaptive_rsi_range: 10            # Override with: RSI_RANGE_STR
-    adaptive_mode: "dynamic"          # Override with: ADAPTIVE_MODE_STR
-    volatility_sensitivity: "medium"  # Override with: VOLATILITY_SENSITIVITY_STR
-    tp_atr_mult: 3.0                  # Override with: TP_ATR_MULT_STR
-    sl_atr_mult: 1.5                  # Override with: SL_ATR_MULT_STR
-    min_tp_pct: 0.010                 # Override with: MIN_TP_PCT_STR
-    max_sl_pct: 0.020                 # Override with: MAX_SL_PCT_STR
-    
-    # Symbol-specific RSI threshold overrides
+    adaptive_mode: "dynamic"
+    volatility_sensitivity: "medium"
+    tp_atr_mult: 3.0
+    sl_atr_mult: 1.5
+    min_tp_pct: 0.010
+    max_sl_pct: 0.020
     symbols:
       "BTC/USDT:USDT":
         rsi_threshold: 55             # Override with: RSI_THRESHOLD_BTC
@@ -196,7 +171,6 @@ position_management:
   exit_monitoring:
     enabled: true
     check_frequency: 5
-  
   time_based_exit:
     max_position_duration: 3600
 
@@ -209,58 +183,79 @@ quarantine:
   file: data/quarantine.json
 
 # ==============================================================================
-# ML (MACHINE LEARNING) CONFIGURATION
+# ML (MACHINE LEARNING) CONFIGURATION (Centralized and Modernized)
 # ==============================================================================
 ml:
-  enabled: true                       # Master switch. Override with: ML_ENABLED
-  
-  # Individual ML component toggles
-  price_prediction_enabled: true
-  regime_prediction_enabled: true
-  reinforcement_learning_enabled: true
-  strategy_optimization_enabled: true
-  
-  # Model types to load
+  enabled: true                       # Master switch for all ML features. Override with: ML_ENABLED
+
+  # ----------------------------------------------------------------------------
+  # Feature Engineering
+  # These settings define the parameters for calculating technical indicators
+  # that are used as inputs for all ML models.
+  # ----------------------------------------------------------------------------
+  features:
+    rsi_period: 14                    # Override with: ML_FEAT_RSI_PERIOD
+    atr_period: 14                    # Override with: ML_FEAT_ATR_PERIOD
+    macd_fast: 12                     # Override with: ML_FEAT_MACD_FAST
+    macd_slow: 26                     # Override with: ML_FEAT_MACD_SLOW
+    macd_signal: 9                    # Override with: ML_FEAT_MACD_SIGNAL
+    bb_period: 20                     # Override with: ML_FEAT_BB_PERIOD
+    bb_std: 2                         # Override with: ML_FEAT_BB_STD
+    volatility_windows: "5,10,20,50"  # Comma-separated. Override with: ML_FEAT_VOL_WINDOWS
+    momentum_windows: "5,10,20,50"  # Comma-separated. Override with: ML_FEAT_MOM_WINDOWS
+
+  # ----------------------------------------------------------------------------
+  # Price & Regime Prediction Engine
+  # Settings for the models that predict market regime and price movements.
+  # ----------------------------------------------------------------------------
+  prediction:
+    update_interval_seconds: 60       # How often to run predictions. Override with: ML_PRED_UPDATE_INTERVAL
+    cache_ttl_seconds: 300            # How long to cache a prediction. Override with: ML_PRED_CACHE_TTL
+    min_confidence_threshold: 0.6     # Min confidence to consider a prediction valid. Override with: ML_PRED_MIN_CONFIDENCE
+    regime_change_threshold: 0.7      # Min confidence for a regime change signal. Override with: ML_PRED_REGIME_THRESHOLD
+
+  # ----------------------------------------------------------------------------
+  # Reinforcement Learning (RL) Agent
+  # The final decision-maker that can veto or approve signals.
+  # ----------------------------------------------------------------------------
+  reinforcement_learning:
+    enabled: true                     # RL master switch. Override with: ML_RL_ENABLED
+    training_mode: false              # Set to true only for training. Override with: ML_RL_TRAINING_MODE
+
+    # Behavior Tuning
+    # If the agent's confidence in 'HOLD' is below this, it considers its second choice.
+    # Lower value = more aggressive (more trades). Higher value = more defensive.
+    hold_confidence_threshold: 0.60   # Override with: ML_RL_HOLD_CONFIDENCE_THRESHOLD
+
+    # Epsilon for inference (live trading). A small value for minimal random actions.
+    epsilon_inference: 0.01           # Override with: ML_RL_EPSILON_INFERENCE
+
+    # Core Algorithm Parameters (Advanced - change with caution)
+    learning_rate: 0.0001             # Override with: ML_RL_LEARNING_RATE
+    gamma: 0.99                       # Discount factor. Override with: ML_RL_GAMMA
+    target_update_freq: 10            # Freq. to update target network. Override with: ML_RL_TARGET_UPDATE_FREQ
+    batch_size: 64                    # Training batch size. Override with: ML_RL_BATCH_SIZE
+    buffer_size: 100000               # Experience replay buffer size. Override with: ML_RL_BUFFER_SIZE
+
+  # ----------------------------------------------------------------------------
+  # Model Architecture Parameters (Advanced - for reference)
+  # ----------------------------------------------------------------------------
+  # These values define the neural network structures.
+  # Changing them requires retraining the models. They are not typically overridden.
   models:
-    - 'lstm'
-    - 'transformer'
-
-  # Comma-separated string of timeframes for ML price prediction.
-  timeframes: "5m,15m,1h,4h"           # Override with: ML_TIMEFRAMES
-
-  # Model parameters are now defined in the code for robustness.
-  # These values are for reference only.
-  model_params:
     lstm:
-      input_size: 42
       hidden_size: 128
       num_layers: 3
-      forecast_horizon: 12
+      dropout: 0.2
     transformer:
-      d_model: 42
-      nhead: 2
+      d_model: 256
+      nhead: 8
       num_layers: 6
-      forecast_horizon: 12
-
-  # Prediction engine settings
-  prediction:
-    update_interval: 60
-    cache_ttl: 300
-    min_confidence: 0.6
-    min_consensus: 0.7
-  
-  # Reinforcement Learning settings
-  rl:
-    state_size: 50
-    action_size: 3
-    learning_rate: 0.001
-    memory_size: 100000
-    batch_size: 32
-    gamma: 0.95
-  
-  # Feature Engineering settings
-  features:
-    lookback_periods: [5, 10, 20, 50]
-    include_technical: true
-    include_volume: true
-    include_sentiment: false
+    random_forest:
+      n_estimators: 100
+      max_depth: 10
+    ensemble_weights:
+      lstm: 0.4
+      transformer: 0.4
+      random_forest: 0.2
+```
