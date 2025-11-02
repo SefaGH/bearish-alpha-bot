@@ -334,88 +334,78 @@ class SmartOrderManager:
     async def _limit_order_execution(self, order_request: Dict, clients_to_use: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Execute limit order with smart pricing.
-        
-        Args:
-            order_request: Order request dictionary
-            clients_to_use: Exchange clients to use (defaults to self.exchange_clients)
-            
-        Returns:
-            Execution result
+        (GÜNCELLENDİ: Analiz talebi doğrultusunda kapsamlı ret sebebi telemetrisi eklendi)
         """
+        symbol = order_request.get('symbol')
+        side = order_request.get('side')
+        amount = order_request.get('amount')
+        exchange = order_request.get('exchange')
+        log_prefix = f"[ORDER-EXEC/{exchange}/{symbol}]"
+
         try:
-            symbol = order_request['symbol']
-            side = order_request['side']
-            amount = order_request['amount']
-            exchange = order_request['exchange']
-            
-            # CRITICAL: Use clients_to_use if provided
             clients = clients_to_use if clients_to_use is not None else self.exchange_clients
             client = clients[exchange]
             
-            # Get current market price
+            # Get market data for pricing and validation
+            market = client.market(symbol)
             ticker = client.ticker(symbol)
             market_price = float(ticker.get('last', 0))
             
-            # Calculate optimal limit price (slightly better than market)
-            price_offset = 0.001  # 0.1% offset
-            if side in ['buy', 'long']:
-                limit_price = market_price * (1 - price_offset)
-            else:
-                limit_price = market_price * (1 + price_offset)
+            # Calculate optimal limit price
+            price_offset = 0.001
+            limit_price = market_price * (1 - price_offset) if side in ['buy', 'long'] else market_price * (1 + price_offset)
             
-            logger.info(f"Executing limit order: {symbol} {side} {amount} @ {limit_price:.4f}")
+            # --- 🔥 YENİ EKLENEN TELEMETRİ VE ÖN KONTROL ADIMI 🔥 ---
+            notional_value = amount * limit_price
+            min_notional = market.get('limits', {}).get('cost', {}).get('min', 0)
+
+            self.logger.info(f"➡️  {log_prefix} Processing LIMIT order. Side: {side}, Amount: {amount}, Limit Price: ${limit_price:.4f}, Notional: ${notional_value:.2f}")
+
+            # 1. Borsa Limit Kontrolü (minNotional)
+            if min_notional and notional_value < min_notional:
+                reason = f"Order notional value (${notional_value:.2f}) is below exchange minimum (${min_notional:.2f})."
+                self.logger.error(f"🛡️  {log_prefix} REJECTED (MinNotional): {reason}")
+                return {'success': False, 'reason': f"REJECT:MIN_NOTIONAL - {reason}", 'order_id': None}
             
-            # Generate order ID
+            # Diğer borsa-spesifik doğrulamalar buraya eklenebilir (örn: min_amount, price precision vs.)
+            # try:
+            #     client.some_pre_check_function(symbol, amount, limit_price)
+            # except Exception as e:
+            #     self.logger.error(f"🛡️  {log_prefix} REJECTED (Pre-check): {e}")
+            #     return {'success': False, 'reason': f"REJECT:EXCHANGE_VALIDATION - {e}", 'order_id': None}
+            # --- TELEMETRİ VE ÖN KONTROL SONU ---
+
+            logger.info(f"✅ {log_prefix} Pre-flight checks passed. Submitting to exchange...")
+            
+            # Emir gönderme simülasyonu
             order_id = f"order_{int(time.time() * 1000)}"
-            
-            # Create order record
             order = {
-                'order_id': order_id,
-                'symbol': symbol,
-                'side': side,
-                'amount': amount,
-                'type': 'limit',
-                'limit_price': limit_price,
-                'exchange': exchange,
-                'status': OrderStatus.SUBMITTED.value,
-                'created_at': datetime.now(timezone.utc),
-                'fills': []
+                'order_id': order_id, 'symbol': symbol, 'side': side, 'amount': amount,
+                'type': 'limit', 'limit_price': limit_price, 'exchange': exchange,
+                'status': OrderStatus.SUBMITTED.value, 'created_at': datetime.now(timezone.utc), 'fills': []
             }
             
-            # In real implementation, would call:
-            # result = client.create_order(symbol, side=side, type_='limit', amount=amount, price=limit_price)
-            
-            # Simulate execution (assume filled at limit price)
+            # Simülasyon: Emirin dolduğunu varsay
             order['status'] = OrderStatus.FILLED.value
             order['filled_amount'] = amount
             order['avg_fill_price'] = limit_price
             order['filled_at'] = datetime.now(timezone.utc)
             
-            # Calculate slippage relative to market price
             slippage = abs(limit_price - market_price) / market_price
             order['slippage'] = slippage
             
-            # Store order
             self.active_orders[order_id] = order
             
-            logger.info(f"Limit order filled: {order_id} @ {limit_price:.4f}")
+            self.logger.info(f"🎉 {log_prefix} Order filled (simulated): {order_id} @ ${limit_price:.4f}")
             
             return {
-                'success': True,
-                'order_id': order_id,
-                'filled_amount': amount,
-                'avg_price': limit_price,
-                'slippage': slippage,
-                'order': order
+                'success': True, 'order_id': order_id, 'filled_amount': amount,
+                'avg_price': limit_price, 'slippage': slippage, 'order': order
             }
             
         except Exception as e:
-            logger.error(f"Limit order execution failed: {e}")
-            return {
-                'success': False,
-                'reason': str(e),
-                'order_id': None
-            }
+            self.logger.error(f"💥 {log_prefix} Limit order execution failed critically: {e}", exc_info=True)
+            return {'success': False, 'reason': str(e), 'order_id': None}
     
     async def _iceberg_order_execution(self, order_request: Dict, clients_to_use: Optional[Dict] = None) -> Dict[str, Any]:
         """
