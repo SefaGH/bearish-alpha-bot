@@ -1690,6 +1690,22 @@ class ProductionCoordinator:
                 self.is_running = True
             
             logger.info(f"🔍 [DEBUG] is_running now = {self.is_running}")
+
+            # KONTROL: Price Prediction Engine varsa ve çalışmıyorsa, onu başlat.
+            if hasattr(self, 'price_engine') and self.price_engine and not self.price_engine.is_running:
+                logger.info("🚀 Activating Price Prediction Engine background loop...")
+                # Zaman dilimlerini (timeframes) ML yapılandırmasından al
+                ml_config = self.config.get('ml', {})
+                prediction_timeframes = ml_config.get('prediction', {}).get('timeframes', ['5m', '15m', '1h'])
+                
+                # Arka plan görevini başlat
+                asyncio.create_task(self.price_engine.start_prediction_loop(
+                    symbols=self.active_symbols,
+                    timeframes=prediction_timeframes
+                ))
+                logger.info("✅ Price Prediction Engine loop started.")
+            elif hasattr(self, 'price_engine') and self.price_engine and self.price_engine.is_running:
+                logger.info("ℹ️ Price Prediction Engine is already running.")
             
             # Start queue monitoring task
             logger.info("🔍 [DEBUG] Creating queue monitoring task...")
