@@ -154,8 +154,6 @@ async def main():
         rl_data_raw = training_data[symbol_for_rl][RL_TRAINING_TIMEFRAME].copy()
         rl_features_df = feature_engine.extract_features(rl_data_raw)
         
-        # === DÜZELTME: Veri setlerini hizala ve NaN'leri temizle ===
-        # Önce verileri hizala, sonra NaN'leri temizle
         common_index = rl_data_raw.index.intersection(rl_features_df.index)
         rl_data_raw = rl_data_raw.loc[common_index]
         rl_features_df = rl_features_df.loc[common_index]
@@ -164,7 +162,6 @@ async def main():
         rl_features_df.fillna(method='bfill', inplace=True)
         rl_features_df.dropna(inplace=True)
         
-        # Temizlenmiş özellikler DataFrame'inin index'ini kullanarak ham veriyi tekrar filtrele
         final_index = rl_features_df.index
         rl_data_raw = rl_data_raw.loc[final_index]
         
@@ -173,20 +170,28 @@ async def main():
         else:
             logger.info(f"✅ RL eğitimi için {len(rl_features_df)} adet kullanılabilir veri noktası hazırlandı.")
             
-            # === DÜZELTME: RLTradingEnv'e hem özellikleri hem de ham veriyi ver ===
             env = RLTradingEnv(features_df=rl_features_df, raw_df=rl_data_raw)
-            state_dim = env.state_dim
+            state_dim = env.state_dim  # Artık burası 42 dönecek
             action_dim = env.action_dim
             
-            agent = TradingRLAgent(state_size=state_dim, action_size=action_dim)
+            logger.info(f"✅ RL Ortamı oluşturuldu. State boyutu: {state_dim}, Aksiyon boyutu: {action_dim}")
+
+            # Ajanı doğru state boyutu ve batch_size ile başlat
+            agent = TradingRLAgent(
+                state_size=state_dim, 
+                action_size=action_dim,
+                batch_size=RL_BATCH_SIZE # Batch size parametresini ajana ver
+            )
+
+            # Deneyim belleğini doğru buffer boyutu ile başlat
             experience_replay = ExperienceReplay(buffer_size=RL_BUFFER_SIZE)
             
-            agent.set_memory(experience_replay)
-            
+            # Eğiticiyi başlat
             rl_trainer = RLModelTrainer(agent, env, experience_replay)
             
             try:
-                rl_trainer.train(num_episodes=RL_NUM_EPISODES, batch_size=RL_BATCH_SIZE)
+                # Trainer'ın train metodu artık batch_size'a ihtiyaç duymuyor.
+                rl_trainer.train(num_episodes=RL_NUM_EPISODES)
                 logger.info("✅ RL Ajanı başarıyla eğitildi ve kaydedildi.")
             except Exception as e:
                 logger.error(f"❌ RL eğitimi sırasında bir hata oluştu: {e}", exc_info=True)
