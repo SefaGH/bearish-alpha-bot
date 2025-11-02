@@ -2648,9 +2648,6 @@ class LiveTradingLauncher:
             logger.info("[PHASE 2] INITIALIZING ML SYSTEMS")
             logger.info("="*70)
             
-            # Initialize AI components
-            await self._initialize_ai_components()
-            
             # Initialize ML systems in coordinator
             ml_init_success = await self._initialize_production_system_ml()
             if not ml_init_success:
