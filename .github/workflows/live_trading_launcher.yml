@@ -311,7 +311,6 @@ jobs:
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
           CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
         run: |
-          # DÜZELTME: Ondalık oranı (0.0005) okunabilir bir yüzdeye (%0.0500) çevir.
           DP_THRESHOLD_AS_PERCENT=$(printf "%.4f%%" $(echo "${DUPLICATE_PREVENTION_THRESHOLD} * 100" | bc))
 
           echo "🚀 BEARISH ALPHA BOT - LIVE TRADING LAUNCHER"
