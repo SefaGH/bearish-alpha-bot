@@ -4,26 +4,21 @@ Advanced Price Prediction Module for Phase 4 Final.
 Implements LSTM and Transformer models for real-time price movement prediction
 with multi-timeframe forecasting, ensemble predictions, and confidence intervals.
 """
-
 import asyncio
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
 from collections import deque
 import logging
-import os  # EKLENDİ
+import os
 
+# Import local modules with a fallback for script execution
 try:
-    from .neural_networks import LSTMRegimePredictor, TransformerRegimePredictor
     from .feature_engineering import FeatureEngineeringPipeline
-    from ..config.ml_config import MLConfiguration
 except ImportError:
-    # Fallback for when running as script
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-    from ml.neural_networks import LSTMRegimePredictor, TransformerRegimePredictor
     from ml.feature_engineering import FeatureEngineeringPipeline
-    from config.ml_config import MLConfiguration
 
 logger = logging.getLogger(__name__)
 
@@ -488,47 +483,87 @@ class AdvancedPricePredictionEngine:
     """
     MODEL_SAVE_DIR = "data/models" # Modellerin kaydedileceği dizin
     
-    def __init__(self, multi_timeframe_predictor: MultiTimeframePricePredictor,
-                 websocket_manager=None,
-                 market_data_pipeline=None):
+    def __init__(self, market_data_pipeline, feature_pipeline, config: Dict[str, Any]):
         """
-        Initialize advanced prediction engine.
-        (GÜNCELLENDİ: `market_data_pipeline` parametresi eklendi)
-        
+        Initialize the advanced prediction engine using a central configuration dictionary.
+
         Args:
-            multi_timeframe_predictor: MultiTimeframePricePredictor instance
-            websocket_manager: Optional WebSocket manager (DEPRECATED - use market_data_pipeline instead)
-            market_data_pipeline: MarketDataPipeline instance for data fetching (strongly recommended)
+            market_data_pipeline: Instance of MarketDataPipeline.
+            feature_pipeline: Instance of FeatureEngineeringPipeline.
+            config (Dict[str, Any]): The 'ml' configuration block from the main YAML file.
         """
-        if not isinstance(multi_timeframe_predictor, MultiTimeframePricePredictor):
-            raise TypeError(
-                "AdvancedPricePredictionEngine requires a valid MultiTimeframePricePredictor instance."
-            )
-        
-        self.predictor = multi_timeframe_predictor
-        
-        # Handle deprecated websocket_manager parameter
-        if websocket_manager is not None:
-            logger.warning("⚠️ websocket_manager parameter is deprecated. Please use market_data_pipeline instead.")
-        self.ws_manager = websocket_manager  # Deprecated but kept for backward compatibility
+        if not TORCH_AVAILABLE:
+            raise ImportError("PyTorch is required for AdvancedPricePredictionEngine.")
         
         self.market_data_pipeline = market_data_pipeline
+        self.feature_pipeline = feature_pipeline
+        # ✅ FIX: The engine now uses the config passed to it, removing the static dependency.
+        self.config = config
+        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info(f"AdvancedPricePredictionEngine using device: {self.device}")
+
+        # ✅ FIX: Build internal predictors based on the provided config.
+        # This replaces the old logic of receiving a pre-built predictor.
+        self.predictor = self._build_predictors()
+        
         self.prediction_cache = {}
         self.data_buffers = {}
         self.is_running = False
         
-        # Configuration
-        self.config = MLConfiguration.get_prediction_config()
-        self.update_interval = 60  # seconds
+        # ✅ FIX: Read prediction-specific config from the passed-in config dictionary.
+        prediction_config = self.config.get('prediction', {})
+        self.update_interval = prediction_config.get('update_interval_seconds', 60)
+        self.cache_ttl = timedelta(seconds=prediction_config.get('cache_ttl_seconds', 300))
         
-        self.is_trained = False # Modelin eğitimli olup olmadığını izler
+        # Load models and set training status.
+        self.is_trained = self.load_models()
         
         if not self.market_data_pipeline:
             logger.warning("⚠️ MarketDataPipeline not provided. Prediction updates may fail.")
         
-        logger.info("Advanced Price Prediction Engine initialized")
-        # --- KALDIRILDI: Başlangıçta modelleri yükleme ---
-        # self.load_models()
+        logger.info("Advanced Price Prediction Engine initialized.")
+
+    def _build_predictors(self) -> MultiTimeframePricePredictor:
+        """Builds the entire prediction stack (LSTM, Transformer, etc.) from config."""
+        logger.info("Building multi-timeframe prediction models from configuration...")
+        
+        model_config = self.config.get('models', {})
+        # This should ideally come from a calculated value based on feature engineering.
+        # For now, we use a configured or default value.
+        input_feature_size = 42 
+        forecast_horizon = 12
+
+        timeframes = self.config.get('timeframes', "5m,15m,1h").split(',')
+        
+        mtf_models = {}
+        for tf in timeframes:
+            tf_models = {}
+            # Build LSTM
+            if 'lstm' in model_config:
+                params = model_config['lstm']
+                tf_models['lstm'] = LSTMPricePredictor(
+                    input_size=input_feature_size,
+                    hidden_size=params.get('hidden_size', 128),
+                    num_layers=params.get('num_layers', 3),
+                    forecast_horizon=forecast_horizon
+                ).to(self.device)
+            
+            # Build Transformer
+            if 'transformer' in model_config:
+                params = model_config['transformer']
+                tf_models['transformer'] = TransformerPricePredictor(
+                    d_model=input_feature_size,
+                    nhead=params.get('nhead', 8),
+                    num_layers=params.get('num_layers', 6),
+                    forecast_horizon=forecast_horizon
+                ).to(self.device)
+            
+            if tf_models:
+                ensemble_weights = model_config.get('ensemble_weights', None)
+                mtf_models[tf] = EnsemblePricePredictor(tf_models, weights=ensemble_weights)
+
+        return MultiTimeframePricePredictor(mtf_models, self.feature_pipeline)
 
     def has_model_for(self, symbol: str) -> bool:
         """
