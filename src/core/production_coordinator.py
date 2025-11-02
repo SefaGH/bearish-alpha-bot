@@ -971,113 +971,116 @@ class ProductionCoordinator:
     async def _initialize_ml_components(self, price_engine: Optional[Any] = None, regime_predictor: Optional[Any] = None) -> Dict[str, Any]:
         """
         Initialize and connect ALL ML components from src/ml/.
-        This connects the fully implemented but disconnected ML layer.
-        (UPDATED: Takes pre-initialized objects)
-        
-        Args:
-            price_engine: Pre-initialized AdvancedPricePredictionEngine object.
-            regime_predictor: Pre-initialized MLRegimePredictor object.
-
-        Returns:
-            Dict with 'success' and optional 'reason' keys
+        This method now instantiates components directly using the central YAML config.
         """
         logger.info("🧠 [ML-INIT] Initializing ML system...")
-        
         ml_components = []
-        
+
         try:
-            # Import ML components (optional - won't fail if not available)
-            try:
-                from ml.strategy_integration import MLStrategyIntegrationManager
-                from ml.reinforcement_learning import TradingRLAgent
-                from ml.experience_replay import ExperienceReplay
-                from ml.feature_engineering import FeatureEngineeringPipeline
-                
-                logger.info("🧠 [ML-INIT] All ML modules imported successfully")
-            except ImportError as e:
-                logger.warning(f"🧠 [ML-INIT] ML modules not available: {e}")
-                return {'success': False, 'reason': f'ML modules not available: {e}'}
-            
-            # 1. Initialize Feature Engineering Pipeline
-            self.feature_pipeline = FeatureEngineeringPipeline()
+            # Import all necessary ML components
+            from ml.feature_engineering import FeatureEngineeringPipeline
+            from ml.price_predictor import AdvancedPricePredictionEngine
+            from ml.regime_predictor import MLRegimePredictor
+            from ml.reinforcement_learning import TradingRLAgent
+            from ml.strategy_integration import MLStrategyIntegrationManager
+            logger.info("🧠 [ML-INIT] All ML modules imported successfully.")
+        except ImportError as e:
+            logger.error(f"🧠 [ML-INIT] Critical ML modules not found: {e}", exc_info=True)
+            return {'success': False, 'reason': f'ML modules not available: {e}'}
+
+        # Get the entire 'ml' block from the main config
+        ml_config = self.config.get('ml', {})
+
+        # 1. Feature Engineering Pipeline (Dependency for other components)
+        try:
+            self.feature_pipeline = FeatureEngineeringPipeline(config=ml_config)
             ml_components.append('feature_pipeline')
-            logger.info("✅ Feature engineering pipeline ready")
-
-            # 2. Use pre-initialized Price Prediction Engine
-            self.price_engine = price_engine
-            if self.price_engine:
-                ml_components.append('price_engine')
-                logger.info("✅ Price prediction engine initialized")
-            else:
-                logger.warning("⚠️ Price engine not provided to coordinator.")
-
-            # 3. Use pre-initialized Regime Predictor
-            self.regime_predictor = regime_predictor
-            if self.regime_predictor:
-                ml_components.append('regime_predictor')
-                logger.info("✅ Regime predictor initialized")
-            else:
-                 logger.warning("⚠️ Regime predictor not provided to coordinator.")
-            
-            # 4. Initialize and Load Reinforcement Learning Agent
-            try:
-                self.rl_agent = TradingRLAgent(
-                    state_size=42, # ✅ FIX: Changed state_size from 50 to 42 to match feature pipeline
-                    action_size=self.config.get('rl_action_size', 3)
-                )
-                self.experience_replay = ExperienceReplay(max_size=100000)
-                # self.rl_agent.set_memory(self.experience_replay) # This line seems to be commented or removed in newer versions, keeping it that way.
-                
-                model_path = os.path.join(self.config.get('model_path', 'data/models'), 'rl_agent_final.pth')
-                
-                self.rl_agent.load_model(model_path)
-                
-                ml_components.append('rl_agent')
-                logger.info("✅ Reinforcement learning agent initialized and model loaded.")
-
-            except Exception as e:
-                logger.warning(f"⚠️ RL agent initialization or model loading failed: {e}")
-            
-            # 5. Initialize ML Strategy Integration Manager
-            try:
-                if self.price_engine and self.regime_predictor:
-                    self.ml_integration = MLStrategyIntegrationManager(
-                        self.price_engine,
-                        self.regime_predictor,
-                        self.market_data_pipeline
-                    )
-                    ml_components.append('ml_integration')
-                    logger.info("✅ ML strategy integration manager initialized with MarketDataPipeline")
-                else:
-                    logger.warning("⚠️ Cannot init ML integration without price/regime engines")
-            except Exception as e:
-                logger.warning(f"⚠️ ML integration init failed: {e}")
-            
-            # 6. Connect ML to Strategy Coordinator
-            if self.strategy_coordinator and self.ml_integration:
-                # The adapter is now an internal detail of ml_integration, so we pass the whole object
-                self.strategy_coordinator.ml_integration = self.ml_integration 
-                self.strategy_coordinator.feature_pipeline = self.feature_pipeline
-                self.strategy_coordinator.rl_agent = self.rl_agent
-                logger.info("🔗 ML connected to StrategyCoordinator")
-            
-            # 7. Connect ML to LiveTradingEngine
-            if self.trading_engine and self.rl_agent:
-                self.trading_engine.rl_agent = self.rl_agent
-                self.trading_engine.ml_integration = self.ml_integration
-                logger.info("🔗 ML connected to LiveTradingEngine")
-            
-            logger.info("🧠 [ML-INIT] ✅ ML SYSTEM INITIALIZED")
-            logger.info(f"   Components: {', '.join(ml_components)}")
-            logger.info(f"   Tracking {len(self.active_symbols)} symbols")
-            
-            health_check_result = await self._ml_preflight_health_check()
-            
-            return {'success': True, 'components': ml_components, 'health_check': health_check_result}
-            
+            logger.info("✅ Feature engineering pipeline initialized.")
         except Exception as e:
-            logger.error(f"🧠 [ML-INIT] Initialization error: {e}", exc_info=True)
-            return {'success': False, 'reason': str(e)}
+            logger.error(f"❌ Failed to initialize FeatureEngineeringPipeline: {e}", exc_info=True)
+            # This is a critical component, so we should probably stop.
+            return {'success': False, 'reason': 'Failed to initialize FeatureEngineeringPipeline'}
+
+        # 2. Price Prediction Engine
+        if ml_config.get('price_prediction_enabled', True):
+            try:
+                # ✅ FIX: Instantiate AdvancedPricePredictionEngine here with required dependencies
+                self.price_engine = AdvancedPricePredictionEngine(
+                    market_data_pipeline=self.market_data_pipeline,
+                    feature_pipeline=self.feature_pipeline,
+                    config=ml_config
+                )
+                ml_components.append('price_engine')
+                logger.info("✅ Price prediction engine initialized.")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize Price Prediction Engine: {e}", exc_info=True)
+                self.price_engine = None
+        else:
+            self.price_engine = None
+            logger.info("ℹ️ Price prediction is disabled in config.")
+
+        # 3. Regime Predictor
+        if ml_config.get('regime_prediction_enabled', True):
+            try:
+                # ✅ FIX: Instantiate MLRegimePredictor here with required dependencies
+                self.regime_predictor = MLRegimePredictor(
+                    feature_pipeline=self.feature_pipeline,
+                    config=ml_config
+                )
+                ml_components.append('regime_predictor')
+                logger.info("✅ Regime predictor initialized.")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize Regime Predictor: {e}", exc_info=True)
+                self.regime_predictor = None
+        else:
+            self.regime_predictor = None
+            logger.info("ℹ️ Regime prediction is disabled in config.")
+
+        # 4. Reinforcement Learning Agent
+        rl_config = ml_config.get('reinforcement_learning', {})
+        if rl_config.get('enabled', True):
+            try:
+                # Assuming state_size is known or can be derived from feature_pipeline
+                state_size = 42 
+                self.rl_agent = TradingRLAgent(state_size=state_size, action_size=3, config=rl_config)
+                model_path = self.config.get('model_path', 'data/models')
+                self.rl_agent.load_model(os.path.join(model_path, "rl_agent_final.pth"))
+                ml_components.append('rl_agent')
+                logger.info("✅ Reinforcement learning agent initialized.")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize Reinforcement Learning Agent: {e}", exc_info=True)
+                self.rl_agent = None
+        else:
+            self.rl_agent = None
+            logger.info("ℹ️ Reinforcement Learning is disabled in config.")
+
+        # 5. ML Strategy Integration Manager
+        try:
+            self.ml_integration = MLStrategyIntegrationManager(
+                price_predictor=self.price_engine,
+                regime_predictor=self.regime_predictor,
+                market_data_pipeline=self.market_data_pipeline
+            )
+            ml_components.append('ml_integration')
+            logger.info("✅ ML strategy integration manager initialized.")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize ML Strategy Integration Manager: {e}", exc_info=True)
+            self.ml_integration = None
+        
+        # 6. Connect components to other parts of the system
+        if self.strategy_coordinator:
+            self.strategy_coordinator.ml_integration = self.ml_integration
+            self.strategy_coordinator.feature_pipeline = self.feature_pipeline
+            self.strategy_coordinator.rl_agent = self.rl_agent
+            logger.info("🔗 ML components connected to StrategyCoordinator.")
+        if self.trading_engine:
+            self.trading_engine.ml_integration = self.ml_integration
+            self.trading_engine.rl_agent = self.rl_agent
+            logger.info("🔗 ML components connected to LiveTradingEngine.")
+
+        logger.info("🧠 [ML-INIT] ✅ ML SYSTEM INITIALIZATION COMPLETE")
+        await self._ml_preflight_health_check()
+        return {'success': True, 'components': ml_components}
     
     async def _ml_preflight_health_check(self) -> Dict[str, Any]:
         """
