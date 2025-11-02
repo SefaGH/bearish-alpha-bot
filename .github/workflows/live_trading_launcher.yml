@@ -425,6 +425,41 @@ jobs:
           ADAPTIVE_MODE_STR: ${{ vars.ADAPTIVE_MODE_STR || 'dynamic' }}
           VOLATILITY_SENSITIVITY_STR: ${{ vars.VOLATILITY_SENSITIVITY_STR || 'medium' }}
         run: |
+          # --- Normalize duration input (supports: 18000, 18000.0, 1.8e4, 2h, 30m, 45s) ---
+          DUR_INPUT="${{ github.event.inputs.duration }}"
+          duration_arg=""
+
+          if [ -n "$DUR_INPUT" ]; then
+            NORMALIZED_DURATION=$(python - <<'PY' "$DUR_INPUT"
+import sys, re
+s = sys.argv[1].strip()
+# Accept integer, float, scientific, or suffix h/m/s
+m = re.match(r'^\s*([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*([hmsHMS])?\s*$', s)
+if not m:
+    # invalid format -> return empty (outer shell will treat as error)
+    sys.exit(0)
+num = float(m.group(1))
+unit = m.group(2)
+if not unit:
+    print(str(int(round(num))), end="")
+else:
+    unit = unit.lower()
+    if unit == 'h':
+        print(str(int(round(num * 3600))), end="")
+    elif unit == 'm':
+        print(str(int(round(num * 60))), end="")
+    else:
+        print(str(int(round(num))), end="")
+PY
+)
+            if [ -n "$NORMALIZED_DURATION" ]; then
+              duration_arg="--duration $NORMALIZED_DURATION"
+            else
+              echo "⚠️ Unknown duration format: '$DUR_INPUT' - expected seconds or values like 2h/30m/45s or numeric formats (e.g. 18000 or 1.8e4)"
+              exit 1
+            fi
+          fi
+
           # Build command dynamically
           CMD="python scripts/live_trading_launcher.py"
 
@@ -448,19 +483,14 @@ jobs:
             CMD="$CMD --auto-restart"
           fi
 
-          # Add max restarts if specified
-          # if [ -n "${{ github.event.inputs.max_restarts }}" ] && [ "${{ github.event.inputs.max_restarts }}" != "1000" ]; then
-          #   CMD="$CMD --max-restarts ${{ github.event.inputs.max_restarts }}"
-          # fi
-
           # Add restart delay if specified
           if [ -n "${{ github.event.inputs.restart_delay }}" ] && [ "${{ github.event.inputs.restart_delay }}" != "30" ]; then
             CMD="$CMD --restart-delay ${{ github.event.inputs.restart_delay }}"
           fi
 
-          # Add duration if specified
-          if [ -n "${{ github.event.inputs.duration }}" ]; then
-            CMD="$CMD --duration ${{ github.event.inputs.duration }}"
+          # Add normalized duration if present
+          if [ -n "$duration_arg" ]; then
+            CMD="$CMD $duration_arg"
           fi
 
           # Add debug mode if enabled
