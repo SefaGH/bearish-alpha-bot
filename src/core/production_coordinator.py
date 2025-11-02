@@ -1053,7 +1053,7 @@ class ProductionCoordinator:
         # 5. ML Strategy Integration Manager
         try:
             self.ml_integration = MLStrategyIntegrationManager(
-                price_predictor=self.price_engine,  # <-- HATALI PARAMETRE ADI
+                price_engine=self.price_engine,  # <-- DOĞRU PARAMETRE ADI
                 regime_predictor=self.regime_predictor,
                 market_data_pipeline=self.market_data_pipeline
             )
