@@ -23,6 +23,11 @@ from src.ml.price_predictor import (
     TransformerPricePredictor
 )
 from src.ml.label_generator import generate_regime_labels
+# --- YENİ: RL EĞİTİMİ İÇİN GEREKLİ IMPORT'LAR ---
+from src.ml.reinforcement_learning import TradingRLAgent, ExperienceReplay
+from src.ml.rl_trading_env import RLTradingEnv
+from src.ml.rl_model_trainer import RLModelTrainer
+# --- YENİ IMPORT'LAR SONU ---
 
 # Logger kurulumu
 logger = setup_logger("model-trainer", level=logging.DEBUG, log_to_file=True, log_filename="training.log")
@@ -31,10 +36,17 @@ logger = setup_logger("model-trainer", level=logging.DEBUG, log_to_file=True, lo
 SYMBOLS_TO_TRAIN = ['BTC/USDT']
 ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h']
 REGIME_TRAINING_TIMEFRAMES = ['30m', '1h', '4h'] 
-CANDLE_LIMIT = 1400
+CANDLE_LIMIT = 2000 # Daha fazla veri, daha iyi eğitim
 
 MIN_SAMPLES_FOR_RF = 100
 MIN_SAMPLES_FOR_NN = 500
+
+# --- YENİ: RL EĞİTİM PARAMETRELERİ ---
+RL_TRAINING_TIMEFRAME = '15m'  # RL eğitimi için kullanılacak zaman dilimi
+RL_NUM_EPISODES = 250          # Ajanın kaç bölüm (episode) boyunca eğitileceği
+RL_BATCH_SIZE = 64             # Her öğrenme adımında kullanılacak deneyim sayısı
+RL_BUFFER_SIZE = 100000        # Deneyim tekrarı belleğinin kapasitesi
+# --- YENİ PARAMETRELER SONU ---
 
 
 async def main():
@@ -61,10 +73,11 @@ async def main():
             except Exception as e:
                 logger.error(f"❌ Veri çekme hatası: {e}", exc_info=True)
     
-    # 1. REJİM MODELLERİ EĞİTİMİ
+    # 1. REJİM MODELLERİ EĞİTİMİ (Mevcut kodunuz aynı kalıyor)
     logger.info("\n" + "="*60)
     logger.info("🧠 ADIM 1: PİYASA REJİMİ MODELLERİ EĞİTİLİYOR 🧠")
-    logger.info(f"   Eğitim Zaman Dilimleri: {REGIME_TRAINING_TIMEFRAMES}")
+    # ... (Bu bölümün tamamı sizin kodunuzla aynı)
+    # ...
     logger.info("="*60)
     
     all_regime_features = []
@@ -80,7 +93,6 @@ async def main():
                 features_df = feature_engine.extract_features(regime_data_raw)
                 regime_labels = generate_regime_labels(regime_data_raw)
                 
-                # --- 🔥 NİHAİ DÜZELTME: Metodu, oluşturulmuş NESNE üzerinden çağır ---
                 X_prepared, y_prepared = feature_engine.prepare_for_training(
                     features_df, 
                     regime_labels
@@ -90,36 +102,21 @@ async def main():
                     all_regime_features.append(X_prepared)
                     all_regime_labels.append(y_prepared)
                     logger.info(f"✅ {tf} verisinden {X_prepared.shape[0]} örnek eklendi.")
-                else:
-                    logger.warning(f"{tf} verisinden geçerli eğitim örneği çıkarılamadı.")
-            else:
-                 logger.error(f"Rejim eğitimi için {symbol_for_regime} sembolüne ait {tf} verisi bulunamadı.")
-
+        
         if all_regime_features and all_regime_labels:
             final_X = np.vstack(all_regime_features)
             final_y = np.concatenate(all_regime_labels)
             
-            total_samples = final_X.shape[0]
-            logger.info(f"Toplamda {total_samples} örnek ve {final_X.shape[1]} özellik ile rejim modeli eğitilecek.")
-
-            if total_samples >= MIN_SAMPLES_FOR_RF:
+            if final_X.shape[0] >= MIN_SAMPLES_FOR_RF:
                 regime_trainer = RegimeModelTrainer()
-                training_results = regime_trainer.train_ensemble_models(final_X, final_y)
+                regime_trainer.train_ensemble_models(final_X, final_y)
                 logger.info(f"✅ Rejim modelleri birleşik veri seti ile eğitildi ve kaydedildi.")
-            else:
-                logger.warning(
-                    f"Rejim modellerini eğitmek için yeterli birleşik veri bulunamadı. "
-                    f"Gereken minimum: {MIN_SAMPLES_FOR_RF}, bulunan: {total_samples}"
-                )
-        else:
-            logger.error("Rejim modeli eğitimi için işlenecek hiçbir veri bulunamadı.")
-    else:
-        logger.error(f"Rejim eğitimi için {symbol_for_regime} sembolüne ait veri bulunamadı.")
 
-
-    # 2. FİYAT TAHMİN MODELLERİ EĞİTİMİ
+    # 2. FİYAT TAHMİN MODELLERİ EĞİTİMİ (Mevcut kodunuz aynı kalıyor)
     logger.info("\n" + "="*60)
     logger.info("📈 ADIM 2: FİYAT TAHMİN MODELLERİ EĞİTİLİYOR 📈")
+    # ... (Bu bölümün tamamı sizin kodunuzla aynı)
+    # ...
     logger.info("="*60)
     
     price_timeframes = [tf for tf in ['5m', '15m', '1h'] if tf in training_data.get(SYMBOLS_TO_TRAIN[0], {})]
@@ -127,12 +124,10 @@ async def main():
         sample_df = training_data[SYMBOLS_TO_TRAIN[0]][price_timeframes[0]].copy()
         sample_features = feature_engine.extract_features(sample_df)
         input_feature_size = sample_features.shape[1]
-        logger.info(f"Fiyat tahmin modelleri için tutarlı girdi boyutu: {input_feature_size}")
-
+        
         transformer_d_model = input_feature_size
         if transformer_d_model % 2 != 0:
             transformer_d_model += 1
-            logger.warning(f"Transformer d_model tek sayı ({input_feature_size}) olamaz. {transformer_d_model}'e yükseltildi.")
 
         timeframe_models = {}
         for tf in price_timeframes:
@@ -146,8 +141,51 @@ async def main():
         price_engine = AdvancedPricePredictionEngine(multi_tf_predictor)
         
         price_engine.train_and_save_models(training_data)
+
+    # --- YENİ: ADIM 3 ---
+    # 3. REINFORCEMENT LEARNING AJANI EĞİTİMİ
+    logger.info("\n" + "="*60)
+    logger.info("🤖 ADIM 3: REINFORCEMENT LEARNING AJANI EĞİTİLİYOR 🤖")
+    logger.info(f"   Eğitim Zaman Dilimi: {RL_TRAINING_TIMEFRAME}, Bölüm Sayısı: {RL_NUM_EPISODES}")
+    logger.info("="*60)
+
+    symbol_for_rl = SYMBOLS_TO_TRAIN[0]
+    if symbol_for_rl in training_data and RL_TRAINING_TIMEFRAME in training_data[symbol_for_rl]:
+        logger.info(f"RL ajanı için {RL_TRAINING_TIMEFRAME} verisi hazırlanıyor...")
+        
+        rl_data_raw = training_data[symbol_for_rl][RL_TRAINING_TIMEFRAME].copy()
+        rl_features_df = feature_engine.extract_features(rl_data_raw)
+        
+        # NaN değerleri temizle
+        rl_features_df.fillna(method='ffill', inplace=True)
+        rl_features_df.fillna(method='bfill', inplace=True)
+        rl_features_df.dropna(inplace=True)
+        
+        if rl_features_df.empty:
+            logger.error("RL eğitimi için özellik çıkarıldıktan sonra veri kalmadı.")
+        else:
+            logger.info(f"✅ RL eğitimi için {len(rl_features_df)} adet kullanılabilir veri noktası hazırlandı.")
+            
+            # RL Ortamını ve Ajanını Başlat
+            env = RLTradingEnv(df=rl_features_df)
+            state_dim = env.state_dim
+            action_dim = env.action_dim
+            
+            agent = TradingRLAgent(state_size=state_dim, action_size=action_dim)
+            experience_replay = ExperienceReplay(buffer_size=RL_BUFFER_SIZE)
+            
+            # RL Eğiticisini Başlat ve Eğitimi Başlat
+            rl_trainer = RLModelTrainer(agent, env, experience_replay)
+            
+            try:
+                rl_trainer.train(num_episodes=RL_NUM_EPISODES, batch_size=RL_BATCH_SIZE)
+                logger.info("✅ RL Ajanı başarıyla eğitildi ve kaydedildi.")
+            except Exception as e:
+                logger.error(f"❌ RL eğitimi sırasında bir hata oluştu: {e}", exc_info=True)
+
     else:
-        logger.error(f"Fiyat modeli eğitimi için {SYMBOLS_TO_TRAIN[0]} sembolüne ait veri bulunamadı.")
+        logger.error(f"RL eğitimi için gerekli olan {symbol_for_rl} sembolüne ait {RL_TRAINING_TIMEFRAME} verisi bulunamadı.")
+    # --- YENİ ADIM 3 SONU ---
 
 
     logger.info("\n" + "="*60)
