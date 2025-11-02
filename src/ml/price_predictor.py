@@ -524,24 +524,43 @@ class AdvancedPricePredictionEngine:
         
         logger.info("Advanced Price Prediction Engine initialized.")
 
-    def _build_predictors(self) -> MultiTimeframePricePredictor:
+    def _build_predictors(self) -> Optional[MultiTimeframePricePredictor]:
         """Builds the entire prediction stack (LSTM, Transformer, etc.) from config."""
         logger.info("Building multi-timeframe prediction models from configuration...")
-        
-        model_config = self.config.get('models', {})
-        # This should ideally come from a calculated value based on feature engineering.
-        # For now, we use a configured or default value.
-        input_feature_size = 42 
-        forecast_horizon = 12
 
-        timeframes = self.config.get('timeframes', "5m,15m,1h").split(',')
+        model_config = self.config.get('prediction', {})
+        input_feature_size = self.config.get('feature_size', 42)
+        forecast_horizon = self.config.get('forecast_horizon', 12)
+
+        # --- YENİ VE ESNEK KOD BAŞLANGICI ---
+        timeframes_from_config = model_config.get('timeframes', ['5m', '15m', '1h'])
         
+        if isinstance(timeframes_from_config, str):
+            # Eski format desteği: "5m,15m,1h"
+            timeframes = [tf.strip() for tf in timeframes_from_config.split(',') if tf.strip()]
+        elif isinstance(timeframes_from_config, list):
+            # Yeni ve doğru format: ['5m', '15m', '1h']
+            timeframes = [str(tf).strip() for tf in timeframes_from_config]
+        else:
+            logger.error(f"Invalid 'timeframes' format in config. Expected list or string, got {type(timeframes_from_config)}.")
+            return None
+        # --- YENİ VE ESNEK KOD SONU ---
+
+        if not timeframes:
+            logger.error("Timeframe list is empty after parsing. Cannot build predictors.")
+            return None
+            
+        logger.info(f"Predictors will be built for timeframes: {timeframes}")
+
         mtf_models = {}
+        model_types_to_build = self.config.get('models', [])
+        model_params = self.config.get('model_params', {})
+
         for tf in timeframes:
             tf_models = {}
             # Build LSTM
-            if 'lstm' in model_config:
-                params = model_config['lstm']
+            if 'lstm' in model_types_to_build:
+                params = model_params.get('lstm', {})
                 tf_models['lstm'] = LSTMPricePredictor(
                     input_size=input_feature_size,
                     hidden_size=params.get('hidden_size', 128),
@@ -550,20 +569,27 @@ class AdvancedPricePredictionEngine:
                 ).to(self.device)
             
             # Build Transformer
-            if 'transformer' in model_config:
-                params = model_config['transformer']
+            if 'transformer' in model_types_to_build:
+                params = model_params.get('transformer', {})
+                # Transformer'ın d_model'i, input_feature_size ile aynı olmalıdır.
+                d_model = input_feature_size
+                if d_model % 2 != 0:
+                    d_model +=1 # nhead'in bölebilmesi için çift sayı olmalı
+                    logger.warning(f"Adjusted d_model to {d_model} to be even for Transformer.")
+
                 tf_models['transformer'] = TransformerPricePredictor(
-                    d_model=input_feature_size,
-                    nhead=params.get('nhead', 8),
+                    d_model=d_model, 
+                    nhead=params.get('nhead', 2), # nhead'in d_model'i bölebildiğinden emin olun
                     num_layers=params.get('num_layers', 6),
                     forecast_horizon=forecast_horizon
                 ).to(self.device)
             
             if tf_models:
-                ensemble_weights = model_config.get('ensemble_weights', None)
+                ensemble_weights = self.config.get('ensemble_weights', None)
                 mtf_models[tf] = EnsemblePricePredictor(tf_models, weights=ensemble_weights)
 
-        return MultiTimeframePricePredictor(mtf_models, self.feature_pipeline)
+        # feature_pipeline'ı MultiTimeframePricePredictor'a constructor'da ver
+        return MultiTimeframePricePredictor(mtf_models)
 
     def has_model_for(self, symbol: str) -> bool:
         """
