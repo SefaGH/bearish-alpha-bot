@@ -10,6 +10,7 @@ import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
 import logging
 import os
+from datetime import timedelta
 
 # ML_ENABLED ortam değişkenini oku
 ML_ENABLED = os.getenv("ML_ENABLED", "false").lower() in ("1", "true", "yes")
