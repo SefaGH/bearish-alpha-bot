@@ -461,7 +461,8 @@ class StrategyCoordinator:
             rl_advice = None
             if hasattr(self, 'rl_agent') and self.rl_agent:
                 try:
-                    state_features = self._extract_rl_state(symbol, current_price)
+                    # ✅ DÜZELTME: 'await' eklendi.
+                    state_features = await self._extract_rl_state(symbol, current_price)
                     rl_action_index = self.rl_agent.act(
                         state_features,
                         market_regime=signal.get('predicted_regime', 'neutral'),
