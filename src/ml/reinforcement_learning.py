@@ -370,14 +370,25 @@ if TORCH_AVAILABLE:
             logger.info(f"Model saved to {path}")
         
         def load_model(self, path: str):
-            """Load model weights."""
-            checkpoint = torch.load(path)
-            self.q_network.load_state_dict(checkpoint['q_network'])
-            self.target_network.load_state_dict(checkpoint['target_network'])
-            self.optimizer.load_state_dict(checkpoint['optimizer'])
-            self.epsilon = checkpoint.get('epsilon', self.epsilon)
-            self.training_history = checkpoint.get('training_history', self.training_history)
-            logger.info(f"Model loaded from {path}")
+            """
+            Load model weights from a checkpoint file.
+            Includes error handling for missing files.
+            """
+            try:
+                checkpoint = torch.load(path)
+                self.q_network.load_state_dict(checkpoint['q_network'])
+                self.target_network.load_state_dict(checkpoint['target_network'])
+                self.optimizer.load_state_dict(checkpoint['optimizer'])
+                self.epsilon = checkpoint.get('epsilon', self.epsilon)
+                self.training_history = checkpoint.get('training_history', self.training_history)
+                # Başarı durumunda net bir log mesajı ekle
+                logger.info(f"✅ RL Agent model loaded successfully from {path}")
+            except FileNotFoundError:
+                # Dosya bulunamazsa hata logu yazdır
+                logger.error(f"❌ RL Agent model file not found at {path}. Agent will use untrained weights.")
+            except Exception as e:
+                # Diğer olası hatalar için detaylı log yazdır
+                logger.error(f"❌ Failed to load RL Agent model from {path}: {e}", exc_info=True)
         
         def get_training_summary(self) -> Dict[str, Any]:
             """Get training summary statistics."""
