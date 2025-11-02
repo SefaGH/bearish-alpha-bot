@@ -384,7 +384,7 @@ class MLStrategyIntegrationManager:
     def __init__(self, 
                  price_engine: Optional[AdvancedPricePredictionEngine],
                  regime_predictor: Optional[MLRegimePredictor],
-                 market_data_pipeline: Optional[Any] = None): # *** UPDATED: Use MarketDataPipeline instead of websocket_manager ***
+                 market_data_pipeline: Optional[Any] = None):
         """
         Initialize the integration manager.
         
@@ -395,18 +395,20 @@ class MLStrategyIntegrationManager:
         """
         self.price_engine = price_engine
         self.regime_predictor = regime_predictor
-        self.market_data_pipeline = market_data_pipeline # *** UPDATED: Store MarketDataPipeline ***
+        self.market_data_pipeline = market_data_pipeline
         
-        # Keep backward compatibility with websocket_manager attribute
         self.websocket_manager = market_data_pipeline.websocket_manager if market_data_pipeline else None
         
         self.adapter = None
-        # Adapter'ın başlatılması için market_data_pipeline bir bağımlılık değil, bu yüzden mantık aynı kalıyor.
         if self.price_engine and self.regime_predictor:
             self.adapter = AIEnhancedStrategyAdapter(price_engine, regime_predictor)
             logger.info("✅ AIEnhancedStrategyAdapter initialized.")
         else:
-            logger.warning("⚠️ AIEnhancedStrategyAdapter not initialized due to missing dependencies (price_engine or regime_predictor).")
+            # Daha detaylı uyarı için eksik bileşenleri listele
+            missing = []
+            if not self.price_engine: missing.append("price_engine")
+            if not self.regime_predictor: missing.append("regime_predictor")
+            logger.warning(f"⚠️ AIEnhancedStrategyAdapter not initialized due to missing dependencies ({', '.join(missing)}).")
 
         self.tracker = StrategyPerformanceTracker()
         
@@ -414,92 +416,87 @@ class MLStrategyIntegrationManager:
 
     async def get_ml_context(self, symbol: str, horizon: str = '1h') -> Dict[str, Any]:
         """
-        Gathers ML-driven context for a symbol, including price predictions and regime analysis.
-        
-        *** UPDATED: Now uses centralized MarketDataPipeline for data access ***
-        This eliminates direct websocket_manager access and ensures consistent data flow.
+        Gathers ML-driven context for a symbol, providing detailed health assessment.
+        (GÜNCELLENDİ: Daha detaylı hata tespiti ve loglama)
         """
-        logger.info(f"🧠 [ML-CONTEXT] Gathering ML context for {symbol}...")
+        logger.debug(f"🧠 [ML-CONTEXT] Gathering ML context for {symbol}...")
         context = {
             'is_healthy': False,
             'prediction': None,
             'regime': None,
-            'confidence': 0.0,
-            'reason': "Initialization failed"
+            'unhealthy_reasons': [] # Nedenleri liste olarak tutacağız
         }
 
-        # Adım 1: Check if MarketDataPipeline is available
+        # Adım 1: Gerekli veriyi MarketDataPipeline üzerinden al
+        price_data = None
         if not self.market_data_pipeline:
-            context['reason'] = "MarketDataPipeline is not available."
-            logger.warning(f"🧠 [ML-CONTEXT] {context['reason']}")
-            return context
-        
-        # Adım 2: Get OHLCV data using centralized MarketDataPipeline
-        # This automatically handles WebSocket-first with REST fallback
-        try:
-            price_data = await self.market_data_pipeline.get_latest_ohlcv(
-                symbol=symbol, 
-                timeframe=horizon,
-                exchange=None  # Let pipeline choose best exchange
-            )
-            
-            if price_data is None or price_data.empty:
-                context['reason'] = f"Could not retrieve OHLCV data for {symbol} from MarketDataPipeline (tried {horizon})."
-                logger.warning(f"🧠 [ML-CONTEXT] {context['reason']}")
-                return context
-            
-            logger.debug(f"🧠 [ML-CONTEXT] Retrieved {len(price_data)} candles for {symbol} via MarketDataPipeline")
-            
-        except Exception as e:
-            context['reason'] = f"Failed to fetch OHLCV data from MarketDataPipeline: {e}"
-            logger.error(f"🧠 [ML-CONTEXT] {context['reason']}", exc_info=False)
-            return context
-
-        # --- Fiyat Tahmini ---
-        if self.price_engine:
+            context['unhealthy_reasons'].append("MarketDataPipeline not available")
+        else:
             try:
-                # `await` kaldırıldı çünkü get_price_forecast async değil.
+                price_data = await self.market_data_pipeline.get_latest_ohlcv(
+                    symbol=symbol, timeframe=horizon, exchange=None
+                )
+                if price_data is None or price_data.empty:
+                    context['unhealthy_reasons'].append(f"No OHLCV data for {symbol} [{horizon}]")
+                    price_data = None # Sonraki adımların çalışmaması için None yap
+            except Exception as e:
+                context['unhealthy_reasons'].append(f"OHLCV data fetch error: {e}")
+                price_data = None # Sonraki adımların çalışmaması için None yap
+
+        # Adım 2: Fiyat Tahmini (Price Forecast)
+        if not self.price_engine:
+            context['unhealthy_reasons'].append("Price engine not available")
+        else:
+            try:
                 prediction = self.price_engine.get_price_forecast(symbol)
                 if prediction:
                     context['prediction'] = prediction
-                    context['confidence'] = prediction.get('aggregated', {}).get('consensus_strength', 0.0)
+                    # 'confidence' anahtarını, eski kodla uyumlu olması için burada eklemeyelim.
+                    # Bu, get_ml_context'in döndürdüğü sözlüğün yapısını korur.
+                else:
+                    context['unhealthy_reasons'].append("Price forecast unavailable (cache miss/stale)")
             except Exception as e:
-                logger.error(f"🧠 [ML-CONTEXT] Price prediction crashed for {symbol}: {e}", exc_info=False)
+                context['unhealthy_reasons'].append(f"Price forecast error: {e}")
 
-        # --- Rejim Tahmini ---
-        # ✅ KESİN ÇÖZÜM: `regime_predictor.py` dosyasındaki doğru metot olan `predict_regime_transition` çağrılıyor.
-        if self.regime_predictor:
+        # Adım 3: Rejim Tahmini (Regime Prediction)
+        if not self.regime_predictor:
+            context['unhealthy_reasons'].append("Regime predictor not available")
+        elif price_data is None:
+            pass # price_data yoksa bu adımı atla, nedeni zaten eklendi.
+        else:
             try:
-                # ÖNCEKİ YANLIŞ ÇAĞRILAR: .predict() veya .get_regime_prediction()
-                # DOĞRU ÇAĞRI:
                 regime = await self.regime_predictor.predict_regime_transition(symbol=symbol, price_data=price_data, horizon=horizon)
-                
-                context['regime'] = regime
-                logger.info(f"🧠 [ML-CONTEXT] Market regime for {symbol}: {regime.get('predicted_regime', 'unknown')}")
+                if regime:
+                    context['regime'] = regime
+                else:
+                    context['unhealthy_reasons'].append("Regime prediction returned no result")
             except Exception as e:
-                logger.error(f"🧠 [ML-CONTEXT] Regime prediction crashed for {symbol}: {e}", exc_info=False)
+                context['unhealthy_reasons'].append(f"Regime prediction error: {e}")
 
-        # --- Sağlık Durumu ---
-        if context['prediction'] and context['regime']:
+        # Adım 4: Nihai Sağlık Değerlendirmesi ve Geriye Dönük Uyumluluk
+        if not context['unhealthy_reasons']:
             context['is_healthy'] = True
             context['reason'] = "ML context successfully gathered."
+            # Eski yapıyla uyumluluk için confidence değerini burada ata
+            if context['prediction']:
+                 context['confidence'] = context['prediction'].get('aggregated', {}).get('consensus_strength', 0.0)
+            else:
+                 context['confidence'] = 0.0
+            logger.debug(f"🧠 [ML-CONTEXT] ML context for {symbol} is healthy.")
         else:
-            reasons = []
-            if not context['prediction']: reasons.append("Price prediction failed or unavailable")
-            if not context['regime']: reasons.append("Regime prediction failed")
-            context['reason'] = ". ".join(reasons)
+            context['is_healthy'] = False
+            reason_str = "; ".join(context['unhealthy_reasons'])
+            context['reason'] = reason_str # Eski `reason` anahtarını doldur
+            logger.warning(f"🧠 [ML-CONTEXT] ML context for {symbol} is unhealthy. Reasons: {reason_str}")
         
-        if not context['is_healthy']:
-             logger.warning(f"🧠 [ML-CONTEXT] ML context for {symbol} is unhealthy. Reason: {context['reason']}")
+        # 'unhealthy_reasons' anahtarını temizleyerek eski dönüş formatını koru
+        del context['unhealthy_reasons']
 
         return context
 
     def get_integration_status(self) -> Dict[str, Any]:
         """
         Get overall integration status, now with fault tolerance.
-        
-        Returns:
-            Status information for all components.
         """
         price_engine_status = {}
         if self.price_engine:
