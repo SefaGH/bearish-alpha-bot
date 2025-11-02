@@ -311,7 +311,7 @@ class StrategyCoordinator:
             # Step 2: Enrich signal with metadata
             enriched_signal = self._enrich_signal(strategy_name, signal)
             
-            # Step 2.5: Validate for duplicates (Phase 3.4 - Issue #103)
+            # ✅ FIX: Step 2.5 is now Duplicate Prevention (MOVED UP)
             is_valid_duplicate, duplicate_reason = self.validate_duplicate(enriched_signal, strategy_name)
             if not is_valid_duplicate:
                 self.processing_stats['rejected_signals'] += 1
@@ -323,12 +323,13 @@ class StrategyCoordinator:
                     'stage': 'duplicate_validation'
                 }
             
-            # Step 2.6: ML Enhancement (if enabled)
+            # ✅ FIX: Step 2.6 is now ML Enhancement
             if hasattr(self, 'ml_integration') and self.ml_integration:
                 enriched_signal = await self._enhance_signal_with_ml(enriched_signal)
                 if enriched_signal is None:
                     # ML blocked the signal
                     self.processing_stats['rejected_signals'] += 1
+                    # Ensure the key exists before incrementing
                     self.processing_stats['ml_blocked_signals'] = self.processing_stats.get('ml_blocked_signals', 0) + 1
                     logger.info(f"Signal rejected by ML enhancement")
                     return {
