@@ -323,6 +323,13 @@ class AdaptiveShortTheRip(ShortTheRip):
             reward_amount = entry_price - target_price
             rr_ratio = (reward_amount / risk_amount) if risk_amount > 0 else float('inf')
 
+            # --- 🔥 YENİ EKLENEN TELEMETRİ LOG'U 🔥 ---
+            if self.debug_logging:
+                logger.info(
+                    f"🔍 {log_prefix} R/R Calculation: "
+                    f"Entry={entry_price:.2f}, TP={target_price:.2f}, SL={stop_price:.2f} | "
+                    f"Reward=${reward_amount:.2f}, Risk=${risk_amount:.2f} -> R/R={rr_ratio:.2f}"
+
             # 3. R/R Ratio Check
             min_rr_ratio = self.config.get('min_rr_ratio', 1.2)
             if rr_ratio < min_rr_ratio:
