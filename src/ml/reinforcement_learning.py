@@ -122,38 +122,61 @@ if TORCH_AVAILABLE:
     class TradingRLAgent:
         """Reinforcement Learning agent for trading strategy optimization."""
         
-        def __init__(self, state_size: int, action_size: int, 
-                     learning_rate: float = 0.001,
-                     gamma: float = 0.99,
-                     epsilon: float = 1.0,
-                     epsilon_decay: float = 0.995,
-                     epsilon_min: float = 0.01,
-                     batch_size: int = 64,
-                     target_update_freq: int = 10):
+        def _get_default_config(self) -> Dict[str, Any]:
+            """Provides default values for the agent's configuration."""
+            return {
+                'learning_rate': 0.0001,
+                'gamma': 0.99,
+                'buffer_size': 100000,
+                'batch_size': 64,
+                'target_update_freq': 10,
+                'training_mode': False,
+                'hold_confidence_threshold': 0.60,
+                'epsilon_inference': 0.01,
+                'epsilon_start': 1.0,
+                'epsilon_decay': 0.995,
+                'epsilon_min': 0.01,
+                'regime_bias_strength': 5.0,
+                'risk_penalty_strength': 100.0,
+            }
+        
+        def __init__(self, state_size: int, action_size: int, config: Dict[str, Any]):
             """
-            Initialize Trading RL Agent.
-            
+            Initialize Trading RL Agent using a configuration dictionary.
+
             Args:
-                state_size: Dimension of state space (market features)
-                action_size: Number of possible actions
-                learning_rate: Learning rate for optimizer
-                gamma: Discount factor for future rewards
-                epsilon: Initial exploration rate
-                epsilon_decay: Decay rate for epsilon
-                epsilon_min: Minimum exploration rate
-                batch_size: Batch size for training
-                target_update_freq: Frequency to update target network
+                state_size (int): Dimension of state space (market features).
+                action_size (int): Number of possible actions.
+                config (Dict[str, Any]): Configuration dictionary, typically from the
+                                         'reinforcement_learning' section of the YAML config.
             """
+            # Merge provided config with defaults for robustness
+            default_config = self._get_default_config()
+            self.config = {**default_config, **config}
+
             self.state_size = state_size
             self.action_size = action_size
-            self.gamma = gamma
-            self.epsilon = epsilon
-            self.epsilon_decay = epsilon_decay
-            self.epsilon_min = epsilon_min
-            self.batch_size = batch_size
-            self.target_update_freq = target_update_freq
-            self.update_counter = 0
             
+            # Core Algorithm Parameters from config
+            self.gamma = self.config['gamma']
+            self.batch_size = self.config['batch_size']
+            self.target_update_freq = self.config['target_update_freq']
+            
+            # Behavior and Mode Parameters from config
+            self.training_mode = self.config.get('training_mode', False)
+            self.hold_confidence_threshold = self.config.get('hold_confidence_threshold', 0.60)
+            
+            # Epsilon values from config
+            self.epsilon = self.config.get('epsilon_start', 1.0) if self.training_mode else self.config.get('epsilon_inference', 0.01)
+            self.epsilon_decay = self.config.get('epsilon_decay', 0.995)
+            self.epsilon_min = self.config.get('epsilon_min', 0.01)
+            
+            # Bias strengths from config
+            self.regime_bias_strength = self.config.get('regime_bias_strength', 5.0)
+            self.risk_penalty_strength = self.config.get('risk_penalty_strength', 100.0)
+
+            self.update_counter = 0
+
             # Initialize Q-networks
             self.q_network = DQNNetwork(state_size, action_size)
             self.target_network = DQNNetwork(state_size, action_size)
@@ -161,10 +184,10 @@ if TORCH_AVAILABLE:
             self.target_network.eval()
             
             # Optimizer
-            self.optimizer = torch.optim.Adam(self.q_network.parameters(), lr=learning_rate)
+            self.optimizer = torch.optim.Adam(self.q_network.parameters(), lr=self.config['learning_rate'])
             
-            # Experience replay (imported separately)
-            self.memory = None  # Will be set externally
+            # Experience replay
+            self.memory = ExperienceReplay(self.config['buffer_size'])
             
             # Training metrics
             self.training_history = {
@@ -174,114 +197,99 @@ if TORCH_AVAILABLE:
             }
             
             logger.info(f"Initialized TradingRLAgent with state_size={state_size}, action_size={action_size}")
+            logger.info(f"RL Agent Config: training_mode={self.training_mode}, hold_threshold={self.hold_confidence_threshold}, regime_bias={self.regime_bias_strength}")
         
         def set_memory(self, memory):
             """Set experience replay buffer."""
             self.memory = memory
         
         def act(self, state: np.ndarray, market_regime: str = None, 
-                risk_constraints: Dict = None, training: bool = True) -> int:
+                risk_constraints: Dict = None) -> int:
             """
             Select action based on current state using epsilon-greedy policy.
-            
-            Args:
-                state: Current market state features
-                market_regime: Current market regime (e.g., 'bullish', 'neutral', 'bearish')
-                risk_constraints: Risk management constraints
-                training: Whether in training mode (applies epsilon-greedy)
-                
-            Returns:
-                Selected action index
             """
-            # Epsilon-greedy exploration during training
-            if training and random.random() < self.epsilon:
+            if state is None:
+                logger.warning("RL Agent received None state, defaulting to HOLD (1).")
+                return 1
+
+            # Determine epsilon based on the agent's mode
+            current_epsilon = self.epsilon if self.training_mode else self.config.get('epsilon_inference', 0.01)
+
+            # Epsilon-greedy exploration
+            if self.training_mode and random.random() < current_epsilon:
                 action = random.randrange(self.action_size)
                 logger.debug(f"🤖 [RL-ACT] Exploration: Selected random action -> {['BUY', 'HOLD', 'SELL'][action]}")
                 return action
             
             # Exploitation: use Q-network
-            self.q_network.eval()
             with torch.no_grad():
+                self.q_network.eval()
                 state_tensor = torch.FloatTensor(state).unsqueeze(0)
-                # 1. Ham Q-değerlerini al
                 raw_q_values = self.q_network(state_tensor)
                 
-                q_values_for_log = raw_q_values[0].clone()
-                
-                # 2. Risk ve Rejim ayarlamalarını uygula
+                # Apply adjustments
                 adjusted_q_values = raw_q_values.clone()
                 if risk_constraints:
                     adjusted_q_values = self._apply_risk_constraints(adjusted_q_values, risk_constraints)
                 if market_regime:
                     adjusted_q_values = self._apply_regime_bias(adjusted_q_values, market_regime)
+
+                # Convert to probabilities for analysis and hold override
+                probabilities = torch.softmax(adjusted_q_values, dim=1).squeeze().cpu().numpy()
+                best_action = int(np.argmax(probabilities))
+                best_prob = probabilities[best_action]
                 
-                # 3. Nihai kararı ver
-                action = adjusted_q_values.argmax().item()
-                chosen_action_str = ['BUY', 'HOLD', 'SELL'][action]
-                
-                # 4. Detaylı Debug Log'u Oluştur
                 logger.debug(f"🤖 [RL-DECISION] Agent Decision Process:")
                 logger.debug(f"   - Market Regime: {market_regime or 'N/A'}")
-                logger.debug(f"   - Raw Q-Values:  [BUY: {q_values_for_log[0]:.4f}, HOLD: {q_values_for_log[1]:.4f}, SELL: {q_values_for_log[2]:.4f}]")
-                if market_regime or risk_constraints:
-                     logger.debug(f"   - Adj. Q-Values: [BUY: {adjusted_q_values[0][0]:.4f}, HOLD: {adjusted_q_values[0][1]:.4f}, SELL: {adjusted_q_values[0][2]:.4f}] (after adjustments)")
-                logger.debug(f"   - Final Choice: {chosen_action_str} (Q-Value: {adjusted_q_values[0][action]:.4f})")
+                logger.debug(f"   - Raw Q-Values:  [BUY: {raw_q_values[0][0]:.4f}, HOLD: {raw_q_values[0][1]:.4f}, SELL: {raw_q_values[0][2]:.4f}]")
+                logger.debug(f"   - Adj. Q-Values: [BUY: {adjusted_q_values[0][0]:.4f}, HOLD: {adjusted_q_values[0][1]:.4f}, SELL: {adjusted_q_values[0][2]:.4f}]")
+                logger.debug(f"   - Final Probs:   [BUY: {probabilities[0]:.2%}, HOLD: {probabilities[1]:.2%}, SELL: {probabilities[2]:.2%}]")
 
-            if training:
-                self.q_network.train()
-            
-            return action
+                # Override logic for "uncertain HOLDs" in live mode
+                if not self.training_mode and best_action == 1 and best_prob < self.hold_confidence_threshold:
+                    sorted_indices = np.argsort(probabilities)[::-1]
+                    second_best_action = int(sorted_indices[1])
+                    
+                    logger.warning(
+                        f"🤖 [RL-OVERRIDE] Agent uncertain (Hold prob: {best_prob:.2f} < {self.hold_confidence_threshold}). "
+                        f"Overriding HOLD with 2nd choice: {['BUY', 'HOLD', 'SELL'][second_best_action]}"
+                    )
+                    return second_best_action
+
+                chosen_action_str = ['BUY', 'HOLD', 'SELL'][best_action]
+                logger.debug(f"   - Final Choice: {chosen_action_str}")
+                
+                if self.training_mode:
+                    self.q_network.train()
+
+                return best_action
         
         def _apply_risk_constraints(self, q_values: torch.Tensor, 
                                    risk_constraints: Dict) -> torch.Tensor:
-            """
-            Apply risk management constraints to Q-values.
-            
-            Args:
-                q_values: Raw Q-values from network
-                risk_constraints: Dictionary with risk limits
-                
-            Returns:
-                Adjusted Q-values
-            """
-            # Penalize risky actions based on constraints
+            """Apply risk management constraints to Q-values using configurable penalty."""
             q_adjusted = q_values.clone()
-            
-            # Example: if max_position_reached, penalize buy actions
+            penalty = self.risk_penalty_strength
+
             if risk_constraints.get('max_position_reached', False):
-                # Assume actions 0-2 are buy-related, 3-5 are sell/hold
-                q_adjusted[0, :3] -= 100  # Large penalty
+                q_adjusted[0, 0] -= penalty  # Penalize BUY
             
-            # Example: if max_drawdown_reached, penalize aggressive actions
             if risk_constraints.get('max_drawdown_reached', False):
-                q_adjusted[0, [0, 2]] -= 50  # Penalize aggressive buy/sell
+                q_adjusted[0, [0, 2]] -= penalty / 2  # Penalize both BUY and SELL
             
             return q_adjusted
         
         def _apply_regime_bias(self, q_values: torch.Tensor, 
                               market_regime: str) -> torch.Tensor:
-            """
-            Apply market regime bias to action selection.
-            
-            Args:
-                q_values: Raw Q-values from network
-                market_regime: Current market regime
-                
-            Returns:
-                Adjusted Q-values with regime bias
-            """
+            """Apply market regime bias to Q-values using configurable strength."""
             q_adjusted = q_values.clone()
-            
-            # Boost certain actions based on regime
+            bias = self.regime_bias_strength
+
             if market_regime == 'bullish':
-                # Favor long positions in bullish regime
-                q_adjusted[0, 0] += 5  # Boost buy action
+                q_adjusted[0, 0] += bias      # Boost BUY
             elif market_regime == 'bearish':
-                # Favor short positions in bearish regime
-                q_adjusted[0, 2] += 5  # Boost sell action
+                q_adjusted[0, 2] += bias      # Boost SELL
             elif market_regime == 'neutral':
-                # Favor hold/wait in neutral regime
-                q_adjusted[0, 1] += 3  # Boost hold action
+                q_adjusted[0, 1] += bias / 2  # Slightly boost HOLD
             
             return q_adjusted
         
