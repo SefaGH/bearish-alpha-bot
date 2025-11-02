@@ -204,16 +204,12 @@ jobs:
 
       - name: Run Dry-Run Pre-Flight Checks
         env:
-          # --- DÜZENLEME: Bu adımdan API sırları kaldırıldı ---
-          # Pre-flight kontrolü --dry-run modunda çalışır ve API anahtarlarına ihtiyaç DUYMAZ.
-          # Python betiği bu modda sırların eksikliğini tolere edecek şekilde güncellendi.
-          # Bu sayede bu adımın amacı (bağımlılık ve kurulum kontrolü) daha net hale gelir.
           ML_ENABLED: ${{ github.event.inputs.enable_ml }}
           DEBUG_STRATEGY_LOGGING: ${{ github.event.inputs.debug_mode }}
           
-          # --- GitHub Değişkenlerinden (vars) gelen yapılandırma ---
-          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
-          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
+          # --- DÜZELTME: Threshold varsayılan değeri doğru ondalık orana (0.0005) getirildi. ---
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.0005' }}
+          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '60' }} # Ayrıca cooldown 60s olarak güncellendi.
           PRICE_DELTA_BYPASS_THRESHOLD: ${{ vars.PRICE_DELTA_BYPASS_THRESHOLD || '0.0015' }}
           PRICE_DELTA_BYPASS_ENABLED: ${{ vars.PRICE_DELTA_BYPASS_ENABLED || 'true' }}
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
@@ -309,12 +305,15 @@ jobs:
 
       - name: Display Configuration
         env:
-          # Load variables for display
-          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
-          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
+          # DÜZELTME: Gösterim için de doğru varsayılan değer kullanılıyor.
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.0005' }}
+          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '60' }}
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
           CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
         run: |
+          # DÜZELTME: Ondalık oranı (0.0005) okunabilir bir yüzdeye (%0.0500) çevir.
+          DP_THRESHOLD_AS_PERCENT=$(printf "%.4f%%" $(echo "${DUPLICATE_PREVENTION_THRESHOLD} * 100" | bc))
+
           echo "🚀 BEARISH ALPHA BOT - LIVE TRADING LAUNCHER"
           echo "=============================================="
           echo "Mode: ${{ github.event.inputs.mode }}"
@@ -322,7 +321,6 @@ jobs:
           echo "Pre-flight Checks: ${{ github.event.inputs.skip_preflight == 'true' && 'SKIPPED ⚠️' || 'COMPLETED ✅' }}"
           echo "Infinite Mode (Layer 1): ${{ github.event.inputs.infinite }}"
           echo "Auto-Restart (Layer 2): ${{ github.event.inputs.auto_restart }}"
-          # echo "Max Restarts: ${{ github.event.inputs.max_restarts }}"
           echo "Restart Delay: ${{ github.event.inputs.restart_delay }}s"
           echo "Duration: ${{ github.event.inputs.duration || 'indefinite' }}"
           echo "Debug Mode: ${{ github.event.inputs.debug_mode }}"
@@ -331,7 +329,8 @@ jobs:
           echo "- Capital: ${CAPITAL_USDT} USDT"
           echo "- Exchange: BingX"
           echo "- Trading Pairs: ${TRADING_SYMBOLS}"
-          echo "- Duplicate Prevention: ${DUPLICATE_PREVENTION_THRESHOLD}% / ${DUPLICATE_PREVENTION_COOLDOWN}s"
+          # DÜZELTME: Doğru hesaplanmış yüzde değeri gösteriliyor.
+          echo "- Duplicate Prevention: ${DP_THRESHOLD_AS_PERCENT} / ${DUPLICATE_PREVENTION_COOLDOWN}s"
           echo "=============================================="
 
       - name: Launch Trading Bot
@@ -576,10 +575,13 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
+          # DÜZELTME: Doğru ondalık oran varsayılanı kullanılıyor.
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.0005' }}
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
         run: |
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            # DÜZELTME: Ondalık oranı okunabilir yüzdeye çevir.
+            DP_THRESHOLD_AS_PERCENT=$(printf "%.4f%%" $(echo "${DUPLICATE_PREVENTION_THRESHOLD} * 100" | bc))
             PREFLIGHT_STATUS="${{ github.event.inputs.skip_preflight == 'true' && '⚠️ SKIPPED' || '✅ PASSED' }}"
             
             MESSAGE="✅ <b>Live Trading Session Completed</b>%0A%0A"
@@ -591,7 +593,8 @@ jobs:
             MESSAGE="${MESSAGE}Auto-Restart: ${{ github.event.inputs.auto_restart }}%0A"
             MESSAGE="${MESSAGE}%0A<b>Trading Config:</b>%0A"
             MESSAGE="${MESSAGE}Symbols: ${TRADING_SYMBOLS}%0A"
-            MESSAGE="${MESSAGE}Dup Prevention: ${DUPLICATE_PREVENTION_THRESHOLD}%%0A"
+            # DÜZELTME: Doğru hesaplanmış yüzde değeri gösteriliyor.
+            MESSAGE="${MESSAGE}Dup Prevention: ${DP_THRESHOLD_AS_PERCENT}%0A"
             MESSAGE="${MESSAGE}%0A<b>Workflow:</b> ${{ github.workflow }}%0A"
             MESSAGE="${MESSAGE}<b>Run:</b> #${{ github.run_number }}"
 
@@ -635,11 +638,15 @@ jobs:
     steps:
       - name: Generate Workflow Summary
         env:
-          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.05' }}
-          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
+          # DÜZELTME: Tüm değerler standart ve doğru varsayılanlara sahip.
+          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.0005' }}
+          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '60' }}
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
           CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
         run: |
+          # DÜZELTME: Ondalık oranı okunabilir yüzdeye çevir.
+          DP_THRESHOLD_AS_PERCENT=$(printf "%.4f%%" $(echo "${DUPLICATE_PREVENTION_THRESHOLD} * 100" | bc))
+
           echo "# 🤖 Bearish Alpha Bot - Trading Session Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Workflow Configuration" >> $GITHUB_STEP_SUMMARY
@@ -648,7 +655,6 @@ jobs:
           echo "- **Pre-flight Checks**: ${{ github.event.inputs.skip_preflight == 'true' && '⚠️ SKIPPED' || '✅ COMPLETED' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Layer 1 (Infinite)**: ${{ github.event.inputs.infinite }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Layer 2 (Auto-Restart)**: ${{ github.event.inputs.auto_restart }}" >> $GITHUB_STEP_SUMMARY
-          # echo "- **Max Restarts**: ${{ github.event.inputs.max_restarts }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Restart Delay**: ${{ github.event.inputs.restart_delay }}s" >> $GITHUB_STEP_SUMMARY
           echo "- **Duration**: ${{ github.event.inputs.duration || 'indefinite' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Debug Mode**: ${{ github.event.inputs.debug_mode }}" >> $GITHUB_STEP_SUMMARY
@@ -657,7 +663,8 @@ jobs:
           echo "- **Capital**: ${CAPITAL_USDT} USDT" >> $GITHUB_STEP_SUMMARY
           echo "- **Exchange**: BingX" >> $GITHUB_STEP_SUMMARY
           echo "- **Trading Pairs**: ${TRADING_SYMBOLS}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duplicate Prevention**: ${DUPLICATE_PREVENTION_THRESHOLD}% threshold, ${DUPLICATE_PREVENTION_COOLDOWN}s cooldown" >> $GITHUB_STEP_SUMMARY
+          # DÜZELTME: Doğru hesaplanmış ve açıklayıcı özet.
+          echo "- **Duplicate Prevention**: ${DP_THRESHOLD_AS_PERCENT} threshold, ${DUPLICATE_PREVENTION_COOLDOWN}s cooldown" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Job Status" >> $GITHUB_STEP_SUMMARY
           echo "- **Validation**: ${{ needs.validate-inputs.result }}" >> $GITHUB_STEP_SUMMARY
