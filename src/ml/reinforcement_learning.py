@@ -203,25 +203,26 @@ if TORCH_AVAILABLE:
             """Set experience replay buffer."""
             self.memory = memory
         
+        # =========================================================================
+        # === DEĞİŞTİRİLEN METOT: act() ===
+        # =========================================================================
         def act(self, state: np.ndarray, market_regime: str = None, 
                 risk_constraints: Dict = None) -> int:
             """
             Select action based on current state using epsilon-greedy policy.
+            Includes detailed logging for decision analysis.
             """
             if state is None:
                 logger.warning("RL Agent received None state, defaulting to HOLD (1).")
                 return 1
 
-            # Determine epsilon based on the agent's mode
             current_epsilon = self.epsilon if self.training_mode else self.config.get('epsilon_inference', 0.01)
 
-            # Epsilon-greedy exploration
             if self.training_mode and random.random() < current_epsilon:
                 action = random.randrange(self.action_size)
                 logger.debug(f"🤖 [RL-ACT] Exploration: Selected random action -> {['BUY', 'HOLD', 'SELL'][action]}")
                 return action
             
-            # Exploitation: use Q-network
             with torch.no_grad():
                 self.q_network.eval()
                 state_tensor = torch.FloatTensor(state).unsqueeze(0)
@@ -234,31 +235,49 @@ if TORCH_AVAILABLE:
                 if market_regime:
                     adjusted_q_values = self._apply_regime_bias(adjusted_q_values, market_regime)
 
-                # Convert to probabilities for analysis and hold override
                 probabilities = torch.softmax(adjusted_q_values, dim=1).squeeze().cpu().numpy()
                 best_action = int(np.argmax(probabilities))
                 best_prob = probabilities[best_action]
                 
-                logger.debug(f"🤖 [RL-DECISION] Agent Decision Process:")
+                # --- YENİ VE GELİŞMİŞ LOGLAMA BLOĞU ---
+                # Karar sürecini şeffaf hale getirmek için analiz yap.
+                raw_best_action = int(torch.argmax(raw_q_values, dim=1).item())
+                actions_map = {0: 'BUY', 1: 'HOLD', 2: 'SELL'}
+                
+                logger.debug("="*50)
+                logger.debug(f"🤖 [RL-DECISION ANALYSIS]")
                 logger.debug(f"   - Market Regime: {market_regime or 'N/A'}")
-                logger.debug(f"   - Raw Q-Values:  [BUY: {raw_q_values[0][0]:.4f}, HOLD: {raw_q_values[0][1]:.4f}, SELL: {raw_q_values[0][2]:.4f}]")
-                logger.debug(f"   - Adj. Q-Values: [BUY: {adjusted_q_values[0][0]:.4f}, HOLD: {adjusted_q_values[0][1]:.4f}, SELL: {adjusted_q_values[0][2]:.4f}]")
-                logger.debug(f"   - Final Probs:   [BUY: {probabilities[0]:.2%}, HOLD: {probabilities[1]:.2%}, SELL: {probabilities[2]:.2%}]")
+                logger.debug(f"   - Raw Q-Values:          [BUY: {raw_q_values[0][0]:.4f}, HOLD: {raw_q_values[0][1]:.4f}, SELL: {raw_q_values[0][2]:.4f}] -> Raw Choice: {actions_map[raw_best_action]}")
+                logger.debug(f"   - Adjusted Q-Values:     [BUY: {adjusted_q_values[0][0]:.4f}, HOLD: {adjusted_q_values[0][1]:.4f}, SELL: {adjusted_q_values[0][2]:.4f}]")
+                logger.debug(f"   - Final Probabilities:   [BUY: {probabilities[0]:.2%}, HOLD: {probabilities[1]:.2%}, SELL: {probabilities[2]:.2%}]")
 
-                # Override logic for "uncertain HOLDs" in live mode
+                # Kararın nedenini analiz et
+                final_choice_str = actions_map[best_action]
+                reason = ""
+                if best_action != raw_best_action:
+                    q_diff = adjusted_q_values - raw_q_values
+                    bias_buy, bias_hold, bias_sell = q_diff[0][0].item(), q_diff[0][1].item(), q_diff[0][2].item()
+                    reason = (f"Decision changed from '{actions_map[raw_best_action]}' to '{final_choice_str}' "
+                              f"due to adjustments (bias: B={bias_buy:.2f}, H={bias_hold:.2f}, S={bias_sell:.2f}).")
+                else:
+                    reason = f"Raw network output '{final_choice_str}' was confirmed after adjustments."
+                
+                logger.debug(f"   - Decision Rationale:    {reason}")
+                logger.debug(f"   - Final Choice:          {final_choice_str} with {best_prob:.2%} confidence.")
+                logger.debug("="*50)
+                # --- LOGLAMA BLOĞU SONU ---
+
+                # "Uncertain HOLD" kontrolü
                 if not self.training_mode and best_action == 1 and best_prob < self.hold_confidence_threshold:
                     sorted_indices = np.argsort(probabilities)[::-1]
                     second_best_action = int(sorted_indices[1])
                     
                     logger.warning(
-                        f"🤖 [RL-OVERRIDE] Agent uncertain (Hold prob: {best_prob:.2f} < {self.hold_confidence_threshold}). "
-                        f"Overriding HOLD with 2nd choice: {['BUY', 'HOLD', 'SELL'][second_best_action]}"
+                        f"🤖 [RL-OVERRIDE] Agent uncertain on HOLD (prob: {best_prob:.2f} < {self.hold_confidence_threshold}). "
+                        f"Overriding with 2nd choice: {actions_map[second_best_action]}"
                     )
                     return second_best_action
 
-                chosen_action_str = ['BUY', 'HOLD', 'SELL'][best_action]
-                logger.debug(f"   - Final Choice: {chosen_action_str}")
-                
                 if self.training_mode:
                     self.q_network.train()
 
