@@ -1,6 +1,8 @@
 """
 Comprehensive Risk Management Engine.
 Provides portfolio-level risk management, position validation, and capital allocation.
+
+PHASE 3 REFACTOR: Transform into Rules Engine
 """
 
 import logging
@@ -10,6 +12,42 @@ import numpy as np
 
 # Import RiskConfiguration for type-safe configuration
 from config.risk_config import RiskConfiguration
+
+# PHASE 3: Import risk rules framework
+try:
+    from core.risk_rules import (
+        BaseRiskRule,
+        CapitalLimitRule,
+        PositionSizeRule,
+        PortfolioHeatRule,
+        MaxDrawdownRule,
+        RiskRewardRatioRule,
+        StrategyPerformanceRule
+    )
+except ModuleNotFoundError:
+    try:
+        from src.core.risk_rules import (
+            BaseRiskRule,
+            CapitalLimitRule,
+            PositionSizeRule,
+            PortfolioHeatRule,
+            MaxDrawdownRule,
+            RiskRewardRatioRule,
+            StrategyPerformanceRule
+        )
+    except ModuleNotFoundError:
+        try:
+            from ..risk_rules import (
+                BaseRiskRule,
+                CapitalLimitRule,
+                PositionSizeRule,
+                PortfolioHeatRule,
+                MaxDrawdownRule,
+                RiskRewardRatioRule,
+                StrategyPerformanceRule
+            )
+        except ImportError:
+            raise
 
 # Triple-fallback import strategy for maximum compatibility:
 # 1. Direct utils import (when src/ is on sys.path)
@@ -22,12 +60,12 @@ except ModuleNotFoundError:
     try:
         # Option 2: Absolute import (repo root on sys.path)
         from src.utils.pnl_calculator import calculate_unrealized_pnl
-    except ModuleNotFoundError as e:
+    except ModuleNotFoundError:
         # Option 3: Relative import (package context)
-        if e.name in ('src', 'src.utils', 'src.utils.pnl_calculator'):
+        try:
             from ..utils.pnl_calculator import calculate_unrealized_pnl
-        else:
-            # Unknown module missing, re-raise
+        except ImportError:
+            # Unable to import, re-raise
             raise
 logger = logging.getLogger(__name__)
 
@@ -35,18 +73,20 @@ logger = logging.getLogger(__name__)
 class RiskManager:
     """Comprehensive risk management engine for multi-strategy portfolio."""
     
-    def __init__(self, portfolio_value: float, risk_config: RiskConfiguration, websocket_manager=None, performance_monitor=None):
+    def __init__(self, portfolio_value: float, risk_config: RiskConfiguration, 
+                 websocket_manager=None, performance_monitor=None, rules: List[BaseRiskRule] = None):
         """
         Initialize risk manager with standardized configuration.
         
-        PHASE 2 REFACTOR: RiskManager is now a STATELESS decision engine.
-        It does NOT hold portfolio state - that's PortfolioManager's job.
+        PHASE 3 REFACTOR: RiskManager is now a RULES ENGINE.
+        Individual risk validation rules are composable and independently testable.
         
         Args:
             portfolio_value: Initial portfolio value in USD (kept for backward compatibility)
             risk_config: RiskConfiguration object with all risk parameters
             websocket_manager: Optional WebSocket manager for real-time data
             performance_monitor: Optional performance monitor for strategy metrics
+            rules: Optional list of risk rules to apply (if None, uses default rules)
         """
         self.risk_config = risk_config
         self.ws_manager = websocket_manager
@@ -61,6 +101,13 @@ class RiskManager:
             'max_correlation': self.risk_limits_dataclass.max_correlation,
         }
         
+        # PHASE 3: Rules Engine - Composable, extensible risk validation
+        if rules is not None:
+            self.rules = rules
+        else:
+            # Default rule set based on risk configuration
+            self.rules = self._create_default_rules()
+        
         # PHASE 2: Removed portfolio state - RiskManager is now stateless
         # State is managed by PortfolioManager
         # Keep portfolio_value only for backward compatibility during transition
@@ -74,9 +121,38 @@ class RiskManager:
         self.peak_portfolio_value = self.portfolio_value  # DEPRECATED: Use PortfolioManager.get_peak_equity()
         
         # Log initialization with standardized configuration
-        logger.info(f"RiskManager initialized (PHASE 2: Stateless Decision Engine)")
+        logger.info(f"RiskManager initialized (PHASE 3: Rules Engine)")
         logger.info(f"Risk configuration: {self.risk_config.to_dict()}")
         logger.info(f"Risk limits: {self.risk_limits}")
+        logger.info(f"Active rules: {[rule.rule_name for rule in self.rules]}")
+    
+    def _create_default_rules(self) -> List[BaseRiskRule]:
+        """
+        Create default set of risk rules based on configuration.
+        
+        Returns:
+            List of risk rule instances
+        """
+        return [
+            # Order matters: Check capital availability first
+            CapitalLimitRule(),
+            # Then check position size limits
+            PositionSizeRule(max_position_size=self.risk_limits['max_position_size']),
+            # Check overall portfolio risk
+            PortfolioHeatRule(
+                max_portfolio_heat=0.10,  # 10% max total portfolio heat
+                max_portfolio_risk=self.risk_limits['max_portfolio_risk']
+            ),
+            # Check drawdown limits
+            MaxDrawdownRule(max_drawdown=self.risk_limits['max_drawdown']),
+            # Validate risk/reward ratio
+            RiskRewardRatioRule(min_risk_reward=1.5),
+            # Optional: Check strategy performance
+            StrategyPerformanceRule(
+                min_win_rate=0.35,
+                performance_monitor=self.performance_monitor
+            )
+        ]
     
     def _calculate_total_portfolio_exposure(self, portfolio_manager=None) -> float:
         """
@@ -130,10 +206,11 @@ class RiskManager:
     
     async def validate_new_position(self, signal: Dict, current_portfolio: Dict = None, portfolio_manager=None) -> Tuple[bool, str, Dict]:
         """
-        Validate if new position meets risk criteria.
+        Validate if new position meets risk criteria using rules engine.
         
-        PHASE 2 REFACTOR: Now accepts PortfolioManager for state queries.
-        Falls back to current_portfolio dict for backward compatibility.
+        PHASE 3 REFACTOR: Uses composable rules engine for validation.
+        Each rule is independently testable and can be added/removed without
+        modifying this method.
         
         Args:
             signal: Trading signal with entry, stop, size, etc.
@@ -144,169 +221,170 @@ class RiskManager:
             Tuple of (is_valid, reason, risk_metrics)
         """
         try:
-            # Extract signal details
             symbol = signal.get('symbol', 'UNKNOWN')
+            
+            # PHASE 2: Get portfolio manager (prefer parameter, fallback to creating mock)
+            if portfolio_manager is None:
+                # Backward compatibility: create a minimal portfolio manager mock
+                logger.warning("No PortfolioManager provided, using deprecated fallback mode")
+                portfolio_manager = self._create_fallback_portfolio_manager()
+            
+            logger.debug(f"🛡️ [RISK-ENGINE] Validating position for {symbol}")
+            logger.debug(f"🛡️ [RISK-ENGINE] Running {len(self.rules)} risk rules")
+            
+            # Initialize risk metrics
+            risk_metrics = self._calculate_risk_metrics(signal, portfolio_manager)
+            
+            # PHASE 3: Run all rules through the rules engine
+            for rule in self.rules:
+                if not rule.enabled:
+                    logger.debug(f"⏭️  [RISK-ENGINE] Skipping disabled rule: {rule.rule_name}")
+                    continue
+                
+                is_valid, reason = rule.validate(signal, portfolio_manager)
+                
+                if not is_valid:
+                    logger.warning(f"🚫 [RISK-ENGINE] Position REJECTED by {rule.rule_name}")
+                    logger.warning(f"   Symbol: {symbol}")
+                    logger.warning(f"   Reason: {reason}")
+                    return (False, reason, risk_metrics)
+                
+                logger.debug(f"✅ [RISK-ENGINE] {rule.rule_name} passed")
+            
+            # All rules passed
+            logger.info(f"✅ [RISK-ENGINE] Position APPROVED for {symbol}")
+            logger.info(f"   All {len([r for r in self.rules if r.enabled])} rules passed")
+            return (True, "All risk rules passed", risk_metrics)
+            
+        except Exception as e:
+            logger.error(f"[RISK-ENGINE] Error validating position: {e}", exc_info=True)
+            return (False, f"Validation error: {str(e)}", {})
+    
+    def _calculate_risk_metrics(self, signal: Dict, portfolio_manager) -> Dict[str, Any]:
+        """
+        Calculate comprehensive risk metrics for a signal.
+        
+        Args:
+            signal: Trading signal
+            portfolio_manager: PortfolioManager instance
+            
+        Returns:
+            Dictionary of risk metrics
+        """
+        try:
             position_size = signal.get('position_size', 0)
             entry_price = signal.get('entry', 0)
             stop_loss = signal.get('stop', 0)
+            target_price = signal.get('target', entry_price * 1.02)
             
-            # Fallback: Calculate stop if missing (same logic as calculate_position_size)
-            if not stop_loss and signal.get('sl_atr_mult') and signal.get('atr'):
-                atr = signal['atr']
-                sl_mult = signal['sl_atr_mult']
-                side = signal.get('side', 'buy')
-                
-                if side in ['buy', 'long']:
-                    stop_loss = entry_price - (atr * sl_mult)
-                else:
-                    stop_loss = entry_price + (atr * sl_mult)
-                
-                logger.info(f"📊 [RISK-VALIDATE] Calculated ATR-based stop: {stop_loss:.2f}")
+            # Calculate stop loss if missing
+            if not stop_loss:
+                stop_loss = self._calculate_stop_loss_from_signal(signal, entry_price)
             
-            if not stop_loss and signal.get('sl_pct'):
-                sl_pct = signal['sl_pct']
-                side = signal.get('side', 'buy')
-                
-                if side in ['buy', 'long']:
-                    stop_loss = entry_price * (1 - sl_pct)
-                else:
-                    stop_loss = entry_price * (1 + sl_pct)
-                
-                logger.info(f"📊 [RISK-VALIDATE] Calculated percentage-based stop: {stop_loss:.2f}")
+            portfolio_value = portfolio_manager.get_current_equity()
+            current_exposure = portfolio_manager.get_total_exposure()
+            active_positions = portfolio_manager.get_open_positions()
             
-            # PHASE 2: Get portfolio value from PortfolioManager or fallback
-            if portfolio_manager is not None:
-                portfolio_value = portfolio_manager.get_current_equity()
-                active_positions = portfolio_manager.get_open_positions()
-            else:
-                # Backward compatibility fallback
-                portfolio_value = self.portfolio_value
-                active_positions = self.active_positions
-            
-            logger.debug(f"🛡️ [RISK-CALC] Validating position for {symbol}")
-            logger.debug(f"🛡️ [RISK-CALC] Portfolio value: ${portfolio_value:.2f}")
-            
-            risk_metrics = {}
-            
-            # STEP 0: Portfolio exposure validation (capital limit enforcement)
-            current_exposure = self._calculate_total_portfolio_exposure(portfolio_manager)
+            # Basic metrics
             new_position_value = position_size * entry_price
             projected_exposure = current_exposure + new_position_value
+            position_size_pct = new_position_value / portfolio_value if portfolio_value > 0 else 0
             
-            risk_metrics['current_exposure'] = current_exposure
-            risk_metrics['new_position_value'] = new_position_value
-            risk_metrics['projected_exposure'] = projected_exposure
-            risk_metrics['capital_limit'] = portfolio_value
+            # Risk metrics
+            risk_amount = abs(entry_price - stop_loss) * position_size if stop_loss else 0
+            risk_pct = risk_amount / portfolio_value if portfolio_value > 0 else 0
             
-            if projected_exposure > portfolio_value:
-                over_limit = projected_exposure - portfolio_value
-                over_limit_pct = (over_limit / portfolio_value) * 100
-                
-                logger.warning(f"🚫 [CAPITAL-LIMIT] PORTFOLIO EXPOSURE EXCEEDED")
-                logger.warning(f"   Symbol: {symbol}")
-                logger.warning(f"   Current Exposure: ${current_exposure:.2f}")
-                logger.warning(f"   New Position: ${new_position_value:.2f}")
-                logger.warning(f"   Projected Total: ${projected_exposure:.2f}")
-                logger.warning(f"   Capital Limit: ${portfolio_value:.2f}")
-                logger.warning(f"   Over Limit By: ${over_limit:.2f} ({over_limit_pct:.1f}%)")
-                logger.warning(f"   Active Positions: {len(active_positions)}")
-                logger.warning(f"   ❌ POSITION REJECTED")
-                
-                return (False, f"Portfolio exposure ${projected_exposure:.2f} would exceed capital limit ${portfolio_value:.2f}", risk_metrics)
-            
-            available_capital = portfolio_value - current_exposure
-            remaining_after = available_capital - new_position_value
-            
-            logger.info(f"✅ [CAPITAL-LIMIT] Exposure check PASSED")
-            logger.info(f"   Available Capital: ${available_capital:.2f}")
-            logger.info(f"   New Position: ${new_position_value:.2f}")
-            logger.info(f"   Remaining After: ${remaining_after:.2f}")
-            
-            # 1. Position size validation
-            position_value = position_size * entry_price
-            max_position_value = portfolio_value * self.risk_limits['max_position_size']
-            
-            logger.debug(f"🛡️ [RISK-CALC] Position size check: ${position_value:.2f} vs ${max_position_value:.2f} max")
-            
-            if position_value > max_position_value:
-                logger.debug(f"🛡️ [RISK-CALC] REJECTED: Position size exceeds limit")
-                return (False, f"Position size ${position_value:.2f} exceeds max ${max_position_value:.2f}", risk_metrics)
-            
-            risk_metrics['position_value'] = position_value
-            risk_metrics['max_position_value'] = max_position_value
-            risk_metrics['position_size_pct'] = position_value / portfolio_value
-            
-            # 2. Portfolio risk check
-            risk_amount = abs(entry_price - stop_loss) * position_size
-            max_risk = portfolio_value * self.risk_limits['max_portfolio_risk']
-            
-            risk_pct = risk_amount / portfolio_value
-            logger.debug(f"🛡️ [RISK-CALC] Risk per trade: {risk_pct:.2%} (limit: {self.risk_limits['max_portfolio_risk']:.2%})")
-            
-            if risk_amount > max_risk:
-                logger.debug(f"🛡️ [RISK-CALC] REJECTED: Risk amount exceeds limit")
-                return (False, f"Risk amount ${risk_amount:.2f} exceeds max ${max_risk:.2f}", risk_metrics)
-            
-            risk_metrics['risk_amount'] = risk_amount
-            risk_metrics['max_risk_amount'] = max_risk
-            risk_metrics['risk_pct'] = risk_pct
-            
-            # 3. Risk/reward ratio assessment
-            target_price = signal.get('target', entry_price * 1.02)  # Default 2% target
-            risk_distance = abs(entry_price - stop_loss)
+            # Risk/reward
+            risk_distance = abs(entry_price - stop_loss) if stop_loss else 0
             reward_distance = abs(target_price - entry_price)
+            risk_reward_ratio = reward_distance / risk_distance if risk_distance > 0 else 0
             
-            if risk_distance > 0:
-                risk_reward_ratio = reward_distance / risk_distance
-                risk_metrics['risk_reward_ratio'] = risk_reward_ratio
-                logger.debug(f"🛡️ [RISK-CALC] Risk/Reward ratio: {risk_reward_ratio:.2f}")
-                
-                if risk_reward_ratio < 1.5:
-                    logger.debug(f"🛡️ [RISK-CALC] REJECTED: R/R ratio too low")
-                    return (False, f"Risk/reward ratio {risk_reward_ratio:.2f} below minimum 1.5", risk_metrics)
-            
-            # 4. Drawdown check
-            current_drawdown = portfolio_manager.get_current_drawdown() if portfolio_manager else self.current_drawdown
-            if current_drawdown > self.risk_limits['max_drawdown']:
-                logger.debug(f"🛡️ [RISK-CALC] REJECTED: Drawdown limit exceeded")
-                return (False, f"Current drawdown {current_drawdown:.2%} exceeds max {self.risk_limits['max_drawdown']:.2%}", risk_metrics)
-            
-            risk_metrics['current_drawdown'] = current_drawdown
-            risk_metrics['max_drawdown'] = self.risk_limits['max_drawdown']
-            
-            # 5. Portfolio heat (total risk exposure)
+            # Portfolio heat
             total_risk = sum(pos.get('risk_amount', 0) for pos in active_positions.values())
-            total_risk += risk_amount
-            portfolio_heat = total_risk / portfolio_value
+            portfolio_heat = (total_risk + risk_amount) / portfolio_value if portfolio_value > 0 else 0
             
-            logger.debug(f"🛡️ [RISK-CALC] Portfolio heat: {portfolio_heat:.2%} (limit: 10%)")
-            
-            if portfolio_heat > 0.10:  # Max 10% total portfolio heat
-                logger.debug(f"🛡️ [RISK-CALC] REJECTED: Portfolio heat too high")
-                return (False, f"Portfolio heat {portfolio_heat:.2%} would exceed 10%", risk_metrics)
-            
-            risk_metrics['portfolio_heat'] = portfolio_heat
-            
-            # 6. Market condition alignment (if performance monitor available)
-            if self.performance_monitor:
-                strategy_name = signal.get('strategy', 'unknown')
-                summary = self.performance_monitor.get_strategy_summary(strategy_name)
-                metrics = summary.get('metrics', {})
-                
-                win_rate = metrics.get('win_rate', 0.5)
-                if win_rate < 0.35:  # Very low win rate
-                    logger.debug(f"🛡️ [RISK-CALC] REJECTED: Strategy win rate too low")
-                    return (False, f"Strategy win rate {win_rate:.2%} too low", risk_metrics)
-                
-                risk_metrics['strategy_win_rate'] = win_rate
-            
-            logger.debug(f"🛡️ [RISK-CALC] APPROVED: All risk checks passed")
-            logger.info(f"Position validation PASSED for {symbol}: {risk_metrics}")
-            return (True, "Position validated successfully", risk_metrics)
-            
+            return {
+                'portfolio_value': portfolio_value,
+                'current_exposure': current_exposure,
+                'new_position_value': new_position_value,
+                'position_value': new_position_value,  # Backward compatibility alias
+                'projected_exposure': projected_exposure,
+                'position_size_pct': position_size_pct,
+                'max_position_value': portfolio_value * self.risk_limits['max_position_size'],
+                'risk_amount': risk_amount,
+                'max_risk_amount': portfolio_value * self.risk_limits['max_portfolio_risk'],
+                'risk_pct': risk_pct,
+                'risk_reward_ratio': risk_reward_ratio,
+                'portfolio_heat': portfolio_heat,
+                'current_drawdown': portfolio_manager.get_current_drawdown(),
+                'max_drawdown': self.risk_limits['max_drawdown'],
+                'active_positions_count': len(active_positions)
+            }
         except Exception as e:
-            logger.error(f"Error validating position: {e}")
-            return (False, f"Validation error: {str(e)}", {})
+            logger.error(f"Error calculating risk metrics: {e}")
+            return {}
+    
+    def _calculate_stop_loss_from_signal(self, signal: Dict, entry_price: float) -> float:
+        """
+        Calculate stop loss from signal parameters if not explicitly provided.
+        
+        Args:
+            signal: Trading signal
+            entry_price: Entry price
+            
+        Returns:
+            Stop loss price
+        """
+        side = signal.get('side', 'buy')
+        
+        # Try ATR-based stop
+        if signal.get('sl_atr_mult') and signal.get('atr'):
+            atr = signal['atr']
+            sl_mult = signal['sl_atr_mult']
+            
+            if side in ['buy', 'long']:
+                return entry_price - (atr * sl_mult)
+            else:
+                return entry_price + (atr * sl_mult)
+        
+        # Try percentage-based stop
+        if signal.get('sl_pct'):
+            sl_pct = signal['sl_pct']
+            
+            if side in ['buy', 'long']:
+                return entry_price * (1 - sl_pct)
+            else:
+                return entry_price * (1 + sl_pct)
+        
+        return 0
+    
+    def _create_fallback_portfolio_manager(self):
+        """
+        Create a minimal portfolio manager mock for backward compatibility.
+        
+        Returns:
+            Mock portfolio manager with basic functionality
+        """
+        class FallbackPortfolioManager:
+            def __init__(self, risk_manager):
+                self.rm = risk_manager
+            
+            def get_current_equity(self):
+                return self.rm.portfolio_value
+            
+            def get_current_drawdown(self):
+                return self.rm.current_drawdown
+            
+            def get_open_positions(self):
+                return self.rm.active_positions
+            
+            def get_total_exposure(self):
+                return sum(
+                    pos.get('size', 0) * pos.get('entry_price', 0)
+                    for pos in self.rm.active_positions.values()
+                )
+        
+        return FallbackPortfolioManager(self)
     
     async def monitor_position_risk(self, position_id: str, portfolio_manager=None) -> Dict[str, Any]:
         """
