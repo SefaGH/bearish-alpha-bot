@@ -1056,6 +1056,7 @@ class ProductionCoordinator:
             self.ml_integration = MLStrategyIntegrationManager(
                 price_engine=self.price_engine,  # <-- DOĞRU PARAMETRE ADI
                 regime_predictor=self.regime_predictor,
+                config=ml_config,
                 market_data_pipeline=self.market_data_pipeline
             )
             ml_components.append('ml_integration')
