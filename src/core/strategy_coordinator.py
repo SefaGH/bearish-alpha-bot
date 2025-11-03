@@ -788,8 +788,12 @@ class StrategyCoordinator:
     async def _assess_signal_risk(self, signal: Dict) -> Dict[str, Any]:
         """Assess risk for the signal using risk manager."""
         try:
-            # Calculate position size
-            position_size = await self.risk_manager.calculate_position_size(signal)
+            # DÜZELTME 1: Pozisyon boyutu hesaplamasına portfolio_manager'ı ekle.
+            # Bu, riskin portföyün GÜNCEL değerine göre ayarlanmasını sağlar.
+            position_size = await self.risk_manager.calculate_position_size(
+                signal, 
+                portfolio_manager=self.portfolio_manager
+            )
             
             if position_size <= 0:
                 return {
@@ -801,12 +805,15 @@ class StrategyCoordinator:
             # Add position size to signal
             signal['position_size'] = position_size
             
-            # Validate position with risk manager
+            # DÜZELTME 2: Pozisyon doğrulamasına portfolio_manager'ı ekle.
+            # Bu, RiskManager'ın "fallback mode"a düşmesini engeller ve
+            # tüm risk kurallarının GERÇEK portföy verileriyle çalışmasını sağlar.
             is_valid, reason, risk_metrics = await self.risk_manager.validate_new_position(
                 signal, 
-                {}
+                portfolio_manager=self.portfolio_manager
             )
-            
+            # =================================================================
+
             if not is_valid:
                 return {
                     'acceptable': False,
@@ -821,7 +828,8 @@ class StrategyCoordinator:
             }
             
         except Exception as e:
-            logger.error(f"Error assessing signal risk: {e}")
+            # Hata loglamasını daha detaylı hale getir.
+            logger.error(f"💥 Critical error during signal risk assessment: {e}", exc_info=True)
             return {
                 'acceptable': False,
                 'reason': f"Risk assessment error: {str(e)}",
