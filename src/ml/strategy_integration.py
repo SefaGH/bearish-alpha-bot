@@ -21,8 +21,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ... AIEnhancedStrategyAdapter ve StrategyPerformanceTracker sınıfları hiç değişmeden kalıyor ...
-# ... Bu sınıflar önceki yanıtta olduğu gibi buradadır, kısalık için gizlenmiştir ...
 class AIEnhancedStrategyAdapter:
     """
     Adapter that enhances existing trading strategies with AI predictions.
@@ -32,28 +30,28 @@ class AIEnhancedStrategyAdapter:
     """
     
     def __init__(self, price_engine: AdvancedPricePredictionEngine,
-                 regime_predictor: MLRegimePredictor):
+                 regime_predictor: MLRegimePredictor, 
+                 config: Dict[str, Any]): # config eklendi
         """
         Initialize strategy adapter.
-        
-        Args:
-            price_engine: Advanced price prediction engine
-            regime_predictor: Market regime predictor
         """
         self.price_engine = price_engine
         self.regime_predictor = regime_predictor
+        self.config = config # config saklandı
         
         # Configuration
-        self.min_confidence = 0.6
+        pred_config = self.config.get('prediction', {})
+        self.min_confidence = pred_config.get('min_confidence_threshold', 0.6)
         self.min_consensus = 0.7
         self.risk_scaling_factor = 1.5
         
         logger.info("AI-Enhanced Strategy Adapter initialized")
+        logger.info(f"   - Adapter min regime confidence: {self.min_confidence}")
+
 
     def _normalize_signal(self, base_signal: Any) -> Dict[str, Any]:
         """
         Normalizes various incoming signal formats into a consistent internal schema.
-        Örnek: {'side': 'buy', 'rr_ratio': 2.5} -> {'signal': 'bullish', 'strength': 0.725}
         """
         # Durum 1: Sinyal zaten 'signal' anahtarı ile doğru formatta.
         if isinstance(base_signal, dict) and 'signal' in base_signal:
@@ -73,18 +71,15 @@ class AIEnhancedStrategyAdapter:
             else:
                 signal_direction = 'neutral'
 
-            # 'strength' (güç) değerini türet. Öncelik: rr_ratio.
             if 'rr_ratio' in base_signal:
                 rr_ratio = float(base_signal.get('rr_ratio', 1.0))
-                # rr_ratio'yu 1.0-3.0 arasından 0.5-0.8 aralığına haritala.
                 strength = 0.5 + (max(0, rr_ratio - 1.0) * 0.15)
-                strength = max(0.5, min(0.8, strength)) # Güvenli aralıkta kalmasını sağla.
+                strength = max(0.5, min(0.8, strength)) 
             else:
-                strength = 0.6  # Varsayılan güç.
+                strength = 0.6
 
             return {'signal': signal_direction, 'strength': strength}
 
-        # Durum 3: Sinyal sadece bir string ('buy', 'sell' vb.)
         if isinstance(base_signal, str):
             side = base_signal.lower()
             if side in ('buy', 'long'): signal_direction = 'bullish'
@@ -92,69 +87,61 @@ class AIEnhancedStrategyAdapter:
             else: signal_direction = 'neutral'
             return {'signal': signal_direction, 'strength': 0.7}
 
-        # Durum 4: Tanınmayan format. Pass-through için 'neutral' yap.
         logger.warning(f"🧠 [ML-ADAPTER] Uyumsuz sinyal formatı: {base_signal}. Pass-through için nötr kabul ediliyor.")
         return {'signal': 'neutral', 'strength': 0.0}
-    
+
     async def enhance_strategy_signal(self, symbol: str, base_signal: Dict[str, Any],
-                                     current_price: float) -> Dict[str, Any]:
+                                     current_price: float, market_data_pipeline: Any) -> Dict[str, Any]:
         """
-        Enhance a base trading strategy signal with AI predictions.
-        (GÜNCELLENDİ: Sinyal normalizasyonu ve pass-through mantığı eklendi)
+        Enhance a base trading strategy signal with AI predictions (price and regime).
         """
         try:
-            # 1. Gelen sinyali standart bir formata dönüştür.
             processed_signal = self._normalize_signal(base_signal)
+            enhancement = { 'original_signal': processed_signal['signal'] }
 
-            # 2. Varsayılan 'enhancement' objesini oluştur. Başlangıçta final sinyal, işlenmiş sinyalin aynısıdır.
-            enhancement = {
-                'original_signal': processed_signal['signal'],
-                'original_strength': processed_signal.get('strength', 0.6),
-                'ai_signal': 'neutral',
-                'ai_strength': 0.0,
-                'final_signal': processed_signal['signal'], # Pass-through için başlangıç değeri
-                'final_strength': processed_signal.get('strength', 0.6), # Pass-through için başlangıç değeri
-                'confidence_adjustment': 1.0,
-                'risk_adjustment': 1.0,
-                'recommendations': []
-            }
+            # ADIM 1: REJİM TAHMİNİNİ AL (EKSİK OLAN ADIM)
+            # ===============================================
+            regime_info = None
+            try:
+                # Rejim tahmini için en güncel veriyi al
+                price_data = await market_data_pipeline.get_latest_ohlcv(symbol, timeframe='1h')
+                if price_data is not None and not price_data.empty:
+                    regime_info = await self.regime_predictor.predict_regime_transition(symbol, price_data)
+                else:
+                    logger.warning(f"🧠 [ML-ADAPTER] Regime prediction skipped: No 1h data for {symbol}.")
+            except Exception as e:
+                logger.error(f"🧠 [ML-ADAPTER] Regime prediction failed: {e}", exc_info=True)
 
-            # 3. Fiyat tahmini almayı dene.
+            # ADIM 2: REJİM BİLGİSİNİ FİLTRELE VE EKLE
+            # ==========================================
+            if regime_info:
+                regime_confidence = regime_info.get('confidence', 0.0)
+                if regime_confidence >= self.min_confidence:
+                    predicted_regime = regime_info.get('predicted_regime', 'neutral')
+                    enhancement['predicted_regime'] = predicted_regime
+                    enhancement['regime_confidence'] = regime_confidence
+                    logger.info(f"🧠 [ML-ADAPTER] Regime for {symbol} is {predicted_regime.upper()} (Conf: {regime_confidence:.2f})")
+                else:
+                    logger.info(f"🧠 [ML-ADAPTER] Regime for {symbol} discarded by confidence filter (Conf: {regime_confidence:.2f} < {self.min_confidence})")
+            
+            # ADIM 3: FİYAT TAHMİNİNİ AL VE SİNYALİ BİRLEŞTİR
+            # =================================================
             price_forecast = self.price_engine.get_price_forecast(symbol)
 
-            # 4. Fiyat tahmini yoksa, sinyali olduğu gibi geri döndür (Pass-through).
             if not price_forecast:
-                enhancement['recommendations'].append('No AI forecast available – pass-through')
-                logger.info(f"🧠 [ML-ADAPTER] {symbol} için AI tahmini yok. Sinyal olduğu gibi geçiriliyor.")
-                return enhancement
+                enhancement['recommendations'] = ['No AI price forecast available']
+                logger.info(f"🧠 [ML-ADAPTER] No price forecast for {symbol}. Only regime will be used.")
+            else:
+                ai_signal = self.price_engine.generate_trading_signals(symbol, current_price)
+                combined = self._combine_signals(processed_signal, ai_signal, price_forecast)
+                enhancement.update(combined)
+                logger.info(f"🧠 [ML-ADAPTER] Price forecast enhanced signal for {symbol}.")
 
-            # 5. Fiyat tahmini varsa, AI sinyali üret ve base sinyal ile birleştir.
-            ai_signal = self.price_engine.generate_trading_signals(symbol, current_price)
-            enhancement['ai_signal'] = ai_signal.get('signal', 'neutral')
-            enhancement['ai_strength'] = float(ai_signal.get('strength', 0.0))
-
-            combined = self._combine_signals(processed_signal, ai_signal, price_forecast)
-            enhancement.update(combined)
-            
-            logger.info(f"🧠 [ML-ADAPTER] Sinyal zenginleştirildi: {enhancement['original_signal']} -> {enhancement['final_signal']}")
             return enhancement
 
         except Exception as e:
-            logger.error(f"Error enhancing strategy signal: {e}", exc_info=True)
-            # Hata durumunda sinyali veto ETME, olduğu gibi geçir (Pass-through).
-            original_signal_val = 'unknown'
-            if isinstance(base_signal, dict):
-                original_signal_val = base_signal.get('side') or base_signal.get('signal', 'unknown')
-            elif isinstance(base_signal, str):
-                original_signal_val = base_signal
-
-            return {
-                'original_signal': original_signal_val,
-                'final_signal': original_signal_val,
-                'final_strength': float(base_signal.get('strength', 0.6)) if isinstance(base_signal, dict) else 0.6,
-                'recommendations': [f'Enhancement failed: {e}', 'Pass-through'],
-                'error': str(e)
-            }
+            logger.error(f"CRITICAL: Error in enhance_strategy_signal: {e}", exc_info=True)
+            return { 'original_signal': base_signal.get('side', 'unknown'), 'error': str(e) }
     
     def _combine_signals(self, base_signal: Dict[str, Any],
                         ai_signal: Dict[str, Any],
