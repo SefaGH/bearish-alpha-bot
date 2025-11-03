@@ -159,8 +159,20 @@ class RiskEventListener:
             logger.info(f"📤 Sending market order to close position {position_id}")
             
             # This is where you would call OrderManager to close the position
-            # Example (adjust based on your OrderManager API):
-            # await self.order_manager.close_position(position_id, order_type='market')
+            # Expected OrderManager interface:
+            # await self.order_manager.place_order(
+            #     symbol=position['symbol'],
+            #     side='sell' if position['side'] == 'long' else 'buy',
+            #     order_type='market',
+            #     quantity=position['size'],
+            #     reduce_only=True
+            # )
+            # 
+            # Or simpler interface if available:
+            # await self.order_manager.close_position(
+            #     position_id=position_id,
+            #     order_type='market'
+            # )
             
             # For demonstration, we'll just log the action
             logger.info(f"✅ Position {position_id} closed due to stop-loss trigger")

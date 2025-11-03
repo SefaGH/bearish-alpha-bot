@@ -68,6 +68,7 @@ class RiskManager:
         
         # DEPRECATED: These properties are kept for backward compatibility
         # They will be removed in Phase 3
+        # TODO: Add deprecation warnings in Phase 3 to encourage migration
         self.active_positions = {}  # DEPRECATED: Use PortfolioManager.get_open_positions()
         self.current_drawdown = 0.0  # DEPRECATED: Use PortfolioManager.get_current_drawdown()
         self.peak_portfolio_value = self.portfolio_value  # DEPRECATED: Use PortfolioManager.get_peak_equity()

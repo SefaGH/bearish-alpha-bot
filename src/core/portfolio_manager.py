@@ -47,6 +47,8 @@ class PortfolioManager:
         self.active_positions = {}
         
         # Portfolio metrics
+        # NOTE: Initial value taken from RiskManager for backward compatibility
+        # In Phase 3, consider passing portfolio_value as separate parameter to constructor
         self.portfolio_value = float(risk_manager.portfolio_value)
         self.peak_portfolio_value = self.portfolio_value
         self.current_drawdown = 0.0
