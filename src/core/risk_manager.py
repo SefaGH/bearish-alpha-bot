@@ -39,8 +39,11 @@ class RiskManager:
         """
         Initialize risk manager with standardized configuration.
         
+        PHASE 2 REFACTOR: RiskManager is now a STATELESS decision engine.
+        It does NOT hold portfolio state - that's PortfolioManager's job.
+        
         Args:
-            portfolio_value: Initial portfolio value in USD
+            portfolio_value: Initial portfolio value in USD (kept for backward compatibility)
             risk_config: RiskConfiguration object with all risk parameters
             websocket_manager: Optional WebSocket manager for real-time data
             performance_monitor: Optional performance monitor for strategy metrics
@@ -58,33 +61,48 @@ class RiskManager:
             'max_correlation': self.risk_limits_dataclass.max_correlation,
         }
         
-        # Active positions tracking
-        self.active_positions = {}
-        
-        # Portfolio state
+        # PHASE 2: Removed portfolio state - RiskManager is now stateless
+        # State is managed by PortfolioManager
+        # Keep portfolio_value only for backward compatibility during transition
         self.portfolio_value = float(portfolio_value)
-        self.current_drawdown = 0.0
-        self.peak_portfolio_value = self.portfolio_value
+        
+        # DEPRECATED: These properties are kept for backward compatibility
+        # They will be removed in Phase 3
+        self.active_positions = {}  # DEPRECATED: Use PortfolioManager.get_open_positions()
+        self.current_drawdown = 0.0  # DEPRECATED: Use PortfolioManager.get_current_drawdown()
+        self.peak_portfolio_value = self.portfolio_value  # DEPRECATED: Use PortfolioManager.get_peak_equity()
         
         # Log initialization with standardized configuration
-        logger.info(f"RiskManager initialized with portfolio value: ${self.portfolio_value:.2f}")
+        logger.info(f"RiskManager initialized (PHASE 2: Stateless Decision Engine)")
         logger.info(f"Risk configuration: {self.risk_config.to_dict()}")
         logger.info(f"Risk limits: {self.risk_limits}")
     
-    def _calculate_total_portfolio_exposure(self) -> float:
+    def _calculate_total_portfolio_exposure(self, portfolio_manager=None) -> float:
         """
         Calculate total notional value of all open positions.
+        
+        PHASE 2: This method now queries PortfolioManager for state.
+        Falls back to deprecated self.active_positions for backward compatibility.
+        
+        Args:
+            portfolio_manager: PortfolioManager instance (preferred)
         
         Returns:
             Total exposure in USDT
         """
+        # PHASE 2: Prefer PortfolioManager as source of truth
+        if portfolio_manager is not None:
+            return portfolio_manager.get_total_exposure()
+        
+        # Fallback to deprecated state for backward compatibility
         total_exposure = sum(
             pos.get('size', 0) * pos.get('entry_price', 0) 
             for pos in self.active_positions.values()
         )
         
         active_count = len(self.active_positions)
-        capital_utilization = (total_exposure / self.portfolio_value * 100) if self.portfolio_value > 0 else 0
+        portfolio_value = self.portfolio_value
+        capital_utilization = (total_exposure / portfolio_value * 100) if portfolio_value > 0 else 0
         
         logger.debug(f"📊 [EXPOSURE] Active positions: {active_count}, Total exposure: ${total_exposure:.2f}, Capital utilization: {capital_utilization:.1f}%")
         
@@ -109,13 +127,17 @@ class RiskManager:
         }
         logger.info(f"Risk limits updated: {self.risk_limits}")
     
-    async def validate_new_position(self, signal: Dict, current_portfolio: Dict) -> Tuple[bool, str, Dict]:
+    async def validate_new_position(self, signal: Dict, current_portfolio: Dict = None, portfolio_manager=None) -> Tuple[bool, str, Dict]:
         """
         Validate if new position meets risk criteria.
         
+        PHASE 2 REFACTOR: Now accepts PortfolioManager for state queries.
+        Falls back to current_portfolio dict for backward compatibility.
+        
         Args:
             signal: Trading signal with entry, stop, size, etc.
-            current_portfolio: Current portfolio state with positions and metrics
+            current_portfolio: Current portfolio state (DEPRECATED - use portfolio_manager)
+            portfolio_manager: PortfolioManager instance (preferred)
             
         Returns:
             Tuple of (is_valid, reason, risk_metrics)
@@ -151,38 +173,47 @@ class RiskManager:
                 
                 logger.info(f"📊 [RISK-VALIDATE] Calculated percentage-based stop: {stop_loss:.2f}")
             
+            # PHASE 2: Get portfolio value from PortfolioManager or fallback
+            if portfolio_manager is not None:
+                portfolio_value = portfolio_manager.get_current_equity()
+                active_positions = portfolio_manager.get_open_positions()
+            else:
+                # Backward compatibility fallback
+                portfolio_value = self.portfolio_value
+                active_positions = self.active_positions
+            
             logger.debug(f"🛡️ [RISK-CALC] Validating position for {symbol}")
-            logger.debug(f"🛡️ [RISK-CALC] Portfolio value: ${self.portfolio_value:.2f}")
+            logger.debug(f"🛡️ [RISK-CALC] Portfolio value: ${portfolio_value:.2f}")
             
             risk_metrics = {}
             
             # STEP 0: Portfolio exposure validation (capital limit enforcement)
-            current_exposure = self._calculate_total_portfolio_exposure()
+            current_exposure = self._calculate_total_portfolio_exposure(portfolio_manager)
             new_position_value = position_size * entry_price
             projected_exposure = current_exposure + new_position_value
             
             risk_metrics['current_exposure'] = current_exposure
             risk_metrics['new_position_value'] = new_position_value
             risk_metrics['projected_exposure'] = projected_exposure
-            risk_metrics['capital_limit'] = self.portfolio_value
+            risk_metrics['capital_limit'] = portfolio_value
             
-            if projected_exposure > self.portfolio_value:
-                over_limit = projected_exposure - self.portfolio_value
-                over_limit_pct = (over_limit / self.portfolio_value) * 100
+            if projected_exposure > portfolio_value:
+                over_limit = projected_exposure - portfolio_value
+                over_limit_pct = (over_limit / portfolio_value) * 100
                 
                 logger.warning(f"🚫 [CAPITAL-LIMIT] PORTFOLIO EXPOSURE EXCEEDED")
                 logger.warning(f"   Symbol: {symbol}")
                 logger.warning(f"   Current Exposure: ${current_exposure:.2f}")
                 logger.warning(f"   New Position: ${new_position_value:.2f}")
                 logger.warning(f"   Projected Total: ${projected_exposure:.2f}")
-                logger.warning(f"   Capital Limit: ${self.portfolio_value:.2f}")
+                logger.warning(f"   Capital Limit: ${portfolio_value:.2f}")
                 logger.warning(f"   Over Limit By: ${over_limit:.2f} ({over_limit_pct:.1f}%)")
-                logger.warning(f"   Active Positions: {len(self.active_positions)}")
+                logger.warning(f"   Active Positions: {len(active_positions)}")
                 logger.warning(f"   ❌ POSITION REJECTED")
                 
-                return (False, f"Portfolio exposure ${projected_exposure:.2f} would exceed capital limit ${self.portfolio_value:.2f}", risk_metrics)
+                return (False, f"Portfolio exposure ${projected_exposure:.2f} would exceed capital limit ${portfolio_value:.2f}", risk_metrics)
             
-            available_capital = self.portfolio_value - current_exposure
+            available_capital = portfolio_value - current_exposure
             remaining_after = available_capital - new_position_value
             
             logger.info(f"✅ [CAPITAL-LIMIT] Exposure check PASSED")
@@ -192,7 +223,7 @@ class RiskManager:
             
             # 1. Position size validation
             position_value = position_size * entry_price
-            max_position_value = self.portfolio_value * self.risk_limits['max_position_size']
+            max_position_value = portfolio_value * self.risk_limits['max_position_size']
             
             logger.debug(f"🛡️ [RISK-CALC] Position size check: ${position_value:.2f} vs ${max_position_value:.2f} max")
             
@@ -202,13 +233,13 @@ class RiskManager:
             
             risk_metrics['position_value'] = position_value
             risk_metrics['max_position_value'] = max_position_value
-            risk_metrics['position_size_pct'] = position_value / self.portfolio_value
+            risk_metrics['position_size_pct'] = position_value / portfolio_value
             
             # 2. Portfolio risk check
             risk_amount = abs(entry_price - stop_loss) * position_size
-            max_risk = self.portfolio_value * self.risk_limits['max_portfolio_risk']
+            max_risk = portfolio_value * self.risk_limits['max_portfolio_risk']
             
-            risk_pct = risk_amount / self.portfolio_value
+            risk_pct = risk_amount / portfolio_value
             logger.debug(f"🛡️ [RISK-CALC] Risk per trade: {risk_pct:.2%} (limit: {self.risk_limits['max_portfolio_risk']:.2%})")
             
             if risk_amount > max_risk:
@@ -234,17 +265,18 @@ class RiskManager:
                     return (False, f"Risk/reward ratio {risk_reward_ratio:.2f} below minimum 1.5", risk_metrics)
             
             # 4. Drawdown check
-            if self.current_drawdown > self.risk_limits['max_drawdown']:
+            current_drawdown = portfolio_manager.get_current_drawdown() if portfolio_manager else self.current_drawdown
+            if current_drawdown > self.risk_limits['max_drawdown']:
                 logger.debug(f"🛡️ [RISK-CALC] REJECTED: Drawdown limit exceeded")
-                return (False, f"Current drawdown {self.current_drawdown:.2%} exceeds max {self.risk_limits['max_drawdown']:.2%}", risk_metrics)
+                return (False, f"Current drawdown {current_drawdown:.2%} exceeds max {self.risk_limits['max_drawdown']:.2%}", risk_metrics)
             
-            risk_metrics['current_drawdown'] = self.current_drawdown
+            risk_metrics['current_drawdown'] = current_drawdown
             risk_metrics['max_drawdown'] = self.risk_limits['max_drawdown']
             
             # 5. Portfolio heat (total risk exposure)
-            total_risk = sum(pos.get('risk_amount', 0) for pos in self.active_positions.values())
+            total_risk = sum(pos.get('risk_amount', 0) for pos in active_positions.values())
             total_risk += risk_amount
-            portfolio_heat = total_risk / self.portfolio_value
+            portfolio_heat = total_risk / portfolio_value
             
             logger.debug(f"🛡️ [RISK-CALC] Portfolio heat: {portfolio_heat:.2%} (limit: 10%)")
             
@@ -275,21 +307,32 @@ class RiskManager:
             logger.error(f"Error validating position: {e}")
             return (False, f"Validation error: {str(e)}", {})
     
-    async def monitor_position_risk(self, position_id: str) -> Dict[str, Any]:
+    async def monitor_position_risk(self, position_id: str, portfolio_manager=None) -> Dict[str, Any]:
         """
         Real-time position risk monitoring.
         
+        PHASE 2: Now accepts PortfolioManager to query position state.
+        
         Args:
             position_id: Unique position identifier
+            portfolio_manager: PortfolioManager instance (preferred)
             
         Returns:
             Dictionary with position risk metrics and alerts
         """
         try:
-            if position_id not in self.active_positions:
-                return {'status': 'not_found', 'alerts': []}
-            
-            position = self.active_positions[position_id]
+            # PHASE 2: Get position from PortfolioManager or fallback
+            if portfolio_manager is not None:
+                position = portfolio_manager.get_position(position_id)
+                if position is None:
+                    return {'status': 'not_found', 'alerts': []}
+                portfolio_value = portfolio_manager.get_current_equity()
+            else:
+                # Backward compatibility fallback
+                if position_id not in self.active_positions:
+                    return {'status': 'not_found', 'alerts': []}
+                position = self.active_positions[position_id]
+                portfolio_value = self.portfolio_value
             alerts = []
             
             # Current position state
@@ -320,7 +363,7 @@ class RiskManager:
                 })
             
             # Large unrealized loss check
-            loss_threshold = self.portfolio_value * self.risk_limits['max_portfolio_risk']
+            loss_threshold = portfolio_value * self.risk_limits['max_portfolio_risk']
             if unrealized_pnl < -loss_threshold:
                 alerts.append({
                     'type': 'large_loss',
@@ -354,19 +397,28 @@ class RiskManager:
             return {'status': 'error', 'message': str(e), 'alerts': []}
     
     async def calculate_position_size(self, signal: Dict, market_regime: Dict = None,
-                                     portfolio_state: Dict = None) -> float:
+                                     portfolio_state: Dict = None, portfolio_manager=None) -> float:
         """
         Calculate optimal position size based on risk parameters.
+        
+        PHASE 2: Now accepts PortfolioManager to query current equity.
         
         Args:
             signal: Trading signal with entry, stop, target
             market_regime: Market regime data from Phase 2 (optional)
-            portfolio_state: Current portfolio state (optional)
+            portfolio_state: Current portfolio state (DEPRECATED - use portfolio_manager)
+            portfolio_manager: PortfolioManager instance (preferred)
             
         Returns:
             Optimal position size
         """
         try:
+            # PHASE 2: Get portfolio value from PortfolioManager or fallback
+            if portfolio_manager is not None:
+                portfolio_value = portfolio_manager.get_current_equity()
+            else:
+                portfolio_value = self.portfolio_value
+            
             entry_price = signal.get('entry', 0)
             stop_loss = signal.get('stop', 0)
             
@@ -400,7 +452,7 @@ class RiskManager:
                 return 0.0
             
             # Base risk amount
-            risk_per_trade = self.portfolio_value * self.risk_limits['max_portfolio_risk']
+            risk_per_trade = portfolio_value * self.risk_limits['max_portfolio_risk']
             
             # Adjust for market regime
             if market_regime:
@@ -430,7 +482,7 @@ class RiskManager:
             position_size = risk_per_trade / risk_distance
             
             # Apply maximum position size limit
-            max_position_value = self.portfolio_value * self.risk_limits['max_position_size']
+            max_position_value = portfolio_value * self.risk_limits['max_position_size']
             max_size_by_limit = max_position_value / entry_price
             position_size = min(position_size, max_size_by_limit)
             
@@ -493,31 +545,57 @@ class RiskManager:
         if position_id in self.active_positions:
             self.active_positions[position_id]['current_price'] = current_price
     
-    def get_portfolio_summary(self) -> Dict[str, Any]:
-        """Get comprehensive portfolio summary."""
+    def get_portfolio_summary(self, portfolio_manager=None) -> Dict[str, Any]:
+        """
+        Get comprehensive portfolio summary.
+        
+        PHASE 2: Now accepts PortfolioManager to query state.
+        Falls back to deprecated state for backward compatibility.
+        
+        Args:
+            portfolio_manager: PortfolioManager instance (preferred)
+        
+        Returns:
+            Portfolio summary dictionary
+        """
+        # PHASE 2: Prefer PortfolioManager as source of truth
+        if portfolio_manager is not None:
+            # Get data from PortfolioManager
+            portfolio_value = portfolio_manager.get_current_equity()
+            peak_value = portfolio_manager.get_peak_equity()
+            current_drawdown = portfolio_manager.get_current_drawdown()
+            active_positions = portfolio_manager.get_open_positions()
+            total_exposure = portfolio_manager.get_total_exposure()
+            available_capital = portfolio_manager.get_available_capital()
+        else:
+            # Backward compatibility fallback
+            portfolio_value = self.portfolio_value
+            peak_value = self.peak_portfolio_value
+            current_drawdown = self.current_drawdown
+            active_positions = self.active_positions
+            total_exposure = self._calculate_total_portfolio_exposure()
+            available_capital = portfolio_value - total_exposure
+        
         total_unrealized_pnl = sum(
             pos.get('unrealized_pnl', 0) 
-            for pos in self.active_positions.values()
+            for pos in active_positions.values()
         )
         
         total_risk = sum(
             pos.get('risk_amount', 0) 
-            for pos in self.active_positions.values()
+            for pos in active_positions.values()
         )
         
-        # Calculate total exposure
-        total_exposure = self._calculate_total_portfolio_exposure()
-        available_capital = self.portfolio_value - total_exposure
-        capital_utilization = total_exposure / self.portfolio_value if self.portfolio_value > 0 else 0
+        capital_utilization = total_exposure / portfolio_value if portfolio_value > 0 else 0
         
         return {
-            'portfolio_value': self.portfolio_value,
-            'peak_value': self.peak_portfolio_value,
-            'current_drawdown': self.current_drawdown,
-            'active_positions': len(self.active_positions),
+            'portfolio_value': portfolio_value,
+            'peak_value': peak_value,
+            'current_drawdown': current_drawdown,
+            'active_positions': len(active_positions),
             'total_unrealized_pnl': total_unrealized_pnl,
             'total_risk': total_risk,
-            'portfolio_heat': total_risk / self.portfolio_value if self.portfolio_value > 0 else 0,
+            'portfolio_heat': total_risk / portfolio_value if portfolio_value > 0 else 0,
             'total_exposure': total_exposure,
             'available_capital': available_capital,
             'capital_utilization': capital_utilization,

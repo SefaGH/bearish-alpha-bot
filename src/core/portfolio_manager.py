@@ -42,11 +42,20 @@ class PortfolioManager:
         self.strategy_allocations = {}  # strategy_name -> allocation (0-1)
         self.strategy_metadata = {}  # strategy_name -> metadata dict
         
+        # PHASE 2: Central portfolio state management (moved from RiskManager)
+        # Active positions tracking - PortfolioManager is now the single source of truth
+        self.active_positions = {}
+        
+        # Portfolio metrics
+        self.portfolio_value = float(risk_manager.portfolio_value)
+        self.peak_portfolio_value = self.portfolio_value
+        self.current_drawdown = 0.0
+        
         # Portfolio state
         self.portfolio_state = {
-            'total_value': risk_manager.portfolio_value,
+            'total_value': self.portfolio_value,
             'allocated_capital': 0.0,
-            'available_capital': risk_manager.portfolio_value,
+            'available_capital': self.portfolio_value,
             'strategy_performance': {},
             'last_rebalance': None,
             'rebalance_count': 0
@@ -55,7 +64,7 @@ class PortfolioManager:
         # Optimization history
         self.optimization_history = []
         
-        logger.info(f"PortfolioManager initialized with portfolio value: ${risk_manager.portfolio_value:.2f}")
+        logger.info(f"PortfolioManager initialized with portfolio value: ${self.portfolio_value:.2f}")
 
     def set_execution_managers(self, order_manager, position_manager):
         """
@@ -65,6 +74,123 @@ class PortfolioManager:
         self.order_manager = order_manager
         self.position_manager = position_manager
         logger.info("✅ Execution managers (OrderManager, PositionManager) have been linked to PortfolioManager.")
+    
+    # PHASE 2: Portfolio state management methods (central source of truth)
+    
+    def get_current_equity(self) -> float:
+        """Get current portfolio equity value."""
+        return self.portfolio_value
+    
+    def get_peak_equity(self) -> float:
+        """Get peak portfolio equity value."""
+        return self.peak_portfolio_value
+    
+    def get_current_drawdown(self) -> float:
+        """Get current portfolio drawdown."""
+        return self.current_drawdown
+    
+    def get_open_positions(self) -> Dict[str, Dict]:
+        """
+        Get all open positions.
+        
+        Returns:
+            Dictionary of active positions {position_id: position_data}
+        """
+        return self.active_positions.copy()
+    
+    def get_position(self, position_id: str) -> Optional[Dict]:
+        """
+        Get a specific position by ID.
+        
+        Args:
+            position_id: Position identifier
+            
+        Returns:
+            Position data or None if not found
+        """
+        return self.active_positions.get(position_id)
+    
+    def register_position(self, position_id: str, position_data: Dict):
+        """
+        Register a new active position.
+        
+        Args:
+            position_id: Unique position identifier
+            position_data: Position data including entry, stop, size, etc.
+        """
+        self.active_positions[position_id] = {
+            **position_data,
+            'entry_time': datetime.now(timezone.utc),
+            'current_price': position_data.get('entry_price', 0)
+        }
+        logger.info(f"Position registered: {position_id} - {position_data.get('symbol', 'UNKNOWN')}")
+    
+    def update_position_price(self, position_id: str, current_price: float):
+        """
+        Update current price for a position.
+        
+        Args:
+            position_id: Position identifier
+            current_price: Current market price
+        """
+        if position_id in self.active_positions:
+            self.active_positions[position_id]['current_price'] = current_price
+    
+    def close_position(self, position_id: str, exit_price: float, realized_pnl: float):
+        """
+        Close and remove a position, updating portfolio metrics.
+        
+        Args:
+            position_id: Position identifier
+            exit_price: Exit price
+            realized_pnl: Realized profit/loss
+        """
+        if position_id in self.active_positions:
+            position = self.active_positions.pop(position_id)
+            
+            # Update portfolio value
+            self.portfolio_value += realized_pnl
+            self.portfolio_state['total_value'] = self.portfolio_value
+            
+            # Update drawdown metrics
+            if self.portfolio_value > self.peak_portfolio_value:
+                self.peak_portfolio_value = self.portfolio_value
+                self.current_drawdown = 0.0
+            else:
+                self.current_drawdown = (self.peak_portfolio_value - self.portfolio_value) / self.peak_portfolio_value
+            
+            logger.info(f"Position closed: {position_id} - PnL: ${realized_pnl:.2f}, Portfolio: ${self.portfolio_value:.2f}")
+        else:
+            logger.warning(f"Attempted to close non-existent position: {position_id}")
+    
+    def get_total_exposure(self) -> float:
+        """
+        Calculate total notional value of all open positions.
+        
+        Returns:
+            Total exposure in USDT
+        """
+        total_exposure = sum(
+            pos.get('size', 0) * pos.get('entry_price', 0) 
+            for pos in self.active_positions.values()
+        )
+        
+        active_count = len(self.active_positions)
+        capital_utilization = (total_exposure / self.portfolio_value * 100) if self.portfolio_value > 0 else 0
+        
+        logger.debug(f"📊 [EXPOSURE] Active positions: {active_count}, Total exposure: ${total_exposure:.2f}, Capital utilization: {capital_utilization:.1f}%")
+        
+        return total_exposure
+    
+    def get_available_capital(self) -> float:
+        """
+        Calculate available capital (not allocated to positions).
+        
+        Returns:
+            Available capital in USDT
+        """
+        total_exposure = self.get_total_exposure()
+        return self.portfolio_value - total_exposure
     
     def add_exchange_client(self, exchange_name: str, client):
         """
@@ -332,11 +458,14 @@ class PortfolioManager:
     
     def _update_portfolio_state(self):
         """Update internal portfolio state."""
+        # Sync portfolio_state with actual portfolio value
+        self.portfolio_state['total_value'] = self.portfolio_value
+        
         total_allocation = sum(self.strategy_allocations.values())
-        allocated_capital = self.portfolio_state['total_value'] * total_allocation
+        allocated_capital = self.portfolio_value * total_allocation
         
         self.portfolio_state['allocated_capital'] = allocated_capital
-        self.portfolio_state['available_capital'] = self.portfolio_state['total_value'] - allocated_capital
+        self.portfolio_state['available_capital'] = self.portfolio_value - allocated_capital
         
         # Update strategy performance from performance monitor
         if self.performance_monitor:
@@ -586,14 +715,38 @@ class PortfolioManager:
         """Get comprehensive portfolio summary."""
         self._update_portfolio_state()
         
+        # Calculate unrealized P&L from positions
+        total_unrealized_pnl = sum(
+            pos.get('unrealized_pnl', 0) 
+            for pos in self.active_positions.values()
+        )
+        
+        total_risk = sum(
+            pos.get('risk_amount', 0) 
+            for pos in self.active_positions.values()
+        )
+        
+        total_exposure = self.get_total_exposure()
+        available_capital = self.get_available_capital()
+        capital_utilization = total_exposure / self.portfolio_value if self.portfolio_value > 0 else 0
+        
         return {
+            'portfolio_value': self.portfolio_value,
+            'peak_value': self.peak_portfolio_value,
+            'current_drawdown': self.current_drawdown,
+            'active_positions': len(self.active_positions),
+            'total_unrealized_pnl': total_unrealized_pnl,
+            'total_risk': total_risk,
+            'portfolio_heat': total_risk / self.portfolio_value if self.portfolio_value > 0 else 0,
+            'total_exposure': total_exposure,
+            'available_capital': available_capital,
+            'capital_utilization': capital_utilization,
             'portfolio_state': self.portfolio_state.copy(),
             'registered_strategies': list(self.strategies.keys()),
             'strategy_allocations': self.strategy_allocations.copy(),
             'strategy_metadata': self.strategy_metadata.copy(),
             'optimization_history_count': len(self.optimization_history),
-            'last_optimization': self.optimization_history[-1] if self.optimization_history else None,
-            'risk_metrics': self.risk_manager.get_portfolio_summary()
+            'last_optimization': self.optimization_history[-1] if self.optimization_history else None
         }
     
     def get_strategy_allocation(self, strategy_name: str) -> Optional[float]:
