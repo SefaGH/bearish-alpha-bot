@@ -4,7 +4,7 @@
 
 **Status:** ✅ COMPLETE
 
-Phase 1 successfully eliminated the architectural conflict between legacy and modern risk management systems. The refactoring establishes a single source of truth for risk configuration, enabling proper flow of parameters from `config.yaml` to all system components including strategies.
+Phase 1 successfully eliminated the architectural conflict between legacy and modern risk management systems. The refactoring establishes a single source of truth for risk configuration, enabling proper flow of parameters from the configuration file (e.g., `config.example.yaml` or user's `config.yaml`) to all system components including strategies.
 
 ## Problem Statement
 
@@ -126,7 +126,7 @@ def create_risk_manager(portfolio_value=10000, custom_limits=None,
 Created `test_phase1_validation.py` with 4 comprehensive tests:
 
 **Test 1: RiskConfiguration Creation**
-- ✅ Loads risk parameters from `config.yaml`
+- ✅ Loads risk parameters from configuration file (`config.example.yaml` for testing)
 - ✅ Creates `RiskConfiguration` object
 - ✅ Validates default risk limits
 
@@ -189,6 +189,8 @@ self.min_rr_ratio = self.strategy_config.get('min_rr_ratio', 1.2)
    ✅ min_rr_ratio correctly set to: 0.8
 ```
 
+*Note: The validation script uses `config.example.yaml` for testing. In production, users create their own `config.yaml` from the example template.*
+
 ### Architecture Improvements
 
 1. **Type Safety:** Raw dicts replaced with typed `RiskConfiguration`
@@ -240,7 +242,7 @@ self.min_rr_ratio = self.strategy_config.get('min_rr_ratio', 1.2)
 
 ### For Users
 The bot can now be tested with the expectation that:
-1. Configuration values in `config.yaml` will be respected
+1. Configuration values in the config file (users should copy `config.example.yaml` to `config.yaml` and customize it) will be respected
 2. Strategies will use configured `min_rr_ratio` values
 3. Signal generation should improve with proper risk thresholds
 
