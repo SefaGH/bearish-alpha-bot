@@ -204,18 +204,17 @@ class RiskManager:
         }
         logger.info(f"Risk limits updated: {self.risk_limits}")
     
-    async def validate_new_position(self, signal: Dict, current_portfolio: Dict = None, portfolio_manager=None) -> Tuple[bool, str, Dict]:
+    async def validate_new_position(self, signal: Dict, portfolio_manager) -> Tuple[bool, str, Dict]:
         """
-        Validate if new position meets risk criteria using rules engine.
+        Validate if new position meets risk criteria using the rules engine.
         
-        PHASE 3 REFACTOR: Uses composable rules engine for validation.
-        Each rule is independently testable and can be added/removed without
-        modifying this method.
-        
+        PHASE 3.1 UPDATE: portfolio_manager is now a required argument.
+        The deprecated fallback mode has been removed for safer, more reliable
+        risk validation based on real-time portfolio state.
+
         Args:
             signal: Trading signal with entry, stop, size, etc.
-            current_portfolio: Current portfolio state (DEPRECATED - use portfolio_manager)
-            portfolio_manager: PortfolioManager instance (preferred)
+            portfolio_manager: The active PortfolioManager instance. This is REQUIRED.
             
         Returns:
             Tuple of (is_valid, reason, risk_metrics)
@@ -223,24 +222,25 @@ class RiskManager:
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
             
-            # PHASE 2: Get portfolio manager (prefer parameter, fallback to creating mock)
+            # ======================= ANA DÜZELTME =======================
+            # 1. Fallback mekanizması kaldırıldı. portfolio_manager artık zorunlu.
             if portfolio_manager is None:
-                # Backward compatibility: create a minimal portfolio manager mock
-                logger.warning("No PortfolioManager provided, using deprecated fallback mode")
-                portfolio_manager = self._create_fallback_portfolio_manager()
-            
+                # Bu durum artık bir hata olarak kabul ediliyor.
+                logger.error("[RISK-ENGINE] CRITICAL: validate_new_position called without a PortfolioManager.")
+                return (False, "Internal error: Risk validation requires a portfolio manager.", {})
+            # ==========================================================
+
             logger.debug(f"🛡️ [RISK-ENGINE] Validating position for {symbol}")
-            logger.debug(f"🛡️ [RISK-ENGINE] Running {len(self.rules)} risk rules")
             
-            # Initialize risk metrics
+            # Risk metriklerini hesapla
             risk_metrics = self._calculate_risk_metrics(signal, portfolio_manager)
             
-            # PHASE 3: Run all rules through the rules engine
+            # PHASE 3: Tüm kuralları çalıştır
             for rule in self.rules:
                 if not rule.enabled:
-                    logger.debug(f"⏭️  [RISK-ENGINE] Skipping disabled rule: {rule.rule_name}")
                     continue
                 
+                # Her kurala, gerçek portfolio_manager nesnesini ver
                 is_valid, reason = rule.validate(signal, portfolio_manager)
                 
                 if not is_valid:
@@ -251,9 +251,8 @@ class RiskManager:
                 
                 logger.debug(f"✅ [RISK-ENGINE] {rule.rule_name} passed")
             
-            # All rules passed
+            # Tüm kurallar geçti
             logger.info(f"✅ [RISK-ENGINE] Position APPROVED for {symbol}")
-            logger.info(f"   All {len([r for r in self.rules if r.enabled])} rules passed")
             return (True, "All risk rules passed", risk_metrics)
             
         except Exception as e:
