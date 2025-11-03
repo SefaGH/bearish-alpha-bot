@@ -8,6 +8,9 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 import numpy as np
 
+# Import RiskConfiguration for type-safe configuration
+from config.risk_config import RiskConfiguration
+
 # Triple-fallback import strategy for maximum compatibility:
 # 1. Direct utils import (when src/ is on sys.path)
 # 2. Absolute src.utils import (when repo root is on sys.path)
@@ -32,31 +35,39 @@ logger = logging.getLogger(__name__)
 class RiskManager:
     """Comprehensive risk management engine for multi-strategy portfolio."""
     
-    def __init__(self, portfolio_config: Dict, websocket_manager=None, performance_monitor=None):
-        """Initialize risk manager."""
-        self.portfolio_config = portfolio_config
+    def __init__(self, portfolio_value: float, risk_config: RiskConfiguration, websocket_manager=None, performance_monitor=None):
+        """
+        Initialize risk manager with standardized configuration.
+        
+        Args:
+            portfolio_value: Initial portfolio value in USD
+            risk_config: RiskConfiguration object with all risk parameters
+            websocket_manager: Optional WebSocket manager for real-time data
+            performance_monitor: Optional performance monitor for strategy metrics
+        """
+        self.risk_config = risk_config
         self.ws_manager = websocket_manager
         self.performance_monitor = performance_monitor
         
-        # Risk limits
+        # Extract risk limits from standardized configuration
+        self.risk_limits_dataclass = self.risk_config.get_risk_limits()
         self.risk_limits = {
-            'max_portfolio_risk': portfolio_config.get('max_portfolio_risk', 0.02),
-            'max_position_size': portfolio_config.get('max_position_size', 0.10),
-            'max_drawdown': portfolio_config.get('max_drawdown', 0.15),
-            'max_correlation': portfolio_config.get('max_correlation', 0.70),
+            'max_portfolio_risk': self.risk_limits_dataclass.max_portfolio_risk,
+            'max_position_size': self.risk_limits_dataclass.max_position_size,
+            'max_drawdown': self.risk_limits_dataclass.max_drawdown,
+            'max_correlation': self.risk_limits_dataclass.max_correlation,
         }
         
         # Active positions tracking
         self.active_positions = {}
         
-        # Portfolio state - DÜZELTME
-        self.portfolio_value = float(portfolio_config.get('equity_usd', 100))  # 100 default!
+        # Portfolio state
+        self.portfolio_value = float(portfolio_value)
         self.current_drawdown = 0.0
         self.peak_portfolio_value = self.portfolio_value
         
-        # DEBUG LOG EKLE
+        # Log initialization with standardized configuration
         logger.info(f"RiskManager initialized with portfolio value: ${self.portfolio_value:.2f}")
-        logger.info(f"Config received: {portfolio_config}")  # Debug için
         logger.info(f"Risk limits: {self.risk_limits}")
     
     def _calculate_total_portfolio_exposure(self) -> float:

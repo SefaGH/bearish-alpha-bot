@@ -20,6 +20,14 @@ from core.portfolio_manager import PortfolioManager
 from core.risk_manager import RiskManager
 from core.performance_monitor import RealTimePerformanceMonitor
 from core.websocket_manager import WebSocketManager
+from config.risk_config import RiskConfiguration
+
+
+# Helper function to create RiskManager with new signature
+def create_risk_manager(portfolio_value=10000, custom_limits=None):
+    """Create RiskManager with standardized configuration."""
+    risk_config = RiskConfiguration(custom_limits=custom_limits or {})
+    return RiskManager(portfolio_value=portfolio_value, risk_config=risk_config)
 
 
 class MockExchangeClient:
@@ -58,8 +66,7 @@ class TestOrderManager:
     
     def test_initialization(self):
         """Test order manager initialization."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         exchange_clients = {
             'kucoinfutures': MockExchangeClient('kucoinfutures')
         }
@@ -73,8 +80,7 @@ class TestOrderManager:
     @pytest.mark.asyncio
     async def test_place_market_order(self):
         """Test market order placement."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         exchange_clients = {
             'kucoinfutures': MockExchangeClient('kucoinfutures')
         }
@@ -98,8 +104,7 @@ class TestOrderManager:
     @pytest.mark.asyncio
     async def test_place_limit_order(self):
         """Test limit order placement."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         exchange_clients = {
             'kucoinfutures': MockExchangeClient('kucoinfutures')
         }
@@ -122,8 +127,7 @@ class TestOrderManager:
     @pytest.mark.asyncio
     async def test_order_validation(self):
         """Test order validation."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         exchange_clients = {
             'kucoinfutures': MockExchangeClient('kucoinfutures')
         }
@@ -145,8 +149,7 @@ class TestOrderManager:
     @pytest.mark.asyncio
     async def test_cancel_order(self):
         """Test order cancellation."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         exchange_clients = {
             'kucoinfutures': MockExchangeClient('kucoinfutures')
         }
@@ -172,8 +175,7 @@ class TestOrderManager:
     
     def test_execution_statistics(self):
         """Test execution statistics."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         exchange_clients = {
             'kucoinfutures': MockExchangeClient('kucoinfutures')
         }
@@ -193,8 +195,7 @@ class TestPositionManager:
     
     def test_initialization(self):
         """Test position manager initialization."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         performance_monitor = RealTimePerformanceMonitor()
         portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
         
@@ -207,8 +208,7 @@ class TestPositionManager:
     @pytest.mark.asyncio
     async def test_open_position(self):
         """Test opening a position."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         performance_monitor = RealTimePerformanceMonitor()
         portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
         position_manager = AdvancedPositionManager(portfolio_manager, risk_manager)
@@ -239,8 +239,7 @@ class TestPositionManager:
     @pytest.mark.asyncio
     async def test_monitor_position_pnl(self):
         """Test position P&L monitoring."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         performance_monitor = RealTimePerformanceMonitor()
         portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
         position_manager = AdvancedPositionManager(portfolio_manager, risk_manager)
@@ -273,8 +272,7 @@ class TestPositionManager:
     @pytest.mark.asyncio
     async def test_close_position(self):
         """Test closing a position."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         performance_monitor = RealTimePerformanceMonitor()
         portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
         position_manager = AdvancedPositionManager(portfolio_manager, risk_manager)
@@ -307,8 +305,7 @@ class TestPositionManager:
     
     def test_calculate_position_metrics(self):
         """Test position metrics calculation."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         performance_monitor = RealTimePerformanceMonitor()
         portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
         position_manager = AdvancedPositionManager(portfolio_manager, risk_manager)
@@ -347,8 +344,7 @@ class TestExecutionAnalytics:
     
     def test_initialization(self):
         """Test execution analytics initialization."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         performance_monitor = RealTimePerformanceMonitor()
         portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
         exchange_clients = {'kucoinfutures': MockExchangeClient('kucoinfutures')}
@@ -363,8 +359,7 @@ class TestExecutionAnalytics:
     
     def test_get_best_execution_algorithm(self):
         """Test execution algorithm recommendation."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         performance_monitor = RealTimePerformanceMonitor()
         portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
         exchange_clients = {'kucoinfutures': MockExchangeClient('kucoinfutures')}
@@ -391,8 +386,7 @@ class TestLiveTradingEngine:
     
     def test_initialization(self):
         """Test trading engine initialization."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         performance_monitor = RealTimePerformanceMonitor()
         portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
         exchange_clients = {'kucoinfutures': MockExchangeClient('kucoinfutures')}
@@ -412,8 +406,7 @@ class TestLiveTradingEngine:
     @pytest.mark.asyncio
     async def test_start_stop_engine(self):
         """Test starting and stopping the trading engine."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         performance_monitor = RealTimePerformanceMonitor()
         portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
         exchange_clients = {'kucoinfutures': MockExchangeClient('kucoinfutures')}
@@ -440,8 +433,7 @@ class TestLiveTradingEngine:
     @pytest.mark.asyncio
     async def test_start_live_trading_reports_running_state(self):
         """Ensure start_live_trading returns a running state immediately."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         performance_monitor = RealTimePerformanceMonitor()
         portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
         exchange_clients = {'kucoinfutures': MockExchangeClient('kucoinfutures')}
@@ -464,8 +456,7 @@ class TestLiveTradingEngine:
     @pytest.mark.asyncio
     async def test_execute_signal(self):
         """Test signal execution through trading engine."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         performance_monitor = RealTimePerformanceMonitor()
         portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
         exchange_clients = {'kucoinfutures': MockExchangeClient('kucoinfutures')}
@@ -545,8 +536,7 @@ class TestWebSocketPerformanceLogging:
     
     def test_websocket_stats_calculation(self):
         """Test WebSocket statistics calculation."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         performance_monitor = RealTimePerformanceMonitor()
         portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
         
@@ -588,8 +578,7 @@ class TestWebSocketPerformanceLogging:
         """Test WebSocket performance logging output."""
         import logging
         
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         performance_monitor = RealTimePerformanceMonitor()
         portfolio_manager = PortfolioManager(risk_manager, performance_monitor)
         

@@ -20,6 +20,25 @@ from core.correlation_monitor import CorrelationMonitor
 from core.circuit_breaker import CircuitBreakerSystem
 
 
+# Helper function to create RiskManager with new standardized signature
+def create_risk_manager(portfolio_value=10000, custom_limits=None):
+    """
+    Helper function to create RiskManager with standardized signature.
+    
+    Args:
+        portfolio_value: Portfolio value in USD
+        custom_limits: Optional dict with custom risk limits
+        
+    Returns:
+        RiskManager instance
+    """
+    risk_config = RiskConfiguration(custom_limits=custom_limits or {})
+    return RiskManager(
+        portfolio_value=portfolio_value,
+        risk_config=risk_config
+    )
+
+
 class TestRiskConfiguration:
     """Test risk configuration management."""
     
@@ -79,13 +98,15 @@ class TestRiskManager:
     
     def test_initialization(self):
         """Test risk manager initialization."""
-        portfolio_config = {
-            'equity_usd': 10000,
+        custom_limits = {
             'max_portfolio_risk': 0.02,
             'max_position_size': 0.10
         }
         
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(
+            portfolio_value=10000,
+            custom_limits=custom_limits
+        )
         
         assert risk_manager.portfolio_value == 10000
         assert risk_manager.risk_limits['max_portfolio_risk'] == 0.02
@@ -93,8 +114,7 @@ class TestRiskManager:
     
     def test_set_risk_limits(self):
         """Test setting risk limits."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         
         risk_manager.set_risk_limits(
             max_portfolio_risk=0.03,
@@ -109,8 +129,7 @@ class TestRiskManager:
     @pytest.mark.asyncio
     async def test_validate_position_success(self):
         """Test successful position validation."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         
         signal = {
             'symbol': 'BTC/USDT:USDT',
@@ -131,8 +150,7 @@ class TestRiskManager:
     @pytest.mark.asyncio
     async def test_validate_position_size_exceeded(self):
         """Test position validation failure due to size limit."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         
         signal = {
             'symbol': 'BTC/USDT:USDT',
@@ -152,8 +170,7 @@ class TestRiskManager:
     @pytest.mark.asyncio
     async def test_validate_position_risk_exceeded(self):
         """Test position validation failure due to risk limit."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         
         signal = {
             'symbol': 'BTC/USDT:USDT',
@@ -173,8 +190,7 @@ class TestRiskManager:
     @pytest.mark.asyncio
     async def test_calculate_position_size(self):
         """Test position size calculation."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         
         signal = {
             'entry': 50000,
@@ -192,8 +208,7 @@ class TestRiskManager:
     
     def test_register_and_close_position(self):
         """Test position registration and closure."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         
         # Register position
         position_data = {
@@ -216,8 +231,7 @@ class TestRiskManager:
     
     def test_portfolio_summary(self):
         """Test portfolio summary generation."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         
         summary = risk_manager.get_portfolio_summary()
         
@@ -233,8 +247,7 @@ class TestPositionSizing:
     
     def test_initialization(self):
         """Test position sizing initialization."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         sizing = AdvancedPositionSizing(risk_manager)
         
         assert sizing.risk_manager == risk_manager
@@ -243,8 +256,7 @@ class TestPositionSizing:
     
     def test_kelly_criterion(self):
         """Test Kelly Criterion position sizing."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         sizing = AdvancedPositionSizing(risk_manager)
         
         # Win rate 60%, avg win $100, avg loss $50
@@ -255,8 +267,7 @@ class TestPositionSizing:
     
     def test_fixed_risk_sizing(self):
         """Test fixed risk position sizing."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         sizing = AdvancedPositionSizing(risk_manager)
         
         # Risk $200 on entry 50000, stop 49000
@@ -266,8 +277,7 @@ class TestPositionSizing:
     
     def test_volatility_adjusted_sizing(self):
         """Test volatility-adjusted position sizing."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         sizing = AdvancedPositionSizing(risk_manager)
         
         signal = {
@@ -282,8 +292,7 @@ class TestPositionSizing:
     
     def test_regime_based_sizing(self):
         """Test regime-based position sizing."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         sizing = AdvancedPositionSizing(risk_manager)
         
         signal = {
@@ -308,8 +317,7 @@ class TestPositionSizing:
     @pytest.mark.asyncio
     async def test_calculate_optimal_size(self):
         """Test optimal size calculation."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         sizing = AdvancedPositionSizing(risk_manager)
         
         signal = {
@@ -333,8 +341,7 @@ class TestRealTimeRiskMonitor:
     
     def test_initialization(self):
         """Test risk monitor initialization."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         monitor = RealTimeRiskMonitor(risk_manager, None)
         
         assert monitor.risk_manager == risk_manager
@@ -344,8 +351,7 @@ class TestRealTimeRiskMonitor:
     @pytest.mark.asyncio
     async def test_price_update_processing(self):
         """Test price update processing."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         monitor = RealTimeRiskMonitor(risk_manager, None)
         
         # Register a position
@@ -368,8 +374,7 @@ class TestRealTimeRiskMonitor:
     @pytest.mark.asyncio
     async def test_stop_loss_trigger(self):
         """Test stop-loss trigger detection."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         monitor = RealTimeRiskMonitor(risk_manager, None)
         
         # Register position with stop loss
@@ -390,8 +395,7 @@ class TestRealTimeRiskMonitor:
     
     def test_var_calculation(self):
         """Test Value at Risk calculation."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         monitor = RealTimeRiskMonitor(risk_manager, None)
         
         # Add some price history
@@ -510,8 +514,7 @@ class TestCircuitBreaker:
     
     def test_initialization(self):
         """Test circuit breaker initialization."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         breaker = CircuitBreakerSystem(risk_manager)
         
         assert breaker.risk_manager == risk_manager
@@ -519,8 +522,7 @@ class TestCircuitBreaker:
     
     def test_set_circuit_breakers(self):
         """Test circuit breaker configuration."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         breaker = CircuitBreakerSystem(risk_manager)
         
         breaker.set_circuit_breakers(
@@ -536,8 +538,7 @@ class TestCircuitBreaker:
     @pytest.mark.asyncio
     async def test_trigger_circuit_breaker(self):
         """Test circuit breaker triggering."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         breaker = CircuitBreakerSystem(risk_manager)
         
         breaker.set_circuit_breakers()
@@ -550,8 +551,7 @@ class TestCircuitBreaker:
     @pytest.mark.asyncio
     async def test_emergency_protocol_close_all(self):
         """Test emergency protocol for closing all positions."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         breaker = CircuitBreakerSystem(risk_manager)
         
         # Register some positions
@@ -581,8 +581,7 @@ class TestCircuitBreaker:
     
     def test_reset_circuit_breaker(self):
         """Test circuit breaker reset."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         breaker = CircuitBreakerSystem(risk_manager)
         
         breaker.set_circuit_breakers()
@@ -594,8 +593,7 @@ class TestCircuitBreaker:
     
     def test_breaker_status(self):
         """Test getting breaker status."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         breaker = CircuitBreakerSystem(risk_manager)
         
         breaker.set_circuit_breakers()
@@ -609,8 +607,7 @@ class TestCircuitBreaker:
     @pytest.mark.asyncio
     async def test_check_circuit_breaker_normal(self):
         """Test check_circuit_breaker when all breakers are normal."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         breaker = CircuitBreakerSystem(risk_manager)
         
         breaker.set_circuit_breakers()
@@ -626,8 +623,7 @@ class TestCircuitBreaker:
     @pytest.mark.asyncio
     async def test_check_circuit_breaker_triggered(self):
         """Test check_circuit_breaker when a breaker is triggered."""
-        portfolio_config = {'equity_usd': 10000}
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         breaker = CircuitBreakerSystem(risk_manager)
         
         breaker.set_circuit_breakers()
@@ -657,7 +653,7 @@ class TestIntegration:
             'max_position_size': 0.10
         }
         
-        risk_manager = RiskManager(portfolio_config)
+        risk_manager = create_risk_manager(portfolio_value=10000)
         sizing = AdvancedPositionSizing(risk_manager)
         monitor = RealTimeRiskMonitor(risk_manager, None)
         breaker = CircuitBreakerSystem(risk_manager)

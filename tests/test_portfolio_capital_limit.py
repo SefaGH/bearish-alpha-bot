@@ -14,12 +14,14 @@ from core.risk_manager import RiskManager
 @pytest.fixture
 def risk_manager():
     """Create a RiskManager with $100 capital for testing."""
-    portfolio_config = {
-        'equity_usd': 100,
+    from config.risk_config import RiskConfiguration
+    
+    custom_limits = {
         'max_portfolio_risk': 0.02,  # 2% max risk
         'max_position_size': 0.15     # 15% max position size
     }
-    return RiskManager(portfolio_config)
+    risk_config = RiskConfiguration(custom_limits=custom_limits)
+    return RiskManager(portfolio_value=100, risk_config=risk_config)
 
 
 class TestPortfolioCapitalLimit:

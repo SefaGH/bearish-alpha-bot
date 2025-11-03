@@ -26,6 +26,7 @@ from core.market_regime import MarketRegimeAnalyzer
 from .performance_monitor import PerformanceMonitor
 from .websocket_manager import WebSocketManager
 from config.live_trading_config import LiveTradingConfiguration
+from config.risk_config import RiskConfiguration
 
 # Performance Monitor için basit fallback
 class RealTimePerformanceMonitor:
@@ -1185,7 +1186,8 @@ class ProductionCoordinator:
     
     async def initialize_core_systems(self,
                                       exchange_clients: Optional[Dict] = None,
-                                      portfolio_config: Optional[Dict] = None,
+                                      portfolio_value: Optional[float] = None,
+                                      risk_config: Optional[RiskConfiguration] = None,
                                       mode: str = 'paper',
                                       trading_symbols: Optional[List[str]] = None,
                                       websocket_manager: Optional[Any] = None) -> Dict[str, Any]:
@@ -1195,7 +1197,8 @@ class ProductionCoordinator:
         
         Args:
             exchange_clients: Dictionary of exchange clients
-            portfolio_config: Portfolio configuration
+            portfolio_value: Initial portfolio value in USD
+            risk_config: RiskConfiguration object with all risk parameters
             mode: Trading mode ('paper' or 'live')
             trading_symbols: List of symbols to trade
             websocket_manager: Pre-initialized WebSocket manager
@@ -1236,28 +1239,29 @@ class ProductionCoordinator:
                 logger.info("✓ Using fallback RealTimePerformanceMonitor")
                 self.performance_monitor = RealTimePerformanceMonitor()
             
-            # === STEP 4: PREPARE RISK MANAGER CONFIG ===
-            portfolio_config = portfolio_config or {}
-            config = self.config
-            risk_config = config.get('risk', {})
+            # === STEP 4: PREPARE RISK MANAGER WITH STANDARDIZED CONFIG ===
+            # Use provided risk_config or create default from config
+            if risk_config is None:
+                config = self.config
+                risk_params = config.get('risk', {})
+                risk_config = RiskConfiguration(custom_limits=risk_params)
+                logger.info("✓ Created RiskConfiguration from config file")
+            else:
+                logger.info("✓ Using provided RiskConfiguration")
             
-            risk_manager_config = {
-                'equity_usd': float(portfolio_config.get('equity_usd') or risk_config.get('equity_usd', 100)),
-                'per_trade_risk_pct': float(risk_config.get('per_trade_risk_pct', 0.01)),
-                'daily_loss_limit_pct': float(risk_config.get('daily_loss_limit_pct', 0.02)),
-                'risk_usd_cap': float(risk_config.get('risk_usd_cap', 5)),
-                'max_notional_per_trade': float(risk_config.get('max_notional_per_trade', 20)),
-                'max_portfolio_risk': float(risk_config.get('max_portfolio_risk', 0.02)),
-                'max_position_size': float(risk_config.get('max_position_size', 0.10)),
-                'max_drawdown': float(risk_config.get('max_drawdown', 0.15)),
-                'max_correlation': float(risk_config.get('max_correlation', 0.70))
-            }
+            # Use provided portfolio_value or get from config
+            if portfolio_value is None:
+                config = self.config
+                risk_params = config.get('risk', {})
+                portfolio_value = float(risk_params.get('equity_usd', 100))
+                logger.info(f"✓ Portfolio value from config: ${portfolio_value:.2f}")
+            else:
+                logger.info(f"✓ Using provided portfolio value: ${portfolio_value:.2f}")
             
-            logger.info(f"✓ Risk config prepared: ${risk_manager_config['equity_usd']} equity")
-            
-            # === STEP 5: INITIALIZE RISK MANAGER ===
+            # === STEP 5: INITIALIZE RISK MANAGER WITH STANDARDIZED CONFIG ===
             self.risk_manager = RiskManager(
-                portfolio_config=risk_manager_config,
+                portfolio_value=portfolio_value,
+                risk_config=risk_config,
                 websocket_manager=self.websocket_manager,
                 performance_monitor=self.performance_monitor
             )
