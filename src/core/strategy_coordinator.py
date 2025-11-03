@@ -280,10 +280,13 @@ class StrategyCoordinator:
             'last_bypass_time': self.processing_stats.get('last_bypass_time')
         }
 
+    # ===============================================================
+    # ====================   DÜZELTİLMİŞ METOT   ====================
+    # ===============================================================
     async def process_strategy_signal(self, strategy_name: str, signal: Dict) -> Dict[str, Any]:
         """
         Process incoming signals from registered strategies.
-        (GÜNCELLENDİ: Analiz talebi doğrultusunda kapsamlı karar telemetrisi eklendi)
+        (GÜNCELLENDİ: 'self.logger' -> 'logger' hatası düzeltildi)
         """
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
@@ -292,18 +295,18 @@ class StrategyCoordinator:
             self.processing_stats['total_signals'] += 1
             self.processing_stats['last_signal_time'] = datetime.now(timezone.utc)
             
-            # --- TELEMETRİ: Sinyal ilk alındığında logla ---
-            self.logger.info(f"➡️  {log_prefix} Signal Received. Side: {signal.get('side', 'N/A')}, Reason: '{signal.get('reason', 'N/A')}'")
+            # --- TELEMETRİ: Sinyal ilk alındığında logla (DÜZELTİLDİ) ---
+            logger.info(f"➡️  {log_prefix} Signal Received. Side: {signal.get('side', 'N/A')}, Reason: '{signal.get('reason', 'N/A')}'")
             
             # Adım 1: Sinyal Formatını Doğrula
             validation_result = self._validate_signal_format(signal)
             if not validation_result['valid']:
                 self.processing_stats['rejected_signals'] += 1
-                # --- TELEMETRİ: Ret Sebebi ---
-                self.logger.warning(f"🛡️  {log_prefix} REJECTED (Invalid Format): {validation_result['reason']}")
+                # --- TELEMETRİ: Ret Sebebi (DÜZELTİLDİ) ---
+                logger.warning(f"🛡️  {log_prefix} REJECTED (Invalid Format): {validation_result['reason']}")
                 return {'status': 'rejected', 'reason': validation_result['reason'], 'stage': 'validation'}
             
-            # Adım 2: Sinyali Zenginleştir (giriş fiyatı, strateji bilgileri vb. ekle)
+            # Adım 2: Sinyali Zenginleştir
             enriched_signal = self._enrich_signal(strategy_name, signal)
             
             # Adım 3: Duplikasyon ve Cooldown Kontrolü
@@ -311,40 +314,37 @@ class StrategyCoordinator:
             if not is_valid_duplicate:
                 self.processing_stats['rejected_signals'] += 1
                 self.processing_stats['duplicate_rejections'] += 1
-                # --- TELEMETRİ: Ret Sebebi (validate_duplicate metodu zaten detaylı logluyor) ---
-                # validate_duplicate metodu zaten "❌ [DUPLICATE-REJECT]..." şeklinde logladığı için burada ek loga gerek yok.
                 return {'status': 'rejected', 'reason': duplicate_reason, 'stage': 'duplicate_validation'}
             
-            # Adım 4: ML ile Sinyali Geliştirme ve RL Ajan Kontrolü
+            # Adım 4: ML ile Sinyali Geliştirme
             if hasattr(self, 'ml_integration') and self.ml_integration:
                 enriched_signal = await self._enhance_signal_with_ml(enriched_signal)
                 if enriched_signal is None:
                     self.processing_stats['rejected_signals'] += 1
                     self.processing_stats['ml_blocked_signals'] = self.processing_stats.get('ml_blocked_signals', 0) + 1
-                    # --- TELEMETRİ: Ret Sebebi (_enhance_signal_with_ml metodu zaten detaylı logluyor) ---
-                    # _enhance_signal_with_ml metodu "🤖 [RL-VETO]..." şeklinde logladığı için burada ek loga gerek yok.
                     return {'status': 'rejected', 'reason': 'ML/RL enhancement blocked signal', 'stage': 'ml_enhancement'}
             
             # Adım 5: Çatışma Kontrolü
             conflict_check = await self._check_signal_conflicts(enriched_signal)
             if conflict_check['has_conflict']:
                 self.processing_stats['conflicted_signals'] += 1
-                self.logger.info(f"🚦 {log_prefix} Conflict Detected: {conflict_check['conflicts']}. Resolving...")
+                # (DÜZELTİLDİ)
+                logger.info(f"🚦 {log_prefix} Conflict Detected: {conflict_check['conflicts']}. Resolving...")
                 
                 resolution = await self.resolve_signal_conflicts(enriched_signal, conflict_check['conflicting_signals'])
                 
                 if resolution['action'] == 'reject':
                     self.processing_stats['rejected_signals'] += 1
-                    # --- TELEMETRİ: Ret Sebebi ---
-                    self.logger.warning(f"🛡️  {log_prefix} REJECTED (Conflict): {resolution['reason']}")
+                    # --- TELEMETRİ: Ret Sebebi (DÜZELTİLDİ) ---
+                    logger.warning(f"🛡️  {log_prefix} REJECTED (Conflict): {resolution['reason']}")
                     return {'status': 'rejected', 'reason': resolution['reason'], 'stage': 'conflict_resolution'}
             
             # Adım 6: Risk Değerlendirmesi
             risk_assessment = await self._assess_signal_risk(enriched_signal)
             if not risk_assessment['acceptable']:
                 self.processing_stats['rejected_signals'] += 1
-                # --- TELEMETRİ: Ret Sebebi ---
-                self.logger.warning(f"🛡️  {log_prefix} REJECTED (Risk Check): {risk_assessment['reason']}")
+                # --- TELEMETRİ: Ret Sebebi (DÜZELTİLDİ) ---
+                logger.warning(f"🛡️  {log_prefix} REJECTED (Risk Check): {risk_assessment['reason']}")
                 return {'status': 'rejected', 'reason': risk_assessment['reason'], 'stage': 'risk_assessment'}
             
             # Adım 7: Sinyali ve Rota Bilgisini Hazırla
@@ -356,8 +356,8 @@ class StrategyCoordinator:
                 'routing': routing_result, 'timestamp': datetime.now(timezone.utc), 'status': 'active'
             }
             
-            # --- TELEMETRİ: Sinyal kuyruğa eklenirken tüm detayları logla ---
-            self.logger.info(
+            # --- TELEMETRİ: Sinyal kuyruğa eklenirken (DÜZELTİLDİ) ---
+            logger.info(
                 f"✅ {log_prefix} ENQUEUED. Side: {enriched_signal.get('side')}, "
                 f"Entry: ${enriched_signal.get('entry'):.2f}, SL: ${enriched_signal.get('stop'):.2f}, TP: ${enriched_signal.get('target'):.2f}, "
                 f"Size: ${risk_assessment.get('position_size'):.2f}"
@@ -374,6 +374,13 @@ class StrategyCoordinator:
                 'signal_id': signal_id, 'strategy_name': strategy_name,
                 'symbol': enriched_signal.get('symbol'), 'timestamp': datetime.now(timezone.utc), 'status': 'accepted'
             })
+
+            # Bu log aslında gereksiz çünkü yukarıda daha detaylı ENQUEUED log'u var.
+            # Ama yine de hatayı düzeltelim. (DÜZELTİLDİ)
+            # Orijinal kodda bu satır vardı, ancak process_strategy_signal içinde logger.info(f"Signal accepted and queued: {signal_id}") satırı yoktu.
+            # Muhtemelen başka bir yerden karıştırıldı, yine de benim eklediğim ve sonra kaldırdığım bir satır olabilir.
+            # En güncel dosyada bu satır bulunmuyor. Bu yüzden yorum satırı olarak bırakmak en temizi.
+            # logger.info(f"Signal accepted and queued: {signal_id}")
             
             return {
                 'status': 'accepted', 'signal_id': signal_id,
@@ -381,6 +388,7 @@ class StrategyCoordinator:
             }
             
         except Exception as e:
+            # (DÜZELTİLDİ)
             logger.error(f"💥 Error processing signal from {strategy_name}: {e}", exc_info=True)
             self.processing_stats['rejected_signals'] += 1
             return {'status': 'error', 'reason': str(e), 'stage': 'processing'}
