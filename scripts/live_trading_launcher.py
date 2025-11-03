@@ -1418,55 +1418,27 @@ class LiveTradingLauncher:
             # Strategy configurations FROM CONFIG FILE
             signals_config = self.config.get('signals', {})
     
-            # Adaptive OB config - config dosyasından oku!
-            ob_cfg = signals_config.get('oversold_bounce', {})
-            if not ob_cfg.get('enable', True):
+            # 🔥 KALICI DÜZELTME: Artık manuel kopyalama yok. Stratejinin tüm config bloğunu alıyoruz.
+            # Bu, `min_rr_ratio` dahil tüm ayarların stratejiye ulaşmasını garanti eder.
+    
+            # Adaptive OB config
+            adaptive_ob_config = signals_config.get('oversold_bounce', {})
+            if not adaptive_ob_config.get('enable', True):
                 logger.info("⚠️ OversoldBounce strategy disabled in config")
-                
-            adaptive_ob_config = {
-                'adaptive_rsi_base': ob_cfg.get('adaptive_rsi_base', 40),
-                'adaptive_rsi_range': ob_cfg.get('adaptive_rsi_range', 15),
-                'tp_pct': ob_cfg.get('tp_pct', 0.015),
-                'sl_atr_mult': ob_cfg.get('sl_atr_mult', 1.0),
-                'ignore_regime': ob_cfg.get('ignore_regime', True),
-                'enable': ob_cfg.get('enable', True),
-                # Backwards compatibility
-                'rsi_max': ob_cfg.get('rsi_max', ob_cfg.get('adaptive_rsi_base', 40))
-            }
-    
-            # Adaptive STR config - config dosyasından oku!
-            str_cfg = signals_config.get('short_the_rip', {})
-            if not str_cfg.get('enable', True):
-                logger.info("⚠️ ShortTheRip strategy disabled in config")
-                
-            adaptive_str_config = {
-                'adaptive_rsi_base': str_cfg.get('adaptive_rsi_base', 40),
-                'adaptive_rsi_range': str_cfg.get('adaptive_rsi_range', 15),
-                'tp_pct': str_cfg.get('tp_pct', 0.012),
-                'sl_atr_mult': str_cfg.get('sl_atr_mult', 1.2),
-                'ignore_regime': str_cfg.get('ignore_regime', True),
-                'enable': str_cfg.get('enable', True),
-                # Backwards compatibility
-                'rsi_min': str_cfg.get('rsi_min', str_cfg.get('adaptive_rsi_base', 40))
-            }
-    
-            logger.info(f"✓ OB Config: base={adaptive_ob_config['adaptive_rsi_base']}, "
-                       f"range=±{adaptive_ob_config['adaptive_rsi_range']}, "
-                       f"enabled={adaptive_ob_config['enable']}")
-            logger.info(f"✓ STR Config: base={adaptive_str_config['adaptive_rsi_base']}, "
-                       f"range=±{adaptive_str_config['adaptive_rsi_range']}, "
-                       f"enabled={adaptive_str_config['enable']}")
-            
-            # Adaptive Oversold Bounce strategy
-            if adaptive_ob_config['enable']:
+            else:
                 self.strategies['adaptive_ob'] = AdaptiveOversoldBounce(adaptive_ob_config, regime_analyzer)
-                logger.info("✓ Adaptive Oversold Bounce strategy initialized")
+                logger.info(f"✓ Adaptive Oversold Bounce strategy initialized")
+                logger.info(f"  - OB Config: { {k: v for k, v in adaptive_ob_config.items() if k != 'enable'} }")
             
-            # Adaptive Short The Rip strategy
-            if adaptive_str_config['enable']:
+            # Adaptive STR config
+            adaptive_str_config = signals_config.get('short_the_rip', {})
+            if not adaptive_str_config.get('enable', True):
+                logger.info("⚠️ ShortTheRip strategy disabled in config")
+            else:
                 self.strategies['adaptive_str'] = AdaptiveShortTheRip(adaptive_str_config, regime_analyzer)
-                logger.info("✓ Adaptive Short The Rip strategy initialized")
-            
+                logger.info(f"✓ Adaptive Short The Rip strategy initialized")
+                logger.info(f"  - STR Config: { {k: v for k, v in adaptive_str_config.items() if k != 'enable'} }")
+    
             if not self.strategies:
                 logger.warning("⚠️ No strategies enabled!")
                 return False
