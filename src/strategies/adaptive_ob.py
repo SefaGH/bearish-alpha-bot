@@ -8,8 +8,6 @@ import logging
 import math
 from typing import Optional, Dict
 from .oversold_bounce import OversoldBounce
-# YENİ: BaseStrategy'i import ediyoruz
-from .base_strategy import BaseStrategy
 
 # Default market regime for fallback
 DEFAULT_MARKET_REGIME = {
@@ -42,16 +40,24 @@ class AdaptiveOversoldBounce(OversoldBounce):
         Args:
             cfg: Strategy configuration dictionary
             regime_analyzer: MarketRegimeAnalyzer instance for regime detection
+        
+        🔥 GÜNCELLEME: Kalıtım zinciri `super().__init__(cfg)` çağrısıyla onarıldı.
+        Minimum R/R oranı artık başlangıçta config'den okunup `self.min_rr_ratio` olarak saklanıyor.
         """
-        # ÖNCEKİ HATALI KOD: super().__init__(cfg)
-        # DOĞRU KOD: BaseStrategy'nin __init__'ini doğrudan ve doğru parametrelerle çağırıyoruz.
-        # Bu, OversoldBounce'un __init__'indeki olası eksiklikleri baypas eder ve
-        # self.strategy_name ve self.config özelliklerinin kesin olarak tanımlanmasını sağlar.
-        BaseStrategy.__init__(self, strategy_name="adaptive_ob", config=cfg)
+        # `OversoldBounce` sınıfının __init__ metodunu çağırarak doğru kurulumu sağla.
+        super().__init__(cfg)
+        
+        # Üst sınıf "oversold_bounce" olarak ayarlayabileceği için, bu alt sınıfın adını yeniden tanımla.
+        self.strategy_name = "adaptive_ob"
         
         self.regime_analyzer = regime_analyzer
         self.base_cfg = cfg.copy()
         self.debug_logging = self.base_cfg.get('debug', {}).get('strategy_logging', False)
+
+        # Minimum R/R oranını başlangıçta, bir kez olmak üzere config'den oku.
+        # `super()` çağrısı `self.strategy_config`'i oluşturduğu için artık bunu güvenle kullanabiliriz.
+        self.min_rr_ratio = self.strategy_config.get('min_rr_ratio', 1.2)
+        logger.info(f"[{self.strategy_name.upper()}] Minimum R/R Ratio initialized to: {self.min_rr_ratio}")
 
     def _validate_input_data(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame, regime_data: Dict, symbol: str) -> tuple[bool, str]:
         """Gerekli tüm verilerin varlığını ve geçerliliğini kontrol eder."""
@@ -207,20 +213,17 @@ class AdaptiveOversoldBounce(OversoldBounce):
         Logs the specific reason if no signal is generated.
         """
         symbol_display = symbol or "UNKNOWN"
-        # ✅ NEW: Consistent logging prefix for clarity.
         log_prefix = f"[{self.strategy_name.upper()}/{symbol_display}]"
 
         # --- Data Validation Step ---
         validation_passed, reason = self._validate_input_data(df_30m, df_1h, regime_data, symbol_display)
         if not validation_passed:
-            # ✅ NEW: Trace Log for Data Validation Failure
             logger.info(f"🚫 {log_prefix} No Signal: {reason}")
             return None
         
         try:
             last = df_30m.dropna().iloc[-1]
         except IndexError:
-            # ✅ NEW: Trace Log for Insufficient Data
             logger.info(f"🚫 {log_prefix} No Signal: Insufficient 30m data to generate a signal.")
             return None
         
@@ -230,7 +233,6 @@ class AdaptiveOversoldBounce(OversoldBounce):
         try:
             # --- Initial Data Extraction ---
             if 'rsi' not in last.index or 'close' not in last.index:
-                # ✅ NEW: Trace Log for Missing Critical Columns
                 logger.warning(f"🚫 {log_prefix} No Signal: 'rsi' or 'close' column missing in the latest data.")
                 return None
             
@@ -245,12 +247,10 @@ class AdaptiveOversoldBounce(OversoldBounce):
             }
             
             # --- Adaptive Threshold Calculation ---
-            # Check for symbol-specific override first
             adaptive_rsi_threshold = self.get_symbol_specific_threshold(symbol_display)
             if adaptive_rsi_threshold is not None:
                 if self.debug_logging: logger.info(f"ℹ️ {log_prefix} Using symbol-specific RSI threshold: {adaptive_rsi_threshold:.2f}")
             else:
-                # If no override, calculate adaptive threshold
                 adaptive_rsi_threshold = self.get_adaptive_rsi_threshold(market_regime)
 
             # --- Core Signal Condition Checks with Tracing ---
@@ -262,19 +262,16 @@ class AdaptiveOversoldBounce(OversoldBounce):
 
             # 1. RSI Condition Check
             if rsi_val > adaptive_rsi_threshold:
-                # ✅ NEW: Trace Log for RSI Condition Failure
                 logger.info(f"🚫 {log_prefix} No Signal: RSI ({rsi_val:.2f}) is above the threshold ({adaptive_rsi_threshold:.2f}).")
                 return None
 
             # 2. Price vs. EMA Condition Check
             if ema_fast > 0 and close_price >= ema_fast:
-                # ✅ NEW: Trace Log for Price/EMA Condition Failure
                 logger.info(f"🚫 {log_prefix} No Signal: Price (${close_price:,.2f}) is not below the fast EMA (${ema_fast:,.2f}).")
                 return None
 
             # 3. Volume Check
             if 'volume' in last.index and float(last['volume']) <= 0:
-                # ✅ NEW: Trace Log for Volume Failure
                 logger.info(f"🚫 {log_prefix} No Signal: Volume is zero or negative.")
                 return None
             
@@ -288,20 +285,14 @@ class AdaptiveOversoldBounce(OversoldBounce):
             if ml_context and ml_context.get('is_healthy', False) and ml_context.get('regime_confidence', 0) >= MIN_ML_CONFIDENCE_THRESHOLD:
                 ml_enhanced = True
                 
-                # ML VETO Check 1: Bearish Regime
                 if ml_context.get('regime_prediction') == 'bearish' and ml_context.get('regime_confidence', 0) > 0.7:
-                    # ✅ NEW: Trace Log for ML Veto
                     logger.info(f"🚫 {log_prefix} No Signal: ML VETO - Strong bearish regime detected (confidence: {ml_context.get('regime_confidence', 0):.2%}).")
                     return None
                 
-                # ML VETO Check 2: Price Down Prediction
                 if ml_context.get('price_direction') == 'down' and ml_context.get('price_confidence', 0) > 0.7:
-                    # ✅ NEW: Trace Log for ML Veto
                     logger.info(f"🚫 {log_prefix} No Signal: ML VETO - Strong price down prediction (confidence: {ml_context.get('price_confidence', 0):.2%}).")
                     return None
                 
-                # ML Confirmation / Caution
-                # (This part modifies the signal but doesn't reject it, so it logs differently)
                 if (ml_context.get('regime_prediction') == 'bullish') or (ml_context.get('price_direction') == 'up'):
                     position_size_modifier = 1.0 + (0.25 * ml_context.get('consensus_score', 0))
                     if self.debug_logging: logger.info(f"🧠 {log_prefix} ML Confirmation: Increasing position size modifier to {position_size_modifier:.2f}x.")
@@ -316,14 +307,15 @@ class AdaptiveOversoldBounce(OversoldBounce):
             entry_price = float(last['close'])
             atr_value = float(last.get('atr', entry_price * 0.02))
             
-            tp_atr_mult = float(self.config.get("tp_atr_mult", 2.5))
-            sl_atr_mult = float(self.config.get("sl_atr_mult", 1.2))
+            # 🔥 GÜNCELLEME: Config okumaları artık tutarlı bir şekilde `self.strategy_config` üzerinden yapılıyor.
+            tp_atr_mult = float(self.strategy_config.get("tp_atr_mult", 2.5))
+            sl_atr_mult = float(self.strategy_config.get("sl_atr_mult", 1.2))
             
             target_price = entry_price + (atr_value * tp_atr_mult)
             stop_price = entry_price - (atr_value * sl_atr_mult)
             
-            min_tp_pct = float(self.config.get("min_tp_pct", 0.008))
-            max_sl_pct = float(self.config.get("max_sl_pct", 0.015))
+            min_tp_pct = float(self.strategy_config.get("min_tp_pct", 0.008))
+            max_sl_pct = float(self.strategy_config.get("max_sl_pct", 0.015))
             
             target_price = max(target_price, entry_price * (1 + min_tp_pct))
             stop_price = min(stop_price, entry_price * (1 - max_sl_pct))
@@ -332,20 +324,17 @@ class AdaptiveOversoldBounce(OversoldBounce):
             rr_denominator = entry_price - stop_price
             rr_ratio = (rr_numerator / rr_denominator) if rr_denominator > 0 else 0
 
-            # --- 🔥 YENİ EKLENEN TELEMETRİ LOG'U 🔥 ---
             if self.debug_logging:
                 logger.info(
                     f"🔍 {log_prefix} R/R Calculation: "
                     f"Entry={entry_price:.2f}, TP={target_price:.2f}, SL={stop_price:.2f} | "
                     f"Reward=${rr_numerator:.2f}, Risk=${rr_denominator:.2f} -> R/R={rr_ratio:.2f}"
                 )
-            # --- TELEMETRİ SONU ---
 
             # 4. R/R Ratio Check
-            min_rr_ratio = self.config.get('min_rr_ratio', 1.2)
-            if rr_ratio < min_rr_ratio:
-                # ✅ NEW: Trace Log for R/R Ratio Failure
-                logger.info(f"🚫 {log_prefix} No Signal: Calculated R/R Ratio ({rr_ratio:.2f}) is below the minimum required ({min_rr_ratio}).")
+            # 🔥 GÜNCELLEME: R/R kontrolü artık __init__ içinde ayarlanan `self.min_rr_ratio` özelliğini kullanıyor.
+            if rr_ratio < self.min_rr_ratio:
+                logger.info(f"🚫 {log_prefix} No Signal: Calculated R/R Ratio ({rr_ratio:.2f}) is below the minimum required ({self.min_rr_ratio}).")
                 return None
 
             # --- Signal Generation ---
