@@ -35,8 +35,8 @@ except ModuleNotFoundError:
             RiskRewardRatioRule,
             StrategyPerformanceRule
         )
-    except ModuleNotFoundError as e:
-        if e.name in ('src', 'src.core', 'src.core.risk_rules'):
+    except ModuleNotFoundError:
+        try:
             from ..risk_rules import (
                 BaseRiskRule,
                 CapitalLimitRule,
@@ -46,7 +46,7 @@ except ModuleNotFoundError:
                 RiskRewardRatioRule,
                 StrategyPerformanceRule
             )
-        else:
+        except ImportError:
             raise
 
 # Triple-fallback import strategy for maximum compatibility:
@@ -60,12 +60,12 @@ except ModuleNotFoundError:
     try:
         # Option 2: Absolute import (repo root on sys.path)
         from src.utils.pnl_calculator import calculate_unrealized_pnl
-    except ModuleNotFoundError as e:
+    except ModuleNotFoundError:
         # Option 3: Relative import (package context)
-        if e.name in ('src', 'src.utils', 'src.utils.pnl_calculator'):
+        try:
             from ..utils.pnl_calculator import calculate_unrealized_pnl
-        else:
-            # Unknown module missing, re-raise
+        except ImportError:
+            # Unable to import, re-raise
             raise
 logger = logging.getLogger(__name__)
 

@@ -161,7 +161,7 @@ class TestPositionSizeRule:
         signal = {
             'symbol': 'BTC/USDT',
             'entry': 50000,
-            'position_size': 0.015,  # $750 position (7.5% - should fail)
+            'position_size': 0.012,  # $600 position (6% - should fail at 5% limit)
         }
         
         is_valid, reason = rule.validate(signal, portfolio)

@@ -222,6 +222,7 @@ class RiskAwareBacktest:
         
         # Simplified: assume 50% chance of hitting target, 50% of hitting stop
         # In real backtest, would use actual price data
+        # Note: Using unseeded random for demo; in production would use actual price data
         hit_target = np.random.random() > 0.5
         
         if hit_target:
