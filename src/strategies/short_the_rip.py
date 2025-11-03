@@ -1,9 +1,11 @@
 # src/strategies/short_the_rip.py
 import pandas as pd
 
-class ShortTheRip:
+from .base_strategy import BaseStrategy
+
+class ShortTheRip(BaseStrategy):
     def __init__(self, cfg):
-        self.cfg = cfg or {}
+        super().__init__(strategy_name="short_the_rip", config=cfg)
 
     def signal(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame):
         # Avoid chained assignment, take snapshots of last rows
@@ -11,7 +13,8 @@ class ShortTheRip:
         last1h = df_1h.dropna().iloc[-1]
 
         # thresholds
-        rsi_min = self.cfg.get('rsi_min', 61)
+        # 🔥 DEĞİŞİKLİK: Artık `self.cfg` yerine standart olan `self.strategy_config` kullanılıyor.
+        rsi_min = self.strategy_config.get('rsi_min', 61)
         try:
             rsi_min = float(rsi_min)
         except Exception:
@@ -28,7 +31,8 @@ class ShortTheRip:
             return {
                 "side": "sell",
                 "reason": f"RSI overbought {rsi_val:.1f} (rip)",
-                "tp_pct": float(self.cfg.get("tp_pct", 0.012)),
-                "sl_atr_mult": float(self.cfg.get("sl_atr_mult", 1.2)),
+                # 🔥 DEĞİŞİKLİK: Artık `self.cfg` yerine standart olan `self.strategy_config` kullanılıyor.
+                "tp_pct": float(self.strategy_config.get("tp_pct", 0.012)),
+                "sl_atr_mult": float(self.strategy_config.get("sl_atr_mult", 1.2)),
             }
         return None
