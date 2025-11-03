@@ -1,479 +1,234 @@
 """
-Live Trading Configuration with Environment Variable Support.
-Configuration settings for production live trading.
+Dynamic and Centralized Live Trading Configuration System.
 
-Priority Order:
-1. Environment Variables (GitHub Secrets/Variables) - HIGHEST
-2. config.example.yaml - MIDDLE
-3. Hardcoded Defaults - LOWEST (fallback only)
+This module provides a robust, centralized configuration loader for the Bearish Alpha Bot.
+It achieves a "Single Source of Truth" by using `config.example.yaml` as the
+canonical definition for all settings, including their default values, types, and
+environment variable mappings.
 
-Author: SefaGH
-Date: 2025-10-20
+PRIORITY ORDER (Highest to Lowest):
+1. Environment Variables (from GitHub Variables/Secrets)
+2. `config.example.yaml`
+
+The loader is implemented as a Singleton, ensuring that configuration is parsed
+and loaded only ONCE per application lifecycle, providing performance and consistency.
+
+Author: SefaGH & GitHub Copilot
+Date: 2025-11-03
+Ref: Issue #277
 """
 
 import os
 import re
 import yaml
-from typing import Dict, List, Any, Optional
 import logging
+from typing import Dict, Any, Optional, Tuple, List, Union
 
 logger = logging.getLogger(__name__)
 
+# Singleton instance storage to ensure config is loaded only once.
+_config_instance: Optional[Dict[str, Any]] = None
 
 class LiveTradingConfiguration:
     """
-    UNIFIED Production Configuration Loader.
-    Supports environment variables for deployment flexibility.
-    """
-    
-    CONFIG_FILE_PATH = 'config/config.example.yaml'
-    
-    # ============= HELPER METHODS =============
-    
-    @classmethod
-    def get_env_float(cls, key: str, default: float) -> float:
-        """Get float from environment variable with fallback."""
-        try:
-            value = os.getenv(key)
-            if value is not None:
-                result = float(value)
-                logger.debug(f"✓ ENV: {key} = {result}")
-                return result
-            return default
-        except (ValueError, TypeError) as e:
-            logger.warning(f"⚠️ Invalid float for {key}: {e}, using default: {default}")
-            return default
-    
-    @classmethod
-    def get_env_int(cls, key: str, default: int) -> int:
-        """Get int from environment variable with fallback."""
-        try:
-            value = os.getenv(key)
-            if value is not None:
-                result = int(value)
-                logger.debug(f"✓ ENV: {key} = {result}")
-                return result
-            return default
-        except (ValueError, TypeError) as e:
-            logger.warning(f"⚠️ Invalid int for {key}: {e}, using default: {default}")
-            return default
-    
-    @classmethod
-    def get_env_bool(cls, key: str, default: bool) -> bool:
-        """Get bool from environment variable with fallback."""
-        value = os.getenv(key)
-        if value is not None:
-            result = value.lower() in ('true', '1', 'yes', 'on')
-            logger.debug(f"✓ ENV: {key} = {result}")
-            return result
-        return default
-    
-    @classmethod
-    def get_env_list(cls, key: str, default: List[str]) -> List[str]:
-        """Get list from environment variable (comma-separated)."""
-        value = os.getenv(key)
-        if value:
-            result = [s.strip() for s in value.split(',') if s.strip()]
-            
-            # Validate symbols if this is TRADING_SYMBOLS
-            if key == 'TRADING_SYMBOLS' and result:
-                valid_symbols = cls._validate_trading_symbols(result)
-                
-                if not valid_symbols:
-                    logger.warning(f"⚠️ All symbols in {key} are invalid, using defaults: {default}")
-                    return default
-                elif len(valid_symbols) < len(result):
-                    invalid = set(result) - set(valid_symbols)
-                    logger.warning(f"⚠️ Invalid symbols filtered from {key}: {invalid}")
-                    result = valid_symbols
-            
-            logger.debug(f"✓ ENV: {key} = {result}")
-            return result
-        return default
-    
-    @classmethod
-    def _validate_trading_symbols(cls, symbols: List[str]) -> List[str]:
-        """
-        Validate trading symbol format.
-        
-        Valid formats:
-        - BTC/USDT:USDT (perpetual futures)
-        - BTC/USDT (spot)
-        - ETH-PERP (some exchanges)
-        
-        Args:
-            symbols: List of symbol strings to validate
-            
-        Returns:
-            List of valid symbols only
-        """
-        valid_symbols = []
-        
-        # Common trading pair patterns
-        patterns = [
-            r'^[A-Z0-9]{2,10}/[A-Z]{3,5}:[A-Z]{3,5}$',  # BTC/USDT:USDT
-            r'^[A-Z0-9]{2,10}/[A-Z]{3,5}$',              # BTC/USDT
-            r'^[A-Z0-9]{2,10}-PERP$',                    # BTC-PERP
-        ]
-        
-        for symbol in symbols:
-            # Check if matches any valid pattern (case-insensitive)
-            if any(re.match(pattern, symbol.upper()) for pattern in patterns):
-                valid_symbols.append(symbol)
-            else:
-                logger.warning(f"⚠️ Invalid symbol format: {symbol}")
-        
-        return valid_symbols
-    
-    # ============= CONFIG LOADERS =============
-    
-    @classmethod
-    def load_from_env(cls) -> Dict[str, Any]:
-        """
-        Load configuration from environment variables (GitHub Secrets/Variables).
-        Returns partial config that will override YAML and defaults.
-        """
-        logger.info("🔧 Loading configuration from environment variables...")
-        
-        env_config: Dict[str, Any] = {}
-        
-        # ============= SIGNALS CONFIG =============
-        env_config['signals'] = {
-            'duplicate_prevention': {
-                'min_price_change_pct': cls.get_env_float(
-                    'DUPLICATE_PREVENTION_THRESHOLD', 
-                    0.0005  # CORRECTED: 0.05% (not 5%)
-                ),
-                'cooldown_seconds': cls.get_env_int(
-                    'DUPLICATE_PREVENTION_COOLDOWN', 
-                    60  # Increased from 20s for stability
-                ),
-                'price_delta_bypass_threshold': cls.get_env_float(
-                    'PRICE_DELTA_BYPASS_THRESHOLD',
-                    0.001  # 0.1% bypass threshold
-                ),
-                'price_delta_bypass_enabled': cls.get_env_bool(
-                    'PRICE_DELTA_BYPASS_ENABLED',
-                    True
-                ),
-                'ml_duplicate_detection_enabled': cls.get_env_bool(
-                    'ML_DUPLICATE_DETECTION_ENABLED',
-                    True
-                ),
-            },
-            'oversold_bounce': {
-                'enable': cls.get_env_bool('STRATEGY_OB_ENABLED', True),
-                'ignore_regime': cls.get_env_bool('STRATEGY_OB_IGNORE_REGIME', True),
-                'rsi_max': cls.get_env_int('RSI_MAX_OB', 45),
-                'adaptive_rsi_base': cls.get_env_int('RSI_BASE_OB', 45),
-                'adaptive_rsi_range': cls.get_env_int('RSI_RANGE_OB', 10),
-                'adaptive_mode': os.getenv('ADAPTIVE_MODE_OB', 'dynamic'),
-                'volatility_sensitivity': os.getenv('VOLATILITY_SENSITIVITY_OB', 'medium'),
-                'tp_atr_mult': cls.get_env_float('TP_ATR_MULT_OB', 2.5),
-                'sl_atr_mult': cls.get_env_float('SL_ATR_MULT_OB', 1.2),
-                'min_tp_pct': cls.get_env_float('MIN_TP_PCT_OB', 0.008),
-                'max_sl_pct': cls.get_env_float('MAX_SL_PCT_OB', 0.015),
-            },
-            'short_the_rip': {
-                'enable': cls.get_env_bool('STRATEGY_STR_ENABLED', True),
-                'ignore_regime': cls.get_env_bool('STRATEGY_STR_IGNORE_REGIME', True),
-                'rsi_min': cls.get_env_int('RSI_MIN_STR', 55),
-                'adaptive_rsi_base': cls.get_env_int('RSI_BASE_STR', 55),
-                'adaptive_rsi_range': cls.get_env_int('RSI_RANGE_STR', 10),
-                'adaptive_mode': os.getenv('ADAPTIVE_MODE_STR', 'dynamic'),
-                'volatility_sensitivity': os.getenv('VOLATILITY_SENSITIVITY_STR', 'medium'),
-                'tp_atr_mult': cls.get_env_float('TP_ATR_MULT_STR', 3.0),
-                'sl_atr_mult': cls.get_env_float('SL_ATR_MULT_STR', 1.5),
-                'min_tp_pct': cls.get_env_float('MIN_TP_PCT_STR', 0.010),
-                'max_sl_pct': cls.get_env_float('MAX_SL_PCT_STR', 0.020),
-                'symbols': {
-                    'BTC/USDT:USDT': {
-                        'rsi_threshold': cls.get_env_int('RSI_THRESHOLD_BTC', 55)
-                    },
-                    'ETH/USDT:USDT': {
-                        'rsi_threshold': cls.get_env_int('RSI_THRESHOLD_ETH', 50)
-                    },
-                    'SOL/USDT:USDT': {
-                        'rsi_threshold': cls.get_env_int('RSI_THRESHOLD_SOL', 50)
-                    }
-                }
-            }
-        }
-        
-        # ============= UNIVERSE CONFIG =============
-        env_config['universe'] = {
-            'fixed_symbols': cls.get_env_list(
-                'TRADING_SYMBOLS',
-                ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
-            ),
-            'auto_select': cls.get_env_bool('UNIVERSE_AUTO_SELECT', False),
-            'priority_order': cls.get_env_list(
-                'TRADING_SYMBOLS_PRIORITY',
-                ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
-            ),
-        }
-        
-        # ============= RISK CONFIG =============
-        env_config['risk'] = {
-            'equity_usd': cls.get_env_float('CAPITAL_USDT', 100),
-            'per_trade_risk_pct': cls.get_env_float('PER_TRADE_RISK_PCT', 0.01),
-            'daily_loss_limit_pct': cls.get_env_float('DAILY_LOSS_LIMIT_PCT', 0.02),
-            'risk_usd_cap': cls.get_env_float('RISK_USD_CAP', 5),
-            'max_notional_per_trade': cls.get_env_float('MAX_NOTIONAL_PER_TRADE', 20),
-            'min_stop_pct': cls.get_env_float('MIN_STOP_PCT', 0.003),
-            'daily_max_trades': cls.get_env_int('DAILY_MAX_TRADES', 5),
-        }
-        
-        # ============= EXECUTION CONFIG =============
-        env_config['execution'] = {
-            'enable_live': cls.get_env_bool('ENABLE_LIVE_TRADING', True),
-            'order_type': os.getenv('ORDER_TYPE', 'market'),
-            'time_in_force': os.getenv('TIME_IN_FORCE', 'IOC'),
-            'fee_pct': cls.get_env_float('FEE_PCT', 0.0006),
-            'max_slippage_pct': cls.get_env_float('MAX_SLIPPAGE_PCT', 0.001),
-            'leverage': {
-                'default': cls.get_env_int('LEVERAGE_DEFAULT', 5),
-            }
-        }
-        
-        # ============= WEBSOCKET CONFIG =============
-        env_config['websocket'] = {
-            'enabled': cls.get_env_bool('WEBSOCKET_ENABLED', True),
-            'priority_enabled': cls.get_env_bool('WEBSOCKET_PRIORITY_ENABLED', True),
-            'max_data_age': cls.get_env_int('WEBSOCKET_MAX_DATA_AGE', 60),
-            'fallback_threshold': cls.get_env_int('WEBSOCKET_FALLBACK_THRESHOLD', 3),
-            'max_streams_per_exchange': {
-                'bingx': cls.get_env_int('WS_MAX_STREAMS_BINGX', 10),
-                'binance': cls.get_env_int('WS_MAX_STREAMS_BINANCE', 20),
-                'kucoinfutures': cls.get_env_int('WS_MAX_STREAMS_KUCOIN', 15),
-                'default': cls.get_env_int('WS_MAX_STREAMS_DEFAULT', 10),
-            },
-            'stream_timeframes': cls.get_env_list('WS_STREAM_TIMEFRAMES', ['1m', '5m', '30m', '1h', '4h']), # DÜZELTİLDİ
-            'reconnect_delay': cls.get_env_int('WS_RECONNECT_DELAY', 5),
-            'max_reconnect_attempts': cls.get_env_int('WS_MAX_RECONNECT_ATTEMPTS', 3),
-        }
-        
-        # ============= INDICATORS CONFIG =============
-        env_config['indicators'] = {
-            'rsi_period': cls.get_env_int('INDICATOR_RSI_PERIOD', 14),
-            'atr_period': cls.get_env_int('INDICATOR_ATR_PERIOD', 14),
-            'ema_fast': cls.get_env_int('INDICATOR_EMA_FAST', 21),
-            'ema_mid': cls.get_env_int('INDICATOR_EMA_MID', 50),
-            'ema_slow': cls.get_env_int('INDICATOR_EMA_SLOW', 200),
-        }
+    A dynamic, singleton configuration loader.
 
-        # ============= ML CONFIG (Issue #135) =============
-        # CRITICAL FIX: Only add ml.timeframes to env_config if ML_TIMEFRAMES env var is set
-        # This prevents overwriting YAML values with empty list
-        env_config['ml'] = {
-            'enabled': cls.get_env_bool('ML_ENABLED', True),
-        }
-        
-        # Only add timeframes if environment variable is explicitly set
-        ml_timeframes_env = os.getenv('ML_TIMEFRAMES')
-        if ml_timeframes_env:
-            timeframes = cls.get_env_list('ML_TIMEFRAMES', [])
-            if timeframes:  # Only add if we got a non-empty list
-                env_config['ml']['timeframes'] = timeframes
-                logger.debug(f"✓ ENV: ML_TIMEFRAMES = {timeframes}")
-            else:
-                logger.warning("⚠️ ML_TIMEFRAMES env var is set but empty, using YAML defaults")
-        
-        # ==========================================================
-        # DEBUG AYARLARI
-        # ==========================================================
-        env_config['debug'] = {
-            'strategy_logging': cls.get_env_bool('DEBUG_STRATEGY_LOGGING', False),
-            # Gelecekte eklenebilecek diğer debug ayarları buraya gelebilir.
-            # 'data_validation_logging': cls.get_env_bool('DEBUG_DATA_VALIDATION', False),
-        }
-        logger.info("✅ Environment variables loaded")
-        return env_config
-    
+    It reads `config.example.yaml`, parses special `# Override with: ENV_VAR`
+    comments, and intelligently merges environment variables with automatic
+    type casting. The result is cached and served on all subsequent calls.
+    """
+    CONFIG_FILE_PATH = 'config/config.example.yaml'
+    ENV_OVERRIDE_PATTERN = re.compile(r'#\s*Override with:\s*(\w+)')
+
     @classmethod
-    def load_from_yaml(cls, config_path: Optional[str] = None) -> Dict[str, Any]:
-        """Load configuration from YAML file."""
-        if config_path is None:
-            config_path = cls.CONFIG_FILE_PATH
+    def load(cls) -> Dict[str, Any]:
+        """
+        Main entry point. Loads, merges, and returns the configuration.
+        Uses a singleton pattern to load only once.
+        """
+        global _config_instance
+        if _config_instance is not None:
+            logger.debug("Returning cached configuration instance.")
+            return _config_instance
+
+        logger.info("=" * 70)
+        logger.info("🔧 DYNAMIC CONFIGURATION LOADER (v2.0 - Singleton)")
+        logger.info("=" * 70)
         
-        if not os.path.exists(config_path):
-            logger.warning(f"⚠️ {config_path} not found, using defaults")
-            return {}
-        
+        instance = cls()
         try:
-            with open(config_path, 'r') as f:
-                yaml_config = yaml.safe_load(f)
-            logger.info(f"✅ YAML config loaded from {config_path}")
-            return yaml_config or {}
+            config = instance._load_and_merge_configs()
+            _config_instance = config
+            instance._log_config_summary(config)
+            return _config_instance
         except Exception as e:
-            logger.error(f"❌ Error loading YAML: {e}")
-            return {}
-    
-    @classmethod
-    def deep_merge(cls, base: Dict, override: Dict) -> Dict:
+            logger.critical(f"❌ A critical error occurred during configuration loading: {e}", exc_info=True)
+            raise RuntimeError("Failed to load configuration. Bot cannot start.") from e
+
+    def _load_and_merge_configs(self) -> Dict[str, Any]:
+        """Orchestrates the loading and merging process."""
+        # 1. Load the base YAML config and parse env var mappings from its comments
+        yaml_config, env_map = self._load_yaml_and_map_env_vars()
+        if not yaml_config:
+            raise ValueError("Base configuration from YAML is empty or could not be loaded.")
+
+        # 2. Get overrides from environment variables using the parsed map
+        env_overrides = self._get_env_overrides(env_map, yaml_config)
+
+        # 3. Deep merge YAML config with environment overrides
+        return self._deep_merge(yaml_config, env_overrides)
+
+    def _load_yaml_and_map_env_vars(self) -> Tuple[Dict[str, Any], Dict[str, List[str]]]:
         """
-        Deep merge two dictionaries.
-        Override values take precedence over base values.
-        """
-        result = base.copy()
+        Loads the YAML file line by line to extract both config and env mappings.
+        This is a robust way to link comments to their corresponding keys.
         
+        Returns:
+            A tuple: (loaded_yaml_dict, env_var_to_path_map)
+        """
+        env_map: Dict[str, List[str]] = {}
+        
+        if not os.path.exists(self.CONFIG_FILE_PATH):
+            raise FileNotFoundError(f"Configuration file not found at: {self.CONFIG_FILE_PATH}")
+
+        with open(self.CONFIG_FILE_PATH, 'r') as f:
+            lines = f.readlines()
+            
+        path_stack: List[Tuple[int, str]] = []
+        
+        for line in lines:
+            stripped_line = line.strip()
+            if not stripped_line or stripped_line.startswith('#'):
+                continue
+
+            indentation = len(line) - len(line.lstrip(' '))
+            
+            try:
+                key_part = stripped_line.split(':', 1)[0].strip()
+            except IndexError:
+                continue
+
+            while path_stack and path_stack[-1][0] >= indentation:
+                path_stack.pop()
+
+            path_stack.append((indentation, key_part))
+            
+            match = self.ENV_OVERRIDE_PATTERN.search(line)
+            if match:
+                env_var = match.group(1)
+                current_path = [p[1] for p in path_stack]
+                env_map[env_var] = current_path
+                logger.debug(f"Mapped ENV '{env_var}' to config path: {current_path}")
+
+        with open(self.CONFIG_FILE_PATH, 'r') as f:
+            yaml_config = yaml.safe_load(f)
+
+        logger.info(f"✅ YAML config loaded. Found {len(env_map)} environment variable mappings.")
+        return yaml_config or {}, env_map
+
+    def _get_env_overrides(self, env_map: Dict[str, List[str]], base_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Builds a dictionary of overrides from environment variables.
+        Performs automatic type casting based on the default value's type.
+        """
+        overrides: Dict[str, Any] = {}
+        logger.info("🔧 Applying overrides from environment variables...")
+
+        for env_var, path in env_map.items():
+            env_value_str = os.getenv(env_var)
+            if env_value_str is None or env_value_str == '':
+                continue
+
+            try:
+                original_value = base_config
+                for key in path:
+                    original_value = original_value[key]
+                
+                target_type = type(original_value)
+                converted_value = self._cast_value(env_value_str, target_type)
+                
+                # Build the nested dictionary for the override
+                temp_dict = overrides
+                for key in path[:-1]:
+                    temp_dict = temp_dict.setdefault(key, {})
+                temp_dict[path[-1]] = converted_value
+
+                logger.info(f"  ✓ Applied ENV: {env_var} = {converted_value} (as {target_type.__name__})")
+
+            except KeyError:
+                logger.warning(f"  ⚠️ ENV var '{env_var}' found, but path '{'.'.join(path)}' is invalid in YAML. Ignoring.")
+            except Exception:
+                logger.error(f"  ❌ Failed to process ENV var '{env_var}' with value '{env_value_str}'", exc_info=True)
+        
+        return overrides
+
+    @staticmethod
+    def _cast_value(value_str: str, target_type: type) -> Any:
+        """Helper to convert a string value to a specific target type."""
+        try:
+            if target_type is bool:
+                return value_str.lower() in ('true', '1', 't', 'y', 'yes')
+            if target_type is int:
+                return int(value_str)
+            if target_type is float:
+                return float(value_str)
+            # For lists or other types, we'll let YAML handle complex structures.
+            # Here, we assume env vars for lists are comma-separated strings.
+            if target_type is list:
+                return [s.strip() for s in value_str.split(',') if s.strip()]
+            return value_str  # Assume string
+        except (ValueError, TypeError):
+            logger.warning(f"Could not cast '{value_str}' to {target_type.__name__}. Using string value as fallback.")
+            return value_str
+
+    @staticmethod
+    def _deep_merge(base: Dict, override: Dict) -> Dict:
+        """Deeply merges the override dict into the base dict."""
+        result = base.copy()
         for key, value in override.items():
             if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                result[key] = cls.deep_merge(result[key], value)
+                result[key] = LiveTradingConfiguration._deep_merge(result[key], value)
             else:
                 result[key] = value
-        
         return result
-    
-    # ============= MAIN LOADER =============
-    
-    @classmethod
-    def load(cls, config_path: Optional[str] = None, log_summary: bool = True) -> Dict[str, Any]:
-        """
-        🎯 UNIFIED CONFIG LOADER - Use this everywhere!
-        
-        Priority order (highest to lowest):
-        1. Environment variables (GitHub Secrets/Variables)
-        2. config.example.yaml
-        3. Hardcoded defaults (not used if above exist)
-        
-        Args:
-            config_path: Optional custom YAML path
-            log_summary: Whether to log configuration summary
-            
-        Returns:
-            Complete merged configuration dictionary
-        """
-        logger.info("="*70)
-        logger.info("🔧 LOADING CONFIGURATION")
-        logger.info("="*70)
-        
-        # Start with YAML config
-        config = cls.load_from_yaml(config_path)
-        
-        # Override with environment variables (highest priority)
-        env_config = cls.load_from_env()
-        config = cls.deep_merge(config, env_config)
-        
-        # Log summary if requested
-        if log_summary:
-            cls._log_config_summary(config)
-        
-        return config
-    
-    @classmethod
-    def _log_config_summary(cls, config: Dict[str, Any]) -> None:
-        """Log configuration summary."""
-        logger.info("="*70)
-        logger.info("📊 CONFIGURATION SUMMARY")
-        logger.info("="*70)
-        
-        # Duplicate Prevention - More robust access and precise formatting
-        dp = config.get('signals', {}).get('duplicate_prevention')
-        if dp:
-            logger.info("🚫 Duplicate Prevention:")
-            
-            threshold = dp.get('min_price_change_pct')
-            if threshold is not None:
-                logger.info(f"   Threshold: {threshold:.4%}")
-            else:
-                logger.info("   Threshold: N/A")
 
-            cooldown = dp.get('cooldown_seconds')
-            if cooldown is not None:
-                logger.info(f"   Cooldown: {cooldown}s")
-            
-            bypass_enabled = dp.get('price_delta_bypass_enabled')
-            if bypass_enabled is not None:
-                logger.info(f"   Bypass: {bypass_enabled}")
+    @staticmethod
+    def _log_config_summary(config: Dict[str, Any]) -> None:
+        """Logs a summary of the final, effective configuration."""
+        logger.info("="*70)
+        logger.info("📊 FINAL CONFIGURATION SUMMARY (Effective Values)")
+        logger.info("="*70)
         
-        # Trading Symbols
-        universe = config.get('universe', {})
-        if universe:
-            symbols = universe.get('fixed_symbols', [])
-            logger.info(f"🎯 Trading Symbols: {len(symbols)}")
-            for symbol in symbols:
-                logger.info(f"   - {symbol}")
-        
-        # Risk Parameters
-        risk = config.get('risk', {})
-        if risk:
-            logger.info("💰 Risk Management:")
-            capital = risk.get('equity_usd')
-            if capital is not None:
-                logger.info(f"   Capital: ${capital:.2f}")
+        # Helper to safely get nested values
+        def get_nested(data: Dict, path: List[str], default: Any = 'N/A') -> Any:
+            for key in path:
+                if not isinstance(data, dict): return default
+                data = data.get(key)
+            return data if data is not None else default
 
-            max_pos = risk.get('max_notional_per_trade')
-            if max_pos is not None:
-                logger.info(f"   Max Position: {max_pos:.2f} USDT")
-            
-            daily_trades = risk.get('daily_max_trades')
-            if daily_trades is not None:
-                logger.info(f"   Daily Max Trades: {daily_trades}")
-        
-        # Strategies
-        signals = config.get('signals', {})
-        if signals:
-            logger.info("📈 Strategies:")
-            ob = signals.get('oversold_bounce')
-            if ob:
-                logger.info(f"   OB: {'✅ Enabled' if ob.get('enable') else '❌ Disabled'}")
+        # ML Settings
+        if get_nested(config, ['ml', 'enabled']):
+            logger.info("🧠 ML Settings:")
+            logger.info(f"   Min Regime Confidence: {get_nested(config, ['ml', 'prediction', 'min_confidence_threshold'])}")
+            logger.info(f"   RL Veto Threshold:     {get_nested(config, ['ml', 'reinforcement_learning', 'hold_confidence_threshold'])}")
 
-            str_cfg = signals.get('short_the_rip')
-            if str_cfg:
-                logger.info(f"   STR: {'✅ Enabled' if str_cfg.get('enable') else '❌ Disabled'}")
-                if 'symbols' in str_cfg:
-                    logger.info("   Symbol-specific RSI:")
-                    for symbol, params in str_cfg.get('symbols', {}).items():
-                        logger.info(f"      {symbol}: {params.get('rsi_threshold', 'N/A')}")
+        # Trading Universe
+        symbols_val = get_nested(config, ['universe', 'fixed_symbols'], [])
+        symbols = symbols_val if isinstance(symbols_val, list) else [s.strip() for s in str(symbols_val).split(',')]
+        logger.info(f"🎯 Trading Universe: {len(symbols)} symbols")
+        if symbols: logger.info(f"   - {', '.join(symbols)}")
         
-        # WebSocket
-        ws = config.get('websocket', {})
-        if ws:
-            logger.info(f"🌐 WebSocket: {'✅ Enabled' if ws.get('enabled') else '❌ Disabled'}")
-            if ws.get('enabled'):
-                max_streams = ws.get('max_streams_per_exchange', {}).get('bingx')
-                if max_streams is not None:
-                    logger.info(f"   Max streams (BingX): {max_streams}")
+        # Risk Management
+        logger.info("💰 Risk Management:")
+        logger.info(f"   Capital: ${get_nested(config, ['risk', 'equity_usd'], 0):.2f} USDT")
+        logger.info(f"   Max Notional Per Trade: {get_nested(config, ['risk', 'max_notional_per_trade'], 0):.2f} USDT")
         
         logger.info("="*70)
-    
-    @classmethod
-    def get_all_configs(cls) -> Dict[str, Any]:
-        """
-        Get all configuration (alias for load() method).
-        Provided for backwards compatibility with existing tests.
-        
-        Returns:
-            Complete merged configuration dictionary
-        """
-        return cls.load(log_summary=False)
-    
-    @classmethod
-    def get_config_value(cls, *keys: str, default: Any = None) -> Any:
-        """
-        Safely get nested config value.
-        
-        Example:
-            threshold = LiveTradingConfiguration.get_config_value(
-                'signals', 'duplicate_prevention', 'min_price_change_pct',
-                default=0.05
-            )
-        
-        Args:
-            *keys: Nested dictionary keys
-            default: Default value if key not found
-            
-        Returns:
-            Config value or default
-        """
-        config = cls.load(log_summary=False)
-        
-        value = config
-        for key in keys:
-            if isinstance(value, dict) and key in value:
-                value = value[key]
-            else:
-                return default
-        
-        return value
+
+# Global accessor function for easy, consistent access from anywhere in the codebase.
+def get_config() -> Dict[str, Any]:
+    """
+    Global accessor for the singleton configuration instance.
+    This should be the ONLY way other modules get the configuration.
+    """
+    return LiveTradingConfiguration.load()
