@@ -1,16 +1,18 @@
 # src/strategies/oversold_bounce.py
 import pandas as pd
 
-class OversoldBounce:
+from .base_strategy import BaseStrategy
+
+class OversoldBounce(BaseStrategy):
     def __init__(self, cfg):
-        self.cfg = cfg or {}
+        super().__init__(strategy_name="oversold_bounce", config=cfg)
 
     def signal(self, df_30m: pd.DataFrame):
         # Ensure last valid row without chained assignment
         last = df_30m.dropna().iloc[-1]
 
         # Backward-compat threshold resolution
-        rsi_max = self.cfg.get('rsi_max', self.cfg.get('rsi_min', 25))
+        rsi_max = self.strategy_config.get('rsi_max', self.strategy_config.get('rsi_min', 25))
         try:
             rsi_max = float(rsi_max)
         except Exception:
@@ -22,9 +24,8 @@ class OversoldBounce:
             return {
                 "side": "buy",
                 "reason": f"RSI oversold {rsi_val:.1f}",
-                "tp_pct": float(self.cfg.get("tp_pct", 0.015)),
-                # prefer explicit sl_pct if provided; else risk module may use sl_atr_mult
-                "sl_pct": (float(self.cfg["sl_pct"]) if "sl_pct" in self.cfg else None),
-                "sl_atr_mult": float(self.cfg.get("sl_atr_mult", 1.0)),
+                "tp_pct": float(self.strategy_config.get("tp_pct", 0.015)),
+                "sl_pct": (float(self.strategy_config["sl_pct"]) if "sl_pct" in self.strategy_config else None),
+                "sl_atr_mult": float(self.strategy_config.get("sl_atr_mult", 1.0)),
             }
         return None
