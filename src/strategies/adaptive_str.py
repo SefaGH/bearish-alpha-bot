@@ -7,8 +7,6 @@ import pandas as pd
 import logging
 from typing import Optional, Dict
 from .short_the_rip import ShortTheRip
-# YENİ: BaseStrategy'i import ediyoruz
-from .base_strategy import BaseStrategy
 
 # Default market regime for fallback
 DEFAULT_MARKET_REGIME = {
@@ -41,14 +39,24 @@ class AdaptiveShortTheRip(ShortTheRip):
         Args:
             cfg: Strategy configuration dictionary
             regime_analyzer: MarketRegimeAnalyzer instance for regime detection
+            
+        🔥 GÜNCELLEME: Kalıtım zinciri `super().__init__(cfg)` çağrısıyla onarıldı.
+        Minimum R/R oranı artık başlangıçta config'den okunup `self.min_rr_ratio` olarak saklanıyor.
         """
-        # ÖNCEKİ HATALI KOD: super().__init__(cfg)
-        # DOĞRU KOD: BaseStrategy'nin __init__'ini doğrudan ve doğru parametrelerle çağırıyoruz.
-        BaseStrategy.__init__(self, strategy_name="adaptive_str", config=cfg)
+        # `ShortTheRip` sınıfının __init__ metodunu çağırarak doğru kurulumu sağla.
+        super().__init__(cfg)
+        
+        # Üst sınıf "short_the_rip" olarak ayarlayabileceği için, bu alt sınıfın adını yeniden tanımla.
+        self.strategy_name = "adaptive_str"
         
         self.regime_analyzer = regime_analyzer
         self.base_cfg = cfg.copy()
         self.debug_logging = self.base_cfg.get('debug', {}).get('strategy_logging', False)
+        
+        # Minimum R/R oranını başlangıçta, bir kez olmak üzere config'den oku.
+        # `super()` çağrısı `self.strategy_config`'i oluşturduğu için artık bunu güvenle kullanabiliriz.
+        self.min_rr_ratio = self.strategy_config.get('min_rr_ratio', 1.2)
+        logger.info(f"[{self.strategy_name.upper()}] Minimum R/R Ratio initialized to: {self.min_rr_ratio}")
 
     def _validate_input_data(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame, regime_data: Dict, symbol: str) -> tuple[bool, str]:
         """Gerekli tüm verilerin varlığını ve geçerliliğini kontrol eder."""
@@ -202,20 +210,17 @@ class AdaptiveShortTheRip(ShortTheRip):
         Logs the specific reason if no signal is generated for transparency.
         """
         symbol_display = symbol or "UNKNOWN"
-        # ✅ NEW: Consistent logging prefix for clarity.
         log_prefix = f"[{self.strategy_name.upper()}/{symbol_display}]"
 
         # --- Data Validation Step ---
         validation_passed, reason = self._validate_input_data(df_30m, df_1h, regime_data, symbol_display)
         if not validation_passed:
-            # ✅ NEW: Trace Log for Data Validation Failure
             logger.info(f"🚫 {log_prefix} No Signal: {reason}")
             return None
 
         try:
             last30 = df_30m.dropna().iloc[-1]
         except IndexError:
-            # ✅ NEW: Trace Log for Insufficient Data
             logger.info(f"🚫 {log_prefix} No Signal: Insufficient 30m data to generate a signal.")
             return None
 
@@ -225,7 +230,6 @@ class AdaptiveShortTheRip(ShortTheRip):
         try:
             # --- Initial Data Extraction ---
             if 'rsi' not in last30.index or 'close' not in last30.index:
-                # ✅ NEW: Trace Log for Missing Critical Columns
                 logger.warning(f"🚫 {log_prefix} No Signal: 'rsi' or 'close' column missing in the latest data.")
                 return None
             
@@ -254,7 +258,6 @@ class AdaptiveShortTheRip(ShortTheRip):
 
             # 1. RSI Condition Check
             if rsi_val < adaptive_rsi_threshold:
-                # ✅ NEW: Trace Log for RSI Condition Failure
                 logger.info(f"🚫 {log_prefix} No Signal: RSI ({rsi_val:.2f}) is below the threshold ({adaptive_rsi_threshold:.2f}).")
                 return None
 
@@ -266,7 +269,6 @@ class AdaptiveShortTheRip(ShortTheRip):
                 ema50 = float(last30['ema50'])
                 ema200 = float(last30['ema200'])
                 if not (ema21 < ema50 <= ema200):
-                    # ✅ NEW: Trace Log for EMA Alignment Failure
                     logger.info(f"🚫 {log_prefix} No Signal: Strict EMA alignment failed (21={ema21:.1f}, 50={ema50:.1f}, 200={ema200:.1f}).")
                     return None
             
@@ -280,19 +282,14 @@ class AdaptiveShortTheRip(ShortTheRip):
             if ml_context and ml_context.get('is_healthy', False) and ml_context.get('regime_confidence', 0) >= MIN_ML_CONFIDENCE_THRESHOLD:
                 ml_enhanced = True
                 
-                # ML VETO Check 1: Bullish Regime
                 if ml_context.get('regime_prediction') == 'bullish' and ml_context.get('regime_confidence', 0) > 0.7:
-                    # ✅ NEW: Trace Log for ML Veto
                     logger.info(f"🚫 {log_prefix} No Signal: ML VETO - Strong bullish regime detected (confidence: {ml_context.get('regime_confidence', 0):.2%}).")
                     return None
                 
-                # ML VETO Check 2: Price Up Prediction
                 if ml_context.get('price_direction') == 'up' and ml_context.get('price_confidence', 0) > 0.7:
-                    # ✅ NEW: Trace Log for ML Veto
                     logger.info(f"🚫 {log_prefix} No Signal: ML VETO - Strong price up prediction (confidence: {ml_context.get('price_confidence', 0):.2%}).")
                     return None
                 
-                # ML Confirmation / Caution
                 if (ml_context.get('regime_prediction') == 'bearish') or (ml_context.get('price_direction') == 'down'):
                     position_size_modifier = 1.0 + (0.25 * ml_context.get('consensus_score', 0))
                     if self.debug_logging: logger.info(f"🧠 {log_prefix} ML Confirmation: Increasing position size modifier to {position_size_modifier:.2f}x.")
@@ -307,14 +304,15 @@ class AdaptiveShortTheRip(ShortTheRip):
             entry_price = float(last30['close'])
             atr_value = float(last30.get('atr', entry_price * 0.02))
             
-            tp_atr_mult = float(self.config.get("tp_atr_mult", 3.0))
-            sl_atr_mult = float(self.config.get("sl_atr_mult", 1.5))
+            # 🔥 GÜNCELLEME: Config okumaları artık tutarlı bir şekilde `self.strategy_config` üzerinden yapılıyor.
+            tp_atr_mult = float(self.strategy_config.get("tp_atr_mult", 3.0))
+            sl_atr_mult = float(self.strategy_config.get("sl_atr_mult", 1.5))
             
             target_price = entry_price - (atr_value * tp_atr_mult)
             stop_price = entry_price + (atr_value * sl_atr_mult)
             
-            min_tp_pct = float(self.config.get("min_tp_pct", 0.010))
-            max_sl_pct = float(self.config.get("max_sl_pct", 0.020))
+            min_tp_pct = float(self.strategy_config.get("min_tp_pct", 0.010))
+            max_sl_pct = float(self.strategy_config.get("max_sl_pct", 0.020))
             
             target_price = min(target_price, entry_price * (1 - min_tp_pct))
             stop_price = max(stop_price, entry_price * (1 + max_sl_pct))
@@ -323,7 +321,6 @@ class AdaptiveShortTheRip(ShortTheRip):
             reward_amount = entry_price - target_price
             rr_ratio = (reward_amount / risk_amount) if risk_amount > 0 else float('inf')
 
-            # --- 🔥 YENİ EKLENEN TELEMETRİ LOG'U 🔥 ---
             if self.debug_logging:
                 logger.info(
                     f"🔍 {log_prefix} R/R Calculation: "
@@ -332,10 +329,9 @@ class AdaptiveShortTheRip(ShortTheRip):
                 )    
 
             # 3. R/R Ratio Check
-            min_rr_ratio = self.config.get('min_rr_ratio', 1.2)
-            if rr_ratio < min_rr_ratio:
-                # ✅ NEW: Trace Log for R/R Ratio Failure
-                logger.info(f"🚫 {log_prefix} No Signal: Calculated R/R Ratio ({rr_ratio:.2f}) is below the minimum required ({min_rr_ratio}).")
+            # 🔥 GÜNCELLEME: R/R kontrolü artık __init__ içinde ayarlanan `self.min_rr_ratio` özelliğini kullanıyor.
+            if rr_ratio < self.min_rr_ratio:
+                logger.info(f"🚫 {log_prefix} No Signal: Calculated R/R Ratio ({rr_ratio:.2f}) is below the minimum required ({self.min_rr_ratio}).")
                 return None
 
             # --- Signal Generation ---
