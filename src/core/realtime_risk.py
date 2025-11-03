@@ -33,23 +33,36 @@ logger = logging.getLogger(__name__)
 
 
 class RealTimeRiskMonitor:
-    """Real-time risk monitoring using WebSocket feeds."""
+    """
+    Real-time risk monitoring using WebSocket feeds.
     
-    def __init__(self, risk_manager, websocket_manager):
+    PHASE 2 REFACTOR: Event-driven architecture.
+    - Monitors risk conditions and EMITS events
+    - Does NOT take direct actions (no position closing)
+    - Other components listen to events and take appropriate actions
+    """
+    
+    def __init__(self, risk_manager, websocket_manager, portfolio_manager=None):
         """
         Initialize real-time risk monitor.
         
+        PHASE 2: Now accepts PortfolioManager for state queries.
+        
         Args:
-            risk_manager: Risk manager instance
-            websocket_manager: WebSocket manager for real-time data (Phase 3.1)
+            risk_manager: Risk manager instance (for risk calculations)
+            websocket_manager: WebSocket manager for real-time data
+            portfolio_manager: PortfolioManager instance (for state queries)
         """
         self.risk_manager = risk_manager
         self.ws_manager = websocket_manager
+        self.portfolio_manager = portfolio_manager
         
-        # Risk alert queue
+        # PHASE 2: Event publishing queue
+        # Risk events are published here for other components to consume
         self.risk_alerts = asyncio.Queue()
+        self.risk_events = asyncio.Queue()  # New: dedicated event queue
         
-        # Emergency stop triggers
+        # Emergency stop triggers (for logging only, not for action)
         self.emergency_stops = {}
         
         # Price monitoring
@@ -60,15 +73,22 @@ class RealTimeRiskMonitor:
         self.monitoring_active = False
         self.monitoring_tasks = []
         
-        logger.info("RealTimeRiskMonitor initialized")
+        logger.info("RealTimeRiskMonitor initialized (PHASE 2: Event-Driven)")
     
     async def start_risk_monitoring(self):
-        """Start real-time risk monitoring for all active positions."""
+        """
+        Start real-time risk monitoring for all active positions.
+        
+        PHASE 2: Gets positions from PortfolioManager.
+        """
         try:
             self.monitoring_active = True
             
-            # Get active positions from risk manager
-            active_positions = self.risk_manager.active_positions
+            # PHASE 2: Get active positions from PortfolioManager or fallback to RiskManager
+            if self.portfolio_manager:
+                active_positions = self.portfolio_manager.get_open_positions()
+            else:
+                active_positions = self.risk_manager.active_positions
             
             if not active_positions:
                 logger.info("No active positions to monitor")
@@ -133,16 +153,25 @@ class RealTimeRiskMonitor:
                 'timestamp': datetime.now(timezone.utc)
             })
             
+            # PHASE 2: Get positions from PortfolioManager
+            if self.portfolio_manager:
+                active_positions = self.portfolio_manager.get_open_positions()
+            else:
+                active_positions = self.risk_manager.active_positions
+            
             # Find positions for this symbol
-            for pos_id, position in self.risk_manager.active_positions.items():
+            for pos_id, position in active_positions.items():
                 if position.get('symbol') == symbol:
-                    # Update position price
-                    self.risk_manager.update_position_price(pos_id, current_price)
+                    # PHASE 2: Update position price via PortfolioManager
+                    if self.portfolio_manager:
+                        self.portfolio_manager.update_position_price(pos_id, current_price)
+                    else:
+                        self.risk_manager.update_position_price(pos_id, current_price)
                     
-                    # Check stop-loss triggers
+                    # Check stop-loss triggers (emits events, doesn't take action)
                     await self._check_stop_loss(pos_id, position, current_price)
                     
-                    # Monitor unrealized P&L
+                    # Monitor unrealized P&L (emits events, doesn't take action)
                     await self._check_unrealized_pnl(pos_id, position, current_price)
             
             # Assess portfolio heat
@@ -165,6 +194,23 @@ class RealTimeRiskMonitor:
                 triggered = True
             
             if triggered:
+                # PHASE 2: Create event for stop-loss trigger
+                event = {
+                    'event_type': 'stop_loss_triggered',
+                    'position_id': position_id,
+                    'symbol': symbol,
+                    'trigger_price': current_price,
+                    'stop_loss': stop_loss,
+                    'side': side,
+                    'timestamp': datetime.now(timezone.utc),
+                    'severity': 'high',
+                    'action_required': 'close_position'
+                }
+                
+                # Emit event to both queues
+                await self.risk_events.put(event)  # For action listeners
+                
+                # Also create alert for monitoring/logging
                 alert = {
                     'type': 'stop_loss_trigger',
                     'severity': 'high',
@@ -176,15 +222,20 @@ class RealTimeRiskMonitor:
                     'timestamp': datetime.now(timezone.utc),
                     'message': f"Stop loss triggered for {symbol} at {current_price}"
                 }
-                
                 await self.risk_alerts.put(alert)
-                logger.warning(f"STOP LOSS TRIGGERED: {position_id} - {symbol} at {current_price}")
+                
+                logger.warning(f"⚠️ [EVENT] STOP_LOSS_TRIGGERED: {position_id} - {symbol} at {current_price}")
+                logger.warning(f"   Event emitted for action listeners to handle")
                 
         except Exception as e:
             logger.error(f"Error checking stop loss: {e}")
     
     async def _check_unrealized_pnl(self, position_id: str, position: Dict, current_price: float):
-        """Monitor unrealized P&L and generate alerts if needed."""
+        """
+        Monitor unrealized P&L and generate alerts if needed.
+        
+        PHASE 2: Emits events, doesn't take action.
+        """
         try:
             entry_price = position.get('entry_price', 0)
             size = position.get('size', 0)
@@ -193,36 +244,73 @@ class RealTimeRiskMonitor:
             # Calculate unrealized P&L
             unrealized_pnl = calculate_unrealized_pnl(side, entry_price, current_price, size)
             
+            # PHASE 2: Get portfolio value from PortfolioManager
+            if self.portfolio_manager:
+                portfolio_value = self.portfolio_manager.get_current_equity()
+            else:
+                portfolio_value = self.risk_manager.portfolio_value
+            
             # Check against thresholds
-            portfolio_value = self.risk_manager.portfolio_value
             loss_threshold = portfolio_value * 0.03  # 3% loss threshold
             
             if unrealized_pnl < -loss_threshold:
+                # PHASE 2: Emit event for large loss
+                event = {
+                    'event_type': 'large_unrealized_loss',
+                    'position_id': position_id,
+                    'symbol': position.get('symbol', 'UNKNOWN'),
+                    'unrealized_pnl': unrealized_pnl,
+                    'loss_pct': abs(unrealized_pnl) / portfolio_value if portfolio_value > 0 else 0,
+                    'timestamp': datetime.now(timezone.utc),
+                    'severity': 'high',
+                    'action_required': 'review_position'
+                }
+                await self.risk_events.put(event)
+                
+                # Also create alert
                 alert = {
                     'type': 'large_unrealized_loss',
                     'severity': 'high',
                     'position_id': position_id,
                     'symbol': position.get('symbol', 'UNKNOWN'),
                     'unrealized_pnl': unrealized_pnl,
-                    'loss_pct': abs(unrealized_pnl) / portfolio_value,
+                    'loss_pct': abs(unrealized_pnl) / portfolio_value if portfolio_value > 0 else 0,
                     'timestamp': datetime.now(timezone.utc),
                     'message': f"Large unrealized loss: ${unrealized_pnl:.2f}"
                 }
                 
                 await self.risk_alerts.put(alert)
-                logger.warning(f"LARGE LOSS: {position_id} - ${unrealized_pnl:.2f}")
+                logger.warning(f"⚠️ [EVENT] LARGE_LOSS: {position_id} - ${unrealized_pnl:.2f}")
                 
         except Exception as e:
             logger.error(f"Error checking unrealized PnL: {e}")
     
     async def _assess_portfolio_heat(self):
-        """Assess total portfolio risk exposure."""
+        """
+        Assess total portfolio risk exposure.
+        
+        PHASE 2: Uses PortfolioManager for state queries.
+        """
         try:
-            summary = self.risk_manager.get_portfolio_summary()
+            # PHASE 2: Get summary from RiskManager with PortfolioManager
+            summary = self.risk_manager.get_portfolio_summary(self.portfolio_manager)
             portfolio_heat = summary.get('portfolio_heat', 0)
             
             # High heat threshold (8%)
             if portfolio_heat > 0.08:
+                # PHASE 2: Emit event for high portfolio heat
+                event = {
+                    'event_type': 'high_portfolio_heat',
+                    'portfolio_heat': portfolio_heat,
+                    'active_positions': summary.get('active_positions', 0),
+                    'total_risk': summary.get('total_risk', 0),
+                    'timestamp': datetime.now(timezone.utc),
+                    'severity': 'medium',
+                    'action_required': 'reduce_exposure'
+                }
+                await self.risk_events.put(event)
+                
+                # Also create alert
                 alert = {
                     'type': 'high_portfolio_heat',
                     'severity': 'medium',
@@ -234,23 +322,39 @@ class RealTimeRiskMonitor:
                 }
                 
                 await self.risk_alerts.put(alert)
-                logger.warning(f"HIGH PORTFOLIO HEAT: {portfolio_heat:.2%}")
+                logger.warning(f"⚠️ [EVENT] HIGH_PORTFOLIO_HEAT: {portfolio_heat:.2%}")
                 
         except Exception as e:
             logger.error(f"Error assessing portfolio heat: {e}")
     
     async def _monitor_portfolio_metrics(self):
-        """Continuously monitor portfolio-level metrics."""
+        """
+        Continuously monitor portfolio-level metrics.
+        
+        PHASE 2: Uses PortfolioManager and emits events.
+        """
         try:
             while self.monitoring_active:
-                # Get portfolio summary
-                summary = self.risk_manager.get_portfolio_summary()
+                # PHASE 2: Get portfolio summary with PortfolioManager
+                summary = self.risk_manager.get_portfolio_summary(self.portfolio_manager)
                 
                 # Check drawdown
                 drawdown = summary.get('current_drawdown', 0)
                 max_drawdown = self.risk_manager.risk_limits.get('max_drawdown', 0.15)
                 
                 if drawdown > max_drawdown * 0.8:  # 80% of max drawdown
+                    # PHASE 2: Emit event for approaching max drawdown
+                    event = {
+                        'event_type': 'approaching_max_drawdown',
+                        'current_drawdown': drawdown,
+                        'max_drawdown': max_drawdown,
+                        'timestamp': datetime.now(timezone.utc),
+                        'severity': 'high',
+                        'action_required': 'halt_new_positions'
+                    }
+                    await self.risk_events.put(event)
+                    
+                    # Also create alert
                     alert = {
                         'type': 'approaching_max_drawdown',
                         'severity': 'high',
@@ -261,7 +365,7 @@ class RealTimeRiskMonitor:
                     }
                     
                     await self.risk_alerts.put(alert)
-                    logger.warning(f"APPROACHING MAX DRAWDOWN: {drawdown:.2%}")
+                    logger.warning(f"⚠️ [EVENT] APPROACHING_MAX_DRAWDOWN: {drawdown:.2%}")
                 
                 # Wait before next check
                 await asyncio.sleep(60)  # Check every minute
@@ -275,26 +379,46 @@ class RealTimeRiskMonitor:
         """
         Emergency position closure mechanism.
         
+        PHASE 2: ONLY emits event - does NOT close positions directly.
+        Action listeners will handle actual position closures.
+        
         Args:
             reason: Reason for emergency stop
             affected_positions: List of position IDs to close (None = all)
         """
         try:
-            logger.critical(f"EMERGENCY STOP TRIGGERED: {reason}")
+            logger.critical(f"🚨 [EVENT] EMERGENCY STOP TRIGGERED: {reason}")
+            
+            # PHASE 2: Get active positions from PortfolioManager
+            if self.portfolio_manager:
+                active_pos = self.portfolio_manager.get_open_positions()
+            else:
+                active_pos = self.risk_manager.active_positions
             
             if affected_positions is None:
-                # Close all positions
-                affected_positions = list(self.risk_manager.active_positions.keys())
+                # All positions
+                affected_positions = list(active_pos.keys())
             
             # Record emergency stop
             stop_record = {
                 'reason': reason,
                 'timestamp': datetime.now(timezone.utc),
                 'affected_positions': affected_positions,
-                'portfolio_state': self.risk_manager.get_portfolio_summary()
+                'portfolio_state': self.risk_manager.get_portfolio_summary(self.portfolio_manager)
             }
             
             self.emergency_stops[datetime.now(timezone.utc).isoformat()] = stop_record
+            
+            # PHASE 2: Emit emergency stop event for action listeners
+            event = {
+                'event_type': 'emergency_stop',
+                'reason': reason,
+                'affected_positions': affected_positions,
+                'timestamp': datetime.now(timezone.utc),
+                'severity': 'critical',
+                'action_required': 'close_all_positions'
+            }
+            await self.risk_events.put(event)
             
             # Generate emergency alert
             alert = {
@@ -308,14 +432,9 @@ class RealTimeRiskMonitor:
             
             await self.risk_alerts.put(alert)
             
-            # In a real system, this would trigger actual position closures
-            # For now, just log the action
-            for pos_id in affected_positions:
-                if pos_id in self.risk_manager.active_positions:
-                    position = self.risk_manager.active_positions[pos_id]
-                    logger.critical(f"CLOSING POSITION: {pos_id} - {position.get('symbol', 'UNKNOWN')}")
-            
-            logger.critical(f"Emergency stop completed: {len(affected_positions)} positions affected")
+            # PHASE 2: Only log - don't take action
+            logger.critical(f"🚨 Emergency stop event emitted for {len(affected_positions)} positions")
+            logger.critical(f"   Action listeners will handle position closures")
             
         except Exception as e:
             logger.error(f"Error during emergency stop: {e}")
@@ -351,7 +470,12 @@ class RealTimeRiskMonitor:
                 }
             
             returns_array = np.array(all_returns)
-            portfolio_value = self.risk_manager.portfolio_value
+            
+            # PHASE 2: Get portfolio value from PortfolioManager
+            if self.portfolio_manager:
+                portfolio_value = self.portfolio_manager.get_current_equity()
+            else:
+                portfolio_value = self.risk_manager.portfolio_value
             
             # Historical VaR
             historical_var = np.percentile(returns_array, confidence * 100)
@@ -412,6 +536,28 @@ class RealTimeRiskMonitor:
             logger.error(f"Error retrieving alerts: {e}")
         
         return alerts
+    
+    async def get_risk_events(self, count: int = 10) -> List[Dict]:
+        """
+        Get recent risk events (PHASE 2).
+        
+        Args:
+            count: Number of events to retrieve
+            
+        Returns:
+            List of event dictionaries
+        """
+        events = []
+        try:
+            for _ in range(min(count, self.risk_events.qsize())):
+                event = await asyncio.wait_for(self.risk_events.get(), timeout=0.1)
+                events.append(event)
+        except asyncio.TimeoutError:
+            pass
+        except Exception as e:
+            logger.error(f"Error retrieving events: {e}")
+        
+        return events
     
     def update_price_history(self, symbol: str, price: float):
         """
