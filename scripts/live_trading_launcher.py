@@ -1465,17 +1465,19 @@ class LiveTradingLauncher:
             if not self.config:
                 self._load_config()
     
-            portfolio_config = {
-                'equity_usd': self.CAPITAL_USDT,
-                'max_portfolio_risk': self.RISK_PARAMS['max_portfolio_risk'],
-                'max_position_size': self.RISK_PARAMS['max_position_size'],
-                'max_drawdown': self.RISK_PARAMS['max_drawdown']
-            }
+            # 2. Create RiskConfiguration from config file
+            from config.risk_config import RiskConfiguration
+            risk_params_from_config = self.config.get('risk', {})
+            risk_config_object = RiskConfiguration(custom_limits=risk_params_from_config)
+            logger.info("✓ RiskConfiguration created from config file")
+            logger.info(f"  - Max Portfolio Risk: {risk_config_object.risk_limits.max_portfolio_risk}")
+            logger.info(f"  - Max Position Size: {risk_config_object.risk_limits.max_position_size}")
+            logger.info(f"  - Max Drawdown: {risk_config_object.risk_limits.max_drawdown}")
     
-            # 2. Configure WebSocket Optimizer
+            # 3. Configure WebSocket Optimizer
             self.ws_optimizer.setup_from_config(self.config)
             
-            # 3. Start WebSocket connections and streams
+            # 4. Start WebSocket connections and streams
             logger.info("Starting WebSocket connections and data streams...")
             ws_success = await self.ws_optimizer.initialize_and_subscribe(
                 self.exchange_clients,
@@ -1485,15 +1487,16 @@ class LiveTradingLauncher:
             if not ws_success:
                 logger.warning("⚠️ [WS] WebSocket initialization was not successful, but we will proceed. The system may rely on REST API.")
     
-            # 4. Create ProductionCoordinator
+            # 5. Create ProductionCoordinator
             from core.production_coordinator import ProductionCoordinator
             self.coordinator = ProductionCoordinator()
             
-            # 5. Initialize CORE systems only (no ML)
+            # 6. Initialize CORE systems with standardized risk configuration
             logger.info("Initializing core production systems...")
             core_result = await self.coordinator.initialize_core_systems(
                 exchange_clients=self.exchange_clients,
-                portfolio_config=portfolio_config,
+                portfolio_value=self.CAPITAL_USDT,
+                risk_config=risk_config_object,
                 mode=self.mode,
                 trading_symbols=self.TRADING_PAIRS,
                 websocket_manager=self.ws_optimizer.ws_manager

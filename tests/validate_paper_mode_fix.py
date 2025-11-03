@@ -28,6 +28,7 @@ import numpy as np
 from core.live_trading_engine import LiveTradingEngine, TradingMode
 from core.risk_manager import RiskManager
 from core.portfolio_manager import PortfolioManager
+from config.risk_config import RiskConfiguration
 
 # Configure logging
 logging.basicConfig(
@@ -255,17 +256,17 @@ async def test_paper_mode_order_placement():
     exchange_clients = {'bingx': mock_client}
     
     # Create risk manager with test config
-    risk_config = {
-        'equity_usd': 1000.0,
-        'per_trade_risk_pct': 0.01,
+    custom_limits = {
         'max_position_size': 0.1,
         'max_portfolio_risk': 0.05,
         'max_drawdown': 0.15,
         'max_correlation': 0.7
     }
     
+    risk_config = RiskConfiguration(custom_limits=custom_limits)
     risk_manager = RiskManager(
-        portfolio_config=risk_config,
+        portfolio_value=1000.0,
+        risk_config=risk_config,
         websocket_manager=None,
         performance_monitor=None
     )
