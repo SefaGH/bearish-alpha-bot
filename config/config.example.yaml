@@ -128,15 +128,16 @@ adaptive_strategies:
 signals:
   duplicate_prevention:
     min_price_change_pct: 0.0005      # Override with: DUPLICATE_PREVENTION_THRESHOLD
-    cooldown_seconds: 60              # Override with: DUPLICATE_PREVENTION_COOLDOWN
+    cooldown_seconds: 20              # 🔥 GÜNCELLENDİ: 60 -> 20. Daha sık sinyal değerlendirmesi için. Override with: DUPLICATE_PREVENTION_COOLDOWN
     price_delta_bypass_threshold: 0.0015 # Override with: PRICE_DELTA_BYPASS_THRESHOLD
     price_delta_bypass_enabled: false # Override with: PRICE_DELTA_BYPASS_ENABLED
     ml_duplicate_detection_enabled: true
   oversold_bounce:
     enable: true                      # Override with: STRATEGY_OB_ENABLED
     ignore_regime: true               # Override with: STRATEGY_OB_IGNORE_REGIME
+    min_rr_ratio: 0.8                 # 🔥 YENİ EKLENDİ: R/R kilitlenmesini çözmek için.
     rsi_max: 45
-    adaptive_rsi_base: 45             # Override with: RSI_BASE_OB
+    adaptive_rsi_base: 48             # 🔥 GÜNCELLENDİ: 45 -> 48. Daha fazla alım sinyali için. Override with: RSI_BASE_OB
     adaptive_rsi_range: 10            # Override with: RSI_RANGE_OB
     adaptive_mode: "dynamic"
     volatility_sensitivity: "medium"
@@ -147,8 +148,9 @@ signals:
   short_the_rip:
     enable: true                      # Override with: STRATEGY_STR_ENABLED
     ignore_regime: true               # Override with: STRATEGY_STR_IGNORE_REGIME
+    min_rr_ratio: 0.8                 # 🔥 YENİ EKLENDİ: R/R kilitlenmesini çözmek için.
     rsi_min: 55
-    adaptive_rsi_base: 55             # Override with: RSI_BASE_STR
+    adaptive_rsi_base: 52             # 🔥 GÜNCELLENDİ: 55 -> 52. Daha fazla satım sinyali için. Override with: RSI_BASE_STR
     adaptive_rsi_range: 10            # Override with: RSI_RANGE_STR
     adaptive_mode: "dynamic"
     volatility_sensitivity: "medium"
@@ -158,11 +160,11 @@ signals:
     max_sl_pct: 0.020
     symbols:
       "BTC/USDT:USDT":
-        rsi_threshold: 55             # Override with: RSI_THRESHOLD_BTC
+        rsi_threshold: 52             # 🔥 GÜNCELLENDİ: 55 -> 52. Override ile uyumlu hale getirildi. Override with: RSI_THRESHOLD_BTC
       "ETH/USDT:USDT":
-        rsi_threshold: 50             # Override with: RSI_THRESHOLD_ETH
+        rsi_threshold: 50
       "SOL/USDT:USDT":
-        rsi_threshold: 50             # Override with: RSI_THRESHOLD_SOL
+        rsi_threshold: 50
 
 # ==============================================================================
 # POSITION EXIT MANAGEMENT
@@ -225,7 +227,7 @@ ml:
     # Behavior Tuning
     # If the agent's confidence in 'HOLD' is below this, it considers its second choice.
     # Lower value = more aggressive (more trades). Higher value = more defensive.
-    hold_confidence_threshold: 0.60   # Override with: ML_RL_HOLD_CONFIDENCE_THRESHOLD
+    hold_confidence_threshold: 0.80   # 🔥 GÜNCELLENDİ: 0.60 -> 0.80. RL vetosunu azaltmak için. Override with: ML_RL_HOLD_CONFIDENCE_THRESHOLD
 
     # Epsilon for inference (live trading). A small value for minimal random actions.
     epsilon_inference: 0.01           # Override with: ML_RL_EPSILON_INFERENCE
