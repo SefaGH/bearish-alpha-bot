@@ -232,13 +232,11 @@ jobs:
         if: always()
         with:
           name: pre-flight-logs
-          # --- DÜZELTME: Tekrarlanan 'path:' anahtarı kaldırıldı ---
           path: |
             logs/**/*.log
             logs/*.log
           if-no-files-found: ignore
 
-  # ... dosyanın geri kalanı aynı kalabilir ...
   live-trading:
     name: Execute Live Trading
     runs-on: ubuntu-latest
@@ -334,32 +332,59 @@ jobs:
 
       - name: Launch Trading Bot
         env:
+          # ============= ÖNEMLİ SİSTEM DEĞİŞKENLERİ =============
           ML_ENABLED: ${{ github.event.inputs.enable_ml }}
-          # ============= EXCHANGE CREDENTIALS =============
           BINGX_KEY: ${{ secrets.BINGX_KEY }}
           BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           LOG_LEVEL: INFO
           PYTHONUNBUFFERED: "1"
+
+          # ============= ML: Price & Regime Prediction Engine =============
+          ML_PRED_UPDATE_INTERVAL: ${{ vars.ML_PRED_UPDATE_INTERVAL || '60' }}
+          ML_PRED_CACHE_TTL: ${{ vars.ML_PRED_CACHE_TTL || '300' }}
+          ML_PRED_MIN_CONFIDENCE: ${{ vars.ML_PRED_MIN_CONFIDENCE || '0.6' }}
+          ML_PRED_REGIME_THRESHOLD: ${{ vars.ML_PRED_REGIME_THRESHOLD || '0.7' }}
+
+          # ============= ML: Reinforcement Learning (RL) Agent =============
+          ML_RL_ENABLED: ${{ vars.ML_RL_ENABLED || 'true' }}
+          ML_RL_TRAINING_MODE: ${{ vars.ML_RL_TRAINING_MODE || 'false' }}
+          ML_RL_HOLD_CONFIDENCE_THRESHOLD: ${{ vars.ML_RL_HOLD_CONFIDENCE_THRESHOLD || '0.60' }}
+          ML_RL_EPSILON_INFERENCE: ${{ vars.ML_RL_EPSILON_INFERENCE || '0.01' }}
+          ML_RL_LEARNING_RATE: ${{ vars.ML_RL_LEARNING_RATE || '0.0001' }}
+          ML_RL_GAMMA: ${{ vars.ML_RL_GAMMA || '0.99' }}
+          ML_RL_TARGET_UPDATE_FREQ: ${{ vars.ML_RL_TARGET_UPDATE_FREQ || '10' }}
+          ML_RL_BATCH_SIZE: ${{ vars.ML_RL_BATCH_SIZE || '64' }}
+          ML_RL_BUFFER_SIZE: ${{ vars.ML_RL_BUFFER_SIZE || '100000' }}
           
-          # ✅ NEW: COMPLETE TRADING CONFIGURATION FROM GITHUB VARIABLES
+          # ============= ML: Feature Engineering =============
+          ML_FEAT_RSI_PERIOD: ${{ vars.ML_FEAT_RSI_PERIOD || '14' }}
+          ML_FEAT_ATR_PERIOD: ${{ vars.ML_FEAT_ATR_PERIOD || '14' }}
+          ML_FEAT_MACD_FAST: ${{ vars.ML_FEAT_MACD_FAST || '12' }}
+          ML_FEAT_MACD_SLOW: ${{ vars.ML_FEAT_MACD_SLOW || '26' }}
+          ML_FEAT_MACD_SIGNAL: ${{ vars.ML_FEAT_MACD_SIGNAL || '9' }}
+          ML_FEAT_BB_PERIOD: ${{ vars.ML_FEAT_BB_PERIOD || '20' }}
+          ML_FEAT_BB_STD: ${{ vars.ML_FEAT_BB_STD || '2' }}
+          ML_FEAT_VOL_WINDOWS: ${{ vars.ML_FEAT_VOL_WINDOWS || '5,10,20,50' }}
+          ML_FEAT_MOM_WINDOWS: ${{ vars.ML_FEAT_MOM_WINDOWS || '5,10,20,50' }}
+
           # ============= DUPLICATE PREVENTION =============
           DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.0005' }}
-          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '60' }}
+          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
           PRICE_DELTA_BYPASS_THRESHOLD: ${{ vars.PRICE_DELTA_BYPASS_THRESHOLD || '0.0015' }}
-          PRICE_DELTA_BYPASS_ENABLED: ${{ vars.PRICE_DELTA_BYPASS_ENABLED || 'true' }}
+          PRICE_DELTA_BYPASS_ENABLED: ${{ vars.PRICE_DELTA_BYPASS_ENABLED || 'false' }}
           
-          # ============= TRADING SYMBOLS =============
+          # ============= TRADING UNIVERSE =============
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
           TRADING_SYMBOLS_PRIORITY: ${{ vars.TRADING_SYMBOLS_PRIORITY || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
           UNIVERSE_AUTO_SELECT: ${{ vars.UNIVERSE_AUTO_SELECT || 'false' }}
 
-          # ============= MACHINE LEARNING =============
+          # ============= ML TIMEFRAMES (Genel) =============
           ML_TIMEFRAMES: ${{ vars.ML_TIMEFRAMES || '5m,15m,1h,4h' }}
           
           # ============= SYMBOL-SPECIFIC RSI =============
-          RSI_THRESHOLD_BTC: ${{ vars.RSI_THRESHOLD_BTC || '55' }}
+          RSI_THRESHOLD_BTC: ${{ vars.RSI_THRESHOLD_BTC || '50' }}
           RSI_THRESHOLD_ETH: ${{ vars.RSI_THRESHOLD_ETH || '50' }}
           RSI_THRESHOLD_SOL: ${{ vars.RSI_THRESHOLD_SOL || '50' }}
           
@@ -372,19 +397,22 @@ jobs:
           MIN_STOP_PCT: ${{ vars.MIN_STOP_PCT || '0.003' }}
           DAILY_MAX_TRADES: ${{ vars.DAILY_MAX_TRADES || '5' }}
           
-          # ============= STRATEGIES =============
+          # ============= STRATEGY: Oversold Bounce (OB) =============
           STRATEGY_OB_ENABLED: ${{ vars.STRATEGY_OB_ENABLED || 'true' }}
           STRATEGY_OB_IGNORE_REGIME: ${{ vars.STRATEGY_OB_IGNORE_REGIME || 'true' }}
-          RSI_BASE_OB: ${{ vars.RSI_BASE_OB || '45' }}
+          STRATEGY_OB_MIN_RR_RATIO: ${{ vars.STRATEGY_OB_MIN_RR_RATIO || '0.5' }}
+          RSI_BASE_OB: ${{ vars.RSI_BASE_OB || '50' }}
           RSI_RANGE_OB: ${{ vars.RSI_RANGE_OB || '10' }}
           TP_ATR_MULT_OB: ${{ vars.TP_ATR_MULT_OB || '2.5' }}
           SL_ATR_MULT_OB: ${{ vars.SL_ATR_MULT_OB || '1.2' }}
           MIN_TP_PCT_OB: ${{ vars.MIN_TP_PCT_OB || '0.008' }}
           MAX_SL_PCT_OB: ${{ vars.MAX_SL_PCT_OB || '0.015' }}
           
+          # ============= STRATEGY: Short The Rip (STR) =============
           STRATEGY_STR_ENABLED: ${{ vars.STRATEGY_STR_ENABLED || 'true' }}
           STRATEGY_STR_IGNORE_REGIME: ${{ vars.STRATEGY_STR_IGNORE_REGIME || 'true' }}
-          RSI_BASE_STR: ${{ vars.RSI_BASE_STR || '55' }}
+          STRATEGY_STR_MIN_RR_RATIO: ${{ vars.STRATEGY_STR_MIN_RR_RATIO || '0.5' }}
+          RSI_BASE_STR: ${{ vars.RSI_BASE_STR || '50' }}
           RSI_RANGE_STR: ${{ vars.RSI_RANGE_STR || '10' }}
           TP_ATR_MULT_STR: ${{ vars.TP_ATR_MULT_STR || '3.0' }}
           SL_ATR_MULT_STR: ${{ vars.SL_ATR_MULT_STR || '1.5' }}
@@ -400,7 +428,7 @@ jobs:
           WS_MAX_STREAMS_BINANCE: ${{ vars.WS_MAX_STREAMS_BINANCE || '20' }}
           WS_MAX_STREAMS_KUCOIN: ${{ vars.WS_MAX_STREAMS_KUCOIN || '15' }}
           WS_MAX_STREAMS_DEFAULT: ${{ vars.WS_MAX_STREAMS_DEFAULT || '10' }}
-          WS_STREAM_TIMEFRAMES: ${{ vars.WS_STREAM_TIMEFRAMES || '1m,5m,30m,1h,4h' }}
+          WS_STREAM_TIMEFRAMES: ${{ vars.WS_STREAM_TIMEFRAMES || '1m,5m,15m,30m,1h,4h' }}
           WS_RECONNECT_DELAY: ${{ vars.WS_RECONNECT_DELAY || '5' }}
           WS_MAX_RECONNECT_ATTEMPTS: ${{ vars.WS_MAX_RECONNECT_ATTEMPTS || '3' }}
           
@@ -412,14 +440,14 @@ jobs:
           MAX_SLIPPAGE_PCT: ${{ vars.MAX_SLIPPAGE_PCT || '0.001' }}
           LEVERAGE_DEFAULT: ${{ vars.LEVERAGE_DEFAULT || '5' }}
           
-          # ============= INDICATORS =============
+          # ============= INDICATORS (Genel) =============
           INDICATOR_RSI_PERIOD: ${{ vars.INDICATOR_RSI_PERIOD || '14' }}
           INDICATOR_ATR_PERIOD: ${{ vars.INDICATOR_ATR_PERIOD || '14' }}
           INDICATOR_EMA_FAST: ${{ vars.INDICATOR_EMA_FAST || '21' }}
           INDICATOR_EMA_MID: ${{ vars.INDICATOR_EMA_MID || '50' }}
           INDICATOR_EMA_SLOW: ${{ vars.INDICATOR_EMA_SLOW || '200' }}
           
-          # ============= ADAPTIVE MODES =============
+          # ============= ADAPTIVE MODES (Genel) =============
           ADAPTIVE_MODE_OB: ${{ vars.ADAPTIVE_MODE_OB || 'dynamic' }}
           VOLATILITY_SENSITIVITY_OB: ${{ vars.VOLATILITY_SENSITIVITY_OB || 'medium' }}
           ADAPTIVE_MODE_STR: ${{ vars.ADAPTIVE_MODE_STR || 'dynamic' }}
