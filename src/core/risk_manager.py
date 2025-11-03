@@ -357,34 +357,6 @@ class RiskManager:
         
         return 0
     
-    def _create_fallback_portfolio_manager(self):
-        """
-        Create a minimal portfolio manager mock for backward compatibility.
-        
-        Returns:
-            Mock portfolio manager with basic functionality
-        """
-        class FallbackPortfolioManager:
-            def __init__(self, risk_manager):
-                self.rm = risk_manager
-            
-            def get_current_equity(self):
-                return self.rm.portfolio_value
-            
-            def get_current_drawdown(self):
-                return self.rm.current_drawdown
-            
-            def get_open_positions(self):
-                return self.rm.active_positions
-            
-            def get_total_exposure(self):
-                return sum(
-                    pos.get('size', 0) * pos.get('entry_price', 0)
-                    for pos in self.rm.active_positions.values()
-                )
-        
-        return FallbackPortfolioManager(self)
-    
     async def monitor_position_risk(self, position_id: str, portfolio_manager=None) -> Dict[str, Any]:
         """
         Real-time position risk monitoring.
