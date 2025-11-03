@@ -245,304 +245,90 @@ jobs:
       always() && 
       needs.validate-inputs.outputs.should_proceed == 'true' &&
       (needs.pre-flight-checks.result == 'success' || needs.validate-inputs.outputs.skip_preflight == 'true')
-    timeout-minutes: 720  # 12 hours maximum
+    timeout-minutes: 720
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Ensure logs and data directories + placeholders
+      - name: Setup Python, TA-Lib and Dependencies
         run: |
-          mkdir -p logs data
-          touch data/state.json data/day_stats.json
-          : > logs/.placeholder || true
-
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: 'pip'
-
-      - name: Install TA-Lib from source
-        run: |
+          # Python kurulumu ve diğer bağımlılıklar için tek bir birleşik adım
+          sudo apt-get update
+          sudo apt-get install -y wget build-essential
           wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
           tar -xzvf ta-lib-0.4.0-src.tar.gz
           cd ta-lib/
           ./configure --prefix=/usr
           make
           sudo make install
-
-      - name: Install Dependencies
-        shell: bash
-        run: |
-          echo "📦 Installing dependencies..."
-          python -V
-          python -m pip install --upgrade pip wheel
-          python -m pip install "setuptools<81"
-          # Fix for parse_frame error - install specific versions first WITH QUOTES
-          pip install --no-cache-dir 'aiohttp==3.8.6' 'yarl<2.0' 'multidict<7.0'
-          
-          # Install TA-Lib Python library (C kütüphanesi artık kurulu)
-          pip install --no-cache-dir TA-Lib
-          
-          # === KOŞULLU YÜKLEME BAŞLANGICI ===
+          cd ..
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir 'aiohttp==3.8.6' 'yarl<2.0' 'multidict<7.0' TA-Lib 'websocket-client>=1.6.0' 'websockets>=10.0'
           if [ "${{ github.event.inputs.enable_ml }}" = "true" ]; then
-            echo "ML is enabled. Installing all dependencies..."
             pip install --no-cache-dir -r requirements.txt
           else
-            echo "ML is disabled. Installing core dependencies only..."
             sed '/# === MACHINE LEARNING (Optional) ===/,$d' requirements.txt | pip install --no-cache-dir -r /dev/stdin
           fi
-          # === KOŞULLU YÜKLEME SONU ===
-
-          # --- YENİ EKLENECEK BÖLÜM ---
-          echo "📦 Installing the repository package in editable mode..."
           python -m pip install -e .
-          echo "✅ Repository package installed."
-          # --- YENİ BÖLÜM SONU ---
 
-      - name: Display Configuration
+      - name: Set Dynamic Environment Variables
         env:
-          # DÜZELTME: Gösterim için de doğru varsayılan değer kullanılıyor.
-          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.0005' }}
-          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '60' }}
-          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
-          CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
+          GH_VARS_JSON: ${{ toJSON(vars) }}
         run: |
-          DP_THRESHOLD_AS_PERCENT=$(printf "%.4f%%" $(echo "${DUPLICATE_PREVENTION_THRESHOLD} * 100" | bc))
-
-          echo "🚀 BEARISH ALPHA BOT - LIVE TRADING LAUNCHER"
-          echo "=============================================="
-          echo "Mode: ${{ github.event.inputs.mode }}"
-          echo "Dry Run: ${{ github.event.inputs.dry_run }}"
-          echo "Pre-flight Checks: ${{ github.event.inputs.skip_preflight == 'true' && 'SKIPPED ⚠️' || 'COMPLETED ✅' }}"
-          echo "Infinite Mode (Layer 1): ${{ github.event.inputs.infinite }}"
-          echo "Auto-Restart (Layer 2): ${{ github.event.inputs.auto_restart }}"
-          echo "Restart Delay: ${{ github.event.inputs.restart_delay }}s"
-          echo "Duration: ${{ github.event.inputs.duration || 'indefinite' }}"
-          echo "Debug Mode: ${{ github.event.inputs.debug_mode }}"
-          echo ""
-          echo "Configuration from GitHub Variables:"
-          echo "- Capital: ${CAPITAL_USDT} USDT"
-          echo "- Exchange: BingX"
-          echo "- Trading Pairs: ${TRADING_SYMBOLS}"
-          # DÜZELTME: Doğru hesaplanmış yüzde değeri gösteriliyor.
-          echo "- Duplicate Prevention: ${DP_THRESHOLD_AS_PERCENT} / ${DUPLICATE_PREVENTION_COOLDOWN}s"
-          echo "=============================================="
+          echo "Setting dynamic environment variables..."
+          # YAML dosyasından 'Override with:' yorumlarını okuyarak ortam değişkenlerini oluşturur.
+          # Bu değişkenleri $GITHUB_ENV dosyasına yazar, böylece sonraki adımlar kullanabilir.
+          grep -oP '#\s*Override with:\s*\K\w+' config/config.example.yaml | while read -r var_name; do
+            python3 -c "
+import os, json, sys
+vars_json = os.getenv('GH_VARS_JSON', '{}')
+var_name = sys.argv[1]
+try:
+    value = json.loads(vars_json).get(var_name, '')
+    # Değerin içinde tırnak işareti varsa kaçış karakteri ekle
+    value = value.replace('\"', '\\\"')
+    print(f'{var_name}=\"{value}\"')
+except Exception:
+    print(f'{var_name}=', file=sys.stderr)
+" "$var_name"
+          done >> $GITHUB_ENV
+          echo "✅ Dynamic variables are ready for the next step."
+        shell: bash
 
       - name: Launch Trading Bot
         env:
-          # ============= ÖNEMLİ SİSTEM DEĞİŞKENLERİ =============
+          # Sadece statik, gizli veya input'tan gelen değişkenler burada listelenir.
+          # Dinamik olanlar bir önceki adımda ortama otomatik olarak eklendi.
           ML_ENABLED: ${{ github.event.inputs.enable_ml }}
           BINGX_KEY: ${{ secrets.BINGX_KEY }}
           BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          LOG_LEVEL: INFO
           PYTHONUNBUFFERED: "1"
-
-          # ============= ML: Price & Regime Prediction Engine =============
-          ML_PRED_UPDATE_INTERVAL: ${{ vars.ML_PRED_UPDATE_INTERVAL || '60' }}
-          ML_PRED_CACHE_TTL: ${{ vars.ML_PRED_CACHE_TTL || '300' }}
-          ML_PRED_MIN_CONFIDENCE: ${{ vars.ML_PRED_MIN_CONFIDENCE || '0.6' }}
-          ML_PRED_REGIME_THRESHOLD: ${{ vars.ML_PRED_REGIME_THRESHOLD || '0.7' }}
-
-          # ============= ML: Reinforcement Learning (RL) Agent =============
-          ML_RL_ENABLED: ${{ vars.ML_RL_ENABLED || 'true' }}
-          ML_RL_TRAINING_MODE: ${{ vars.ML_RL_TRAINING_MODE || 'false' }}
-          ML_RL_HOLD_CONFIDENCE_THRESHOLD: ${{ vars.ML_RL_HOLD_CONFIDENCE_THRESHOLD || '0.60' }}
-          ML_RL_EPSILON_INFERENCE: ${{ vars.ML_RL_EPSILON_INFERENCE || '0.01' }}
-          ML_RL_LEARNING_RATE: ${{ vars.ML_RL_LEARNING_RATE || '0.0001' }}
-          ML_RL_GAMMA: ${{ vars.ML_RL_GAMMA || '0.99' }}
-          ML_RL_TARGET_UPDATE_FREQ: ${{ vars.ML_RL_TARGET_UPDATE_FREQ || '10' }}
-          ML_RL_BATCH_SIZE: ${{ vars.ML_RL_BATCH_SIZE || '64' }}
-          ML_RL_BUFFER_SIZE: ${{ vars.ML_RL_BUFFER_SIZE || '100000' }}
-          
-          # ============= ML: Feature Engineering =============
-          ML_FEAT_RSI_PERIOD: ${{ vars.ML_FEAT_RSI_PERIOD || '14' }}
-          ML_FEAT_ATR_PERIOD: ${{ vars.ML_FEAT_ATR_PERIOD || '14' }}
-          ML_FEAT_MACD_FAST: ${{ vars.ML_FEAT_MACD_FAST || '12' }}
-          ML_FEAT_MACD_SLOW: ${{ vars.ML_FEAT_MACD_SLOW || '26' }}
-          ML_FEAT_MACD_SIGNAL: ${{ vars.ML_FEAT_MACD_SIGNAL || '9' }}
-          ML_FEAT_BB_PERIOD: ${{ vars.ML_FEAT_BB_PERIOD || '20' }}
-          ML_FEAT_BB_STD: ${{ vars.ML_FEAT_BB_STD || '2' }}
-          ML_FEAT_VOL_WINDOWS: ${{ vars.ML_FEAT_VOL_WINDOWS || '5,10,20,50' }}
-          ML_FEAT_MOM_WINDOWS: ${{ vars.ML_FEAT_MOM_WINDOWS || '5,10,20,50' }}
-
-          # ============= DUPLICATE PREVENTION =============
-          DUPLICATE_PREVENTION_THRESHOLD: ${{ vars.DUPLICATE_PREVENTION_THRESHOLD || '0.0005' }}
-          DUPLICATE_PREVENTION_COOLDOWN: ${{ vars.DUPLICATE_PREVENTION_COOLDOWN || '20' }}
-          PRICE_DELTA_BYPASS_THRESHOLD: ${{ vars.PRICE_DELTA_BYPASS_THRESHOLD || '0.0015' }}
-          PRICE_DELTA_BYPASS_ENABLED: ${{ vars.PRICE_DELTA_BYPASS_ENABLED || 'false' }}
-          
-          # ============= TRADING UNIVERSE =============
-          TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
-          TRADING_SYMBOLS_PRIORITY: ${{ vars.TRADING_SYMBOLS_PRIORITY || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
-          UNIVERSE_AUTO_SELECT: ${{ vars.UNIVERSE_AUTO_SELECT || 'false' }}
-
-          # ============= ML TIMEFRAMES (Genel) =============
-          ML_TIMEFRAMES: ${{ vars.ML_TIMEFRAMES || '5m,15m,1h,4h' }}
-          
-          # ============= SYMBOL-SPECIFIC RSI =============
-          RSI_THRESHOLD_BTC: ${{ vars.RSI_THRESHOLD_BTC || '50' }}
-          RSI_THRESHOLD_ETH: ${{ vars.RSI_THRESHOLD_ETH || '50' }}
-          RSI_THRESHOLD_SOL: ${{ vars.RSI_THRESHOLD_SOL || '50' }}
-          
-          # ============= RISK MANAGEMENT =============
-          CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
-          PER_TRADE_RISK_PCT: ${{ vars.PER_TRADE_RISK_PCT || '0.01' }}
-          DAILY_LOSS_LIMIT_PCT: ${{ vars.DAILY_LOSS_LIMIT_PCT || '0.02' }}
-          RISK_USD_CAP: ${{ vars.RISK_USD_CAP || '5' }}
-          MAX_NOTIONAL_PER_TRADE: ${{ vars.MAX_NOTIONAL_PER_TRADE || '20' }}
-          MIN_STOP_PCT: ${{ vars.MIN_STOP_PCT || '0.003' }}
-          DAILY_MAX_TRADES: ${{ vars.DAILY_MAX_TRADES || '5' }}
-          
-          # ============= STRATEGY: Oversold Bounce (OB) =============
-          STRATEGY_OB_ENABLED: ${{ vars.STRATEGY_OB_ENABLED || 'true' }}
-          STRATEGY_OB_IGNORE_REGIME: ${{ vars.STRATEGY_OB_IGNORE_REGIME || 'true' }}
-          STRATEGY_OB_MIN_RR_RATIO: ${{ vars.STRATEGY_OB_MIN_RR_RATIO || '0.5' }}
-          RSI_BASE_OB: ${{ vars.RSI_BASE_OB || '50' }}
-          RSI_RANGE_OB: ${{ vars.RSI_RANGE_OB || '10' }}
-          TP_ATR_MULT_OB: ${{ vars.TP_ATR_MULT_OB || '2.5' }}
-          SL_ATR_MULT_OB: ${{ vars.SL_ATR_MULT_OB || '1.2' }}
-          MIN_TP_PCT_OB: ${{ vars.MIN_TP_PCT_OB || '0.008' }}
-          MAX_SL_PCT_OB: ${{ vars.MAX_SL_PCT_OB || '0.015' }}
-          
-          # ============= STRATEGY: Short The Rip (STR) =============
-          STRATEGY_STR_ENABLED: ${{ vars.STRATEGY_STR_ENABLED || 'true' }}
-          STRATEGY_STR_IGNORE_REGIME: ${{ vars.STRATEGY_STR_IGNORE_REGIME || 'true' }}
-          STRATEGY_STR_MIN_RR_RATIO: ${{ vars.STRATEGY_STR_MIN_RR_RATIO || '0.5' }}
-          RSI_BASE_STR: ${{ vars.RSI_BASE_STR || '50' }}
-          RSI_RANGE_STR: ${{ vars.RSI_RANGE_STR || '10' }}
-          TP_ATR_MULT_STR: ${{ vars.TP_ATR_MULT_STR || '3.0' }}
-          SL_ATR_MULT_STR: ${{ vars.SL_ATR_MULT_STR || '1.5' }}
-          MIN_TP_PCT_STR: ${{ vars.MIN_TP_PCT_STR || '0.010' }}
-          MAX_SL_PCT_STR: ${{ vars.MAX_SL_PCT_STR || '0.020' }}
-          
-          # ============= WEBSOCKET =============
-          WEBSOCKET_ENABLED: ${{ vars.WEBSOCKET_ENABLED || 'true' }}
-          WEBSOCKET_PRIORITY_ENABLED: ${{ vars.WEBSOCKET_PRIORITY_ENABLED || 'true' }}
-          WEBSOCKET_MAX_DATA_AGE: ${{ vars.WEBSOCKET_MAX_DATA_AGE || '60' }}
-          WEBSOCKET_FALLBACK_THRESHOLD: ${{ vars.WEBSOCKET_FALLBACK_THRESHOLD || '3' }}
-          WS_MAX_STREAMS_BINGX: ${{ vars.WS_MAX_STREAMS_BINGX || '10' }}
-          WS_MAX_STREAMS_BINANCE: ${{ vars.WS_MAX_STREAMS_BINANCE || '20' }}
-          WS_MAX_STREAMS_KUCOIN: ${{ vars.WS_MAX_STREAMS_KUCOIN || '15' }}
-          WS_MAX_STREAMS_DEFAULT: ${{ vars.WS_MAX_STREAMS_DEFAULT || '10' }}
-          WS_STREAM_TIMEFRAMES: ${{ vars.WS_STREAM_TIMEFRAMES || '1m,5m,15m,30m,1h,4h' }}
-          WS_RECONNECT_DELAY: ${{ vars.WS_RECONNECT_DELAY || '5' }}
-          WS_MAX_RECONNECT_ATTEMPTS: ${{ vars.WS_MAX_RECONNECT_ATTEMPTS || '3' }}
-          
-          # ============= EXECUTION =============
-          ENABLE_LIVE_TRADING: ${{ vars.ENABLE_LIVE_TRADING || 'true' }}
-          ORDER_TYPE: ${{ vars.ORDER_TYPE || 'market' }}
-          TIME_IN_FORCE: ${{ vars.TIME_IN_FORCE || 'IOC' }}
-          FEE_PCT: ${{ vars.FEE_PCT || '0.0006' }}
-          MAX_SLIPPAGE_PCT: ${{ vars.MAX_SLIPPAGE_PCT || '0.001' }}
-          LEVERAGE_DEFAULT: ${{ vars.LEVERAGE_DEFAULT || '5' }}
-          
-          # ============= INDICATORS (Genel) =============
-          INDICATOR_RSI_PERIOD: ${{ vars.INDICATOR_RSI_PERIOD || '14' }}
-          INDICATOR_ATR_PERIOD: ${{ vars.INDICATOR_ATR_PERIOD || '14' }}
-          INDICATOR_EMA_FAST: ${{ vars.INDICATOR_EMA_FAST || '21' }}
-          INDICATOR_EMA_MID: ${{ vars.INDICATOR_EMA_MID || '50' }}
-          INDICATOR_EMA_SLOW: ${{ vars.INDICATOR_EMA_SLOW || '200' }}
-          
-          # ============= ADAPTIVE MODES (Genel) =============
-          ADAPTIVE_MODE_OB: ${{ vars.ADAPTIVE_MODE_OB || 'dynamic' }}
-          VOLATILITY_SENSITIVITY_OB: ${{ vars.VOLATILITY_SENSITIVITY_OB || 'medium' }}
-          ADAPTIVE_MODE_STR: ${{ vars.ADAPTIVE_MODE_STR || 'dynamic' }}
-          VOLATILITY_SENSITIVITY_STR: ${{ vars.VOLATILITY_SENSITIVITY_STR || 'medium' }}
         run: |
-          # --- Normalize duration input (supports: 18000, 18000.0, 1.8e4, 2h, 30m, 45s) ---
-          DUR_INPUT="${{ github.event.inputs.duration }}"
-          duration_arg=""
-
-          if [ -n "$DUR_INPUT" ]; then
-            NORMALIZED_DURATION=$(python - <<'PY' "$DUR_INPUT"
-          import sys, re
-          s = sys.argv[1].strip()
-          # Accept integer, float, scientific, or suffix h/m/s
-          m = re.match(r'^\s*([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*([hmsHMS])?\s*$', s)
-          if not m:
-              # invalid format -> return empty (outer shell will treat as error)
-              sys.exit(0)
-          num = float(m.group(1))
-          unit = m.group(2)
-          if not unit:
-              print(str(int(round(num))), end="")
-          else:
-              unit = unit.lower()
-              if unit == 'h':
-                  print(str(int(round(num * 3600))), end="")
-              elif unit == 'm':
-                  print(str(int(round(num * 60))), end="")
-              else:
-                  print(str(int(round(num))), end="")
-          PY
-          )
-            if [ -n "$NORMALIZED_DURATION" ]; then
-              duration_arg="--duration $NORMALIZED_DURATION"
-            else
-              echo "⚠️ Unknown duration format: '$DUR_INPUT' - expected seconds or values like 2h/30m/45s or numeric formats (e.g. 18000 or 1.8e4)"
-              exit 1
-            fi
-          fi
-
-          # Build command dynamically
-          CMD="python scripts/live_trading_launcher.py"
-
-          # Add mode
-          if [ "${{ github.event.inputs.mode }}" = "paper" ]; then
-            CMD="$CMD --paper"
-          fi
-
-          # Add dry-run if enabled
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            CMD="$CMD --dry-run"
-          fi
-
-          # Add infinite mode (Layer 1)
-          if [ "${{ github.event.inputs.infinite }}" = "true" ]; then
-            CMD="$CMD --infinite"
-          fi
-
-          # Add auto-restart (Layer 2)
-          if [ "${{ github.event.inputs.auto_restart }}" = "true" ]; then
-            CMD="$CMD --auto-restart"
-          fi
-
-          # Add restart delay if specified
-          if [ -n "${{ github.event.inputs.restart_delay }}" ] && [ "${{ github.event.inputs.restart_delay }}" != "30" ]; then
-            CMD="$CMD --restart-delay ${{ github.event.inputs.restart_delay }}"
-          fi
-
-          # Add normalized duration if present
-          if [ -n "$duration_arg" ]; then
-            CMD="$CMD $duration_arg"
-          fi
-
-          # Add debug mode if enabled
-          if [ "${{ github.event.inputs.debug_mode }}" = "true" ]; then
-            CMD="$CMD --debug"
-          fi
-
-          echo "🚀 Executing command:"
-          echo "$CMD"
-          echo ""
+          # Komut argümanlarını güvenli bir şekilde bir diziye ekle
+          args=()
+          [ "${{ github.event.inputs.mode }}" = "paper" ] && args+=("--paper")
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && args+=("--dry-run")
+          [ "${{ github.event.inputs.infinite }}" = "true" ] && args+=("--infinite")
+          [ "${{ github.event.inputs.auto_restart }}" = "true" ] && args+=("--auto-restart")
+          [ "${{ github.event.inputs.debug_mode }}" = "true" ] && args+=("--debug")
           
-          echo "📊 Environment Variables Summary:"
-          echo "  DUPLICATE_PREVENTION_THRESHOLD: $DUPLICATE_PREVENTION_THRESHOLD"
-          echo "  DUPLICATE_PREVENTION_COOLDOWN: $DUPLICATE_PREVENTION_COOLDOWN"
-          echo "  TRADING_SYMBOLS: $TRADING_SYMBOLS"
-          echo "  RSI_THRESHOLD_BTC: $RSI_THRESHOLD_BTC"
-          echo "  RSI_THRESHOLD_ETH: $RSI_THRESHOLD_ETH"
-          echo "  RSI_THRESHOLD_SOL: $RSI_THRESHOLD_SOL"
-          echo "  CAPITAL_USDT: $CAPITAL_USDT"
-          echo "  WS_MAX_STREAMS_BINGX: $WS_MAX_STREAMS_BINGX"
-          echo ""
+          # Süre (duration) argümanını işle
+          if [ -n "${{ github.event.inputs.duration }}" ]; then
+            duration_in_seconds=$(python3 -c "import re, sys; s = sys.argv[1]; m = re.match(r'^\s*([0-9\.]+)\s*([hms])?\s*$', s.lower()); print(int(float(m.group(1)) * {'h':3600,'m':60,'s':1}.get(m.group(2), 1)))" "${{ github.event.inputs.duration }}")
+            args+=("--duration" "$duration_in_seconds")
+          fi
 
-          # Execute
-          $CMD
+          # Nihai komutu oluştur ve çalıştır
+          CMD=("python3" "scripts/live_trading_launcher.py" "${args[@]}")
+          
+          echo "🚀 Executing command:"
+          printf "%q " "${CMD[@]}"
+          echo
+          
+          "${CMD[@]}"
 
       - name: Generate Post-Session Summary
         if: always()
