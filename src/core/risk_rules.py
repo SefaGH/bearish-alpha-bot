@@ -345,71 +345,89 @@ class MaxDrawdownRule(BaseRiskRule):
 
 class RiskRewardRatioRule(BaseRiskRule):
     """
-    Validates that trade has acceptable risk/reward ratio.
+    Validates that a trade has an acceptable risk/reward ratio.
     
-    Ensures we only take trades with favorable risk/reward profiles.
+    This rule is now DYNAMIC. It prioritizes the 'min_rr_ratio' from the
+    incoming signal, making it responsive to strategy-specific or config-level changes.
     """
     
     def __init__(self, min_risk_reward: float = 1.5, rule_name: str = None):
         """
-        Initialize risk/reward ratio rule.
+        Initialize the risk/reward ratio rule.
         
         Args:
-            min_risk_reward: Minimum acceptable risk/reward ratio (default 1.5:1)
-            rule_name: Optional custom rule name
+            min_risk_reward: A fallback minimum ratio, used only if the signal
+                             does not provide its own 'min_rr_ratio'. Default is 1.5.
+            rule_name: Optional custom rule name.
         """
         super().__init__(rule_name or "RiskRewardRatioRule")
-        self.min_risk_reward = min_risk_reward
+        # Bu değer artık sadece bir "varsayılan" veya "fallback" görevi görüyor.
+        self.fallback_min_risk_reward = min_risk_reward
     
     def validate(self, signal: Dict, portfolio_manager) -> Tuple[bool, str]:
         """
-        Validate risk/reward ratio.
+        Validate risk/reward ratio using the dynamic limit from the signal itself.
         
         Args:
-            signal: Trading signal
-            portfolio_manager: PortfolioManager instance
+            signal: Trading signal, expected to contain 'min_rr_ratio'.
+            portfolio_manager: PortfolioManager instance.
             
         Returns:
-            (is_valid, reason) tuple
+            (is_valid, reason) tuple.
         """
         if not self.enabled:
             return (True, f"{self.rule_name} disabled")
         
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
+            
+            # ======================= ANA DÜZELTME =======================
+            # 1. Dinamik R/R Hedefini Sinyalden Oku
+            #    Eğer sinyalde bu değer yoksa, başlatmadaki varsayılan değeri kullan.
+            min_rr_target = signal.get('min_rr_ratio', self.fallback_min_risk_reward)
+            # ==========================================================
+
             entry_price = signal.get('entry', 0)
             stop_loss = signal.get('stop', 0)
-            target_price = signal.get('target', entry_price * 1.02)  # Default 2% target
+            target_price = signal.get('target', 0)
             
-            # Calculate stop loss if missing
-            if not stop_loss:
-                stop_loss = self._calculate_stop_loss(signal, entry_price)
+            # Gerekli fiyat bilgileri eksikse kural başarısız olur.
+            if not all([entry_price, stop_loss, target_price]):
+                reason = f"Missing price data for R/R calculation (entry={entry_price}, stop={stop_loss}, target={target_price})"
+                logger.warning(f"[{self.rule_name}] {symbol}: {reason}")
+                return (False, reason)
             
-            if not stop_loss or entry_price <= 0:
-                logger.warning(f"[{self.rule_name}] {symbol}: invalid prices (entry={entry_price}, stop={stop_loss})")
-                return (False, "Invalid entry or stop price")
-            
+            # Risk ve Getiri mesafelerini hesapla
             risk_distance = abs(entry_price - stop_loss)
             reward_distance = abs(target_price - entry_price)
             
             if risk_distance > 0:
-                risk_reward_ratio = reward_distance / risk_distance
+                # Gerçek R/R oranını hesapla
+                calculated_rr_ratio = reward_distance / risk_distance
                 
-                logger.debug(f"[{self.rule_name}] {symbol}: R/R ratio {risk_reward_ratio:.2f} vs min {self.min_risk_reward:.2f}")
+                # Loglamayı, hangi hedefe göre kontrol edildiğini gösterecek şekilde güncelle.
+                log_msg = (f"[{self.rule_name}] {symbol}: "
+                           f"Calculated R/R Ratio {calculated_rr_ratio:.2f} vs "
+                           f"Target Minimum {min_rr_target:.2f}")
                 
-                if risk_reward_ratio < self.min_risk_reward:
-                    logger.warning(f"🚫 [{self.rule_name}] REJECTED: {symbol} R/R ratio {risk_reward_ratio:.2f} below minimum {self.min_risk_reward:.2f}")
-                    return (False, f"Risk/reward ratio {risk_reward_ratio:.2f} below minimum {self.min_risk_reward:.2f}")
+                # 2. Karşılaştırmayı Dinamik Hedefe Göre Yap
+                if calculated_rr_ratio < min_rr_target:
+                    reason = f"Risk/reward ratio {calculated_rr_ratio:.2f} is below the target minimum of {min_rr_target:.2f}"
+                    logger.warning(f"🚫 [{self.rule_name}] REJECTED: {symbol} - {reason}")
+                    # Ret logunu log_msg ile birleştirerek daha anlaşılır hale getir
+                    logger.debug(log_msg) 
+                    return (False, reason)
                 
-                logger.debug(f"✅ [{self.rule_name}] PASSED: {symbol}")
-                return (True, f"Risk/reward ratio acceptable")
+                logger.debug(log_msg + " -> ✅ PASSED")
+                return (True, "Risk/reward ratio is acceptable")
             else:
-                logger.warning(f"[{self.rule_name}] {symbol}: zero risk distance")
-                return (False, "Zero risk distance")
+                # Risk mesafesi sıfır ise (örneğin stop loss giriş fiyatıyla aynıysa)
+                logger.warning(f"[{self.rule_name}] {symbol}: Zero risk distance, cannot calculate R/R ratio.")
+                return (False, "Zero risk distance prevents R/R calculation")
             
         except Exception as e:
-            logger.error(f"[{self.rule_name}] Validation error: {e}")
-            return (False, f"Validation error: {str(e)}")
+            logger.error(f"[{self.rule_name}] Validation error: {e}", exc_info=True)
+            return (False, f"Critical validation error: {str(e)}")
     
     def _calculate_stop_loss(self, signal: Dict, entry_price: float) -> float:
         """Calculate stop loss from signal parameters."""
