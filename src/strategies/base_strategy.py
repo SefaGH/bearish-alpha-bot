@@ -9,7 +9,7 @@ class BaseStrategy(ABC):
     """
     def __init__(self, strategy_name: str, config: Dict[str, Any]):
         self.strategy_name = strategy_name
-        self.config = config
+        self.strategy_config = config
         self.market_data_pipeline = None # Can be injected later
 
     def set_market_data_pipeline(self, pipeline: Any):
