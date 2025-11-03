@@ -68,6 +68,7 @@ class RiskManager:
         
         # Log initialization with standardized configuration
         logger.info(f"RiskManager initialized with portfolio value: ${self.portfolio_value:.2f}")
+        logger.info(f"Risk configuration: {self.risk_config.to_dict()}")
         logger.info(f"Risk limits: {self.risk_limits}")
     
     def _calculate_total_portfolio_exposure(self) -> float:

@@ -21,13 +21,15 @@ from core.circuit_breaker import CircuitBreakerSystem
 
 
 # Helper function to create RiskManager with new standardized signature
-def create_risk_manager(portfolio_value=10000, custom_limits=None):
+def create_risk_manager(portfolio_value=10000, custom_limits=None, websocket_manager=None, performance_monitor=None):
     """
     Helper function to create RiskManager with standardized signature.
     
     Args:
         portfolio_value: Portfolio value in USD
         custom_limits: Optional dict with custom risk limits
+        websocket_manager: Optional WebSocket manager
+        performance_monitor: Optional performance monitor
         
     Returns:
         RiskManager instance
@@ -35,7 +37,9 @@ def create_risk_manager(portfolio_value=10000, custom_limits=None):
     risk_config = RiskConfiguration(custom_limits=custom_limits or {})
     return RiskManager(
         portfolio_value=portfolio_value,
-        risk_config=risk_config
+        risk_config=risk_config,
+        websocket_manager=websocket_manager,
+        performance_monitor=performance_monitor
     )
 
 

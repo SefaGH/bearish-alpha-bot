@@ -24,10 +24,15 @@ from config.risk_config import RiskConfiguration
 
 
 # Helper function to create RiskManager with new signature
-def create_risk_manager(portfolio_value=10000, custom_limits=None):
+def create_risk_manager(portfolio_value=10000, custom_limits=None, websocket_manager=None, performance_monitor=None):
     """Create RiskManager with standardized configuration."""
     risk_config = RiskConfiguration(custom_limits=custom_limits or {})
-    return RiskManager(portfolio_value=portfolio_value, risk_config=risk_config)
+    return RiskManager(
+        portfolio_value=portfolio_value,
+        risk_config=risk_config,
+        websocket_manager=websocket_manager,
+        performance_monitor=performance_monitor
+    )
 
 
 class MockExchangeClient:
