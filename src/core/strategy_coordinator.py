@@ -440,8 +440,7 @@ class StrategyCoordinator:
 
                     rl_action_index = self.rl_agent.act(
                         state_features,
-                        market_regime=signal.get('predicted_regime', 'neutral'),
-                        training=False
+                        market_regime=signal.get('predicted_regime', 'neutral')
                     )
                     rl_advice_str = ['buy', 'hold', 'sell'][rl_action_index]
                     signal['rl_recommendation'] = rl_advice_str
