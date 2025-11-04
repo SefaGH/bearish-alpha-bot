@@ -917,6 +917,18 @@ class LiveTradingLauncher:
         #    get_config() metodu, sembollerin her zaman bir LİSTE olmasını garanti eder.
         self.CAPITAL_USDT = self.config.get('risk', {}).get('equity_usd', 100.0)
         self.TRADING_PAIRS = self.config.get('universe', {}).get('fixed_symbols', [])
+        
+        # DEFENSIVE: Ensure TRADING_PAIRS is always a list, even if config parsing fails
+        if isinstance(self.TRADING_PAIRS, str):
+            # Single symbol or comma-separated string - convert to list
+            if ',' in self.TRADING_PAIRS:
+                self.TRADING_PAIRS = [s.strip() for s in self.TRADING_PAIRS.split(',') if s.strip()]
+            else:
+                self.TRADING_PAIRS = [self.TRADING_PAIRS.strip()] if self.TRADING_PAIRS.strip() else []
+        elif not isinstance(self.TRADING_PAIRS, list):
+            logger.warning(f"⚠️ Unexpected type for TRADING_PAIRS: {type(self.TRADING_PAIRS)}. Using default.")
+            self.TRADING_PAIRS = ['BTC/USDT']  # Safe fallback
+        
         self.RISK_PARAMS = self.config.get('risk', {})
 
         # 4. Diğer tüm başlangıç değişkenlerini boş olarak başlat
@@ -934,6 +946,12 @@ class LiveTradingLauncher:
         # ML bileşenleri daha sonra yüklenecek
         self.regime_predictor = None
         self.price_engine = None
+        # CRITICAL: Initialize all task attributes to prevent AttributeError during cleanup
+        self._main_trading_task = None
+        self._prediction_loop_task = None
+        self._websocket_task = None
+        self._heartbeat_task = None
+        self._monitoring_task = None
 
         # 5. Başlangıç loglarını, YENİ ve DOĞRU verilerle yazdır
         logger.info("="*70)
@@ -995,7 +1013,7 @@ class LiveTradingLauncher:
         
         # Stop price prediction loop
         logger.info("\nStopping price prediction loop...")
-        if self._prediction_loop_task:
+        if hasattr(self, '_prediction_loop_task') and self._prediction_loop_task:
             try:
                 if self.price_engine:
                     await self.price_engine.stop_prediction_loop()

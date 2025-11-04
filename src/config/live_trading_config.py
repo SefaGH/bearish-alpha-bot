@@ -166,13 +166,19 @@ class LiveTradingConfiguration:
     def _cast_value(value_str: str, target_type: type) -> Any:
         """Helper to convert a string value to a specific target type."""
         try:
-            # === YENİ VE ÖNEMLİ KONTROL ===
-            # Eğer YAML'deki varsayılan değer bir string ise ama virgül içeriyorsa,
-            # bunu potansiyel bir liste olarak kabul et. Bu, TRADING_SYMBOLS gibi ayarları çözer.
-            if target_type is str and ',' in value_str:
-                 return [s.strip() for s in value_str.split(',') if s.strip()]
-            # === KONTROL SONU ===
+            # === CRITICAL FIX: Handle trading symbols specifically ===
+            # Trading symbols have the format "BTC/USDT" or "BTC/USDT:USDT"
+            # They must be converted to a list, even if there's only one symbol
+            if '/' in value_str:  # Detect trading pair format
+                if ',' in value_str:
+                    # Multiple symbols: "BTC/USDT,ETH/USDT"
+                    return [s.strip() for s in value_str.split(',') if s.strip()]
+                else:
+                    # Single symbol: "BTC/USDT" -> ["BTC/USDT"]
+                    return [value_str.strip()]
+            # === END CRITICAL FIX ===
 
+            # Original type-based casting for non-trading-symbol values
             if target_type is bool:
                 return value_str.lower() in ('true', '1', 't', 'y', 'yes')
             if target_type is int:
@@ -181,9 +187,14 @@ class LiveTradingConfiguration:
                 return float(value_str)
             if target_type is list:
                 return [s.strip() for s in value_str.split(',') if s.strip()]
+            if target_type is str:
+                # For strings that look like lists (comma-separated)
+                if ',' in value_str:
+                    return [s.strip() for s in value_str.split(',') if s.strip()]
+                return value_str
             return value_str  # Assume string
-        except (ValueError, TypeError):
-            logger.warning(f"Could not cast '{value_str}' to {target_type.__name__}. Using string value as fallback.")
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Could not cast '{value_str}' to {target_type.__name__}: {e}")
             return value_str
 
     @staticmethod
