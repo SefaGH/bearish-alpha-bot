@@ -901,7 +901,7 @@ class LiveTradingLauncher:
     def __init__(self, mode: str, dry_run: bool, infinite: bool, auto_restart: bool,
                  max_restarts: int, restart_delay: int, debug_mode: bool):
 
-        # Argümanları doğrudan sınıf değişkenlerine ata
+        # 1. Gelen argümanları doğrudan sınıf değişkenlerine ata
         self.mode = mode
         self.dry_run = dry_run
         self.infinite = infinite
@@ -910,49 +910,45 @@ class LiveTradingLauncher:
         self.restart_delay = restart_delay
         self.debug_mode = debug_mode
 
-        # ====================================================================
-        # ===           YAPILANDIRMAYI MERKEZDEN VE TEK SEFERDE AL          ===
-        # ====================================================================
-        # 1. Yeni merkezi fonksiyon ile yapılandırmayı al.
+        # 2. YAPILANDIRMAYI MERKEZDEN VE TEK SEFERDE AL (TEK DOĞRU KAYNAK)
         self.config = get_config()
         
-        # 2. Gerekli tüm parametreleri DOĞRUDAN bu tek, güvenilir kaynaktan al.
+        # 3. Gerekli tüm parametreleri DOĞRUDAN bu tek, güvenilir kaynaktan al.
+        #    get_config() metodu, sembollerin her zaman bir LİSTE olmasını garanti eder.
         self.CAPITAL_USDT = self.config.get('risk', {}).get('equity_usd', 100.0)
         self.TRADING_PAIRS = self.config.get('universe', {}).get('fixed_symbols', [])
-        # ====================================================================
+        self.RISK_PARAMS = self.config.get('risk', {})
 
-        # --- Diğer tüm başlangıç değişkenlerini başlat ---
+        # 4. Diğer tüm başlangıç değişkenlerini boş olarak başlat
         self.coordinator = None
         self.telegram = None
         self.exchange_clients = {}
-        self._api_health_status: Dict[str, Any] = {}
         self.strategies = {}
         self.restart_manager = None
         self.health_monitor = None
-        self._cleanup_completed = False
         self.ws_optimizer = None
+        self._cleanup_completed = False
         self._has_bingx_credentials = False
-        self.regime_predictor = None
-        self.price_engine = None
-        self.strategy_adapter = None
-        self.strategy_optimizer = None
-        self._prediction_loop_task = None
         self._cached_exchange_status = None
         self._cached_ws_status = None
-        self.debug_logger = None
+        # ML bileşenleri daha sonra yüklenecek
+        self.regime_predictor = None
+        self.price_engine = None
 
-        # Başlangıç loglarını, yeni ve temizlenmiş verilerle yazdır
+        # 5. Başlangıç loglarını, YENİ ve DOĞRU verilerle yazdır
         logger.info("="*70)
-        logger.info("BEARISH ALPHA BOT - LAUNCHER (v3.0 - Centralized Config)")
+        logger.info("BEARISH ALPHA BOT - LAUNCHER (v3.2 - Final Config)")
         logger.info("="*70)
         logger.info(f"Mode: {self.mode.upper()}")
+        logger.info(f"Dry Run: {self.dry_run}")
         logger.info(f"Capital: {self.CAPITAL_USDT} USDT (from config)")
         logger.info(f"Exchange: BingX")
+        
+        # Bu loglama artık her zaman doğru çalışacak
         if self.TRADING_PAIRS:
-            logger.info(f"Trading Pairs ({len(self.TRADING_PAIRS)}): {', '.join(self.TRADING_PAIRS[:5])}...")
+            logger.info(f"Trading Pairs ({len(self.TRADING_PAIRS)}): {', '.join(self.TRADING_PAIRS)}")
         else:
             logger.warning("⚠️ No trading pairs configured! This will likely cause an error.")
-        logger.info(f"Dry Run: {self.dry_run}")
 
     @property
     def capital_source(self) -> str:
