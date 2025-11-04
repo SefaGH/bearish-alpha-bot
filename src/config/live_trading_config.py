@@ -180,11 +180,12 @@ class LiveTradingConfiguration:
         overrides: Dict[str, Any] = {}
         logger.info("🔧 Applying overrides from environment variables...")
         
-        # Symbol format adapter for RSI thresholds
-        symbol_format_map = {
-            'BTC': ['BTC/USDT', 'BTC/USDT:USDT'],
-            'ETH': ['ETH/USDT', 'ETH/USDT:USDT'],
-            'SOL': ['SOL/USDT', 'SOL/USDT:USDT']
+        # RSI threshold symbol mapping (spot -> futures format)
+        rsi_symbol_map = {
+            'RSI_THRESHOLD_BTC': ['BTC/USDT', 'BTC/USDT:USDT'],
+            'RSI_THRESHOLD_ETH': ['ETH/USDT', 'ETH/USDT:USDT'],
+            'RSI_THRESHOLD_SOL': ['SOL/USDT', 'SOL/USDT:USDT'],
+            'RSI_THRESHOLD_BNB': ['BNB/USDT', 'BNB/USDT:USDT'],
         }
         
         for env_var, path in env_map.items():
@@ -192,51 +193,84 @@ class LiveTradingConfiguration:
             if env_value_str is None or env_value_str == '':
                 continue
     
-            # Special handling for RSI_THRESHOLD_* variables
-            if 'RSI_THRESHOLD' in env_var:
-                symbol_key = env_var.replace('RSI_THRESHOLD_', '')
-                if symbol_key in symbol_format_map:
-                    # Try both spot and futures formats
-                    for symbol_format in symbol_format_map[symbol_key]:
-                        adapted_path = path.copy()
-                        # Replace the symbol in the path
-                        if len(adapted_path) > 2:
-                            adapted_path[-2] = symbol_format
-                            
-                        try:
-                            # Try with adapted path
-                            original_value = self._navigate_config_path(base_config, adapted_path)
-                            if original_value is not None:
-                                path = adapted_path  # Use the successful path
-                                logger.debug(f"Adapted RSI threshold path for {symbol_key}: {'.'.join(path)}")
-                                break
-                        except KeyError:
-                            continue
-    
-            try:
-                # Navigate through the config to find the original value
-                original_value = self._navigate_config_path(base_config, path)
+            # Special handling for RSI_THRESHOLD variables
+            if env_var in rsi_symbol_map:
+                # Try to find the correct path with available symbol formats
+                original_value = None
+                successful_path = None
                 
-                target_type = type(original_value)
+                for symbol_format in rsi_symbol_map[env_var]:
+                    try:
+                        # Create adapted path with correct symbol format
+                        adapted_path = path.copy()
+                        if len(adapted_path) >= 3 and 'symbols' in adapted_path:
+                            # Replace the symbol key in the path
+                            symbol_index = adapted_path.index('symbols') + 1
+                            if symbol_index < len(adapted_path):
+                                adapted_path[symbol_index] = symbol_format
+                        
+                        # Try to navigate with adapted path
+                        test_value = base_config
+                        for key in adapted_path:
+                            test_value = test_value[key]
+                        
+                        # If successful, use this path
+                        original_value = test_value
+                        successful_path = adapted_path
+                        logger.debug(f"✓ Found RSI config for {env_var} using format: {symbol_format}")
+                        break
+                        
+                    except (KeyError, TypeError):
+                        continue
+                
+                if successful_path:
+                    path = successful_path
+                else:
+                    logger.warning(f"⚠️ Could not find valid path for {env_var}")
+                    continue
+    
+            # Standard processing for all variables (including adapted RSI ones)
+            try:
+                # Navigate through config to find original value
+                if 'RSI_THRESHOLD' not in env_var:  # Skip navigation for already processed RSI vars
+                    original_value = base_config
+                    for key in path:
+                        if not isinstance(original_value, dict):
+                            raise KeyError(f"Expected dict at {key}")
+                        original_value = original_value[key]
+                
+                target_type = type(original_value) if original_value is not None else str
                 converted_value = self._cast_value(env_value_str, target_type)
                 
-                # Build the nested dictionary for the override
+                # Build nested dictionary for override
                 temp_dict = overrides
                 for key in path[:-1]:
                     temp_dict = temp_dict.setdefault(key, {})
                 temp_dict[path[-1]] = converted_value
-    
+                
                 logger.info(f"  ✓ Applied ENV: {env_var} = {converted_value} (as {target_type.__name__})")
-    
+                
             except KeyError as e:
-                logger.warning(f"  ⚠️ ENV var '{env_var}' found, but path '{'.'.join(path)}' is invalid in YAML. Key error: {e}")
+                logger.warning(f"  ⚠️ ENV var '{env_var}' found, but path '{'.'.join(path)}' is invalid. Error: {e}")
             except Exception as e:
-                logger.error(f"  ❌ Failed to process ENV var '{env_var}' with value '{env_value_str}'", exc_info=True)
+                logger.error(f"  ❌ Failed to process '{env_var}': {e}")
         
         return overrides
     
     def _navigate_config_path(self, config: Dict, path: List[str]) -> Any:
-        """Helper to navigate through nested config dictionary."""
+        """
+        Helper to navigate through nested config dictionary.
+        
+        Args:
+            config: The configuration dictionary to navigate
+            path: List of keys representing the path to navigate
+            
+        Returns:
+            The value at the end of the path
+            
+        Raises:
+            KeyError: If the path is invalid
+        """
         result = config
         for key in path:
             if not isinstance(result, dict):
@@ -291,29 +325,29 @@ class LiveTradingConfiguration:
     def _cast_value(value_str: str, target_type: type) -> Any:
         """Helper to convert a string value to a specific target type."""
         try:
-            # Trading symbols check (mevcut kod korunacak)
+            # Trading symbols check
             if LiveTradingConfiguration._is_trading_symbol(value_str):
                 return LiveTradingConfiguration._parse_trading_symbols(value_str)
             
-            # Handle list types with integer conversion for ML windows
+            # ML window lists için özel işlem
             if target_type is list:
-                # Check if it's a numeric window list (for ML features)
-                parts = [s.strip() for s in value_str.split(',') if s.strip()]
+                cleaned = value_str.strip()
+                if cleaned.startswith('[') and cleaned.endswith(']'):
+                    cleaned = cleaned[1:-1]
                 
-                # Try to convert to integers if all parts are numeric
-                try:
-                    # Remove brackets if present
-                    if value_str.startswith('[') and value_str.endswith(']'):
-                        value_str = value_str[1:-1]
-                        
-                    int_list = [int(p.strip()) for p in value_str.split(',') if p.strip()]
-                    logger.debug(f"Converted '{value_str}' to integer list: {int_list}")
-                    return int_list
-                except ValueError:
-                    # Not all numeric, return as string list
+                parts = [s.strip() for s in cleaned.split(',') if s.strip()]
+                
+                # Tüm parçalar sayı mı kontrol et
+                all_numeric = all(p.replace('.','').replace('-','').isdigit() for p in parts)
+                
+                if all_numeric:
+                    # Integer list olarak döndür
+                    return [int(float(p)) for p in parts]
+                else:
+                    # String list olarak döndür
                     return parts
             
-            # Original type-based casting
+            # Original type conversions
             if target_type is bool:
                 return value_str.lower() in ('true', '1', 't', 'y', 'yes')
             if target_type is int:
@@ -321,7 +355,6 @@ class LiveTradingConfiguration:
             if target_type is float:
                 return float(value_str)
             if target_type is str:
-                # For strings that look like lists (comma-separated)
                 if ',' in value_str:
                     return [s.strip() for s in value_str.split(',') if s.strip()]
                 return value_str
