@@ -917,6 +917,9 @@ class LiveTradingLauncher:
         #    get_config() metodu, sembollerin her zaman bir LİSTE olmasını garanti eder.
         self.CAPITAL_USDT = self.config.get('risk', {}).get('equity_usd', 100.0)
         self.TRADING_PAIRS = self.config.get('universe', {}).get('fixed_symbols', [])
+
+        # ✅ ADD THIS LINE FOR COMPATIBILITY
+        self.trading_pairs = self.TRADING_PAIRS  # Lowercase alias for compatibility
         
         # DEFENSIVE: Ensure TRADING_PAIRS is always a list (last-resort safety check)
         # The config module should already return a list, but this handles edge cases
