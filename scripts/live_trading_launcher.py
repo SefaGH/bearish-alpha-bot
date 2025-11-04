@@ -909,23 +909,19 @@ class LiveTradingLauncher:
         self.restart_delay = restart_delay
         self.debug_mode = debug_mode
 
-        # --- Yapılandırmayı ve temel ayarları en başta yükle ---
+        # ====================================================================
+        # ===                YAPILANDIRMAYI MERKEZDEN ALMA                 ===
+        # ====================================================================
         # 1. Yeni merkezi fonksiyon ile yapılandırmayı AL.
         self.config = get_config()
         
-        # 2. Sermayeyi doğrudan bu config'den AL.
+        # 2. Gerekli tüm parametreleri DOĞRUDAN bu config'den AL.
+        #    Artık karmaşık kontrollere gerek yok. get_config() zaten doğru tipi sağlıyor.
         self.CAPITAL_USDT = self.config.get('risk', {}).get('equity_usd', 100.0)
-        
-        # 3. İşlem çiftlerini (sembolleri) güvenli bir şekilde AL.
-        raw_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
-        if isinstance(raw_symbols, str) and ',' in raw_symbols:
-             self.TRADING_PAIRS = [s.strip() for s in raw_symbols.split(',') if s.strip()]
-        elif isinstance(raw_symbols, list):
-            self.TRADING_PAIRS = raw_symbols
-        else: # Hatalı veya beklenmedik bir format gelirse boş liste ata.
-            self.TRADING_PAIRS = [] if raw_symbols else []
+        self.TRADING_PAIRS = self.config.get('universe', {}).get('fixed_symbols', [])
+        # ====================================================================
 
-        # --- Diğer başlangıç değişkenleri (Bunlar aynı kalabilir) ---
+        # --- Diğer başlangıç değişkenleri ---
         self.coordinator = None
         self.telegram = None
         self.exchange_clients = {}
@@ -946,7 +942,7 @@ class LiveTradingLauncher:
         self.debug_logger = None
 
         logger.info("="*70)
-        logger.info("BEARISH ALPHA BOT - LIVE TRADING LAUNCHER (v2.0 - Centralized)")
+        logger.info("BEARISH ALPHA BOT - LIVE TRADING LAUNCHER (v3.0 - Final Refactor)")
         logger.info("="*70)
         logger.info(f"Mode: {self.mode.upper()}")
         logger.info(f"Capital: {self.CAPITAL_USDT} USDT (from config)")
@@ -954,7 +950,7 @@ class LiveTradingLauncher:
         if self.TRADING_PAIRS:
             logger.info(f"Trading Pairs ({len(self.TRADING_PAIRS)}): {', '.join(self.TRADING_PAIRS[:5])}...")
         else:
-            logger.warning("⚠️ No trading pairs configured!")
+            logger.warning("⚠️ No trading pairs configured! This will likely cause an error.")
         logger.info(f"Dry Run: {self.dry_run}")
 
     @property
@@ -1161,7 +1157,7 @@ class LiveTradingLauncher:
         """OPTIMIZED BingX initialization."""
         logger.info("\n[2/8] Initializing BingX Exchange Connection...")
         
-        trading_pairs = self.TRADING_PAIRS # <--- DOĞRU VERSİYON BU
+        trading_pairs = self.TRADING_PAIRS
         
         try:
             creds = None
