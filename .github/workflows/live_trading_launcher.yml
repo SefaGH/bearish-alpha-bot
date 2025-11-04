@@ -351,7 +351,7 @@ jobs:
           # Fixed duration handling - single line Python
           if [ -n "${{ github.event.inputs.duration }}" ]; then
             DURATION_INPUT="${{ github.event.inputs.duration }}"
-            duration_in_seconds=$(python3 -c "import re; s='${DURATION_INPUT}'.strip(); m=re.match(r'^([0-9\.]+)\s*([hms])?', s.lower()); print(int(float(m.group(1))*{'h':3600,'m':60,'s':1}.get(m.group(2) or 's',1))) if m else exit(1)")
+            duration_in_seconds=$(python3 -c "import re,sys; s='${DURATION_INPUT}'.strip(); m=re.match(r'^([0-9\.]+)\s*([hms])?\s*\$', s.lower()); sys.exit(0) if m and print(int(float(m.group(1))*{'h':3600,'m':60,'s':1}.get(m.group(2) or 's',1))) is None else sys.exit(1)")
             
             if [ $? -eq 0 ]; then
               args+=("--duration" "$duration_in_seconds")
@@ -477,7 +477,7 @@ jobs:
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
             # Use Python for percentage calculation instead of bc (passing as argument for safety)
             # Note: Duplicated in summary job for independence (each job should be self-contained)
-            DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; print(f'{float(sys.argv[1]) * 100:.4f}%' if len(sys.argv) > 1 else 'N/A')" "${DUPLICATE_PREVENTION_THRESHOLD}")
+            DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; val=sys.argv[1] if len(sys.argv)>1 else ''; print(f'{float(val)*100:.4f}%' if val else 'N/A') if val and val.replace('.','').replace('-','').isdigit() else print('N/A')" "${DUPLICATE_PREVENTION_THRESHOLD}")
             PREFLIGHT_STATUS="${{ github.event.inputs.skip_preflight == 'true' && '⚠️ SKIPPED' || '✅ PASSED' }}"
             
             MESSAGE="✅ <b>Live Trading Session Completed</b>%0A%0A"
@@ -547,7 +547,7 @@ jobs:
         run: |
           # Use Python for percentage calculation instead of bc (passing as argument for safety)
           # Note: Duplicated from Telegram notification for job independence
-          DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; print(f'{float(sys.argv[1]) * 100:.4f}%' if len(sys.argv) > 1 else 'N/A')" "${DUPLICATE_PREVENTION_THRESHOLD}")
+          DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; val=sys.argv[1] if len(sys.argv)>1 else ''; print(f'{float(val)*100:.4f}%' if val else 'N/A') if val and val.replace('.','').replace('-','').isdigit() else print('N/A')" "${DUPLICATE_PREVENTION_THRESHOLD}")
 
           echo "# 🤖 Bearish Alpha Bot - Trading Session Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
