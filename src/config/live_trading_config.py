@@ -318,5 +318,8 @@ def get_config() -> Dict[str, Any]:
     """
     Global accessor for the singleton configuration instance.
     This should be the ONLY way other modules get the configuration.
+    
+    Note: This function always logs the configuration summary on first load.
+    Tests that need to suppress logging should use LiveTradingConfiguration.load(log_summary=False) directly.
     """
     return LiveTradingConfiguration.load()
