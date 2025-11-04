@@ -108,7 +108,8 @@ ML_HEALTH_CHECK_SYMBOL = "HEALTH_CHECK_BTC/USDT"  # Symbol for ML health checks
 class ProductionCoordinator:
     """Coordinate all Phase 3 components for production deployment."""
     
-    def __init__(self):
+    # --- DEĞİŞİKLİK 1: __init__ metodunu `config` alacak şekilde güncelle ---
+    def __init__(self, config: Optional[Dict] = None):
         """Initialize production coordinator."""
         # Phase 3 components (will be initialized)
         self.websocket_manager = None  # Phase 3.1
@@ -143,9 +144,15 @@ class ProductionCoordinator:
         # Signal lifecycle tracking
         self.signal_lifecycle = {}  # signal_id -> {stage, timestamp, details}
         
-        # Configuration
-        self.config = LiveTradingConfiguration.load()
-        
+        # --- DEĞİŞİKLİK 2: Kendi config'ini yüklemek yerine dışarıdan gelen config'i kullan ---
+        # Eğer dışarıdan bir config gelmezse, eski davranışa geri dön (güvenlik için)
+        if config:
+            self.config = config
+            logger.info("ProductionCoordinator initialized with provided configuration.")
+        else:
+            self.config = LiveTradingConfiguration.load()
+            logger.warning("ProductionCoordinator initialized by loading its own configuration. (Legacy mode)")
+
         # Debug ayarını config'den oku
         self.debug_logging = self.config.get('debug', {}).get('strategy_logging', False)
         
@@ -969,6 +976,7 @@ class ProductionCoordinator:
             'timestamp': datetime.now(timezone.utc)
         }
     
+    # --- DEĞİŞİKLİK 3: ML bileşenlerini `self.config`'den okunan değerlerle başlat ---
     async def _initialize_ml_components(self, price_engine: Optional[Any] = None, regime_predictor: Optional[Any] = None) -> Dict[str, Any]:
         """
         Initialize and connect ALL ML components from src/ml/.
@@ -989,12 +997,12 @@ class ProductionCoordinator:
             logger.error(f"🧠 [ML-INIT] Critical ML modules not found: {e}", exc_info=True)
             return {'success': False, 'reason': f'ML modules not available: {e}'}
 
+        # BU `self.config` ARTIK ORTAM DEĞİŞKENLERİNİ İÇERİYOR!
         ml_config = self.config.get('ml', {})
 
         # 1. Feature Engineering Pipeline (Dependency for other components)
         try:
-            # ✅ FIX: FeatureEngineeringPipeline does not take a 'config' argument.
-            self.feature_pipeline = FeatureEngineeringPipeline()
+            self.feature_pipeline = FeatureEngineeringPipeline(config=ml_config.get('features', {}))
             ml_components.append('feature_pipeline')
             logger.info("✅ Feature engineering pipeline initialized.")
         except Exception as e:
@@ -1002,12 +1010,12 @@ class ProductionCoordinator:
             return {'success': False, 'reason': 'Failed to initialize FeatureEngineeringPipeline'}
 
         # 2. Price Prediction Engine
-        if ml_config.get('price_prediction_enabled', True):
+        if ml_config.get('prediction', {}).get('enabled', True):
             try:
                 self.price_engine = AdvancedPricePredictionEngine(
                     market_data_pipeline=self.market_data_pipeline,
                     feature_pipeline=self.feature_pipeline,
-                    config=ml_config
+                    config=ml_config.get('prediction', {})
                 )
                 ml_components.append('price_engine')
                 logger.info("✅ Price prediction engine initialized.")
@@ -1019,11 +1027,11 @@ class ProductionCoordinator:
             logger.info("ℹ️ Price prediction is disabled in config.")
 
         # 3. Regime Predictor
-        if ml_config.get('regime_prediction_enabled', True):
+        if ml_config.get('prediction', {}).get('enabled', True):
             try:
                 self.regime_predictor = MLRegimePredictor(
                     feature_pipeline=self.feature_pipeline,
-                    config=ml_config
+                    config=ml_config.get('prediction', {})
                 )
                 ml_components.append('regime_predictor')
                 logger.info("✅ Regime predictor initialized.")
@@ -1038,8 +1046,16 @@ class ProductionCoordinator:
         rl_config = ml_config.get('reinforcement_learning', {})
         if rl_config.get('enabled', True):
             try:
+                # RL ajanı için gerekli parametreleri `self.config`'den alarak başlat.
                 state_size = 42 
-                self.rl_agent = TradingRLAgent(state_size=state_size, action_size=3, config=rl_config)
+                self.rl_agent = TradingRLAgent(
+                    state_size=state_size, 
+                    action_size=3, 
+                    training_mode=rl_config.get('training_mode', False),
+                    epsilon_inference=rl_config.get('epsilon_inference', 0.01),
+                    hold_threshold=rl_config.get('hold_confidence_threshold', 0.6), # <-- ORTAM DEĞİŞKENİNDEN GELEN DEĞER
+                    config=rl_config # Geriye dönük uyumluluk için tüm config'i de ver.
+                )
                 model_path = self.config.get('model_path', 'data/models')
                 self.rl_agent.load_model(os.path.join(model_path, "rl_agent_final.pth"))
                 ml_components.append('rl_agent')
@@ -1053,11 +1069,15 @@ class ProductionCoordinator:
 
         # 5. ML Strategy Integration Manager
         try:
+            # Entegrasyon yöneticisini de `self.config`'den gelen değerlerle başlat.
             self.ml_integration = MLStrategyIntegrationManager(
-                price_engine=self.price_engine,  # <-- DOĞRU PARAMETRE ADI
+                price_engine=self.price_engine,
                 regime_predictor=self.regime_predictor,
-                config=ml_config,
-                market_data_pipeline=self.market_data_pipeline
+                rl_agent=self.rl_agent, # rl_agent'ı da ver
+                min_confidence_threshold=ml_config.get('prediction', {}).get('min_confidence_threshold', 0.6), # <-- ORTAM DEĞİŞKENİ
+                rl_veto_threshold=rl_config.get('veto_threshold', 0.6), # <-- ORTAM DEĞİŞKENİ
+                market_data_pipeline=self.market_data_pipeline,
+                config=ml_config # Geriye dönük uyumluluk
             )
             ml_components.append('ml_integration')
             logger.info("✅ ML strategy integration manager initialized.")
@@ -1079,7 +1099,7 @@ class ProductionCoordinator:
         logger.info("🧠 [ML-INIT] ✅ ML SYSTEM INITIALIZATION COMPLETE")
         await self._ml_preflight_health_check()
         return {'success': True, 'components': ml_components}
-    
+
     async def _ml_preflight_health_check(self) -> Dict[str, Any]:
         """
         Perform pre-flight health checks on ML system.
