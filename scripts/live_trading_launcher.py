@@ -1514,12 +1514,14 @@ class LiveTradingLauncher:
             # Config ZATEN yüklü olmalı
             if not self.config:
                 self._load_config()
-
+    
             # FIX: Use TRADING_PAIRS (uppercase) which exists
             trading_pairs = getattr(self, 'trading_pairs', self.TRADING_PAIRS)
             logger.info(f"✓ Using config with {len(trading_pairs)} symbols")
             
-            logger.info(f"✓ Using config with {len(self.trading_pairs)} symbols")
+            # ❌ REMOVE THIS LINE - IT'S DUPLICATE AND WRONG
+            # logger.info(f"✓ Using config with {len(self.trading_pairs)} symbols")
+            
             # Equal allocation across strategies
             allocation_per_strategy = 1.0 / len(self.strategies)
             
