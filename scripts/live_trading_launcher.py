@@ -898,36 +898,34 @@ class LiveTradingLauncher:
     Comprehensive live trading launcher integrating all system components.
     """
     
-    def __init__(self, mode: str = 'live', dry_run: bool = False, 
-                 infinite: bool = False, auto_restart: bool = False,
-                 max_restarts: int = 1000, restart_delay: int = 30,
-                 debug_mode: bool = False):
-        """
-        Initialize live trading launcher.
-        
-        [... mevcut init docstring ...]
-        """
-                     
-        # Define capital and risk parameters FIRST
-        self._capital_source = "default"
-        self._default_CAPITAL_USDT = 100.0
-        self.CAPITAL_USDT = float(self._default_CAPITAL_USDT)
-        self.RISK_PARAMS = {
-            'max_position_size': 0.20,  # 20% max position
-            'stop_loss_pct': 0.02,      # 2% stop loss
-            'take_profit_pct': 0.015,   # 1.5% take profit
-            'max_portfolio_risk': 0.05, # 5% max portfolio risk
-            'max_drawdown': 0.10        # 10% max drawdown
-        }
-                     
-        # Config ve trading pairs için instance variables
-        self.config = None
-        self.trading_pairs = []  # ← Config'den gelecek
+    def __init__(self, mode: str, dry_run: bool, infinite: bool, auto_restart: bool,
+                 max_restarts: int, restart_delay: int, debug_mode: bool):
+
         self.mode = mode
         self.dry_run = dry_run
         self.infinite = infinite
         self.auto_restart = auto_restart
+        self.max_restarts = max_restarts
+        self.restart_delay = restart_delay
         self.debug_mode = debug_mode
+
+        # --- Yapılandırmayı ve temel ayarları en başta yükle ---
+        # 1. Yeni merkezi fonksiyon ile yapılandırmayı AL.
+        self.config = get_config()
+        
+        # 2. Sermayeyi doğrudan bu config'den AL.
+        self.CAPITAL_USDT = self.config.get('risk', {}).get('equity_usd', 100.0)
+        
+        # 3. İşlem çiftlerini (sembolleri) güvenli bir şekilde AL.
+        raw_symbols = self.config.get('universe', {}).get('fixed_symbols', [])
+        if isinstance(raw_symbols, str) and ',' in raw_symbols:
+             self.TRADING_PAIRS = [s.strip() for s in raw_symbols.split(',') if s.strip()]
+        elif isinstance(raw_symbols, list):
+            self.TRADING_PAIRS = raw_symbols
+        else: # Hatalı veya beklenmedik bir format gelirse boş liste ata.
+            self.TRADING_PAIRS = [] if raw_symbols else []
+
+        # --- Diğer başlangıç değişkenleri (Bunlar aynı kalabilir) ---
         self.coordinator = None
         self.telegram = None
         self.exchange_clients = {}
@@ -935,175 +933,35 @@ class LiveTradingLauncher:
         self.strategies = {}
         self.restart_manager = None
         self.health_monitor = None
-
-        # *** YENİ: Cleanup tracking için daha basit bir flag ***
         self._cleanup_completed = False
-        
-        # WebSocket optimization manager
         self.ws_optimizer = None
-
-        # Credential tracking
         self._has_bingx_credentials = False
-        
-        # Phase 4 AI components
         self.regime_predictor = None
         self.price_engine = None
         self.strategy_adapter = None
         self.strategy_optimizer = None
-        self._prediction_loop_task = None  # Background task for price predictions
-        
-        # Ultimate mode settings
-        self.max_restarts = max_restarts
-        self.restart_delay = restart_delay
-        
-        # *** NEW: Cached health status from pre-flight checks ***
+        self._prediction_loop_task = None
         self._cached_exchange_status = None
         self._cached_ws_status = None
-        
-        # Debug logger
         self.debug_logger = None
-        
-        # Get trading pairs FIRST, before logging
-        self.TRADING_PAIRS = self._get_trading_pairs()
-        self.CAPITAL_USDT = self._resolve_initial_capital()
-        
+
         logger.info("="*70)
-        logger.info("BEARISH ALPHA BOT - LIVE TRADING LAUNCHER")
+        logger.info("BEARISH ALPHA BOT - LIVE TRADING LAUNCHER (v2.0 - Centralized)")
         logger.info("="*70)
-        logger.info(f"Mode: {mode.upper()}")
-        logger.info(
-            "Capital: %s USDT (source: %s)",
-            self.CAPITAL_USDT,
-            self._capital_source.upper(),
-        )
+        logger.info(f"Mode: {self.mode.upper()}")
+        logger.info(f"Capital: {self.CAPITAL_USDT} USDT (from config)")
         logger.info(f"Exchange: BingX")
-        logger.info(f"Trading Pairs: {len(self.TRADING_PAIRS)}")
         if self.TRADING_PAIRS:
-            logger.info(f"Symbols: {', '.join(self.TRADING_PAIRS[:3])}...")
-        logger.info(f"Dry Run: {dry_run}")
-        
-        # Debug mode indicator
-        if debug_mode:
-            logger.info("")
-            logger.info("🔍 DEBUG MODE ACTIVATED - Enhanced logging enabled")
-            logger.info("🔍 Monitoring: Strategy signals, AI decisions, Risk calculations")
-            logger.info("")
-        
-        # Live trading warning
-        if mode == 'live':
-            logger.warning("")
-            logger.warning("⚠️  LIVE TRADING MODE: Using real USDT capital")
-            logger.warning("⚠️  Ensure you understand the risks before proceeding")
-            logger.warning("")
-        
-        # Ultimate mode indicators
-        if infinite or auto_restart:
-            logger.info("")
-            logger.info("🚀 ULTIMATE CONTINUOUS TRADING MODE 🚀")
-            logger.info(f"Infinite Mode: {'ENABLED' if infinite else 'DISABLED'}")
-            logger.info(f"Auto-Restart: {'ENABLED' if auto_restart else 'DISABLED'}")
-            if auto_restart:
-                logger.info(f"Max Restarts: {max_restarts}")
-                logger.info(f"Restart Delay: {restart_delay}s")
-        
-        logger.info("="*70)
-
-    def _load_config(self) -> Dict[str, Any]:
-        """Load and cache configuration using the new unified, singleton loader."""
-        if self.config is None:
-            # Artık doğrudan yeni, merkezi get_config() fonksiyonunu çağırıyoruz.
-            # Bu fonksiyon, özet loglamayı ve singleton yapısını zaten kendi içinde yönetiyor.
-            try:
-                self.config = get_config()
-                logger.info("✓ Centralized configuration loaded and validated.")
-            except Exception as e:
-                logger.critical(f"❌ CRITICAL: Bot could not start due to a configuration error: {e}", exc_info=True)
-                # Hata durumunda botun çökmesi için exception'ı tekrar yükseltmek daha güvenli.
-                raise RuntimeError("Failed to load configuration.") from e
-        return self.config
-
-    def _resolve_initial_capital(self) -> float:
-        """Determine initial capital from ENV, config and defaults."""
-
-        env_value = os.getenv("CAPITAL_USDT")
-        if env_value is not None:
-            try:
-                capital = float(env_value)
-            except ValueError:
-                logger.warning(
-                    "Invalid CAPITAL_USDT environment value '%s' – falling back to config",
-                    env_value,
-                )
-            else:
-                self._capital_source = "env"
-                return max(capital, 0.0)
-
-        config = self._load_config() or {}
-        risk_section: Dict[str, Any] = {}
-
-        if os.getenv("CAPITAL_USDT") is None:
-            try:
-                from config.live_trading_config import LiveTradingConfiguration
-
-                yaml_config = LiveTradingConfiguration.load_from_yaml()
-            except Exception:
-                yaml_config = None
-            if isinstance(yaml_config, dict):
-                risk_section = yaml_config.get("risk", {}) or {}
-
-        if not risk_section:
-            risk_section = config.get("risk", {}) if isinstance(config, dict) else {}
-        capital_cfg = risk_section.get("equity_usd")
-        if capital_cfg is not None:
-            try:
-                capital = float(capital_cfg)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Invalid equity_usd in config (%s) – reverting to default capital",
-                    capital_cfg,
-                )
-            else:
-                self._capital_source = "config"
-                return max(capital, 0.0)
-
-        self._capital_source = "default"
-        return float(self._default_CAPITAL_USDT)
+            logger.info(f"Trading Pairs ({len(self.TRADING_PAIRS)}): {', '.join(self.TRADING_PAIRS[:5])}...")
+        else:
+            logger.warning("⚠️ No trading pairs configured!")
+        logger.info(f"Dry Run: {self.dry_run}")
 
     @property
     def capital_source(self) -> str:
         """Return the source used for resolving capital."""
 
         return self._capital_source
-    
-    def _get_trading_pairs(self) -> List[str]:
-        """Get trading pairs from config, not hardcoded!"""
-        if self.trading_pairs:
-            return self.trading_pairs
-            
-        config = self._load_config()
-        universe_cfg = config.get('universe', {})
-        
-        # 1. Önce fixed_symbols bak
-        fixed_symbols = universe_cfg.get('fixed_symbols', [])
-        
-        # 2. Auto-select KAPALI mı kontrol et
-        auto_select = universe_cfg.get('auto_select', False)
-        
-        if fixed_symbols and not auto_select:
-            self.trading_pairs = fixed_symbols
-            logger.info(f"✓ Using {len(fixed_symbols)} symbols from config (fixed mode)")
-            logger.info(f"✓ Symbols: {', '.join(fixed_symbols)}")
-        else:
-            # Fallback: Default 3 symbols
-            logger.warning("⚠️ No fixed symbols in config or auto_select=true")
-            self.trading_pairs = [
-                'BTC/USDT:USDT',
-                'ETH/USDT:USDT', 
-                'SOL/USDT:USDT'
-            ]
-            logger.info(f"✓ Using default {len(self.trading_pairs)} symbols")
-        
-        return self.trading_pairs
     
     async def cleanup(self, signum=None, frame=None):
         """
@@ -1409,16 +1267,16 @@ class LiveTradingLauncher:
         return self.ws_optimizer is not None and getattr(self.ws_optimizer, 'is_initialized', False)
     
     async def _initialize_strategies(self) -> bool:
-        """Initialize adaptive trading strategies."""
+        """Initialize adaptive trading strategies from the pre-loaded config."""
         logger.info("\n[5/8] Initializing Trading Strategies...")
         
         try:
-            # ✅ FIX 1: Use unified config loader (ENV > YAML > Defaults)
-            from config.live_trading_config import LiveTradingConfiguration
-            
-            # Load config with proper priority: ENV > YAML > Defaults
-            self.config = LiveTradingConfiguration.load(log_summary=False)
-            logger.info("✓ Config loaded via unified loader (ENV > YAML > Defaults)")
+            # Yapılandırma zaten __init__ içinde yüklendi. Sadece kullan.
+            if not self.config:
+                logger.error("❌ Cannot initialize strategies, config is not loaded.")
+                return False
+
+            logger.info("✓ Using pre-loaded centralized configuration.")
             
             # Log active configuration
             symbols = self.config.get('universe', {}).get('fixed_symbols', [])
@@ -2561,19 +2419,15 @@ class LiveTradingLauncher:
     async def _run_once(self, duration: Optional[float] = None) -> int:
         """
         Run trading system once without auto-restart.
-        
-        Args:
-            duration: Optional trading duration in seconds
-            
-        Returns:
-            Exit code (0 for success, 1 for failure)
         """
+        exit_code = 0 # Yeni: Cleanup'ta kullanmak için exit_code'u en başta tanımla
         try:
-            # Step 1: Load environment
+            # ADIMLAR YENİDEN DÜZENLENDİ VE TEMİZLENDİ
+            # Step 1: Load environment (API anahtarları, Telegram vs.)
             if not self._load_environment():
                 return 1
             
-            # Step 2: Initialize exchange
+            # Step 2: Initialize exchange (config'den alınan sembollerle)
             if not await self._initialize_exchange_connection():
                 return 1
 
