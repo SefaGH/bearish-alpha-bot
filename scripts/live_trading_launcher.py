@@ -1004,6 +1004,11 @@ class LiveTradingLauncher:
         for standard_key, variations in key_mappings.items():
             found = False
             
+            # Preserve existing standard key if already set
+            if standard_key in self.RISK_PARAMS:
+                found = True
+                continue
+            
             # Check RISK_PARAMS first
             for variant in variations:
                 if variant in self.RISK_PARAMS:
@@ -1034,7 +1039,7 @@ class LiveTradingLauncher:
                             found = True
                             break
                         except ValueError:
-                            pass
+                            logger.warning(f"Invalid value for environment variable '{env_name}': '{env_val}' (expected float)")
             
             # Set default if nothing found
             if not found:
@@ -2046,29 +2051,10 @@ class LiveTradingLauncher:
             if self.telegram:
                 ws_info = "WebSocket CONNECTED ✅" if ws_connected else "REST API mode (WebSocket unavailable)"
                 
-                # Safe extraction with multiple fallbacks
-                max_pos = (
-                    self.RISK_PARAMS.get('max_position_size') or
-                    self.RISK_PARAMS.get('max_position_size_pct') or
-                    self.config.get('trading', {}).get('max_position_size_pct') or
-                    float(os.getenv('MAX_POSITION_SIZE_PCT', '0.2'))
-                )
-                
-                stop_loss = (
-                    self.RISK_PARAMS.get('stop_loss_pct') or
-                    self.RISK_PARAMS.get('stop_loss') or
-                    self.RISK_PARAMS.get('min_stop_pct') or
-                    self.config.get('trading', {}).get('stop_loss_pct') or
-                    float(os.getenv('STOP_LOSS_PCT', '0.02'))
-                )
-                
-                take_profit = (
-                    self.RISK_PARAMS.get('take_profit_pct') or
-                    self.RISK_PARAMS.get('take_profit') or
-                    self.RISK_PARAMS.get('min_tp_pct') or
-                    self.config.get('trading', {}).get('take_profit_pct') or
-                    float(os.getenv('TAKE_PROFIT_PCT', '0.015'))
-                )
+                # Safe extraction (normalization already done)
+                max_pos = self.RISK_PARAMS.get('max_position_size', 0.2)
+                stop_loss = self.RISK_PARAMS.get('stop_loss_pct', 0.02)
+                take_profit = self.RISK_PARAMS.get('take_profit_pct', 0.015)
                 
                 self.telegram.send(
                     f"🚀 <b>LIVE TRADING STARTED</b>\n"
