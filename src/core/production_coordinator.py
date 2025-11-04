@@ -1066,17 +1066,14 @@ class ProductionCoordinator:
             self.rl_agent = None
             logger.info("ℹ️ Reinforcement Learning is disabled in config.")
 
-        # 5. ML Strategy Integration Manager (ANA DÜZELTME)
+        # 5. ML Strategy Integration Manager (DOĞRU VERSİYON)
         try:
-            # Entegrasyon yöneticisini de `self.config`'den gelen doğru değerlerle başlat.
+            # Merkezi config'i direkt geç - alt bileşenler kendi ihtiyaçlarını alacak
             self.ml_integration = MLStrategyIntegrationManager(
                 price_engine=self.price_engine,
                 regime_predictor=self.regime_predictor,
-                rl_agent=self.rl_agent,
-                # Parametreleri doğrudan vererek belirsizliği ortadan kaldır.
-                min_confidence_threshold=ml_config.get('prediction', {}).get('min_confidence_threshold', 0.6),
-                market_data_pipeline=self.market_data_pipeline,
-                config=ml_config # Geriye dönük uyumluluk için tüm config'i de ver.
+                config=ml_config,  # ✅ Tüm ML config burada
+                market_data_pipeline=self.market_data_pipeline
             )
             ml_components.append('ml_integration')
             logger.info("✅ ML strategy integration manager initialized.")
