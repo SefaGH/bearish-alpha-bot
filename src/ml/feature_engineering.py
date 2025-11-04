@@ -163,13 +163,16 @@ class VolatilityFeatures:
 class MomentumFeatures:
     """Extract momentum and trend features."""
     
-    def compute(self, price_data: pd.DataFrame, windows: List[int] = [5, 10, 20, 50]) -> pd.DataFrame:
+    def __init__(self, windows: List[int] = None):
+        """Initialize with configurable windows."""
+        self.windows = windows or [5, 10, 20, 50]
+    
+    def compute(self, price_data: pd.DataFrame) -> pd.DataFrame:
         """
         Compute momentum and trend features.
         
         Args:
             price_data: DataFrame with OHLCV data
-            windows: List of window sizes for momentum calculation
             
         Returns:
             DataFrame with momentum features
@@ -177,7 +180,7 @@ class MomentumFeatures:
         features = pd.DataFrame(index=price_data.index)
         
         try:
-            for window in windows:
+            for window in self.windows:  # self.windows kullan (parametreden değil)
                 # Rate of change
                 features[f'roc_{window}'] = price_data['close'].pct_change(window)
                 
@@ -185,19 +188,15 @@ class MomentumFeatures:
                 ma = price_data['close'].rolling(window=window).mean()
                 features[f'ma_slope_{window}'] = ma.pct_change(1)
             
-            # --- 🔥🔥🔥 NİHAİ DÜZELTME: 'trend_strength' HESAPLAMASI ---
-            # 'ema_20' ve 'ema_50' sütunlarına bağımlı olmak yerine,
-            # bu değerleri doğrudan burada hesapla.
+            # Trend strength hesaplaması (mevcut kod korunuyor)
             ema20 = ta.ema(price_data['close'], length=20)
             ema50 = ta.ema(price_data['close'], length=50)
             
-            # `ema20` veya `ema50` NaN değilse hesapla
             if ema20 is not None and ema50 is not None:
                 features['trend_strength'] = (ema20 - ema50) / price_data['close']
             else:
-                features['trend_strength'] = np.nan # Hesaplama başarısız olursa NaN ata
-            # --- 🔥🔥🔥 DÜZELTME SONU ---
-
+                features['trend_strength'] = np.nan
+            
             # Momentum regime
             mom_mean = features['roc_20'].rolling(window=50).mean()
             mom_std = features['roc_20'].rolling(window=50).std()
@@ -207,7 +206,7 @@ class MomentumFeatures:
             logger.error(f"Error computing momentum features: {e}")
         
         return features
-
+        
 
 class CrossAssetFeatures:
     """Extract cross-asset correlation features."""
