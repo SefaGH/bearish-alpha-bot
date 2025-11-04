@@ -477,7 +477,7 @@ jobs:
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
             # Use Python for percentage calculation instead of bc (passing as argument for safety)
             # Note: Duplicated in summary job for independence (each job should be self-contained)
-            DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; val=sys.argv[1] if len(sys.argv)>1 else ''; print(f'{float(val)*100:.4f}%' if val else 'N/A') if val and val.replace('.','').replace('-','').isdigit() else print('N/A')" "${DUPLICATE_PREVENTION_THRESHOLD}")
+            DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; val=sys.argv[1] if len(sys.argv)>1 else ''; print(f'{float(val)*100:.4f}%') if val and val.replace('.','').replace('-','').isdigit() else print('N/A')" "${DUPLICATE_PREVENTION_THRESHOLD}")
             PREFLIGHT_STATUS="${{ github.event.inputs.skip_preflight == 'true' && '⚠️ SKIPPED' || '✅ PASSED' }}"
             
             MESSAGE="✅ <b>Live Trading Session Completed</b>%0A%0A"
@@ -547,7 +547,7 @@ jobs:
         run: |
           # Use Python for percentage calculation instead of bc (passing as argument for safety)
           # Note: Duplicated from Telegram notification for job independence
-          DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; val=sys.argv[1] if len(sys.argv)>1 else ''; print(f'{float(val)*100:.4f}%' if val else 'N/A') if val and val.replace('.','').replace('-','').isdigit() else print('N/A')" "${DUPLICATE_PREVENTION_THRESHOLD}")
+          DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; val=sys.argv[1] if len(sys.argv)>1 else ''; print(f'{float(val)*100:.4f}%') if val and val.replace('.','').replace('-','').isdigit() else print('N/A')" "${DUPLICATE_PREVENTION_THRESHOLD}")
 
           echo "# 🤖 Bearish Alpha Bot - Trading Session Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
