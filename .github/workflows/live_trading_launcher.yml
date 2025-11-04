@@ -93,6 +93,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Verify Python Version
+        run: |
+          python --version
+          python -c "import sys; assert sys.version_info[:2] == (3, 11), f'Expected Python 3.11, got {sys.version}'"
+
       - name: Install PyYAML for validation
         run: pip install pyyaml
 
@@ -256,18 +261,42 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Python, TA-Lib and Dependencies
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+
+      - name: Setup TA-Lib and Dependencies
         run: |
+          set -e  # Exit on error
+          
+          # Verify Python version
+          python --version
+          python -c "import sys; assert sys.version_info[:2] == (3, 11), f'Expected Python 3.11, got {sys.version}'"
+          
+          # Install system dependencies (jq needed for dynamic variable extraction)
           sudo apt-get update && sudo apt-get install -y wget build-essential jq
+          
+          # Install TA-Lib
           wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-          tar -xzvf ta-lib-0.4.0-src.tar.gz && cd ta-lib && ./configure --prefix=/usr && make && sudo make install && cd ..
+          tar -xzvf ta-lib-0.4.0-src.tar.gz
+          cd ta-lib
+          ./configure --prefix=/usr
+          make
+          sudo make install
+          cd ..
+          
+          # Install Python dependencies
           python -m pip install --upgrade pip
           pip install --no-cache-dir 'aiohttp==3.8.6' 'yarl<2.0' 'multidict<7.0' TA-Lib 'websocket-client>=1.6.0' 'websockets>=10.0'
+          
           if [ "${{ github.event.inputs.enable_ml }}" = "true" ]; then
             pip install --no-cache-dir -r requirements.txt
           else
             sed '/# === MACHINE LEARNING (Optional) ===/,$d' requirements.txt | pip install --no-cache-dir -r /dev/stdin
           fi
+          
           python -m pip install -e .
         shell: bash
 
@@ -290,6 +319,7 @@ jobs:
         shell: bash
 
       - name: Launch Trading Bot
+        id: trading
         env:
           # Sadece statik, gizli veya input'tan gelenler burada listelenir.
           # Dinamik olanlar bir önceki adımda ortama otomatik olarak eklendi.
@@ -300,6 +330,17 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PYTHONUNBUFFERED: "1"
         run: |
+          set -e  # Exit on error
+          
+          # Validate critical environment variables for live mode
+          if [ "${{ github.event.inputs.mode }}" = "live" ]; then
+            if [ -z "$BINGX_KEY" ] || [ -z "$BINGX_SECRET" ]; then
+              echo "❌ ERROR: Live mode requires BINGX_KEY and BINGX_SECRET secrets"
+              exit 1
+            fi
+          fi
+          
+          # Build command arguments
           args=()
           [ "${{ github.event.inputs.mode }}" = "paper" ] && args+=("--paper")
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && args+=("--dry-run")
@@ -307,18 +348,46 @@ jobs:
           [ "${{ github.event.inputs.auto_restart }}" = "true" ] && args+=("--auto-restart")
           [ "${{ github.event.inputs.debug_mode }}" = "true" ] && args+=("--debug")
           
+          # Fixed duration handling (pass as argument for security)
           if [ -n "${{ github.event.inputs.duration }}" ]; then
-            duration_in_seconds=$(python3 -c "import re, sys; s = sys.argv[1]; m = re.match(r'^\s*([0-9\.]+)\s*([hms])?\s*$', s.lower()); print(int(float(m.group(1)) * {'h':3600,'m':60,'s':1}.get(m.group(2), 1)))" "${{ github.event.inputs.duration }}")
+            duration_in_seconds=$(python3 -c "
+import re, sys
+try:
+    s = sys.argv[1].strip()
+    m = re.match(r'^([0-9\.]+)\s*([hms])?\s*$', s.lower())
+    if m:
+        value = float(m.group(1))
+        unit = m.group(2) or 's'  # Default to seconds if no unit
+        multiplier = {'h': 3600, 'm': 60, 's': 1}[unit]
+        print(int(value * multiplier))
+    else:
+        raise ValueError('Invalid format')
+except (ValueError, KeyError) as e:
+    print('Error: Invalid duration format. Expected: 60s, 5m, 2h, or plain seconds', file=sys.stderr)
+    sys.exit(1)
+" "${{ github.event.inputs.duration }}") || exit 1
             args+=("--duration" "$duration_in_seconds")
           fi
-
+          
+          # Execute with proper error handling
           CMD=("python3" "scripts/live_trading_launcher.py" "${args[@]}")
           
           echo "🚀 Executing command:"
           printf "%q " "${CMD[@]}"
           echo
           
-          "${CMD[@]}"
+          # Run with timeout and capture exit code
+          # 43200 seconds = 720 minutes (12 hours), matches job timeout-minutes: 720
+          # Exit code 124 = timeout, other codes = command exit status
+          timeout 43200 "${CMD[@]}" || EXIT_CODE=$?
+          
+          if [ "${EXIT_CODE:-0}" -eq 124 ]; then
+            echo "⏱️ Trading session reached 12-hour timeout limit (this is normal)"
+            exit 0
+          elif [ "${EXIT_CODE:-0}" -ne 0 ]; then
+            echo "❌ Trading bot exited with code: ${EXIT_CODE}"
+            exit ${EXIT_CODE}
+          fi
 
       - name: Generate Post-Session Summary
         if: always()
@@ -413,8 +482,16 @@ jobs:
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
         run: |
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-            # DÜZELTME: Ondalık oranı okunabilir yüzdeye çevir.
-            DP_THRESHOLD_AS_PERCENT=$(printf "%.4f%%" $(echo "${DUPLICATE_PREVENTION_THRESHOLD} * 100" | bc))
+            # Use Python for percentage calculation instead of bc (passing as argument for safety)
+            # Note: Duplicated in summary job for independence (each job should be self-contained)
+            DP_THRESHOLD_AS_PERCENT=$(python3 -c "
+import sys
+try:
+    val = float(sys.argv[1])
+    print(f'{val * 100:.4f}%')
+except (ValueError, IndexError) as e:
+    print('N/A')
+" "${DUPLICATE_PREVENTION_THRESHOLD}")
             PREFLIGHT_STATUS="${{ github.event.inputs.skip_preflight == 'true' && '⚠️ SKIPPED' || '✅ PASSED' }}"
             
             MESSAGE="✅ <b>Live Trading Session Completed</b>%0A%0A"
@@ -469,6 +546,11 @@ jobs:
     if: always()
 
     steps:
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          
       - name: Generate Workflow Summary
         env:
           # DÜZELTME: Tüm değerler standart ve doğru varsayılanlara sahip.
@@ -477,8 +559,16 @@ jobs:
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
           CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
         run: |
-          # DÜZELTME: Ondalık oranı okunabilir yüzdeye çevir.
-          DP_THRESHOLD_AS_PERCENT=$(printf "%.4f%%" $(echo "${DUPLICATE_PREVENTION_THRESHOLD} * 100" | bc))
+          # Use Python for percentage calculation instead of bc (passing as argument for safety)
+          # Note: Duplicated from Telegram notification for job independence
+          DP_THRESHOLD_AS_PERCENT=$(python3 -c "
+import sys
+try:
+    val = float(sys.argv[1])
+    print(f'{val * 100:.4f}%')
+except (ValueError, IndexError) as e:
+    print('N/A')
+" "${DUPLICATE_PREVENTION_THRESHOLD}")
 
           echo "# 🤖 Bearish Alpha Bot - Trading Session Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
