@@ -201,80 +201,51 @@ class CcxtClient:
             logger.error(f"Failed to load markets: {e}")
             raise
 
-    async def load_markets(self, reload=False, params={}):
+    def load_markets(self, reload=False, params={}):
         """
         CCXT market loading wrapper with optimization for fixed symbols.
-        If a fixed list of symbols is provided, it avoids loading all markets
-        and instead injects a minimal market structure for only those symbols.
-        This prevents CCXT's "lazy loading" from fetching all markets on the
-        first private API call.
+        This is now a SYNCHRONOUS method and robustly handles symbol parsing.
         """
         logger.info(f"[{self.exchange.id}] load_markets() wrapper called (reload={reload})")
 
-        # Eğer semboller önceden tanımlanmışsa ve yeniden yükleme zorunlu değilse, optimizasyonu uygula
         if self.symbols and not reload:
-            logger.info(f"[{self.exchange.id}] Will only work with {len(self.symbols)} symbols (no market load)")
-            
-            # --- YENİ EKLENEN ANA MANTIK ---
-            # ccxt'nin otomatik yüklemesini engellemek için minimal bir piyasa yapısı oluşturup enjekte et.
+            logger.info(f"[{self.exchange.id}] Using pre-set minimal market structure for {len(self.symbols)} symbols.")
             try:
+                if self.exchange.markets and not reload:
+                    return self.exchange.markets
+
                 minimal_markets = {}
                 for symbol in self.symbols:
-                    # --- DÜZELTME: Burada da doğru formatı kullan ---
                     native_id = self._get_bingx_native_symbol(symbol)
-                    # CCXT'nin beklediği temel piyasa yapısını oluştur
+                    
+                    # --- NIHAI DÜZELTME: Sağlam sembol ayırma mantığı ---
+                    parts = symbol.split('/')
+                    if len(parts) < 2:
+                        logger.warning(f"Skipping malformed symbol: {symbol}")
+                        continue
+                    base = parts[0]
+                    quote_parts = parts[1].split(':')
+                    quote = quote_parts[0]
+                    # --- DÜZELTME SONU ---
+
                     market = self.exchange.safe_market_structure({
-                        'id': native_id,
-                        'symbol': symbol,
-                        'base': symbol.split('/')[0],
-                        'quote': symbol.split('/')[1].split(':')[0],
-                        'baseId': symbol.split('/')[0],
-                        'quoteId': symbol.split('/')[1].split(':')[0],
-                        'active': True,
-                        'type': 'swap',
-                        'linear': True,
-                        'inverse': False,
-                        'spot': False,
-                        'swap': True,
-                        'future': False,
-                        'option': False,
-                        'precision': {
-                            'amount': 8,
-                            'price': 8,
-                        },
-                        'limits': {
-                            'amount': {'min': 1e-8, 'max': None},
-                            'price': {'min': 1e-8, 'max': None},
-                            'cost': {'min': None, 'max': None},
-                        },
-                        'info': {}, # Borsa özel bilgileri
+                        'id': native_id, 'symbol': symbol, 'base': base, 'quote': quote,
+                        'baseId': base, 'quoteId': quote, 'active': True,
+                        'type': 'swap', 'linear': True, 'swap': True,
+                        'precision': {'amount': 8, 'price': 8},
+                        'limits': {'amount': {'min': 1e-8}}, 'info': {},
                     })
                     minimal_markets[symbol] = market
 
-                # Oluşturulan bu minimal piyasa yapısını doğrudan ccxt'ye set et.
-                # Bu, ccxt'nin load_markets() çağırmasını engeller.
                 self.exchange.set_markets(minimal_markets)
                 logger.info(f"[{self.exchange.id}] Injected minimal market structure for {len(self.symbols)} symbols.")
                 return self.exchange.markets
             except Exception as e:
-                logger.error(f"[{self.exchange.id}] Failed to create minimal market structure: {e}. Falling back to full load.")
-                # Eğer bu işlem başarısız olursa, güvenli moda dön ve her şeyi yükle.
+                logger.error(f"[{self.exchange.id}] Failed to create minimal market structure: {e}. Falling back to full load.", exc_info=True)
                 return self.ex.load_markets(params=params)
-
         else:
-            # Standart davranış: tüm piyasaları yükle
-            if reload:
-                logger.info(f"[{self.exchange.id}] Forcing reload of all markets...")
-            else:
-                logger.info(f"[{self.exchange.id}] Loading all available markets...")
-            
-            # --- GÜVENLİ ÇAĞRI DÜZELTMESİ ---
-            load_markets_fn = getattr(self.ex, 'load_markets')
-            if inspect.iscoroutinefunction(load_markets_fn):
-                return await load_markets_fn(params=params)
-            else:
-                loop = asyncio.get_running_loop()
-                return await loop.run_in_executor(None, lambda: load_markets_fn(params=params))
+            logger.info(f"[{self.exchange.id}] Performing full market load from network...")
+            return self.ex.load_markets(params=params)
 
     def validate_and_get_symbol(self, requested_symbol="BTC/USDT"):
         """
