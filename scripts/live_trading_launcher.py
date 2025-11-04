@@ -898,6 +898,15 @@ class LiveTradingLauncher:
     Comprehensive live trading launcher integrating all system components.
     """
     
+    # Default risk parameters - used across normalization and fallbacks
+    DEFAULT_RISK_PARAMS = {
+        'max_position_size': 0.2,
+        'stop_loss_pct': 0.02,
+        'take_profit_pct': 0.015,
+        'risk_per_trade': 0.05,
+        'max_drawdown': 0.05
+    }
+    
     def __init__(self, mode: str, dry_run: bool, infinite: bool, auto_restart: bool,
                  max_restarts: int, restart_delay: int, debug_mode: bool):
 
@@ -976,6 +985,92 @@ class LiveTradingLauncher:
             logger.info(f"Trading Pairs ({len(self.TRADING_PAIRS)}): {', '.join(self.TRADING_PAIRS)}")
         else:
             logger.warning("⚠️ No trading pairs configured! This will likely cause an error.")
+
+    def _normalize_risk_params(self):
+        """
+        Normalize risk parameter keys to prevent KeyError.
+        Maps all variations to standard keys.
+        """
+        if not hasattr(self, 'RISK_PARAMS'):
+            self.RISK_PARAMS = {}
+        
+        # Debug: Log what we have
+        logger.debug(f"Current RISK_PARAMS keys: {list(self.RISK_PARAMS.keys())}")
+        
+        # Map all possible variations to standard keys
+        # Note: Standard key itself is NOT in the variations list to avoid redundancy
+        key_mappings = {
+            'max_position_size': ['max_position_size_pct', 'max_notional_per_trade'],
+            'stop_loss_pct': ['stop_loss', 'min_stop_pct', 'stop_loss_multiplier'],
+            'take_profit_pct': ['take_profit', 'min_tp_pct', 'take_profit_ratio'],
+            'risk_per_trade': ['per_trade_risk_pct', 'risk_usd_cap'],
+            'max_drawdown': ['daily_loss_limit_pct', 'max_daily_loss']
+        }
+        
+        # Also check config if available
+        config_trading = self.config.get('trading', {}) if hasattr(self, 'config') else {}
+        config_risk = self.config.get('risk_management', {}) if hasattr(self, 'config') else {}
+        
+        for standard_key, variations in key_mappings.items():
+            found = False
+            
+            # Preserve existing standard key if already set
+            if standard_key in self.RISK_PARAMS:
+                continue
+            
+            # Check RISK_PARAMS first
+            for variant in variations:
+                if variant in self.RISK_PARAMS:
+                    self.RISK_PARAMS[standard_key] = self.RISK_PARAMS[variant]
+                    found = True
+                    break
+            
+            # Check config if not found
+            if not found:
+                for variant in variations:
+                    if variant in config_trading:
+                        self.RISK_PARAMS[standard_key] = config_trading[variant]
+                        found = True
+                        break
+                    elif variant in config_risk:
+                        self.RISK_PARAMS[standard_key] = config_risk[variant]
+                        found = True
+                        break
+            
+            # Check environment variables if still not found
+            if not found:
+                env_names = [v.upper() for v in variations]
+                for env_name in env_names:
+                    env_val = os.getenv(env_name)
+                    if env_val:
+                        try:
+                            self.RISK_PARAMS[standard_key] = float(env_val)
+                            found = True
+                            break
+                        except ValueError:
+                            logger.warning(f"Invalid value for environment variable '{env_name}': '{env_val}' (expected float)")
+            
+            # Set default if nothing found
+            if not found:
+                self.RISK_PARAMS[standard_key] = self.DEFAULT_RISK_PARAMS[standard_key]
+                logger.warning(f"Risk param '{standard_key}' not found, using default: {self.DEFAULT_RISK_PARAMS[standard_key]}")
+        
+        # Validate risk parameter values
+        # Note: All values are stored in decimal format (0.2 = 20%, not 20.0 = 20%)
+        for key, value in self.RISK_PARAMS.items():
+            if key in self.DEFAULT_RISK_PARAMS:  # Only validate known risk params
+                if value < 0:
+                    logger.error(f"Invalid risk param '{key}': {value} (negative value not allowed). Using default.")
+                    self.RISK_PARAMS[key] = self.DEFAULT_RISK_PARAMS[key]
+                elif value > 1.0:
+                    # Values > 1.0 mean > 100%, which might be intentional for some params
+                    logger.warning(f"Risk param '{key}': {value:.1%} (> 100%). This may be intentional for leverage, but verify configuration.")
+                elif key == 'max_position_size' and value > 0.5:
+                    # Max position > 50% is risky
+                    logger.warning(f"Risk param 'max_position_size': {value:.1%} (> 50%). This is quite high, verify configuration.")
+        
+        logger.info("Risk parameters normalized successfully")
+        logger.debug(f"Final RISK_PARAMS: {self.RISK_PARAMS}")
 
     @property
     def capital_source(self) -> str:
@@ -1190,10 +1285,17 @@ class LiveTradingLauncher:
             # Create risk configuration with custom limits
             risk_config = RiskConfiguration(custom_limits=self.RISK_PARAMS)
             logger.info("✓ Risk configuration loaded")
-            logger.info(f"  - Max position size: {self.RISK_PARAMS['max_position_size']:.1%}")
-            logger.info(f"  - Stop loss: {self.RISK_PARAMS['stop_loss_pct']:.1%}")
-            logger.info(f"  - Take profit: {self.RISK_PARAMS['take_profit_pct']:.1%}")
-            logger.info(f"  - Max drawdown: {self.RISK_PARAMS['max_drawdown']:.1%}")
+            
+            # Safe extraction with fallbacks
+            max_pos = self.RISK_PARAMS.get('max_position_size', self.DEFAULT_RISK_PARAMS['max_position_size'])
+            stop_loss = self.RISK_PARAMS.get('stop_loss_pct', self.DEFAULT_RISK_PARAMS['stop_loss_pct'])
+            take_profit = self.RISK_PARAMS.get('take_profit_pct', self.DEFAULT_RISK_PARAMS['take_profit_pct'])
+            max_dd = self.RISK_PARAMS.get('max_drawdown', self.DEFAULT_RISK_PARAMS['max_drawdown'])
+            
+            logger.info(f"  - Max position size: {max_pos:.1%}")
+            logger.info(f"  - Stop loss: {stop_loss:.1%}")
+            logger.info(f"  - Take profit: {take_profit:.1%}")
+            logger.info(f"  - Max drawdown: {max_dd:.1%}")
             
             return True
             
@@ -1964,6 +2066,12 @@ class LiveTradingLauncher:
             # STEP 2: SEND STARTUP NOTIFICATION
             if self.telegram:
                 ws_info = "WebSocket CONNECTED ✅" if ws_connected else "REST API mode (WebSocket unavailable)"
+                
+                # Safe extraction (normalization already done, but keeping fallbacks for safety)
+                max_pos = self.RISK_PARAMS.get('max_position_size', self.DEFAULT_RISK_PARAMS['max_position_size'])
+                stop_loss = self.RISK_PARAMS.get('stop_loss_pct', self.DEFAULT_RISK_PARAMS['stop_loss_pct'])
+                take_profit = self.RISK_PARAMS.get('take_profit_pct', self.DEFAULT_RISK_PARAMS['take_profit_pct'])
+                
                 self.telegram.send(
                     f"🚀 <b>LIVE TRADING STARTED</b>\n"
                     f"Mode: {self.mode.upper()}\n"
@@ -1971,9 +2079,9 @@ class LiveTradingLauncher:
                     f"Exchange: BingX\n"
                     f"Pairs: {len(self.TRADING_PAIRS)}\n"
                     f"Data: {ws_info}\n"
-                    f"Max Position: {self.RISK_PARAMS['max_position_size']:.1%}\n"
-                    f"Stop Loss: {self.RISK_PARAMS['stop_loss_pct']:.1%}\n"
-                    f"Take Profit: {self.RISK_PARAMS['take_profit_pct']:.1%}"
+                    f"Max Position: {max_pos:.1%}\n"
+                    f"Stop Loss: {stop_loss:.1%}\n"
+                    f"Take Profit: {take_profit:.1%}"
                 )
             
             # STEP 3: ACTIVATE TRADING SYSTEMS
@@ -2377,6 +2485,9 @@ class LiveTradingLauncher:
             # ADIM 1: ORTAM VE BORSA BAĞLANTISINI HAZIRLA
             # ===================================================================
             if not self._load_environment(): return 1
+            
+            # Normalize risk parameters after loading environment
+            self._normalize_risk_params()
 
             logger.info("\n[2/8] Initializing BingX Exchange Connection...")
             try:
