@@ -33,6 +33,13 @@ from typing import Dict, List, Optional, Any
 
 from core.logger import setup_logger
 
+# ====================================================================
+# ===             YENİ VE MERKEZİ YAPIYI KULLANMA                  ===
+# ====================================================================
+# Artık yapılandırmayı almak için tek bir standart yolumuz var.
+from config.live_trading_config import get_config
+# ====================================================================
+
 from core.production_coordinator import ProductionCoordinator
 from core.ccxt_client import CcxtClient
 from core.notify import Telegram
@@ -1002,11 +1009,17 @@ class LiveTradingLauncher:
         logger.info("="*70)
 
     def _load_config(self) -> Dict[str, Any]:
-        """Load and cache configuration using unified loader."""
+        """Load and cache configuration using the new unified, singleton loader."""
         if self.config is None:
-            from config.live_trading_config import LiveTradingConfiguration
-            self.config = LiveTradingConfiguration.load(log_summary=False)
-            logger.info("✓ Config loaded (ENV > YAML > Defaults)")
+            # Artık doğrudan yeni, merkezi get_config() fonksiyonunu çağırıyoruz.
+            # Bu fonksiyon, özet loglamayı ve singleton yapısını zaten kendi içinde yönetiyor.
+            try:
+                self.config = get_config()
+                logger.info("✓ Centralized configuration loaded and validated.")
+            except Exception as e:
+                logger.critical(f"❌ CRITICAL: Bot could not start due to a configuration error: {e}", exc_info=True)
+                # Hata durumunda botun çökmesi için exception'ı tekrar yükseltmek daha güvenli.
+                raise RuntimeError("Failed to load configuration.") from e
         return self.config
 
     def _resolve_initial_capital(self) -> float:
@@ -2494,48 +2507,6 @@ class LiveTradingLauncher:
             
         except Exception as e:
             logger.error(f"Error generating post-session analysis: {e}")
-
-    def _log_final_configuration(self):
-        """
-        Tüm katmanlar birleştirildikten sonra botun kullanacağı nihai yapılandırmayı loglar.
-        Bu, YAML, ortam değişkenleri ve GitHub değişkenlerinin birleşimini yansıtır.
-        """
-        if not self.config:
-            logger.warning("Yapılandırma özeti loglanamadı: self.config henüz yüklenmemiş.")
-            return
-
-        logger.info("\n" + "="*80)
-        logger.info("  🤖 FINAL BOT CONFIGURATION SUMMARY (EFFECTIVE VALUES) 🤖")
-        logger.info("="*80)
-
-        # --- En Kritik ML Ayarları ---
-        ml_config = self.config.get('ml', {})
-        pred_config = ml_config.get('prediction', {})
-        rl_config = ml_config.get('reinforcement_learning', {})
-
-        min_confidence = pred_config.get('min_confidence_threshold', 'YOK (varsayılan kullanılacak)')
-        hold_threshold = rl_config.get('hold_confidence_threshold', 'YOK (varsayılan kullanılacak)')
-        
-        logger.info("--- 🎯 ML & AI Settings ---")
-        logger.info(f"Rejim Filtresi Güven Eşiği (ML_PRED_MIN_CONFIDENCE): {min_confidence}")
-        logger.info(f"RL Ajanı Veto Eşiği (ML_RL_HOLD_CONFIDENCE_THRESHOLD):    {hold_threshold}")
-
-        # --- Diğer Önemli Ayarlar ---
-        risk_config = self.config.get('risk', {})
-        universe_config = self.config.get('universe', {})
-        
-        equity = risk_config.get('equity_usd', 'YOK')
-        max_notional = risk_config.get('max_notional_per_trade', 'YOK')
-        symbols = universe_config.get('fixed_symbols', 'YOK')
-
-        logger.info("\n--- 💰 Risk & Capital Settings ---")
-        logger.info(f"Sermaye (CAPITAL_USDT): {equity} USDT")
-        logger.info(f"İşlem Başına Max Büyüklük (MAX_NOTIONAL_PER_TRADE): {max_notional} USDT")
-
-        logger.info("\n--- 📈 Trading Universe ---")
-        logger.info(f"İşlem Yapılacak Semboller (TRADING_SYMBOLS): {symbols}")
-
-        logger.info("="*80 + "\n")
     
     async def _emergency_shutdown(self, reason: str) -> None:
         """
@@ -2601,22 +2572,19 @@ class LiveTradingLauncher:
             # Step 1: Load environment
             if not self._load_environment():
                 return 1
-
-            # Step 2: Yapılandırma yüklendikten sonra nihai ayarları logla
-            self._log_final_configuration()
             
-            # Step 3: Initialize exchange
+            # Step 2: Initialize exchange
             if not await self._initialize_exchange_connection():
                 return 1
 
-            # Step 4: Perform API Health Check
+            # Step 3: Perform API Health Check
             logger.info("Performing API health check...")
             for name, client in self.exchange_clients.items():
                 if hasattr(client, 'check_api_health'):
                     health_result = await client.check_api_health()
                     self._api_health_status[name] = health_result
                     
-                    # Step 5: Sadece 'live' moddaysak ve durum 'UNHEALTHY' ise dur.
+                    # Step 4: Sadece 'live' moddaysak ve durum 'UNHEALTHY' ise dur.
                     # 'PUBLIC_ONLY' durumu 'live' mod için bir hata değildir.
                     if health_result['status'] == 'UNHEALTHY':
                         logger.critical(f"❌ API for '{name}' is UNHEALTHY: {health_result['reason']}. Aborting launch.")
@@ -2627,7 +2595,7 @@ class LiveTradingLauncher:
                 else:
                     self._api_health_status[name] = {'status': 'UNKNOWN', 'reason': 'check_api_health method not found.'}
             
-            # Step 6: Initialize risk management
+            # Step 5: Initialize risk management
             if not self._initialize_risk_management():
                 return 1
             
