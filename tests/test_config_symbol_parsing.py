@@ -100,8 +100,8 @@ class TestConfigSymbolParsing:
         assert 'BTC/USDT' in symbols
         assert 'ETH/USDT' in symbols
         assert 'SOL/USDT' in symbols
-        # Ensure no extra spaces
-        assert all(' ' not in s or s.count(' ') == 0 for s in symbols if '/' in s)
+        # Ensure no extra spaces in trading symbols
+        assert all(' ' not in s for s in symbols if '/' in s)
     
     def test_multiple_trading_symbols_with_quotes(self):
         """Test that multiple symbols with quote suffixes are correctly parsed."""

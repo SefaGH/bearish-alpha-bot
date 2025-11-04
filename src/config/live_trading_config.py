@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 # Singleton instance storage to ensure config is loaded only once.
 _config_instance: Optional[Dict[str, Any]] = None
 
+# Regex pattern for validating trading symbols (compiled once at module load)
+# Matches format: BASE/QUOTE or BASE/QUOTE:SETTLE
+# Examples: BTC/USDT, ETH/USDT:USDT
+_TRADING_SYMBOL_PATTERN = re.compile(r'^[A-Z0-9]{2,10}/[A-Z0-9]{2,10}(:[A-Z0-9]{2,10})?$')
+
 class LiveTradingConfiguration:
     """
     A dynamic, singleton configuration loader.
@@ -200,20 +205,14 @@ class LiveTradingConfiguration:
             return False
         
         # Check if string contains '/' which is the key indicator of trading pairs
-        # Also ensure it's not just any path string by checking for common currency patterns
         if '/' not in value:
             return False
         
         # Split by comma to handle multiple symbols
         parts = [p.strip() for p in value.split(',') if p.strip()]
         
-        # Each part should be a valid trading pair format
-        # Valid format: 2-10 uppercase letters/numbers, /, 2-10 uppercase letters/numbers, optional :SETTLE
-        import re
-        symbol_pattern = re.compile(r'^[A-Z0-9]{2,10}/[A-Z0-9]{2,10}(:[A-Z0-9]{2,10})?$')
-        
-        # At least one part should match the pattern
-        return any(symbol_pattern.match(part) for part in parts)
+        # At least one part should match the trading symbol pattern
+        return any(_TRADING_SYMBOL_PATTERN.match(part) for part in parts)
     
     @staticmethod
     def _parse_trading_symbols(value_str: str) -> list:
