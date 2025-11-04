@@ -203,8 +203,8 @@ ml:
     macd_signal: 9                    # Override with: ML_FEAT_MACD_SIGNAL
     bb_period: 20                     # Override with: ML_FEAT_BB_PERIOD
     bb_std: 2                         # Override with: ML_FEAT_BB_STD
-    volatility_windows: 5,10,20,50    # Override with: ML_FEAT_VOL_WINDOWS
-    momentum_windows: 5,10,20,50      # Override with: ML_FEAT_MOM_WINDOWS
+    volatility_windows: [5, 10, 20, 50]    # Override with: ML_FEAT_VOL_WINDOWS
+    momentum_windows: [5, 10, 20, 50]      # Override with: ML_FEAT_MOM_WINDOWS
 
   # ----------------------------------------------------------------------------
   # Price & Regime Prediction Engine
