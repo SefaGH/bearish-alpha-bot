@@ -124,6 +124,11 @@ jobs:
           echo "should_proceed=true" >> $GITHUB_OUTPUT
           echo "skip_preflight=$SKIP_PREFLIGHT" >> $GITHUB_OUTPUT
 
+      - name: Install repository for validation script
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+
       - name: Validate Adaptive Configuration
         if: github.event.inputs.skip_preflight != 'true'
         run: |
