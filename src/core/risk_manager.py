@@ -325,18 +325,15 @@ class RiskManager:
     
     def _calculate_stop_loss_from_signal(self, signal: Dict, entry_price: float) -> float:
         """
-        Calculate stop loss from signal parameters if not explicitly provided.
-        
-        Args:
-            signal: Trading signal
-            entry_price: Entry price
-            
-        Returns:
-            Stop loss price
+        Calculate stop loss with support for dynamic and static values.
         """
         side = signal.get('side', 'buy')
         
-        # Try ATR-based stop
+        # Priority 1: Signal'de hazır stop var mı?
+        if signal.get('stop'):
+            return signal['stop']
+        
+        # Priority 2: ATR-based dynamic stop
         if signal.get('sl_atr_mult') and signal.get('atr'):
             atr = signal['atr']
             sl_mult = signal['sl_atr_mult']
@@ -346,16 +343,23 @@ class RiskManager:
             else:
                 return entry_price + (atr * sl_mult)
         
-        # Try percentage-based stop
+        # Priority 3: Percentage-based stop
         if signal.get('sl_pct'):
             sl_pct = signal['sl_pct']
+        else:
+            # Config'den al - None olabilir!
+            sl_pct = self.risk_limits_dataclass.stop_loss_pct
             
-            if side in ['buy', 'long']:
-                return entry_price * (1 - sl_pct)
-            else:
-                return entry_price * (1 + sl_pct)
+            if sl_pct is None:
+                # Config'de de yok, strateji de vermemiş
+                # Son çare: Çok konservatif bir default kullan
+                logger.warning(f"No stop loss defined for signal, using emergency default 2%")
+                sl_pct = 0.02
         
-        return 0
+        if side in ['buy', 'long']:
+            return entry_price * (1 - sl_pct)
+        else:
+            return entry_price * (1 + sl_pct)
     
     async def monitor_position_risk(self, position_id: str, portfolio_manager=None) -> Dict[str, Any]:
         """
