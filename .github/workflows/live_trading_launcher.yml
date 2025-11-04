@@ -351,19 +351,17 @@ jobs:
             duration_in_seconds=$(python3 -c "
 import re, sys
 try:
-    s = sys.argv[1]
-    m = re.match(r'^\s*([0-9\.]+)\s*([hms])?\s*$', s.lower())
+    s = sys.argv[1].strip()
+    m = re.match(r'^([0-9\.]+)\s*([hms])?\s*$', s.lower())
     if m:
         value = float(m.group(1))
-        unit = m.group(2) or 's'
+        unit = m.group(2) or 's'  # Default to seconds if no unit
         multiplier = {'h': 3600, 'm': 60, 's': 1}[unit]
         print(int(value * multiplier))
     else:
-        # If regex doesn't match, assume it's plain seconds
-        value = int(s)
-        print(value)
+        raise ValueError('Invalid format')
 except (ValueError, KeyError) as e:
-    print(f'Error: Invalid duration format. Expected formats: 60s, 5m, 2h, or plain number (seconds)', file=sys.stderr)
+    print('Error: Invalid duration format. Expected: 60s, 5m, 2h, or plain seconds', file=sys.stderr)
     sys.exit(1)
 " "${{ github.event.inputs.duration }}") || exit 1
             args+=("--duration" "$duration_in_seconds")
@@ -376,7 +374,8 @@ except (ValueError, KeyError) as e:
           printf "%q " "${CMD[@]}"
           echo
           
-          # Run with timeout and capture exit code (43200s = 12 hours, matches job timeout-minutes: 720)
+          # Run with timeout and capture exit code
+          # 43200 seconds = 720 minutes (12 hours), matches job timeout-minutes: 720
           # --preserve-status: Exit with COMMAND's status, not timeout's (124)
           timeout --preserve-status 43200 "${CMD[@]}" || EXIT_CODE=$?
           
@@ -482,6 +481,7 @@ except (ValueError, KeyError) as e:
         run: |
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
             # Use Python for percentage calculation instead of bc (passing as argument for safety)
+            # Note: Duplicated in summary job for independence (each job should be self-contained)
             DP_THRESHOLD_AS_PERCENT=$(python3 -c "
 import sys
 try:
@@ -558,6 +558,7 @@ except (ValueError, IndexError) as e:
           CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
         run: |
           # Use Python for percentage calculation instead of bc (passing as argument for safety)
+          # Note: Duplicated from Telegram notification for job independence
           DP_THRESHOLD_AS_PERCENT=$(python3 -c "
 import sys
 try:
