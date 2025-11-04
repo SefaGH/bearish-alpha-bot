@@ -6,7 +6,7 @@ Advanced feature extraction from market data for regime prediction models.
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import logging
 
 # pandas_ta'yı güvenli bir şekilde import et
