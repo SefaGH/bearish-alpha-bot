@@ -232,6 +232,12 @@ ml:
     # Epsilon for inference (live trading). A small value for minimal random actions.
     epsilon_inference: 0.01           # Override with: ML_RL_EPSILON_INFERENCE
 
+    # Regime bias strength for Q-value adjustments
+    regime_bias_strength: 5.0        # Override with: ML_RL_REGIME_BIAS
+    
+    # Risk penalty strength for constraints
+    risk_penalty_strength: 100.0     # Override with: ML_RL_RISK_PENALTY
+
     # Core Algorithm Parameters (Advanced - change with caution)
     learning_rate: 0.0001             # Override with: ML_RL_LEARNING_RATE
     gamma: 0.99                       # Discount factor. Override with: ML_RL_GAMMA
