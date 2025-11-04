@@ -278,6 +278,9 @@ class FeatureEngineeringPipeline:
     def __init__(self, config: Dict[str, Any] = None):
         """Initialize the feature engineering pipeline with config."""
         self.config = config or {}
+
+        # Debug log ekle
+        logger.info(f"FeatureEngineeringPipeline initialized with config: {list(self.config.keys())}")
         
         # Pass config to sub-components
         self.technical_indicators = TechnicalIndicatorFeatures(self.config)
