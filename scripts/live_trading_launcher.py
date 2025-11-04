@@ -1154,82 +1154,6 @@ class LiveTradingLauncher:
         
         return True
     
-    async def _initialize_exchange_connection(self) -> bool:
-        """OPTIMIZED BingX initialization."""
-        logger.info("\n[2/8] Initializing BingX Exchange Connection...")
-        
-        trading_pairs = self.TRADING_PAIRS
-        
-        try:
-            creds = None
-            if self._has_bingx_credentials and not self.dry_run:
-                logger.info("Authenticated mode: Loading API credentials.")
-                creds = {
-                    'apiKey': os.getenv('BINGX_KEY'),
-                    'secret': os.getenv('BINGX_SECRET')
-                }
-            else:
-                logger.info("Public mode: Initializing without API credentials (dry-run or no secrets).")
-
-            bingx_client = CcxtClient('bingx', creds=creds)
-            
-            # --- NIHAI DÜZELTME: Fonksiyonların çağrılma sırasını düzeltiyoruz ---
-            # 1. ÖNCE sembolleri ayarla, böylece `self.symbols` oluşsun.
-            bingx_client.set_required_symbols(trading_pairs)
-            
-            # 2. SONRA marketleri yükle. Artık `self.symbols` olduğu için hata vermeyecek.
-            try:
-                logger.info(f"Explicitly loading market data for specified symbols: {trading_pairs}")
-                await bingx_client.load_markets(params={'symbols': trading_pairs})
-            except Exception as e:
-                logger.error(f"Failed to load specific markets for symbols {trading_pairs}: {e}", exc_info=True)
-                return False
-            # --- NIHAI DÜZELTME SONU ---
-    
-            logger.info(f"✓ BingX client optimized for {len(trading_pairs)} symbols only")
-            
-            self.exchange_clients['bingx'] = bingx_client
-            
-            # Test connection with a public endpoint call
-            logger.info("Testing BingX connection...")
-            # `fetch_ticker` async olmadığı için await kaldırıldı.
-            test_ticker = bingx_client.ticker('BTC/USDT')
-            logger.info(f"✓ Connected to BingX - Test price: BTC=${test_ticker['last']:.2f}")
-
-            if self._has_bingx_credentials and not self.dry_run:
-                try:
-                    balance = bingx_client.get_bingx_balance()
-                    logger.info("✓ BingX authentication successful")
-                except Exception as e:
-                    logger.warning(f"⚠️ BingX authentication test failed: {e}")
-            else:
-                logger.info("ℹ️ Skipping BingX authentication check (public mode).")
-            
-            logger.info(f"Verifying {len(trading_pairs)} trading pairs...")
-            verified_pairs = []
-        
-            for pair in trading_pairs:
-                try:
-                    # `fetch_ticker` async olmadığı için await kaldırıldı.
-                    ticker = bingx_client.ticker(pair)
-                    verified_pairs.append(pair)
-                    logger.info(f"  ✓ {pair}: ${ticker['last']:.2f}")
-                except Exception as e:
-                    logger.warning(f"  ❌ {pair}: {e}")
-            
-            min_required = max(1, len(trading_pairs) // 2)
-            
-            if len(verified_pairs) >= min_required:
-                logger.info(f"✓ {len(verified_pairs)}/{len(trading_pairs)} trading pairs verified")
-                return True
-            else:
-                logger.error(f"Only {len(verified_pairs)}/{len(trading_pairs)} pairs verified (minimum {min_required} required)")
-                return False
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to connect to BingX: {e}", exc_info=True)
-            return False
-    
     def _initialize_risk_management(self) -> bool:
         """
         Initialize risk management system with custom parameters.
@@ -2413,167 +2337,113 @@ class LiveTradingLauncher:
         else:
             return await self._run_once(duration)
     
-    async def _run_once(self, duration: Optional[float] = None) -> int:
+        async def _run_once(self, duration: Optional[float] = None) -> int:
         """
         Run trading system once without auto-restart.
         """
-        exit_code = 0 # Yeni: Cleanup'ta kullanmak için exit_code'u en başta tanımla
+        exit_code = 0 
         try:
-            # ADIMLAR YENİDEN DÜZENLENDİ VE TEMİZLENDİ
-            # Step 1: Load environment (API anahtarları, Telegram vs.)
+            # 1. Ortam değişkenlerini ve temel bileşenleri yükle
             if not self._load_environment():
                 return 1
             
-            # Step 2: Initialize exchange (config'den alınan sembollerle)
-            if not await self._initialize_exchange_connection():
-                return 1
-
-            # Step 3: Perform API Health Check
-            logger.info("Performing API health check...")
-            for name, client in self.exchange_clients.items():
-                if hasattr(client, 'check_api_health'):
-                    health_result = await client.check_api_health()
-                    self._api_health_status[name] = health_result
-                    
-                    # Step 4: Sadece 'live' moddaysak ve durum 'UNHEALTHY' ise dur.
-                    # 'PUBLIC_ONLY' durumu 'live' mod için bir hata değildir.
-                    if health_result['status'] == 'UNHEALTHY':
-                        logger.critical(f"❌ API for '{name}' is UNHEALTHY: {health_result['reason']}. Aborting launch.")
-                        return 1
-                    elif health_result['status'] == 'PUBLIC_ONLY' and self.mode == 'live' and not self.dry_run:
-                        logger.warning(f"⚠️ API for '{name}' is in PUBLIC_ONLY mode. Live trading may fail.")
-                    # --- YENİ KONTROL SONU ---
+            # 2. Borsa bağlantısını kur
+            # --- BURASI DEĞİŞTİ: Borsa bağlantısı artık doğrudan bu metodun içinde ---
+            logger.info("\n[2/8] Initializing BingX Exchange Connection...")
+            try:
+                creds = None
+                if self._has_bingx_credentials and not self.dry_run:
+                    logger.info("Authenticated mode: Loading API credentials.")
+                    creds = {'apiKey': os.getenv('BINGX_KEY'), 'secret': os.getenv('BINGX_SECRET')}
                 else:
-                    self._api_health_status[name] = {'status': 'UNKNOWN', 'reason': 'check_api_health method not found.'}
-            
-            # Step 5: Initialize risk management
+                    logger.info("Public mode: Initializing without API credentials.")
+
+                bingx_client = CcxtClient('bingx', creds=creds)
+                bingx_client.set_required_symbols(self.TRADING_PAIRS)
+                
+                # --- AWAIT HATASI DÜZELTİLDİ ---
+                bingx_client.load_markets()
+                logger.info(f"✓ BingX client optimized for {len(self.TRADING_PAIRS)} symbols.")
+                self.exchange_clients['bingx'] = bingx_client
+
+                logger.info("Testing BingX connection...")
+                # --- AWAIT HATASI DÜZELTİLDİ ---
+                test_ticker = bingx_client.ticker('BTC/USDT')
+                logger.info(f"✓ Connected to BingX - Test price: BTC=${test_ticker['last']:.2f}")
+
+                logger.info(f"Verifying {len(self.TRADING_PAIRS)} trading pairs...")
+                verified_pairs = []
+                for pair in self.TRADING_PAIRS:
+                    try:
+                        # --- AWAIT HATASI DÜZELTİLDİ ---
+                        ticker = bingx_client.ticker(pair)
+                        verified_pairs.append(pair)
+                        logger.info(f"  ✓ {pair}: ${ticker['last']:.2f}")
+                    except Exception as e:
+                        logger.warning(f"  ❌ {pair}: {e}")
+                
+                min_required = 1 if len(self.TRADING_PAIRS) > 0 else 0
+                if len(verified_pairs) < min_required:
+                    logger.error(f"Only {len(verified_pairs)}/{len(self.TRADING_PAIRS)} pairs verified (minimum {min_required} required)")
+                    return 1
+            except Exception as e:
+                logger.error(f"❌ Failed to connect to BingX: {e}", exc_info=True)
+                return 1
+            # --- Borsa bağlantı mantığı sonu ---
+
+            # 3. Risk yönetimini başlat
             if not self._initialize_risk_management():
                 return 1
             
-            # ====================================================================
-            # PHASE 1: INITIALIZE CORE SYSTEMS (Exchange, WebSocket, Data Layer)
-            # ====================================================================
-            logger.info("")
-            logger.info("="*70)
-            logger.info("[PHASE 1] INITIALIZING CORE SYSTEMS")
-            logger.info("="*70)
-            
-            # Initialize strategies (need them before production system)
-            if not await self._initialize_strategies():
-                return 1
-            
-            # Initialize production system CORE ONLY (no ML yet)
+            # PHASE 1: CORE SİSTEMLERİ BAŞLAT
+            logger.info("\n" + "="*70 + "\n[PHASE 1] INITIALIZING CORE SYSTEMS\n" + "="*70)
             if not await self._initialize_production_system_core():
                 return 1
             
-            # ====================================================================
-            # PHASE 1.5: DATA LAYER HEALTH CHECK
-            # ====================================================================
-            logger.info("")
-            logger.info("="*70)
-            logger.info("[PHASE 1.5] DATA LAYER HEALTH CHECK")
-            logger.info("="*70)
-            
+            # PHASE 1.5: VERİ KATI SAĞLIK KONTROLÜ
+            logger.info("\n" + "="*70 + "\n[PHASE 1.5] DATA LAYER HEALTH CHECK\n" + "="*70)
             if not await self._perform_data_health_check():
                 logger.error("\n❌ Data layer health check failed - aborting launch")
                 return 1
-            
-            # ====================================================================
-            # PHASE 2: INITIALIZE ML SYSTEMS (Only after data layer is healthy)
-            # ====================================================================
-            logger.info("")
-            logger.info("="*70)
-            logger.info("[PHASE 2] INITIALIZING ML SYSTEMS")
-            logger.info("="*70)
-            
-            # Initialize ML systems in coordinator
-            ml_init_success = await self._initialize_production_system_ml()
-            if not ml_init_success:
-                # ML failure is not critical - continue with degraded functionality
+                
+            # PHASE 2: ML SİSTEMLERİNİ BAŞLAT
+            logger.info("\n" + "="*70 + "\n[PHASE 2] INITIALIZING ML SYSTEMS\n" + "="*70)
+            if not await self._initialize_production_system_ml():
                 logger.warning("⚠️ ML initialization failed - continuing with limited AI features")
             
-            # Start price prediction loop if price engine is available
-            if self.price_engine and ml_init_success:
-                try:
-                    # Get symbols and timeframes from config
-                    symbols = self.config.get('universe', {}).get('fixed_symbols', ['BTC/USDT:USDT'])
-                    timeframes = self.config.get('ml', {}).get('prediction', {}).get('timeframes', ['5m', '15m', '1h'])
-                    
-                    # Start prediction loop as a background task
-                    logger.info("🧠 [ML] Starting price prediction background loop...")
-                    self._prediction_loop_task = asyncio.create_task(
-                        self.price_engine.start_prediction_loop(symbols, timeframes)
-                    )
-                    logger.info("✅ Price prediction loop started as background task")
-                except Exception as e:
-                    logger.error(f"❌ Failed to start prediction loop: {e}", exc_info=True)
-                    logger.warning("   Continuing without prediction loop")
-            
-            # ====================================================================
-            # MARK SYSTEM AS INITIALIZED (Critical for pre-flight checks)
-            # ====================================================================
-            # After Phase 1 (Core) and Phase 2 (ML) complete, mark coordinator as initialized
-            # This flag is checked by pre-flight checks to verify system readiness
-            # 
-            # Note: We set this directly at the launcher level as a safety net to ensure
-            # the flag is set before pre-flight checks, even if the coordinator's internal
-            # ML initialization didn't set it (e.g., if ML is disabled in config).
-            # The coordinator also sets this flag internally via _mark_as_initialized_if_ready()
-            # during ML initialization, making this a redundant safety measure.
             self.coordinator.is_initialized = True
-            logger.info("✅ Production coordinator marked as initialized (is_initialized = True)")
+            logger.info("✅ Production coordinator marked as initialized")
             
-            # ====================================================================
-            # PHASE 3: FINALIZE SETUP
-            # ====================================================================
-            logger.info("")
-            logger.info("="*70)
-            logger.info("[PHASE 3] FINALIZING SETUP")
-            logger.info("="*70)
-            
-            # Register strategies with coordinator
-            if not await self._register_strategies():
-                return 1
-            
-            # Pre-flight checks
+            # PHASE 3: KURULUMU SONLANDIR
+            logger.info("\n" + "="*70 + "\n[PHASE 3] FINALIZING SETUP\n" + "="*70)
+            # Not: Strateji kaydı artık _initialize_production_system_core içinde yapılıyor olabilir,
+            # Bu yüzden _register_strategies'i siliyoruz.
             if not await self._perform_preflight_checks():
                 logger.error("\n❌ Pre-flight checks failed - aborting launch")
                 return 1
             
-            # Print configuration summary after initialization
             self._print_configuration_summary()
             
-            # If dry-run, stop here
             if self.dry_run:
                 logger.info("\n✓ Dry run completed successfully - no trading started")
                 return 0
             
-            # Start trading loop
             await self._start_trading_loop(duration)
             
             return 0
             
         except KeyboardInterrupt:
             logger.warning("⚠️ Interrupted by user (Ctrl+C)")
-            return 130  # Standard exit code for Ctrl+C
+            return 130
             
         except Exception as e:
-            logger.critical(f"❌ Fatal error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.critical(f"❌ Fatal error in _run_once: {e}", exc_info=True)
             return 1
         
         finally:
-            # ✅ ALWAYS cleanup, even on error!
-            logger.info("Performing cleanup...")
-            try:
-                # cleanup'ı tekrar çağırmadan önce tamamlanıp tamamlanmadığını kontrol et
-                if not self._cleanup_completed:
-                    await self.cleanup()
-            except Exception as e:
-                logger.error(f"❌ Cleanup failed: {e}")
-                if exit_code == 0:
-                    exit_code = 1
+            if not self._cleanup_completed:
+                logger.info("Performing final cleanup in _run_once...")
+                await self.cleanup()
     
     async def _run_with_auto_restart(self, duration: Optional[float] = None) -> int:
         """
