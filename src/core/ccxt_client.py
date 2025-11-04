@@ -259,7 +259,7 @@ class CcxtClient:
             except Exception as e:
                 logger.error(f"[{self.exchange.id}] Failed to create minimal market structure: {e}. Falling back to full load.")
                 # Eğer bu işlem başarısız olursa, güvenli moda dön ve her şeyi yükle.
-                return await self.ex.load_markets(params=params)
+                return self.ex.load_markets(params=params)
 
         else:
             # Standart davranış: tüm piyasaları yükle
