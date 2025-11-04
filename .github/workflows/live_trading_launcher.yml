@@ -348,25 +348,18 @@ jobs:
           [ "${{ github.event.inputs.auto_restart }}" = "true" ] && args+=("--auto-restart")
           [ "${{ github.event.inputs.debug_mode }}" = "true" ] && args+=("--debug")
           
-          # Fixed duration handling (pass as argument for security)
+          # Fixed duration handling - single line Python
           if [ -n "${{ github.event.inputs.duration }}" ]; then
-            duration_in_seconds=$(python3 -c "
-import re, sys
-try:
-    s = sys.argv[1].strip()
-    m = re.match(r'^([0-9\.]+)\s*([hms])?\s*$', s.lower())
-    if m:
-        value = float(m.group(1))
-        unit = m.group(2) or 's'  # Default to seconds if no unit
-        multiplier = {'h': 3600, 'm': 60, 's': 1}[unit]
-        print(int(value * multiplier))
-    else:
-        raise ValueError('Invalid format')
-except (ValueError, KeyError) as e:
-    print('Error: Invalid duration format. Expected: 60s, 5m, 2h, or plain seconds', file=sys.stderr)
-    sys.exit(1)
-" "${{ github.event.inputs.duration }}") || exit 1
-            args+=("--duration" "$duration_in_seconds")
+            DURATION_INPUT="${{ github.event.inputs.duration }}"
+            duration_in_seconds=$(python3 -c "import re,sys; s='${DURATION_INPUT}'.strip(); m=re.match(r'^([0-9\.]+)\s*([hms])?\s*\$', s.lower()); sys.exit(0) if m and print(int(float(m.group(1))*{'h':3600,'m':60,'s':1}.get(m.group(2) or 's',1))) is None else sys.exit(1)")
+            
+            if [ $? -eq 0 ]; then
+              args+=("--duration" "$duration_in_seconds")
+              echo "Duration set to ${duration_in_seconds} seconds"
+            else
+              echo "Error: Invalid duration format '${DURATION_INPUT}'. Expected: 60s, 5m, 2h, or plain seconds"
+              exit 1
+            fi
           fi
           
           # Execute with proper error handling
@@ -484,14 +477,7 @@ except (ValueError, KeyError) as e:
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
             # Use Python for percentage calculation instead of bc (passing as argument for safety)
             # Note: Duplicated in summary job for independence (each job should be self-contained)
-            DP_THRESHOLD_AS_PERCENT=$(python3 -c "
-import sys
-try:
-    val = float(sys.argv[1])
-    print(f'{val * 100:.4f}%')
-except (ValueError, IndexError) as e:
-    print('N/A')
-" "${DUPLICATE_PREVENTION_THRESHOLD}")
+            DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; val=sys.argv[1] if len(sys.argv)>1 else ''; print(f'{float(val)*100:.4f}%') if val and val.replace('.','').replace('-','').isdigit() else print('N/A')" "${DUPLICATE_PREVENTION_THRESHOLD}")
             PREFLIGHT_STATUS="${{ github.event.inputs.skip_preflight == 'true' && '⚠️ SKIPPED' || '✅ PASSED' }}"
             
             MESSAGE="✅ <b>Live Trading Session Completed</b>%0A%0A"
@@ -561,14 +547,7 @@ except (ValueError, IndexError) as e:
         run: |
           # Use Python for percentage calculation instead of bc (passing as argument for safety)
           # Note: Duplicated from Telegram notification for job independence
-          DP_THRESHOLD_AS_PERCENT=$(python3 -c "
-import sys
-try:
-    val = float(sys.argv[1])
-    print(f'{val * 100:.4f}%')
-except (ValueError, IndexError) as e:
-    print('N/A')
-" "${DUPLICATE_PREVENTION_THRESHOLD}")
+          DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; val=sys.argv[1] if len(sys.argv)>1 else ''; print(f'{float(val)*100:.4f}%') if val and val.replace('.','').replace('-','').isdigit() else print('N/A')" "${DUPLICATE_PREVENTION_THRESHOLD}")
 
           echo "# 🤖 Bearish Alpha Bot - Trading Session Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
