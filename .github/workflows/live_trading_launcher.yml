@@ -304,17 +304,40 @@ jobs:
         id: set-env
         run: |
           echo "Dynamically setting environment variables using jq..."
-          # GitHub `vars` context'ini bir dosyaya yaz
+          
+          # GitHub vars context'ini JSON dosyasına yaz
           echo '${{ toJSON(vars) }}' > github_vars.json
           
-          # config.example.yaml dosyasından tüm değişken adlarını oku
+          # ML Feature windows için özel işlem
+          echo "ML_FEAT_VOL_WINDOWS=5,10,20,50" >> $GITHUB_ENV
+          echo "ML_FEAT_MOM_WINDOWS=5,10,20,50" >> $GITHUB_ENV
+          
+          # RSI thresholds - hem spot hem futures formatı için
+          RSI_BTC="${{ vars.RSI_THRESHOLD_BTC || '50' }}"
+          RSI_ETH="${{ vars.RSI_THRESHOLD_ETH || '50' }}"
+          RSI_SOL="${{ vars.RSI_THRESHOLD_SOL || '50' }}"
+          
+          echo "RSI_THRESHOLD_BTC=$RSI_BTC" >> $GITHUB_ENV
+          echo "RSI_THRESHOLD_ETH=$RSI_ETH" >> $GITHUB_ENV
+          echo "RSI_THRESHOLD_SOL=$RSI_SOL" >> $GITHUB_ENV
+          
+          # Diğer değişkenleri otomatik al
           grep -oP '#\s*Override with:\s*\K\w+' config/config.example.yaml | while read -r var_name; do
+            # ML_FEAT ve RSI_THRESHOLD olanları skip et (yukarıda manuel handle edildi)
+            if [[ "$var_name" == "ML_FEAT_VOL_WINDOWS" ]] || \
+               [[ "$var_name" == "ML_FEAT_MOM_WINDOWS" ]] || \
+               [[ "$var_name" == RSI_THRESHOLD_* ]]; then
+              continue
+            fi
+            
             # jq kullanarak JSON dosyasından değişkenin değerini al
             value=$(jq -r --arg key "$var_name" '.[$key] // ""' github_vars.json)
             
-            # Değeri $GITHUB_ENV dosyasına yazarak ortam değişkeni olarak ayarla
-            echo "$var_name=$value" >> $GITHUB_ENV
+            if [ -n "$value" ]; then
+              echo "$var_name=$value" >> $GITHUB_ENV
+            fi
           done
+          
           echo "✅ Dynamic variables are ready for the next step."
         shell: bash
 
