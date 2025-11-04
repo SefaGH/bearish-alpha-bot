@@ -22,17 +22,21 @@ logger = logging.getLogger(__name__)
 class TechnicalIndicatorFeatures:
     """Extract technical indicator features from price data."""
     
-    def __init__(self):
-        """Initialize technical indicator feature extractor."""
+    def __init__(self, config: Dict[str, Any] = None):
+        """Initialize technical indicator feature extractor with config."""
         if not ta:
             raise ImportError("pandas_ta_classic kütüphanesi bulunamadı. Lütfen 'pip install pandas-ta-classic' ile kurun.")
-        self.rsi_period = 14
-        self.macd_fast = 12
-        self.macd_slow = 26
-        self.macd_signal = 9
-        self.bb_period = 20
-        self.atr_period = 14
-    
+        
+        # Config varsa kullan, yoksa varsayılan değerleri kullan
+        config = config or {}
+        self.rsi_period = config.get('rsi_period', 14)
+        self.macd_fast = config.get('macd_fast', 12)
+        self.macd_slow = config.get('macd_slow', 26)
+        self.macd_signal = config.get('macd_signal', 9)
+        self.bb_period = config.get('bb_period', 20)
+        self.bb_std = config.get('bb_std', 2)
+        self.atr_period = config.get('atr_period', 14)
+        
     def compute(self, price_data: pd.DataFrame) -> pd.DataFrame:
         """
         Compute technical indicator features.
@@ -123,24 +127,19 @@ class MarketMicrostructureFeatures:
 
 class VolatilityFeatures:
     """Extract volatility-related features."""
+
+    def __init__(self, windows: List[int] = None):
+        """Initialize with configurable windows."""
+        self.windows = windows or [5, 10, 20, 50]
     
-    def compute(self, price_data: pd.DataFrame, windows: List[int] = [5, 10, 20, 50]) -> pd.DataFrame:
-        """
-        Compute volatility features across multiple windows.
-        
-        Args:
-            price_data: DataFrame with OHLCV data
-            windows: List of window sizes for volatility calculation
-            
-        Returns:
-            DataFrame with volatility features
-        """
+    def compute(self, price_data: pd.DataFrame) -> pd.DataFrame:
+        """Compute volatility features across multiple windows."""
         features = pd.DataFrame(index=price_data.index)
         
         try:
             returns = price_data['close'].pct_change()
             
-            for window in windows:
+            for window in self.windows:  # self.windows kullan
                 # Realized volatility
                 features[f'vol_{window}'] = returns.rolling(window=window).std()
                 
@@ -276,12 +275,30 @@ class FeatureEngineeringPipeline:
     ]
     # =================================================================================
     
-    def __init__(self):
-        """Initialize the feature engineering pipeline."""
-        self.technical_indicators = TechnicalIndicatorFeatures()
+    def __init__(self, config: Dict[str, Any] = None):
+        """Initialize the feature engineering pipeline with config."""
+        self.config = config or {}
+        
+        # Pass config to sub-components
+        self.technical_indicators = TechnicalIndicatorFeatures(self.config)
         self.market_microstructure = MarketMicrostructureFeatures()
-        self.volatility_features = VolatilityFeatures()
-        self.momentum_features = MomentumFeatures()
+        
+        # Parse volatility windows from config
+        vol_windows_str = self.config.get('volatility_windows', '5,10,20,50')
+        if isinstance(vol_windows_str, str):
+            vol_windows = [int(w.strip()) for w in vol_windows_str.split(',')]
+        else:
+            vol_windows = vol_windows_str
+        self.volatility_features = VolatilityFeatures(windows=vol_windows)
+        
+        # Parse momentum windows from config
+        mom_windows_str = self.config.get('momentum_windows', '5,10,20,50')
+        if isinstance(mom_windows_str, str):
+            mom_windows = [int(w.strip()) for w in mom_windows_str.split(',')]
+        else:
+            mom_windows = mom_windows_str
+        self.momentum_features = MomentumFeatures(windows=mom_windows)
+        
         self.cross_asset_features = CrossAssetFeatures()
         
     def extract_features(self, price_data: pd.DataFrame, 
