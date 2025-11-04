@@ -274,11 +274,10 @@ jobs:
 
       - name: Set Dynamic Environment Variables
         env:
-          GH_VARS_JSON: ${{ toJSON(vars) }}
+          GH_VARS_JSON: |
+            ${{ toJSON(vars) }}
         run: |
           echo "Setting dynamic environment variables..."
-          # YAML dosyasından 'Override with:' yorumlarını okuyarak ortam değişkenlerini oluşturur.
-          # Bu değişkenleri $GITHUB_ENV dosyasına yazar, böylece sonraki adımlar kullanabilir.
           grep -oP '#\s*Override with:\s*\K\w+' config/config.example.yaml | while read -r var_name; do
             python3 -c "
 import os, json, sys
@@ -286,9 +285,8 @@ vars_json = os.getenv('GH_VARS_JSON', '{}')
 var_name = sys.argv[1]
 try:
     value = json.loads(vars_json).get(var_name, '')
-    # Değerin içinde tırnak işareti varsa kaçış karakteri ekle
-    value = value.replace('\"', '\\\"')
-    print(f'{var_name}=\"{value}\"')
+    # Olası tırnak işareti sorunlarını önlemek için değeri güvenli bir şekilde yazdır
+    print(f'{var_name}={value}')
 except Exception:
     print(f'{var_name}=', file=sys.stderr)
 " "$var_name"
