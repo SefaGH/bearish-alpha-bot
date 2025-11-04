@@ -269,6 +269,8 @@ jobs:
 
       - name: Setup TA-Lib and Dependencies
         run: |
+          set -e  # Exit on error
+          
           # Verify Python version
           python --version
           python -c "import sys; assert sys.version_info[:2] == (3, 11), f'Expected Python 3.11, got {sys.version}'"
@@ -376,11 +378,11 @@ except (ValueError, KeyError) as e:
           
           # Run with timeout and capture exit code
           # 43200 seconds = 720 minutes (12 hours), matches job timeout-minutes: 720
-          # --preserve-status: Exit with COMMAND's status, not timeout's (124)
-          timeout --preserve-status 43200 "${CMD[@]}" || EXIT_CODE=$?
+          # Exit code 124 = timeout, other codes = command exit status
+          timeout 43200 "${CMD[@]}" || EXIT_CODE=$?
           
           if [ "${EXIT_CODE:-0}" -eq 124 ]; then
-            echo "⏱️ Trading session reached 12-hour timeout limit"
+            echo "⏱️ Trading session reached 12-hour timeout limit (this is normal)"
             exit 0
           elif [ "${EXIT_CODE:-0}" -ne 0 ]; then
             echo "❌ Trading bot exited with code: ${EXIT_CODE}"
