@@ -46,10 +46,14 @@ class LiveTradingConfiguration:
     ENV_OVERRIDE_PATTERN = re.compile(r'#\s*Override with:\s*(\w+)')
 
     @classmethod
-    def load(cls) -> Dict[str, Any]:
+    def load(cls, log_summary: bool = True) -> Dict[str, Any]:
         """
         Main entry point. Loads, merges, and returns the configuration.
         Uses a singleton pattern to load only once.
+        
+        Args:
+            log_summary: Whether to log configuration summary (for backward compatibility).
+                        Default is True. Set to False to suppress logging.
         """
         global _config_instance
         if _config_instance is not None:
@@ -64,7 +68,11 @@ class LiveTradingConfiguration:
         try:
             config = instance._load_and_merge_configs()
             _config_instance = config
-            instance._log_config_summary(config)
+            
+            # Only log summary if requested (backward compatibility)
+            if log_summary:
+                instance._log_config_summary(config)
+                
             return _config_instance
         except Exception as e:
             logger.critical(f"❌ A critical error occurred during configuration loading: {e}", exc_info=True)
