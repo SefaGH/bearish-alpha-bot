@@ -2337,107 +2337,102 @@ class LiveTradingLauncher:
         else:
             return await self._run_once(duration)
     
-        async def _run_once(self, duration: Optional[float] = None) -> int:
+    async def _run_once(self, duration: Optional[float] = None) -> int:
         """
-        Run trading system once without auto-restart.
+        Run trading system once without auto-restart. This is the main
+        execution flow of the application.
         """
-        exit_code = 0 
+        exit_code = 0
         try:
-            # 1. Ortam değişkenlerini ve temel bileşenleri yükle
-            if not self._load_environment():
-                return 1
-            
-            # 2. Borsa bağlantısını kur
-            # --- BURASI DEĞİŞTİ: Borsa bağlantısı artık doğrudan bu metodun içinde ---
+            # ===================================================================
+            # ADIM 1: ORTAM VE BORSA BAĞLANTISINI HAZIRLA
+            # ===================================================================
+            if not self._load_environment(): return 1
+
             logger.info("\n[2/8] Initializing BingX Exchange Connection...")
             try:
-                creds = None
-                if self._has_bingx_credentials and not self.dry_run:
-                    logger.info("Authenticated mode: Loading API credentials.")
-                    creds = {'apiKey': os.getenv('BINGX_KEY'), 'secret': os.getenv('BINGX_SECRET')}
-                else:
-                    logger.info("Public mode: Initializing without API credentials.")
-
+                creds = {'apiKey': os.getenv('BINGX_KEY'), 'secret': os.getenv('BINGX_SECRET')} if self._has_bingx_credentials and not self.dry_run else None
                 bingx_client = CcxtClient('bingx', creds=creds)
                 bingx_client.set_required_symbols(self.TRADING_PAIRS)
-                
-                # --- AWAIT HATASI DÜZELTİLDİ ---
-                bingx_client.load_markets()
-                logger.info(f"✓ BingX client optimized for {len(self.TRADING_PAIRS)} symbols.")
+                bingx_client.load_markets() # Not async
                 self.exchange_clients['bingx'] = bingx_client
-
-                logger.info("Testing BingX connection...")
-                # --- AWAIT HATASI DÜZELTİLDİ ---
-                test_ticker = bingx_client.ticker('BTC/USDT')
-                logger.info(f"✓ Connected to BingX - Test price: BTC=${test_ticker['last']:.2f}")
-
-                logger.info(f"Verifying {len(self.TRADING_PAIRS)} trading pairs...")
-                verified_pairs = []
-                for pair in self.TRADING_PAIRS:
-                    try:
-                        # --- AWAIT HATASI DÜZELTİLDİ ---
-                        ticker = bingx_client.ticker(pair)
-                        verified_pairs.append(pair)
-                        logger.info(f"  ✓ {pair}: ${ticker['last']:.2f}")
-                    except Exception as e:
-                        logger.warning(f"  ❌ {pair}: {e}")
+                logger.info(f"✓ BingX client created and configured for {len(self.TRADING_PAIRS)} symbols.")
                 
-                min_required = 1 if len(self.TRADING_PAIRS) > 0 else 0
-                if len(verified_pairs) < min_required:
-                    logger.error(f"Only {len(verified_pairs)}/{len(self.TRADING_PAIRS)} pairs verified (minimum {min_required} required)")
-                    return 1
-            except Exception as e:
-                logger.error(f"❌ Failed to connect to BingX: {e}", exc_info=True)
-                return 1
-            # --- Borsa bağlantı mantığı sonu ---
+                # Hızlı bir test yap
+                test_ticker = bingx_client.ticker('BTC/USDT') # Not async
+                logger.info(f"✓ Connection test OK. BTC price: ${test_ticker['last']:.2f}")
 
-            # 3. Risk yönetimini başlat
-            if not self._initialize_risk_management():
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize exchange connection: {e}", exc_info=True)
                 return 1
-            
-            # PHASE 1: CORE SİSTEMLERİ BAŞLAT
+
+            # ===================================================================
+            # ADIM 2: STRATEJİLERİ YÜKLE
+            # ===================================================================
+            # Bu, Phase 1'den ÖNCE yapılmalı ki, coordinator stratejileri bilsin.
+            if not await self._initialize_strategies():
+                logger.error("\n❌ Strategy initialization failed - aborting launch.")
+                return 1
+
+            # ===================================================================
+            # ADIM 3: TEMEL SİSTEMLERİ (CORE) BAŞLAT (PHASE 1)
+            # ===================================================================
             logger.info("\n" + "="*70 + "\n[PHASE 1] INITIALIZING CORE SYSTEMS\n" + "="*70)
             if not await self._initialize_production_system_core():
                 return 1
-            
-            # PHASE 1.5: VERİ KATI SAĞLIK KONTROLÜ
+
+            # ===================================================================
+            # ADIM 4: VERİ KATI SAĞLIĞINI KONTROL ET (PHASE 1.5)
+            # ===================================================================
             logger.info("\n" + "="*70 + "\n[PHASE 1.5] DATA LAYER HEALTH CHECK\n" + "="*70)
             if not await self._perform_data_health_check():
-                logger.error("\n❌ Data layer health check failed - aborting launch")
+                logger.error("\n❌ Data layer health check failed - aborting launch.")
                 return 1
                 
-            # PHASE 2: ML SİSTEMLERİNİ BAŞLAT
+            # ===================================================================
+            # ADIM 5: ML SİSTEMLERİNİ BAŞLAT (PHASE 2)
+            # ===================================================================
             logger.info("\n" + "="*70 + "\n[PHASE 2] INITIALIZING ML SYSTEMS\n" + "="*70)
             if not await self._initialize_production_system_ml():
-                logger.warning("⚠️ ML initialization failed - continuing with limited AI features")
+                logger.warning("⚠️ ML initialization failed - continuing with limited AI features.")
             
             self.coordinator.is_initialized = True
-            logger.info("✅ Production coordinator marked as initialized")
+            logger.info("✅ Production coordinator marked as initialized.")
             
-            # PHASE 3: KURULUMU SONLANDIR
-            logger.info("\n" + "="*70 + "\n[PHASE 3] FINALIZING SETUP\n" + "="*70)
-            # Not: Strateji kaydı artık _initialize_production_system_core içinde yapılıyor olabilir,
-            # Bu yüzden _register_strategies'i siliyoruz.
+            # ===================================================================
+            # ADIM 6: STRATEJİLERİ KOORDİNATÖRE KAYDET
+            # ===================================================================
+            # Bu, TÜM sistemler başlatıldıktan SONRA yapılmalı.
+            logger.info("\n[FINAL STEP] Registering initialized strategies with the coordinator...")
+            if not await self._register_strategies():
+                logger.error("\n❌ Strategy registration failed - aborting launch.")
+                return 1
+
+            # ===================================================================
+            # ADIM 7: SON UÇUŞ ÖNCESİ KONTROLLER
+            # ===================================================================
             if not await self._perform_preflight_checks():
-                logger.error("\n❌ Pre-flight checks failed - aborting launch")
+                logger.error("\n❌ Pre-flight checks failed - aborting launch.")
                 return 1
             
             self._print_configuration_summary()
             
             if self.dry_run:
-                logger.info("\n✓ Dry run completed successfully - no trading started")
+                logger.info("\n✓ Dry run completed successfully. No trading was started.")
                 return 0
             
+            # ===================================================================
+            # ADIM 8: TİCARET DÖNGÜSÜNÜ BAŞLAT
+            # ===================================================================
             await self._start_trading_loop(duration)
-            
             return 0
             
         except KeyboardInterrupt:
-            logger.warning("⚠️ Interrupted by user (Ctrl+C)")
+            logger.warning("⚠️ Interrupted by user (Ctrl+C).")
             return 130
             
         except Exception as e:
-            logger.critical(f"❌ Fatal error in _run_once: {e}", exc_info=True)
+            logger.critical(f"❌ A fatal error occurred in the main execution flow: {e}", exc_info=True)
             return 1
         
         finally:
