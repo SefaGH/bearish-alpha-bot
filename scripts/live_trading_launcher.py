@@ -901,8 +901,8 @@ class LiveTradingLauncher:
     # Default risk parameters - used across normalization and fallbacks
     DEFAULT_RISK_PARAMS = {
         'max_position_size': 0.2,
-        'stop_loss_pct': 0.02,
-        'take_profit_pct': 0.015,
+        'stop_loss_pct': None,      # Sentinel value - will be calculated dynamically
+        'take_profit_pct': None,    # Sentinel value - will be calculated dynamically
         'risk_per_trade': 0.05,
         'max_drawdown': 0.05
     }
@@ -988,17 +988,15 @@ class LiveTradingLauncher:
 
     def _normalize_risk_params(self):
         """
-        Normalize risk parameter keys to prevent KeyError.
-        Maps all variations to standard keys.
+        Normalize risk parameters with support for dynamic (sentinel) values.
+        Maps all variations to standard keys while preserving None for dynamic params.
         """
         if not hasattr(self, 'RISK_PARAMS'):
             self.RISK_PARAMS = {}
         
-        # Debug: Log what we have
         logger.debug(f"Current RISK_PARAMS keys: {list(self.RISK_PARAMS.keys())}")
         
         # Map all possible variations to standard keys
-        # Note: Standard key itself is NOT in the variations list to avoid redundancy
         key_mappings = {
             'max_position_size': ['max_position_size_pct', 'max_notional_per_trade'],
             'stop_loss_pct': ['stop_loss', 'min_stop_pct', 'stop_loss_multiplier'],
@@ -1007,9 +1005,9 @@ class LiveTradingLauncher:
             'max_drawdown': ['daily_loss_limit_pct', 'max_daily_loss']
         }
         
-        # Also check config if available
+        # Check config if available
         config_trading = self.config.get('trading', {}) if hasattr(self, 'config') else {}
-        config_risk = self.config.get('risk_management', {}) if hasattr(self, 'config') else {}
+        config_risk = self.config.get('risk', {}) if hasattr(self, 'config') else {}
         
         for standard_key, variations in key_mappings.items():
             found = False
@@ -1017,6 +1015,10 @@ class LiveTradingLauncher:
             # Preserve existing standard key if already set
             if standard_key in self.RISK_PARAMS:
                 continue
+            
+            # ===== SENTINEL VALUE SUPPORT =====
+            # For take_profit_pct and stop_loss_pct, allow None as a valid value
+            is_dynamic_param = standard_key in ['take_profit_pct', 'stop_loss_pct']
             
             # Check RISK_PARAMS first
             for variant in variations:
@@ -1050,27 +1052,40 @@ class LiveTradingLauncher:
                         except ValueError:
                             logger.warning(f"Invalid value for environment variable '{env_name}': '{env_val}' (expected float)")
             
-            # Set default if nothing found
+            # ===== KEY CHANGE: Handle missing params differently =====
             if not found:
-                self.RISK_PARAMS[standard_key] = self.DEFAULT_RISK_PARAMS[standard_key]
-                logger.warning(f"Risk param '{standard_key}' not found, using default: {self.DEFAULT_RISK_PARAMS[standard_key]}")
+                if is_dynamic_param:
+                    # For dynamic params, use None (sentinel value)
+                    self.RISK_PARAMS[standard_key] = None
+                    logger.info(f"✓ Risk param '{standard_key}' will be calculated dynamically by strategies")
+                else:
+                    # For other params, use defaults
+                    self.RISK_PARAMS[standard_key] = self.DEFAULT_RISK_PARAMS[standard_key]
+                    logger.warning(f"Risk param '{standard_key}' not found, using default: {self.DEFAULT_RISK_PARAMS[standard_key]}")
         
-        # Validate risk parameter values
-        # Note: All values are stored in decimal format (0.2 = 20%, not 20.0 = 20%)
+        # Validate risk parameter values (skip None values)
         for key, value in self.RISK_PARAMS.items():
+            if value is None:
+                # Skip validation for sentinel values
+                continue
+                
             if key in self.DEFAULT_RISK_PARAMS:  # Only validate known risk params
                 if value < 0:
                     logger.error(f"Invalid risk param '{key}': {value} (negative value not allowed). Using default.")
                     self.RISK_PARAMS[key] = self.DEFAULT_RISK_PARAMS[key]
                 elif value > 1.0:
-                    # Values > 1.0 mean > 100%, which might be intentional for some params
-                    logger.warning(f"Risk param '{key}': {value:.1%} (> 100%). This may be intentional for leverage, but verify configuration.")
+                    logger.warning(f"Risk param '{key}': {value:.1%} (> 100%). This may be intentional for leverage.")
                 elif key == 'max_position_size' and value > 0.5:
-                    # Max position > 50% is risky
-                    logger.warning(f"Risk param 'max_position_size': {value:.1%} (> 50%). This is quite high, verify configuration.")
+                    logger.warning(f"Risk param 'max_position_size': {value:.1%} (> 50%). This is quite high.")
         
         logger.info("Risk parameters normalized successfully")
-        logger.debug(f"Final RISK_PARAMS: {self.RISK_PARAMS}")
+        
+        # Log final state with special handling for None values
+        for key, value in self.RISK_PARAMS.items():
+            if value is None:
+                logger.debug(f"  {key}: <dynamic>")
+            else:
+                logger.debug(f"  {key}: {value}")
 
     @property
     def capital_source(self) -> str:
@@ -2068,10 +2083,15 @@ class LiveTradingLauncher:
             if self.telegram:
                 ws_info = "WebSocket CONNECTED ✅" if ws_connected else "REST API mode (WebSocket unavailable)"
                 
-                # Safe extraction (normalization already done, but keeping fallbacks for safety)
+                # Safe extraction with sentinel value support
                 max_pos = self.RISK_PARAMS.get('max_position_size', self.DEFAULT_RISK_PARAMS['max_position_size'])
-                stop_loss = self.RISK_PARAMS.get('stop_loss_pct', self.DEFAULT_RISK_PARAMS['stop_loss_pct'])
-                take_profit = self.RISK_PARAMS.get('take_profit_pct', self.DEFAULT_RISK_PARAMS['take_profit_pct'])
+                stop_loss = self.RISK_PARAMS.get('stop_loss_pct')
+                take_profit = self.RISK_PARAMS.get('take_profit_pct')
+                
+                # Format values for display
+                max_pos_str = f"{max_pos:.1%}" if max_pos is not None else "Dynamic"
+                stop_loss_str = f"{stop_loss:.1%}" if stop_loss is not None else "Dynamic (ATR-based)"
+                take_profit_str = f"{take_profit:.1%}" if take_profit is not None else "Dynamic (ATR-based)"
                 
                 self.telegram.send(
                     f"🚀 <b>LIVE TRADING STARTED</b>\n"
@@ -2080,11 +2100,11 @@ class LiveTradingLauncher:
                     f"Exchange: BingX\n"
                     f"Pairs: {len(self.TRADING_PAIRS)}\n"
                     f"Data: {ws_info}\n"
-                    f"Max Position: {max_pos:.1%}\n"
-                    f"Stop Loss: {stop_loss:.1%}\n"
-                    f"Take Profit: {take_profit:.1%}"
+                    f"Max Position: {max_pos_str}\n"
+                    f"Stop Loss: {stop_loss_str}\n"
+                    f"Take Profit: {take_profit_str}"
                 )
-            
+                        
             # STEP 3: ACTIVATE TRADING SYSTEMS
             logger.info("\n" + "="*70)
             logger.info("🚀 ACTIVATING TRADING SYSTEMS")
