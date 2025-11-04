@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 # Singleton instance storage to ensure config is loaded only once.
 _config_instance: Optional[Dict[str, Any]] = None
 
+# Regex pattern for validating trading symbols (compiled once at module load)
+# Matches format: BASE/QUOTE or BASE/QUOTE:SETTLE
+# Examples: BTC/USDT, ETH/USDT:USDT
+_TRADING_SYMBOL_PATTERN = re.compile(r'^[A-Z0-9]{2,10}/[A-Z0-9]{2,10}(:[A-Z0-9]{2,10})?$')
+
 class LiveTradingConfiguration:
     """
     A dynamic, singleton configuration loader.
@@ -72,10 +77,13 @@ class LiveTradingConfiguration:
         if not yaml_config:
             raise ValueError("Base configuration from YAML is empty or could not be loaded.")
 
-        # 2. Get overrides from environment variables using the parsed map
+        # 2. Normalize YAML values (e.g., convert trading symbol strings to lists)
+        yaml_config = self._normalize_yaml_values(yaml_config)
+
+        # 3. Get overrides from environment variables using the parsed map
         env_overrides = self._get_env_overrides(env_map, yaml_config)
 
-        # 3. Deep merge YAML config with environment overrides
+        # 4. Deep merge YAML config with environment overrides
         return self._deep_merge(yaml_config, env_overrides)
 
     def _load_yaml_and_map_env_vars(self) -> Tuple[Dict[str, Any], Dict[str, List[str]]]:
@@ -126,6 +134,26 @@ class LiveTradingConfiguration:
         logger.info(f"✅ YAML config loaded. Found {len(env_map)} environment variable mappings.")
         return yaml_config or {}, env_map
 
+    def _normalize_yaml_values(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalize YAML values by applying the same conversion logic as _cast_value.
+        This ensures that trading symbols in YAML are converted to lists.
+        """
+        def normalize_recursive(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                return {k: normalize_recursive(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [normalize_recursive(item) for item in obj]
+            elif isinstance(obj, str):
+                # Use the same helper method to detect and parse trading symbols
+                if self._is_trading_symbol(obj):
+                    return self._parse_trading_symbols(obj)
+                return obj
+            else:
+                return obj
+        
+        return normalize_recursive(config)
+
     def _get_env_overrides(self, env_map: Dict[str, List[str]], base_config: Dict[str, Any]) -> Dict[str, Any]:
         """
         Builds a dictionary of overrides from environment variables.
@@ -163,16 +191,58 @@ class LiveTradingConfiguration:
         return overrides
 
     @staticmethod
+    def _is_trading_symbol(value: str) -> bool:
+        """
+        Detect if a string represents a trading symbol or list of trading symbols.
+        
+        Trading symbols have the format: "BASE/QUOTE" or "BASE/QUOTE:SETTLE"
+        Examples: "BTC/USDT", "ETH/USDT:USDT", "BTC/USDT,ETH/USDT"
+        
+        Returns:
+            True if the string contains trading symbol(s), False otherwise.
+        """
+        if not isinstance(value, str) or not value.strip():
+            return False
+        
+        # Check if string contains '/' which is the key indicator of trading pairs
+        if '/' not in value:
+            return False
+        
+        # Split by comma to handle multiple symbols
+        parts = [p.strip() for p in value.split(',') if p.strip()]
+        
+        # At least one part should match the trading symbol pattern
+        return any(_TRADING_SYMBOL_PATTERN.match(part) for part in parts)
+    
+    @staticmethod
+    def _parse_trading_symbols(value_str: str) -> list:
+        """
+        Parse trading symbol(s) from a string into a list.
+        
+        Handles both single symbols and comma-separated lists.
+        Examples:
+            "BTC/USDT" -> ["BTC/USDT"]
+            "BTC/USDT,ETH/USDT" -> ["BTC/USDT", "ETH/USDT"]
+        """
+        if ',' in value_str:
+            # Multiple symbols
+            return [s.strip() for s in value_str.split(',') if s.strip()]
+        else:
+            # Single symbol
+            return [value_str.strip()]
+
+    @staticmethod
     def _cast_value(value_str: str, target_type: type) -> Any:
         """Helper to convert a string value to a specific target type."""
         try:
-            # === YENİ VE ÖNEMLİ KONTROL ===
-            # Eğer YAML'deki varsayılan değer bir string ise ama virgül içeriyorsa,
-            # bunu potansiyel bir liste olarak kabul et. Bu, TRADING_SYMBOLS gibi ayarları çözer.
-            if target_type is str and ',' in value_str:
-                 return [s.strip() for s in value_str.split(',') if s.strip()]
-            # === KONTROL SONU ===
+            # === CRITICAL FIX: Handle trading symbols specifically ===
+            # Trading symbols have the format "BTC/USDT" or "BTC/USDT:USDT"
+            # They must be converted to a list, even if there's only one symbol
+            if LiveTradingConfiguration._is_trading_symbol(value_str):
+                return LiveTradingConfiguration._parse_trading_symbols(value_str)
+            # === END CRITICAL FIX ===
 
+            # Original type-based casting for non-trading-symbol values
             if target_type is bool:
                 return value_str.lower() in ('true', '1', 't', 'y', 'yes')
             if target_type is int:
@@ -181,9 +251,14 @@ class LiveTradingConfiguration:
                 return float(value_str)
             if target_type is list:
                 return [s.strip() for s in value_str.split(',') if s.strip()]
+            if target_type is str:
+                # For strings that look like lists (comma-separated)
+                if ',' in value_str:
+                    return [s.strip() for s in value_str.split(',') if s.strip()]
+                return value_str
             return value_str  # Assume string
-        except (ValueError, TypeError):
-            logger.warning(f"Could not cast '{value_str}' to {target_type.__name__}. Using string value as fallback.")
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Could not cast '{value_str}' to {target_type.__name__}: {e}")
             return value_str
 
     @staticmethod
