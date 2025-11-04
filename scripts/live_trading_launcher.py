@@ -918,16 +918,22 @@ class LiveTradingLauncher:
         self.CAPITAL_USDT = self.config.get('risk', {}).get('equity_usd', 100.0)
         self.TRADING_PAIRS = self.config.get('universe', {}).get('fixed_symbols', [])
         
-        # DEFENSIVE: Ensure TRADING_PAIRS is always a list, even if config parsing fails
-        if isinstance(self.TRADING_PAIRS, str):
-            # Single symbol or comma-separated string - convert to list
-            if ',' in self.TRADING_PAIRS:
-                self.TRADING_PAIRS = [s.strip() for s in self.TRADING_PAIRS.split(',') if s.strip()]
+        # DEFENSIVE: Ensure TRADING_PAIRS is always a list (last-resort safety check)
+        # The config module should already return a list, but this handles edge cases
+        if not isinstance(self.TRADING_PAIRS, list):
+            logger.warning(
+                f"⚠️ TRADING_PAIRS has unexpected type {type(self.TRADING_PAIRS).__name__}. "
+                f"Converting to list. Value: {self.TRADING_PAIRS}"
+            )
+            if isinstance(self.TRADING_PAIRS, str):
+                # Use config module's parsing logic
+                from config.live_trading_config import LiveTradingConfiguration
+                if LiveTradingConfiguration._is_trading_symbol(self.TRADING_PAIRS):
+                    self.TRADING_PAIRS = LiveTradingConfiguration._parse_trading_symbols(self.TRADING_PAIRS)
+                else:
+                    self.TRADING_PAIRS = ['BTC/USDT']  # Safe fallback
             else:
-                self.TRADING_PAIRS = [self.TRADING_PAIRS.strip()] if self.TRADING_PAIRS.strip() else []
-        elif not isinstance(self.TRADING_PAIRS, list):
-            logger.warning(f"⚠️ Unexpected type for TRADING_PAIRS: {type(self.TRADING_PAIRS)}. Using default.")
-            self.TRADING_PAIRS = ['BTC/USDT']  # Safe fallback
+                self.TRADING_PAIRS = ['BTC/USDT']  # Safe fallback
         
         self.RISK_PARAMS = self.config.get('risk', {})
 

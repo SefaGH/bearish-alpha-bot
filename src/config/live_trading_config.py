@@ -140,12 +140,9 @@ class LiveTradingConfiguration:
             elif isinstance(obj, list):
                 return [normalize_recursive(item) for item in obj]
             elif isinstance(obj, str):
-                # Apply the same logic as _cast_value for string values
-                if '/' in obj:  # Trading symbol format
-                    if ',' in obj:
-                        return [s.strip() for s in obj.split(',') if s.strip()]
-                    else:
-                        return [obj.strip()]
+                # Use the same helper method to detect and parse trading symbols
+                if self._is_trading_symbol(obj):
+                    return self._parse_trading_symbols(obj)
                 return obj
             else:
                 return obj
@@ -189,19 +186,61 @@ class LiveTradingConfiguration:
         return overrides
 
     @staticmethod
+    def _is_trading_symbol(value: str) -> bool:
+        """
+        Detect if a string represents a trading symbol or list of trading symbols.
+        
+        Trading symbols have the format: "BASE/QUOTE" or "BASE/QUOTE:SETTLE"
+        Examples: "BTC/USDT", "ETH/USDT:USDT", "BTC/USDT,ETH/USDT"
+        
+        Returns:
+            True if the string contains trading symbol(s), False otherwise.
+        """
+        if not isinstance(value, str) or not value.strip():
+            return False
+        
+        # Check if string contains '/' which is the key indicator of trading pairs
+        # Also ensure it's not just any path string by checking for common currency patterns
+        if '/' not in value:
+            return False
+        
+        # Split by comma to handle multiple symbols
+        parts = [p.strip() for p in value.split(',') if p.strip()]
+        
+        # Each part should be a valid trading pair format
+        # Valid format: 2-10 uppercase letters/numbers, /, 2-10 uppercase letters/numbers, optional :SETTLE
+        import re
+        symbol_pattern = re.compile(r'^[A-Z0-9]{2,10}/[A-Z0-9]{2,10}(:[A-Z0-9]{2,10})?$')
+        
+        # At least one part should match the pattern
+        return any(symbol_pattern.match(part) for part in parts)
+    
+    @staticmethod
+    def _parse_trading_symbols(value_str: str) -> list:
+        """
+        Parse trading symbol(s) from a string into a list.
+        
+        Handles both single symbols and comma-separated lists.
+        Examples:
+            "BTC/USDT" -> ["BTC/USDT"]
+            "BTC/USDT,ETH/USDT" -> ["BTC/USDT", "ETH/USDT"]
+        """
+        if ',' in value_str:
+            # Multiple symbols
+            return [s.strip() for s in value_str.split(',') if s.strip()]
+        else:
+            # Single symbol
+            return [value_str.strip()]
+
+    @staticmethod
     def _cast_value(value_str: str, target_type: type) -> Any:
         """Helper to convert a string value to a specific target type."""
         try:
             # === CRITICAL FIX: Handle trading symbols specifically ===
             # Trading symbols have the format "BTC/USDT" or "BTC/USDT:USDT"
             # They must be converted to a list, even if there's only one symbol
-            if '/' in value_str:  # Detect trading pair format
-                if ',' in value_str:
-                    # Multiple symbols: "BTC/USDT,ETH/USDT"
-                    return [s.strip() for s in value_str.split(',') if s.strip()]
-                else:
-                    # Single symbol: "BTC/USDT" -> ["BTC/USDT"]
-                    return [value_str.strip()]
+            if LiveTradingConfiguration._is_trading_symbol(value_str):
+                return LiveTradingConfiguration._parse_trading_symbols(value_str)
             # === END CRITICAL FIX ===
 
             # Original type-based casting for non-trading-symbol values
