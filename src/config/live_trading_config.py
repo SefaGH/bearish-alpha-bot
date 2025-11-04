@@ -106,7 +106,7 @@ class LiveTradingConfiguration:
         
         if not os.path.exists(self.CONFIG_FILE_PATH):
             raise FileNotFoundError(f"Configuration file not found at: {self.CONFIG_FILE_PATH}")
-
+    
         with open(self.CONFIG_FILE_PATH, 'r') as f:
             lines = f.readlines()
             
@@ -116,17 +116,24 @@ class LiveTradingConfiguration:
             stripped_line = line.strip()
             if not stripped_line or stripped_line.startswith('#'):
                 continue
-
+    
             indentation = len(line) - len(line.lstrip(' '))
             
             try:
                 key_part = stripped_line.split(':', 1)[0].strip()
+                
+                # ✅ FIX: Remove quotes from keys (for symbol names like "BTC/USDT:USDT")
+                # This handles both single and double quotes
+                if (key_part.startswith('"') and key_part.endswith('"')) or \
+                   (key_part.startswith("'") and key_part.endswith("'")):
+                    key_part = key_part[1:-1]  # Remove surrounding quotes
+                    
             except IndexError:
                 continue
-
+    
             while path_stack and path_stack[-1][0] >= indentation:
                 path_stack.pop()
-
+    
             path_stack.append((indentation, key_part))
             
             match = self.ENV_OVERRIDE_PATTERN.search(line)
@@ -134,11 +141,14 @@ class LiveTradingConfiguration:
                 env_var = match.group(1)
                 current_path = [p[1] for p in path_stack]
                 env_map[env_var] = current_path
-                logger.debug(f"Mapped ENV '{env_var}' to config path: {current_path}")
-
+                
+                # Debug log for problematic variables
+                if 'RSI_THRESHOLD' in env_var or 'ML_' in env_var:
+                    logger.debug(f"Mapped ENV '{env_var}' to config path: {'.'.join(current_path)}")
+    
         with open(self.CONFIG_FILE_PATH, 'r') as f:
             yaml_config = yaml.safe_load(f)
-
+    
         logger.info(f"✅ YAML config loaded. Found {len(env_map)} environment variable mappings.")
         return yaml_config or {}, env_map
 
@@ -169,15 +179,34 @@ class LiveTradingConfiguration:
         """
         overrides: Dict[str, Any] = {}
         logger.info("🔧 Applying overrides from environment variables...")
-
+        
+        # Debug: Log RSI threshold mappings specifically
+        rsi_vars = {k: v for k, v in env_map.items() if 'RSI_THRESHOLD' in k}
+        if rsi_vars:
+            logger.debug(f"🔍 RSI threshold variable mappings found: {len(rsi_vars)}")
+            for var_name, path in rsi_vars.items():
+                logger.debug(f"  - {var_name} -> {'.'.join(path)}")
+    
         for env_var, path in env_map.items():
             env_value_str = os.getenv(env_var)
             if env_value_str is None or env_value_str == '':
                 continue
-
+    
             try:
+                # Navigate through the config to find the original value
                 original_value = base_config
-                for key in path:
+                for i, key in enumerate(path):
+                    if not isinstance(original_value, dict):
+                        logger.warning(f"  ⚠️ {env_var}: Expected dict at path[{i-1}], got {type(original_value).__name__}")
+                        raise KeyError(f"Path navigation failed at index {i-1}")
+                        
+                    if key not in original_value:
+                        # Special debug for symbol keys
+                        if 'USDT' in key:
+                            available_keys = [k for k in original_value.keys() if 'USDT' in str(k)]
+                            logger.warning(f"  ⚠️ {env_var}: Key '{key}' not found. Available similar keys: {available_keys}")
+                        raise KeyError(key)
+                        
                     original_value = original_value[key]
                 
                 target_type = type(original_value)
@@ -188,12 +217,12 @@ class LiveTradingConfiguration:
                 for key in path[:-1]:
                     temp_dict = temp_dict.setdefault(key, {})
                 temp_dict[path[-1]] = converted_value
-
+    
                 logger.info(f"  ✓ Applied ENV: {env_var} = {converted_value} (as {target_type.__name__})")
-
-            except KeyError:
-                logger.warning(f"  ⚠️ ENV var '{env_var}' found, but path '{'.'.join(path)}' is invalid in YAML. Ignoring.")
-            except Exception:
+    
+            except KeyError as e:
+                logger.warning(f"  ⚠️ ENV var '{env_var}' found, but path '{'.'.join(path)}' is invalid in YAML. Key error: {e}")
+            except Exception as e:
                 logger.error(f"  ❌ Failed to process ENV var '{env_var}' with value '{env_value_str}'", exc_info=True)
         
         return overrides
