@@ -359,11 +359,13 @@ try:
         multiplier = {'h': 3600, 'm': 60, 's': 1}[unit]
         print(int(value * multiplier))
     else:
-        print(s)
-except Exception as e:
-    print(f'Error parsing duration: {e}', file=sys.stderr)
+        # If regex doesn't match, assume it's plain seconds
+        value = int(s)
+        print(value)
+except (ValueError, KeyError) as e:
+    print(f'Error: Invalid duration format. Expected formats: 60s, 5m, 2h, or plain number (seconds)', file=sys.stderr)
     sys.exit(1)
-" "${{ github.event.inputs.duration }}")
+" "${{ github.event.inputs.duration }}") || exit 1
             args+=("--duration" "$duration_in_seconds")
           fi
           
@@ -375,6 +377,7 @@ except Exception as e:
           echo
           
           # Run with timeout and capture exit code (43200s = 12 hours, matches job timeout-minutes: 720)
+          # --preserve-status: Exit with COMMAND's status, not timeout's (124)
           timeout --preserve-status 43200 "${CMD[@]}" || EXIT_CODE=$?
           
           if [ "${EXIT_CODE:-0}" -eq 124 ]; then
