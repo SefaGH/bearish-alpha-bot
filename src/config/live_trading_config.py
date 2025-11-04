@@ -180,34 +180,42 @@ class LiveTradingConfiguration:
         overrides: Dict[str, Any] = {}
         logger.info("🔧 Applying overrides from environment variables...")
         
-        # Debug: Log RSI threshold mappings specifically
-        rsi_vars = {k: v for k, v in env_map.items() if 'RSI_THRESHOLD' in k}
-        if rsi_vars:
-            logger.debug(f"🔍 RSI threshold variable mappings found: {len(rsi_vars)}")
-            for var_name, path in rsi_vars.items():
-                logger.debug(f"  - {var_name} -> {'.'.join(path)}")
-    
+        # Symbol format adapter for RSI thresholds
+        symbol_format_map = {
+            'BTC': ['BTC/USDT', 'BTC/USDT:USDT'],
+            'ETH': ['ETH/USDT', 'ETH/USDT:USDT'],
+            'SOL': ['SOL/USDT', 'SOL/USDT:USDT']
+        }
+        
         for env_var, path in env_map.items():
             env_value_str = os.getenv(env_var)
             if env_value_str is None or env_value_str == '':
                 continue
     
+            # Special handling for RSI_THRESHOLD_* variables
+            if 'RSI_THRESHOLD' in env_var:
+                symbol_key = env_var.replace('RSI_THRESHOLD_', '')
+                if symbol_key in symbol_format_map:
+                    # Try both spot and futures formats
+                    for symbol_format in symbol_format_map[symbol_key]:
+                        adapted_path = path.copy()
+                        # Replace the symbol in the path
+                        if len(adapted_path) > 2:
+                            adapted_path[-2] = symbol_format
+                            
+                        try:
+                            # Try with adapted path
+                            original_value = self._navigate_config_path(base_config, adapted_path)
+                            if original_value is not None:
+                                path = adapted_path  # Use the successful path
+                                logger.debug(f"Adapted RSI threshold path for {symbol_key}: {'.'.join(path)}")
+                                break
+                        except KeyError:
+                            continue
+    
             try:
                 # Navigate through the config to find the original value
-                original_value = base_config
-                for i, key in enumerate(path):
-                    if not isinstance(original_value, dict):
-                        logger.warning(f"  ⚠️ {env_var}: Expected dict at path[{i-1}], got {type(original_value).__name__}")
-                        raise KeyError(f"Path navigation failed at index {i-1}")
-                        
-                    if key not in original_value:
-                        # Special debug for symbol keys
-                        if 'USDT' in key:
-                            available_keys = [k for k in original_value.keys() if 'USDT' in str(k)]
-                            logger.warning(f"  ⚠️ {env_var}: Key '{key}' not found. Available similar keys: {available_keys}")
-                        raise KeyError(key)
-                        
-                    original_value = original_value[key]
+                original_value = self._navigate_config_path(base_config, path)
                 
                 target_type = type(original_value)
                 converted_value = self._cast_value(env_value_str, target_type)
@@ -226,6 +234,17 @@ class LiveTradingConfiguration:
                 logger.error(f"  ❌ Failed to process ENV var '{env_var}' with value '{env_value_str}'", exc_info=True)
         
         return overrides
+    
+    def _navigate_config_path(self, config: Dict, path: List[str]) -> Any:
+        """Helper to navigate through nested config dictionary."""
+        result = config
+        for key in path:
+            if not isinstance(result, dict):
+                raise KeyError(f"Expected dict, got {type(result).__name__}")
+            if key not in result:
+                raise KeyError(key)
+            result = result[key]
+        return result
 
     @staticmethod
     def _is_trading_symbol(value: str) -> bool:
@@ -272,28 +291,41 @@ class LiveTradingConfiguration:
     def _cast_value(value_str: str, target_type: type) -> Any:
         """Helper to convert a string value to a specific target type."""
         try:
-            # === CRITICAL FIX: Handle trading symbols specifically ===
-            # Trading symbols have the format "BTC/USDT" or "BTC/USDT:USDT"
-            # They must be converted to a list, even if there's only one symbol
+            # Trading symbols check (mevcut kod korunacak)
             if LiveTradingConfiguration._is_trading_symbol(value_str):
                 return LiveTradingConfiguration._parse_trading_symbols(value_str)
-            # === END CRITICAL FIX ===
-
-            # Original type-based casting for non-trading-symbol values
+            
+            # Handle list types with integer conversion for ML windows
+            if target_type is list:
+                # Check if it's a numeric window list (for ML features)
+                parts = [s.strip() for s in value_str.split(',') if s.strip()]
+                
+                # Try to convert to integers if all parts are numeric
+                try:
+                    # Remove brackets if present
+                    if value_str.startswith('[') and value_str.endswith(']'):
+                        value_str = value_str[1:-1]
+                        
+                    int_list = [int(p.strip()) for p in value_str.split(',') if p.strip()]
+                    logger.debug(f"Converted '{value_str}' to integer list: {int_list}")
+                    return int_list
+                except ValueError:
+                    # Not all numeric, return as string list
+                    return parts
+            
+            # Original type-based casting
             if target_type is bool:
                 return value_str.lower() in ('true', '1', 't', 'y', 'yes')
             if target_type is int:
                 return int(value_str)
             if target_type is float:
                 return float(value_str)
-            if target_type is list:
-                return [s.strip() for s in value_str.split(',') if s.strip()]
             if target_type is str:
                 # For strings that look like lists (comma-separated)
                 if ',' in value_str:
                     return [s.strip() for s in value_str.split(',') if s.strip()]
                 return value_str
-            return value_str  # Assume string
+            return value_str
         except (ValueError, TypeError) as e:
             logger.warning(f"Could not cast '{value_str}' to {target_type.__name__}: {e}")
             return value_str
