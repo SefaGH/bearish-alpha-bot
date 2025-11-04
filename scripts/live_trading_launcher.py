@@ -1056,15 +1056,18 @@ class LiveTradingLauncher:
                 logger.warning(f"Risk param '{standard_key}' not found, using default: {self.DEFAULT_RISK_PARAMS[standard_key]}")
         
         # Validate risk parameter values
+        # Note: All values are stored in decimal format (0.2 = 20%, not 20.0 = 20%)
         for key, value in self.RISK_PARAMS.items():
             if key in self.DEFAULT_RISK_PARAMS:  # Only validate known risk params
                 if value < 0:
                     logger.error(f"Invalid risk param '{key}': {value} (negative value not allowed). Using default.")
                     self.RISK_PARAMS[key] = self.DEFAULT_RISK_PARAMS[key]
-                elif key.endswith('_pct') and value > 1.0:
-                    logger.warning(f"Risk param '{key}': {value} (> 100%). This may be intentional for leverage, but verify configuration.")
-                elif key == 'max_position_size' and value > 10.0:
-                    logger.warning(f"Risk param 'max_position_size': {value} (> 1000%). This seems very high, verify configuration.")
+                elif value > 1.0:
+                    # Values > 1.0 mean > 100%, which might be intentional for some params
+                    logger.warning(f"Risk param '{key}': {value:.1%} (> 100%). This may be intentional for leverage, but verify configuration.")
+                elif key == 'max_position_size' and value > 0.5:
+                    # Max position > 50% is risky
+                    logger.warning(f"Risk param 'max_position_size': {value:.1%} (> 50%). This is quite high, verify configuration.")
         
         logger.info("Risk parameters normalized successfully")
         logger.debug(f"Final RISK_PARAMS: {self.RISK_PARAMS}")
