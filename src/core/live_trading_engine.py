@@ -58,9 +58,9 @@ from .execution_analytics import ExecutionAnalytics
 
 # Import config with try/except for flexibility
 try:
-    from ..config.live_trading_config import LiveTradingConfiguration
+    from ..config.live_trading_config import get_config
 except ImportError:
-    from config.live_trading_config import LiveTradingConfiguration
+    from config.live_trading_config import get_config
 
 if TYPE_CHECKING:
     from .strategy_coordinator import StrategyCoordinator
@@ -142,7 +142,7 @@ class LiveTradingEngine:
         self.tasks = []
         
         # Load configuration using unified loader (correct priority: ENV > YAML > Defaults)
-        self.config = LiveTradingConfiguration.load(log_summary=False)
+        self.config = get_config()
         
         # WebSocket integration configuration
         cfg = self.config
