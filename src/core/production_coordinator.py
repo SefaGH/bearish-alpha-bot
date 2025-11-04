@@ -980,13 +980,12 @@ class ProductionCoordinator:
     async def _initialize_ml_components(self, price_engine: Optional[Any] = None, regime_predictor: Optional[Any] = None) -> Dict[str, Any]:
         """
         Initialize and connect ALL ML components from src/ml/.
-        This method now instantiates components directly using the central YAML config.
+        This method now instantiates components directly using the central, environment-aware config.
         """
         logger.info("🧠 [ML-INIT] Initializing ML system...")
         ml_components = []
 
         try:
-            # Import all necessary ML components
             from ml.feature_engineering import FeatureEngineeringPipeline
             from ml.price_predictor import AdvancedPricePredictionEngine
             from ml.regime_predictor import MLRegimePredictor
@@ -1042,24 +1041,24 @@ class ProductionCoordinator:
             self.regime_predictor = None
             logger.info("ℹ️ Regime prediction is disabled in config.")
 
-        # 4. Reinforcement Learning Agent
+        # 4. Reinforcement Learning Agent (ANA DÜZELTME)
         rl_config = ml_config.get('reinforcement_learning', {})
         if rl_config.get('enabled', True):
             try:
-                # RL ajanı için gerekli parametreleri `self.config`'den alarak başlat.
-                state_size = 42 
+                state_size = 42
+                # TradingRLAgent'ı, ortam değişkenlerini de içeren `rl_config` ile başlat.
+                # TradingRLAgent'ın __init__ metodu bu config'i alıp kendi içinde işleyecek şekilde tasarlandı.
                 self.rl_agent = TradingRLAgent(
                     state_size=state_size, 
                     action_size=3, 
-                    training_mode=rl_config.get('training_mode', False),
-                    epsilon_inference=rl_config.get('epsilon_inference', 0.01),
-                    hold_threshold=rl_config.get('hold_confidence_threshold', 0.6), # <-- ORTAM DEĞİŞKENİNDEN GELEN DEĞER
-                    config=rl_config # Geriye dönük uyumluluk için tüm config'i de ver.
+                    config=rl_config  # <-- İşte kilit nokta burası!
                 )
                 model_path = self.config.get('model_path', 'data/models')
                 self.rl_agent.load_model(os.path.join(model_path, "rl_agent_final.pth"))
                 ml_components.append('rl_agent')
                 logger.info("✅ Reinforcement learning agent initialized.")
+                # Başlatma sırasında hangi hold_threshold değerinin kullanıldığını loglayalım.
+                logger.info(f"   - RL Agent using hold_confidence_threshold: {self.rl_agent.hold_confidence_threshold}")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Reinforcement Learning Agent: {e}", exc_info=True)
                 self.rl_agent = None
@@ -1067,17 +1066,17 @@ class ProductionCoordinator:
             self.rl_agent = None
             logger.info("ℹ️ Reinforcement Learning is disabled in config.")
 
-        # 5. ML Strategy Integration Manager
+        # 5. ML Strategy Integration Manager (ANA DÜZELTME)
         try:
-            # Entegrasyon yöneticisini de `self.config`'den gelen değerlerle başlat.
+            # Entegrasyon yöneticisini de `self.config`'den gelen doğru değerlerle başlat.
             self.ml_integration = MLStrategyIntegrationManager(
                 price_engine=self.price_engine,
                 regime_predictor=self.regime_predictor,
-                rl_agent=self.rl_agent, # rl_agent'ı da ver
-                min_confidence_threshold=ml_config.get('prediction', {}).get('min_confidence_threshold', 0.6), # <-- ORTAM DEĞİŞKENİ
-                rl_veto_threshold=rl_config.get('veto_threshold', 0.6), # <-- ORTAM DEĞİŞKENİ
+                rl_agent=self.rl_agent,
+                # Parametreleri doğrudan vererek belirsizliği ortadan kaldır.
+                min_confidence_threshold=ml_config.get('prediction', {}).get('min_confidence_threshold', 0.6),
                 market_data_pipeline=self.market_data_pipeline,
-                config=ml_config # Geriye dönük uyumluluk
+                config=ml_config # Geriye dönük uyumluluk için tüm config'i de ver.
             )
             ml_components.append('ml_integration')
             logger.info("✅ ML strategy integration manager initialized.")
