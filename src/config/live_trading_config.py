@@ -72,10 +72,13 @@ class LiveTradingConfiguration:
         if not yaml_config:
             raise ValueError("Base configuration from YAML is empty or could not be loaded.")
 
-        # 2. Get overrides from environment variables using the parsed map
+        # 2. Normalize YAML values (e.g., convert trading symbol strings to lists)
+        yaml_config = self._normalize_yaml_values(yaml_config)
+
+        # 3. Get overrides from environment variables using the parsed map
         env_overrides = self._get_env_overrides(env_map, yaml_config)
 
-        # 3. Deep merge YAML config with environment overrides
+        # 4. Deep merge YAML config with environment overrides
         return self._deep_merge(yaml_config, env_overrides)
 
     def _load_yaml_and_map_env_vars(self) -> Tuple[Dict[str, Any], Dict[str, List[str]]]:
@@ -125,6 +128,29 @@ class LiveTradingConfiguration:
 
         logger.info(f"✅ YAML config loaded. Found {len(env_map)} environment variable mappings.")
         return yaml_config or {}, env_map
+
+    def _normalize_yaml_values(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalize YAML values by applying the same conversion logic as _cast_value.
+        This ensures that trading symbols in YAML are converted to lists.
+        """
+        def normalize_recursive(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                return {k: normalize_recursive(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [normalize_recursive(item) for item in obj]
+            elif isinstance(obj, str):
+                # Apply the same logic as _cast_value for string values
+                if '/' in obj:  # Trading symbol format
+                    if ',' in obj:
+                        return [s.strip() for s in obj.split(',') if s.strip()]
+                    else:
+                        return [obj.strip()]
+                return obj
+            else:
+                return obj
+        
+        return normalize_recursive(config)
 
     def _get_env_overrides(self, env_map: Dict[str, List[str]], base_config: Dict[str, Any]) -> Dict[str, Any]:
         """
