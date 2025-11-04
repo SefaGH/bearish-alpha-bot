@@ -273,7 +273,7 @@ jobs:
           python --version
           python -c "import sys; assert sys.version_info[:2] == (3, 11), f'Expected Python 3.11, got {sys.version}'"
           
-          # Install system dependencies
+          # Install system dependencies (jq needed for dynamic variable extraction)
           sudo apt-get update && sudo apt-get install -y wget build-essential jq
           
           # Install TA-Lib
@@ -474,8 +474,8 @@ else:
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
         run: |
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-            # Use Python for percentage calculation instead of bc
-            DP_THRESHOLD_AS_PERCENT=$(python3 -c "print(f'{float(${DUPLICATE_PREVENTION_THRESHOLD}) * 100:.4f}%')")
+            # Use Python for percentage calculation instead of bc (passing as argument for safety)
+            DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; val=float(sys.argv[1]); print(f'{val * 100:.4f}%')" "${DUPLICATE_PREVENTION_THRESHOLD}")
             PREFLIGHT_STATUS="${{ github.event.inputs.skip_preflight == 'true' && '⚠️ SKIPPED' || '✅ PASSED' }}"
             
             MESSAGE="✅ <b>Live Trading Session Completed</b>%0A%0A"
@@ -543,8 +543,8 @@ else:
           TRADING_SYMBOLS: ${{ vars.TRADING_SYMBOLS || 'BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT' }}
           CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
         run: |
-          # Use Python for percentage calculation instead of bc
-          DP_THRESHOLD_AS_PERCENT=$(python3 -c "print(f'{float(${DUPLICATE_PREVENTION_THRESHOLD}) * 100:.4f}%')")
+          # Use Python for percentage calculation instead of bc (passing as argument for safety)
+          DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; val=float(sys.argv[1]); print(f'{val * 100:.4f}%')" "${DUPLICATE_PREVENTION_THRESHOLD}")
 
           echo "# 🤖 Bearish Alpha Bot - Trading Session Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
