@@ -1161,7 +1161,7 @@ class LiveTradingLauncher:
         """OPTIMIZED BingX initialization."""
         logger.info("\n[2/8] Initializing BingX Exchange Connection...")
         
-        trading_pairs = self._get_trading_pairs()
+        trading_pairs = self.TRADING_PAIRS # <--- DOĞRU VERSİYON BU
         
         try:
             creds = None
