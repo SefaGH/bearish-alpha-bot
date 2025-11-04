@@ -137,7 +137,7 @@ signals:
     ignore_regime: true               # Override with: STRATEGY_OB_IGNORE_REGIME
     min_rr_ratio: 0.5                 # 🔥 YENİ DEĞER: R/R filtresini gevşetmek için.
     rsi_max: 45
-    adaptive_rsi_base: 50             # 🔥 YENİ DEĞER: 48 -> 50. Alım bölgesini genişletmek için. Override with: RSI_BASE_OB
+    adaptive_rsi_base: 50             # Override with: RSI_BASE_OB
     adaptive_rsi_range: 10            # Override with: RSI_RANGE_OB
     adaptive_mode: "dynamic"
     volatility_sensitivity: "medium"
@@ -150,7 +150,7 @@ signals:
     ignore_regime: true               # Override with: STRATEGY_STR_IGNORE_REGIME
     min_rr_ratio: 0.5                 # 🔥 YENİ DEĞER: R/R filtresini gevşetmek için.
     rsi_min: 55
-    adaptive_rsi_base: 50             # 🔥 YENİ DEĞER: 52 -> 50. Satım bölgesini genişletmek için. Override with: RSI_BASE_STR
+    adaptive_rsi_base: 50             # Override with: RSI_BASE_STR
     adaptive_rsi_range: 10            # Override with: RSI_RANGE_STR
     adaptive_mode: "dynamic"
     volatility_sensitivity: "medium"
@@ -160,7 +160,7 @@ signals:
     max_sl_pct: 0.020
     symbols:
       "BTC/USDT:USDT":
-        rsi_threshold: 50             # 🔥 YENİ DEĞER: 52 -> 50. Ana değişiklikle uyumlu hale getirildi. Override with: RSI_THRESHOLD_BTC
+        rsi_threshold: 50             # Override with: RSI_THRESHOLD_BTC
       "ETH/USDT:USDT":
         rsi_threshold: 50
       "SOL/USDT:USDT":
@@ -203,31 +203,31 @@ ml:
     macd_signal: 9                    # Override with: ML_FEAT_MACD_SIGNAL
     bb_period: 20                     # Override with: ML_FEAT_BB_PERIOD
     bb_std: 2                         # Override with: ML_FEAT_BB_STD
-    volatility_windows: "5,10,20,50"  # Comma-separated. Override with: ML_FEAT_VOL_WINDOWS
-    momentum_windows: "5,10,20,50"  # Comma-separated. Override with: ML_FEAT_MOM_WINDOWS
+    volatility_windows: "5,10,20,50"  # Override with: ML_FEAT_VOL_WINDOWS
+    momentum_windows: "5,10,20,50"    # Override with: ML_FEAT_MOM_WINDOWS
 
   # ----------------------------------------------------------------------------
   # Price & Regime Prediction Engine
   # Settings for the models that predict market regime and price movements.
   # ----------------------------------------------------------------------------
   prediction:
-    update_interval_seconds: 60       # How often to run predictions. Override with: ML_PRED_UPDATE_INTERVAL
-    cache_ttl_seconds: 300            # How long to cache a prediction. Override with: ML_PRED_CACHE_TTL
-    min_confidence_threshold: 0.6     # Min confidence to consider a prediction valid. Override with: ML_PRED_MIN_CONFIDENCE
-    regime_change_threshold: 0.7      # Min confidence for a regime change signal. Override with: ML_PRED_REGIME_THRESHOLD
+    update_interval_seconds: 60       # Override with: ML_PRED_UPDATE_INTERVAL
+    cache_ttl_seconds: 300            # Override with: ML_PRED_CACHE_TTL
+    min_confidence_threshold: 0.6     # Override with: ML_PRED_MIN_CONFIDENCE
+    regime_change_threshold: 0.7      # Override with: ML_PRED_REGIME_THRESHOLD
 
   # ----------------------------------------------------------------------------
   # Reinforcement Learning (RL) Agent
   # The final decision-maker that can veto or approve signals.
   # ----------------------------------------------------------------------------
   reinforcement_learning:
-    enabled: true                     # RL master switch. Override with: ML_RL_ENABLED
-    training_mode: false              # Set to true only for training. Override with: ML_RL_TRAINING_MODE
+    enabled: true                     # Override with: ML_RL_ENABLED
+    training_mode: false              # Override with: ML_RL_TRAINING_MODE
 
     # Behavior Tuning
     # If the agent's confidence in 'HOLD' is below this, it considers its second choice.
     # Lower value = more aggressive (more trades). Higher value = more defensive.
-    hold_confidence_threshold: 0.60   # 🔥 YENİ DEĞER: 0.80 -> 0.60. RL vetosunu azaltmak için. Override with: ML_RL_HOLD_CONFIDENCE_THRESHOLD
+    hold_confidence_threshold: 0.60   # Override with: ML_RL_HOLD_CONFIDENCE_THRESHOLD
 
     # Epsilon for inference (live trading). A small value for minimal random actions.
     epsilon_inference: 0.01           # Override with: ML_RL_EPSILON_INFERENCE
@@ -240,10 +240,10 @@ ml:
 
     # Core Algorithm Parameters (Advanced - change with caution)
     learning_rate: 0.0001             # Override with: ML_RL_LEARNING_RATE
-    gamma: 0.99                       # Discount factor. Override with: ML_RL_GAMMA
-    target_update_freq: 10            # Freq. to update target network. Override with: ML_RL_TARGET_UPDATE_FREQ
-    batch_size: 64                    # Training batch size. Override with: ML_RL_BATCH_SIZE
-    buffer_size: 100000               # Experience replay buffer size. Override with: ML_RL_BUFFER_SIZE
+    gamma: 0.99                       # Override with: ML_RL_GAMMA
+    target_update_freq: 10            # Override with: ML_RL_TARGET_UPDATE_FREQ
+    batch_size: 64                    # Override with: ML_RL_BATCH_SIZE
+    buffer_size: 100000               # Override with: ML_RL_BUFFER_SIZE
 
   # ----------------------------------------------------------------------------
   # Model Architecture Parameters (Advanced - for reference)
