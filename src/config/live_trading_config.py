@@ -166,14 +166,19 @@ class LiveTradingConfiguration:
     def _cast_value(value_str: str, target_type: type) -> Any:
         """Helper to convert a string value to a specific target type."""
         try:
+            # === YENİ VE ÖNEMLİ KONTROL ===
+            # Eğer YAML'deki varsayılan değer bir string ise ama virgül içeriyorsa,
+            # bunu potansiyel bir liste olarak kabul et. Bu, TRADING_SYMBOLS gibi ayarları çözer.
+            if target_type is str and ',' in value_str:
+                 return [s.strip() for s in value_str.split(',') if s.strip()]
+            # === KONTROL SONU ===
+
             if target_type is bool:
                 return value_str.lower() in ('true', '1', 't', 'y', 'yes')
             if target_type is int:
                 return int(value_str)
             if target_type is float:
                 return float(value_str)
-            # For lists or other types, we'll let YAML handle complex structures.
-            # Here, we assume env vars for lists are comma-separated strings.
             if target_type is list:
                 return [s.strip() for s in value_str.split(',') if s.strip()]
             return value_str  # Assume string
