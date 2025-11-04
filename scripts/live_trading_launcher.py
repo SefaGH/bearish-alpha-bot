@@ -901,6 +901,7 @@ class LiveTradingLauncher:
     def __init__(self, mode: str, dry_run: bool, infinite: bool, auto_restart: bool,
                  max_restarts: int, restart_delay: int, debug_mode: bool):
 
+        # Argümanları doğrudan sınıf değişkenlerine ata
         self.mode = mode
         self.dry_run = dry_run
         self.infinite = infinite
@@ -910,18 +911,17 @@ class LiveTradingLauncher:
         self.debug_mode = debug_mode
 
         # ====================================================================
-        # ===                YAPILANDIRMAYI MERKEZDEN ALMA                 ===
+        # ===           YAPILANDIRMAYI MERKEZDEN VE TEK SEFERDE AL          ===
         # ====================================================================
-        # 1. Yeni merkezi fonksiyon ile yapılandırmayı AL.
+        # 1. Yeni merkezi fonksiyon ile yapılandırmayı al.
         self.config = get_config()
         
-        # 2. Gerekli tüm parametreleri DOĞRUDAN bu config'den AL.
-        #    Artık karmaşık kontrollere gerek yok. get_config() zaten doğru tipi sağlıyor.
+        # 2. Gerekli tüm parametreleri DOĞRUDAN bu tek, güvenilir kaynaktan al.
         self.CAPITAL_USDT = self.config.get('risk', {}).get('equity_usd', 100.0)
         self.TRADING_PAIRS = self.config.get('universe', {}).get('fixed_symbols', [])
         # ====================================================================
 
-        # --- Diğer başlangıç değişkenleri ---
+        # --- Diğer tüm başlangıç değişkenlerini başlat ---
         self.coordinator = None
         self.telegram = None
         self.exchange_clients = {}
@@ -941,8 +941,9 @@ class LiveTradingLauncher:
         self._cached_ws_status = None
         self.debug_logger = None
 
+        # Başlangıç loglarını, yeni ve temizlenmiş verilerle yazdır
         logger.info("="*70)
-        logger.info("BEARISH ALPHA BOT - LIVE TRADING LAUNCHER (v3.0 - Final Refactor)")
+        logger.info("BEARISH ALPHA BOT - LAUNCHER (v3.0 - Centralized Config)")
         logger.info("="*70)
         logger.info(f"Mode: {self.mode.upper()}")
         logger.info(f"Capital: {self.CAPITAL_USDT} USDT (from config)")
