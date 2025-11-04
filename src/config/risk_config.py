@@ -3,7 +3,7 @@ Risk Management Configuration.
 Centralized risk parameters and circuit breaker limits.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
 
 
