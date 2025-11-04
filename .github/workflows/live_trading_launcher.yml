@@ -346,20 +346,24 @@ jobs:
           [ "${{ github.event.inputs.auto_restart }}" = "true" ] && args+=("--auto-restart")
           [ "${{ github.event.inputs.debug_mode }}" = "true" ] && args+=("--debug")
           
-          # Fixed duration handling
+          # Fixed duration handling (pass as argument for security)
           if [ -n "${{ github.event.inputs.duration }}" ]; then
             duration_in_seconds=$(python3 -c "
 import re, sys
-s = '${{ github.event.inputs.duration }}'
-m = re.match(r'^\s*([0-9\.]+)\s*([hms])?\s*$', s.lower())
-if m:
-    value = float(m.group(1))
-    unit = m.group(2) or 's'
-    multiplier = {'h': 3600, 'm': 60, 's': 1}[unit]
-    print(int(value * multiplier))
-else:
-    print(s)
-")
+try:
+    s = sys.argv[1]
+    m = re.match(r'^\s*([0-9\.]+)\s*([hms])?\s*$', s.lower())
+    if m:
+        value = float(m.group(1))
+        unit = m.group(2) or 's'
+        multiplier = {'h': 3600, 'm': 60, 's': 1}[unit]
+        print(int(value * multiplier))
+    else:
+        print(s)
+except Exception as e:
+    print(f'Error parsing duration: {e}', file=sys.stderr)
+    sys.exit(1)
+" "${{ github.event.inputs.duration }}")
             args+=("--duration" "$duration_in_seconds")
           fi
           
@@ -370,7 +374,7 @@ else:
           printf "%q " "${CMD[@]}"
           echo
           
-          # Run with timeout and capture exit code
+          # Run with timeout and capture exit code (43200s = 12 hours, matches job timeout-minutes: 720)
           timeout --preserve-status 43200 "${CMD[@]}" || EXIT_CODE=$?
           
           if [ "${EXIT_CODE:-0}" -eq 124 ]; then
@@ -475,7 +479,14 @@ else:
         run: |
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
             # Use Python for percentage calculation instead of bc (passing as argument for safety)
-            DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; val=float(sys.argv[1]); print(f'{val * 100:.4f}%')" "${DUPLICATE_PREVENTION_THRESHOLD}")
+            DP_THRESHOLD_AS_PERCENT=$(python3 -c "
+import sys
+try:
+    val = float(sys.argv[1])
+    print(f'{val * 100:.4f}%')
+except (ValueError, IndexError) as e:
+    print('N/A')
+" "${DUPLICATE_PREVENTION_THRESHOLD}")
             PREFLIGHT_STATUS="${{ github.event.inputs.skip_preflight == 'true' && '⚠️ SKIPPED' || '✅ PASSED' }}"
             
             MESSAGE="✅ <b>Live Trading Session Completed</b>%0A%0A"
@@ -544,7 +555,14 @@ else:
           CAPITAL_USDT: ${{ vars.CAPITAL_USDT || '100' }}
         run: |
           # Use Python for percentage calculation instead of bc (passing as argument for safety)
-          DP_THRESHOLD_AS_PERCENT=$(python3 -c "import sys; val=float(sys.argv[1]); print(f'{val * 100:.4f}%')" "${DUPLICATE_PREVENTION_THRESHOLD}")
+          DP_THRESHOLD_AS_PERCENT=$(python3 -c "
+import sys
+try:
+    val = float(sys.argv[1])
+    print(f'{val * 100:.4f}%')
+except (ValueError, IndexError) as e:
+    print('N/A')
+" "${DUPLICATE_PREVENTION_THRESHOLD}")
 
           echo "# 🤖 Bearish Alpha Bot - Trading Session Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
