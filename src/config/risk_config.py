@@ -17,6 +17,10 @@ class RiskLimits:
     stop_loss_multiplier: float = 2.0  # 2x ATR stop loss
     take_profit_ratio: float = 2.0     # 2:1 risk/reward minimum
 
+    # Sentinel değerler - None = dinamik olarak belirlenecek
+    take_profit_pct: Optional[float] = None
+    stop_loss_pct: Optional[float] = None
+
 
 @dataclass
 class CircuitBreakerLimits:
@@ -48,6 +52,8 @@ class RiskConfiguration:
         'max_correlation': 0.70,     # 70% max position correlation
         'stop_loss_multiplier': 2.0, # 2x ATR stop loss
         'take_profit_ratio': 2.0,    # 2:1 risk/reward minimum
+        'take_profit_pct': None,     # None = dinamik
+        'stop_loss_pct': None,       # None = dinamik
     }
     
     CIRCUIT_BREAKER_LIMITS = {
@@ -66,11 +72,28 @@ class RiskConfiguration:
     
     def __init__(self, custom_limits: Dict[str, Any] = None):
         """
-        Initialize risk configuration.
-        
-        Args:
-            custom_limits: Optional custom risk limits to override defaults
+        Initialize risk configuration with support for dynamic values.
         """
+        # Process each limit with sentinel value awareness
+        processed_limits = {}
+        
+        for key, default_value in self.DEFAULT_RISK_LIMITS.items():
+            if custom_limits and key in custom_limits:
+                value = custom_limits[key]
+            else:
+                value = default_value
+            
+            # Sentinel value kontrolü
+            if key == 'take_profit_pct' and value is None:
+                logger.info("✓ Take Profit: Will be calculated dynamically by strategies")
+            elif key == 'stop_loss_pct' and value is None:
+                logger.info("✓ Stop Loss: Will be calculated dynamically by strategies")
+            elif value is not None:
+                if key in ['take_profit_pct', 'stop_loss_pct']:
+                    logger.info(f"✓ {key}: {value*100:.1f}% (static value)")
+            
+            processed_limits[key] = value
+            
         self.risk_limits = RiskLimits(**{
             k: custom_limits.get(k, v) 
             for k, v in self.DEFAULT_RISK_LIMITS.items()
