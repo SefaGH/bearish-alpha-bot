@@ -40,15 +40,11 @@ jobs:
             
             # Check if file contains setup-python
             if grep -q "setup-python" "$file"; then
-              # Verify it specifies Python 3.11 (directly or via variable)
-              if grep -q 'python-version.*"3\.11"' "$file" || \
-                 grep -q "python-version.*'3\.11'" "$file" || \
-                 grep -q 'python-version-file.*\.python-version' "$file"; then
+              # Verify it specifies Python 3.11 (directly or via variable) - using extended regex for efficiency
+              if grep -qE "python-version.*['\"]3\.11['\"]|python-version-file.*\.python-version" "$file"; then
                 echo "  ✅ Correctly specifies Python 3.11"
               # Check for workflow_dispatch inputs with default 3.11
-              elif grep -q "workflow_dispatch" "$file" && \
-                   grep -q "python_version" "$file" && \
-                   grep -A 2 "python_version" "$file" | grep -q "default.*'3\.11'"; then
+              elif grep -q "workflow_dispatch" "$file" && grep -A 4 "python_version" "$file" | grep -qE "default.*['\"]3\.11['\"]"; then
                 echo "  ✅ Uses variable with default 3.11"
               else
                 echo "  ⚠️  WARNING: Does not explicitly specify Python 3.11"
