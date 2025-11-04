@@ -253,16 +253,9 @@ jobs:
 
       - name: Setup Python, TA-Lib and Dependencies
         run: |
-          # Python kurulumu ve diğer bağımlılıklar için tek bir birleşik adım
-          sudo apt-get update
-          sudo apt-get install -y wget build-essential
+          sudo apt-get update && sudo apt-get install -y wget build-essential jq
           wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-          tar -xzvf ta-lib-0.4.0-src.tar.gz
-          cd ta-lib/
-          ./configure --prefix=/usr
-          make
-          sudo make install
-          cd ..
+          tar -xzvf ta-lib-0.4.0-src.tar.gz && cd ta-lib && ./configure --prefix=/usr && make && sudo make install && cd ..
           python -m pip install --upgrade pip
           pip install --no-cache-dir 'aiohttp==3.8.6' 'yarl<2.0' 'multidict<7.0' TA-Lib 'websocket-client>=1.6.0' 'websockets>=10.0'
           if [ "${{ github.event.inputs.enable_ml }}" = "true" ]; then
@@ -271,32 +264,29 @@ jobs:
             sed '/# === MACHINE LEARNING (Optional) ===/,$d' requirements.txt | pip install --no-cache-dir -r /dev/stdin
           fi
           python -m pip install -e .
+        shell: bash
 
       - name: Set Dynamic Environment Variables
-        env:
-          GH_VARS_JSON: |
-            ${{ toJSON(vars) }}
+        id: set-env
         run: |
-          echo "Setting dynamic environment variables..."
+          echo "Dynamically setting environment variables using jq..."
+          # GitHub `vars` context'ini bir dosyaya yaz
+          echo '${{ toJSON(vars) }}' > github_vars.json
+          
+          # config.example.yaml dosyasından tüm değişken adlarını oku
           grep -oP '#\s*Override with:\s*\K\w+' config/config.example.yaml | while read -r var_name; do
-            python3 -c "
-import os, json, sys
-vars_json = os.getenv('GH_VARS_JSON', '{}')
-var_name = sys.argv[1]
-try:
-    value = json.loads(vars_json).get(var_name, '')
-    # Olası tırnak işareti sorunlarını önlemek için değeri güvenli bir şekilde yazdır
-    print(f'{var_name}={value}')
-except Exception:
-    print(f'{var_name}=', file=sys.stderr)
-" "$var_name"
-          done >> $GITHUB_ENV
+            # jq kullanarak JSON dosyasından değişkenin değerini al
+            value=$(jq -r --arg key "$var_name" '.[$key] // ""' github_vars.json)
+            
+            # Değeri $GITHUB_ENV dosyasına yazarak ortam değişkeni olarak ayarla
+            echo "$var_name=$value" >> $GITHUB_ENV
+          done
           echo "✅ Dynamic variables are ready for the next step."
         shell: bash
 
       - name: Launch Trading Bot
         env:
-          # Sadece statik, gizli veya input'tan gelen değişkenler burada listelenir.
+          # Sadece statik, gizli veya input'tan gelenler burada listelenir.
           # Dinamik olanlar bir önceki adımda ortama otomatik olarak eklendi.
           ML_ENABLED: ${{ github.event.inputs.enable_ml }}
           BINGX_KEY: ${{ secrets.BINGX_KEY }}
@@ -305,7 +295,6 @@ except Exception:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PYTHONUNBUFFERED: "1"
         run: |
-          # Komut argümanlarını güvenli bir şekilde bir diziye ekle
           args=()
           [ "${{ github.event.inputs.mode }}" = "paper" ] && args+=("--paper")
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && args+=("--dry-run")
@@ -313,13 +302,11 @@ except Exception:
           [ "${{ github.event.inputs.auto_restart }}" = "true" ] && args+=("--auto-restart")
           [ "${{ github.event.inputs.debug_mode }}" = "true" ] && args+=("--debug")
           
-          # Süre (duration) argümanını işle
           if [ -n "${{ github.event.inputs.duration }}" ]; then
             duration_in_seconds=$(python3 -c "import re, sys; s = sys.argv[1]; m = re.match(r'^\s*([0-9\.]+)\s*([hms])?\s*$', s.lower()); print(int(float(m.group(1)) * {'h':3600,'m':60,'s':1}.get(m.group(2), 1)))" "${{ github.event.inputs.duration }}")
             args+=("--duration" "$duration_in_seconds")
           fi
 
-          # Nihai komutu oluştur ve çalıştır
           CMD=("python3" "scripts/live_trading_launcher.py" "${args[@]}")
           
           echo "🚀 Executing command:"
