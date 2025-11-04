@@ -898,6 +898,15 @@ class LiveTradingLauncher:
     Comprehensive live trading launcher integrating all system components.
     """
     
+    # Default risk parameters - used across normalization and fallbacks
+    DEFAULT_RISK_PARAMS = {
+        'max_position_size': 0.2,
+        'stop_loss_pct': 0.02,
+        'take_profit_pct': 0.015,
+        'risk_per_trade': 0.05,
+        'max_drawdown': 0.05
+    }
+    
     def __init__(self, mode: str, dry_run: bool, infinite: bool, auto_restart: bool,
                  max_restarts: int, restart_delay: int, debug_mode: bool):
 
@@ -986,7 +995,7 @@ class LiveTradingLauncher:
             self.RISK_PARAMS = {}
         
         # Debug: Log what we have
-        logger.info(f"Current RISK_PARAMS keys: {list(self.RISK_PARAMS.keys())}")
+        logger.debug(f"Current RISK_PARAMS keys: {list(self.RISK_PARAMS.keys())}")
         
         # Map all possible variations to standard keys
         key_mappings = {
@@ -1043,15 +1052,8 @@ class LiveTradingLauncher:
             
             # Set default if nothing found
             if not found:
-                defaults = {
-                    'max_position_size': 0.2,
-                    'stop_loss_pct': 0.02,
-                    'take_profit_pct': 0.015,
-                    'risk_per_trade': 0.05,
-                    'max_drawdown': 0.05
-                }
-                self.RISK_PARAMS[standard_key] = defaults[standard_key]
-                logger.warning(f"Risk param '{standard_key}' not found, using default: {defaults[standard_key]}")
+                self.RISK_PARAMS[standard_key] = self.DEFAULT_RISK_PARAMS[standard_key]
+                logger.warning(f"Risk param '{standard_key}' not found, using default: {self.DEFAULT_RISK_PARAMS[standard_key]}")
         
         logger.info("Risk parameters normalized successfully")
         logger.debug(f"Final RISK_PARAMS: {self.RISK_PARAMS}")
@@ -1271,10 +1273,10 @@ class LiveTradingLauncher:
             logger.info("✓ Risk configuration loaded")
             
             # Safe extraction with fallbacks
-            max_pos = self.RISK_PARAMS.get('max_position_size', 0.2)
-            stop_loss = self.RISK_PARAMS.get('stop_loss_pct', 0.02)
-            take_profit = self.RISK_PARAMS.get('take_profit_pct', 0.015)
-            max_dd = self.RISK_PARAMS.get('max_drawdown', 0.05)
+            max_pos = self.RISK_PARAMS.get('max_position_size', self.DEFAULT_RISK_PARAMS['max_position_size'])
+            stop_loss = self.RISK_PARAMS.get('stop_loss_pct', self.DEFAULT_RISK_PARAMS['stop_loss_pct'])
+            take_profit = self.RISK_PARAMS.get('take_profit_pct', self.DEFAULT_RISK_PARAMS['take_profit_pct'])
+            max_dd = self.RISK_PARAMS.get('max_drawdown', self.DEFAULT_RISK_PARAMS['max_drawdown'])
             
             logger.info(f"  - Max position size: {max_pos:.1%}")
             logger.info(f"  - Stop loss: {stop_loss:.1%}")
@@ -2051,10 +2053,10 @@ class LiveTradingLauncher:
             if self.telegram:
                 ws_info = "WebSocket CONNECTED ✅" if ws_connected else "REST API mode (WebSocket unavailable)"
                 
-                # Safe extraction (normalization already done)
-                max_pos = self.RISK_PARAMS.get('max_position_size', 0.2)
-                stop_loss = self.RISK_PARAMS.get('stop_loss_pct', 0.02)
-                take_profit = self.RISK_PARAMS.get('take_profit_pct', 0.015)
+                # Safe extraction (normalization already done, but keeping fallbacks for safety)
+                max_pos = self.RISK_PARAMS.get('max_position_size', self.DEFAULT_RISK_PARAMS['max_position_size'])
+                stop_loss = self.RISK_PARAMS.get('stop_loss_pct', self.DEFAULT_RISK_PARAMS['stop_loss_pct'])
+                take_profit = self.RISK_PARAMS.get('take_profit_pct', self.DEFAULT_RISK_PARAMS['take_profit_pct'])
                 
                 self.telegram.send(
                     f"🚀 <b>LIVE TRADING STARTED</b>\n"
