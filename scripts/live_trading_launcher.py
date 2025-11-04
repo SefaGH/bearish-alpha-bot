@@ -998,12 +998,13 @@ class LiveTradingLauncher:
         logger.debug(f"Current RISK_PARAMS keys: {list(self.RISK_PARAMS.keys())}")
         
         # Map all possible variations to standard keys
+        # Note: Standard key itself is NOT in the variations list to avoid redundancy
         key_mappings = {
-            'max_position_size': ['max_position_size_pct', 'max_position_size', 'max_notional_per_trade'],
-            'stop_loss_pct': ['stop_loss_pct', 'stop_loss', 'min_stop_pct', 'stop_loss_multiplier'],
-            'take_profit_pct': ['take_profit_pct', 'take_profit', 'min_tp_pct', 'take_profit_ratio'],
-            'risk_per_trade': ['per_trade_risk_pct', 'risk_per_trade', 'risk_usd_cap'],
-            'max_drawdown': ['daily_loss_limit_pct', 'max_drawdown', 'max_daily_loss']
+            'max_position_size': ['max_position_size_pct', 'max_notional_per_trade'],
+            'stop_loss_pct': ['stop_loss', 'min_stop_pct', 'stop_loss_multiplier'],
+            'take_profit_pct': ['take_profit', 'min_tp_pct', 'take_profit_ratio'],
+            'risk_per_trade': ['per_trade_risk_pct', 'risk_usd_cap'],
+            'max_drawdown': ['daily_loss_limit_pct', 'max_daily_loss']
         }
         
         # Also check config if available
@@ -1015,7 +1016,6 @@ class LiveTradingLauncher:
             
             # Preserve existing standard key if already set
             if standard_key in self.RISK_PARAMS:
-                found = True
                 continue
             
             # Check RISK_PARAMS first
@@ -1054,6 +1054,17 @@ class LiveTradingLauncher:
             if not found:
                 self.RISK_PARAMS[standard_key] = self.DEFAULT_RISK_PARAMS[standard_key]
                 logger.warning(f"Risk param '{standard_key}' not found, using default: {self.DEFAULT_RISK_PARAMS[standard_key]}")
+        
+        # Validate risk parameter values
+        for key, value in self.RISK_PARAMS.items():
+            if key in self.DEFAULT_RISK_PARAMS:  # Only validate known risk params
+                if value < 0:
+                    logger.error(f"Invalid risk param '{key}': {value} (negative value not allowed). Using default.")
+                    self.RISK_PARAMS[key] = self.DEFAULT_RISK_PARAMS[key]
+                elif key.endswith('_pct') and value > 1.0:
+                    logger.warning(f"Risk param '{key}': {value} (> 100%). This may be intentional for leverage, but verify configuration.")
+                elif key == 'max_position_size' and value > 10.0:
+                    logger.warning(f"Risk param 'max_position_size': {value} (> 1000%). This seems very high, verify configuration.")
         
         logger.info("Risk parameters normalized successfully")
         logger.debug(f"Final RISK_PARAMS: {self.RISK_PARAMS}")
