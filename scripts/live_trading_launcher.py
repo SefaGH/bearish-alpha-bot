@@ -1406,7 +1406,8 @@ class LiveTradingLauncher:
     
             # 5. Create ProductionCoordinator
             from core.production_coordinator import ProductionCoordinator
-            self.coordinator = ProductionCoordinator()
+            # ProductionCoordinator'a konfigürasyon nesnesini aktar
+            self.coordinator = ProductionCoordinator(config=self.config)
             
             # 6. Initialize CORE systems with standardized risk configuration
             logger.info("Initializing core production systems...")
