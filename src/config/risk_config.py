@@ -5,6 +5,9 @@ Centralized risk parameters and circuit breaker limits.
 
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
