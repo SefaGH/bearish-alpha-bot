@@ -1,0 +1,26 @@
+# GitHub Copilot Configuration for Bearish Alpha Bot
+# This configuration ensures Copilot respects Python 3.11 requirement
+
+github-copilot:
+  python-version: "3.11"
+  
+  workflow-defaults:
+    python: "3.11"
+    setup-python-action: "actions/setup-python@v5"
+    python-version-file: ".python-version"
+  
+  environment:
+    python: "3.11"
+    runtime: "python-3.11"
+  
+  constraints:
+    # CRITICAL: Python 3.12+ is NOT supported
+    python-max-version: "3.11.99"
+    python-min-version: "3.11.0"
+  
+  dependencies:
+    # These dependencies require Python 3.11
+    critical:
+      - aiohttp==3.8.6
+      - yarl<2.0
+      - multidict<7.0

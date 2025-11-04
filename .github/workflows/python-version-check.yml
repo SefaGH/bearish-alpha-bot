@@ -1,0 +1,123 @@
+name: Validate Python Version
+
+on:
+  pull_request:
+    paths:
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '.python-version'
+      - 'runtime.txt'
+      - 'pyproject.toml'
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '.python-version'
+      - 'runtime.txt'
+      - 'pyproject.toml'
+
+jobs:
+  check-python-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Check workflow files for Python version
+        run: |
+          set -e
+          echo "🔍 Checking all workflow files for Python 3.11 requirement..."
+          
+          # Find all workflow files
+          WORKFLOW_FILES=$(find .github/workflows -name "*.yml" -o -name "*.yaml")
+          ERROR_COUNT=0
+          
+          for file in $WORKFLOW_FILES; do
+            echo "📄 Checking $file..."
+            
+            # Check if file contains setup-python
+            if grep -q "setup-python" "$file"; then
+              # Verify it specifies Python 3.11
+              if grep -q 'python-version.*"3\.11"' "$file" || \
+                 grep -q "python-version.*'3\.11'" "$file" || \
+                 grep -q 'python-version-file.*\.python-version' "$file"; then
+                echo "  ✅ Correctly specifies Python 3.11"
+              else
+                echo "  ❌ ERROR: Does not specify Python 3.11!"
+                ERROR_COUNT=$((ERROR_COUNT + 1))
+              fi
+            else
+              # Check if it uses Docker (which might have Python 3.11)
+              if grep -q "docker" "$file" || grep -q "Docker" "$file"; then
+                echo "  ℹ️  Uses Docker (Python version handled in Dockerfile)"
+              else
+                echo "  ℹ️  Does not use setup-python (might not need Python)"
+              fi
+            fi
+          done
+          
+          echo ""
+          if [ $ERROR_COUNT -eq 0 ]; then
+            echo "✅ All workflows correctly specify Python 3.11 or don't need it"
+            exit 0
+          else
+            echo "❌ Found $ERROR_COUNT workflow(s) with incorrect Python version"
+            echo ""
+            echo "📝 Required setup-python configuration:"
+            echo "  - uses: actions/setup-python@v5"
+            echo "    with:"
+            echo "      python-version: \"3.11\""
+            echo "      # OR use:"
+            echo "      # python-version-file: \".python-version\""
+            exit 1
+          fi
+      
+      - name: Verify configuration files
+        run: |
+          set -e
+          echo "🔍 Verifying Python version configuration files..."
+          
+          # Check .python-version
+          if [ -f .python-version ]; then
+            VERSION=$(cat .python-version)
+            echo "📄 .python-version: $VERSION"
+            if [[ "$VERSION" == "3.11"* ]]; then
+              echo "  ✅ Correct"
+            else
+              echo "  ❌ Should be 3.11 or 3.11.x"
+              exit 1
+            fi
+          else
+            echo "❌ .python-version file not found!"
+            exit 1
+          fi
+          
+          # Check runtime.txt
+          if [ -f runtime.txt ]; then
+            RUNTIME=$(cat runtime.txt)
+            echo "📄 runtime.txt: $RUNTIME"
+            if [[ "$RUNTIME" == "python-3.11"* ]]; then
+              echo "  ✅ Correct"
+            else
+              echo "  ❌ Should be python-3.11"
+              exit 1
+            fi
+          else
+            echo "⚠️  runtime.txt file not found (optional but recommended)"
+          fi
+          
+          # Check pyproject.toml
+          if [ -f pyproject.toml ]; then
+            if grep -q 'requires-python.*>=3\.11.*<3\.12' pyproject.toml; then
+              echo "📄 pyproject.toml: ✅ Correct (>=3.11,<3.12)"
+            else
+              echo "📄 pyproject.toml: ❌ Should require >=3.11,<3.12"
+              exit 1
+            fi
+          fi
+          
+          echo ""
+          echo "✅ All configuration files are correct"
