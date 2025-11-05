@@ -382,8 +382,8 @@ class LiveTradingEngine:
             logger.info(f"  Reason: {signal.get('reason', 'N/A')}")
             
             # Step 1: Risk validation (Phase 3.2)
-            portfolio_state = self.portfolio_manager.portfolio_state if self.portfolio_manager else {}
-            risk_validation = await self.risk_manager.validate_new_position(signal, portfolio_state)
+            # FIX: Pass PortfolioManager object, not dict
+            risk_validation = await self.risk_manager.validate_new_position(signal, self.portfolio_manager)
             
             if not risk_validation[0]:  # is_valid
                 logger.warning(f"❌ Risk validation failed: {risk_validation[1]}")

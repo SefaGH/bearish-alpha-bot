@@ -43,6 +43,9 @@ class SmartOrderManager:
             risk_manager: RiskManager instance.
             exchange_clients: Dictionary of exchange client instances.
         """
+        # FIX: Initialize logger for instance use
+        self.logger = logging.getLogger(__name__)
+        
         self.risk_manager = risk_manager
         self.exchange_clients = exchange_clients if exchange_clients is not None else {}
         
@@ -69,7 +72,7 @@ class SmartOrderManager:
             'total_slippage': 0.0,
         }
         
-        logger.info("SmartOrderManager initialized")
+        self.logger.info("SmartOrderManager initialized successfully")
 
     def set_dependencies(self, risk_manager: Any, exchange_clients: Dict):
         """

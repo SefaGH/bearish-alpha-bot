@@ -259,6 +259,36 @@ class RiskManager:
             logger.error(f"[RISK-ENGINE] Error validating position: {e}", exc_info=True)
             return (False, f"Validation error: {str(e)}", {})
     
+    def _safe_get_equity(self, portfolio_manager) -> float:
+        """
+        Safely retrieve current equity with multiple fallback strategies.
+        
+        Args:
+            portfolio_manager: PortfolioManager instance or dict
+            
+        Returns:
+            float: Current equity value
+        """
+        try:
+            # Primary: Try PortfolioManager method
+            if hasattr(portfolio_manager, 'get_current_equity'):
+                return float(portfolio_manager.get_current_equity())
+            
+            # Secondary: Try dict access
+            if isinstance(portfolio_manager, dict):
+                logger.warning(f"[RISK-ENGINE] Received dict instead of PortfolioManager. "
+                             f"Using fallback dict access.")
+                return float(portfolio_manager.get('equity_usd', self.portfolio_value))
+            
+            # Fallback: Use internal value
+            logger.warning(f"[RISK-ENGINE] Invalid portfolio_manager type: {type(portfolio_manager)}. "
+                          f"Using fallback value: {self.portfolio_value}")
+            return float(self.portfolio_value)
+            
+        except Exception as e:
+            logger.error(f"[RISK-ENGINE] Failed to get equity: {e}. Using fallback: {self.portfolio_value}")
+            return float(self.portfolio_value)
+    
     def _calculate_risk_metrics(self, signal: Dict, portfolio_manager) -> Dict[str, Any]:
         """
         Calculate comprehensive risk metrics for a signal.
@@ -280,9 +310,19 @@ class RiskManager:
             if not stop_loss:
                 stop_loss = self._calculate_stop_loss_from_signal(signal, entry_price)
             
-            portfolio_value = portfolio_manager.get_current_equity()
-            current_exposure = portfolio_manager.get_total_exposure()
-            active_positions = portfolio_manager.get_open_positions()
+            # FIX: Use safe equity getter
+            portfolio_value = self._safe_get_equity(portfolio_manager)
+            
+            # Safe access for other portfolio methods
+            if hasattr(portfolio_manager, 'get_total_exposure'):
+                current_exposure = portfolio_manager.get_total_exposure()
+            else:
+                current_exposure = portfolio_manager.get('total_exposure', 0) if isinstance(portfolio_manager, dict) else 0
+            
+            if hasattr(portfolio_manager, 'get_open_positions'):
+                active_positions = portfolio_manager.get_open_positions()
+            else:
+                active_positions = portfolio_manager.get('open_positions', {}) if isinstance(portfolio_manager, dict) else {}
             
             # Basic metrics
             new_position_value = position_size * entry_price
@@ -380,7 +420,8 @@ class RiskManager:
                 position = portfolio_manager.get_position(position_id)
                 if position is None:
                     return {'status': 'not_found', 'alerts': []}
-                portfolio_value = portfolio_manager.get_current_equity()
+                # FIX: Use safe equity getter
+                portfolio_value = self._safe_get_equity(portfolio_manager)
             else:
                 # Backward compatibility fallback
                 if position_id not in self.active_positions:
@@ -469,7 +510,8 @@ class RiskManager:
         try:
             # PHASE 2: Get portfolio value from PortfolioManager or fallback
             if portfolio_manager is not None:
-                portfolio_value = portfolio_manager.get_current_equity()
+                # FIX: Use safe equity getter
+                portfolio_value = self._safe_get_equity(portfolio_manager)
             else:
                 portfolio_value = self.portfolio_value
             
@@ -615,12 +657,13 @@ class RiskManager:
         # PHASE 2: Prefer PortfolioManager as source of truth
         if portfolio_manager is not None:
             # Get data from PortfolioManager
-            portfolio_value = portfolio_manager.get_current_equity()
-            peak_value = portfolio_manager.get_peak_equity()
-            current_drawdown = portfolio_manager.get_current_drawdown()
-            active_positions = portfolio_manager.get_open_positions()
-            total_exposure = portfolio_manager.get_total_exposure()
-            available_capital = portfolio_manager.get_available_capital()
+            # FIX: Use safe equity getter
+            portfolio_value = self._safe_get_equity(portfolio_manager)
+            peak_value = portfolio_manager.get_peak_equity() if hasattr(portfolio_manager, 'get_peak_equity') else portfolio_value
+            current_drawdown = portfolio_manager.get_current_drawdown() if hasattr(portfolio_manager, 'get_current_drawdown') else 0.0
+            active_positions = portfolio_manager.get_open_positions() if hasattr(portfolio_manager, 'get_open_positions') else {}
+            total_exposure = portfolio_manager.get_total_exposure() if hasattr(portfolio_manager, 'get_total_exposure') else 0.0
+            available_capital = portfolio_manager.get_available_capital() if hasattr(portfolio_manager, 'get_available_capital') else portfolio_value
         else:
             # Backward compatibility fallback
             portfolio_value = self.portfolio_value
