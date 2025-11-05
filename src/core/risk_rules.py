@@ -131,7 +131,7 @@ class CapitalLimitRule(BaseRiskRule):
             if leverage <= 1:
                 if notional > available:
                     logger.warning(f"🚫 [CapitalLimitRule] REJECTED {symbol} (spot): ${notional:.2f} > ${available:.2f}")
-                    return (False, f"Spot position ${notional:.2f} exceeds available ${available:.2f}")
+                    return (False, f"Position ${notional:.2f} would exceed capital limit ${available:.2f} available")
                 else:
                     logger.info(f"✅ [CapitalLimitRule] PASSED {symbol} (spot): ${notional:.2f} <= ${available:.2f}")
                     return (True, "Capital check passed (spot)")
