@@ -414,17 +414,30 @@ class RiskRewardRatioRule(BaseRiskRule):
     Low confidence signals get higher R/R requirements (1.5-2.0)
     """
     
-    def __init__(self, config=None, rule_name: str = None):
+    def __init__(self, config=None, min_risk_reward: float = None, rule_name: str = None):
         """
         Initialize the risk/reward ratio rule.
         
         Args:
-            config: RiskConfiguration instance with dynamic R/R settings
+            config: RiskConfiguration instance with dynamic R/R settings (preferred)
+            min_risk_reward: Legacy parameter for backward compatibility (static threshold)
             rule_name: Optional custom rule name.
         """
         super().__init__(rule_name or "RiskRewardRatioRule")
         self.risk_config = config
         self.validation_history = []  # For monitoring
+        
+        # Backward compatibility: If min_risk_reward provided but no config,
+        # create a simple config with dynamic disabled
+        if min_risk_reward is not None and config is None:
+            # Create a minimal config for backward compatibility
+            from config.risk_config import RiskConfiguration
+            self.risk_config = RiskConfiguration({
+                'rr_dynamic': {
+                    'enabled': False,
+                    'base_target_rr': min_risk_reward
+                }
+            })
     
     def validate(self, signal: Dict, portfolio_manager) -> Tuple[bool, str]:
         """
@@ -447,6 +460,10 @@ class RiskRewardRatioRule(BaseRiskRule):
             entry = float(signal.get('entry', 0) or signal.get('price', 0))
             stop = float(signal.get('stop', 0) or signal.get('stop_loss', 0))
             target = float(signal.get('target', 0) or signal.get('take_profit', 0))
+            
+            # Backward compatibility: Calculate stop from ATR if not provided
+            if stop == 0 and entry > 0:
+                stop = self._calculate_stop_from_signal(signal, entry)
             
             # Validate inputs
             if entry <= 0 or stop <= 0 or target <= 0:
@@ -476,8 +493,8 @@ class RiskRewardRatioRule(BaseRiskRule):
             
             # Make decision
             if calculated_rr < target_rr:
-                reason = (f"R/R {calculated_rr:.2f} < Dynamic Target {target_rr:.2f} | "
-                         f"Risk: {risk_pct:.1f}%, Reward: {reward_pct:.1f}%")
+                reason = (f"Risk/reward ratio {calculated_rr:.2f} is below dynamic target {target_rr:.2f} "
+                         f"(Risk: {risk_pct:.1f}%, Reward: {reward_pct:.1f}%)")
                 logger.warning(f"🚫 [RiskRewardRatioRule] REJECTED {symbol}: {reason}")
                 return (False, reason)
             else:
@@ -558,6 +575,40 @@ class RiskRewardRatioRule(BaseRiskRule):
                    f"× Regime({regime_name})={regime_mult:.1f} = {dynamic_target:.2f} → Final={final_target:.2f}")
         
         return final_target
+    
+    def _calculate_stop_from_signal(self, signal: Dict, entry_price: float) -> float:
+        """
+        Calculate stop loss from signal parameters (backward compatibility).
+        
+        Args:
+            signal: Trading signal
+            entry_price: Entry price
+            
+        Returns:
+            Stop loss price
+        """
+        side = signal.get('side', 'buy')
+        
+        # Try ATR-based stop
+        if signal.get('sl_atr_mult') and signal.get('atr'):
+            atr = float(signal['atr'])
+            sl_mult = float(signal['sl_atr_mult'])
+            
+            if side in ['buy', 'long']:
+                return entry_price - (atr * sl_mult)
+            else:
+                return entry_price + (atr * sl_mult)
+        
+        # Try percentage-based stop
+        if signal.get('sl_pct'):
+            sl_pct = float(signal['sl_pct'])
+            
+            if side in ['buy', 'long']:
+                return entry_price * (1 - sl_pct)
+            else:
+                return entry_price * (1 + sl_pct)
+        
+        return 0
     
     def _calculate_stop_loss(self, signal: Dict, entry_price: float) -> float:
         """Calculate stop loss from signal parameters."""
