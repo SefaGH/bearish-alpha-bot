@@ -444,11 +444,21 @@ class LiveTradingEngine:
             signal['exchange'] = exchange
             
             # Step 4: Determine execution algorithm
-            notional_value = position_size * signal.get('entry', 0)
-            urgency = signal.get('urgency', 'normal')
-            execution_algo = self.execution_analytics.get_best_execution_algorithm(notional_value, urgency)
+            # ✅ FIX: Respect ORDER_TYPE configuration from environment/config
+            config_order_type = self.config.get('trading', {}).get('order_type', 'limit')
             
-            logger.info(f"  ✓ Execution algorithm selected: {execution_algo}")
+            # Paper mode and live mode both should respect the configured order type
+            if config_order_type:
+                execution_algo = config_order_type.lower()
+                logger.info(f"  ✓ Using configured order type: {execution_algo}")
+            else:
+                # Fallback to execution analytics if no config
+                notional_value = position_size * signal.get('entry', 0)
+                urgency = signal.get('urgency', 'normal')
+                execution_algo = self.execution_analytics.get_best_execution_algorithm(notional_value, urgency)
+                logger.info(f"  ✓ Execution algorithm selected: {execution_algo}")
+            
+            notional_value = position_size * signal.get('entry', 0)
             logger.info(f"  Notional value: ${notional_value:.2f}")
             
             # Step 5: Execute order (Phase 3.4)

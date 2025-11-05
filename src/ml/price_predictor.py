@@ -520,6 +520,12 @@ class AdvancedPricePredictionEngine:
         # Load models and set training status.
         self.is_trained = self.load_models()
         
+        # ✅ FIX: Clear status logging based on actual model state
+        if self.is_trained:
+            logger.info("✅ Price predictor model loaded successfully")
+        else:
+            logger.info("📊 No ML model found. Using fallback heuristics for price predictions")
+        
         if not self.market_data_pipeline:
             logger.warning("⚠️ MarketDataPipeline not provided. Prediction updates may fail.")
         
@@ -646,11 +652,16 @@ class AdvancedPricePredictionEngine:
         logger.info("✅ All models processed for saving.")
 
     # --- YENİ METOT: load_models ---
-    def load_models(self):
-        """Loads trained model state dictionaries from disk."""
+    def load_models(self) -> bool:
+        """
+        Loads trained model state dictionaries from disk.
+        
+        Returns:
+            True if models were loaded successfully, False otherwise
+        """
         if not TORCH_AVAILABLE:
             logger.warning("Cannot load models: PyTorch is not installed.")
-            return
+            return False
 
         logger.info("Attempting to load trained models from disk...")
         models_loaded = 0
@@ -658,7 +669,7 @@ class AdvancedPricePredictionEngine:
         # --- KORUMA: self.predictor veya self.predictor.models yoksa çık ---
         if not hasattr(self.predictor, 'models') or not self.predictor.models:
              logger.warning("No timeframes configured in MultiTimeframePricePredictor. Cannot load models.")
-             return
+             return False
 
         for tf, ensemble_model in self.predictor.models.items():
             for model_name, model_instance in ensemble_model.models.items():
@@ -680,11 +691,11 @@ class AdvancedPricePredictionEngine:
                             logger.error(f"Failed to load model from {model_path}: {e}")
         
         if models_loaded > 0:
-            self.is_trained = True
             logger.info(f"✅ Model loading complete. {models_loaded} models loaded.")
+            return True
         else:
-            self.is_trained = False
             logger.warning("No pre-trained models were found or loaded. The system will rely on fallback mechanisms.")
+            return False
 
     async def _update_predictions(self, symbols: List[str], 
                                   timeframes: List[str]) -> None:
