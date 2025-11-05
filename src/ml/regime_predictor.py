@@ -46,12 +46,11 @@ class EnsembleRegimePredictor:
                 "EnsembleRegimePredictor sınıfı ML_ENABLED=true gerektirir. "
                 "Lütfen botu 'enable_ml=true' ile çalıştırın."
             )
-        
         self.models = models
         self.weights = weights or {
-            'lstm': 0.4,
-            'transformer': 0.4,
-            'random_forest': 0.2
+            'lstm_regime': 0.3, # Anahtar adını güncelledik
+            'transformer_regime': 0.3, # Gelecekteki kullanım için
+            'random_forest': 0.4 # Ağırlığı güncelledik
         }
     
     def _create_sequence_for_prediction(self, X: np.ndarray, seq_length: int) -> np.ndarray:
@@ -141,42 +140,41 @@ class EnsembleRegimePredictor:
 class MLRegimePredictor:
     """
     Machine learning-based market regime prediction system.
-    (GÜNCELLENDİ: load_models metodu eklendi)
+    (GÜNCELLENDİ: Artık kendi konfigürasyon bloğunu doğru okuyor)
     """
     MODEL_DIR = "data/models/regime"
     
     def __init__(self, feature_pipeline, config: Dict[str, Any]):
         """
-        Initialize the ML regime predictor using a central configuration dictionary.
+        Initialize the ML regime predictor.
 
         Args:
             feature_pipeline: Instance of FeatureEngineeringPipeline.
-            config (Dict[str, Any]): The 'ml' configuration block from the main YAML file.
+            config (Dict[str, Any]): The 'regime_prediction' configuration block.
         """
         if not ML_ENABLED:
             raise RuntimeError("MLRegimePredictor requires ML_ENABLED=true.")
 
-        # ✅ FIX: Store the passed-in dependencies and config.
         self.feature_pipeline = feature_pipeline
         self.config = config
         
         self.scaler = None
         self.models = {
-            'lstm': None,
-            'transformer': None,
+            'lstm_regime': None, # Anahtar adını YAML ile eşleştirdik
             'random_forest': None,
             'ensemble': None
         }
         self.prediction_history = []
         
         logger.info("ML Regime Predictor initialized.")
-        # Load models and set training status.
         self.is_trained = self.load_models()
 
     def load_models(self) -> bool:
-        """Loads trained regime models and the scaler from disk using central config."""
-        model_dir = self.config.get('model_path', 'data/models')
-        regime_model_dir = os.path.join(model_dir, 'regime')
+        """Loads trained regime models and the scaler from disk using its own config."""
+        # ✔️ DÜZELTME 1: 'model_path' anahtarı `ml.regime_prediction` bloğunda yok.
+        # Bu nedenle, varsayılan bir yol kullanmak daha güvenli.
+        model_dir_base = self.config.get('model_base_path', 'data/models') 
+        regime_model_dir = os.path.join(model_dir_base, 'regime')
 
         if not os.path.exists(regime_model_dir):
             logger.warning(f"Regime model directory not found: {regime_model_dir}. Models not loaded.")
@@ -184,53 +182,51 @@ class MLRegimePredictor:
 
         models_loaded = 0
         try:
-            # Load the feature scaler
             scaler_path = os.path.join(regime_model_dir, "scaler.pkl")
             if os.path.exists(scaler_path):
                 self.scaler = joblib.load(scaler_path)
                 logger.info(f"✅ Regime feature scaler loaded from: {scaler_path}")
             
-            # Load Random Forest model
             rf_path = os.path.join(regime_model_dir, "random_forest.pkl")
             if os.path.exists(rf_path) and RandomForestClassifier is not None:
                 self.models['random_forest'] = joblib.load(rf_path)
                 models_loaded += 1
                 logger.info(f"✅ Random Forest regime model loaded from: {rf_path}")
             
-            # ✅ FIX: Get model parameters from the central config
-            model_params = self.config.get('models', {})
-            feature_params = self.config.get('features', {})
-            # This should match your feature engineering output size
-            input_size = feature_params.get('input_size', 42) 
+            # ✔️ DÜZELTME 2: Gerekli parametreleri doğrudan kendisine verilen `self.config`'ten okur.
+            # 'models' veya 'features' gibi üst seviye anahtarları aramaz.
+            model_params = self.config.get('model_params', {})
+            # `input_size` gibi bir parametre `regime_prediction` bloğunda tanımlı değil.
+            # Bu, `feature_pipeline`'dan veya sabit bir değerden alınmalı. Şimdilik sabit varsayalım.
+            input_size = 42
 
-            # Load LSTM model (PyTorch)
+            # LSTM modelini yükle
             lstm_path = os.path.join(regime_model_dir, "lstm_regime.pth")
-            if os.path.exists(lstm_path) and 'lstm' in model_params:
+            # `lstm_regime` anahtarının `model_params` içinde olup olmadığını kontrol et
+            if os.path.exists(lstm_path) and 'lstm_regime' in model_params:
                 try:
                     import torch
-                    from .neural_networks import LSTMRegimePredictor
                     
-                    lstm_config = model_params['lstm']
+                    lstm_config = model_params['lstm_regime'] # Anahtar adını düzelttik
                     lstm_model = LSTMRegimePredictor(
                         input_size=input_size,
-                        hidden_size=lstm_config.get('hidden_size', 128),
-                        num_layers=lstm_config.get('num_layers', 3),
-                        num_classes=3 # Bull, Neutral, Bear
+                        hidden_size=lstm_config.get('hidden_size', 64), # Varsayılan değerler ekledik
+                        num_layers=lstm_config.get('num_layers', 2),
+                        num_classes=3
                     )
                     lstm_model.load_state_dict(torch.load(lstm_path, map_location='cpu'))
                     lstm_model.eval()
-                    self.models['lstm'] = lstm_model
+                    self.models['lstm_regime'] = lstm_model # Anahtar adını düzelttik
                     models_loaded += 1
                     logger.info(f"✅ LSTM regime model loaded from: {lstm_path}")
                 except Exception as e:
                     logger.error(f"❌ Failed to load LSTM model from {lstm_path}: {e}", exc_info=True)
             
-            # (Optional) Add Transformer loading logic here if you have it
-            
             if models_loaded > 0:
                 base_models = {name: model for name, model in self.models.items() if model and name != 'ensemble'}
                 if base_models:
-                    ensemble_weights = model_params.get('ensemble_weights')
+                    # ✔️ DÜZELTME 3: Ensemble ağırlıklarını `self.config`'ten okur.
+                    ensemble_weights = self.config.get('ensemble_weights')
                     self.models['ensemble'] = EnsembleRegimePredictor(base_models, weights=ensemble_weights)
                     logger.info(f"✅ {len(base_models)} regime models loaded and ensemble created.")
                     return True
