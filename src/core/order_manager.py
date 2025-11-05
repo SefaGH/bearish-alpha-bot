@@ -85,8 +85,19 @@ class SmartOrderManager:
         Set dependencies after initialization. This allows for flexible setup.
         
         DEPRECATED: market_data_pipeline should now be provided in __init__.
-        This method is kept for backward compatibility.
+        This method is kept for backward compatibility and will be removed in v2.0.0.
+        
+        Deprecation Timeline:
+        - Deprecated: v1.1.0 (current)
+        - Removal: v2.0.0 (planned)
         """
+        import warnings
+        warnings.warn(
+            "set_dependencies() is deprecated. Pass market_data_pipeline to __init__ instead. "
+            "This method will be removed in v2.0.0.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         self.risk_manager = risk_manager
         self.exchange_clients = exchange_clients
         logger.info(f"OrderManager dependencies set. {len(exchange_clients)} exchange client(s) registered.")
@@ -362,8 +373,10 @@ class SmartOrderManager:
             try:
                 market = await self.market_data_pipeline.get_market_metadata(symbol, exchange)
             except ValueError as e:
+                # Sanitize error message to avoid exposing internal details
+                error_msg = f"Market metadata unavailable for {symbol} on {exchange}"
                 self.logger.error(f"🛡️  {log_prefix} REJECTED (MarketMetadata): {e}")
-                return {'success': False, 'reason': f"REJECT:MARKET_METADATA - {e}", 'order_id': None}
+                return {'success': False, 'reason': f"REJECT:MARKET_METADATA - {error_msg}", 'order_id': None}
             
             # Get current price from exchange
             ticker = client.ticker(symbol)

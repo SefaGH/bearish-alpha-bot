@@ -63,6 +63,13 @@ class MarketDataPipeline:
         # Market metadata cache: {exchange: {symbol: market_metadata}}
         self._market_metadata_cache = {}
         
+        # Dedicated thread pool for synchronous CCXT calls to avoid overhead
+        import concurrent.futures
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix='ccxt_executor'
+        )
+        
         # Health monitoring
         self.start_time = datetime.now(timezone.utc)
         self.total_requests = 0
@@ -109,9 +116,9 @@ class MarketDataPipeline:
         try:
             client = self.exchanges[exchange_id]
             
-            # Ensure markets are loaded
+            # Ensure markets are loaded using dedicated executor
             loop = asyncio.get_running_loop()
-            markets = await loop.run_in_executor(None, client.load_markets)
+            markets = await loop.run_in_executor(self._executor, client.load_markets)
             
             # Get market data for the symbol
             if symbol not in markets:
@@ -735,6 +742,11 @@ class MarketDataPipeline:
         """
         logger.info("🔄 Shutting down MarketDataPipeline...")
         self.is_running = False
+        
+        # Shutdown executor
+        if hasattr(self, '_executor'):
+            logger.debug("Shutting down thread pool executor...")
+            self._executor.shutdown(wait=True, cancel_futures=False)
         
         # Log final stats
         final_stats = self.get_pipeline_status()
