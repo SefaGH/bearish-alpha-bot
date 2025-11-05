@@ -345,7 +345,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 "entry": entry_price, "stop": stop_price, "target": target_price,
                 "reason": f"Adaptive RSI {rsi_val:.1f} <= {adaptive_rsi_threshold:.1f}",
                 "rr_ratio": rr_ratio, "is_adaptive": True, "position_multiplier": position_mult,
-                "ml_enhanced": ml_enhanced, "strategy_type": 'adaptive'
+                "ml_enhanced": ml_enhanced, "strategy_type": 'adaptive',
+                "strategy_min_rr": self.min_rr_ratio  # NEW: Strategy's own minimum R/R
             }
             
             if ml_enhanced:

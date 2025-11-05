@@ -402,35 +402,40 @@ class MaxDrawdownRule(BaseRiskRule):
 
 class RiskRewardRatioRule(BaseRiskRule):
     """
-    Validates that a trade has an acceptable risk/reward ratio.
+    Intelligent Risk/Reward ratio validation with ML/RL awareness.
     
-    This rule is now DYNAMIC. It prioritizes the 'min_rr_ratio' from the
-    incoming signal, making it responsive to strategy-specific or config-level changes.
+    This rule implements a dynamic R/R threshold that adjusts based on:
+    - ML confidence in regime prediction
+    - RL agent agreement with signal direction
+    - Market regime clarity
+    - Strategy's minimum R/R requirement
+    
+    High confidence signals get lower R/R requirements (0.8-1.2)
+    Low confidence signals get higher R/R requirements (1.5-2.0)
     """
     
-    def __init__(self, min_risk_reward: float = 1.5, rule_name: str = None):
+    def __init__(self, config=None, rule_name: str = None):
         """
         Initialize the risk/reward ratio rule.
         
         Args:
-            min_risk_reward: A fallback minimum ratio, used only if the signal
-                             does not provide its own 'min_rr_ratio'. Default is 1.5.
+            config: RiskConfiguration instance with dynamic R/R settings
             rule_name: Optional custom rule name.
         """
         super().__init__(rule_name or "RiskRewardRatioRule")
-        # Bu değer artık sadece bir "varsayılan" veya "fallback" görevi görüyor.
-        self.fallback_min_risk_reward = min_risk_reward
+        self.risk_config = config
+        self.validation_history = []  # For monitoring
     
     def validate(self, signal: Dict, portfolio_manager) -> Tuple[bool, str]:
         """
-        Validate risk/reward ratio using the dynamic limit from the signal itself.
+        Validate R/R with dynamic intelligence-based adjustment.
         
         Args:
-            signal: Trading signal, expected to contain 'min_rr_ratio'.
-            portfolio_manager: PortfolioManager instance.
+            signal: Trading signal with ML/RL enrichment
+            portfolio_manager: PortfolioManager instance
             
         Returns:
-            (is_valid, reason) tuple.
+            (is_valid, reason) tuple
         """
         if not self.enabled:
             return (True, f"{self.rule_name} disabled")
@@ -438,53 +443,121 @@ class RiskRewardRatioRule(BaseRiskRule):
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
             
-            # ======================= ANA DÜZELTME =======================
-            # 1. Dinamik R/R Hedefini Sinyalden Oku
-            #    Eğer sinyalde bu değer yoksa, başlatmadaki varsayılan değeri kullan.
-            min_rr_target = signal.get('min_rr_ratio', self.fallback_min_risk_reward)
-            # ==========================================================
-
-            entry_price = signal.get('entry', 0)
-            stop_loss = signal.get('stop', 0)
-            target_price = signal.get('target', 0)
+            # Extract price levels
+            entry = float(signal.get('entry', 0) or signal.get('price', 0))
+            stop = float(signal.get('stop', 0) or signal.get('stop_loss', 0))
+            target = float(signal.get('target', 0) or signal.get('take_profit', 0))
             
-            # Gerekli fiyat bilgileri eksikse kural başarısız olur.
-            if not all([entry_price, stop_loss, target_price]):
-                reason = f"Missing price data for R/R calculation (entry={entry_price}, stop={stop_loss}, target={target_price})"
-                logger.warning(f"[{self.rule_name}] {symbol}: {reason}")
+            # Validate inputs
+            if entry <= 0 or stop <= 0 or target <= 0:
+                return (False, "Invalid price levels for R/R calculation")
+            
+            # Calculate actual R/R
+            risk = abs(entry - stop)
+            reward = abs(target - entry)
+            
+            if risk == 0:
+                return (False, "Zero risk detected (stop equals entry)")
+            
+            calculated_rr = reward / risk
+            risk_pct = (risk / entry) * 100
+            reward_pct = (reward / entry) * 100
+            
+            # Get dynamic target R/R
+            target_rr = self._calculate_dynamic_target(signal)
+            
+            # Enhanced diagnostic logging
+            logger.info(f"📊 [R/R Analysis] {symbol}:")
+            logger.info(f"   Prices: Entry=${entry:.2f}, Stop=${stop:.2f} (-{risk_pct:.1f}%), Target=${target:.2f} (+{reward_pct:.1f}%)")
+            logger.info(f"   R/R: Actual={calculated_rr:.2f}, Required={target_rr:.2f}")
+            logger.info(f"   Intelligence: ML={signal.get('ml_confidence', 'N/A')}, "
+                       f"RL_agree={signal.get('rl_is_agree', 'N/A')}, "
+                       f"Regime={signal.get('regime_name', 'N/A')}")
+            
+            # Make decision
+            if calculated_rr < target_rr:
+                reason = (f"R/R {calculated_rr:.2f} < Dynamic Target {target_rr:.2f} | "
+                         f"Risk: {risk_pct:.1f}%, Reward: {reward_pct:.1f}%")
+                logger.warning(f"🚫 [RiskRewardRatioRule] REJECTED {symbol}: {reason}")
                 return (False, reason)
-            
-            # Risk ve Getiri mesafelerini hesapla
-            risk_distance = abs(entry_price - stop_loss)
-            reward_distance = abs(target_price - entry_price)
-            
-            if risk_distance > 0:
-                # Gerçek R/R oranını hesapla
-                calculated_rr_ratio = reward_distance / risk_distance
-                
-                # Loglamayı, hangi hedefe göre kontrol edildiğini gösterecek şekilde güncelle.
-                log_msg = (f"[{self.rule_name}] {symbol}: "
-                           f"Calculated R/R Ratio {calculated_rr_ratio:.2f} vs "
-                           f"Target Minimum {min_rr_target:.2f}")
-                
-                # 2. Karşılaştırmayı Dinamik Hedefe Göre Yap
-                if calculated_rr_ratio < min_rr_target:
-                    reason = f"Risk/reward ratio {calculated_rr_ratio:.2f} is below the target minimum of {min_rr_target:.2f}"
-                    logger.warning(f"🚫 [{self.rule_name}] REJECTED: {symbol} - {reason}")
-                    # Ret logunu log_msg ile birleştirerek daha anlaşılır hale getir
-                    logger.debug(log_msg) 
-                    return (False, reason)
-                
-                logger.debug(log_msg + " -> ✅ PASSED")
-                return (True, "Risk/reward ratio is acceptable")
             else:
-                # Risk mesafesi sıfır ise (örneğin stop loss giriş fiyatıyla aynıysa)
-                logger.warning(f"[{self.rule_name}] {symbol}: Zero risk distance, cannot calculate R/R ratio.")
-                return (False, "Zero risk distance prevents R/R calculation")
-            
+                logger.info(f"✅ [RiskRewardRatioRule] PASSED {symbol}: R/R {calculated_rr:.2f} >= {target_rr:.2f}")
+                return (True, f"R/R acceptable ({calculated_rr:.2f} >= {target_rr:.2f})")
+                
         except Exception as e:
-            logger.error(f"[{self.rule_name}] Validation error: {e}", exc_info=True)
-            return (False, f"Critical validation error: {str(e)}")
+            logger.error(f"[RiskRewardRatioRule] Error: {e}", exc_info=True)
+            return (False, f"R/R validation error: {str(e)}")
+    
+    def _calculate_dynamic_target(self, signal: Dict) -> float:
+        """
+        Calculate dynamic R/R target based on ML/RL confidence.
+        
+        Formula:
+        Dynamic R/R = BASE_RR - (ML_WEIGHT × ML_CONF) - (RL_WEIGHT × RL_AGREEMENT) 
+                     + (REGIME_WEIGHT × UNCERTAINTY) × REGIME_MULTIPLIER
+        Final R/R = CLAMP(Dynamic R/R, LOWER_BOUND, UPPER_BOUND)
+        
+        Args:
+            signal: Trading signal with ML/RL metrics
+            
+        Returns:
+            Dynamic R/R target threshold
+        """
+        # Check if dynamic system is enabled
+        if not self.risk_config or not hasattr(self.risk_config, 'rr_dynamic'):
+            logger.warning("[Dynamic R/R] Config not found, using static default 1.5")
+            return 1.5
+        
+        config = self.risk_config.rr_dynamic
+        
+        if not config.get('enabled', False):
+            # Use static target if dynamic is disabled
+            static_target = getattr(self.risk_config, 'min_risk_reward_ratio', 1.5)
+            logger.debug(f"[Dynamic R/R] Disabled, using static target: {static_target}")
+            return static_target
+        
+        # Get configuration parameters
+        base_rr = config['base_target_rr']
+        lower_bound = config['lower_bound_rr']
+        upper_bound = config['upper_bound_rr']
+        weights = config['weights']
+        fallback = config['fallback']
+        regime_mults = config['regime_multipliers']
+        
+        # Extract intelligence metrics with fallbacks
+        ml_conf = float(signal.get('ml_confidence', fallback['missing_ml_default']))
+        rl_agree = 1.0 if signal.get('rl_is_agree', False) else 0.0
+        rl_prob = float(signal.get('rl_action_prob', fallback['missing_rl_default']))
+        regime_conf = float(signal.get('regime_confidence', fallback.get('missing_regime_default', 0.3)))
+        regime_name = signal.get('regime_name', 'neutral').lower()
+        
+        # Calculate relaxation (reduces required R/R for high confidence)
+        relaxation = (
+            weights['ml_confidence'] * ml_conf +
+            weights['rl_agreement'] * rl_agree * rl_prob
+        )
+        
+        # Calculate tightening (increases required R/R for uncertainty)
+        tightening = weights['regime_clarity'] * (1.0 - regime_conf)
+        
+        # Apply regime multiplier
+        regime_mult = regime_mults.get(regime_name, 1.0)
+        
+        # Calculate dynamic target
+        dynamic_target = (base_rr - relaxation + tightening) * regime_mult
+        
+        # Respect strategy's minimum
+        strategy_min = float(signal.get('strategy_min_rr', 0.5))
+        dynamic_target = max(dynamic_target, strategy_min)
+        
+        # Apply bounds
+        final_target = max(lower_bound, min(dynamic_target, upper_bound))
+        
+        # Detailed logging
+        logger.info(f"📊 [Dynamic R/R Calc] Base={base_rr:.2f} - Relax={relaxation:.2f} + Tight={tightening:.2f} "
+                   f"× Regime({regime_name})={regime_mult:.1f} = {dynamic_target:.2f} → Final={final_target:.2f}")
+        
+        return final_target
     
     def _calculate_stop_loss(self, signal: Dict, entry_price: float) -> float:
         """Calculate stop loss from signal parameters."""

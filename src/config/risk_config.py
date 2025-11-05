@@ -6,6 +6,7 @@ Centralized risk parameters and circuit breaker limits.
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,9 @@ class RiskConfiguration:
         }) if custom_limits else CircuitBreakerLimits()
         
         self.emergency_protocols = EmergencyProtocols()
+        
+        # Load dynamic R/R configuration
+        self._load_dynamic_rr_config(custom_limits)
     
     def get_risk_limits(self) -> RiskLimits:
         """Get current risk limits."""
@@ -140,9 +144,112 @@ class RiskConfiguration:
             if hasattr(self.risk_limits, key):
                 setattr(self.risk_limits, key, value)
     
+    def _get_env_or_config(self, env_key: str, config_value: Any, value_type=str) -> Any:
+        """
+        Helper to get value with priority: ENV > config > default.
+        
+        Args:
+            env_key: Environment variable name
+            config_value: Value from config file
+            value_type: Type to convert to (str, bool, float, int)
+            
+        Returns:
+            Value with priority order applied
+        """
+        env_value = os.getenv(env_key)
+        if env_value is not None:
+            if value_type == bool:
+                return env_value.lower() in ['true', '1', 'yes']
+            elif value_type == float:
+                return float(env_value)
+            elif value_type == int:
+                return int(env_value)
+            return str(env_value)
+        return config_value
+    
+    def _load_dynamic_rr_config(self, config_dict: Dict[str, Any]):
+        """
+        Load dynamic R/R configuration with GitHub Variables priority.
+        
+        Args:
+            config_dict: Configuration dictionary from YAML
+        """
+        rr_config = config_dict.get('rr_dynamic', {}) if config_dict else {}
+        
+        # Build configuration with priority chain: ENV > config > defaults
+        self.rr_dynamic = {
+            'enabled': self._get_env_or_config('RR_DYNAMIC_ENABLED', 
+                                              rr_config.get('enabled', True), 
+                                              bool),
+            
+            'base_target_rr': self._get_env_or_config('RR_BASE_TARGET',
+                                                     rr_config.get('base_target_rr', 1.5),
+                                                     float),
+            
+            'lower_bound_rr': self._get_env_or_config('RR_LOWER_BOUND',
+                                                     rr_config.get('lower_bound_rr', 0.8),
+                                                     float),
+            
+            'upper_bound_rr': self._get_env_or_config('RR_UPPER_BOUND',
+                                                     rr_config.get('upper_bound_rr', 2.0),
+                                                     float),
+            
+            'weights': {
+                'ml_confidence': self._get_env_or_config('RR_WEIGHT_ML',
+                                                        rr_config.get('weights', {}).get('ml_confidence', 0.3),
+                                                        float),
+                'rl_agreement': self._get_env_or_config('RR_WEIGHT_RL',
+                                                       rr_config.get('weights', {}).get('rl_agreement', 0.3),
+                                                       float),
+                'regime_clarity': self._get_env_or_config('RR_WEIGHT_REGIME',
+                                                         rr_config.get('weights', {}).get('regime_clarity', 0.2),
+                                                         float),
+                'volume_strength': self._get_env_or_config('RR_WEIGHT_VOLUME',
+                                                          rr_config.get('weights', {}).get('volume_strength', 0.1),
+                                                          float),
+                'momentum_strength': self._get_env_or_config('RR_WEIGHT_MOMENTUM',
+                                                            rr_config.get('weights', {}).get('momentum_strength', 0.1),
+                                                            float),
+            },
+            
+            'fallback': {
+                'missing_ml_default': self._get_env_or_config('RR_FALLBACK_ML',
+                                                             rr_config.get('fallback', {}).get('missing_ml_default', 0.5),
+                                                             float),
+                'missing_rl_default': self._get_env_or_config('RR_FALLBACK_RL',
+                                                             rr_config.get('fallback', {}).get('missing_rl_default', 0.5),
+                                                             float),
+                'missing_regime_default': self._get_env_or_config('RR_FALLBACK_REGIME',
+                                                                 rr_config.get('fallback', {}).get('missing_regime_default', 0.3),
+                                                                 float),
+            },
+            
+            'regime_multipliers': {
+                'bullish': self._get_env_or_config('RR_MULT_BULLISH',
+                                                  rr_config.get('regime_multipliers', {}).get('bullish', 0.9),
+                                                  float),
+                'bearish': self._get_env_or_config('RR_MULT_BEARISH',
+                                                  rr_config.get('regime_multipliers', {}).get('bearish', 0.9),
+                                                  float),
+                'neutral': self._get_env_or_config('RR_MULT_NEUTRAL',
+                                                  rr_config.get('regime_multipliers', {}).get('neutral', 1.0),
+                                                  float),
+                'volatile': self._get_env_or_config('RR_MULT_VOLATILE',
+                                                   rr_config.get('regime_multipliers', {}).get('volatile', 1.2),
+                                                   float),
+            }
+        }
+        
+        # Also store min_risk_reward_ratio for backward compatibility
+        self.min_risk_reward_ratio = self.rr_dynamic['base_target_rr']
+        
+        logger.info(f"✅ Dynamic R/R Config: enabled={self.rr_dynamic['enabled']}, "
+                   f"base={self.rr_dynamic['base_target_rr']:.1f}, "
+                   f"bounds=[{self.rr_dynamic['lower_bound_rr']:.1f}-{self.rr_dynamic['upper_bound_rr']:.1f}]")
+    
     def to_dict(self) -> Dict[str, Any]:
         """Export configuration as dictionary."""
-        return {
+        result = {
             'risk_limits': {
                 'max_portfolio_risk': self.risk_limits.max_portfolio_risk,
                 'max_position_size': self.risk_limits.max_position_size,
@@ -159,3 +266,9 @@ class RiskConfiguration:
             },
             'emergency_protocols': self.emergency_protocols.protocols
         }
+        
+        # Add dynamic R/R config if available
+        if hasattr(self, 'rr_dynamic'):
+            result['rr_dynamic'] = self.rr_dynamic
+        
+        return result
