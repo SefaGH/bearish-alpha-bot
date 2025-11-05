@@ -231,6 +231,13 @@ quarantine:
 # ==============================================================================
 ml:
   enabled: true                       # Master switch for all ML features. Override with: ML_ENABLED
+  
+  # ----------------------------------------------------------------------------
+  # Model Configuration (CRITICAL - Required for price prediction models)
+  # ----------------------------------------------------------------------------
+  models: ['lstm', 'transformer']     # List of models to build. Override with: ML_MODELS
+  feature_size: 42                    # Input feature dimensionality. Override with: ML_FEATURE_SIZE
+  forecast_horizon: 12                # Number of future steps to predict. Override with: ML_FORECAST_HORIZON
 
   # ----------------------------------------------------------------------------
   # Feature Engineering
