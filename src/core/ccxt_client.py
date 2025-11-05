@@ -778,6 +778,187 @@ class CcxtClient:
         logger.info(f"🔐 [BINGX-API] Placing {side} order: {amount} {symbol} @ ${price}")
         return self._make_authenticated_bingx_request('/openApi/swap/v2/trade/order', params, 'POST')
 
+    def _normalize_symbol_keys(self, symbol: str) -> List[str]:
+        """
+        Derive potential CCXT and exchange format variants for a symbol.
+        
+        Examples:
+        - 'BTC/USDT' -> ['BTC/USDT', 'BTC/USDT:USDT', 'BTC-USDT', 'BTCUSDT']
+        - 'ETH/USDT:USDT' -> ['ETH/USDT', 'ETH/USDT:USDT', 'ETH-USDT', 'ETHUSDT']
+        
+        Args:
+            symbol: Symbol to normalize
+            
+        Returns:
+            List of symbol format variants
+        """
+        try:
+            # Remove perpetual suffix: 'BTC/USDT:USDT' -> 'BTC/USDT'
+            base_symbol = symbol.split(':')[0]
+            
+            # Split base and quote
+            if '/' in base_symbol:
+                parts = base_symbol.split('/')
+            elif '-' in base_symbol:
+                parts = base_symbol.split('-')
+            else:
+                return [symbol]  # Unrecognized format
+            
+            if len(parts) != 2:
+                return [symbol]
+                
+            base, quote = parts[0], parts[1]
+            
+            # Generate different format variants
+            variants = [
+                f"{base}/{quote}",          # CCXT standard
+                f"{base}/{quote}:{quote}",  # CCXT perpetual
+                f"{base}-{quote}",          # BingX native format
+                f"{base}{quote}",           # Compact format (BTCUSDT)
+            ]
+            
+            # Return unique ordered list
+            seen = set()
+            ordered = []
+            for v in variants:
+                if v not in seen:
+                    ordered.append(v)
+                    seen.add(v)
+            
+            logger.debug(f"Symbol normalization: {symbol} -> {ordered}")
+            return ordered
+            
+        except Exception as e:
+            logger.warning(f"Symbol normalization failed for {symbol}: {e}")
+            return [symbol]
+
+    def _get_cached_market(self, symbol: str) -> Optional[Dict]:
+        """
+        Safely retrieve market information from injected minimal market structures
+        when working in "no market load" mode.
+        
+        Search order:
+        1. self.ex.markets (CCXT's own cache)
+        2. self.exchange.markets (alternative reference)
+        3. self._injected_markets (manually injected data)
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            Market metadata dictionary or None if not found
+        """
+        # Potential market store locations
+        candidates = [
+            getattr(getattr(self, "ex", None), "markets", None),
+            getattr(getattr(self, "exchange", None), "markets", None),
+            getattr(self, "_injected_markets", None),
+        ]
+        
+        # Try normalized symbol variants
+        keys_to_try = self._normalize_symbol_keys(symbol)
+        
+        for market_store in candidates:
+            if market_store and isinstance(market_store, dict):
+                for key in keys_to_try:
+                    if key in market_store:
+                        logger.debug(f"Market data for '{symbol}' found with key '{key}'")
+                        return market_store[key]
+        
+        logger.debug(f"No cached market data found for '{symbol}'")
+        return None
+
+    def market(self, symbol: str) -> Dict:
+        """
+        Safe bridge to CCXT's standard market() method.
+        
+        Working logic:
+        1. First check CCXT's own market information
+        2. If in "no market load" mode, search cached data
+        3. If nothing found, return safe fallback values
+        
+        Args:
+            symbol: Trading pair (e.g., 'BTC/USDT', 'ETH/USDT:USDT')
+            
+        Returns:
+            CCXT market metadata dictionary
+        """
+        # Step 1 & 2: Search for loaded or cached market information
+        cached_market_data = self._get_cached_market(symbol)
+        if cached_market_data:
+            logger.debug(f"[{getattr(self, 'name', 'ccxt')}] Market data for '{symbol}' retrieved from cache")
+            return cached_market_data
+
+        # Step 3: Fallback - Safe default values
+        logger.warning(
+            f"[{getattr(self, 'name', 'ccxt')}] No market data found for '{symbol}'. "
+            f"Using fallback values (no markets loaded or symbol not in cache)"
+        )
+        
+        # Extract base and quote from symbol
+        try:
+            clean_symbol = symbol.split(':')[0]  # Remove perpetual suffix
+            if '/' in clean_symbol:
+                base, quote = clean_symbol.split('/')
+            elif '-' in clean_symbol:
+                base, quote = clean_symbol.split('-')
+            else:
+                # Try to extract from common patterns like BTCUSDT
+                # Look for USDT, BUSD, USD at the end
+                if clean_symbol.endswith('USDT'):
+                    base = clean_symbol[:-4]  # Remove USDT
+                    quote = 'USDT'
+                elif clean_symbol.endswith('BUSD'):
+                    base = clean_symbol[:-4]  # Remove BUSD
+                    quote = 'BUSD'
+                elif clean_symbol.endswith('USD'):
+                    base = clean_symbol[:-3]  # Remove USD
+                    quote = 'USD'
+                else:
+                    # Can't parse - use as base with USDT quote
+                    base = clean_symbol
+                    quote = 'USDT'
+        except Exception:
+            base, quote = symbol, 'USDT'
+
+        # Safe fallback market structure
+        fallback_market = {
+            'id': f"{base}-{quote}",
+            'symbol': f"{base}/{quote}",
+            'base': base.upper(),
+            'quote': quote.upper(),
+            'active': True,
+            'type': 'swap',  # For perpetual futures
+            'spot': False,
+            'future': True,
+            'swap': True,
+            'option': False,
+            'contract': True,
+            'contractSize': 1,
+            'precision': {
+                'amount': 6,  # 6 decimal places precision
+                'price': 2    # 2 decimal places for price
+            },
+            'limits': {
+                'amount': {'min': 0.000001, 'max': 1000000},
+                'price': {'min': 0.000001, 'max': None},
+                'cost': {'min': 5, 'max': None},  # Min 5 USDT
+                'leverage': {'min': 1, 'max': 125}
+            },
+            'info': {
+                'source': 'fallback',
+                'note': 'Generated safe defaults - no market data was loaded',
+                'timestamp': self.timestamp()
+            }
+        }
+        
+        logger.info(f"Using fallback market structure for {symbol}: min_cost=${fallback_market['limits']['cost']['min']}")
+        return fallback_market
+
+    def timestamp(self) -> int:
+        """Return current timestamp in milliseconds"""
+        return int(time.time() * 1000)
+
     # --- NIHAI DÜZELTME: Güvenli async/sync çağrı mantığı eklendi ---
     async def check_api_health(self) -> Dict[str, Any]:
         """
