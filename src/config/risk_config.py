@@ -74,10 +74,17 @@ class RiskConfiguration:
         'correlation_spike': 'close_correlated_positions'
     }
     
-    def __init__(self, custom_limits: Dict[str, Any] = None):
+    def __init__(self, custom_limits: Dict[str, Any] = None, initial_capital: float = None):
         """
         Initialize risk configuration with support for dynamic values.
+        
+        Args:
+            custom_limits: Configuration dictionary from YAML/ENV
+            initial_capital: Trading capital for USD calculations
         """
+        # Store capital for USD calculations
+        self.initial_capital = initial_capital or (custom_limits.get('equity_usd', 100.0) if custom_limits else 100.0)
+        
         # Process each limit with sentinel value awareness
         processed_limits = {}
         
@@ -112,6 +119,69 @@ class RiskConfiguration:
         
         # Load dynamic R/R configuration
         self._load_dynamic_rr_config(custom_limits)
+        
+        # NEW: Calculate USD amounts after loading risk limits
+        self._calculate_usd_amounts(custom_limits)
+    
+    def _calculate_usd_amounts(self, custom_limits: Dict[str, Any] = None):
+        """Calculate USD amounts based on percentages and capital."""
+        # Read ENV overrides for critical risk parameters
+        # Convert from percentage (e.g., 1.0 for 1%) to decimal (0.01)
+        
+        # Get default per_trade_risk value from config or risk limits
+        default_per_trade_risk = (
+            custom_limits.get('per_trade_risk_pct', self.risk_limits.max_portfolio_risk) 
+            if custom_limits 
+            else self.risk_limits.max_portfolio_risk
+        )
+        per_trade_risk_pct = self._get_env_or_config(
+            'PER_TRADE_RISK_PCT', 
+            default_per_trade_risk * 100,  # Convert to percentage
+            float
+        )
+        
+        # Get default daily_loss_limit value from config or circuit breaker limits
+        default_daily_loss = (
+            custom_limits.get('daily_loss_limit_pct', self.circuit_breaker_limits.daily_loss_limit)
+            if custom_limits 
+            else self.circuit_breaker_limits.daily_loss_limit
+        )
+        daily_loss_limit_pct = self._get_env_or_config(
+            'DAILY_LOSS_LIMIT_PCT',
+            default_daily_loss * 100,  # Convert to percentage
+            float
+        )
+        
+        # Calculate USD amounts
+        self.max_risk_per_trade_usd = self.initial_capital * (per_trade_risk_pct / 100)
+        self.daily_loss_limit_usd = self.initial_capital * (daily_loss_limit_pct / 100)
+        self.max_drawdown_usd = self.initial_capital * self.risk_limits.max_drawdown
+        
+        # Update circuit breaker with USD values
+        self.circuit_breaker_limits_usd = {
+            'daily_loss_limit': self.daily_loss_limit_usd,
+            'position_loss_limit': self.initial_capital * self.circuit_breaker_limits.position_loss_limit,
+            'max_drawdown': self.max_drawdown_usd
+        }
+        
+        logger.info(f"""
+===== RISK USD AMOUNTS CALCULATED =====
+Capital: ${self.initial_capital:.2f}
+Per-Trade Risk: {per_trade_risk_pct}% = ${self.max_risk_per_trade_usd:.2f}
+Daily Loss Limit: {daily_loss_limit_pct}% = ${self.daily_loss_limit_usd:.2f}
+Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
+=======================================
+""")
+    
+    def get_risk_params_for_sizing(self) -> Dict:
+        """Get risk parameters with USD amounts for position sizing."""
+        return {
+            'max_risk_per_trade': self.risk_limits.max_portfolio_risk,
+            'max_risk_amount': self.max_risk_per_trade_usd,  # USD amount
+            'daily_loss_limit': self.daily_loss_limit_usd,    # USD amount
+            'circuit_breaker_limits': self.circuit_breaker_limits_usd,  # USD amounts
+            'initial_capital': self.initial_capital
+        }
     
     def get_risk_limits(self) -> RiskLimits:
         """Get current risk limits."""
