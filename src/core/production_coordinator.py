@@ -979,8 +979,7 @@ class ProductionCoordinator:
     async def _initialize_ml_components(self, price_engine: Optional[Any] = None, regime_predictor: Optional[Any] = None) -> Dict[str, Any]:
         """
         Initialize and connect ALL ML components from src/ml/.
-        This method now instantiates components directly using the central, environment-aware config.
-        (GÜNCELLENDİ ve KESİN ÇÖZÜM)
+        (YENİ YAPIYA UYGUN HALE GETİRİLDİ)
         """
         logger.info("🧠 [ML-INIT] Initializing ML system...")
         ml_components = []
@@ -1002,7 +1001,7 @@ class ProductionCoordinator:
 
         # 1. Özellik Mühendisliği Pijaması (Feature Engineering Pipeline)
         try:
-            # Bu bileşen, kendi alt konfigürasyonunu ('features') kullanır
+            # Bu bileşen, 'features' alt bloğunu kullanır
             self.feature_pipeline = FeatureEngineeringPipeline(config=ml_config.get('features', {}))
             ml_components.append('feature_pipeline')
             logger.info("✅ Feature engineering pipeline initialized.")
@@ -1011,14 +1010,14 @@ class ProductionCoordinator:
             return {'success': False, 'reason': 'Failed to initialize FeatureEngineeringPipeline'}
 
         # 2. Fiyat Tahmin Motoru (Price Prediction Engine)
-        if ml_config.get('prediction', {}).get('enabled', True):
+        # ✔️ DÜZELTME: Bu bileşene artık sadece 'price_prediction' alt bloğu verilir.
+        price_pred_config = ml_config.get('price_prediction', {})
+        if price_pred_config.get('enabled', True):
             try:
-                # ✔️ DÜZELTME: Motora, sadece 'prediction' alt bloğunu değil, 'ml_config'in tamamını veriyoruz.
-                # Motor, kendi içinde hem 'prediction' bloğunu hem de 'models', 'feature_size' gibi üst seviye anahtarları okuyabilir.
                 self.price_engine = AdvancedPricePredictionEngine(
                     market_data_pipeline=self.market_data_pipeline,
                     feature_pipeline=self.feature_pipeline,
-                    config=ml_config  # <-- HATA 1 İÇİN DÜZELTME
+                    config=price_pred_config  # <-- DEĞİŞİKLİK BURADA
                 )
                 ml_components.append('price_engine')
                 logger.info("✅ Price prediction engine initialized.")
@@ -1030,12 +1029,13 @@ class ProductionCoordinator:
             logger.info("ℹ️ Price prediction is disabled in config.")
 
         # 3. Rejim Tahmincisi (Regime Predictor)
-        if ml_config.get('prediction', {}).get('enabled', True):
+        # ✔️ DÜZELTME: Bu bileşene artık sadece 'regime_prediction' alt bloğu verilir.
+        regime_pred_config = ml_config.get('regime_prediction', {})
+        if regime_pred_config.get('enabled', True):
             try:
-                # ✔️ DÜZELTME: Bu bileşene de tam 'ml_config' verilir.
                 self.regime_predictor = MLRegimePredictor(
                     feature_pipeline=self.feature_pipeline,
-                    config=ml_config # <-- HATA 2 İÇİN DÜZELTME
+                    config=regime_pred_config  # <-- DEĞİŞİKLİK BURADA
                 )
                 ml_components.append('regime_predictor')
                 logger.info("✅ Regime predictor initialized.")
@@ -1047,18 +1047,15 @@ class ProductionCoordinator:
             logger.info("ℹ️ Regime prediction is disabled in config.")
 
         # 4. Pekiştirmeli Öğrenme Ajanı (Reinforcement Learning Agent)
+        # ✔️ DÜZELTME: Bu bileşene artık sadece 'reinforcement_learning' alt bloğu verilir.
         rl_config = ml_config.get('reinforcement_learning', {})
         if rl_config.get('enabled', True):
             try:
-                # state_size, 'features' bloğundan veya ana 'ml' bloğundan gelebilir. Şimdilik sabit.
-                state_size = ml_config.get('feature_size', 42)
-                
-                # ✔️ DÜZELTME: Ajan'a, sadece kendi alt bloğunu değil, tam 'ml_config' verilir.
-                # Bu, ajanın gelecekte diğer ML bileşenlerinin çıktılarına göre hareket etmesini sağlar.
+                state_size = ml_config.get('features', {}).get('feature_size', 42) # Ortak özellik boyutu
                 self.rl_agent = TradingRLAgent(
-                    state_size=state_size, 
-                    action_size=3, 
-                    config=ml_config  # <-- HATA 3 İÇİN DÜZELTME
+                    state_size=state_size,
+                    action_size=3,
+                    config=rl_config  # <-- DEĞİŞİKLİK BURADA
                 )
                 model_path = self.config.get('model_path', 'data/models')
                 self.rl_agent.load_model(os.path.join(model_path, "rl_agent_final.pth"))
