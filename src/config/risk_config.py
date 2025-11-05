@@ -127,15 +127,28 @@ class RiskConfiguration:
         """Calculate USD amounts based on percentages and capital."""
         # Read ENV overrides for critical risk parameters
         # Convert from percentage (e.g., 1.0 for 1%) to decimal (0.01)
+        
+        # Get default per_trade_risk value from config or risk limits
+        default_per_trade_risk = (
+            custom_limits.get('per_trade_risk_pct', self.risk_limits.max_portfolio_risk) 
+            if custom_limits 
+            else self.risk_limits.max_portfolio_risk
+        )
         per_trade_risk_pct = self._get_env_or_config(
             'PER_TRADE_RISK_PCT', 
-            (custom_limits.get('per_trade_risk_pct', self.risk_limits.max_portfolio_risk) if custom_limits else self.risk_limits.max_portfolio_risk) * 100, 
+            default_per_trade_risk * 100,  # Convert to percentage
             float
         )
         
+        # Get default daily_loss_limit value from config or circuit breaker limits
+        default_daily_loss = (
+            custom_limits.get('daily_loss_limit_pct', self.circuit_breaker_limits.daily_loss_limit)
+            if custom_limits 
+            else self.circuit_breaker_limits.daily_loss_limit
+        )
         daily_loss_limit_pct = self._get_env_or_config(
             'DAILY_LOSS_LIMIT_PCT',
-            (custom_limits.get('daily_loss_limit_pct', self.circuit_breaker_limits.daily_loss_limit) if custom_limits else self.circuit_breaker_limits.daily_loss_limit) * 100,
+            default_daily_loss * 100,  # Convert to percentage
             float
         )
         

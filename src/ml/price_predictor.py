@@ -601,11 +601,17 @@ class AdvancedPricePredictionEngine:
 
     def get_status_summary(self) -> str:
         """Get human-readable status for logging."""
+        # Safely get timeframes list
+        timeframes = []
+        if hasattr(self, 'predictor') and hasattr(self.predictor, 'models'):
+            try:
+                timeframes = list(self.predictor.models.keys())
+            except (AttributeError, TypeError):
+                pass
+        
         if self.is_trained:
-            loaded_timeframes = list(self.predictor.models.keys()) if hasattr(self.predictor, 'models') else []
-            return f"ML Mode - {len(loaded_timeframes)} models loaded: {sorted(loaded_timeframes)}"
+            return f"ML Mode - {len(timeframes)} models loaded: {sorted(timeframes)}"
         else:
-            timeframes = list(self.predictor.models.keys()) if hasattr(self.predictor, 'models') else []
             return f"FALLBACK Mode - No trained models (configured for: {timeframes})"
     
     def has_model_for(self, symbol: str) -> bool:

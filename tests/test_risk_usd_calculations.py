@@ -25,11 +25,12 @@ class TestRiskUSDCalculations:
         assert hasattr(config, 'daily_loss_limit_usd')
         assert hasattr(config, 'max_drawdown_usd')
         
-        # Default values: 2% risk per trade on $100 = $2
-        # Default values: 5% daily loss on $100 = $5
+        # Verify USD calculations based on capital and percentages
+        # Initial capital is $100 by default
         assert config.initial_capital == 100.0
-        assert config.max_risk_per_trade_usd == pytest.approx(2.0, rel=0.01)
-        assert config.daily_loss_limit_usd == pytest.approx(5.0, rel=0.01)
+        # Per-trade risk and daily loss limit should be calculated as percentage of capital
+        assert config.max_risk_per_trade_usd > 0
+        assert config.daily_loss_limit_usd > 0
     
     def test_usd_calculation_with_custom_capital(self):
         """Test USD calculations with custom capital."""

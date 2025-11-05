@@ -243,10 +243,10 @@ class TestPricePredictorLoggingWithMockedModels:
                 
                 # Should NOT have FALLBACK warning
                 log_messages = [record.message for record in caplog.records]
-                fallback_warnings = [msg for msg in log_messages if 'FALLBACK mode' in msg and 'warning' in record.levelname.lower() for record in caplog.records]
                 # In ML mode, we shouldn't have fallback warnings
                 if engine.is_trained:
-                    assert len([msg for msg in log_messages if 'FALLBACK mode' in msg]) == 0
+                    fallback_logs = [msg for msg in log_messages if 'FALLBACK mode' in msg]
+                    assert len(fallback_logs) == 0, f"Expected no FALLBACK logs in ML mode, but found: {fallback_logs}"
 
 
 if __name__ == '__main__':
