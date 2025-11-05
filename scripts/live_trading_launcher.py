@@ -1000,9 +1000,9 @@ class LiveTradingLauncher:
         # CRITICAL FIX: Remove max_notional_per_trade from max_position_size mapping
         key_mappings = {
             'max_position_size': ['max_position_size_pct'],  # FIXED: Removed 'max_notional_per_trade'
-            'stop_loss_pct': ['stop_loss', 'stop_loss_multiplier'],  # FIXED: Removed 'min_stop_pct' 
-            'take_profit_pct': ['take_profit', 'take_profit_ratio'],  # FIXED: Removed 'min_tp_pct'
-            'min_stop_pct': ['min_stop_pct'],  # Separate parameter
+            'stop_loss_pct': ['stop_loss', 'stop_loss_multiplier'],  # Separated from min_stop_pct 
+            'take_profit_pct': ['take_profit', 'take_profit_ratio'],  # Separated from min_tp_pct
+            'min_stop_pct': ['min_stop_pct'],  # Now a separate parameter (not merged with stop_loss_pct)
             'risk_per_trade': ['per_trade_risk_pct'],
             'max_drawdown': ['daily_loss_limit_pct', 'max_daily_loss'],
             # NEW mappings for dynamic sizing

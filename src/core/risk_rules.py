@@ -17,6 +17,41 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _get_portfolio_value(portfolio_manager, signal, default=100):
+    """
+    Helper to get portfolio value from either portfolio_manager object or fallback to signal.
+    Provides backward compatibility for tests that pass dicts instead of objects.
+    
+    Args:
+        portfolio_manager: PortfolioManager instance or dict
+        signal: Trading signal with potential fallback values
+        default: Default value if not found anywhere
+        
+    Returns:
+        float: Portfolio value
+    """
+    if isinstance(portfolio_manager, dict) or not hasattr(portfolio_manager, 'get_current_equity'):
+        return signal.get('portfolio_value', default)
+    return portfolio_manager.get_current_equity()
+
+
+def _get_portfolio_exposure(portfolio_manager, signal, default=0):
+    """
+    Helper to get portfolio exposure from either portfolio_manager object or fallback to signal.
+    
+    Args:
+        portfolio_manager: PortfolioManager instance or dict
+        signal: Trading signal with potential fallback values
+        default: Default value if not found anywhere
+        
+    Returns:
+        float: Current portfolio exposure
+    """
+    if isinstance(portfolio_manager, dict) or not hasattr(portfolio_manager, 'get_total_exposure'):
+        return signal.get('current_exposure', default)
+    return portfolio_manager.get_total_exposure()
+
+
 class BaseRiskRule(ABC):
     """
     Abstract base class for all risk validation rules.
@@ -108,21 +143,11 @@ class CapitalLimitRule(BaseRiskRule):
                 entry_price = signal.get('entry', 0)
                 notional = position_size * entry_price
             
-            # Get portfolio state - handle both dict and object
-            # When portfolio_manager is a dict (backward compatibility for tests),
-            # we need to use risk_manager's internal tracking
-            if isinstance(portfolio_manager, dict) or not hasattr(portfolio_manager, 'get_current_equity'):
-                # Get risk metrics from signal (should be added by RiskManager before validation)
-                portfolio_value = signal.get('portfolio_value', 100)
-                current_exposure = signal.get('current_exposure', 0)
-                available = portfolio_value - current_exposure
-                logger.debug(f"[CapitalLimitRule] Using fallback: portfolio_value={portfolio_value}, current_exposure={current_exposure}, available={available}")
-            else:
-                # Normal case: portfolio_manager is a proper object
-                portfolio_value = portfolio_manager.get_current_equity()
-                current_exposure = portfolio_manager.get_total_exposure()
-                available = portfolio_value - current_exposure
-                logger.debug(f"[CapitalLimitRule] Using portfolio_manager: portfolio_value={portfolio_value}, current_exposure={current_exposure}, available={available}")
+            # Get portfolio state using helper functions
+            portfolio_value = _get_portfolio_value(portfolio_manager, signal)
+            current_exposure = _get_portfolio_exposure(portfolio_manager, signal)
+            available = portfolio_value - current_exposure
+            logger.debug(f"[CapitalLimitRule] portfolio_value={portfolio_value}, current_exposure={current_exposure}, available={available}")
             
             if notional <= 0:
                 return (False, f"Invalid notional value: {notional}")
@@ -188,11 +213,8 @@ class PositionSizeRule(BaseRiskRule):
             position_size = signal.get('position_size', 0)
             entry_price = signal.get('entry', 0)
             
-            # Handle both dict and object portfolio_manager
-            if isinstance(portfolio_manager, dict) or not hasattr(portfolio_manager, 'get_current_equity'):
-                portfolio_value = signal.get('portfolio_value', 100)
-            else:
-                portfolio_value = portfolio_manager.get_current_equity()
+            # Get portfolio value using helper function
+            portfolio_value = _get_portfolio_value(portfolio_manager, signal)
                 
             position_value = position_size * entry_price
             max_position_value = portfolio_value * self.max_position_size
@@ -258,12 +280,13 @@ class PortfolioHeatRule(BaseRiskRule):
             if not stop_loss:
                 stop_loss = self._calculate_stop_loss(signal, entry_price)
             
-            # Handle both dict and object portfolio_manager
-            if isinstance(portfolio_manager, dict) or not hasattr(portfolio_manager, 'get_current_equity'):
-                portfolio_value = signal.get('portfolio_value', 100)
+            # Get portfolio value using helper function
+            portfolio_value = _get_portfolio_value(portfolio_manager, signal)
+            
+            # Get active positions (empty dict for test compatibility)
+            if isinstance(portfolio_manager, dict) or not hasattr(portfolio_manager, 'get_open_positions'):
                 active_positions = {}
             else:
-                portfolio_value = portfolio_manager.get_current_equity()
                 active_positions = portfolio_manager.get_open_positions()
             
             # Calculate risk for this position
@@ -357,7 +380,7 @@ class MaxDrawdownRule(BaseRiskRule):
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
             
-            # Handle both dict and object portfolio_manager
+            # Get current drawdown (with fallback for test compatibility)
             if isinstance(portfolio_manager, dict) or not hasattr(portfolio_manager, 'get_current_drawdown'):
                 current_drawdown = signal.get('current_drawdown', 0)
             else:

@@ -255,7 +255,11 @@ class AdvancedPositionSizing:
             if entry_price > 0 and stop_loss > 0:
                 stop_pct = abs(entry_price - stop_loss) / entry_price
             else:
-                logger.warning(f"[SIZING] Missing price data for {symbol}")
+                logger.warning(f"[SIZING] Missing price data for {symbol}, cannot calculate position size")
+                # Return signal with zero position to indicate sizing failure
+                signal['amount'] = 0
+                signal['notional'] = 0
+                signal['position_size'] = 0
                 return signal
             
             # Get portfolio state from RiskManager
@@ -263,7 +267,11 @@ class AdvancedPositionSizing:
             capital = float(portfolio.get('portfolio_value', 0))
             
             if capital <= 0:
-                logger.error(f"[SIZING] Invalid capital: {capital}")
+                logger.error(f"[SIZING] Invalid capital: {capital}, cannot calculate position size")
+                # Return signal with zero position to indicate sizing failure
+                signal['amount'] = 0
+                signal['notional'] = 0
+                signal['position_size'] = 0
                 return signal
             
             # Get configuration (use config from risk_manager)
