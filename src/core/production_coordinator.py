@@ -976,16 +976,17 @@ class ProductionCoordinator:
             'timestamp': datetime.now(timezone.utc)
         }
     
-    # --- DEĞİŞİKLİK 3: ML bileşenlerini `self.config`'den okunan değerlerle başlat ---
     async def _initialize_ml_components(self, price_engine: Optional[Any] = None, regime_predictor: Optional[Any] = None) -> Dict[str, Any]:
         """
         Initialize and connect ALL ML components from src/ml/.
         This method now instantiates components directly using the central, environment-aware config.
+        (GÜNCELLENDİ ve KESİN ÇÖZÜM)
         """
         logger.info("🧠 [ML-INIT] Initializing ML system...")
         ml_components = []
 
         try:
+            # Gerekli ML modüllerini import et
             from ml.feature_engineering import FeatureEngineeringPipeline
             from ml.price_predictor import AdvancedPricePredictionEngine
             from ml.regime_predictor import MLRegimePredictor
@@ -996,11 +997,12 @@ class ProductionCoordinator:
             logger.error(f"🧠 [ML-INIT] Critical ML modules not found: {e}", exc_info=True)
             return {'success': False, 'reason': f'ML modules not available: {e}'}
 
-        # BU `self.config` ARTIK ORTAM DEĞİŞKENLERİNİ İÇERİYOR!
+        # Ana konfigürasyondan 'ml' bloğunu al
         ml_config = self.config.get('ml', {})
 
-        # 1. Feature Engineering Pipeline (Dependency for other components)
+        # 1. Özellik Mühendisliği Pijaması (Feature Engineering Pipeline)
         try:
+            # Bu bileşen, kendi alt konfigürasyonunu ('features') kullanır
             self.feature_pipeline = FeatureEngineeringPipeline(config=ml_config.get('features', {}))
             ml_components.append('feature_pipeline')
             logger.info("✅ Feature engineering pipeline initialized.")
@@ -1008,13 +1010,15 @@ class ProductionCoordinator:
             logger.error(f"❌ Failed to initialize FeatureEngineeringPipeline: {e}", exc_info=True)
             return {'success': False, 'reason': 'Failed to initialize FeatureEngineeringPipeline'}
 
-        # 2. Price Prediction Engine
+        # 2. Fiyat Tahmin Motoru (Price Prediction Engine)
         if ml_config.get('prediction', {}).get('enabled', True):
             try:
+                # ✔️ DÜZELTME: Motora, sadece 'prediction' alt bloğunu değil, 'ml_config'in tamamını veriyoruz.
+                # Motor, kendi içinde hem 'prediction' bloğunu hem de 'models', 'feature_size' gibi üst seviye anahtarları okuyabilir.
                 self.price_engine = AdvancedPricePredictionEngine(
                     market_data_pipeline=self.market_data_pipeline,
                     feature_pipeline=self.feature_pipeline,
-                    config=ml_config.get('prediction', {})
+                    config=ml_config  # <-- HATA 1 İÇİN DÜZELTME
                 )
                 ml_components.append('price_engine')
                 logger.info("✅ Price prediction engine initialized.")
@@ -1025,12 +1029,13 @@ class ProductionCoordinator:
             self.price_engine = None
             logger.info("ℹ️ Price prediction is disabled in config.")
 
-        # 3. Regime Predictor
+        # 3. Rejim Tahmincisi (Regime Predictor)
         if ml_config.get('prediction', {}).get('enabled', True):
             try:
+                # ✔️ DÜZELTME: Bu bileşene de tam 'ml_config' verilir.
                 self.regime_predictor = MLRegimePredictor(
                     feature_pipeline=self.feature_pipeline,
-                    config=ml_config.get('prediction', {})
+                    config=ml_config # <-- HATA 2 İÇİN DÜZELTME
                 )
                 ml_components.append('regime_predictor')
                 logger.info("✅ Regime predictor initialized.")
@@ -1041,23 +1046,24 @@ class ProductionCoordinator:
             self.regime_predictor = None
             logger.info("ℹ️ Regime prediction is disabled in config.")
 
-        # 4. Reinforcement Learning Agent (ANA DÜZELTME)
+        # 4. Pekiştirmeli Öğrenme Ajanı (Reinforcement Learning Agent)
         rl_config = ml_config.get('reinforcement_learning', {})
         if rl_config.get('enabled', True):
             try:
-                state_size = 42
-                # TradingRLAgent'ı, ortam değişkenlerini de içeren `rl_config` ile başlat.
-                # TradingRLAgent'ın __init__ metodu bu config'i alıp kendi içinde işleyecek şekilde tasarlandı.
+                # state_size, 'features' bloğundan veya ana 'ml' bloğundan gelebilir. Şimdilik sabit.
+                state_size = ml_config.get('feature_size', 42)
+                
+                # ✔️ DÜZELTME: Ajan'a, sadece kendi alt bloğunu değil, tam 'ml_config' verilir.
+                # Bu, ajanın gelecekte diğer ML bileşenlerinin çıktılarına göre hareket etmesini sağlar.
                 self.rl_agent = TradingRLAgent(
                     state_size=state_size, 
                     action_size=3, 
-                    config=rl_config  # <-- İşte kilit nokta burası!
+                    config=ml_config  # <-- HATA 3 İÇİN DÜZELTME
                 )
                 model_path = self.config.get('model_path', 'data/models')
                 self.rl_agent.load_model(os.path.join(model_path, "rl_agent_final.pth"))
                 ml_components.append('rl_agent')
                 logger.info("✅ Reinforcement learning agent initialized.")
-                # Başlatma sırasında hangi hold_threshold değerinin kullanıldığını loglayalım.
                 logger.info(f"   - RL Agent using hold_confidence_threshold: {self.rl_agent.hold_confidence_threshold}")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Reinforcement Learning Agent: {e}", exc_info=True)
@@ -1066,13 +1072,13 @@ class ProductionCoordinator:
             self.rl_agent = None
             logger.info("ℹ️ Reinforcement Learning is disabled in config.")
 
-        # 5. ML Strategy Integration Manager (DOĞRU VERSİYON)
+        # 5. ML Strateji Entegrasyon Yöneticisi
         try:
-            # Merkezi config'i direkt geç - alt bileşenler kendi ihtiyaçlarını alacak
+            # ✔️ DÜZELTME: Bu yöneticiye de tam 'ml_config' verilir.
             self.ml_integration = MLStrategyIntegrationManager(
                 price_engine=self.price_engine,
                 regime_predictor=self.regime_predictor,
-                config=ml_config,  # ✅ Tüm ML config burada
+                config=ml_config,
                 market_data_pipeline=self.market_data_pipeline
             )
             ml_components.append('ml_integration')
@@ -1081,7 +1087,7 @@ class ProductionCoordinator:
             logger.error(f"❌ Failed to initialize ML Strategy Integration Manager: {e}", exc_info=True)
             self.ml_integration = None
         
-        # 6. Connect components to other parts of the system
+        # 6. Bileşenleri sistemin diğer parçalarına bağla
         if self.strategy_coordinator:
             self.strategy_coordinator.ml_integration = self.ml_integration
             self.strategy_coordinator.feature_pipeline = self.feature_pipeline
