@@ -308,25 +308,56 @@ class AdaptiveShortTheRip(ShortTheRip):
             tp_atr_mult = float(self.strategy_config.get("tp_atr_mult", 3.0))
             sl_atr_mult = float(self.strategy_config.get("sl_atr_mult", 1.5))
             
-            target_price = entry_price - (atr_value * tp_atr_mult)
-            stop_price = entry_price + (atr_value * sl_atr_mult)
+            # Calculate theoretical ATR-based levels
+            theoretical_sl_distance = atr_value * sl_atr_mult
+            theoretical_tp_distance = atr_value * tp_atr_mult
+            
+            theoretical_sl_pct = theoretical_sl_distance / entry_price
+            theoretical_tp_pct = theoretical_tp_distance / entry_price
             
             min_tp_pct = float(self.strategy_config.get("min_tp_pct", 0.010))
             max_sl_pct = float(self.strategy_config.get("max_sl_pct", 0.020))
             
-            target_price = min(target_price, entry_price * (1 - min_tp_pct))
-            stop_price = max(stop_price, entry_price * (1 + max_sl_pct))
+            # Apply stop-loss cap CORRECTLY and realign TP if needed
+            if theoretical_sl_pct > max_sl_pct:
+                # Risk needs capping
+                logger.info(f"📊 {log_prefix} [SL Cap Applied] {theoretical_sl_pct:.1%} → {max_sl_pct:.1%}")
+                actual_sl_pct = max_sl_pct
+                actual_sl_distance = entry_price * actual_sl_pct
+                
+                # CRITICAL - Realign TP to maintain intended R/R ratio
+                intended_rr = tp_atr_mult / sl_atr_mult  # e.g., 3.0/1.5 = 2.0
+                adjusted_tp_distance = actual_sl_distance * intended_rr
+                actual_tp_pct = adjusted_tp_distance / entry_price
+                
+                logger.info(f"📊 {log_prefix} [TP Realigned] Maintaining R/R={intended_rr:.2f}")
+            else:
+                # No capping needed
+                actual_sl_pct = theoretical_sl_pct
+                actual_tp_pct = theoretical_tp_pct
             
+            # SHORT: Stop is ABOVE entry
+            stop_price = entry_price * (1 + actual_sl_pct)
+            
+            # ✅ CRITICAL FIX: Use min() for SHORT to prevent stop going too high
+            stop_price = min(stop_price, entry_price * (1 + max_sl_pct))
+            
+            # SHORT: Target is BELOW entry
+            target_price = entry_price * (1 - actual_tp_pct)
+            target_price = min(target_price, entry_price * (1 - min_tp_pct))
+            
+            # Calculate final R/R
             risk_amount = stop_price - entry_price
             reward_amount = entry_price - target_price
             rr_ratio = (reward_amount / risk_amount) if risk_amount > 0 else float('inf')
 
-            if self.debug_logging:
-                logger.info(
-                    f"🔍 {log_prefix} R/R Calculation: "
-                    f"Entry={entry_price:.2f}, TP={target_price:.2f}, SL={stop_price:.2f} | "
-                    f"Reward=${reward_amount:.2f}, Risk=${risk_amount:.2f} -> R/R={rr_ratio:.2f}"
-                )    
+            # Enhanced logging with R/R details
+            logger.info(
+                f"🔎 {log_prefix} [STR R/R] SHORT Entry=${entry_price:.2f}, "
+                f"Stop=${stop_price:.2f} (+{actual_sl_pct:.1%}), "
+                f"Target=${target_price:.2f} (-{actual_tp_pct:.1%}), "
+                f"R/R={rr_ratio:.2f}"
+            )    
 
             # 3. R/R Ratio Check
             # 🔥 GÜNCELLEME: R/R kontrolü artık __init__ içinde ayarlanan `self.min_rr_ratio` özelliğini kullanıyor.
