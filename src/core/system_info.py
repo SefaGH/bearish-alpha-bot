@@ -516,20 +516,26 @@ def format_startup_header(
     # Max position size
     max_position_size = risk_params.get('max_position_size', 0.2)
     max_position_usdt = capital * max_position_size
-    lines.append(f"│ Max Position Size:      │ {(max_position * 100 if max_position else 'Dynamic'):<43} │")
+    lines.append(f"Max Position Size:      {max_position_size * 100:.1f}% ({max_position_usdt:.2f} USDT)")
     
-    # Risk per trade (use max_position_size if risk_per_trade not specified)
-    risk_per_trade = risk_params.get('risk_per_trade', max_position_size * 0.25)
+    # Risk per trade
+    risk_per_trade = risk_params.get('risk_per_trade', 0.05)
     risk_per_trade_usdt = capital * risk_per_trade
     lines.append(f"Risk Per Trade:         {risk_per_trade * 100:.1f}% ({risk_per_trade_usdt:.2f} USDT max risk)")
     
     # Stop loss
-    stop_loss = risk_params.get('stop_loss_pct')  # None olabilir
-    lines.append(f"│ Stop Loss:              │ {(f'{stop_loss * 100:.1f}%' if stop_loss else 'Dynamic (ATR-based)'):<43} │")
+    stop_loss = risk_params.get('stop_loss_pct')
+    if stop_loss is not None:
+        lines.append(f"Stop Loss:              {stop_loss * 100:.1f}%")
+    else:
+        lines.append(f"Stop Loss:              Dynamic (ATR-based)")
     
     # Take profit
-    take_profit = risk_params.get('take_profit_pct')  # None olabilir
-    lines.append(f"│ Take Profit:            │ {(f'{take_profit * 100:.1f}%' if take_profit else 'Dynamic (ATR-based)'):<43} │")
+    take_profit = risk_params.get('take_profit_pct')
+    if take_profit is not None:
+        lines.append(f"Take Profit:            {take_profit * 100:.1f}%")
+    else:
+        lines.append(f"Take Profit:            Dynamic (ATR-based)")
     
     # Max drawdown
     max_drawdown = risk_params.get('max_drawdown', 0.05)
