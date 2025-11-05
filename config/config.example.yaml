@@ -28,15 +28,27 @@ execution:
       "BTC/USDT:USDT": 10
 
 # ==============================================================================
-# RISK MANAGEMENT
+# RISK MANAGEMENT - ENHANCED POSITION SIZING
 # ==============================================================================
 risk:
+  # Existing parameters (keep these)
   equity_usd: 100                     # Override with: CAPITAL_USDT
   per_trade_risk_pct: 0.01            # Override with: PER_TRADE_RISK_PCT
   daily_loss_limit_pct: 0.02          # Override with: DAILY_LOSS_LIMIT_PCT
   risk_usd_cap: 5                     # Override with: RISK_USD_CAP
-  max_notional_per_trade: 20          # Override with: MAX_NOTIONAL_PER_TRADE
+  
+  # NEW: Dynamic position sizing parameters
+  max_position_size_pct: 0.20         # Override with: MAX_POSITION_SIZE_PCT
+  max_notional_pct_per_trade: 0.20    # Override with: MAX_NOTIONAL_PCT_PER_TRADE
+  max_margin_pct_per_trade: 0.20      # Override with: MAX_MARGIN_PCT_PER_TRADE
+  
+  # Safety limits
+  min_position_size_usd: 10           # Override with: MIN_POSITION_SIZE_USD
   min_stop_pct: 0.003                 # Override with: MIN_STOP_PCT
+  
+  # Deprecated - DO NOT USE (causes the bug)
+  # max_notional_per_trade: 20        # REMOVED - use max_notional_pct_per_trade instead
+  
   min_amount_behavior: skip
   min_notional_behavior: skip
   daily_max_trades: 5                 # Override with: DAILY_MAX_TRADES

@@ -786,34 +786,33 @@ class StrategyCoordinator:
                (side1 in short_sides and side2 in long_sides)
     
     async def _assess_signal_risk(self, signal: Dict) -> Dict[str, Any]:
-        """Assess risk for the signal using risk manager."""
+        """
+        UPDATED: Use AdvancedPositionSizing instead of risk_manager for sizing.
+        """
         try:
-            # DÜZELTME 1: Pozisyon boyutu hesaplamasına portfolio_manager'ı ekle.
-            # Bu, riskin portföyün GÜNCEL değerine göre ayarlanmasını sağlar.
-            position_size = await self.risk_manager.calculate_position_size(
-                signal, 
-                portfolio_manager=self.portfolio_manager
-            )
+            # Initialize position sizing if not already done
+            if not hasattr(self, 'position_sizing'):
+                from core.position_sizing import AdvancedPositionSizing
+                self.position_sizing = AdvancedPositionSizing(self.risk_manager)
+                logger.info("✅ AdvancedPositionSizing initialized in StrategyCoordinator")
             
-            if position_size <= 0:
+            # Calculate position size using the new module
+            sized_signal = await self.position_sizing.calculate_optimal_size(signal)
+            
+            # Check if sizing was successful
+            if sized_signal.get('amount', 0) <= 0:
                 return {
                     'acceptable': False,
                     'reason': 'Unable to calculate valid position size',
-                    'metrics': {}
+                    'metrics': sized_signal.get('sizing_meta', {})
                 }
             
-            # Add position size to signal
-            signal['position_size'] = position_size
-            
-            # DÜZELTME 2: Pozisyon doğrulamasına portfolio_manager'ı ekle.
-            # Bu, RiskManager'ın "fallback mode"a düşmesini engeller ve
-            # tüm risk kurallarının GERÇEK portföy verileriyle çalışmasını sağlar.
+            # NOW validate the sized position with risk rules
             is_valid, reason, risk_metrics = await self.risk_manager.validate_new_position(
-                signal, 
+                sized_signal,
                 portfolio_manager=self.portfolio_manager
             )
-            # =================================================================
-
+            
             if not is_valid:
                 return {
                     'acceptable': False,
@@ -821,15 +820,18 @@ class StrategyCoordinator:
                     'metrics': risk_metrics
                 }
             
+            # Add sizing metadata to risk metrics
+            risk_metrics['sizing_meta'] = sized_signal.get('sizing_meta', {})
+            
             return {
                 'acceptable': True,
-                'position_size': position_size,
+                'position_size': sized_signal['amount'],
+                'notional': sized_signal['notional'],
                 'metrics': risk_metrics
             }
             
         except Exception as e:
-            # Hata loglamasını daha detaylı hale getir.
-            logger.error(f"💥 Critical error during signal risk assessment: {e}", exc_info=True)
+            logger.error(f"Error in risk assessment: {e}", exc_info=True)
             return {
                 'acceptable': False,
                 'reason': f"Risk assessment error: {str(e)}",

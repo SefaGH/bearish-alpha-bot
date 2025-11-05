@@ -72,6 +72,10 @@ class CapitalLimitRule(BaseRiskRule):
     """
     Validates that total portfolio exposure does not exceed available capital.
     
+    UPDATED: Now supports margin-based validation for futures.
+    - Spot (leverage=1): Compare notional to available capital
+    - Futures (leverage>1): Compare required margin to available capital
+    
     This is the fundamental capital preservation rule - ensures we cannot
     allocate more capital than we have available.
     """
@@ -81,10 +85,10 @@ class CapitalLimitRule(BaseRiskRule):
     
     def validate(self, signal: Dict, portfolio_manager) -> Tuple[bool, str]:
         """
-        Validate that new position won't exceed capital limit.
+        Validate capital requirements based on leverage.
         
         Args:
-            signal: Trading signal with position_size and entry price
+            signal: Trading signal with position_size, entry price, and leverage
             portfolio_manager: PortfolioManager instance
             
         Returns:
@@ -95,40 +99,43 @@ class CapitalLimitRule(BaseRiskRule):
         
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
-            position_size = signal.get('position_size', 0)
-            entry_price = signal.get('entry', 0)
+            notional = signal.get('notional', 0)
+            leverage = signal.get('leverage', 1)
             
-            portfolio_value = portfolio_manager.get_current_equity()
-            current_exposure = portfolio_manager.get_total_exposure()
+            # Fallback to old calculation if notional is not provided
+            if notional <= 0:
+                position_size = signal.get('position_size', 0)
+                entry_price = signal.get('entry', 0)
+                notional = position_size * entry_price
             
-            new_position_value = position_size * entry_price
-            projected_exposure = current_exposure + new_position_value
+            # Get portfolio state
+            portfolio = portfolio_manager.get_portfolio_summary()
+            available = portfolio.get('available_capital', portfolio.get('portfolio_value', 0))
             
-            if projected_exposure > portfolio_value:
-                over_limit = projected_exposure - portfolio_value
-                over_limit_pct = (over_limit / portfolio_value) * 100
+            if notional <= 0:
+                return (False, f"Invalid notional value: {notional}")
+            
+            # Spot trading (leverage = 1)
+            if leverage <= 1:
+                if notional > available:
+                    logger.warning(f"🚫 [CapitalLimitRule] REJECTED {symbol} (spot): ${notional:.2f} > ${available:.2f}")
+                    return (False, f"Spot position ${notional:.2f} exceeds available ${available:.2f}")
+                else:
+                    logger.info(f"✅ [CapitalLimitRule] PASSED {symbol} (spot): ${notional:.2f} <= ${available:.2f}")
+                    return (True, "Capital check passed (spot)")
+            
+            # Futures trading (leverage > 1)
+            required_margin = notional / leverage
+            
+            if required_margin > available:
+                logger.warning(f"🚫 [CapitalLimitRule] REJECTED {symbol} (futures): Margin ${required_margin:.2f} > ${available:.2f}")
+                return (False, f"Margin ${required_margin:.2f} exceeds available ${available:.2f}")
+            else:
+                logger.info(f"✅ [CapitalLimitRule] PASSED {symbol} (futures): Margin ${required_margin:.2f} <= ${available:.2f}")
+                return (True, f"Margin check passed (leverage {leverage}x)")
                 
-                logger.warning(f"🚫 [{self.rule_name}] REJECTED: {symbol}")
-                logger.warning(f"   Current Exposure: ${current_exposure:.2f}")
-                logger.warning(f"   New Position: ${new_position_value:.2f}")
-                logger.warning(f"   Projected Total: ${projected_exposure:.2f}")
-                logger.warning(f"   Capital Limit: ${portfolio_value:.2f}")
-                logger.warning(f"   Over Limit By: ${over_limit:.2f} ({over_limit_pct:.1f}%)")
-                
-                return (False, f"Portfolio exposure ${projected_exposure:.2f} would exceed capital limit ${portfolio_value:.2f}")
-            
-            available_capital = portfolio_value - current_exposure
-            remaining_after = available_capital - new_position_value
-            
-            logger.info(f"✅ [{self.rule_name}] PASSED: {symbol}")
-            logger.info(f"   Available Capital: ${available_capital:.2f}")
-            logger.info(f"   New Position: ${new_position_value:.2f}")
-            logger.info(f"   Remaining After: ${remaining_after:.2f}")
-            
-            return (True, f"Capital exposure within limits")
-            
         except Exception as e:
-            logger.error(f"[{self.rule_name}] Validation error: {e}")
+            logger.error(f"[CapitalLimitRule] Error: {e}", exc_info=True)
             return (False, f"Validation error: {str(e)}")
 
 

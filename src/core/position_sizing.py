@@ -227,72 +227,109 @@ class AdvancedPositionSizing:
             logger.error(f"Error in regime-based sizing: {e}")
             return 0.0
     
-    async def calculate_optimal_size(self, signal: Dict, method: str = 'kelly',
-                                    **kwargs) -> float:
+    async def calculate_optimal_size(self, signal: Dict, method: str = 'fixed_risk_capped') -> Dict:
         """
-        Calculate optimal position size using specified method.
+        Calculate position size with two-stage safety:
+        1. Risk-based calculation
+        2. Dynamic capital percentage caps
+        
+        This method enriches the signal with:
+        - amount: Position size in base currency
+        - notional: Position value in USDT
+        - sizing_meta: Detailed calculation metadata
         
         Args:
             signal: Trading signal with entry, stop, target, etc.
-            method: Sizing method ('kelly', 'fixed_risk', 'volatility_adjusted', 'regime_based')
-            **kwargs: Method-specific parameters
+            method: Sizing method (default: 'fixed_risk_capped')
             
         Returns:
-            Optimal position size
+            Enriched signal dictionary with position size and metadata
         """
         try:
-            if method not in self.sizing_methods:
-                logger.warning(f"Unknown sizing method '{method}', using fixed_risk")
-                method = 'fixed_risk'
+            # Get required parameters
+            symbol = signal.get('symbol', 'UNKNOWN')
+            entry_price = signal.get('entry', 0) or signal.get('entry_price', 0)
+            stop_loss = signal.get('stop', 0) or signal.get('stop_loss', 0)
             
-            sizing_func = self.sizing_methods[method]
-            
-            # Prepare parameters based on method
-            if method == 'kelly':
-                # Need performance history for Kelly
-                performance_history = kwargs.get('performance_history', {})
-                win_rate = performance_history.get('win_rate', 0.5)
-                avg_win = performance_history.get('avg_win', 50)
-                avg_loss = performance_history.get('avg_loss', 25)
-                portfolio_value = self.risk_manager.portfolio_value
-                
-                kelly_fraction = sizing_func(win_rate, avg_win, avg_loss, portfolio_value, **kwargs)
-                position_size = (kelly_fraction * portfolio_value) / signal.get('entry', 1)
-                
-            elif method == 'fixed_risk':
-                risk_per_trade = kwargs.get('risk_per_trade',
-                                           self.risk_manager.portfolio_value * 0.02)
-                position_size = sizing_func(risk_per_trade, signal.get('entry', 0),
-                                          signal.get('stop', 0))
-                
-            elif method == 'volatility_adjusted':
-                target_risk = kwargs.get('target_risk',
-                                        self.risk_manager.portfolio_value * 0.02)
-                market_volatility = kwargs.get('market_volatility', signal.get('atr', 1))
-                position_size = sizing_func(signal, market_volatility, target_risk, **kwargs)
-                
-            elif method == 'regime_based':
-                market_regime = kwargs.get('market_regime', {})
-                performance_history = kwargs.get('performance_history', {})
-                position_size = sizing_func(signal, market_regime, performance_history, **kwargs)
-            
+            # Calculate stop loss percentage
+            if entry_price > 0 and stop_loss > 0:
+                stop_pct = abs(entry_price - stop_loss) / entry_price
             else:
-                position_size = 0.0
+                logger.warning(f"[SIZING] Missing price data for {symbol}")
+                return signal
             
-            # Validate against risk limits
-            is_valid, reason, risk_metrics = await self.risk_manager.validate_new_position(
-                {**signal, 'position_size': position_size},
-                kwargs.get('current_portfolio', {})
-            )
+            # Get portfolio state from RiskManager
+            portfolio = self.risk_manager.get_portfolio_summary()
+            capital = float(portfolio.get('portfolio_value', 0))
             
-            if not is_valid:
-                logger.warning(f"Position size validation failed: {reason}")
-                # Try with reduced size
-                position_size *= 0.5
+            if capital <= 0:
+                logger.error(f"[SIZING] Invalid capital: {capital}")
+                return signal
             
-            logger.info(f"Optimal position size ({method}): {position_size:.4f}")
-            return position_size
+            # Get configuration (use config from risk_manager)
+            config = getattr(self.risk_manager, 'config', {})
+            
+            # Use configuration with GitHub Variables priority
+            risk_pct = float(config.get('per_trade_risk_pct', 0.01))
+            risk_cap = config.get('risk_usd_cap')
+            max_notional_pct = float(config.get('max_notional_pct_per_trade', 0.20))
+            max_margin_pct = float(config.get('max_margin_pct_per_trade', 0.20))
+            leverage = float(signal.get('leverage', config.get('leverage_default', 5)))
+            
+            # STAGE 1: Risk-based calculation
+            base_risk_usd = capital * risk_pct
+            if risk_cap:
+                base_risk_usd = min(base_risk_usd, float(risk_cap))
+            
+            risk_based_notional = base_risk_usd / stop_pct if stop_pct > 0 else 0
+            
+            # STAGE 2: Apply dynamic caps (percentage of capital)
+            exposure_cap = capital * max_notional_pct
+            margin_cap = capital * max_margin_pct * leverage  # For futures
+            
+            # Determine final cap
+            caps_to_apply = [exposure_cap, margin_cap]
+            final_cap = min(caps_to_apply)
+            
+            # Apply the cap
+            final_notional = min(risk_based_notional, final_cap)
+            
+            # Calculate position amount
+            amount = final_notional / entry_price if entry_price > 0 else 0
+            
+            # Create detailed metadata
+            sizing_meta = {
+                'method': method,
+                'capital': capital,
+                'risk_pct': risk_pct,
+                'stop_pct': stop_pct,
+                'calculations': {
+                    'base_risk_usd': base_risk_usd,
+                    'risk_based_notional': risk_based_notional,
+                    'exposure_cap': exposure_cap,
+                    'margin_cap': margin_cap,
+                    'final_notional': final_notional
+                },
+                'position_pct': (final_notional/capital)*100 if capital > 0 else 0,
+                'capped': risk_based_notional > final_cap
+            }
+            
+            # Log the calculation
+            logger.info(f"📊 [SIZING] {symbol}")
+            logger.info(f"   Capital: ${capital:.2f}")
+            logger.info(f"   Risk-based: ${risk_based_notional:.2f}")
+            logger.info(f"   Cap applied: ${final_cap:.2f}")
+            logger.info(f"   Final notional: ${final_notional:.2f} ({sizing_meta['position_pct']:.1f}% of capital)")
+            
+            # Enrich signal with calculated values
+            signal['amount'] = amount
+            signal['notional'] = final_notional
+            signal['position_size'] = amount  # Backward compatibility
+            signal['leverage'] = leverage
+            signal['sizing_meta'] = sizing_meta
+            
+            return signal
             
         except Exception as e:
-            logger.error(f"Error calculating optimal size: {e}")
-            return 0.0
+            logger.error(f"[SIZING] Error calculating size for {signal.get('symbol')}: {e}", exc_info=True)
+            return signal

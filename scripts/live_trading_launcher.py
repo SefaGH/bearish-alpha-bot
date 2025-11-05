@@ -997,12 +997,17 @@ class LiveTradingLauncher:
         logger.debug(f"Current RISK_PARAMS keys: {list(self.RISK_PARAMS.keys())}")
         
         # Map all possible variations to standard keys
+        # CRITICAL FIX: Remove max_notional_per_trade from max_position_size mapping
         key_mappings = {
-            'max_position_size': ['max_position_size_pct', 'max_notional_per_trade'],
-            'stop_loss_pct': ['stop_loss', 'min_stop_pct', 'stop_loss_multiplier'],
-            'take_profit_pct': ['take_profit', 'min_tp_pct', 'take_profit_ratio'],
-            'risk_per_trade': ['per_trade_risk_pct', 'risk_usd_cap'],
-            'max_drawdown': ['daily_loss_limit_pct', 'max_daily_loss']
+            'max_position_size': ['max_position_size_pct'],  # FIXED: Removed 'max_notional_per_trade'
+            'stop_loss_pct': ['stop_loss', 'stop_loss_multiplier'],  # FIXED: Removed 'min_stop_pct' 
+            'take_profit_pct': ['take_profit', 'take_profit_ratio'],  # FIXED: Removed 'min_tp_pct'
+            'min_stop_pct': ['min_stop_pct'],  # Separate parameter
+            'risk_per_trade': ['per_trade_risk_pct'],
+            'max_drawdown': ['daily_loss_limit_pct', 'max_daily_loss'],
+            # NEW mappings for dynamic sizing
+            'max_notional_pct': ['max_notional_pct_per_trade'],
+            'max_margin_pct': ['max_margin_pct_per_trade'],
         }
         
         # Check config if available
@@ -1063,6 +1068,14 @@ class LiveTradingLauncher:
                     self.RISK_PARAMS[standard_key] = self.DEFAULT_RISK_PARAMS[standard_key]
                     logger.warning(f"Risk param '{standard_key}' not found, using default: {self.DEFAULT_RISK_PARAMS[standard_key]}")
         
+        # CRITICAL: Add safety check for max_position_size
+        if 'max_position_size' in self.RISK_PARAMS and self.RISK_PARAMS['max_position_size'] is not None:
+            value = self.RISK_PARAMS['max_position_size']
+            if value > 1.0:
+                logger.warning(f"⚠️ max_position_size={value} > 1.0, converting to ratio")
+                self.RISK_PARAMS['max_position_size'] = min(value / 100.0, 0.20)  # Cap at 20%
+                logger.info(f"✅ Corrected max_position_size to {self.RISK_PARAMS['max_position_size']:.2%}")
+        
         # Validate risk parameter values (skip None values)
         for key, value in self.RISK_PARAMS.items():
             if value is None:
@@ -1073,7 +1086,7 @@ class LiveTradingLauncher:
                 if value < 0:
                     logger.error(f"Invalid risk param '{key}': {value} (negative value not allowed). Using default.")
                     self.RISK_PARAMS[key] = self.DEFAULT_RISK_PARAMS[key]
-                elif value > 1.0:
+                elif value > 1.0 and key != 'max_position_size':  # Skip max_position_size as we handle it above
                     logger.warning(f"Risk param '{key}': {value:.1%} (> 100%). This may be intentional for leverage.")
                 elif key == 'max_position_size' and value > 0.5:
                     logger.warning(f"Risk param 'max_position_size': {value:.1%} (> 50%). This is quite high.")
