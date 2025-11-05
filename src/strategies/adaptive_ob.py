@@ -343,6 +343,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
             stop_price = entry_price * (1 - actual_sl_pct)
             
             # ✅ CRITICAL FIX: Use max() for LONG positions to prevent stop going too low
+            # This safety net ensures we never exceed max_sl_pct even with rounding errors
+            # or edge cases in the logic above (defensive programming for financial systems)
             stop_price = max(stop_price, entry_price * (1 - max_sl_pct))
             
             target_price = entry_price * (1 + actual_tp_pct)

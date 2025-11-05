@@ -340,6 +340,8 @@ class AdaptiveShortTheRip(ShortTheRip):
             stop_price = entry_price * (1 + actual_sl_pct)
             
             # ✅ CRITICAL FIX: Use min() for SHORT to prevent stop going too high
+            # This safety net ensures we never exceed max_sl_pct even with rounding errors
+            # or edge cases in the logic above (defensive programming for financial systems)
             stop_price = min(stop_price, entry_price * (1 + max_sl_pct))
             
             # SHORT: Target is BELOW entry

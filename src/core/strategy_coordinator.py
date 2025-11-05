@@ -12,6 +12,13 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+# Constants for signal enrichment
+DEFAULT_RL_CONFIDENCE = 0.7  # Default confidence when RL agent doesn't provide it
+VOLUME_NORMALIZATION_MAX = 2.0  # Maximum volume ratio before normalization
+VOLUME_NORMALIZATION_DIVISOR = 2.0  # Divisor for volume strength normalization
+MOMENTUM_PRICE_CHANGE_OFFSET = 0.1  # Offset for momentum calculation
+MOMENTUM_PRICE_CHANGE_RANGE = 0.2  # Range for momentum normalization
+
 
 class SignalPriority(Enum):
     """Signal priority levels."""
@@ -447,10 +454,9 @@ class StrategyCoordinator:
                     rl_advice = rl_advice_str.lower()
                     
                     # CRITICAL: Store RL decision for enrichment
-                    from datetime import datetime
                     self._last_rl_decision = {
                         'action': rl_advice_str,
-                        'confidence': 0.7,  # Default confidence, can be enhanced if RL agent provides it
+                        'confidence': DEFAULT_RL_CONFIDENCE,  # Default confidence, can be enhanced if RL agent provides it
                         'timestamp': datetime.utcnow().isoformat()
                     }
                     
@@ -866,11 +872,11 @@ class StrategyCoordinator:
                     # Volume strength: recent vs average
                     recent_vol = data['volume'].tail(5).mean()
                     avg_vol = data['volume'].tail(20).mean()
-                    signal['volume_strength'] = min(recent_vol / avg_vol, 2.0) / 2.0 if avg_vol > 0 else 0.5
+                    signal['volume_strength'] = min(recent_vol / avg_vol, VOLUME_NORMALIZATION_MAX) / VOLUME_NORMALIZATION_DIVISOR if avg_vol > 0 else 0.5
                     
                     # Momentum: price change normalized
                     price_change_pct = data['close'].pct_change(10).iloc[-1]
-                    signal['momentum_strength'] = max(0, min(1, (price_change_pct + 0.1) / 0.2))
+                    signal['momentum_strength'] = max(0, min(1, (price_change_pct + MOMENTUM_PRICE_CHANGE_OFFSET) / MOMENTUM_PRICE_CHANGE_RANGE))
                     logger.debug(f"✅ Market metrics: vol={signal['volume_strength']:.2f}, mom={signal['momentum_strength']:.2f}")
                 else:
                     signal.update({'volume_strength': 0.5, 'momentum_strength': 0.5})
