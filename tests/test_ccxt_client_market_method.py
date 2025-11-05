@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 """
-Test for CcxtClient market() Method
+DEPRECATED: Test for CcxtClient market() Method
 
-This test verifies that the CcxtClient.market() method correctly handles:
+⚠️ ARCHITECTURAL CHANGE NOTICE ⚠️
+
+The market() method and related helpers have been REMOVED from CcxtClient
+as part of architectural refactoring to improve separation of concerns.
+
+Market metadata retrieval is now handled by MarketDataPipeline.get_market_metadata()
+
+See: tests/test_market_metadata_pipeline.py for current tests
+
+This test file is kept for historical reference but tests are now SKIPPED.
+
+Original Purpose:
+This test verified that the CcxtClient.market() method correctly handled:
 1. Symbol normalization (BTC/USDT, BTC/USDT:USDT, BTC-USDT)
 2. Cached market data retrieval
 3. Fallback to safe default values when no market data is available
 4. Compatibility with "no market load" optimization mode
-
-This addresses the critical issue:
-AttributeError: 'CcxtClient' object has no attribute 'market'
 """
 
 import pytest
@@ -23,8 +32,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from core.ccxt_client import CcxtClient
 
 
+@pytest.mark.skip(reason="Methods removed from CcxtClient - see test_market_metadata_pipeline.py")
 class TestCcxtClientMarketMethod:
-    """Test CcxtClient market() method and related helpers."""
+    """DEPRECATED: Test CcxtClient market() method and related helpers."""
     
     @pytest.fixture
     def mock_ccxt(self):
@@ -267,8 +277,9 @@ class TestCcxtClientMarketMethod:
         assert market['base'] == 'BTC'
 
 
+@pytest.mark.skip(reason="Methods removed from CcxtClient - see test_market_metadata_pipeline.py")
 class TestMarketMethodIntegration:
-    """Integration tests for market() method with SmartOrderManager scenario."""
+    """DEPRECATED: Integration tests for market() method with SmartOrderManager scenario."""
     
     @pytest.fixture
     def mock_ccxt(self):
