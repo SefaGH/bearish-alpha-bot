@@ -1285,8 +1285,12 @@ class ProductionCoordinator:
             logger.info(f"✓ Risk manager initialized (portfolio value: ${self.risk_manager.portfolio_value:.2f})")
 
             # === STEP 6: INITIALIZE EXECUTION MANAGERS ===
-            self.order_manager = SmartOrderManager(risk_manager=self.risk_manager)
-            logger.info("✓ Order manager initialized (dependencies pending)")
+            self.order_manager = SmartOrderManager(
+                market_data_pipeline=self.market_data_pipeline,
+                risk_manager=self.risk_manager,
+                exchange_clients=self.exchange_clients
+            )
+            logger.info("✓ Order manager initialized with market_data_pipeline dependency")
             
             self.position_manager = AdvancedPositionManager(
                 risk_manager=self.risk_manager,
@@ -1307,10 +1311,8 @@ class ProductionCoordinator:
 
             # === STEP 8: LINK MANAGERS ===
             self.portfolio_manager.set_execution_managers(self.order_manager, self.position_manager)
-            self.order_manager.set_dependencies(
-                risk_manager=self.risk_manager,
-                exchange_clients=self.exchange_clients
-            )
+            # Note: set_dependencies is now optional as dependencies are injected in __init__
+            # Kept for backward compatibility with other parts of the system
             logger.info("✓ All managers have been interlinked")
 
             # === STEP 9: VERIFY WEBSOCKET COLLECTOR READY ===
