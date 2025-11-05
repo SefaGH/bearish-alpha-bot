@@ -446,6 +446,14 @@ class StrategyCoordinator:
                     signal['rl_recommendation'] = rl_advice_str
                     rl_advice = rl_advice_str.lower()
                     
+                    # CRITICAL: Store RL decision for enrichment
+                    from datetime import datetime
+                    self._last_rl_decision = {
+                        'action': rl_advice_str,
+                        'confidence': 0.7,  # Default confidence, can be enhanced if RL agent provides it
+                        'timestamp': datetime.utcnow().isoformat()
+                    }
+                    
                     # 💡 YENİ LOGLAMA: Ajanın kararını logla
                     logger.info(f"🤖 [RL-DECISION] For {symbol}, Agent decided: {rl_advice.upper()}")
 
@@ -785,6 +793,105 @@ class StrategyCoordinator:
         return (side1 in long_sides and side2 in short_sides) or \
                (side1 in short_sides and side2 in long_sides)
     
+    async def _enrich_signal_for_dynamic_rr(self, signal: Dict) -> Dict:
+        """
+        Enrich signal with intelligence metrics for dynamic R/R calculation.
+        
+        Adds the following metrics:
+        - ML confidence and regime prediction
+        - RL agreement and action probability
+        - Market volume and momentum strength
+        
+        Args:
+            signal: Trading signal to enrich
+            
+        Returns:
+            Enriched signal with intelligence metrics
+        """
+        symbol = signal.get('symbol', 'UNKNOWN')
+        
+        # 1. ML Metrics
+        try:
+            if hasattr(self, 'ml_integration') and self.ml_integration:
+                ml_context = self.ml_integration.get_ml_context(symbol)
+                if ml_context:
+                    # Use actual ML values
+                    signal['ml_confidence'] = float(ml_context.get('consensus_score', 0.5))
+                    signal['regime_name'] = str(ml_context.get('regime', 'neutral'))
+                    signal['regime_confidence'] = float(ml_context.get('regime_confidence', 0.3))
+                    logger.debug(f"✅ ML metrics added: conf={signal['ml_confidence']:.2f}")
+                else:
+                    # No ML context, use explicit fallbacks
+                    signal['ml_confidence'] = 0.5
+                    signal['regime_name'] = 'neutral'
+                    signal['regime_confidence'] = 0.3
+                    logger.debug("⚠️ Using ML fallback values")
+            else:
+                signal['ml_confidence'] = 0.5
+                signal['regime_name'] = 'neutral'
+                signal['regime_confidence'] = 0.3
+        except Exception as e:
+            logger.debug(f"ML enrichment error: {e}")
+            signal.update({'ml_confidence': 0.5, 'regime_name': 'neutral', 'regime_confidence': 0.3})
+        
+        # 2. RL Metrics
+        try:
+            # Check if we stored the RL decision
+            if hasattr(self, '_last_rl_decision') and self._last_rl_decision:
+                rl_action = self._last_rl_decision.get('action', 'hold')
+                rl_confidence = float(self._last_rl_decision.get('confidence', 0.5))
+                signal_side = signal.get('side', '').lower()
+                
+                # Normalize action strings for comparison
+                rl_action_normalized = rl_action.lower().replace('long', 'buy').replace('short', 'sell')
+                signal_side_normalized = signal_side.replace('long', 'buy').replace('short', 'sell')
+                
+                signal['rl_is_agree'] = (rl_action_normalized == signal_side_normalized)
+                signal['rl_action_prob'] = rl_confidence
+                logger.debug(f"✅ RL metrics: agree={signal['rl_is_agree']}, prob={rl_confidence:.2f}")
+            else:
+                signal['rl_is_agree'] = False
+                signal['rl_action_prob'] = 0.5
+                logger.debug("⚠️ Using RL fallback values")
+        except Exception as e:
+            logger.debug(f"RL enrichment error: {e}")
+            signal.update({'rl_is_agree': False, 'rl_action_prob': 0.5})
+        
+        # 3. Market Metrics (Volume & Momentum)
+        try:
+            if hasattr(self, 'market_data_pipeline') and self.market_data_pipeline:
+                # Get latest market data
+                data = await self.market_data_pipeline.get_latest_ohlcv(symbol, '5m')
+                if data is not None and len(data) >= 20:
+                    # Volume strength: recent vs average
+                    recent_vol = data['volume'].tail(5).mean()
+                    avg_vol = data['volume'].tail(20).mean()
+                    signal['volume_strength'] = min(recent_vol / avg_vol, 2.0) / 2.0 if avg_vol > 0 else 0.5
+                    
+                    # Momentum: price change normalized
+                    price_change_pct = data['close'].pct_change(10).iloc[-1]
+                    signal['momentum_strength'] = max(0, min(1, (price_change_pct + 0.1) / 0.2))
+                    logger.debug(f"✅ Market metrics: vol={signal['volume_strength']:.2f}, mom={signal['momentum_strength']:.2f}")
+                else:
+                    signal.update({'volume_strength': 0.5, 'momentum_strength': 0.5})
+                    logger.debug("⚠️ Insufficient market data, using defaults")
+            else:
+                signal.update({'volume_strength': 0.5, 'momentum_strength': 0.5})
+        except Exception as e:
+            logger.debug(f"Market metrics error: {e}")
+            signal.update({'volume_strength': 0.5, 'momentum_strength': 0.5})
+        
+        # Log enriched signal
+        logger.info(f"📊 [Signal Enriched] {symbol}: "
+                    f"ML={signal.get('ml_confidence', 0):.2f}, "
+                    f"RL_agree={signal.get('rl_is_agree', False)}, "
+                    f"Regime={signal.get('regime_name', 'N/A')} "
+                    f"({signal.get('regime_confidence', 0):.2f}), "
+                    f"Vol={signal.get('volume_strength', 0):.2f}, "
+                    f"Mom={signal.get('momentum_strength', 0):.2f}")
+        
+        return signal
+    
     async def _assess_signal_risk(self, signal: Dict) -> Dict[str, Any]:
         """
         UPDATED: Use AdvancedPositionSizing instead of risk_manager for sizing.
@@ -797,42 +904,8 @@ class StrategyCoordinator:
                 self.position_sizing = AdvancedPositionSizing(self.risk_manager)
                 logger.info("✅ AdvancedPositionSizing initialized in StrategyCoordinator")
             
-            # CRITICAL: Add ML/RL metrics for dynamic R/R calculation
-            symbol = signal.get('symbol', 'UNKNOWN')
-            
-            # 1. Add ML confidence if available
-            if hasattr(self, 'ml_integration') and self.ml_integration:
-                try:
-                    ml_result = self.ml_integration.get_ml_context(symbol)
-                    if ml_result:
-                        signal['ml_confidence'] = float(ml_result.get('regime_confidence', 0.0))
-                        signal['regime_name'] = ml_result.get('regime', 'neutral')
-                        signal['regime_confidence'] = float(ml_result.get('regime_confidence', 0.0))
-                        logger.debug(f"Added ML metrics: conf={signal['ml_confidence']:.2f}, regime={signal['regime_name']}")
-                except Exception as e:
-                    logger.debug(f"Could not get ML metrics: {e}")
-                    signal['ml_confidence'] = 0.5  # Fallback
-            else:
-                signal['ml_confidence'] = 0.5  # Fallback when ML not available
-            
-            # 2. Add RL agreement if available
-            if hasattr(self, 'rl_agent') and self.rl_agent:
-                try:
-                    # Check if RL agrees with the signal
-                    # Normalize action strings for comparison (buy/long -> buy, sell/short -> sell)
-                    rl_decision = getattr(self.rl_agent, 'last_decision', {})
-                    rl_action = rl_decision.get('action', '').lower().replace('long', 'buy').replace('short', 'sell')
-                    signal_side = signal.get('side', '').lower().replace('long', 'buy').replace('short', 'sell')
-                    signal['rl_is_agree'] = (rl_action == signal_side)
-                    signal['rl_action_prob'] = float(rl_decision.get('confidence', 0.5))
-                    logger.debug(f"Added RL metrics: agree={signal['rl_is_agree']}, prob={signal['rl_action_prob']:.2f}")
-                except Exception as e:
-                    logger.debug(f"Could not get RL metrics: {e}")
-                    signal['rl_is_agree'] = False
-                    signal['rl_action_prob'] = 0.5
-            else:
-                signal['rl_is_agree'] = False
-                signal['rl_action_prob'] = 0.5
+            # CRITICAL: Enrich signal BEFORE risk validation
+            signal = await self._enrich_signal_for_dynamic_rr(signal)
             
             # 3. Calculate R/R ratio if not already present
             if 'rr_ratio' not in signal and signal.get('entry') and signal.get('stop') and signal.get('target'):
