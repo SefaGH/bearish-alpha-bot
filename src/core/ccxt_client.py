@@ -903,9 +903,21 @@ class CcxtClient:
             elif '-' in clean_symbol:
                 base, quote = clean_symbol.split('-')
             else:
-                # Default to USDT
-                base = clean_symbol.replace('USDT', '').replace('usdt', '')
-                quote = 'USDT'
+                # Try to extract from common patterns like BTCUSDT
+                # Look for USDT, BUSD, USD at the end
+                if clean_symbol.endswith('USDT'):
+                    base = clean_symbol[:-4]  # Remove USDT
+                    quote = 'USDT'
+                elif clean_symbol.endswith('BUSD'):
+                    base = clean_symbol[:-4]  # Remove BUSD
+                    quote = 'BUSD'
+                elif clean_symbol.endswith('USD'):
+                    base = clean_symbol[:-3]  # Remove USD
+                    quote = 'USD'
+                else:
+                    # Can't parse - use as base with USDT quote
+                    base = clean_symbol
+                    quote = 'USDT'
         except Exception:
             base, quote = symbol, 'USDT'
 

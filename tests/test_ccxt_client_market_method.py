@@ -312,7 +312,7 @@ class TestMarketMethodIntegration:
         min_cost = market_info['limits']['cost']['min']
         assert min_cost > 0
         
-        print(f"✅ OrderManager scenario test passed: min_cost=${min_cost}")
+        # Successful test - min_cost validation works
     
     def test_min_cost_validation(self, client_for_integration):
         """Test that market() provides usable min_cost for validation."""
@@ -326,7 +326,7 @@ class TestMarketMethodIntegration:
         is_valid = notional_value >= min_notional
         
         assert isinstance(is_valid, bool)
-        print(f"Order validation: ${notional_value} >= ${min_notional} = {is_valid}")
+        # Validation logic works correctly
 
 
 if __name__ == '__main__':
