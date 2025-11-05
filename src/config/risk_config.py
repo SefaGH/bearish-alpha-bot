@@ -159,7 +159,15 @@ class RiskConfiguration:
         env_value = os.getenv(env_key)
         if env_value is not None:
             if value_type == bool:
-                return env_value.lower() in ['true', '1', 'yes']
+                # Enhanced boolean parsing with more edge cases
+                val_lower = str(env_value).strip().lower()
+                if val_lower in ['true', '1', 'yes', 'on', 'enabled']:
+                    return True
+                elif val_lower in ['false', '0', 'no', 'off', 'disabled', '']:
+                    return False
+                else:
+                    logger.warning(f"Invalid boolean value '{env_value}' for {env_key}, defaulting to config value")
+                    return config_value
             elif value_type == float:
                 return float(env_value)
             elif value_type == int:
@@ -243,9 +251,16 @@ class RiskConfiguration:
         # Also store min_risk_reward_ratio for backward compatibility
         self.min_risk_reward_ratio = self.rr_dynamic['base_target_rr']
         
+        # Validate weights configuration
+        total_weight = sum(self.rr_dynamic['weights'].values())
+        if total_weight > 1.5:
+            logger.warning(f"⚠️ Dynamic R/R weights sum to {total_weight:.2f}, which may cause unexpected behavior. "
+                         f"Consider normalizing weights to sum to 1.0")
+        
         logger.info(f"✅ Dynamic R/R Config: enabled={self.rr_dynamic['enabled']}, "
                    f"base={self.rr_dynamic['base_target_rr']:.1f}, "
-                   f"bounds=[{self.rr_dynamic['lower_bound_rr']:.1f}-{self.rr_dynamic['upper_bound_rr']:.1f}]")
+                   f"bounds=[{self.rr_dynamic['lower_bound_rr']:.1f}-{self.rr_dynamic['upper_bound_rr']:.1f}], "
+                   f"weights_sum={total_weight:.2f}")
     
     def to_dict(self) -> Dict[str, Any]:
         """Export configuration as dictionary."""

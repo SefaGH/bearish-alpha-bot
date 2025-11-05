@@ -430,7 +430,8 @@ class RiskRewardRatioRule(BaseRiskRule):
         # Backward compatibility: If min_risk_reward provided but no config,
         # create a simple config with dynamic disabled
         if min_risk_reward is not None and config is None:
-            # Create a minimal config for backward compatibility
+            # Import here to avoid circular dependency during module initialization
+            # This is only used for backward compatibility with legacy tests
             from config.risk_config import RiskConfiguration
             self.risk_config = RiskConfiguration({
                 'rr_dynamic': {
@@ -462,6 +463,8 @@ class RiskRewardRatioRule(BaseRiskRule):
             target = float(signal.get('target', 0) or signal.get('take_profit', 0))
             
             # Backward compatibility: Calculate stop from ATR if not provided
+            # This fallback supports legacy signal formats that only provide ATR parameters
+            # instead of pre-calculated stop prices. Modern signals should include explicit stop prices.
             if stop == 0 and entry > 0:
                 stop = self._calculate_stop_from_signal(signal, entry)
             

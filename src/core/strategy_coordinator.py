@@ -819,8 +819,11 @@ class StrategyCoordinator:
             if hasattr(self, 'rl_agent') and self.rl_agent:
                 try:
                     # Check if RL agrees with the signal
+                    # Normalize action strings for comparison (buy/long -> buy, sell/short -> sell)
                     rl_decision = getattr(self.rl_agent, 'last_decision', {})
-                    signal['rl_is_agree'] = (rl_decision.get('action') == signal.get('side'))
+                    rl_action = rl_decision.get('action', '').lower().replace('long', 'buy').replace('short', 'sell')
+                    signal_side = signal.get('side', '').lower().replace('long', 'buy').replace('short', 'sell')
+                    signal['rl_is_agree'] = (rl_action == signal_side)
                     signal['rl_action_prob'] = float(rl_decision.get('confidence', 0.5))
                     logger.debug(f"Added RL metrics: agree={signal['rl_is_agree']}, prob={signal['rl_action_prob']:.2f}")
                 except Exception as e:
