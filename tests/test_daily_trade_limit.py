@@ -325,8 +325,8 @@ class TestEndToEndTradeLimit:
             'entry': 50000,
             'stop': 49000,
             'target': 52000,
-            'position_size': 0.08,  # 8% of portfolio = $800
-            'notional': 4000,  # 0.08 * 50000 = 4000
+            'position_size': 0.016,  # 0.016 BTC * 50000 = $800 (8% of $10k portfolio)
+            'notional': 800,  # Notional value: 0.016 * 50000 = 800
             'side': 'long'
         }
         

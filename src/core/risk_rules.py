@@ -763,9 +763,14 @@ class DailyTradeLimitRule(BaseRiskRule):
             
             # Get current trade count from PortfolioManager
             if not hasattr(portfolio_manager, 'get_todays_trade_count'):
-                logger.error(f"[{self.rule_name}] PortfolioManager does not have get_todays_trade_count method!")
+                logger.error(
+                    f"[{self.rule_name}] PortfolioManager does not have get_todays_trade_count method! "
+                    f"This is likely an integration issue. "
+                    f"FAIL-SAFE MODE: Allowing trade (limit cannot be enforced)."
+                )
                 # Fail safely: if we can't check, don't block the trade
-                return (True, f"{self.rule_name}: cannot verify (missing method)")
+                # This prevents breaking production if PortfolioManager link is not established
+                return (True, f"{self.rule_name}: cannot verify (missing method - fail-safe mode)")
             
             todays_trades = portfolio_manager.get_todays_trade_count()
             
