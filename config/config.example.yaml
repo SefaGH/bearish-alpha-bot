@@ -253,6 +253,7 @@ ml:
   # Settings for the models that predict market regime and price movements.
   # ----------------------------------------------------------------------------
   prediction:
+    timeframes: ['5m', '15m', '30m', '1h', '4h']   # Override with: ML_PRED_TIMEFRAMES
     update_interval_seconds: 60       # Override with: ML_PRED_UPDATE_INTERVAL
     cache_ttl_seconds: 300            # Override with: ML_PRED_CACHE_TTL
     min_confidence_threshold: 0.6     # Override with: ML_PRED_MIN_CONFIDENCE
@@ -265,6 +266,25 @@ ml:
   reinforcement_learning:
     enabled: true                     # Override with: ML_RL_ENABLED
     training_mode: false              # Override with: ML_RL_TRAINING_MODE
+
+  # Model Architecture & Ensemble Weights
+  model_params:
+    lstm:
+      hidden_size: 128
+      num_layers: 3
+      dropout: 0.2
+    transformer:
+      d_model: 256
+      nhead: 8
+      num_layers: 6
+    random_forest:
+      n_estimators: 100
+      max_depth: 10
+      
+  ensemble_weights:
+    lstm: 0.4
+    transformer: 0.4
+    random_forest: 0.2
 
     # Behavior Tuning
     # If the agent's confidence in 'HOLD' is below this, it considers its second choice.
@@ -286,25 +306,4 @@ ml:
     target_update_freq: 10            # Override with: ML_RL_TARGET_UPDATE_FREQ
     batch_size: 64                    # Override with: ML_RL_BATCH_SIZE
     buffer_size: 100000               # Override with: ML_RL_BUFFER_SIZE
-
-  # ----------------------------------------------------------------------------
-  # Model Architecture Parameters (Advanced - for reference)
-  # ----------------------------------------------------------------------------
-  # These values define the neural network structures.
-  # Changing them requires retraining the models. They are not typically overridden.
-  models:
-    lstm:
-      hidden_size: 128
-      num_layers: 3
-      dropout: 0.2
-    transformer:
-      d_model: 256
-      nhead: 8
-      num_layers: 6
-    random_forest:
-      n_estimators: 100
-      max_depth: 10
-    ensemble_weights:
-      lstm: 0.4
-      transformer: 0.4
-      random_forest: 0.2
+  
