@@ -145,8 +145,8 @@ class RiskManager:
             ),
             # Check drawdown limits
             MaxDrawdownRule(max_drawdown=self.risk_limits['max_drawdown']),
-            # Validate risk/reward ratio
-            RiskRewardRatioRule(min_risk_reward=1.5),
+            # Validate risk/reward ratio with dynamic intelligence
+            RiskRewardRatioRule(config=self.risk_config),
             # Optional: Check strategy performance
             StrategyPerformanceRule(
                 min_win_rate=0.35,

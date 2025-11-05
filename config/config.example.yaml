@@ -52,6 +52,36 @@ risk:
   min_amount_behavior: skip
   min_notional_behavior: skip
   daily_max_trades: 5                 # Override with: DAILY_MAX_TRADES
+  
+  # NEW: Dynamic Risk/Reward System
+  rr_dynamic:
+    enabled: true                     # Override with: RR_DYNAMIC_ENABLED
+    
+    # Base Configuration
+    base_target_rr: 1.5              # Override with: RR_BASE_TARGET
+    lower_bound_rr: 0.8              # Override with: RR_LOWER_BOUND
+    upper_bound_rr: 2.0              # Override with: RR_UPPER_BOUND
+    
+    # Intelligence Weights (sum should be ~1.0)
+    weights:
+      ml_confidence: 0.3             # Override with: RR_WEIGHT_ML
+      rl_agreement: 0.3              # Override with: RR_WEIGHT_RL
+      regime_clarity: 0.2            # Override with: RR_WEIGHT_REGIME
+      volume_strength: 0.1           # Override with: RR_WEIGHT_VOLUME
+      momentum_strength: 0.1         # Override with: RR_WEIGHT_MOMENTUM
+    
+    # Fallback values when ML/RL data missing
+    fallback:
+      missing_ml_default: 0.5        # Override with: RR_FALLBACK_ML
+      missing_rl_default: 0.5        # Override with: RR_FALLBACK_RL
+      missing_regime_default: 0.3    # Override with: RR_FALLBACK_REGIME
+    
+    # Regime-specific multipliers
+    regime_multipliers:
+      bullish: 0.9                   # Override with: RR_MULT_BULLISH
+      bearish: 0.9                   # Override with: RR_MULT_BEARISH
+      neutral: 1.0                   # Override with: RR_MULT_NEUTRAL
+      volatile: 1.2                  # Override with: RR_MULT_VOLATILE
 
 # Asset class-specific risk limits (optional, not commonly overridden)
 class_limits:

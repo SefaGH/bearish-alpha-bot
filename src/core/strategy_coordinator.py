@@ -788,6 +788,7 @@ class StrategyCoordinator:
     async def _assess_signal_risk(self, signal: Dict) -> Dict[str, Any]:
         """
         UPDATED: Use AdvancedPositionSizing instead of risk_manager for sizing.
+        Also enriches signals with ML/RL intelligence for dynamic R/R calculation.
         """
         try:
             # Initialize position sizing if not already done
@@ -795,6 +796,53 @@ class StrategyCoordinator:
                 from core.position_sizing import AdvancedPositionSizing
                 self.position_sizing = AdvancedPositionSizing(self.risk_manager)
                 logger.info("✅ AdvancedPositionSizing initialized in StrategyCoordinator")
+            
+            # CRITICAL: Add ML/RL metrics for dynamic R/R calculation
+            symbol = signal.get('symbol', 'UNKNOWN')
+            
+            # 1. Add ML confidence if available
+            if hasattr(self, 'ml_integration') and self.ml_integration:
+                try:
+                    ml_result = self.ml_integration.get_ml_context(symbol)
+                    if ml_result:
+                        signal['ml_confidence'] = float(ml_result.get('regime_confidence', 0.0))
+                        signal['regime_name'] = ml_result.get('regime', 'neutral')
+                        signal['regime_confidence'] = float(ml_result.get('regime_confidence', 0.0))
+                        logger.debug(f"Added ML metrics: conf={signal['ml_confidence']:.2f}, regime={signal['regime_name']}")
+                except Exception as e:
+                    logger.debug(f"Could not get ML metrics: {e}")
+                    signal['ml_confidence'] = 0.5  # Fallback
+            else:
+                signal['ml_confidence'] = 0.5  # Fallback when ML not available
+            
+            # 2. Add RL agreement if available
+            if hasattr(self, 'rl_agent') and self.rl_agent:
+                try:
+                    # Check if RL agrees with the signal
+                    # Normalize action strings for comparison (buy/long -> buy, sell/short -> sell)
+                    rl_decision = getattr(self.rl_agent, 'last_decision', {})
+                    rl_action = rl_decision.get('action', '').lower().replace('long', 'buy').replace('short', 'sell')
+                    signal_side = signal.get('side', '').lower().replace('long', 'buy').replace('short', 'sell')
+                    signal['rl_is_agree'] = (rl_action == signal_side)
+                    signal['rl_action_prob'] = float(rl_decision.get('confidence', 0.5))
+                    logger.debug(f"Added RL metrics: agree={signal['rl_is_agree']}, prob={signal['rl_action_prob']:.2f}")
+                except Exception as e:
+                    logger.debug(f"Could not get RL metrics: {e}")
+                    signal['rl_is_agree'] = False
+                    signal['rl_action_prob'] = 0.5
+            else:
+                signal['rl_is_agree'] = False
+                signal['rl_action_prob'] = 0.5
+            
+            # 3. Calculate R/R ratio if not already present
+            if 'rr_ratio' not in signal and signal.get('entry') and signal.get('stop') and signal.get('target'):
+                entry = float(signal['entry'])
+                stop = float(signal['stop'])
+                target = float(signal['target'])
+                risk = abs(entry - stop)
+                reward = abs(target - entry)
+                signal['rr_ratio'] = reward / risk if risk > 0 else 0
+                logger.debug(f"📊 Signal R/R: {signal['rr_ratio']:.2f}")
             
             # Calculate position size using the new module
             sized_signal = await self.position_sizing.calculate_optimal_size(signal)
