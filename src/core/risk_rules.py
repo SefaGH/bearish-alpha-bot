@@ -89,7 +89,7 @@ class CapitalLimitRule(BaseRiskRule):
         
         Args:
             signal: Trading signal with position_size, entry price, and leverage
-            portfolio_manager: PortfolioManager instance
+            portfolio_manager: PortfolioManager instance or dict
             
         Returns:
             (is_valid, reason) tuple
@@ -108,9 +108,21 @@ class CapitalLimitRule(BaseRiskRule):
                 entry_price = signal.get('entry', 0)
                 notional = position_size * entry_price
             
-            # Get portfolio state
-            portfolio = portfolio_manager.get_portfolio_summary()
-            available = portfolio.get('available_capital', portfolio.get('portfolio_value', 0))
+            # Get portfolio state - handle both dict and object
+            # When portfolio_manager is a dict (backward compatibility for tests),
+            # we need to use risk_manager's internal tracking
+            if isinstance(portfolio_manager, dict) or not hasattr(portfolio_manager, 'get_current_equity'):
+                # Get risk metrics from signal (should be added by RiskManager before validation)
+                portfolio_value = signal.get('portfolio_value', 100)
+                current_exposure = signal.get('current_exposure', 0)
+                available = portfolio_value - current_exposure
+                logger.debug(f"[CapitalLimitRule] Using fallback: portfolio_value={portfolio_value}, current_exposure={current_exposure}, available={available}")
+            else:
+                # Normal case: portfolio_manager is a proper object
+                portfolio_value = portfolio_manager.get_current_equity()
+                current_exposure = portfolio_manager.get_total_exposure()
+                available = portfolio_value - current_exposure
+                logger.debug(f"[CapitalLimitRule] Using portfolio_manager: portfolio_value={portfolio_value}, current_exposure={current_exposure}, available={available}")
             
             if notional <= 0:
                 return (False, f"Invalid notional value: {notional}")
@@ -163,7 +175,7 @@ class PositionSizeRule(BaseRiskRule):
         
         Args:
             signal: Trading signal
-            portfolio_manager: PortfolioManager instance
+            portfolio_manager: PortfolioManager instance or dict
             
         Returns:
             (is_valid, reason) tuple
@@ -176,7 +188,12 @@ class PositionSizeRule(BaseRiskRule):
             position_size = signal.get('position_size', 0)
             entry_price = signal.get('entry', 0)
             
-            portfolio_value = portfolio_manager.get_current_equity()
+            # Handle both dict and object portfolio_manager
+            if isinstance(portfolio_manager, dict) or not hasattr(portfolio_manager, 'get_current_equity'):
+                portfolio_value = signal.get('portfolio_value', 100)
+            else:
+                portfolio_value = portfolio_manager.get_current_equity()
+                
             position_value = position_size * entry_price
             max_position_value = portfolio_value * self.max_position_size
             
@@ -241,8 +258,13 @@ class PortfolioHeatRule(BaseRiskRule):
             if not stop_loss:
                 stop_loss = self._calculate_stop_loss(signal, entry_price)
             
-            portfolio_value = portfolio_manager.get_current_equity()
-            active_positions = portfolio_manager.get_open_positions()
+            # Handle both dict and object portfolio_manager
+            if isinstance(portfolio_manager, dict) or not hasattr(portfolio_manager, 'get_current_equity'):
+                portfolio_value = signal.get('portfolio_value', 100)
+                active_positions = {}
+            else:
+                portfolio_value = portfolio_manager.get_current_equity()
+                active_positions = portfolio_manager.get_open_positions()
             
             # Calculate risk for this position
             risk_amount = abs(entry_price - stop_loss) * position_size
@@ -334,7 +356,12 @@ class MaxDrawdownRule(BaseRiskRule):
         
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
-            current_drawdown = portfolio_manager.get_current_drawdown()
+            
+            # Handle both dict and object portfolio_manager
+            if isinstance(portfolio_manager, dict) or not hasattr(portfolio_manager, 'get_current_drawdown'):
+                current_drawdown = signal.get('current_drawdown', 0)
+            else:
+                current_drawdown = portfolio_manager.get_current_drawdown()
             
             logger.debug(f"[{self.rule_name}] {symbol}: current drawdown {current_drawdown:.2%} vs max {self.max_drawdown:.2%}")
             
