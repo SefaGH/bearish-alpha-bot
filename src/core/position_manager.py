@@ -66,7 +66,7 @@ class ExitReason(Enum):
 class AdvancedPositionManager:
     """Comprehensive position lifecycle management."""
     
-    def __init__(self, risk_manager, order_manager, websocket_manager=None):
+    def __init__(self, risk_manager, order_manager, websocket_manager=None, portfolio_manager=None):
         """
         Initialize position manager.
         
@@ -74,10 +74,12 @@ class AdvancedPositionManager:
             risk_manager: RiskManager instance.
             order_manager: SmartOrderManager instance for executing close orders.
             websocket_manager: WebSocketManager for fetching live prices.
+            portfolio_manager: PortfolioManager instance (optional, can be set later).
         """
         self.risk_manager = risk_manager
         self.order_manager = order_manager # DOĞRUDAN BAĞIMLILIK
         self.ws_manager = websocket_manager
+        self.portfolio_manager = portfolio_manager  # Link to PortfolioManager for trade counting
         
         # Position tracking
         self.positions = {}  # position_id -> position_data
@@ -254,6 +256,12 @@ class AdvancedPositionManager:
                 'unrealized_pnl': 0.0,
                 'pnl_pct': 0.0
             }]
+            
+            # Increment daily trade counter
+            if self.portfolio_manager and hasattr(self.portfolio_manager, 'increment_trade_count'):
+                self.portfolio_manager.increment_trade_count()
+            else:
+                logger.warning("⚠️ Could not increment trade count: PortfolioManager not linked or method missing")
             
             logger.info(f"Position opened: {position_id} - {symbol} {side} {amount} @ {entry_price:.4f}")
             logger.info(f"  Stop-loss: {stop_loss:.4f}, Take-profit: {take_profit:.4f}")

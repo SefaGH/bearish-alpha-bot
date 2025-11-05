@@ -37,6 +37,10 @@ class PortfolioManager:
         self.order_manager = None
         self.position_manager = None
         
+        # Daily trade counter for daily_max_trades enforcement
+        self._todays_trade_count = 0
+        self._last_trade_date = datetime.now(timezone.utc).date()
+        
         # Strategy registry
         self.strategies = {}  # strategy_name -> strategy_instance
         self.strategy_allocations = {}  # strategy_name -> allocation (0-1)
@@ -75,7 +79,36 @@ class PortfolioManager:
         """
         self.order_manager = order_manager
         self.position_manager = position_manager
+        
+        # Set reverse link so PositionManager can update trade count
+        if position_manager and hasattr(position_manager, 'portfolio_manager'):
+            position_manager.portfolio_manager = self
+            logger.info("✅ Reverse link set: PositionManager → PortfolioManager")
+        
         logger.info("✅ Execution managers (OrderManager, PositionManager) have been linked to PortfolioManager.")
+    
+    def get_todays_trade_count(self) -> int:
+        """
+        Get today's trade count, automatically resetting on new day.
+        
+        Returns:
+            Current number of trades executed today
+        """
+        today = datetime.now(timezone.utc).date()
+        if today != self._last_trade_date:
+            self._todays_trade_count = 0
+            self._last_trade_date = today
+            logger.info(f"📅 New trading day: {today}. Trade count reset to 0.")
+        return self._todays_trade_count
+    
+    def increment_trade_count(self):
+        """
+        Increment the daily trade counter.
+        Should be called when a position is successfully opened.
+        """
+        self.get_todays_trade_count()  # Ensure day check is performed first
+        self._todays_trade_count += 1
+        logger.info(f"📊 Daily trade count incremented to: {self._todays_trade_count}")
     
     # PHASE 2: Portfolio state management methods (central source of truth)
     

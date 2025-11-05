@@ -22,7 +22,8 @@ try:
         PortfolioHeatRule,
         MaxDrawdownRule,
         RiskRewardRatioRule,
-        StrategyPerformanceRule
+        StrategyPerformanceRule,
+        DailyTradeLimitRule
     )
 except ModuleNotFoundError:
     try:
@@ -33,7 +34,8 @@ except ModuleNotFoundError:
             PortfolioHeatRule,
             MaxDrawdownRule,
             RiskRewardRatioRule,
-            StrategyPerformanceRule
+            StrategyPerformanceRule,
+            DailyTradeLimitRule
         )
     except ModuleNotFoundError:
         try:
@@ -44,7 +46,8 @@ except ModuleNotFoundError:
                 PortfolioHeatRule,
                 MaxDrawdownRule,
                 RiskRewardRatioRule,
-                StrategyPerformanceRule
+                StrategyPerformanceRule,
+                DailyTradeLimitRule
             )
         except ImportError:
             raise
@@ -133,7 +136,7 @@ class RiskManager:
         Returns:
             List of risk rule instances
         """
-        return [
+        rules = [
             # Order matters: Check capital availability first
             CapitalLimitRule(),
             # Then check position size limits
@@ -153,6 +156,46 @@ class RiskManager:
                 performance_monitor=self.performance_monitor
             )
         ]
+        
+        # Add daily trade limit rule if configured
+        daily_max_trades = self._get_daily_max_trades_from_config()
+        if daily_max_trades is not None and daily_max_trades > 0:
+            rules.append(DailyTradeLimitRule(max_daily_trades=daily_max_trades))
+            logger.info(f"✅ Daily trade limit rule added: {daily_max_trades} trades/day")
+        else:
+            logger.info("ℹ️ Daily trade limit not configured or disabled")
+        
+        return rules
+    
+    def _get_daily_max_trades_from_config(self) -> Optional[int]:
+        """
+        Extract daily_max_trades from risk configuration.
+        
+        Returns:
+            Daily max trades limit or None if not configured
+        """
+        try:
+            # Try to get from risk_config if it's a RiskConfiguration object
+            if hasattr(self.risk_config, 'to_dict'):
+                config_dict = self.risk_config.to_dict()
+                if 'daily_max_trades' in config_dict:
+                    return int(config_dict['daily_max_trades'])
+            
+            # Try direct attribute access
+            if hasattr(self.risk_config, 'daily_max_trades'):
+                value = getattr(self.risk_config, 'daily_max_trades')
+                if value is not None:
+                    return int(value)
+            
+            # If risk_config is a dict, try direct key access
+            if isinstance(self.risk_config, dict) and 'daily_max_trades' in self.risk_config:
+                return int(self.risk_config['daily_max_trades'])
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Failed to get daily_max_trades from config: {e}")
+            return None
     
     def _calculate_total_portfolio_exposure(self, portfolio_manager=None) -> float:
         """
