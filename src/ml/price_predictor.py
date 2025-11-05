@@ -480,47 +480,44 @@ class MultiTimeframePricePredictor:
 class AdvancedPricePredictionEngine:
     """
     Advanced price prediction engine with training, saving, and loading capabilities.
-    (GÜNCELLENDİ: Eğitim, kaydetme ve yükleme metotları eklendi)
+    (YENİ KONFİGÜRASYON YAPISIYLA TAM UYUMLU HALE GETİRİLDİ)
     """
-    MODEL_SAVE_DIR = "data/models" # Modellerin kaydedileceği dizin
-    
+    MODEL_SAVE_DIR = "data/models" 
+
     def __init__(self, market_data_pipeline, feature_pipeline, config: Dict[str, Any]):
         """
-        Initialize the advanced prediction engine using a central configuration dictionary.
+        Initialize the advanced prediction engine using its specific configuration block.
 
         Args:
             market_data_pipeline: Instance of MarketDataPipeline.
             feature_pipeline: Instance of FeatureEngineeringPipeline.
-            config (Dict[str, Any]): The 'ml' configuration block from the main YAML file.
+            config (Dict[str, Any]): The 'price_prediction' configuration block from the main YAML file.
         """
         if not TORCH_AVAILABLE:
             raise ImportError("PyTorch is required for AdvancedPricePredictionEngine.")
         
         self.market_data_pipeline = market_data_pipeline
         self.feature_pipeline = feature_pipeline
-        # ✅ FIX: The engine now uses the config passed to it, removing the static dependency.
-        self.config = config
+        self.config = config  # Bu artık 'price_prediction' bloğudur.
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"AdvancedPricePredictionEngine using device: {self.device}")
 
-        # ✅ FIX: Build internal predictors based on the provided config.
-        # This replaces the old logic of receiving a pre-built predictor.
+        # Modelleri, kendisine verilen 'config' bloğuna göre inşa et
         self.predictor = self._build_predictors()
         
         self.prediction_cache = {}
         self.data_buffers = {}
         self.is_running = False
         
-        # ✅ FIX: Read prediction-specific config from the passed-in config dictionary.
-        prediction_config = self.config.get('prediction', {})
-        self.update_interval = prediction_config.get('update_interval_seconds', 60)
-        self.cache_ttl = timedelta(seconds=prediction_config.get('cache_ttl_seconds', 300))
+        # ✔️ DÜZELTME 1: Ayarları doğrudan self.config'ten oku.
+        # Gereksiz `get('prediction', {})` çağrısını kaldır.
+        self.update_interval = self.config.get('update_interval_seconds', 60)
+        self.cache_ttl = timedelta(seconds=self.config.get('cache_ttl_seconds', 300))
         
-        # Load models and set training status.
+        # Modelleri yükle ve eğitim durumunu ayarla
         self.is_trained = self.load_models()
         
-        # ✅ FIX: Clear status logging based on actual model state
         status_summary = self.get_status_summary()
         logger.info(f"🤖 PricePredictor Status: {status_summary}")
         
@@ -533,26 +530,23 @@ class AdvancedPricePredictionEngine:
         logger.info("Advanced Price Prediction Engine initialized.")
 
     def _build_predictors(self) -> Optional[MultiTimeframePricePredictor]:
-        """Builds the entire prediction stack (LSTM, Transformer, etc.) from config."""
+        """Builds the entire prediction stack (LSTM, Transformer, etc.) from its config."""
         logger.info("Building multi-timeframe prediction models from configuration...")
 
-        model_config = self.config.get('prediction', {})
+        # ✔️ DÜZELTME 2: Ayarları doğrudan self.config'ten oku.
+        # `model_config` ara değişkenini ve gereksiz `get('prediction', {})` çağrısını kaldır.
         input_feature_size = self.config.get('feature_size', 42)
         forecast_horizon = self.config.get('forecast_horizon', 12)
-
-        # --- YENİ VE ESNEK KOD BAŞLANGICI ---
-        timeframes_from_config = model_config.get('timeframes', ['5m', '15m', '1h'])
+        timeframes_from_config = self.config.get('timeframes', ['5m', '15m', '1h'])
         
+        # ... (zaman dilimi parse etme mantığı aynı kalır)
         if isinstance(timeframes_from_config, str):
-            # Eski format desteği: "5m,15m,1h"
             timeframes = [tf.strip() for tf in timeframes_from_config.split(',') if tf.strip()]
         elif isinstance(timeframes_from_config, list):
-            # Yeni ve doğru format: ['5m', '15m', '1h']
             timeframes = [str(tf).strip() for tf in timeframes_from_config]
         else:
             logger.error(f"Invalid 'timeframes' format in config. Expected list or string, got {type(timeframes_from_config)}.")
             return None
-        # --- YENİ VE ESNEK KOD SONU ---
 
         if not timeframes:
             logger.error("Timeframe list is empty after parsing. Cannot build predictors.")
@@ -561,12 +555,12 @@ class AdvancedPricePredictionEngine:
         logger.info(f"Predictors will be built for timeframes: {timeframes}")
 
         mtf_models = {}
+        # Parametreleri yine doğrudan `self.config`'ten oku
         model_types_to_build = self.config.get('models', [])
         model_params = self.config.get('model_params', {})
 
         for tf in timeframes:
             tf_models = {}
-            # Build LSTM
             if 'lstm' in model_types_to_build:
                 params = model_params.get('lstm', {})
                 tf_models['lstm'] = LSTMPricePredictor(
@@ -576,18 +570,16 @@ class AdvancedPricePredictionEngine:
                     forecast_horizon=forecast_horizon
                 ).to(self.device)
             
-            # Build Transformer
             if 'transformer' in model_types_to_build:
                 params = model_params.get('transformer', {})
-                # Transformer'ın d_model'i, input_feature_size ile aynı olmalıdır.
                 d_model = input_feature_size
                 if d_model % 2 != 0:
-                    d_model +=1 # nhead'in bölebilmesi için çift sayı olmalı
+                    d_model += 1
                     logger.warning(f"Adjusted d_model to {d_model} to be even for Transformer.")
 
                 tf_models['transformer'] = TransformerPricePredictor(
                     d_model=d_model, 
-                    nhead=params.get('nhead', 2), # nhead'in d_model'i bölebildiğinden emin olun
+                    nhead=params.get('nhead', 2),
                     num_layers=params.get('num_layers', 6),
                     forecast_horizon=forecast_horizon
                 ).to(self.device)
@@ -596,7 +588,6 @@ class AdvancedPricePredictionEngine:
                 ensemble_weights = self.config.get('ensemble_weights', None)
                 mtf_models[tf] = EnsemblePricePredictor(tf_models, weights=ensemble_weights)
 
-        # feature_pipeline'ı MultiTimeframePricePredictor'a constructor'da ver
         return MultiTimeframePricePredictor(mtf_models, self.feature_pipeline)
 
     def get_status_summary(self) -> str:
