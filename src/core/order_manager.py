@@ -6,9 +6,12 @@ Advanced order management with execution optimization.
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, TYPE_CHECKING
 from datetime import datetime, timezone
 from enum import Enum
+
+if TYPE_CHECKING:
+    from .market_data_pipeline import MarketDataPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -35,17 +38,20 @@ class OrderType(Enum):
 class SmartOrderManager:
     """Advanced order management with execution optimization."""
     
-    def __init__(self, risk_manager=None, exchange_clients: Optional[Dict] = None):
+    def __init__(self, market_data_pipeline: 'MarketDataPipeline', risk_manager=None, exchange_clients: Optional[Dict] = None):
         """
-        Initialize smart order manager. Dependencies can be set later.
+        Initialize smart order manager.
         
         Args:
+            market_data_pipeline: The central market data provider.
             risk_manager: RiskManager instance.
             exchange_clients: Dictionary of exchange client instances.
         """
         # FIX: Initialize logger for instance use
         self.logger = logging.getLogger(__name__)
         
+        # Core dependencies
+        self.market_data_pipeline = market_data_pipeline
         self.risk_manager = risk_manager
         self.exchange_clients = exchange_clients if exchange_clients is not None else {}
         
@@ -77,7 +83,21 @@ class SmartOrderManager:
     def set_dependencies(self, risk_manager: Any, exchange_clients: Dict):
         """
         Set dependencies after initialization. This allows for flexible setup.
+        
+        DEPRECATED: market_data_pipeline should now be provided in __init__.
+        This method is kept for backward compatibility and will be removed in v2.0.0.
+        
+        Deprecation Timeline:
+        - Deprecated: v1.1.0 (current)
+        - Removal: v2.0.0 (planned)
         """
+        import warnings
+        warnings.warn(
+            "set_dependencies() is deprecated. Pass market_data_pipeline to __init__ instead. "
+            "This method will be removed in v2.0.0.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         self.risk_manager = risk_manager
         self.exchange_clients = exchange_clients
         logger.info(f"OrderManager dependencies set. {len(exchange_clients)} exchange client(s) registered.")
@@ -337,7 +357,7 @@ class SmartOrderManager:
     async def _limit_order_execution(self, order_request: Dict, clients_to_use: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Execute limit order with smart pricing.
-        (GÜNCELLENDİ: Analiz talebi doğrultusunda kapsamlı ret sebebi telemetrisi eklendi)
+        (UPDATED: Now uses MarketDataPipeline for market metadata retrieval)
         """
         symbol = order_request.get('symbol')
         side = order_request.get('side')
@@ -349,8 +369,16 @@ class SmartOrderManager:
             clients = clients_to_use if clients_to_use is not None else self.exchange_clients
             client = clients[exchange]
             
-            # Get market data for pricing and validation
-            market = client.market(symbol)
+            # Get market metadata from pipeline (proper architecture)
+            try:
+                market = await self.market_data_pipeline.get_market_metadata(symbol, exchange)
+            except ValueError as e:
+                # Sanitize error message to avoid exposing internal details
+                error_msg = f"Market metadata unavailable for {symbol} on {exchange}"
+                self.logger.error(f"🛡️  {log_prefix} REJECTED (MarketMetadata): {e}")
+                return {'success': False, 'reason': f"REJECT:MARKET_METADATA - {error_msg}", 'order_id': None}
+            
+            # Get current price from exchange
             ticker = client.ticker(symbol)
             market_price = float(ticker.get('last', 0))
             

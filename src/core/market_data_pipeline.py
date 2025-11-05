@@ -60,6 +60,16 @@ class MarketDataPipeline:
         # Data storage: {exchange: {symbol: {timeframe: DataFrame}}}
         self.data_streams = defaultdict(lambda: defaultdict(dict))
         
+        # Market metadata cache: {exchange: {symbol: market_metadata}}
+        self._market_metadata_cache = {}
+        
+        # Dedicated thread pool for synchronous CCXT calls to avoid overhead
+        import concurrent.futures
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix='ccxt_executor'
+        )
+        
         # Health monitoring
         self.start_time = datetime.now(timezone.utc)
         self.total_requests = 0
@@ -70,6 +80,133 @@ class MarketDataPipeline:
         self.is_running = False
         
         logger.info(f"🔄 MarketDataPipeline initialized with {len(exchanges)} exchanges: {list(exchanges.keys())}")
+    
+    async def get_market_metadata(self, symbol: str, exchange_id: str) -> Dict[str, Any]:
+        """
+        Get market metadata (precision, limits, etc.) for a given symbol on an exchange.
+        
+        This method is the proper way to access market information in the architecture.
+        It handles caching and ensures data is loaded from the appropriate exchange.
+        
+        Args:
+            symbol: Trading pair symbol (e.g., 'BTC/USDT:USDT', 'ETH/USDT')
+            exchange_id: Exchange identifier (e.g., 'bingx', 'kucoinfutures')
+            
+        Returns:
+            Market metadata dictionary with precision, limits, etc.
+            
+        Raises:
+            ValueError: If exchange is not available or symbol is invalid
+        """
+        # Check if exchange exists
+        if exchange_id not in self.exchanges:
+            raise ValueError(f"Exchange '{exchange_id}' not available in MarketDataPipeline")
+        
+        # Create cache key
+        cache_key = f"{exchange_id}:{symbol}"
+        
+        # Check cache first
+        if cache_key in self._market_metadata_cache:
+            logger.debug(f"[MARKET-META] Cache hit for {cache_key}")
+            return self._market_metadata_cache[cache_key]
+        
+        # Cache miss - fetch from exchange
+        logger.debug(f"[MARKET-META] Cache miss for {cache_key}, fetching from exchange")
+        
+        try:
+            client = self.exchanges[exchange_id]
+            
+            # Ensure markets are loaded using dedicated executor
+            loop = asyncio.get_running_loop()
+            markets = await loop.run_in_executor(self._executor, client.load_markets)
+            
+            # Get market data for the symbol
+            if symbol not in markets:
+                # Try to normalize symbol variants
+                symbol_variants = self._normalize_symbol_variants(symbol)
+                found_symbol = None
+                
+                for variant in symbol_variants:
+                    if variant in markets:
+                        found_symbol = variant
+                        logger.info(f"[MARKET-META] Symbol variant match: {symbol} -> {variant}")
+                        break
+                
+                if not found_symbol:
+                    raise ValueError(
+                        f"Symbol '{symbol}' not found on exchange '{exchange_id}'. "
+                        f"Tried variants: {symbol_variants}"
+                    )
+                
+                symbol = found_symbol
+            
+            # Get market metadata
+            market_metadata = markets[symbol]
+            
+            # Cache the result
+            self._market_metadata_cache[cache_key] = market_metadata
+            logger.info(f"[MARKET-META] Cached metadata for {cache_key}")
+            
+            return market_metadata
+            
+        except Exception as e:
+            error_msg = f"Failed to get market metadata for {symbol} on {exchange_id}: {e}"
+            logger.error(f"[MARKET-META] {error_msg}")
+            raise ValueError(error_msg) from e
+    
+    def _normalize_symbol_variants(self, symbol: str) -> List[str]:
+        """
+        Generate potential symbol format variants.
+        
+        Examples:
+        - 'BTC/USDT' -> ['BTC/USDT', 'BTC/USDT:USDT', 'BTC-USDT', 'BTCUSDT']
+        - 'ETH/USDT:USDT' -> ['ETH/USDT:USDT', 'ETH/USDT', 'ETH-USDT', 'ETHUSDT']
+        
+        Args:
+            symbol: Symbol to normalize
+            
+        Returns:
+            List of symbol format variants
+        """
+        try:
+            # Remove perpetual suffix: 'BTC/USDT:USDT' -> 'BTC/USDT'
+            base_symbol = symbol.split(':')[0]
+            
+            # Split base and quote
+            if '/' in base_symbol:
+                parts = base_symbol.split('/')
+            elif '-' in base_symbol:
+                parts = base_symbol.split('-')
+            else:
+                return [symbol]  # Unrecognized format
+            
+            if len(parts) != 2:
+                return [symbol]
+                
+            base, quote = parts[0], parts[1]
+            
+            # Generate different format variants (original first, then alternatives)
+            variants = [
+                symbol,                     # Original format
+                f"{base}/{quote}",          # CCXT standard
+                f"{base}/{quote}:{quote}",  # CCXT perpetual
+                f"{base}-{quote}",          # BingX native format
+                f"{base}{quote}",           # Compact format (BTCUSDT)
+            ]
+            
+            # Return unique ordered list
+            seen = set()
+            ordered = []
+            for v in variants:
+                if v not in seen:
+                    ordered.append(v)
+                    seen.add(v)
+            
+            return ordered
+            
+        except Exception as e:
+            logger.warning(f"Symbol normalization failed for {symbol}: {e}")
+            return [symbol]
     
     async def _wait_for_websocket_ready(self, timeout: float = 10.0) -> bool:
         """
@@ -605,6 +742,11 @@ class MarketDataPipeline:
         """
         logger.info("🔄 Shutting down MarketDataPipeline...")
         self.is_running = False
+        
+        # Shutdown executor
+        if hasattr(self, '_executor'):
+            logger.debug("Shutting down thread pool executor...")
+            self._executor.shutdown(wait=True, cancel_futures=False)
         
         # Log final stats
         final_stats = self.get_pipeline_status()
