@@ -521,10 +521,11 @@ class AdvancedPricePredictionEngine:
         self.is_trained = self.load_models()
         
         # ✅ FIX: Clear status logging based on actual model state
-        if self.is_trained:
-            logger.info("✅ Price predictor model loaded successfully")
-        else:
-            logger.info("📊 No ML model found. Using fallback heuristics for price predictions")
+        status_summary = self.get_status_summary()
+        logger.info(f"🤖 PricePredictor Status: {status_summary}")
+        
+        if not self.is_trained:
+            logger.warning("⚠️ PricePredictor running in FALLBACK mode - predictions based on technical analysis only")
         
         if not self.market_data_pipeline:
             logger.warning("⚠️ MarketDataPipeline not provided. Prediction updates may fail.")
@@ -598,6 +599,15 @@ class AdvancedPricePredictionEngine:
         # feature_pipeline'ı MultiTimeframePricePredictor'a constructor'da ver
         return MultiTimeframePricePredictor(mtf_models, self.feature_pipeline)
 
+    def get_status_summary(self) -> str:
+        """Get human-readable status for logging."""
+        if self.is_trained:
+            loaded_timeframes = list(self.predictor.models.keys()) if hasattr(self.predictor, 'models') else []
+            return f"ML Mode - {len(loaded_timeframes)} models loaded: {sorted(loaded_timeframes)}"
+        else:
+            timeframes = list(self.predictor.models.keys()) if hasattr(self.predictor, 'models') else []
+            return f"FALLBACK Mode - No trained models (configured for: {timeframes})"
+    
     def has_model_for(self, symbol: str) -> bool:
         """
         Checks if a trained model exists for the given symbol.
@@ -745,13 +755,23 @@ class AdvancedPricePredictionEngine:
                 
                 # Only make predictions if we have data for at least one timeframe
                 if data_by_timeframe:
+                    # Log prediction mode
+                    if self.is_trained:
+                        logger.debug(f"📊 ML prediction for {symbol} using {len(data_by_timeframe)} trained models")
+                    else:
+                        logger.debug(f"📈 Fallback prediction for {symbol} (no trained models)")
+                    
                     # Generate multi-timeframe prediction
                     prediction = self.predictor.predict_multi_timeframe(data_by_timeframe)
                     
                     # Cache the prediction
                     self.prediction_cache[symbol] = prediction
                     
-                    logger.info(f"✅ Updated prediction for {symbol} using {len(data_by_timeframe)} timeframes: {list(data_by_timeframe.keys())}")
+                    # Log with clear mode indication
+                    if self.is_trained:
+                        logger.info(f"✅ ML prediction updated for {symbol} using {len(data_by_timeframe)} timeframes: {list(data_by_timeframe.keys())}")
+                    else:
+                        logger.info(f"⚠️ FALLBACK prediction for {symbol} - using technical indicators only ({len(data_by_timeframe)} timeframes)")
                 else:
                     logger.warning(f"⚠️ No data available for {symbol} across any timeframe. Prediction cache not updated.")
                     
