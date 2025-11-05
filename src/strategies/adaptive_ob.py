@@ -311,25 +311,59 @@ class AdaptiveOversoldBounce(OversoldBounce):
             tp_atr_mult = float(self.strategy_config.get("tp_atr_mult", 2.5))
             sl_atr_mult = float(self.strategy_config.get("sl_atr_mult", 1.2))
             
-            target_price = entry_price + (atr_value * tp_atr_mult)
-            stop_price = entry_price - (atr_value * sl_atr_mult)
+            # Calculate theoretical ATR-based levels
+            theoretical_sl_distance = atr_value * sl_atr_mult
+            theoretical_tp_distance = atr_value * tp_atr_mult
+            
+            theoretical_sl_pct = theoretical_sl_distance / entry_price
+            theoretical_tp_pct = theoretical_tp_distance / entry_price
             
             min_tp_pct = float(self.strategy_config.get("min_tp_pct", 0.008))
             max_sl_pct = float(self.strategy_config.get("max_sl_pct", 0.015))
             
-            target_price = max(target_price, entry_price * (1 + min_tp_pct))
-            stop_price = min(stop_price, entry_price * (1 - max_sl_pct))
+            # Apply stop-loss cap CORRECTLY and realign TP if needed
+            if theoretical_sl_pct > max_sl_pct:
+                # Risk needs capping
+                logger.info(f"📊 {log_prefix} [SL Cap Applied] {theoretical_sl_pct:.1%} → {max_sl_pct:.1%}")
+                actual_sl_pct = max_sl_pct
+                actual_sl_distance = entry_price * actual_sl_pct
+                
+                # CRITICAL - Realign TP to maintain intended R/R ratio
+                intended_rr = tp_atr_mult / sl_atr_mult  # e.g., 2.5/1.2 = 2.08
+                adjusted_tp_distance = actual_sl_distance * intended_rr
+                actual_tp_pct = adjusted_tp_distance / entry_price
+                
+                logger.info(f"📊 {log_prefix} [TP Realigned] Maintaining R/R={intended_rr:.2f}")
+            else:
+                # No capping needed
+                actual_sl_pct = theoretical_sl_pct
+                actual_tp_pct = theoretical_tp_pct
             
+            # Calculate final prices
+            stop_price = entry_price * (1 - actual_sl_pct)
+            
+            # ✅ CRITICAL FIX: Use max() for LONG positions to prevent stop going too low
+            # This safety net ensures we never exceed max_sl_pct even with rounding errors
+            # or edge cases in the logic above (defensive programming for financial systems)
+            stop_price = max(stop_price, entry_price * (1 - max_sl_pct))
+            
+            target_price = entry_price * (1 + actual_tp_pct)
+            
+            # Ensure minimum TP
+            target_price = max(target_price, entry_price * (1 + min_tp_pct))
+            
+            # Calculate final R/R
             rr_numerator = target_price - entry_price
             rr_denominator = entry_price - stop_price
             rr_ratio = (rr_numerator / rr_denominator) if rr_denominator > 0 else 0
 
-            if self.debug_logging:
-                logger.info(
-                    f"🔍 {log_prefix} R/R Calculation: "
-                    f"Entry={entry_price:.2f}, TP={target_price:.2f}, SL={stop_price:.2f} | "
-                    f"Reward=${rr_numerator:.2f}, Risk=${rr_denominator:.2f} -> R/R={rr_ratio:.2f}"
-                )
+            # Enhanced logging with R/R details
+            logger.info(
+                f"🔎 {log_prefix} [OB R/R] Entry=${entry_price:.2f}, "
+                f"Stop=${stop_price:.2f} (-{actual_sl_pct:.1%}), "
+                f"Target=${target_price:.2f} (+{actual_tp_pct:.1%}), "
+                f"R/R={rr_ratio:.2f}"
+            )
 
             # 4. R/R Ratio Check
             # 🔥 GÜNCELLEME: R/R kontrolü artık __init__ içinde ayarlanan `self.min_rr_ratio` özelliğini kullanıyor.

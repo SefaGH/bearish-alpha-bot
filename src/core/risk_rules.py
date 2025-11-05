@@ -490,9 +490,23 @@ class RiskRewardRatioRule(BaseRiskRule):
             logger.info(f"📊 [R/R Analysis] {symbol}:")
             logger.info(f"   Prices: Entry=${entry:.2f}, Stop=${stop:.2f} (-{risk_pct:.1f}%), Target=${target:.2f} (+{reward_pct:.1f}%)")
             logger.info(f"   R/R: Actual={calculated_rr:.2f}, Required={target_rr:.2f}")
-            logger.info(f"   Intelligence: ML={signal.get('ml_confidence', 'N/A')}, "
-                       f"RL_agree={signal.get('rl_is_agree', 'N/A')}, "
-                       f"Regime={signal.get('regime_name', 'N/A')}")
+            
+            # Show intelligence metrics if available
+            ml_conf = signal.get('ml_confidence', 'N/A')
+            rl_agree = signal.get('rl_is_agree', 'N/A')
+            rl_prob = signal.get('rl_action_prob', 'N/A')
+            regime = signal.get('regime_name', 'N/A')
+            regime_conf = signal.get('regime_confidence', 'N/A')
+            vol_str = signal.get('volume_strength', 'N/A')
+            mom_str = signal.get('momentum_strength', 'N/A')
+            
+            logger.info(f"   Intelligence: ML={ml_conf if isinstance(ml_conf, str) else f'{ml_conf:.2f}'}, "
+                       f"RL_agree={rl_agree}, "
+                       f"RL_prob={rl_prob if isinstance(rl_prob, str) else f'{rl_prob:.2f}'}, "
+                       f"Regime={regime} "
+                       f"({regime_conf if isinstance(regime_conf, str) else f'{regime_conf:.2f}'}), "
+                       f"Vol={vol_str if isinstance(vol_str, str) else f'{vol_str:.2f}'}, "
+                       f"Mom={mom_str if isinstance(mom_str, str) else f'{mom_str:.2f}'}")
             
             # Make decision
             if calculated_rr < target_rr:
