@@ -85,6 +85,9 @@ class RiskConfiguration:
         # Store capital for USD calculations
         self.initial_capital = initial_capital or (custom_limits.get('equity_usd', 100.0) if custom_limits else 100.0)
         
+        # Store daily_max_trades if provided
+        self.daily_max_trades = custom_limits.get('daily_max_trades') if custom_limits else None
+        
         # Process each limit with sentinel value awareness
         processed_limits = {}
         
@@ -351,6 +354,10 @@ Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
             },
             'emergency_protocols': self.emergency_protocols.protocols
         }
+        
+        # Add daily_max_trades if available
+        if hasattr(self, 'daily_max_trades') and self.daily_max_trades is not None:
+            result['daily_max_trades'] = self.daily_max_trades
         
         # Add dynamic R/R config if available
         if hasattr(self, 'rr_dynamic'):

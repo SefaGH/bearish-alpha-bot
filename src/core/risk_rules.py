@@ -713,3 +713,76 @@ class StrategyPerformanceRule(BaseRiskRule):
         except Exception as e:
             logger.error(f"[{self.rule_name}] Validation error: {e}")
             return (False, f"Validation error: {str(e)}")
+
+
+class DailyTradeLimitRule(BaseRiskRule):
+    """
+    Validates that daily trade limit has not been reached.
+    
+    This rule prevents over-trading by enforcing a maximum number of
+    trades per day. The counter automatically resets at the start of
+    each new trading day (UTC).
+    
+    Critical for:
+    - Risk management and capital preservation
+    - Preventing emotional/impulsive over-trading
+    - Enforcing disciplined trading approach
+    """
+    
+    def __init__(self, max_daily_trades: int, rule_name: str = None):
+        """
+        Initialize daily trade limit rule.
+        
+        Args:
+            max_daily_trades: Maximum number of trades allowed per day
+            rule_name: Optional custom rule name
+        """
+        super().__init__(rule_name or "DailyTradeLimitRule")
+        self.max_daily_trades = max_daily_trades
+        
+        if max_daily_trades <= 0:
+            logger.warning(f"⚠️ DailyTradeLimitRule initialized with invalid limit: {max_daily_trades}. "
+                         f"This rule will effectively block all trades.")
+    
+    def validate(self, signal: Dict, portfolio_manager) -> Tuple[bool, str]:
+        """
+        Validate that daily trade limit has not been reached.
+        
+        Args:
+            signal: Trading signal
+            portfolio_manager: PortfolioManager instance (must have get_todays_trade_count method)
+            
+        Returns:
+            (is_valid, reason) tuple
+        """
+        if not self.enabled:
+            return (True, f"{self.rule_name} disabled")
+        
+        try:
+            symbol = signal.get('symbol', 'UNKNOWN')
+            
+            # Get current trade count from PortfolioManager
+            if not hasattr(portfolio_manager, 'get_todays_trade_count'):
+                logger.error(f"[{self.rule_name}] PortfolioManager does not have get_todays_trade_count method!")
+                # Fail safely: if we can't check, don't block the trade
+                return (True, f"{self.rule_name}: cannot verify (missing method)")
+            
+            todays_trades = portfolio_manager.get_todays_trade_count()
+            
+            logger.debug(f"[{self.rule_name}] {symbol}: Today's trades: {todays_trades}/{self.max_daily_trades}")
+            
+            if todays_trades >= self.max_daily_trades:
+                logger.warning(
+                    f"🚫 [{self.rule_name}] REJECTED: {symbol}\n"
+                    f"   Daily trade limit reached: {todays_trades}/{self.max_daily_trades}\n"
+                    f"   No more trades allowed until next trading day."
+                )
+                return (False, f"Daily trade limit reached: {todays_trades}/{self.max_daily_trades}")
+            
+            logger.debug(f"✅ [{self.rule_name}] PASSED: {symbol} ({todays_trades + 1}/{self.max_daily_trades})")
+            return (True, f"Daily trade limit check passed ({todays_trades + 1}/{self.max_daily_trades})")
+            
+        except Exception as e:
+            logger.error(f"[{self.rule_name}] Validation error: {e}", exc_info=True)
+            # Fail safely: if there's an error, don't block the trade
+            return (True, f"{self.rule_name}: error during validation")
