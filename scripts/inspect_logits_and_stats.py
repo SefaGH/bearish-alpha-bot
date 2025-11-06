@@ -8,6 +8,8 @@ Writes diagnostics/logits_and_stats.json with:
  - feature_means, feature_stds
  - logits (raw q_network outputs) and softmaxed probs
  - optionally any config/training_history keys if present in checkpoint
+ 
+YENİ: Artık veriyi (X - mean) / std kullanarak Z-score normalizasyonu yapar.
 """
 import os
 import json
@@ -22,8 +24,6 @@ try:
     import numpy as np
     import pandas as pd
     from torch.nn import functional as F
-    # 'safe_torch_load'u import etmiyoruz, çünkü bu script'in 'weights_only=False'
-    # kullanması ve kendi checkpoint'ini de (config için) okuması gerekiyor.
 except Exception as e:
     with open(OUT, "w") as f:
         json.dump({"error": f"import failed: {e}", "trace": traceback.format_exc()}, f, indent=2)
@@ -47,7 +47,8 @@ except Exception as e:
     print(f"[WARN] Could not read 'inferred_state_size.txt': {e}")
 
 # Örnekleri (sample) yükle
-X = None
+X_scaled = None
+X_raw = None
 if not os.path.exists(SAMPLES_PATH):
     res["error"] = "samples file not found"
     with open(OUT, "w") as f: json.dump(res, f, indent=2)
@@ -62,25 +63,38 @@ try:
         print(f"Dropping label/target columns: {label_cols}")
         df = df.drop(columns=label_cols)
     
-    num = df.select_dtypes(include=[int,float]).to_numpy(dtype=float)
-    X_full = num
-    X = num[:N] # Sadece ilk N satırı al
+    num_df = df.select_dtypes(include=[int,float])
+    X_full = num_df.to_numpy(dtype=float)
+    X_raw = X_full[:N] # Sadece ilk N satırı al
     
     res["sample_shape_raw"] = list(X_full.shape)
     res["sample_head"] = df.head(3).to_dict(orient="records")
     
     # Özellik (feature) istatistikleri (tüm veri üzerinden)
-    res["feature_means"] = np.mean(X_full, axis=0).tolist() if X_full.size else []
-    res["feature_stds"] = np.std(X_full, axis=0).tolist() if X_full.size else []
+    means = np.mean(X_full, axis=0)
+    stds = np.std(X_full, axis=0)
+    # 0'a bölme hatasını önle (std 0 ise 1 yap)
+    stds[stds == 0] = 1.0 
+    
+    res["feature_means"] = means.tolist() if X_full.size else []
+    res["feature_stds"] = stds.tolist() if X_full.size else []
 
     # Veriyi modele uyması için kes (slice)
-    if expected_state_size is not None and X.shape[1] > expected_state_size:
-        print(f"Slicing sample data from {X.shape[1]} to {expected_state_size} features.")
-        X = X[:, :expected_state_size]
-    res["sample_shape_final"] = list(X.shape)
+    if expected_state_size is not None and X_raw.shape[1] > expected_state_size:
+        print(f"Slicing sample data from {X_raw.shape[1]} to {expected_state_size} features.")
+        X_raw = X_raw[:, :expected_state_size]
+        means = means[:expected_state_size]
+        stds = stds[:expected_state_size]
+    res["sample_shape_final"] = list(X_raw.shape)
+    
+    # --- YENİ ADIM: Veriyi Z-Score ile Normalize Et ---
+    print("Applying Z-score normalization (X - mean) / std to data...")
+    X_scaled = (X_raw - means) / stds
+    # --- BLOK SONU ---
     
 except Exception as e:
     res["sample_load_error"] = str(e)
+    traceback.print_exc()
     with open(OUT, "w") as f: json.dump(res, f, indent=2)
     print(f"Wrote {OUT} (sample load error)")
     sys.exit(0)
@@ -88,6 +102,9 @@ except Exception as e:
 
 # "Canlı" modeli yükle (weights_only=False ile)
 try:
+    # Not: 'safe_torch_load'u burada kullanmıyoruz çünkü bu script'in 'weights_only=False'
+    # kullanması ve kendi checkpoint'ini de (config için) okuması gerekiyor.
+    # Bu script zaten 'inst_model.pth'yi yüklüyor, bu yüzden 'model_class_import'a gerek yok.
     obj = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
     res["loaded_type"] = str(type(obj))
 except Exception as e:
@@ -101,10 +118,10 @@ except Exception as e:
 try:
     ck = torch.load(ORIGINAL_CKPT_PATH, map_location="cpu")
     if isinstance(ck, dict):
-        for k in ("config", "training_history", "epsilon"):
+        # Analiz H'den gelen daha iyi anahtar listesi:
+        for k in ("config", "training_history", "epsilon", "scaler_mean", "scaler_std"):
             if k in ck:
                 v = ck[k]
-                # Sadece basit tipleri kaydet
                 if isinstance(v, (int, float, str, bool, dict, list)):
                     res.setdefault("checkpoint_info", {})[k] = v
                 else:
@@ -118,18 +135,17 @@ res["logits"] = []
 res["probs"] = []
 if hasattr(obj, "q_network"):
     try:
-        for row in X:
+        # --- GÜNCELLEME: Ham (X_raw) yerine ölçeklenmiş (X_scaled) veriyi kullan ---
+        for row in X_scaled: 
             tensor = torch.tensor(row, dtype=torch.float32).unsqueeze(0)
             with torch.no_grad():
                 out = obj.q_network(tensor) # Bu, ham logit'ler olmalı
             
-            # Logit'leri (ham çıktı) kaydet
             try:
                 logits = out.detach().cpu().numpy().tolist()
             except Exception:
                 logits = str(type(out))
             
-            # Softmax uygulanmış olasılıkları (probs) kaydet
             try:
                 probs = F.softmax(out, dim=-1).detach().cpu().numpy().tolist()
             except Exception:
