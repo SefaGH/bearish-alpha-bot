@@ -51,10 +51,40 @@ class AIEnhancedStrategyAdapter:
             pred_config.get("risk_scaling_factor", 1.5)
         )
 
+        # Soft-weight thresholds from config
+        regime_config = self.config.get("regime", {}) or {}
+        self.regime_hard_reject: float = float(
+            regime_config.get("min_confidence_hard_reject", 0.30)
+        )
+        self.regime_full_weight: float = float(
+            regime_config.get("min_confidence_full_weight", 0.60)
+        )
+
         logger.info("AI-Enhanced Strategy Adapter initialized")
         logger.info(
             "   - Adapter min regime confidence: %s", self.min_confidence
         )
+        logger.info(
+            "   - Soft-weight thresholds: hard_reject=%.2f, full_weight=%.2f",
+            self.regime_hard_reject, self.regime_full_weight
+        )
+
+    def _calculate_regime_weight(self, regime_confidence: float) -> Optional[float]:
+        """Calculate regime weight based on confidence with soft-weighting.
+        
+        Args:
+            regime_confidence: Regime prediction confidence (0.0-1.0)
+            
+        Returns:
+            regime_weight (0.0-1.0) or None if below hard reject threshold
+        """
+        if regime_confidence < self.regime_hard_reject:
+            return None  # Hard reject
+        elif regime_confidence >= self.regime_full_weight:
+            return 1.0  # Full weight
+        else:
+            # Linear interpolation between hard_reject and full_weight
+            return regime_confidence / self.regime_full_weight
 
     async def enhance_strategy_signal(
         self,
@@ -103,27 +133,35 @@ class AIEnhancedStrategyAdapter:
                         "🧠 [ML-ADAPTER] Regime prediction failed: %s", e, exc_info=True
                     )
 
-            # --- STEP 2: Filter regime by confidence ---
+            # --- STEP 2: Apply soft-weighting to regime by confidence ---
             if regime_info:
                 regime_confidence = float(regime_info.get("confidence", 0.0))
-                if regime_confidence >= self.min_confidence:
-                    predicted_regime = str(
-                        regime_info.get("predicted_regime", "neutral")
-                    )
-                    enhancement["predicted_regime"] = predicted_regime
-                    enhancement["regime_confidence"] = regime_confidence
+                predicted_regime = str(regime_info.get("predicted_regime", "neutral"))
+                
+                # Calculate regime_weight using configured thresholds
+                regime_weight = self._calculate_regime_weight(regime_confidence)
+                
+                if regime_weight is None:
+                    # Hard reject: completely ignore low confidence predictions
                     logger.info(
-                        "🧠 [ML-ADAPTER] Regime for %s is %s (Conf: %.2f)",
+                        "🧠 [ML-ADAPTER] Regime for %s ignored (Conf: %.2f < %.2f hard reject threshold)",
+                        symbol,
+                        regime_confidence,
+                        self.regime_hard_reject,
+                    )
+                else:
+                    # Add regime info with weight
+                    enhancement["predicted_regime"] = predicted_regime
+                    enhancement["regime_name"] = predicted_regime
+                    enhancement["regime_confidence"] = regime_confidence
+                    enhancement["regime_weight"] = float(regime_weight)
+                    
+                    logger.info(
+                        "🧠 [ML-ADAPTER] Regime for %s is %s (Conf: %.2f, Weight: %.2f)",
                         symbol,
                         predicted_regime.upper(),
                         regime_confidence,
-                    )
-                else:
-                    logger.info(
-                        "🧠 [ML-ADAPTER] Regime for %s discarded by confidence filter (Conf: %.2f < %.2f)",
-                        symbol,
-                        regime_confidence,
-                        self.min_confidence,
+                        regime_weight,
                     )
 
             # --- STEP 3: Price forecast + AI signals ---
