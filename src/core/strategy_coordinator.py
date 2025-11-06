@@ -405,6 +405,8 @@ class StrategyCoordinator:
         Enhance signal with all ML predictions and apply RL agent's decision as a gatekeeper.
         Uses price prediction, regime prediction, and RL agent recommendations.
         
+        UPDATED: Added extreme condition bypass to prevent RL veto during obvious market conditions.
+        
         Args:
             signal: Trading signal dictionary
             
@@ -420,6 +422,18 @@ class StrategyCoordinator:
             current_price = signal.get('entry', 0)
             symbol = signal.get('symbol')
             original_side = signal.get('side').lower()
+
+            # --- EXTREME CONDITION BYPASS CHECK (BEFORE ANY ML/RL PROCESSING) ---
+            rsi_value = await self._extract_rsi_from_market_data(symbol)
+            if rsi_value is not None:
+                bypass_triggered = await self._check_extreme_condition_bypass(
+                    signal, rsi_value, symbol, original_side
+                )
+                if bypass_triggered:
+                    # Bypass confirmed - skip RL veto and return signal with minimal ML enhancement
+                    signal['bypass_triggered'] = True
+                    signal['bypass_rsi'] = rsi_value
+                    return signal
 
             # --- 1. ML ZENGİNLEŞTİRMESİ (MEVCUT YAPI KORUNUYOR) ---
             try:
@@ -560,6 +574,123 @@ class StrategyCoordinator:
         except Exception as e:
             logger.error(f"❌ [RL-STATE] Critical error extracting RL state for {symbol}: {e}", exc_info=True)
             return None
+    
+    async def _extract_rsi_from_market_data(self, symbol: str) -> Optional[float]:
+        """
+        Extract current RSI value from market data for extreme condition bypass check.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Current RSI value or None if unavailable
+        """
+        if not hasattr(self, 'market_data_pipeline') or not self.market_data_pipeline:
+            return None
+        
+        try:
+            # Get latest 30m data with indicators (same timeframe used by strategies)
+            df = await self.market_data_pipeline.get_latest_ohlcv(symbol, "30m")
+            
+            if df is None or df.empty:
+                return None
+            
+            # Check if RSI column exists
+            if 'rsi' not in df.columns:
+                return None
+            
+            # Get the most recent RSI value
+            latest_rsi = float(df['rsi'].iloc[-1])
+            
+            # Sanity check (RSI should be between 0 and 100)
+            if 0 <= latest_rsi <= 100:
+                return latest_rsi
+            
+            logger.warning(f"[BYPASS] Invalid RSI value {latest_rsi} for {symbol} (out of 0-100 range)")
+            return None
+            
+        except Exception as e:
+            logger.debug(f"[BYPASS] Failed to extract RSI for {symbol}: {e}")
+            return None
+    
+    async def _check_extreme_condition_bypass(
+        self, signal: Dict, rsi_value: float, symbol: str, original_side: str
+    ) -> bool:
+        """
+        Check if extreme condition bypass should be triggered.
+        
+        This method implements the bypass logic that allows obvious trading signals
+        to skip RL Agent veto when RSI reaches extreme oversold/overbought levels.
+        
+        Args:
+            signal: Trading signal dictionary
+            rsi_value: Current RSI value
+            symbol: Trading symbol
+            original_side: Signal side ('buy', 'long', 'sell', 'short')
+            
+        Returns:
+            True if bypass is triggered, False otherwise
+        """
+        # Get config
+        config = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
+        bypass_config = config.get('signals', {}).get('bypass', {})
+        
+        # Check if bypass is enabled (default: True as per issue requirements)
+        if not bypass_config.get('enabled', True):
+            return False
+        
+        # Get thresholds with validation
+        oversold_threshold = float(bypass_config.get('rsi_oversold_threshold', 20))
+        overbought_threshold = float(bypass_config.get('rsi_overbought_threshold', 80))
+        
+        # Validate thresholds
+        if not (0 <= oversold_threshold <= 100 and 0 <= overbought_threshold <= 100):
+            logger.error(
+                f"[BYPASS] Invalid RSI thresholds: oversold={oversold_threshold}, "
+                f"overbought={overbought_threshold}. Must be in range [0, 100]."
+            )
+            return False
+        
+        if oversold_threshold >= overbought_threshold:
+            logger.error(
+                f"[BYPASS] Invalid RSI thresholds: oversold ({oversold_threshold}) "
+                f"must be < overbought ({overbought_threshold})"
+            )
+            return False
+        
+        # Normalize side for comparison
+        normalized_side = original_side.lower()
+        is_buy_signal = normalized_side in ['buy', 'long']
+        is_sell_signal = normalized_side in ['sell', 'short']
+        
+        # Check EXTREME OVERSOLD condition (RSI < oversold_threshold) with BUY signal
+        if rsi_value < oversold_threshold and is_buy_signal:
+            logger.warning(
+                f"🚨 [EXTREME-OVERSOLD-BYPASS] RSI={rsi_value:.2f} < {oversold_threshold}\n"
+                f"   Symbol: {symbol}\n"
+                f"   Signal: {original_side.upper()}\n"
+                f"   Strategy: {signal.get('strategy_name', 'unknown')}\n"
+                f"   Entry: ${signal.get('entry', 0):.2f}\n"
+                f"   Bypassing all ML/RL checks - SIGNAL CONFIRMED\n"
+                f"   Reason: Extreme oversold condition detected"
+            )
+            return True
+        
+        # Check EXTREME OVERBOUGHT condition (RSI > overbought_threshold) with SELL signal
+        if rsi_value > overbought_threshold and is_sell_signal:
+            logger.warning(
+                f"🚨 [EXTREME-OVERBOUGHT-BYPASS] RSI={rsi_value:.2f} > {overbought_threshold}\n"
+                f"   Symbol: {symbol}\n"
+                f"   Signal: {original_side.upper()}\n"
+                f"   Strategy: {signal.get('strategy_name', 'unknown')}\n"
+                f"   Entry: ${signal.get('entry', 0):.2f}\n"
+                f"   Bypassing all ML/RL checks - SIGNAL CONFIRMED\n"
+                f"   Reason: Extreme overbought condition detected"
+            )
+            return True
+        
+        # No bypass triggered
+        return False
     
     async def resolve_signal_conflicts(self, new_signal: Dict, 
                                       conflicting_signals: List[Dict],

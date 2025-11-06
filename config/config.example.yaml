@@ -168,6 +168,13 @@ adaptive_strategies:
 # SIGNAL GENERATION & STRATEGIES
 # ==============================================================================
 signals:
+  # Extreme Condition Bypass - Prevents RL Agent from blocking obvious signals
+  # when RSI reaches extreme oversold/overbought levels
+  bypass:
+    enabled: true                     # Override with: SIGNAL_BYPASS_ENABLED
+    rsi_oversold_threshold: 20        # Override with: SIGNAL_BYPASS_RSI_OVERSOLD (BUY signals when RSI < this)
+    rsi_overbought_threshold: 80      # Override with: SIGNAL_BYPASS_RSI_OVERBOUGHT (SELL signals when RSI > this)
+  
   duplicate_prevention:
     min_price_change_pct: 0.0005      # Override with: DUPLICATE_PREVENTION_THRESHOLD
     cooldown_seconds: 20              # Override with: DUPLICATE_PREVENTION_COOLDOWN
