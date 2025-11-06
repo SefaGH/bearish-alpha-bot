@@ -63,15 +63,13 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src:${{ github.workspace }}/scripts
         run: |
           echo "PYTHONPATH=$PYTHONPATH"
-          # Build command using the current script's flags (--csv, --out, --out-dir)
-          CMD="python scripts/diagnose_model_confidence.py --model \"${MODEL_PATH}\""
-          if [ -n "${SAMPLES_PATH}" ]; then CMD="${CMD} --csv \"${SAMPLES_PATH}\""; fi
-          if [ -n "${LIMIT}" ]; then CMD="${CMD} --limit ${LIMIT}"; fi
-          if [ -n "${OUT}" ]; then CMD="${CMD} --out \"${OUT}\""; fi
-          if [ -n "${OUT_DIR}" ]; then CMD="${CMD} --out-dir \"${OUT_DIR}\""; fi
-          echo "Running: $CMD"
-          set -o pipefail
-          $CMD 2>&1 | tee diagnostics/diagnostics_stdout.log || true
+          # Direct invocation (do not embed quotes into a single CMD string)
+          python scripts/diagnose_model_confidence.py \
+            --model "$MODEL_PATH" \
+            --csv "$SAMPLES_PATH" \
+            --out "$OUT" \
+            --out-dir "$OUT_DIR" \
+            ${LIMIT:+--limit $LIMIT} 2>&1 | tee diagnostics/diagnostics_stdout.log || true
 
       - name: Upload diagnostics as artifact
         uses: actions/upload-artifact@v4
