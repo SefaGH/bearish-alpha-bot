@@ -12,7 +12,7 @@ import json
 import os
 import sys
 from typing import Any, Dict, Optional, List
-import importlib  # Gerekli, ancak sadece try_load_model için
+import importlib
 
 import numpy as np
 
@@ -87,8 +87,7 @@ def try_load_model(model_path: Optional[str]) -> Dict[str, Any]:
         if torch is None:
             return {"model": None, "note": "torch not available to load .pt/.pth"}
         try:
-            # Bu script artık checkpoint dict'lerini canlandırmaya ÇALIŞMAZ.
-            # Sadece dosyayı yükler.
+            # Bu script artık "akıllı" değil. Sadece yükler.
             obj = torch.load(model_path, map_location="cpu")
             return {"model": obj, "note": "Loaded torch object via torch.load"}
         except Exception as e:
@@ -124,7 +123,6 @@ def try_load_model(model_path: Optional[str]) -> Dict[str, Any]:
 # Core inference utility
 # --------------------------------------------------------------------------------------
 def _logits_to_probs(x: Any) -> np.ndarray:
-    # ... (bu fonksiyon değişmedi) ...
     if torch is not None and isinstance(x, (torch.Tensor,)):
         if x.ndim == 1:
             x = x.reshape(1, -1)
@@ -157,7 +155,6 @@ def _logits_to_probs(x: Any) -> np.ndarray:
 
 
 def compute_confidences_and_stats(model_obj: Any, X: np.ndarray, batch_size: int = 512) -> Dict[str, np.ndarray]:
-    # ... (bu fonksiyon değişmedi) ...
     probs_list: List[np.ndarray] = []
     if hasattr(model_obj, "q_network") and getattr(model_obj, "q_network") is not None:
         if torch is None:
@@ -231,7 +228,6 @@ def build_report(X: np.ndarray,
                  result: Optional[Dict[str, np.ndarray]],
                  load_note: str,
                  error: Optional[str]) -> Dict[str, Any]:
-    # ... (bu fonksiyon değişmedi) ...
     report: Dict[str, Any] = {
         "samples_count": int(len(X)),
         "model_load_note": load_note,
@@ -266,20 +262,18 @@ def save_report(report: Dict[str, Any], out_path: str) -> None:
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Diagnose model confidences on a CSV of samples")
     p.add_argument("--csv", required=True, help="Path to samples CSV")
-    p.add_GÜNCELLENMİŞ( "--model", default=None, help="Path to model file (optional)")
+    p.add_argument("--model", default=None, help="Path to model file (optional)")
     p.add_argument("--limit", type=int, default=None, help="Optional row limit from CSV")
     p.add_argument("--out", default="report.json", help="Path to write JSON report")
     p.add_argument("--batch-size", type=int, default=512, help="Inference batch size")
     p.add_argument("--out-dir", default="diagnostics", help="Optional diagnostics output directory")
     
-    # --- "model_class_import" ve diğer otomatik tahmin argümanları kaldırıldı ---
-    # Bu script artık "aptal" (dumb) ve sadece yükleme/çıkarım yapar.
+    # --- Tüm "akıllı" argümanlar kaldırıldı ---
     
     return p.parse_args(argv)
 
 
 def _write_diagnostics(out_dir: str, result: Dict[str, np.ndarray]) -> None:
-    # ... (bu fonksiyon değişmedi) ...
     os.makedirs(out_dir, exist_ok=True)
     np.save(os.path.join(out_dir, "probs_sample.npy"), result["probs"])
     confs = result["confs"]
@@ -318,8 +312,7 @@ def main(argv=None) -> int:
     model_obj = loaded.get("model", None)
     load_note = loaded.get("note", "")
 
-    # --- "OTOMATİK TAHMİN" (ANALİZ B) BLOĞU BURADAN KALDIRILDI ---
-    # Bu mantık artık YAML'deki 'try_instantiate.py' adımındadır.
+    # --- "OTOMATİK TAHMİN" BLOĞU BURADAN TAMAMEN KALDIRILDI ---
     
     # Run inference best-effort
     result = None
@@ -330,7 +323,7 @@ def main(argv=None) -> int:
             try:
                 result = compute_confidences_and_stats(model_obj, X, batch_size=args.batch_size)
             except Exception as e:
-                # Bu beklenen hata: "Model object is not callable..."
+                # Checkpoint (dict) yüklenirse bu hatayı alması beklenir
                 inference_err = str(e)
 
     report = build_report(X, result, load_note, inference_err)
