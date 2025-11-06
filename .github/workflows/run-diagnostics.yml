@@ -61,8 +61,6 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # Bu adım, hem 'diagnostics' varsayılan dizinini
-          # hem de kullanıcı tarafından sağlanan özel 'out_dir' dizinini oluşturur.
           mkdir -p diagnostics
           if [ -n "${{ github.event.inputs.out_dir }}" ]; then
             mkdir -p "${{ github.event.inputs.out_dir }}"
@@ -180,7 +178,6 @@ PY
         run: |
           set -euo pipefail
           echo "PYTHONPATH=$PYTHONPATH"
-          # "$OUT_DIR" zaten 'Ensure diagnostics directories exist' adımında oluşturuldu.
           ARGS=(--model "$MODEL_PATH" --out "$OUT" --out-dir "$OUT_DIR")
           if [[ -n "${SAMPLES_PATH}" ]]; then
             ARGS+=(--csv "$SAMPLES_PATH")
