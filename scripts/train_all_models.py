@@ -22,6 +22,8 @@ import pandas as pd
 import numpy as np
 import logging
 import yaml
+import json
+from datetime import datetime
 
 # --- YOL AYARLAMASI (IMPORT HATALARINI ÖNLER) ---
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -48,7 +50,7 @@ from src.ml.rl_model_trainer import RLModelTrainer
 # --- YENİ IMPORT'LAR SONU ---
 
 # Logger kurulumu
-logger = setup_logger("model-trainer", level=logging.DEBUG, log_to_file=True, log_filename="training.log")
+logger = setup_logger("model-trainer", level=logging.INFO, log_to_file=True, log_filename="training.log")
 
 # --- EĞİTİM PARAMETRELERİ ---
 SYMBOLS_TO_TRAIN = ['BTC/USDT']
@@ -73,6 +75,26 @@ async def main():
     logger.info("="*60)
     logger.info("🤖 BAŞLIYOR: BİRLEŞİK ML MODEL EĞİTİM BETİĞİ 🤖")
     logger.info("="*60)
+    
+    # Report GPU availability
+    try:
+        import torch
+        cuda_available = torch.cuda.is_available()
+        device_name = torch.cuda.get_device_name(0) if cuda_available else 'CPU'
+        logger.info(f"CUDA Available: {cuda_available} | Device: {device_name}")
+    except ImportError:
+        logger.info("PyTorch not installed, GPU check skipped")
+    
+    # Initialize metrics tracking
+    start_time = datetime.now()
+    training_metrics = {
+        'start_time': start_time.isoformat(),
+        'symbols': SYMBOLS_TO_TRAIN,
+        'timeframes': ALL_TIMEFRAMES,
+        'regime_models': {},
+        'price_models': {},
+        'rl_models': {}
+    }
 
     # Load configuration from config.example.yaml
     config_path = os.path.join(project_root, 'config', 'config.example.yaml')
@@ -96,6 +118,9 @@ async def main():
     logger.info(f"✅ Configuration loaded from {config_path}")
     logger.info(f"   Regime LSTM params: {regime_pred_config.get('model_params', {}).get('lstm_regime', {})}")
 
+    # Log symbols being trained
+    logger.info(f"Training symbols: {', '.join(SYMBOLS_TO_TRAIN)}")
+    
     exchange_client = CcxtClient('bingx')
     feature_engine = FeatureEngineeringPipeline()
     logger.info("✅ Borsa istemcisi ve özellik motoru başlatıldı.")
@@ -151,8 +176,22 @@ async def main():
             if final_X.shape[0] >= MIN_SAMPLES_FOR_RF:
                 # Pass regime_prediction config to trainer so it uses correct architecture
                 regime_trainer = RegimeModelTrainer(config=regime_pred_config)
-                regime_trainer.train_ensemble_models(final_X, final_y)
+                results = regime_trainer.train_ensemble_models(final_X, final_y)
                 logger.info(f"✅ Rejim modelleri birleşik veri seti ile eğitildi ve kaydedildi.")
+                
+                # Store regime model metrics (safely handle None results)
+                if results:
+                    training_metrics['regime_models'] = {
+                        'total_samples': final_X.shape[0],
+                        'feature_count': final_X.shape[1],
+                        'metrics': results.get('metrics', {})
+                    }
+                else:
+                    training_metrics['regime_models'] = {
+                        'total_samples': final_X.shape[0],
+                        'feature_count': final_X.shape[1],
+                        'metrics': {}
+                    }
 
     # 2. FİYAT TAHMİN MODELLERİ EĞİTİMİ
     logger.info("\n" + "="*60)
@@ -178,9 +217,19 @@ async def main():
             logger.info("Model eğitimi ve kaydetme süreci başlatılıyor...")
             price_engine.train_and_save_models(training_data)
             logger.info("✅ Fiyat tahmin modellerinin eğitimi ve kaydı tamamlandı.")
+            
+            # Store price model metrics
+            training_metrics['price_models'] = {
+                'status': 'completed',
+                'models_trained': ['LSTM', 'Transformer', 'Ensemble']
+            }
 
         except Exception as e:
             logger.error(f"❌ Fiyat tahmin modelleri eğitimi sırasında kritik hata: {e}", exc_info=True)
+            training_metrics['price_models'] = {
+                'status': 'failed',
+                'error': str(e)
+            }
 
     else:
         logger.warning("Fiyat tahmini eğitimi için veri bulunamadı, bu adım atlanıyor.")
@@ -238,12 +287,57 @@ async def main():
             try:
                 rl_trainer.train(num_episodes=RL_NUM_EPISODES)
                 logger.info("✅ RL Ajanı başarıyla eğitildi ve kaydedildi.")
+                
+                # Store RL model metrics
+                training_metrics['rl_models'] = {
+                    'status': 'completed',
+                    'num_episodes': RL_NUM_EPISODES,
+                    'state_dim': state_dim,
+                    'action_dim': action_dim,
+                    'training_samples': len(rl_features_df)
+                }
             except Exception as e:
                 logger.error(f"❌ RL eğitimi sırasında bir hata oluştu: {e}", exc_info=True)
+                training_metrics['rl_models'] = {
+                    'status': 'failed',
+                    'error': str(e)
+                }
     else:
         logger.error(f"RL eğitimi için gerekli olan {symbol_for_rl} sembolüne ait {RL_TRAINING_TIMEFRAME} verisi bulunamadı.")
+        training_metrics['rl_models'] = {
+            'status': 'skipped',
+            'reason': 'missing_data'
+        }
 
 
+    # Save training metrics to files
+    end_time = datetime.now()
+    training_metrics['end_time'] = end_time.isoformat()
+    training_metrics['duration_seconds'] = (end_time - start_time).total_seconds()
+    
+    # Create logs directory if it doesn't exist
+    os.makedirs('logs', exist_ok=True)
+    
+    # Save metrics as JSON
+    metrics_json_path = 'logs/training_metrics.json'
+    with open(metrics_json_path, 'w') as f:
+        json.dump(training_metrics, f, indent=2)
+    logger.info(f"✅ Saved training metrics: {metrics_json_path}")
+    
+    # Save metrics as CSV (flattened version)
+    metrics_csv_path = 'logs/training_metrics.csv'
+    csv_data = {
+        'timestamp': [training_metrics['start_time']],
+        'duration_seconds': [training_metrics['duration_seconds']],
+        'symbols': [','.join(training_metrics['symbols'])],
+        'regime_samples': [training_metrics.get('regime_models', {}).get('total_samples', 0)],
+        'price_status': [training_metrics.get('price_models', {}).get('status', 'unknown')],
+        'rl_status': [training_metrics.get('rl_models', {}).get('status', 'unknown')],
+        'rl_episodes': [training_metrics.get('rl_models', {}).get('num_episodes', 0)]
+    }
+    pd.DataFrame(csv_data).to_csv(metrics_csv_path, index=False)
+    logger.info(f"✅ Saved training metrics: {metrics_csv_path}")
+    
     logger.info("\n" + "="*60)
     logger.info("✅ TÜM MODEL EĞİTİMLERİ TAMAMLANDI ✅")
     logger.info("="*60)

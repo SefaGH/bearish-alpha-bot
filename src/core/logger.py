@@ -45,8 +45,11 @@ def setup_logger(name: str = "bearish_alpha_bot",
         root_logger.handlers.clear()
         root_logger.setLevel(log_level)
         
+        # Suppress noisy third-party library logs
         logging.getLogger("websockets.client").setLevel(logging.WARNING)
         logging.getLogger("asyncio").setLevel(logging.WARNING)
+        logging.getLogger("ccxt.base.exchange").setLevel(logging.WARNING)
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
 
         formatter = logging.Formatter(
             f'%(asctime)s - {"🔍 " if log_level == logging.DEBUG else ""}[%(name)s] - %(levelname)s - %(message)s',

@@ -11,38 +11,66 @@ on:
         default: 'INFO'
         type: choice
         options:
-        - INFO
-        - DEBUG
+          - INFO
+          - DEBUG
 
 jobs:
   train-and-save-models:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Check out repository code
-      uses: actions/checkout@v4
+      - name: Check out repository code
+        uses: actions/checkout@v4
 
-    # Python 3.11 ortamını kur
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: 'pip'
+      # Python 3.11 ortamını kur
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
 
-    - name: Upgrade pip
-      run: python -m pip install --upgrade pip setuptools wheel
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip setuptools wheel
 
-    # Bağımlılıkları kur (artık 'pandas-ta-classic' ile sorunsuz çalışacak)
-    - name: Install dependencies
-      run: pip install -r requirements.txt
+      # Bağımlılıkları kur (artık 'pandas-ta-classic' ile sorunsuz çalışacak)
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-    - name: Run model training script
-      env:
-        ML_ENABLED: "true"
-      run: python scripts/train_all_models.py
+      - name: Run model training script
+        env:
+          ML_ENABLED: "true"
+        run: python scripts/train_all_models.py
 
-    - name: Archive trained models
-      uses: actions/upload-artifact@v4
-      with:
-        name: trained-models
-        path: data/models/
+      # List model directory contents before archiving
+      - name: List trained models
+        run: |
+          echo "=== Trained Models ==="
+          ls -lah data/models/
+          echo ""
+          echo "=== Training Logs ==="
+          ls -lah logs/
+        if: always()
+
+      # Archive trained models with SHA and run number
+      - name: Archive trained models
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-models-${{ github.sha }}-${{ github.run_number }}
+          path: |
+            data/models/
+          retention-days: 14
+          if-no-files-found: warn
+
+      # Archive training logs
+      - name: Archive training logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-logs-${{ github.sha }}-${{ github.run_number }}
+          path: |
+            logs/training.log
+            logs/training_metrics.json
+            logs/training_metrics.csv
+            logs/regime_training_metrics.csv
+            logs/rl_training_metrics.csv
+          retention-days: 14
+          if-no-files-found: warn

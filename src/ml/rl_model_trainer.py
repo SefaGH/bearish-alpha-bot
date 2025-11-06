@@ -40,6 +40,7 @@ class RLModelTrainer:
         self.experience_replay = experience_replay
         self.model_save_path = model_save_path
         self.model_name = model_name
+        self.training_history = []  # Store episode metrics
         
         # Agent'ın hafızasını (experience_replay) ayarla
         self.agent.set_memory(self.experience_replay)
@@ -95,6 +96,16 @@ class RLModelTrainer:
                 f"Epsilon: {self.agent.epsilon:.4f} | "
                 f"Loss: {latest_metrics.get('loss', 0):.4f}"
             )
+            
+            # Store episode metrics
+            self.training_history.append({
+                'episode': e,
+                'total_reward': total_reward,
+                'avg_reward': avg_score,
+                'pnl': info.get('pnl', 0),
+                'epsilon': self.agent.epsilon,
+                'loss': latest_metrics.get('loss', 0)
+            })
 
             # === GÜNCELLEME: Doğru metod adı 'save_model' ===
             if e % save_every == 0:
@@ -107,3 +118,39 @@ class RLModelTrainer:
         full_path = os.path.join(self.model_save_path, 'rl_agent_final.pth') # Final modelini farklı kaydet
         self.agent.save_model(full_path)
         logger.info(f"💾 Final RL model saved to {full_path}")
+        
+        # Save training metrics
+        self._save_training_metrics()
+    
+    def _save_training_metrics(self):
+        """Save RL training history to CSV file."""
+        if not self.training_history:
+            logger.info("No RL training history to save.")
+            return
+        
+        try:
+            # Create logs directory if it doesn't exist
+            log_dir = 'logs'
+            os.makedirs(log_dir, exist_ok=True)
+            
+            # Validate and normalize training history entries
+            normalized_history = []
+            for entry in self.training_history:
+                normalized_entry = {
+                    'episode': entry.get('episode', 0),
+                    'total_reward': entry.get('total_reward', 0.0),
+                    'avg_reward': entry.get('avg_reward', 0.0),
+                    'pnl': entry.get('pnl', 0.0),
+                    'epsilon': entry.get('epsilon', 0.0),
+                    'loss': entry.get('loss', 0.0)
+                }
+                normalized_history.append(normalized_entry)
+            
+            # Save as CSV
+            df = pd.DataFrame(normalized_history)
+            csv_path = os.path.join(log_dir, 'rl_training_metrics.csv')
+            df.to_csv(csv_path, index=False)
+            logger.info(f"✅ Saved RL training metrics: {csv_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save RL training metrics: {e}", exc_info=True)
