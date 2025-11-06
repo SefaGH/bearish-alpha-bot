@@ -80,8 +80,6 @@ jobs:
           set -euo pipefail
           python scripts/inspect_model.py
       
-      # --- "AKILLI CANLANDIRMA" ADIMI ---
-      # Harici script'i çağırır
       - name: Try instantiate model with inferred kwargs
         shell: bash
         env:
@@ -92,31 +90,30 @@ jobs:
           python scripts/instantiate_model.py || true
           ls -la diagnostics
 
-      # --- FİNAL ADIMI ---
       - name: Run diagnostics script (using instantiated model if available)
         shell: bash
         env:
           ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
-          INSTANTIATED_MODEL_PATH: "diagnostics/inst_model.pth" # Yeni script'in oluşturduğu dosya
+          INSTANTIATED_MODEL_PATH: "diagnostics/inst_model.pth"
           SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
           LIMIT: ${{ github.event.inputs.limit }}
           OUT: ${{ github.event.inputs.out }}
           OUT_DIR: ${{ github.event.inputs.out_dir }}
+          # --- BU DEĞİŞKENİ SON ADIMA DA EKLE ---
+          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
         run: |
           set -euo pipefail
           echo "PYTHONPATH=$PYTHONPATH"
           mkdir -p "$OUT_DIR"
           
-          # HANGİ MODELİ KULLANACAĞIMIZI SEÇ
           if [ -f "$INSTANTIATED_MODEL_PATH" ]; then
             echo "SUCCESS: Using instantiated model: $INSTANTIATED_MODEL_PATH"
             MODEL_TO_USE="$INSTANTIATED_MODEL_PATH"
           else
-            echo "WARN: Instantiated model not found. Falling back to original checkpoint (this will likely fail inference)."
+            echo "WARN: Instantiated model not found. Falling back to original checkpoint."
             MODEL_TO_USE="$ORIGINAL_MODEL_PATH"
           fi
           
-          # Seçilen modeli kullanarak "aptal" script'i çalıştır
           ARGS=(
             --model "$MODEL_TO_USE"
             --csv "$SAMPLES_PATH"
@@ -126,6 +123,12 @@ jobs:
           
           if [[ -n "${LIMIT}" ]]; then
             ARGS+=(--limit "$LIMIT")
+          fi
+          
+          # --- BU BLOK, PICKLE HATASINI ÇÖZER ---
+          # Sınıfı import edebilmesi için argümanı bu script'e de gönder
+          if [[ -n "${MODEL_CLASS_IMPORT}" ]]; then
+            ARGS+=(--model-class-import "$MODEL_CLASS_IMPORT")
           fi
           
           python scripts/diagnose_model_confidence.py "${ARGS[@]}" \
