@@ -168,37 +168,123 @@ def load_scaler(scaler_path: Optional[str]):
 def compute_confidences_and_stats(model_obj, X: np.ndarray, batch_size=512):
     """
     Returns dict with confidences, predicted classes, probs.
-    Expects model_obj to be a PyTorch module or a callable that accepts numpy arrays.
+
+    Behavior (deterministic):
+    - If model_obj has attribute `q_network` and it's not None, use that network to compute logits -> softmax -> probs.
+    - Else if model_obj is a PyTorch callable (nn.Module or scripted), call it with tensors -> softmax -> probs.
+    - Else if model_obj has `predict_proba`, call that.
+    - Otherwise raise a clear RuntimeError.
+
+    Always returns:
+      {"probs": probs, "confs": confs, "preds": preds}
+    where probs is an (N, C) numpy array, confs is (N,) max-prob per sample, preds is (N,) argmax class indices.
     """
+    import torch
+    import numpy as _np
+    try:
+        import torch.nn.functional as F
+    except Exception:
+        F = None
+
+    if X is None or len(X) == 0:
+        raise RuntimeError("Empty input X given to compute_confidences_and_stats")
+
     probs_list = []
-    model = model_obj
-    # If module/callable that accepts tensors
-    if hasattr(model, "forward") or hasattr(model, "__call__"):
+
+    # Helper: convert logits tensor -> probs numpy using softmax
+    def tensor_logits_to_probs(tensor):
+        nonlocal F
+        if isinstance(tensor, torch.Tensor):
+            if F is None:
+                # softmax fallback using torch.exp / sum
+                tensor = tensor.detach().cpu()
+                e = torch.exp(tensor)
+                s = e.sum(dim=1, keepdim=True)
+                probs_t = e / s
+                return probs_t.cpu().numpy()
+            else:
+                return F.softmax(tensor, dim=1).cpu().numpy()
+        else:
+            # numpy array fallback (logits)
+            arr = _np.asarray(tensor)
+            if arr.ndim == 1:
+                arr = arr.reshape(1, -1)
+            # numerical stable softmax
+            arr_max = arr.max(axis=1, keepdims=True)
+            ex = _np.exp(arr - arr_max)
+            return ex / ex.sum(axis=1, keepdims=True)
+
+    # Case 1: RL agent with q_network attribute
+    if hasattr(model_obj, "q_network") and getattr(model_obj, "q_network") is not None:
+        net = getattr(model_obj, "q_network")
         device = torch.device("cpu")
+        net.eval()
         with torch.no_grad():
             for i in range(0, len(X), batch_size):
-                xb = torch.from_numpy(X[i:i+batch_size].astype(np.float32)).to(device)
-                out = model(xb)
+                xb = torch.from_numpy(X[i:i+batch_size].astype(_np.float32)).to(device)
+                out = net(xb)
+                # If network returns tuple/list take first element
                 if isinstance(out, (tuple, list)):
                     out = out[0]
-                out = out.cpu().numpy()
-                probs_list.append(out)
-        probs = np.vstack(probs_list)
-    else:
-        # fallback if model object has predict_proba
-        if hasattr(model_obj, "predict_proba"):
-            probs = model_obj.predict_proba(X)
+                probs_chunk = tensor_logits_to_probs(out)
+                probs_list.append(probs_chunk)
+        probs = _np.vstack(probs_list)
+
+    # Case 2: model_obj is callable (nn.Module or scripted)
+    elif callable(model_obj):
+        device = torch.device("cpu")
+        # If it's a PyTorch module, make sure to use torch.no_grad
+        try:
+            is_torch_module = isinstance(model_obj, torch.nn.Module)
+        except Exception:
+            is_torch_module = False
+        if is_torch_module:
+            model_obj.eval()
+            with torch.no_grad():
+                for i in range(0, len(X), batch_size):
+                    xb = torch.from_numpy(X[i:i+batch_size].astype(_np.float32)).to(device)
+                    out = model_obj(xb)
+                    if isinstance(out, (tuple, list)):
+                        out = out[0]
+                    probs_chunk = tensor_logits_to_probs(out)
+                    probs_list.append(probs_chunk)
+            probs = _np.vstack(probs_list)
         else:
-            raise RuntimeError("Model object not callable and has no predict_proba.")
-    # Normalize if needed
+            # Some scripted modules are callable but not subclass of nn.Module;
+            # attempt to call and handle tensor or numpy outputs.
+            with torch.no_grad():
+                for i in range(0, len(X), batch_size):
+                    xb = torch.from_numpy(X[i:i+batch_size].astype(_np.float32))
+                    try:
+                        out = model_obj(xb)
+                    except Exception:
+                        # try passing numpy
+                        out = model_obj(X[i:i+batch_size])
+                    if isinstance(out, (tuple, list)):
+                        out = out[0]
+                    probs_chunk = tensor_logits_to_probs(out)
+                    probs_list.append(probs_chunk)
+            probs = _np.vstack(probs_list)
+
+    # Case 3: sklearn-like predict_proba
+    elif hasattr(model_obj, "predict_proba"):
+        probs = model_obj.predict_proba(X)
+        probs = _np.asarray(probs)
+        if probs.ndim == 1:
+            probs = _np.vstack([1 - probs, probs]).T
+
+    else:
+        raise RuntimeError("Model object is not callable, has no 'q_network', and has no 'predict_proba' method.")
+
+    # Normalize binary/logit single-column outputs to two-column probs
     if probs.ndim == 1:
-        # maybe binary returning single logit -> convert via sigmoid
-        probs = np.stack([1 - (1/(1+np.exp(probs))), 1/(1+np.exp(probs))], axis=1)
+        probs = _np.vstack([1 - probs, probs]).T
     elif probs.shape[1] == 1:
-        probs = np.hstack([1 - probs, probs])
-    # confidences = max prob per row
+        probs = _np.hstack([1 - probs, probs])
+
     confs = probs.max(axis=1)
     preds = probs.argmax(axis=1)
+
     return {"probs": probs, "confs": confs, "preds": preds}
 
 def expected_calibration_error(probs: np.ndarray, labels: np.ndarray, n_bins=10):
