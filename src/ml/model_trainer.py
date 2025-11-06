@@ -179,6 +179,7 @@ class RegimeModelTrainer:
             'monte_carlo': MonteCarloValidation()
         }
         self.performance_history = []
+        self.training_history = []  # Store epoch-by-epoch metrics
         os.makedirs(self.MODEL_SAVE_DIR, exist_ok=True) # Klasörün var olduğundan emin ol
     
     def _create_sequences(self, X: np.ndarray, y: np.ndarray, seq_length: int = 10) -> Tuple[np.ndarray, np.ndarray]:
@@ -273,6 +274,9 @@ class RegimeModelTrainer:
             # Save models to disk
             self.save_models()
             
+            # Save training metrics
+            self._save_training_metrics()
+            
             logger.info("Ensemble training complete and models saved.")
             return results
             
@@ -280,6 +284,26 @@ class RegimeModelTrainer:
             logger.error(f"Error in ensemble training: {e}", exc_info=True)
             return results
 
+    def _save_training_metrics(self):
+        """Save training history to CSV and JSON files."""
+        if not self.training_history:
+            logger.info("No training history to save.")
+            return
+        
+        try:
+            # Create logs directory if it doesn't exist
+            log_dir = 'logs'
+            os.makedirs(log_dir, exist_ok=True)
+            
+            # Save as CSV
+            df = pd.DataFrame(self.training_history)
+            csv_path = os.path.join(log_dir, 'regime_training_metrics.csv')
+            df.to_csv(csv_path, index=False)
+            logger.info(f"✅ Saved regime training metrics: {csv_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save training metrics: {e}", exc_info=True)
+    
     def save_models(self):
         """Eğitilmiş rejim modellerini ve scaler'ı diske kaydeder."""
         if not self.models:
@@ -449,6 +473,13 @@ class RegimeModelTrainer:
                 epoch_loss += loss.item()
             avg_loss = epoch_loss / len(train_loader)
             logger.info(f"  LSTM Epoch {epoch+1}/10, Loss: {avg_loss:.4f}")
+            
+            # Store epoch metrics
+            self.training_history.append({
+                'model': 'lstm',
+                'epoch': epoch + 1,
+                'loss': avg_loss
+            })
 
         # Calculate validation accuracy
         model.eval()
@@ -551,6 +582,13 @@ class RegimeModelTrainer:
                 epoch_loss += loss.item()
             avg_loss = epoch_loss / len(train_loader)
             logger.info(f"  Transformer Epoch {epoch+1}/10, Loss: {avg_loss:.4f}")
+            
+            # Store epoch metrics
+            self.training_history.append({
+                'model': 'transformer',
+                'epoch': epoch + 1,
+                'loss': avg_loss
+            })
 
         # Calculate validation accuracy
         model.eval()

@@ -41,8 +41,36 @@ jobs:
         ML_ENABLED: "true"
       run: python scripts/train_all_models.py
 
+    # List model directory contents before archiving
+    - name: List trained models
+      run: |
+        echo "=== Trained Models ==="
+        ls -lah data/models/
+        echo ""
+        echo "=== Training Logs ==="
+        ls -lah logs/
+      if: always()
+
+    # Archive trained models with SHA and run number
     - name: Archive trained models
       uses: actions/upload-artifact@v4
       with:
-        name: trained-models
-        path: data/models/
+        name: trained-models-${{ github.sha }}-${{ github.run_number }}
+        path: |
+          data/models/
+        retention-days: 14
+        if-no-files-found: warn
+
+    # Archive training logs
+    - name: Archive training logs
+      uses: actions/upload-artifact@v4
+      with:
+        name: training-logs-${{ github.sha }}-${{ github.run_number }}
+        path: |
+          logs/training.log
+          logs/training_metrics.json
+          logs/training_metrics.csv
+          logs/regime_training_metrics.csv
+          logs/rl_training_metrics.csv
+        retention-days: 14
+        if-no-files-found: warn
