@@ -79,23 +79,207 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/inspect_model.py
-
-      - name: Run diagnostics script
+      
+      # --- YENİ ADIM 1 (ANALİZ C'den) ---
+      - name: Dump q_network parameter shapes
         shell: bash
         env:
           MODEL_PATH: ${{ github.event.inputs.model_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          cat > diagnostics/dump_q_shapes.py <<'PY'
+import torch, json, os, traceback
+p = os.environ.get("MODEL_PATH", "data/models/rl_agent_final.pth")
+out = {"path": p}
+try:
+    ck = torch.load(p, map_location="cpu")
+except Exception as e:
+    out["error"] = f"torch.load failed: {e}"
+    out["traceback"] = traceback.format_exc()
+    with open("diagnostics/q_network_shapes.json", "w") as f:
+        json.dump(out, f, indent=2)
+    raise SystemExit(0)
+
+if not isinstance(ck, dict):
+    out["error"] = "torch.load returned non-dict object"
+    with open("diagnostics/q_network_shapes.json", "w") as f:
+        json.dump(out, f, indent=2)
+    raise SystemExit(0)
+
+q = ck.get("q_network") or ck.get("q_network_state_dict") or ck.get("qnet")
+if q is None:
+    out["error"] = "No q_network-like key found in checkpoint"
+    with open("diagnostics/q_network_shapes.json", "w") as f:
+        json.dump(out, f, indent=2)
+    raise SystemExit(0)
+
+shapes = []
+for name, v in (q.items() if isinstance(q, dict) else []):
+    try:
+        if hasattr(v, "size"):
+            shape = list(v.size())
+        else:
+            shape = getattr(v, "shape", None)
+            if shape is not None:
+                shape = list(shape)
+    except Exception as e:
+        shape = None
+    shapes.append({"name": name, "type": type(v).__name__, "shape": shape})
+out["q_network_params"] = shapes
+with open("diagnostics/q_network_shapes.json", "w") as f:
+    json.dump(out, f, indent=2)
+print("WDrote diagnostics/q_network_shapes.json")
+PY
+          python diagnostics/dump_q_shapes.py || true
+          ls -la diagnostics || true
+
+      # --- YENİ ADIM 2 (ANALİZ C'den) ---
+      - name: Try instantiate model with inferred kwargs and load q_network
+        shell: bash
+        env:
+          MODEL_PATH: ${{ github.event.inputs.model_path }}
+          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          cat > diagnostics/try_instantiate.py <<'PY'
+import torch, json, os, importlib, traceback
+p = os.environ.get("MODEL_PATH","data/models/rl_agent_final.pth")
+mc = os.environ.get("MODEL_CLASS_IMPORT","")
+out = {"path": p, "model_class_import": mc}
+try:
+    ck = torch.load(p, map_location="cpu")
+except Exception as e:
+    out["error"] = "torch.load failed: " + str(e)
+    out["traceback"] = traceback.format_exc()
+    with open("diagnostics/model_inst_attempt.json","w") as f:
+        json.dump(out,f,indent=2)
+    raise SystemExit(0)
+
+if not mc:
+    out["error"] = "No MODEL_CLASS_IMPORT provided"
+    with open("diagnostics/model_inst_attempt.json","w") as f:
+        json.dump(out,f,indent=2)
+    raise SystemExit(0)
+
+try:
+    module_path, cls_name = mc.rsplit(".",1)
+    mod = importlib.import_module(module_path)
+    Klass = getattr(mod, cls_name)
+except Exception as e:
+    out["import_error"] = str(e)
+    out["traceback"] = traceback.format_exc()
+    with open("diagnostics/model_inst_attempt.json","w") as f:
+        json.dump(out,f,indent=2)
+    raise SystemExit(0)
+
+# find q_network state dict
+q_sd = None
+for key in ("q_network","q_network_state_dict","qnet","state_dict","model_state_dict"):
+    if isinstance(ck, dict) and key in ck and isinstance(ck[key], dict):
+        q_sd = ck[key]
+        break
+
+# infer sizes from q_sd weight tensors
+inferred = {"state_size": None, "action_size": None}
+if q_sd is not None:
+    try:
+        weight_names = [n for n in q_sd.keys() if n.endswith(".weight")]
+        if weight_names:
+            first = q_sd[weight_names[0]]
+            last = q_sd[weight_names[-1]]
+            inferred["state_size"] = int(first.size()[1]) if hasattr(first, "size") and first.dim()>=2 else None
+            inferred["action_size"] = int(last.size()[0]) if hasattr(last, "size") and last.dim()>=2 else None
+    except Exception:
+        pass
+
+# fallback to checkpoint fields if present
+if inferred["state_size"] is None:
+    inferred["state_size"] = int(ck.get("state_size", ck.get("state_dim", 50))) if isinstance(ck, dict) else 50
+if inferred["action_size"] is None:
+    inferred["action_size"] = int(ck.get("action_size", 3)) if isinstance(ck, dict) else 3
+
+# pick config if present
+cfg = ck.get("config") if isinstance(ck, dict) else None
+if not isinstance(cfg, dict):
+    cfg = ck.get("training_history") if isinstance(ck, dict) else None
+if not isinstance(cfg, dict):
+    cfg = {}
+
+out["inferred"] = inferred
+out["config_snippet"] = True if cfg else False
+
+# Try instantiate with inferred kwargs
+inst = None
+try:
+    kwargs = {"state_size": inferred["state_size"], "action_size": inferred["action_size"], "config": cfg}
+    inst = Klass(**kwargs)  # try ctor with inferred kwargs
+    out["instantiation_kwargs"] = kwargs
+except Exception as e:
+    out["instantiate_error"] = str(e)
+    out["instantiate_traceback"] = traceback.format_exc()
+
+# if have inst and q_sd, try to load
+loaded = False
+if inst is not None and q_sd is not None:
+    try:
+        if hasattr(inst, "q_network"):
+            inst.q_network.load_state_dict(q_sd)
+            loaded = True
+        elif hasattr(inst, "load_state_dict"):
+            inst.load_state_dict(q_sd)
+            loaded = True
+    except Exception as e:
+        out["load_error"] = str(e)
+        out["load_traceback"] = traceback.format_exc()
+
+if loaded and inst is not None:
+    try:
+        torch.save(inst, "diagnostics/inst_model.pth")
+        out["inst_saved"] = "diagnostics/inst_model.pth"
+    except Exception as e:
+        out["save_error"] = str(e)
+        out["save_traceback"] = traceback.format_exc()
+
+out["loaded"] = loaded
+with open("diagnostics/model_inst_attempt.json","w") as f:
+    json.dump(out,f,indent=2)
+print("Wrote diagnostics/model_inst_attempt.json")
+PY
+          python diagnostics/try_instantiate.py || true
+          ls -la diagnostics || true
+
+      # --- GÜNCELLENMİŞ FİNAL ADIMI ---
+      - name: Run diagnostics script
+        shell: bash
+        env:
+          # Orijinal checkpoint path'i bir değişkene al
+          ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
+          # "Canlı" modelin potansiyel yolunu tanımla
+          INSTANTIATED_MODEL_PATH: "diagnostics/inst_model.pth"
+          
           SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
           LIMIT: ${{ github.event.inputs.limit }}
           OUT: ${{ github.event.inputs.out }}
           OUT_DIR: ${{ github.event.inputs.out_dir }}
-          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
         run: |
           set -euo pipefail
           echo "PYTHONPATH=$PYTHONPATH"
           mkdir -p "$OUT_DIR"
           
+          # HANGİ MODELİ KULLANACAĞIMIZI SEÇ
+          if [ -f "$INSTANTIATED_MODEL_PATH" ]; then
+            echo "SUCCESS: Using instantiated model: $INSTANTIATED_MODEL_PATH"
+            MODEL_TO_USE="$INSTANTIATED_MODEL_PATH"
+          else
+            echo "WARN: Instantiated model not found. Falling back to original checkpoint (this will likely fail inference)."
+            MODEL_TO_USE="$ORIGINAL_MODEL_PATH"
+          fi
+          
+          # Seçilen modeli kullanarak script'i çalıştır
           ARGS=(
-            --model "$MODEL_PATH"
+            --model "$MODEL_TO_USE"
             --csv "$SAMPLES_PATH"
             --out "$OUT"
             --out-dir "$OUT_DIR"
@@ -104,9 +288,8 @@ jobs:
           if [[ -n "${LIMIT}" ]]; then
             ARGS+=(--limit "$LIMIT")
           fi
-          if [[ -n "${MODEL_CLASS_IMPORT}" ]]; then
-            ARGS+=(--model-class-import "$MODEL_CLASS_IMPORT")
-          fi
+          
+          # (Artık --model-class-import'a gerek yok)
           
           python scripts/diagnose_model_confidence.py "${ARGS[@]}" \
             2>&1 | tee diagnostics/diagnostics_stdout.log || true
