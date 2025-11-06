@@ -123,6 +123,12 @@ class RiskConfiguration:
         # Load dynamic R/R configuration
         self._load_dynamic_rr_config(custom_limits)
         
+        # Load regime soft-weighting configuration
+        self._load_regime_soft_weight_config(custom_limits)
+        
+        # Load signal scoring configuration
+        self._load_signal_scoring_config(custom_limits)
+        
         # NEW: Calculate USD amounts after loading risk limits
         self._calculate_usd_amounts(custom_limits)
     
@@ -335,6 +341,79 @@ Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
                    f"bounds=[{self.rr_dynamic['lower_bound_rr']:.1f}-{self.rr_dynamic['upper_bound_rr']:.1f}], "
                    f"weights_sum={total_weight:.2f}")
     
+    def _load_regime_soft_weight_config(self, config_dict: Dict[str, Any]):
+        """
+        Load regime soft-weighting configuration.
+        
+        Args:
+            config_dict: Configuration dictionary from YAML
+        """
+        ml_config = config_dict.get('ml', {}) if config_dict else {}
+        regime_config = ml_config.get('regime', {})
+        
+        # Build configuration with priority chain: ENV > config > defaults
+        self.regime_soft_weight = {
+            'enabled': self._get_env_or_config('REGIME_SOFT_WEIGHT_ENABLED',
+                                              regime_config.get('soft_weighting_enabled', True),
+                                              bool),
+            
+            'min_confidence_hard_reject': self._get_env_or_config('REGIME_MIN_CONF_REJECT',
+                                                                 regime_config.get('min_confidence_hard_reject', 0.30),
+                                                                 float),
+            
+            'min_confidence_full_weight': self._get_env_or_config('REGIME_MIN_CONF_FULL',
+                                                                 regime_config.get('min_confidence_full_weight', 0.60),
+                                                                 float),
+        }
+        
+        logger.info(f"✅ Regime Soft-Weight Config: enabled={self.regime_soft_weight['enabled']}, "
+                   f"hard_reject={self.regime_soft_weight['min_confidence_hard_reject']:.2f}, "
+                   f"full_weight={self.regime_soft_weight['min_confidence_full_weight']:.2f}")
+    
+    def _load_signal_scoring_config(self, config_dict: Dict[str, Any]):
+        """
+        Load signal scoring configuration.
+        
+        Args:
+            config_dict: Configuration dictionary from YAML
+        """
+        ml_config = config_dict.get('ml', {}) if config_dict else {}
+        scoring_config = ml_config.get('signal_scoring', {})
+        
+        # Build configuration with priority chain: ENV > config > defaults
+        self.signal_scoring = {
+            'enabled': self._get_env_or_config('SIGNAL_SCORING_ENABLED',
+                                              scoring_config.get('enabled', True),
+                                              bool),
+            
+            'min_score_to_trade': self._get_env_or_config('SIGNAL_MIN_SCORE',
+                                                         scoring_config.get('min_score_to_trade', 60),
+                                                         int),
+            
+            'weights': {
+                'strategy': self._get_env_or_config('SCORE_WEIGHT_STRATEGY',
+                                                   scoring_config.get('weights', {}).get('strategy', 0.3),
+                                                   float),
+                'ml_price': self._get_env_or_config('SCORE_WEIGHT_ML',
+                                                   scoring_config.get('weights', {}).get('ml_price', 0.3),
+                                                   float),
+                'regime': self._get_env_or_config('SCORE_WEIGHT_REGIME',
+                                                 scoring_config.get('weights', {}).get('regime', 0.2),
+                                                 float),
+                'risk_reward': self._get_env_or_config('SCORE_WEIGHT_RR',
+                                                      scoring_config.get('weights', {}).get('risk_reward', 0.2),
+                                                      float),
+            }
+        }
+        
+        total_weight = sum(self.signal_scoring['weights'].values())
+        if abs(total_weight - 1.0) > 0.01:
+            logger.warning(f"⚠️ Signal scoring weights sum to {total_weight:.2f}, expected 1.0")
+        
+        logger.info(f"✅ Signal Scoring Config: enabled={self.signal_scoring['enabled']}, "
+                   f"min_score={self.signal_scoring['min_score_to_trade']}, "
+                   f"weights_sum={total_weight:.2f}")
+    
     def to_dict(self) -> Dict[str, Any]:
         """Export configuration as dictionary."""
         result = {
@@ -362,5 +441,13 @@ Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
         # Add dynamic R/R config if available
         if hasattr(self, 'rr_dynamic'):
             result['rr_dynamic'] = self.rr_dynamic
+        
+        # Add regime soft-weight config if available
+        if hasattr(self, 'regime_soft_weight'):
+            result['regime_soft_weight'] = self.regime_soft_weight
+        
+        # Add signal scoring config if available
+        if hasattr(self, 'signal_scoring'):
+            result['signal_scoring'] = self.signal_scoring
         
         return result

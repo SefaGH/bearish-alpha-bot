@@ -300,6 +300,12 @@ ml:
     enabled: true                     # Rejim tahmin motorunu etkinleştirir.
     min_confidence_threshold: 0.6     # Override: ML_REGIME_MIN_CONFIDENCE
     
+    # NEW: Soft-Weighting Configuration
+    # Instead of hard cutoff, use graduated weighting based on confidence
+    soft_weighting_enabled: true      # Override: REGIME_SOFT_WEIGHT_ENABLED
+    min_confidence_hard_reject: 0.30  # Override: REGIME_MIN_CONF_REJECT (Below this, completely ignore)
+    min_confidence_full_weight: 0.60  # Override: REGIME_MIN_CONF_FULL (Above this, use full weight)
+    
     # 1. Model Parametreleri (SADECE Rejim Tahmincisi için)
     # ⚠️ KRİTİK: Bu parametreler TÜM kod tabanında kullanılır:
     #   - src/ml/neural_networks.py (LSTMRegimePredictor default değerleri)
@@ -344,4 +350,19 @@ ml:
     target_update_freq: 10            # Override: ML_RL_TARGET_UPDATE_FREQ
     batch_size: 64                    # Override: ML_RL_BATCH_SIZE
     buffer_size: 100000               # Override: ML_RL_BUFFER_SIZE
+
+  # ----------------------------------------------------------------------------
+  # E) SIGNAL SCORING SYSTEM
+  # Composite scoring system for signal quality assessment
+  # ----------------------------------------------------------------------------
+  signal_scoring:
+    enabled: true                     # Override: SIGNAL_SCORING_ENABLED
+    min_score_to_trade: 60            # Override: SIGNAL_MIN_SCORE (Minimum score to execute trade)
+    
+    # Component weights (should sum to 1.0)
+    weights:
+      strategy: 0.3                   # Override: SCORE_WEIGHT_STRATEGY (Base strategy signal strength)
+      ml_price: 0.3                   # Override: SCORE_WEIGHT_ML (ML price prediction confidence)
+      regime: 0.2                     # Override: SCORE_WEIGHT_REGIME (Regime prediction weight)
+      risk_reward: 0.2                # Override: SCORE_WEIGHT_RR (Risk/reward ratio quality)
   

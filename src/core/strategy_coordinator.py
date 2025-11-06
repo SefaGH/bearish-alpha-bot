@@ -863,13 +863,24 @@ class StrategyCoordinator:
         elif win_rate < 0.40 or profit_factor < 1.0:
             priority = SignalPriority.LOW
         
-        # Adjust for signal quality
+        # Adjust for signal quality and regime weight
         if signal.get('confidence'):
             confidence = signal['confidence']
             if confidence > 0.8 and priority == SignalPriority.HIGH:
                 priority = SignalPriority.CRITICAL
             elif confidence < 0.3:
                 priority = SignalPriority.LOW
+        
+        # Further adjust based on regime_weight if available
+        regime_weight = signal.get('regime_weight')
+        if regime_weight is not None:
+            regime_weight = float(regime_weight)
+            if regime_weight < 0.5 and priority > SignalPriority.LOW:
+                # Low regime confidence: downgrade priority
+                priority = SignalPriority.LOW
+            elif regime_weight > 0.8 and priority == SignalPriority.HIGH:
+                # High regime confidence with high priority: upgrade to critical
+                priority = SignalPriority.CRITICAL
         
         return priority
     

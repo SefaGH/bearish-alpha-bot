@@ -103,27 +103,43 @@ class AIEnhancedStrategyAdapter:
                         "🧠 [ML-ADAPTER] Regime prediction failed: %s", e, exc_info=True
                     )
 
-            # --- STEP 2: Filter regime by confidence ---
+            # --- STEP 2: Apply soft-weighting to regime by confidence ---
             if regime_info:
                 regime_confidence = float(regime_info.get("confidence", 0.0))
-                if regime_confidence >= self.min_confidence:
-                    predicted_regime = str(
-                        regime_info.get("predicted_regime", "neutral")
-                    )
-                    enhancement["predicted_regime"] = predicted_regime
-                    enhancement["regime_confidence"] = regime_confidence
+                predicted_regime = str(regime_info.get("predicted_regime", "neutral"))
+                
+                # Soft-weight thresholds
+                min_hard_reject = 0.30  # Below this, completely ignore
+                min_full_weight = 0.60  # Above this, use full weight
+                
+                if regime_confidence < min_hard_reject:
+                    # Hard reject: completely ignore low confidence predictions
                     logger.info(
-                        "🧠 [ML-ADAPTER] Regime for %s is %s (Conf: %.2f)",
+                        "🧠 [ML-ADAPTER] Regime for %s ignored (Conf: %.2f < %.2f hard reject threshold)",
+                        symbol,
+                        regime_confidence,
+                        min_hard_reject,
+                    )
+                else:
+                    # Calculate regime_weight based on confidence
+                    if regime_confidence >= min_full_weight:
+                        regime_weight = 1.0
+                    else:
+                        # Partial weight: linear interpolation between thresholds
+                        regime_weight = regime_confidence / min_full_weight
+                    
+                    # Add regime info with weight
+                    enhancement["predicted_regime"] = predicted_regime
+                    enhancement["regime_name"] = predicted_regime
+                    enhancement["regime_confidence"] = regime_confidence
+                    enhancement["regime_weight"] = float(regime_weight)
+                    
+                    logger.info(
+                        "🧠 [ML-ADAPTER] Regime for %s is %s (Conf: %.2f, Weight: %.2f)",
                         symbol,
                         predicted_regime.upper(),
                         regime_confidence,
-                    )
-                else:
-                    logger.info(
-                        "🧠 [ML-ADAPTER] Regime for %s discarded by confidence filter (Conf: %.2f < %.2f)",
-                        symbol,
-                        regime_confidence,
-                        self.min_confidence,
+                        regime_weight,
                     )
 
             # --- STEP 3: Price forecast + AI signals ---
