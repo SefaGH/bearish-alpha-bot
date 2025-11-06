@@ -4,20 +4,7 @@ diagnose_model_confidence.py
 ---------------------------------
 Loads a model (optional) and a CSV of samples, runs inference to compute per-sample
 probabilities, confidences, and predictions, and writes a JSON report.
-
-- Model backends supported (best-effort):
-    * PyTorch: torch.nn.Module or an object exposing .q_network (Torch module)
-    * Callable Python object (returns logits or probabilities)
-    * Sklearn-like estimators exposing .predict_proba
-- If a model cannot be loaded or inference fails, report will include "inference_error".
-
-Usage (examples):
-    python diagnose_model_confidence.py --csv data/samples.csv --model model.pth
-    python diagnose_model_confidence.py --csv data/samples.csv --limit 500
-    python diagnose_model_confidence.py --csv data/samples.csv --model model.pth --model-class-import src.agent.MyAgent
-
-Output:
-    report.json in the current directory (configurable via --out)
+... (script'inizin geri kalanı) ...
 """
 
 from __future__ import annotations
@@ -26,7 +13,8 @@ import json
 import os
 import sys
 from typing import Any, Dict, Optional, List
-import importlib  # <-- YENİ EKLENDİ
+import importlib
+import inspect  # <-- YENİ EKLENDİ (otomatik tahmin için)
 
 import numpy as np
 
@@ -349,8 +337,8 @@ def parse_args(argv=None):
     p.add_argument("--out", default="report.json", help="Path to write JSON report")
     p.add_argument("--batch-size", type=int, default=512, help="Inference batch size")
     p.add_argument("--out-dir", default="diagnostics", help="Optional diagnostics output directory")
-    # --- YENİ ARGÜMAN EKLENDİ ---
     p.add_argument("--model-class-import", default=None, help="Python import path for model class (e.g. src.agent.MyAgent)")
+    
     return p.parse_args(argv)
 
 
@@ -375,7 +363,6 @@ def _write_diagnostics(out_dir: str, result: Dict[str, np.ndarray]) -> None:
 def main(argv=None) -> int:
     args = parse_args(argv)
     
-    # Rapor için erken başlatma
     report_extras = {}
     inference_err = None
 
@@ -399,79 +386,138 @@ def main(argv=None) -> int:
     model_obj = loaded.get("model", None)
     load_note = loaded.get("note", "")
 
-    # --- YENİ "MODEL CANLANDIRMA" BLOĞU ---
-    # `model_load.json` dosyamıza dayanarak, model_obj bir checkpoint (dict) ise
-    # ve kullanıcı --model-class-import sağladıysa, modeli "canlandırmayı" dene.
+    # --- YENİ "OTOMATİK TAHMİN" BLOĞU (ANALİZ B) ---
     if isinstance(model_obj, dict) and args.model_class_import:
         print(f"Loaded object is a dict. Attempting to instantiate from: {args.model_class_import}")
-        checkpoint = model_obj  # Yüklenen nesne checkpoint'in kendisi
-        instantiated_model = None
+        checkpoint = model_obj  # model_obj'nin kendisi sözlük
+        
         try:
-            # 1. Sınıfı (mimarîyi) import et
             module_path, class_name = args.model_class_import.rsplit(".", 1)
             mod = importlib.import_module(module_path)
             Klass = getattr(mod, class_name)
-            
-            # 2. Mimarîden boş bir model nesnesi oluştur
-            # Varsayım: __init__ argüman almaz. Alırsa burası hata verir.
-            instantiated_model = Klass()
-            print(f"Instantiated model class: {class_name}")
-
-            # 3. Ağırlıkları (state_dict) modele yükle
-            # model_load.json'a göre: anahtar "q_network"
-            if "q_network" in checkpoint and hasattr(instantiated_model, "q_network"):
-                print("Found 'q_network' key, loading into model.q_network...")
-                instantiated_model.q_network.load_state_dict(checkpoint["q_network"])
-                load_note = f"Instantiated {args.model_class_import} and loaded 'q_network' state_dict."
-                # Başarılı! model_obj'yi "canlı" modelle değiştir
-                model_obj = instantiated_model
-            
-            # Analizdeki diğer fallbacks (güvenlik için)
-            elif "state_dict" in checkpoint and hasattr(instantiated_model, "load_state_dict"):
-                print("Found 'state_dict' key, loading into model.load_state_dict()...")
-                instantiated_model.load_state_dict(checkpoint["state_dict"])
-                load_note = f"Instantiated {args.model_class_import} and loaded 'state_dict'."
-                model_obj = instantiated_model
-
-            else:
-                print("[WARN] Checkpoint dict loaded, but could not find a matching state_dict key ('q_network' or 'state_dict') to load.")
-                load_note = f"Instantiated {args.model_class_import} but FAILED to find state_dict key."
-                # model_obj'yi dict olarak bırak, bu alt satırda hataya düşecek
-            
-            report_extras["model_instantiation"] = "success"
-
         except Exception as e:
-            print(f"[ERROR] Failed during model instantiation/loading: {e}")
-            inference_err = f"Failed to instantiate model {args.model_class_import}: {e}"
-            report_extras["model_instantiation"] = f"failed: {e}"
-            # model_obj'nin dict olarak kalmasını sağla
-            model_obj = checkpoint
+            report_extras["model_inst_error"] = f"failed to import {args.model_class_import}: {e}"
+            inference_err = f"Failed to import class: {e}"
+        else:
+            inst = None
+            # 1. Sıfır argümanlı kurucuyu dene
+            try:
+                inst = Klass()
+            except Exception as ctor_err:
+                # 2. Hata (muhtemelen 'missing args'): Argümanları tahmin etmeyi dene
+                print(f"Zero-arg constructor failed: {ctor_err}. Attempting to infer args...")
+                try:
+                    sig = inspect.signature(Klass.__init__)
+                    params = list(sig.parameters.keys())[1:] # 'self'i atla
+                except Exception:
+                    params = []
+                
+                ctor_kwargs = {}
+                inferred_state_size = None
+                inferred_action_size = None
+
+                # q_network'ten boyutları tahmin et (model_load.json'a göre)
+                q_sd = checkpoint.get("q_network")
+                if isinstance(q_sd, dict):
+                    try:
+                        weight_candidates = []
+                        for name, val in q_sd.items():
+                            if isinstance(val, torch.Tensor) and name.endswith(".weight") and val.ndim >= 2:
+                                weight_candidates.append((name, val))
+                        
+                        if weight_candidates:
+                            first_w = weight_candidates[0][1] # İlk ağırlık tensörü
+                            last_w = weight_candidates[-1][1] # Son ağırlık tensörü
+                            
+                            # Heuristic: state_size = ilk katmanın giriş boyutu
+                            inferred_state_size = int(first_w.shape[1])
+                            # Heuristic: action_size = son katmanın çıkış boyutu
+                            inferred_action_size = int(last_w.shape[0])
+                            print(f"Inferred state_size={inferred_state_size}, action_size={inferred_action_size} from q_network weights.")
+                        else:
+                            print("[WARN] q_network state_dict had no '.weight' tensors to infer shape.")
+                    except Exception as e:
+                        print(f"[WARN] Failed to infer sizes from weights: {e}")
+                
+                # Tahmin edilen veya varsayılan değerleri doldur
+                if "state_size" in params:
+                    ctor_kwargs["state_size"] = inferred_state_size or checkpoint.get("state_size", 50) # Fallback 50
+                if "action_size" in params:
+                    ctor_kwargs["action_size"] = inferred_action_size or checkpoint.get("action_size", 3) # Fallback 3
+                if "config" in params:
+                    # config'i checkpoint'ten al, bulamazsan boş dict kullan
+                    config_val = checkpoint.get("config") or checkpoint.get("training_history") or {}
+                    ctor_kwargs["config"] = config_val if isinstance(config_val, (dict, list)) else {}
+
+                
+                # 3. Tahmin edilen argümanlarla tekrar dene
+                try:
+                    print(f"Retrying instantiation with inferred kwargs: {ctor_kwargs}")
+                    inst = Klass(**ctor_kwargs)
+                    report_extras["model_inst_note"] = f"Instantiated with inferred kwargs: {ctor_kwargs}"
+                except Exception as e2:
+                    error_msg = f"Zero-arg ctor failed: {ctor_err}. Inferred ctor failed: {e2}"
+                    print(f"[ERROR] {error_msg}")
+                    report_extras["model_inst_error"] = error_msg
+                    inference_err = f"Failed to instantiate model (zero-arg and inferred): {e2}"
+
+            # 4. Başarılı bir 'inst' (instance) varsa, ağırlıkları yükle
+            if inst is not None:
+                loaded_any = False
+                try:
+                    # Bizim model_load.json'a göre öncelikli durum:
+                    if hasattr(inst, "q_network") and "q_network" in checkpoint and isinstance(checkpoint["q_network"], dict):
+                        inst.q_network.load_state_dict(checkpoint["q_network"])
+                        loaded_any = True
+                        report_extras["model_inst_load"] = "q_network"
+                        print("Successfully loaded 'q_network' state_dict.")
+                    
+                    # Diğer fallback'ler
+                    for cand in ("state_dict", "model_state_dict"):
+                        if not loaded_any and cand in checkpoint and isinstance(checkpoint[cand], dict) and hasattr(inst, "load_state_dict"):
+                            inst.load_state_dict(checkpoint[cand])
+                            loaded_any = True
+                            report_extras["model_inst_load"] = cand
+                            print(f"Successfully loaded '{cand}' state_dict.")
+                            break
+                    
+                    if loaded_any:
+                        if hasattr(inst, "eval"): inst.eval()
+                        model_obj = inst # Başarılı! model_obj'yi dict'ten 'canlı' modele çevir
+                        load_note = f"Instantiated {args.model_class_import} and loaded {report_extras.get('model_inst_load', 'state')}"
+                    else:
+                        inference_err = "Instantiated model but failed to find/load a matching state_dict ('q_network' or 'state_dict')."
+                        report_extras["model_inst_error"] = inference_err
+                        print(f"[ERROR] {inference_err}")
+                        
+                except Exception as e:
+                    inference_err = f"Failed during state_dict loading: {e}"
+                    report_extras["model_inst_load_errors"] = str(e)
+                    print(f"[ERROR] {inference_err}")
     # --- YENİ BLOK SONU ---
 
 
     # Run inference best-effort
     result = None
-    if inference_err is None: # Sadece canlandırma başarısız olmadıysa dene
+    if inference_err is None:
         if model_obj is None:
             inference_err = "No model object available for inference"
         else:
             try:
                 result = compute_confidences_and_stats(model_obj, X, batch_size=args.batch_size)
             except Exception as e:
-                # Bu, "Model object is not callable..." hatasını yakalayan yer
                 inference_err = str(e)
 
     report = build_report(X, result, load_note, inference_err)
-    report.update(report_extras) # Canlandırma loglarını rapora ekle
+    report.update(report_extras)
     save_report(report, args.out)
 
-    # Always write diagnostics if out_dir is provided
+    # Always write diagnostics
     if args.out_dir:
         try:
             if report.get("inference_ok") and result is not None:
-                _write_diagnostics(args.out_dir, result)  # type: ignore[arg-type]
+                _write_diagnostics(args.out_dir, result)
             else:
-                # still save X and load_note for debugging
                 os.makedirs(args.out_dir, exist_ok=True)
                 np.save(os.path.join(args.out_dir, "X.npy"), X)
                 with open(os.path.join(args.out_dir, "load_note.txt"), "w", encoding="utf-8") as f:
