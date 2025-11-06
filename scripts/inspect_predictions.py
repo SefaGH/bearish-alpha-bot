@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""
+scripts/inspect_predictions.py
+
+Load diagnostics/inst_model.pth (if exists) and sample CSV (SAMPLES_PATH env var).
+Try several fallback ways to get model outputs for the first few samples:
+ - model.predict_proba(X)
+ - model.act(x)  (if present)
+ - model.q_network(torch.tensor(x)) -> apply softmax
+Write diagnostics/predictions_debug.json with attempts and shapes.
+"""
+import os
+import json
+import traceback
+
+OUT = "diagnostics/predictions_debug.json"
+os.makedirs("diagnostics", exist_ok=True)
+
+try:
+    import torch
+    import numpy as np
+    import pandas as pd
+    import importlib
+    from torch.nn import functional as F
+    from scripts.safe_torch_load import safe_torch_load # Güvenli yükleyiciyi kullan
+except Exception as e:
+    with open(OUT, "w") as f:
+        json.dump({"error": f"import failed: {e}", "trace": traceback.format_exc()}, f, indent=2)
+    print(f"Wrote {OUT} (import error)")
+    sys.exit(0)
+
+model_path = os.environ.get("INST_MODEL_PATH", "diagnostics/inst_model.pth")
+samples_path = os.environ.get("SAMPLES_PATH", "sample_data/test_samples.csv")
+model_class_import = os.environ.get("MODEL_CLASS_IMPORT", None) # Sınıfı bilmeye ihtiyacı var
+res = {"model_path": model_path, "samples_path": samples_path, "attempts": []}
+
+def safe_tolist(t):
+    try:
+        return t.detach().cpu().numpy().tolist()
+    except Exception:
+        try:
+            return list(t)
+        except Exception:
+            return str(type(t))
+
+# load samples
+X = None
+if os.path.exists(samples_path):
+    try:
+        df = pd.read_csv(samples_path)
+        # take first 10 rows and convert numeric columns to a 2D array as fallback
+        num = df.select_dtypes(include=[int,float]).to_numpy()
+        if num.size == 0:
+            num = df.to_numpy()
+        X = num[:10]
+        res["sample_shape"] = list(X.shape)
+    except Exception as e:
+        res["sample_load_error"] = str(e)
+else:
+    res["sample_load_error"] = "samples file not found"
+
+# load model
+try:
+    obj = safe_torch_load(model_path, model_class_import=model_class_import, map_location="cpu")
+    res["loaded_type"] = str(type(obj))
+except Exception as e:
+    res["load_error"] = str(e)
+    with open(OUT, "w") as f:
+        json.dump(res, f, indent=2)
+    print(f"Wrote {OUT} (load error)")
+    sys.exit(0)
+
+if X is None:
+    print(f"Cannot run predictions, sample data (X) is None.")
+    with open(OUT, "w") as f:
+        json.dump(res, f, indent=2)
+    sys.exit(0)
+
+# try predict_proba
+try:
+    if hasattr(obj, "predict_proba"):
+        outp = obj.predict_proba(X)
+        res["predict_proba"] = safe_tolist(outp)
+    else:
+        res["predict_proba"] = "not supported"
+except Exception as e:
+    res["predict_proba_error"] = str(e)
+
+# try act (some agents define act that returns action probs)
+try:
+    if hasattr(obj, "act"):
+        acts = []
+        for row in X:
+            try:
+                # 'act' genellikle tek bir state (1D array) alır
+                a = obj.act(row)
+                acts.append(safe_tolist(a))
+            except Exception as ex:
+                acts.append({"error": str(ex)})
+        res["act"] = acts
+    else:
+        res["act"] = "not supported"
+except Exception as e:
+    res["act_error"] = str(e)
+
+# try q_network forward (apply softmax)
+try:
+    if hasattr(obj, "q_network"):
+        qouts = []
+        for row in X:
+            try:
+                # q_network genellikle (batch_size, state_size) bekler
+                tensor = torch.tensor(row, dtype=torch.float32).unsqueeze(0)
+                with torch.no_grad():
+                    out = obj.q_network(tensor)
+                    probs = F.softmax(out, dim=-1)
+                    qouts.append(safe_tolist(probs))
+            except Exception as ex:
+                qouts.append({"error": str(ex)})
+        res["q_network"] = qouts
+    else:
+        res["q_network"] = "not supported"
+except Exception as e:
+    res["q_network_error"] = str(e)
+
+with open(OUT, "w") as f:
+    json.dump(res, f, indent=2)
+print(f"Wrote {OUT}")
