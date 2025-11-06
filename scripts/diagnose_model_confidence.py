@@ -29,9 +29,16 @@ import math
 import matplotlib.pyplot as plt
 
 # ---------- Helpers ----------
+def _strip_quotes(s: Optional[str]) -> Optional[str]:
+    if s is None:
+        return None
+    return str(s).strip().strip('"').strip("'")
+
 def try_load_model(model_path: str, model_class_import: Optional[str]=None):
-    # Sanitize model_path in case workflow input included surrounding quotes
-    model_path = str(model_path).strip().strip('"').strip("'")
+    # Sanitize incoming values (strip surrounding quotes that CI inputs sometimes include)
+    model_path = _strip_quotes(model_path)
+    if model_class_import:
+        model_class_import = _strip_quotes(model_class_import)
     model_path = Path(model_path)
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found: {model_path}")
@@ -48,6 +55,8 @@ def try_load_model(model_path: str, model_class_import: Optional[str]=None):
         raise RuntimeError(f"torch.load failed: {e}")
     # If obj is state_dict and model class provided, import and load
     if isinstance(obj, dict) and model_class_import:
+        # sanitize import again just in case
+        model_class_import = _strip_quotes(model_class_import)
         module_path, class_name = model_class_import.rsplit(".", 1)
         mod = importlib.import_module(module_path)
         Klass = getattr(mod, class_name)
@@ -143,6 +152,13 @@ def main():
     ap.add_argument("--state-import", required=False, help="Optional: import path for state vector builder module, e.g. env.state_vector")
     ap.add_argument("--label-col", default="label", help="If samples CSV has a label column")
     args = ap.parse_args()
+
+    args.model = _strip_quotes(args.model)
+    args.samples = _strip_quotes(args.samples)
+    args.scaler = _strip_quotes(args.scaler)
+    args.state_import = _strip_quotes(args.state_import)
+    args.model_class_import = _strip_quotes(args.model_class_import)
+    args.label_col = _strip_quotes(args.label_col)
 
     out_dir = Path("diagnostics")
     out_dir.mkdir(exist_ok=True)
