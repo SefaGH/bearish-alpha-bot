@@ -30,6 +30,8 @@ import matplotlib.pyplot as plt
 
 # ---------- Helpers ----------
 def try_load_model(model_path: str, model_class_import: Optional[str]=None):
+    # Sanitize model_path in case workflow input included surrounding quotes
+    model_path = str(model_path).strip().strip('"').strip("'")
     model_path = Path(model_path)
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found: {model_path}")
