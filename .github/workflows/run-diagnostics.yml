@@ -139,6 +139,20 @@ jobs:
           python scripts/diagnose_model_confidence.py "${ARGS[@]}" \
             2>&1 | tee diagnostics/diagnostics_stdout.log || true
 
+      # --- YENİ HATA AYIKLAMA ADIMI (ANALİZ F) ---
+      - name: 5. Inspect model predictions (debug)
+        shell: bash
+        env:
+          INST_MODEL_PATH: "diagnostics/inst_model.pth"
+          SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
+          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
+        run: |
+          set -euo pipefail
+          python scripts/inspect_predictions.py || true
+          echo "--- Content of predictions_debug.json ---"
+          cat diagnostics/predictions_debug.json || true
+          echo "-----------------------------------------"
+
       - name: Upload diagnostics as artifact
         uses: actions/upload-artifact@v4
         with:
