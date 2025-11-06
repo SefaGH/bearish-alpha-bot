@@ -12,6 +12,7 @@ Write diagnostics/predictions_debug.json with attempts and shapes.
 import os
 import json
 import traceback
+import sys # sys.exit için eklendi
 
 OUT = "diagnostics/predictions_debug.json"
 os.makedirs("diagnostics", exist_ok=True)
@@ -45,17 +46,53 @@ def safe_tolist(t):
         except Exception:
             return str(type(t))
 
+# --- YENİ EKLENEN ADIM ---
+# Modelin beklediği state_size'ı (42) dosyadan oku
+expected_state_size = None
+try:
+    with open("diagnostics/inferred_state_size.txt", "r") as f:
+        expected_state_size = int(f.read().strip())
+    print(f"Read expected state_size from file: {expected_state_size}")
+except Exception as e:
+    print(f"[WARN] Could not read 'inferred_state_size.txt': {e}")
+# --- BLOK SONU ---
+
 # load samples (first 10)
 X = None
 if os.path.exists(samples_path):
     try:
         df = pd.read_csv(samples_path)
+        
+        # 'label' sütununu (ve benzerlerini) çıkar
+        label_cols_found = []
+        for drop_col in ("label", "target", "y", "timestamp", "time", "datetime"):
+            if drop_col in df.columns: # Orijinal df'ten çıkar
+                label_cols_found.append(drop_col)
+                
+        if label_cols_found:
+            print(f"Dropping non-feature columns: {label_cols_found}")
+            df = df.drop(columns=label_cols_found, errors='ignore')
+
         num = df.select_dtypes(include=[int,float]).to_numpy()
         if num.size == 0:
+            print("[WARN] No numeric columns found after dropping labels. Using all columns.")
             num = df.to_numpy()
+            
         X = num[:10]
-        res["sample_shape"] = list(X.shape)
+        res["sample_shape_raw"] = list(X.shape)
         res["sample_head"] = df.head(3).to_dict(orient="records")
+        
+        # --- YENİ EKLENEN VERİ KESME (SLICING) BLOĞU ---
+        if expected_state_size is not None:
+            print(f"Data shape is {X.shape}, model expects {expected_state_size}.")
+            if X.shape[1] > expected_state_size:
+                print(f"Slicing data from {X.shape[1]} features to {expected_state_size} features.")
+                X = X[:, :expected_state_size]
+            elif X.shape[1] < expected_state_size:
+                print(f"[WARN] Data shape ({X.shape[1]}) is smaller than model expected shape ({expected_state_size})!")
+        res["sample_shape_final"] = list(X.shape)
+        # --- BLOK SONU ---
+
     except Exception as e:
         res["sample_load_error"] = str(e)
 else:
