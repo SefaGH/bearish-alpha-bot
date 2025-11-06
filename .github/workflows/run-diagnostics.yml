@@ -90,6 +90,16 @@ jobs:
           python scripts/instantiate_model.py || true
           ls -la diagnostics
 
+      # --- YENİ "DOĞRULAMA" ADIMI (ANALİZ D'DEN) ---
+      # Bu adım, 'inst_model.pth' dosyasını yüklemeyi dener ve tipini raporlar.
+      - name: Verify instantiated model object
+        shell: bash
+        env:
+          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
+        run: |
+          set -euo pipefail
+          python scripts/verify_model.py || true
+
       - name: Run diagnostics script (using instantiated model if available)
         shell: bash
         env:
@@ -99,7 +109,6 @@ jobs:
           LIMIT: ${{ github.event.inputs.limit }}
           OUT: ${{ github.event.inputs.out }}
           OUT_DIR: ${{ github.event.inputs.out_dir }}
-          # --- BU DEĞİŞKENİ SON ADIMA DA EKLE ---
           MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
         run: |
           set -euo pipefail
@@ -125,8 +134,6 @@ jobs:
             ARGS+=(--limit "$LIMIT")
           fi
           
-          # --- BU BLOK, PICKLE HATASINI ÇÖZER ---
-          # Sınıfı import edebilmesi için argümanı bu script'e de gönder
           if [[ -n "${MODEL_CLASS_IMPORT}" ]]; then
             ARGS+=(--model-class-import "$MODEL_CLASS_IMPORT")
           fi
