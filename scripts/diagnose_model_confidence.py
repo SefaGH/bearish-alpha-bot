@@ -2,8 +2,8 @@
 """
 diagnose_model_confidence.py
 ---------------------------------
-Loads a model (optional) and a CSV of samples, runs inference to compute per-sample
-probabilities, confidences, and predictions, and writes a JSON report.
+Loads a model, auto-detects the best scaling strategy for the input data,
+runs inference, and writes a JSON report.
 """
 
 from __future__ import annotations
@@ -11,35 +11,26 @@ import argparse
 import json
 import os
 import sys
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 import importlib
+import math as _math # Scaling fonksiyonları için eklendi
 
-import numpy as np
+import numpy as _np # Scaling fonksiyonları için _np olarak import edildi
 
 # Optional deps
 try:
     import pandas as pd
-except Exception:  # pragma: no cover
-    pd = None
-
+except Exception: pd = None
 try:
     import torch
     import torch.nn.functional as F
-except Exception:  # pragma: no cover
-    torch = None
-    F = None
-
-# joblib is optional for sklearn pickle loads
+except Exception: torch, F = None, None
 try:
     import joblib
-except Exception:  # pragma: no cover
-    joblib = None
-
-# Optional YAML (when configs are used to describe models)
+except Exception: joblib = None
 try:
     import yaml
-except Exception:  # pragma: no cover
-    yaml = None
+except Exception: yaml = None
 
 # "safe_torch_load"u import ediyoruz
 from scripts.safe_torch_load import safe_torch_load
@@ -47,32 +38,26 @@ from scripts.safe_torch_load import safe_torch_load
 # --------------------------------------------------------------------------------------
 # I/O helpers
 # --------------------------------------------------------------------------------------
-def load_samples(csv_path: str, limit: Optional[int] = None, expected_shape: Optional[int] = None) -> np.ndarray:
+def load_samples(csv_path: str, limit: Optional[int] = None, expected_shape: Optional[int] = None) -> Tuple[_np.ndarray, List[str]]:
     """
-    CSV'yi yükler. Eğer expected_shape verilirse, veriyi [:, :expected_shape]
-    şeklinde keser (slice).
+    CSV'yi yükler, 'label' sütunlarını atar ve veriyi (X) beklenen şekle (expected_shape)
+    göre keser. (X, feature_cols) döndürür.
     """
-    if pd is None:
-        raise RuntimeError("pandas is required to read CSV files")
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+    if pd is None: raise RuntimeError("pandas required")
+    if not os.path.exists(csv_path): raise FileNotFoundError(f"CSV not found: {csv_path}")
     df = pd.read_csv(csv_path)
-    if df.empty:
-        raise RuntimeError("CSV is empty")
+    if df.empty: raise RuntimeError("CSV is empty")
 
     num_df = df.select_dtypes(include=["number"]).copy()
     
-    # 'label' sütununu (ve benzerlerini) çıkar
-    label_cols_found = []
-    for drop_col in ("label", "target", "y", "timestamp", "time", "datetime"):
-        if drop_col in num_df.columns:
-            label_cols_found.append(drop_col)
-            num_df.drop(columns=[drop_col], inplace=True, errors="ignore")
-    if label_cols_found:
-        print(f"Dropping non-feature columns: {label_cols_found}")
+    label_candidates = [c for c in num_df.columns if c.lower() in ("label", "target", "y", "class")]
+    if label_candidates:
+        print(f"Dropping non-feature columns: {label_candidates}")
+        num_df = num_df.drop(columns=label_candidates)
 
+    feature_cols = num_df.columns.tolist()
+    
     if num_df.empty:
-        print("[WARN] No numeric columns found after dropping labels. Using all columns.")
         X = df.values
     else:
         X = num_df.values
@@ -82,41 +67,34 @@ def load_samples(csv_path: str, limit: Optional[int] = None, expected_shape: Opt
     if X.ndim == 1:
         X = X.reshape(-1, 1)
     
-    # --- YENİ EKLENEN VERİ KESME (SLICING) BLOĞU ---
     if expected_shape is not None:
         print(f"Data shape is {X.shape}, model expects {expected_shape}.")
         if X.shape[1] > expected_shape:
-            print(f"Slicing data from {X.shape[1]} features to {expected_shape} features.")
+            print(f"Slicing data from {X.shape[1]} to {expected_shape} features.")
             X = X[:, :expected_shape]
+            feature_cols = feature_cols[:expected_shape]
         elif X.shape[1] < expected_shape:
-            print(f"[WARN] Data shape ({X.shape[1]}) is smaller than model expected shape ({expected_shape})!")
-    # --- BLOK SONU ---
+            print(f"[WARN] Data shape ({X.shape[1]}) is smaller than expected ({expected_shape})!")
             
-    return X.astype(np.float32, copy=False)
+    return X.astype(_np.float32, copy=False), feature_cols
 
 
 def try_load_model(model_path: Optional[str], model_class_import: Optional[str] = None) -> Dict[str, Any]:
     """
     'safe_torch_load' kullanarak modeli yükler.
     """
-    if not model_path:
-        return {"model": None, "note": "No model path provided"}
-    if not os.path.exists(model_path):
-        return {"model": None, "note": f"Model path does not exist: {model_path}"}
+    if not model_path: return {"model": None, "note": "No model path provided"}
+    if not os.path.exists(model_path): return {"model": None, "note": f"Model path not found: {model_path}"}
 
     ext = os.path.splitext(model_path)[1].lower()
     if ext in (".pt", ".pth"):
-        if torch is None:
-            return {"model": None, "note": "torch not available"}
+        if torch is None: return {"model": None, "note": "torch not available"}
         try:
-            # 'safe_torch_load'u çağırıyoruz
             obj = safe_torch_load(model_path, model_class_import=model_class_import, map_location="cpu")
             return {"model": obj, "note": "Loaded via safe_torch_load"}
         except Exception as e:
-            # Hata mesajını yakala
             return {"model": None, "note": f"safe_torch_load failed: {e}"}
             
-    # Diğer dosya türleri (pickle, yaml) değişmedi...
     if ext in (".pkl", ".pickle"):
         try:
             if joblib is not None: obj = joblib.load(model_path)
@@ -137,12 +115,11 @@ def try_load_model(model_path: Optional[str], model_class_import: Optional[str] 
 
     return {"model": None, "note": f"Unsupported model extension: {ext}"}
 
-
 # --------------------------------------------------------------------------------------
 # Core inference utility
 # --------------------------------------------------------------------------------------
-def _logits_to_probs(x: Any) -> np.ndarray:
-    # torch path
+def _logits_to_probs(x: Any) -> _np.ndarray:
+    # ... (Bu fonksiyon "Analiz J" için değişmedi, ancak _np kullanacak şekilde güncellendi) ...
     if torch is not None and isinstance(x, (torch.Tensor,)):
         if x.ndim == 1:
             x = x.reshape(1, -1)
@@ -163,120 +140,238 @@ def _logits_to_probs(x: Any) -> np.ndarray:
             e = torch.exp(t)
             p = e / e.sum(dim=1, keepdim=True)
             return p.cpu().numpy()
-    # numpy path
-    arr = np.asarray(x)
+    arr = _np.asarray(x)
     if arr.ndim == 1:
         arr = arr.reshape(1, -1)
     row_sums = arr.sum(axis=1, keepdims=True)
-    if np.all(arr >= 0) and np.allclose(row_sums, 1.0, atol=1e-4):
+    if _np.all(arr >= 0) and _np.allclose(row_sums, 1.0, atol=1e-4):
         return arr
-    # Softmax
     arr = arr - arr.max(axis=1, keepdims=True)
-    ex = np.exp(arr)
+    ex = _np.exp(arr)
     return ex / ex.sum(axis=1, keepdims=True)
 
 
-def compute_confidences_and_stats(model_obj: Any, X: np.ndarray, batch_size: int = 512) -> Dict[str, np.ndarray]:
-    probs_list: List[np.ndarray] = []
-
-    # Case 1: agent has q_network (torch)
+def compute_confidences_and_stats(model_obj: Any, X: _np.ndarray, batch_size: int = 512) -> Dict[str, _np.ndarray]:
+    """
+    Bu fonksiyon artık 'X' verisinin ZATEN ÖLÇEKLENDİRİLMİŞ (SCALED) olduğunu varsayar.
+    """
+    # ... (Bu fonksiyon "Analiz J" için değişmedi, ancak _np kullanacak şekilde güncellendi) ...
+    probs_list: List[_np.ndarray] = []
     if hasattr(model_obj, "q_network") and getattr(model_obj, "q_network") is not None:
-        if torch is None:
-            raise RuntimeError("torch is required to use q_network")
+        if torch is None: raise RuntimeError("torch is required to use q_network")
         net = getattr(model_obj, "q_network")
         device = torch.device("cpu")
         net.eval()
         with torch.no_grad():
             for i in range(0, len(X), batch_size):
-                xb = torch.from_numpy(X[i:i+batch_size].astype(np.float32)).to(device)
+                xb = torch.from_numpy(X[i:i+batch_size].astype(_np.float32)).to(device)
                 out = net(xb)
-                if isinstance(out, (tuple, list)):
-                    out = out[0]
+                if isinstance(out, (tuple, list)): out = out[0]
                 probs_chunk = _logits_to_probs(out)
                 probs_list.append(probs_chunk)
-
-    # Case 2: callable / torch.nn.Module
     elif callable(model_obj):
         is_torch_module = False
         if torch is not None:
-            try:
-                is_torch_module = isinstance(model_obj, torch.nn.Module)
-            except Exception:
-                is_torch_module = False
-
+            try: is_torch_module = isinstance(model_obj, torch.nn.Module)
+            except Exception: is_torch_module = False
         if is_torch_module:
             model_obj.eval()
             with torch.no_grad():
                 for i in range(0, len(X), batch_size):
-                    xb = torch.from_numpy(X[i:i+batch_size].astype(np.float32))
+                    xb = torch.from_numpy(X[i:i+batch_size].astype(_np.float32))
                     out = model_obj(xb)
-                    if isinstance(out, (tuple, list)):
-                        out = out[0]
+                    if isinstance(out, (tuple, list)): out = out[0]
                     probs_chunk = _logits_to_probs(out)
                     probs_list.append(probs_chunk)
         else:
-            # Generic callable
             if hasattr(model_obj, "predict_proba"):
-                probs = np.asarray(model_obj.predict_proba(X))
+                probs = _np.asarray(model_obj.predict_proba(X))
                 probs_list.append(probs)
             else:
                 for i in range(0, len(X), batch_size):
                     Xb = X[i:i+batch_size]
-                    try:
-                        out = model_obj(Xb)
-                    except Exception:
-                        out = model_obj(Xb.astype(np.float32))
-                    if isinstance(out, (tuple, list)):
-                        out = out[0]
+                    try: out = model_obj(Xb)
+                    except Exception: out = model_obj(Xb.astype(_np.float32))
+                    if isinstance(out, (tuple, list)): out = out[0]
                     probs_chunk = _logits_to_probs(out)
                     probs_list.append(probs_chunk)
-
-    # Case 3: sklearn-like object
     elif hasattr(model_obj, "predict_proba"):
-        probs = np.asarray(model_obj.predict_proba(X))
+        probs = _np.asarray(model_obj.predict_proba(X))
         probs_list.append(probs)
-
     else:
         raise RuntimeError("Model object is not callable, has no q_network, and has no predict_proba")
 
-    if not probs_list:
-        raise RuntimeError("No outputs produced by model during inference")
-
-    probs = np.vstack(probs_list)
-
-    if probs.ndim == 1:
-        probs = np.vstack([1 - probs, probs]).T
-    elif probs.shape[1] == 1:
-        probs = np.hstack([1 - probs, probs])
-
+    if not probs_list: raise RuntimeError("No outputs produced by model during inference")
+    probs = _np.vstack(probs_list)
+    if probs.ndim == 1: probs = _np.vstack([1 - probs, probs]).T
+    elif probs.shape[1] == 1: probs = _np.hstack([1 - probs, probs])
     confs = probs.max(axis=1)
     preds = probs.argmax(axis=1)
     return {"probs": probs, "confs": confs, "preds": preds}
 
+# --------------------------------------------------------------------------------------
+# YENİ "OTOMATİK ÖLÇEKLEME" FONKSİYONLARI (ANALİZ J)
+# --------------------------------------------------------------------------------------
+
+def _entropy_rows(probs: _np.ndarray) -> _np.ndarray:
+    # probs: (N, C)
+    eps = 1e-12
+    p = _np.clip(probs, eps, 1.0)
+    return -_np.sum(p * _np.log(p), axis=1)
+
+def _model_probs_for_X(model_obj, X: _np.ndarray) -> _np.ndarray:
+    """
+    Try to run model.q_network forward and softmax; fallbacks if model provides act/predict_proba.
+    Returns numpy array shape (N, C) or raises.
+    """
+    # try predict_proba
+    try:
+        if hasattr(model_obj, "predict_proba"):
+            out = model_obj.predict_proba(X)
+            return _np.asarray(out)
+    except Exception:
+        pass
+
+    # try act OR q_network
+    try:
+        # if model expects torch tensors, convert
+        xt = torch.tensor(X, dtype=torch.float32)
+        if hasattr(model_obj, "q_network"):
+            with torch.no_grad():
+                logits = model_obj.q_network(xt)
+                probs = F.softmax(logits, dim=-1)
+                return probs.detach().cpu().numpy()
+        # try calling model directly (e.g. if it's a nn.Module)
+        if callable(model_obj):
+            with torch.no_grad():
+                logits = model_obj(xt)
+                probs = F.softmax(logits, dim=-1)
+                return probs.detach().cpu().numpy()
+    except Exception:
+        # last-resort: try act per-sample returning int/class -> convert to one-hot
+        if hasattr(model_obj, "act"):
+            outs = []
+            action_size = getattr(model_obj, "action_size", 3) # default 3
+            for row in X:
+                try:
+                    a = model_obj.act(row)
+                    # if act returns int action index
+                    if isinstance(a, int):
+                        v = _np.zeros(action_size)
+                        v[a] = 1.0
+                        outs.append(v)
+                    else:
+                        outs.append(_np.asarray(a))
+                except Exception:
+                    outs.append(None)
+            # Fill Nones with uniform prob
+            uniform_prob = _np.full((action_size,), 1.0/action_size)
+            return _np.asarray([o if o is not None else uniform_prob for o in outs])
+            
+    raise RuntimeError("Model forward failed for all known interfaces (q_network, callable, predict_proba, act)")
+
+def try_scalings_and_choose(X: _np.ndarray, model_obj, checkpoint: Dict = None) -> Tuple[_np.ndarray, Dict]:
+    """
+    Try several scaling strategies on X, run model, compute mean entropy and choose best (lowest mean entropy).
+    Returns (X_chosen, metadata) where metadata contains method and per-method stats.
+    """
+    print("Starting auto-scaling probe... Trying different scaling strategies.")
+    results = {}
+    methods = []
+
+    # prepare input
+    Xf = _np.asarray(X, dtype=float)
+    if Xf.size == 0:
+        raise RuntimeError("Input data (X) for scaling is empty.")
+    N, D = Xf.shape
+
+    # 1. candidate: checkpoint scaler if present
+    if checkpoint and isinstance(checkpoint, dict):
+        if "scaler_mean" in checkpoint and "scaler_std" in checkpoint:
+            try:
+                mean = _np.asarray(checkpoint["scaler_mean"], dtype=float)
+                std = _np.asarray(checkpoint["scaler_std"], dtype=float)
+                Xc = (Xf - mean.reshape(1, -1)) / (std.reshape(1, -1) + 1e-12)
+                methods.append(("checkpoint", Xc))
+            except Exception:
+                pass # Shape mismatch vb.
+
+    # 2. none
+    methods.append(("none", Xf.copy()))
+
+    # 3. z-score (use sample stats)
+    try:
+        means = Xf.mean(axis=0)
+        stds = Xf.std(axis=0)
+        stds[stds == 0] = 1.0 # 0'a bölmeyi engelle
+        z = (Xf - means.reshape(1, -1)) / (stds.reshape(1, -1) + 1e-12)
+        methods.append(("zscore_sample", z))
+    except Exception as e:
+        results["zscore_sample_error"] = str(e)
+
+    # 4. min-max [0, 1]
+    try:
+        mn = Xf.min(axis=0)
+        mx = Xf.max(axis=0)
+        denom = (mx - mn).reshape(1, -1)
+        denom[denom == 0] = 1.0 # 0'a bölmeyi engelle
+        mm = (Xf - mn.reshape(1, -1)) / (denom + 1e-12)
+        methods.append(("minmax_sample", mm))
+    except Exception as e:
+        results["minmax_sample_error"] = str(e)
+
+    # 5. div by maxabs [-1, 1]
+    try:
+        maxabs = _np.max(_np.abs(Xf), axis=0)
+        maxabs_adj = maxabs.copy()
+        maxabs_adj[maxabs_adj == 0] = 1.0
+        dm = Xf / maxabs_adj.reshape(1, -1)
+        methods.append(("maxabs", dm))
+    except Exception as e:
+        results["maxabs_error"] = str(e)
+
+
+    # evaluate each method
+    best = None
+    for name, Xm in methods:
+        try:
+            probs = _model_probs_for_X(model_obj, Xm)  # (N, C)
+            ent = _entropy_rows(probs)
+            mean_ent = float(_np.mean(ent))
+            results[name] = {"mean_entropy": mean_ent, "entropy_per_sample": ent.tolist(), "probs_example": probs[:5].tolist()}
+            if best is None or mean_ent < best[0]:
+                best = (mean_ent, name, Xm, probs)
+        except Exception as e:
+            print(f"Scaling method '{name}' failed: {e}")
+            results[name] = {"error": str(e)}
+
+    if best is None:
+        print("[ERROR] All scaling attempts failed.")
+        raise RuntimeError("All scaling attempts failed")
+
+    chosen_entropy, chosen_name, chosen_X, chosen_probs = best
+    meta = {"chosen_method": chosen_name, "chosen_entropy": float(chosen_entropy), "per_method": results}
+    print(f"Auto-scaling complete. Best method: '{chosen_name}' (Entropy: {chosen_entropy:.4f})")
+    return chosen_X, meta
 
 # --------------------------------------------------------------------------------------
 # Reporting
 # --------------------------------------------------------------------------------------
-def build_report(X: np.ndarray,
-                 result: Optional[Dict[str, np.ndarray]],
+def build_report(X: _np.ndarray,
+                 result: Optional[Dict[str, _np.ndarray]],
                  load_note: str,
                  error: Optional[str]) -> Dict[str, Any]:
-    report: Dict[str, Any] = {
-        "samples_count": int(len(X)),
-        "model_load_note": load_note,
-    }
+    # ... (Bu fonksiyon "Analiz J" için değişmedi, ancak _np kullanacak şekilde güncellendi) ...
+    report: Dict[str, Any] = {"samples_count": int(len(X)), "model_load_note": load_note}
     if error is not None:
         report["inference_ok"] = False
         report["inference_error"] = str(error)
         return report
-
     probs = result["probs"]
     confs = result["confs"]
     preds = result["preds"]
-
-    class_counts = {int(c): int((preds == c).sum()) for c in np.unique(preds)}
+    class_counts = {int(c): int((preds == c).sum()) for c in _np.unique(preds)}
     avg_conf = float(confs.mean()) if len(confs) else 0.0
-
     report.update({
         "inference_ok": True,
         "n_classes": int(probs.shape[1]) if probs.ndim == 2 else 0,
@@ -288,8 +383,9 @@ def build_report(X: np.ndarray,
 
 
 def save_report(report: Dict[str, Any], out_path: str) -> None:
+    # ... (Bu fonksiyon "Analiz J" için değişmedi) ...
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
+        json.dump(report, f, indent=2, default=str) # default=str eklendi (numpy array'leri için)
 
 
 # --------------------------------------------------------------------------------------
@@ -310,20 +406,16 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
-def _write_diagnostics(out_dir: str, result: Dict[str, np.ndarray]) -> None:
+def _write_diagnostics(out_dir: str, result: Dict[str, _np.ndarray]) -> None:
+    # ... (Bu fonksiyon "Analiz J" için değişmedi, ancak _np kullanacak şekilde güncellendi) ...
     os.makedirs(out_dir, exist_ok=True)
-    np.save(os.path.join(out_dir, "probs_sample.npy"), result["probs"])
+    _np.save(os.path.join(out_dir, "probs_sample.npy"), result["probs"])
     confs = result["confs"]
     bins = [0.0, 0.5, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99, 1.0]
-    hist = np.histogram(confs, bins=bins)[0].tolist()
-    rel = {
-        "bins": bins,
-        "counts": hist,
-        "avg_confidence": float(confs.mean()) if len(confs) else 0.0,
-        "n": int(len(confs)),
-    }
+    hist = _np.histogram(confs, bins=bins)[0].tolist()
+    rel = {"bins": bins, "counts": hist, "avg_confidence": float(confs.mean()) if len(confs) else 0.0, "n": int(len(confs))}
     with open(os.path.join(out_dir, "reliability.json"), "w", encoding="utf-8") as f:
-        json.dump(rel, f, ensure_ascii=False, indent=2)
+        json.dump(rel, f, indent=2)
 
 
 def main(argv=None) -> int:
@@ -332,7 +424,6 @@ def main(argv=None) -> int:
     report_extras = {}
     inference_err = None
     
-    # --- YENİ EKLENEN ADIM ---
     # Modelin beklediği state_size'ı (42) dosyadan oku
     expected_state_size = None
     try:
@@ -340,58 +431,68 @@ def main(argv=None) -> int:
             expected_state_size = int(f.read().strip())
         print(f"Read expected state_size from file: {expected_state_size}")
     except Exception as e:
-        print(f"[WARN] Could not read 'inferred_state_size.txt' (this is OK if model is not a checkpoint): {e}")
-    # --- BLOK SONU ---
+        print(f"[WARN] Could not read 'inferred_state_size.txt': {e}")
 
-    # Load samples
+    # Veriyi (X_raw) yükle ve doğru boyuta (42) kes
     try:
-        # 'load_samples'a beklenen şekli (42) iletiyoruz
-        X = load_samples(args.csv, limit=args.limit, expected_shape=expected_state_size)
+        X_raw, feature_cols = load_samples(args.csv, limit=args.limit, expected_shape=expected_state_size)
     except Exception as e:
-        err_report = {
-            "samples_count": 0, "model_load_note": "skip (no model used)",
-            "inference_ok": False, "inference_error": f"Failed to load samples: {e}",
-        }
-        err_report.update(report_extras)
+        err_report = {"samples_count": 0, "model_load_note": "skip", "inference_ok": False, "inference_error": f"Failed to load samples: {e}"}
         save_report(err_report, args.out)
         print(f"[ERROR] {e}")
         return 2
 
-    # Load model (optional)
-    # 'safe_torch_load'un 'TradingRLAgent'ı bulabilmesi için import path'i iletiyoruz
+    # "Canlı" modeli yükle
     loaded = try_load_model(args.model, args.model_class_import)
     model_obj = loaded.get("model", None)
     load_note = loaded.get("note", "")
 
-    # 'model_obj'nin dict olup olmadığını kontrol etme mantığı (Analiz B) kaldırıldı,
-    # çünkü bu işi artık 'instantiate_model.py' yapıyor.
-    
+    # Orijinal checkpoint'i de (config/scaler bilgisi için) yüklemeyi dene
+    original_checkpoint_path = os.environ.get("ORIGINAL_MODEL_PATH", "")
+    checkpoint_dict = None
+    if model_obj is not None and isinstance(model_obj, dict):
+         checkpoint_dict = model_obj # Eğer 'inst_model.pth' yerine orijinal .pth verilirse
+    elif os.path.exists(original_checkpoint_path):
+        try:
+            checkpoint_dict = safe_torch_load(original_checkpoint_path, model_class_import=args.model_class_import)
+        except Exception:
+            pass # Yüklenemezse sorun değil
+            
+
     # Run inference best-effort
     result = None
-    if inference_err is None:
-        if model_obj is None:
-            inference_err = "No model object available for inference (load failed)"
-        else:
-            try:
-                result = compute_confidences_and_stats(model_obj, X, batch_size=args.batch_size)
-            except Exception as e:
-                # Bu, 'inst_model.pth' yüklenmiş olsa bile (örn. shape mismatch)
-                # meydana gelebilecek gerçek çıkarım hatasıdır.
-                inference_err = f"Inference failed (compute_confidences_and_stats): {e}"
-                report_extras["inference_traceback"] = traceback.format_exc()
+    if model_obj is None:
+        inference_err = "No model object available for inference"
+    else:
+        try:
+            # --- YENİ "OTOMATİK ÖLÇEKLEME" ADIMI (ANALİZ J) ---
+            # X_raw'ı en iyi ölçeklenmiş X_chosen'a dönüştür
+            X_chosen, scale_meta = try_scalings_and_choose(X_raw, model_obj, checkpoint=checkpoint_dict)
+            report_extras["scaling_results"] = scale_meta
+            load_note += f" | Scaling chosen: {scale_meta.get('chosen_method')}"
+            # --- BLOK SONU ---
+            
+            # Ana analizi "seçilen" veriyle yap
+            result = compute_confidences_and_stats(model_obj, X_chosen, batch_size=args.batch_size)
+        except Exception as e:
+            inference_err = str(e)
+            print(f"[ERROR] Inference failed: {e}")
+            import traceback
+            traceback.print_exc()
 
-    report = build_report(X, result, load_note, inference_err)
+    report = build_report(X_raw, result, load_note, inference_err) # Raporu X_raw boyutuyla oluştur
     report.update(report_extras)
     save_report(report, args.out)
 
     # Always write diagnostics
     if args.out_dir:
         try:
+            # probs_sample.npy dosyasını (eğer varsa) kaydet
             if report.get("inference_ok") and result is not None:
                 _write_diagnostics(args.out_dir, result)
             else:
                 os.makedirs(args.out_dir, exist_ok=True)
-                np.save(os.path.join(args.out_dir, "X.npy"), X)
+                _np.save(os.path.join(args.out_dir, "X_raw.npy"), X_raw) # Ham X'i kaydet
                 with open(os.path.join(args.out_dir, "load_note.txt"), "w", encoding="utf-8") as f:
                     f.write(load_note or "")
         except Exception as e:
