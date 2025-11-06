@@ -22,7 +22,8 @@ try:
     import pandas as pd
     import importlib
     from torch.nn import functional as F
-    from scripts.safe_torch_load import safe_torch_load # Güvenli yükleyiciyi kullan
+    # 'safe_torch_load'u kullanarak 'weights_only' hatasını güvenle aşıyoruz
+    from scripts.safe_torch_load import safe_torch_load 
 except Exception as e:
     with open(OUT, "w") as f:
         json.dump({"error": f"import failed: {e}", "trace": traceback.format_exc()}, f, indent=2)
@@ -31,7 +32,8 @@ except Exception as e:
 
 model_path = os.environ.get("INST_MODEL_PATH", "diagnostics/inst_model.pth")
 samples_path = os.environ.get("SAMPLES_PATH", "sample_data/test_samples.csv")
-model_class_import = os.environ.get("MODEL_CLASS_IMPORT", None) # Sınıfı bilmeye ihtiyacı var
+# safe_torch_load'un 'TradingRLAgent' sınıfını bulabilmesi için bu değişkene ihtiyacı var
+model_class_import = os.environ.get("MODEL_CLASS_IMPORT", None) 
 res = {"model_path": model_path, "samples_path": samples_path, "attempts": []}
 
 def safe_tolist(t):
@@ -43,17 +45,17 @@ def safe_tolist(t):
         except Exception:
             return str(type(t))
 
-# load samples
+# load samples (first 10)
 X = None
 if os.path.exists(samples_path):
     try:
         df = pd.read_csv(samples_path)
-        # take first 10 rows and convert numeric columns to a 2D array as fallback
         num = df.select_dtypes(include=[int,float]).to_numpy()
         if num.size == 0:
             num = df.to_numpy()
         X = num[:10]
         res["sample_shape"] = list(X.shape)
+        res["sample_head"] = df.head(3).to_dict(orient="records")
     except Exception as e:
         res["sample_load_error"] = str(e)
 else:
@@ -61,10 +63,12 @@ else:
 
 # load model
 try:
+    # torch.load yerine bizim 'akıllı' yükleyicimizi kullanıyoruz
     obj = safe_torch_load(model_path, model_class_import=model_class_import, map_location="cpu")
     res["loaded_type"] = str(type(obj))
 except Exception as e:
     res["load_error"] = str(e)
+    res["load_trace"] = traceback.format_exc()
     with open(OUT, "w") as f:
         json.dump(res, f, indent=2)
     print(f"Wrote {OUT} (load error)")
@@ -85,8 +89,9 @@ try:
         res["predict_proba"] = "not supported"
 except Exception as e:
     res["predict_proba_error"] = str(e)
+    res["predict_proba_trace"] = traceback.format_exc()
 
-# try act (some agents define act that returns action probs)
+# try act (agent method)
 try:
     if hasattr(obj, "act"):
         acts = []
@@ -102,6 +107,7 @@ try:
         res["act"] = "not supported"
 except Exception as e:
     res["act_error"] = str(e)
+    res["act_trace"] = traceback.format_exc()
 
 # try q_network forward (apply softmax)
 try:
@@ -122,6 +128,7 @@ try:
         res["q_network"] = "not supported"
 except Exception as e:
     res["q_network_error"] = str(e)
+    res["q_network_trace"] = traceback.format_exc()
 
 with open(OUT, "w") as f:
     json.dump(res, f, indent=2)
