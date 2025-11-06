@@ -109,7 +109,7 @@ jobs:
           OUT_DIR: ${{ github.event.inputs.out_dir }}
           MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           echo "PYTHONPATH=$PYTHONPATH"
           mkdir -p "$OUT_DIR"
           
