@@ -46,8 +46,8 @@ if TORCH_AVAILABLE:
     class LSTMRegimePredictor(nn.Module):
         """LSTM network for regime sequence prediction."""
         
-        def __init__(self, input_size: int = 50, hidden_size: int = 128, 
-                     num_layers: int = 3, num_classes: int = 3):
+        def __init__(self, input_size: int = 42, hidden_size: int = 64, 
+                     num_layers: int = 2, num_classes: int = 3):
             """
             Initialize LSTM regime predictor.
             
@@ -194,8 +194,8 @@ else:
     class LSTMRegimePredictor:
         """Mock LSTM network for regime prediction (PyTorch not available)."""
         
-        def __init__(self, input_size: int = 50, hidden_size: int = 128,
-                     num_layers: int = 3, num_classes: int = 3):
+        def __init__(self, input_size: int = 42, hidden_size: int = 64,
+                     num_layers: int = 2, num_classes: int = 3):
             """Initialize mock LSTM predictor."""
             self.input_size = input_size
             self.hidden_size = hidden_size

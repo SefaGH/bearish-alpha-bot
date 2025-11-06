@@ -159,12 +159,18 @@ class MonteCarloValidation:
 class RegimeModelTrainer:
     """
     Comprehensive model training and validation system.
-    (GÜNCELLENDİ: save_models metodu eklendi)
+    (GÜNCELLENDİ: save_models metodu eklendi ve config parametresi eklendi)
     """
     MODEL_SAVE_DIR = "data/models/regime" # Rejim modelleri için ayrı bir klasör
     
-    def __init__(self):
-        """Initialize the model trainer."""
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """
+        Initialize the model trainer.
+        
+        Args:
+            config: Optional configuration dictionary from ml.regime_prediction config block
+        """
+        self.config = config or {}
         self.models = {}
         self.scalers = {}
         self.validators = {
@@ -416,10 +422,14 @@ class RegimeModelTrainer:
         # === KORUMA SONU ===
         
         # Initialize LSTM model with correct input size (number of features per timestep)
+        # Read parameters from config (ml.regime_prediction.model_params.lstm_regime)
+        model_params = self.config.get('model_params', {})
+        lstm_config = model_params.get('lstm_regime', {})
+        
         model = LSTMRegimePredictor(
             input_size=X.shape[2],  # Number of features (last dimension of 3D array)
-            hidden_size=128,
-            num_layers=3,
+            hidden_size=lstm_config.get('hidden_size', 64),
+            num_layers=lstm_config.get('num_layers', 2),
             num_classes=len(np.unique(y))
         )
         
