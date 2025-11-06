@@ -35,45 +35,119 @@ def _strip_quotes(s: Optional[str]) -> Optional[str]:
     return str(s).strip().strip('"').strip("'")
 
 def try_load_model(model_path: str, model_class_import: Optional[str]=None):
-    # Sanitize incoming values (strip surrounding quotes that CI inputs sometimes include)
-    model_path = _strip_quotes(model_path)
-    if model_class_import:
-        model_class_import = _strip_quotes(model_class_import)
+    """
+    Robust model loader:
+    - accepts scripted modules, saved nn.Modules, or state-dict checkpoints
+    - if model_class_import points to a class that needs constructor args (e.g. TradingRLAgent),
+      this function will try to infer sensible defaults from config/config.example.yaml
+      and call the class's load_model(path) method if present.
+    """
+    # sanitize inputs (strip surrounding quotes)
+    def _strip(s):
+        return None if s is None else str(s).strip().strip('"').strip("'")
+    model_path = _strip(model_path)
+    model_class_import = _strip(model_class_import)
+
     model_path = Path(model_path)
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found: {model_path}")
-    # Try torch.jit load first
+
+    # 1) Try scripted module first
     try:
-        m = torch.jit.load(str(model_path), map_location='cpu')
-        return {"type":"scripted", "model": m}
+        m = torch.jit.load(str(model_path), map_location="cpu")
+        return {"type": "scripted", "model": m}
     except Exception:
         pass
-    # Try torch.load
+
+    # 2) Try torch.load
     try:
-        obj = torch.load(str(model_path), map_location='cpu')
+        obj = torch.load(str(model_path), map_location="cpu")
     except Exception as e:
         raise RuntimeError(f"torch.load failed: {e}")
-    # If obj is state_dict and model class provided, import and load
+
+    # 3) If obj is dict and model_class_import provided, try to construct class and load
     if isinstance(obj, dict) and model_class_import:
-        # sanitize import again just in case
-        model_class_import = _strip_quotes(model_class_import)
-        module_path, class_name = model_class_import.rsplit(".", 1)
-        mod = importlib.import_module(module_path)
-        Klass = getattr(mod, class_name)
-        model = Klass()
+        # import class
         try:
-            state = obj if "state_dict" not in obj else obj["state_dict"]
-            model.load_state_dict(state)
-            model.eval()
-            return {"type":"nn_module", "model": model}
+            module_path, class_name = model_class_import.rsplit(".", 1)
+            mod = importlib.import_module(module_path)
+            Klass = getattr(mod, class_name)
         except Exception as e:
-            return {"type":"dict", "obj": obj, "note": f"loaded dict but failed to load into {model_class_import}: {e}"}
-    # If obj is nn.Module saved directly
+            return {"type": "dict", "obj": obj, "note": f"failed to import {model_class_import}: {e}"}
+
+        # attempt to instantiate intelligently
+        try:
+            # Try simple no-arg constructor first
+            model = Klass()
+        except TypeError as ctor_err:
+            # Inspect signature to see required params
+            import inspect, yaml
+            sig = inspect.signature(Klass.__init__)
+            params = list(sig.parameters.keys())[1:]  # drop 'self'
+            # Try to read config/config.example.yaml or config/config.yaml for defaults
+            cfg = {}
+            for cfg_path in ("config/config.example.yaml", "config/config.yaml"):
+                try:
+                    with open(cfg_path, "r") as f:
+                        cfg = yaml.safe_load(f) or {}
+                        break
+                except Exception:
+                    cfg = {}
+            ml_cfg = cfg.get("ml", {}) if isinstance(cfg, dict) else {}
+            rl_cfg = ml_cfg.get("reinforcement_learning", {}) if isinstance(ml_cfg, dict) else {}
+            # state_size guess: ml.features.feature_size or ml.feature_size or default 42
+            state_size = None
+            if isinstance(ml_cfg, dict):
+                state_size = ml_cfg.get("features", {}).get("feature_size") or ml_cfg.get("feature_size")
+            if state_size is None:
+                state_size = 42
+            # action_size guess: from rl_cfg or default 3
+            action_size = rl_cfg.get("action_size") if isinstance(rl_cfg, dict) else None
+            if action_size is None:
+                action_size = 3
+
+            # Build kwargs based on parameter names
+            ctor_kwargs = {}
+            if "state_size" in params:
+                ctor_kwargs["state_size"] = int(state_size)
+            if "action_size" in params:
+                ctor_kwargs["action_size"] = int(action_size)
+            if "config" in params:
+                ctor_kwargs["config"] = rl_cfg if isinstance(rl_cfg, dict) else {}
+
+            try:
+                model = Klass(**ctor_kwargs)
+            except Exception as e:
+                return {"type": "dict", "obj": obj, "note": f"failed to construct {model_class_import} with inferred args: {e}"}
+
+        # If model has load_model(path) prefer that (TradingRLAgent implements load_model)
+        try:
+            if hasattr(model, "load_model"):
+                try:
+                    model.load_model(str(model_path))
+                    return {"type": "nn_module_loaded_via_class", "model": model}
+                except Exception as e:
+                    # proceed to try load_state_dict fallback
+                    pass
+            # Otherwise attempt load_state_dict if available
+            if hasattr(model, "load_state_dict"):
+                state = obj if "state_dict" not in obj else obj["state_dict"]
+                model.load_state_dict(state)
+                model.eval()
+                return {"type": "nn_module", "model": model}
+        except Exception as e:
+            return {"type": "dict", "obj": obj, "note": f"constructed {model_class_import} but loading weights failed: {e}"}
+
+        # fallback: return dict
+        return {"type": "dict", "obj": obj, "note": "could not load into class; returned dict"}
+
+    # 4) If obj is nn.Module saved directly
     if hasattr(obj, "eval"):
         obj.eval()
-        return {"type":"nn_module_saved", "model": obj}
-    # Otherwise return dict
-    return {"type":"dict", "obj": obj}
+        return {"type": "nn_module_saved", "model": obj}
+
+    # 5) Otherwise return dict
+    return {"type": "dict", "obj": obj}
 
 def load_scaler(scaler_path: Optional[str]):
     if not scaler_path:
