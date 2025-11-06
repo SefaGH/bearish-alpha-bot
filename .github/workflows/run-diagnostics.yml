@@ -11,22 +11,18 @@ on:
         description: 'Path to sample CSV (optional, leave empty if none)'
         required: false
         default: 'sample_data/test_samples.csv'
-      scaler_path:
-        description: 'Path to scaler file (optional, leave empty if none)'
-        required: false
-        default: 'data/models/regime/scaler.pkl'
-      state_import:
-        description: 'Python import path for state vector builder (e.g. env.state_vector) (optional)'
-        required: false
-        default: 'env.state_vector'
-      model_class_import:
-        description: 'Optional: model class import path if model is state_dict (e.g. src.ml.reinforcement_learning.TradingRLAgent)'
+      limit:
+        description: 'Optional row limit from CSV'
         required: false
         default: ''
-      label_col:
-        description: 'Label column name in samples CSV (optional)'
+      out:
+        description: 'Output report JSON path'
         required: false
-        default: 'label'
+        default: 'diagnostics/report.json'
+      out_dir:
+        description: 'Diagnostics output directory (optional)'
+        required: false
+        default: 'diagnostics'
 
 jobs:
   diagnostic:
@@ -60,21 +56,19 @@ jobs:
         env:
           MODEL_PATH: ${{ github.event.inputs.model_path }}
           SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
-          SCALER_PATH: ${{ github.event.inputs.scaler_path }}
-          STATE_IMPORT: ${{ github.event.inputs.state_import }}
-          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
-          LABEL_COL: ${{ github.event.inputs.label_col }}
+          LIMIT: ${{ github.event.inputs.limit }}
+          OUT: ${{ github.event.inputs.out }}
+          OUT_DIR: ${{ github.event.inputs.out_dir }}
           MPLBACKEND: Agg
-          # <-- add these lines so Python can import `src.*` and modules in scripts/
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src:${{ github.workspace }}/scripts
         run: |
           echo "PYTHONPATH=$PYTHONPATH"
+          # Build command using the current script's flags (--csv, --out, --out-dir)
           CMD="python scripts/diagnose_model_confidence.py --model \"${MODEL_PATH}\""
-          if [ -n "${SAMPLES_PATH}" ]; then CMD="${CMD} --samples \"${SAMPLES_PATH}\""; fi
-          if [ -n "${SCALER_PATH}" ]; then CMD="${CMD} --scaler \"${SCALER_PATH}\""; fi
-          if [ -n "${STATE_IMPORT}" ]; then CMD="${CMD} --state-import \"${STATE_IMPORT}\""; fi
-          if [ -n "${MODEL_CLASS_IMPORT}" ]; then CMD="${CMD} --model-class-import \"${MODEL_CLASS_IMPORT}\""; fi
-          if [ -n "${LABEL_COL}" ]; then CMD="${CMD} --label-col \"${LABEL_COL}\""; fi
+          if [ -n "${SAMPLES_PATH}" ]; then CMD="${CMD} --csv \"${SAMPLES_PATH}\""; fi
+          if [ -n "${LIMIT}" ]; then CMD="${CMD} --limit ${LIMIT}"; fi
+          if [ -n "${OUT}" ]; then CMD="${CMD} --out \"${OUT}\""; fi
+          if [ -n "${OUT_DIR}" ]; then CMD="${CMD} --out-dir \"${OUT_DIR}\""; fi
           echo "Running: $CMD"
           set -o pipefail
           $CMD 2>&1 | tee diagnostics/diagnostics_stdout.log || true
