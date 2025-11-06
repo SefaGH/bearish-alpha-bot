@@ -51,10 +51,40 @@ class AIEnhancedStrategyAdapter:
             pred_config.get("risk_scaling_factor", 1.5)
         )
 
+        # Soft-weight thresholds from config
+        regime_config = self.config.get("regime", {}) or {}
+        self.regime_hard_reject: float = float(
+            regime_config.get("min_confidence_hard_reject", 0.30)
+        )
+        self.regime_full_weight: float = float(
+            regime_config.get("min_confidence_full_weight", 0.60)
+        )
+
         logger.info("AI-Enhanced Strategy Adapter initialized")
         logger.info(
             "   - Adapter min regime confidence: %s", self.min_confidence
         )
+        logger.info(
+            "   - Soft-weight thresholds: hard_reject=%.2f, full_weight=%.2f",
+            self.regime_hard_reject, self.regime_full_weight
+        )
+
+    def _calculate_regime_weight(self, regime_confidence: float) -> Optional[float]:
+        """Calculate regime weight based on confidence with soft-weighting.
+        
+        Args:
+            regime_confidence: Regime prediction confidence (0.0-1.0)
+            
+        Returns:
+            regime_weight (0.0-1.0) or None if below hard reject threshold
+        """
+        if regime_confidence < self.regime_hard_reject:
+            return None  # Hard reject
+        elif regime_confidence >= self.regime_full_weight:
+            return 1.0  # Full weight
+        else:
+            # Linear interpolation between hard_reject and full_weight
+            return regime_confidence / self.regime_full_weight
 
     async def enhance_strategy_signal(
         self,
@@ -108,26 +138,18 @@ class AIEnhancedStrategyAdapter:
                 regime_confidence = float(regime_info.get("confidence", 0.0))
                 predicted_regime = str(regime_info.get("predicted_regime", "neutral"))
                 
-                # Soft-weight thresholds
-                min_hard_reject = 0.30  # Below this, completely ignore
-                min_full_weight = 0.60  # Above this, use full weight
+                # Calculate regime_weight using configured thresholds
+                regime_weight = self._calculate_regime_weight(regime_confidence)
                 
-                if regime_confidence < min_hard_reject:
+                if regime_weight is None:
                     # Hard reject: completely ignore low confidence predictions
                     logger.info(
                         "🧠 [ML-ADAPTER] Regime for %s ignored (Conf: %.2f < %.2f hard reject threshold)",
                         symbol,
                         regime_confidence,
-                        min_hard_reject,
+                        self.regime_hard_reject,
                     )
                 else:
-                    # Calculate regime_weight based on confidence
-                    if regime_confidence >= min_full_weight:
-                        regime_weight = 1.0
-                    else:
-                        # Partial weight: linear interpolation between thresholds
-                        regime_weight = regime_confidence / min_full_weight
-                    
                     # Add regime info with weight
                     enhancement["predicted_regime"] = predicted_regime
                     enhancement["regime_name"] = predicted_regime

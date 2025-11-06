@@ -566,6 +566,11 @@ class RiskRewardRatioRule(BaseRiskRule):
         regime_name = signal.get('regime_name', 'neutral').lower()
         
         # Get regime_weight (soft-weighting), default to 1.0 if not available
+        # Note: regime_weight is calculated from regime_conf in strategy_integration.py:
+        #   - regime_weight = None if regime_conf < 0.30 (hard reject)
+        #   - regime_weight = regime_conf / 0.60 if 0.30 <= regime_conf < 0.60
+        #   - regime_weight = 1.0 if regime_conf >= 0.60
+        # Legacy signals without regime_weight are assumed to have full confidence (1.0)
         regime_weight = float(signal.get('regime_weight', 1.0))
         
         # Calculate relaxation (reduces required R/R for high confidence)
