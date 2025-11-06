@@ -72,7 +72,7 @@ jobs:
             mkdir -p "${{ github.event.inputs.out_dir }}"
           fi
 
-      - name: Inspect model checkpoint (dump keys/types)
+      - name: 1. Inspect model checkpoint (dump keys/types)
         shell: bash
         env:
           MODEL_PATH: ${{ github.event.inputs.model_path }}
@@ -80,7 +80,7 @@ jobs:
           set -euo pipefail
           python scripts/inspect_model.py
       
-      - name: Try instantiate model with inferred kwargs
+      - name: 2. Try instantiate model with inferred kwargs
         shell: bash
         env:
           MODEL_PATH: ${{ github.event.inputs.model_path }}
@@ -90,9 +90,7 @@ jobs:
           python scripts/instantiate_model.py || true
           ls -la diagnostics
 
-      # --- YENİ "DOĞRULAMA" ADIMI (ANALİZ D'DEN) ---
-      # Bu adım, 'inst_model.pth' dosyasını yüklemeyi dener ve tipini raporlar.
-      - name: Verify instantiated model object
+      - name: 3. Verify instantiated model object (for debugging)
         shell: bash
         env:
           MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
@@ -100,7 +98,7 @@ jobs:
           set -euo pipefail
           python scripts/verify_model.py || true
 
-      - name: Run diagnostics script (using instantiated model if available)
+      - name: 4. Run diagnostics script (using instantiated model if available)
         shell: bash
         env:
           ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
