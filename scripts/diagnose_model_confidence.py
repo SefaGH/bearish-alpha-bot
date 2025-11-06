@@ -87,7 +87,9 @@ def try_load_model(model_path: Optional[str]) -> Dict[str, Any]:
         if torch is None:
             return {"model": None, "note": "torch not available to load .pt/.pth"}
         try:
-            # Bu script artık "akıllı" değil. Sadece yükler.
+            # Bu, 'canlı' modeli yükler.
+            # main() fonksiyonunun, pickle'ın sınıfı bulabilmesi için
+            # sınıfı önceden import ettiğini varsayar.
             obj = torch.load(model_path, map_location="cpu")
             return {"model": obj, "note": "Loaded torch object via torch.load"}
         except Exception as e:
@@ -206,7 +208,6 @@ def compute_confidences_and_stats(model_obj: Any, X: np.ndarray, batch_size: int
         probs = np.asarray(model_obj.predict_proba(X))
         probs_list.append(probs)
     else:
-        # Bu, checkpoint (dict) yüklenirse alacağımız beklenen hatadır.
         raise RuntimeError("Model object is not callable, has no q_network, and has no predict_proba")
 
     if not probs_list:
@@ -268,7 +269,8 @@ def parse_args(argv=None):
     p.add_argument("--batch-size", type=int, default=512, help="Inference batch size")
     p.add_argument("--out-dir", default="diagnostics", help="Optional diagnostics output directory")
     
-    # --- Tüm "akıllı" argümanlar kaldırıldı ---
+    # --- PICKLE HATASINI ÇÖZMEK İÇİN BU ARGÜMAN GERİ GELDİ ---
+    p.add_argument("--model-class-import", default=None, help="Python import path for model class (e.g. src.agent.MyAgent)")
     
     return p.parse_args(argv)
 
@@ -295,6 +297,20 @@ def main(argv=None) -> int:
     report_extras = {}
     inference_err = None
 
+    # --- PICKLE HATASINI ÇÖZMEK İÇİN BU BLOK GELDİ ---
+    # torch.load'un 'canlı' modeli (inst_model.pth) bulabilmesi için
+    # sınıf tanımını (pickle'ın ihtiyaç duyduğu) import etmemiz gerekiyor.
+    if args.model_class_import:
+        try:
+            print(f"Pre-importing class {args.model_class_import} for torch.load...")
+            module_path, class_name = args.model_class_import.rsplit(".", 1)
+            mod = importlib.import_module(module_path)
+            Klass = getattr(mod, class_name)
+            print("Class imported successfully.")
+        except Exception as e:
+            print(f"[WARN] Failed to pre-import model class: {e}. torch.load might fail.")
+    # --- YENİ BLOK SONU ---
+
     # Load samples
     try:
         X = load_samples(args.csv, limit=args.limit)
@@ -312,8 +328,6 @@ def main(argv=None) -> int:
     model_obj = loaded.get("model", None)
     load_note = loaded.get("note", "")
 
-    # --- "OTOMATİK TAHMİN" BLOĞU BURADAN TAMAMEN KALDIRILDI ---
-    
     # Run inference best-effort
     result = None
     if inference_err is None:
@@ -323,7 +337,6 @@ def main(argv=None) -> int:
             try:
                 result = compute_confidences_and_stats(model_obj, X, batch_size=args.batch_size)
             except Exception as e:
-                # Checkpoint (dict) yüklenirse bu hatayı alması beklenir
                 inference_err = str(e)
 
     report = build_report(X, result, load_note, inference_err)
