@@ -203,22 +203,23 @@ if TORCH_AVAILABLE:
             """Set experience replay buffer."""
             self.memory = memory
         
-        # =========================================================================
-        # === DEĞİŞTİRİLEN METOT: act() ===
-        # =========================================================================
         def act(self, state: np.ndarray, market_regime: str = None, 
-                risk_constraints: Dict = None) -> int:
+                risk_constraints: Dict = None, training: bool = False) -> int:
             """
             Select action based on current state using epsilon-greedy policy.
-            Includes detailed logging for decision analysis.
+    
+            Args:
+                state (np.ndarray): The current state from the environment.
+                market_regime (str, optional): The current market regime to apply bias.
+                risk_constraints (Dict, optional): Any risk constraints to apply.
+                training (bool, optional): If True, enables exploration (epsilon-greedy). 
+                                           If False, uses exploitation-only mode. Defaults to False.
             """
             if state is None:
                 logger.warning("RL Agent received None state, defaulting to HOLD (1).")
                 return 1
 
-            current_epsilon = self.epsilon if self.training_mode else self.config.get('epsilon_inference', 0.01)
-
-            if self.training_mode and random.random() < current_epsilon:
+            if training and random.random() < self.epsilon:
                 action = random.randrange(self.action_size)
                 logger.debug(f"🤖 [RL-ACT] Exploration: Selected random action -> {['BUY', 'HOLD', 'SELL'][action]}")
                 return action
@@ -228,59 +229,30 @@ if TORCH_AVAILABLE:
                 state_tensor = torch.FloatTensor(state).unsqueeze(0)
                 raw_q_values = self.q_network(state_tensor)
                 
-                # Apply adjustments
                 adjusted_q_values = raw_q_values.clone()
                 if risk_constraints:
                     adjusted_q_values = self._apply_risk_constraints(adjusted_q_values, risk_constraints)
                 if market_regime:
                     adjusted_q_values = self._apply_regime_bias(adjusted_q_values, market_regime)
-
+    
                 probabilities = torch.softmax(adjusted_q_values, dim=1).squeeze().cpu().numpy()
                 best_action = int(np.argmax(probabilities))
                 best_prob = probabilities[best_action]
                 
-                # --- YENİ VE GELİŞMİŞ LOGLAMA BLOĞU ---
-                # Karar sürecini şeffaf hale getirmek için analiz yap.
-                raw_best_action = int(torch.argmax(raw_q_values, dim=1).item())
-                actions_map = {0: 'BUY', 1: 'HOLD', 2: 'SELL'}
-                
-                logger.debug("="*50)
-                logger.debug(f"🤖 [RL-DECISION ANALYSIS]")
-                logger.debug(f"   - Market Regime: {market_regime or 'N/A'}")
-                logger.debug(f"   - Raw Q-Values:          [BUY: {raw_q_values[0][0]:.4f}, HOLD: {raw_q_values[0][1]:.4f}, SELL: {raw_q_values[0][2]:.4f}] -> Raw Choice: {actions_map[raw_best_action]}")
-                logger.debug(f"   - Adjusted Q-Values:     [BUY: {adjusted_q_values[0][0]:.4f}, HOLD: {adjusted_q_values[0][1]:.4f}, SELL: {adjusted_q_values[0][2]:.4f}]")
-                logger.debug(f"   - Final Probabilities:   [BUY: {probabilities[0]:.2%}, HOLD: {probabilities[1]:.2%}, SELL: {probabilities[2]:.2%}]")
-
-                # Kararın nedenini analiz et
-                final_choice_str = actions_map[best_action]
-                reason = ""
-                if best_action != raw_best_action:
-                    q_diff = adjusted_q_values - raw_q_values
-                    bias_buy, bias_hold, bias_sell = q_diff[0][0].item(), q_diff[0][1].item(), q_diff[0][2].item()
-                    reason = (f"Decision changed from '{actions_map[raw_best_action]}' to '{final_choice_str}' "
-                              f"due to adjustments (bias: B={bias_buy:.2f}, H={bias_hold:.2f}, S={bias_sell:.2f}).")
-                else:
-                    reason = f"Raw network output '{final_choice_str}' was confirmed after adjustments."
-                
-                logger.debug(f"   - Decision Rationale:    {reason}")
-                logger.debug(f"   - Final Choice:          {final_choice_str} with {best_prob:.2%} confidence.")
-                logger.debug("="*50)
-                # --- LOGLAMA BLOĞU SONU ---
-
-                # "Uncertain HOLD" kontrolü
-                if not self.training_mode and best_action == 1 and best_prob < self.hold_confidence_threshold:
+                # "Uncertain HOLD" kontrolü - Sadece canlı modda (training=False) çalışmalı
+                if not training and best_action == 1 and best_prob < self.hold_confidence_threshold:
                     sorted_indices = np.argsort(probabilities)[::-1]
                     second_best_action = int(sorted_indices[1])
-                    
                     logger.warning(
                         f"🤖 [RL-OVERRIDE] Agent uncertain on HOLD (prob: {best_prob:.2f} < {self.hold_confidence_threshold}). "
-                        f"Overriding with 2nd choice: {actions_map[second_best_action]}"
+                        f"Overriding with 2nd choice: {['BUY', 'HOLD', 'SELL'][second_best_action]}"
                     )
                     return second_best_action
-
-                if self.training_mode:
+    
+                # Eğitim devam ediyorsa modeli tekrar train moduna al
+                if training:
                     self.q_network.train()
-
+    
                 return best_action
         
         def _apply_risk_constraints(self, q_values: torch.Tensor, 
