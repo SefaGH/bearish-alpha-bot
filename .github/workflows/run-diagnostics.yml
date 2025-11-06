@@ -127,6 +127,8 @@ jobs:
             --out "$OUT"
             --out-dir "$OUT_DIR"
             --model-class-import "$MODEL_CLASS_IMPORT"
+            # 'diagnose' script'inin 'checkpoint'i (config için) bulabilmesi için
+            --original-model-path "$ORIGINAL_MODEL_PATH"
           )
           
           if [[ -n "${LIMIT}" ]]; then
@@ -155,7 +157,6 @@ jobs:
             echo "Skipping logit/stats inspection, $MODEL_TO_USE not found."
           fi
 
-      # --- YENİ ADIM 7 (Analiz I'den) ---
       - name: (Adım 7) Summarize logits_and_stats.json
         shell: bash
         run: |
@@ -170,7 +171,6 @@ jobs:
             echo "Skipping logits summary, file not found."
           fi
 
-      # --- YENİ ADIM 8 (Analiz I'den) ---
       - name: (Adım 8) Summarize probs_sample.npy
         shell: bash
         run: |
@@ -184,6 +184,43 @@ jobs:
           else
             echo "Skipping probs_sample.npy summary, file not found."
           fi
+
+      # --- YENİ ADIMLAR (ANALİZ J+) ---
+      - name: (Adım 9) Inspect Model Weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Inspecting model weights..."
+          python scripts/weight_stats.py || true
+          echo "--- Content of weight_stats.json ---"
+          cat diagnostics/weight_stats.json || true
+          echo "------------------------------------"
+
+      - name: (Adım 10) Test Input Responses
+        shell: bash
+        env:
+          SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
+          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
+        run: |
+          set -euo pipefail
+          echo "Testing model response to various input scalings..."
+          python scripts/test_input_responses.py || true
+          echo "--- Content of input_response_summary.json ---"
+          cat diagnostics/input_response_summary.json || true
+          echo "----------------------------------------------"
+          
+      - name: (Adım 11) Inspect Training History
+        shell: bash
+        env:
+          ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
+          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
+        run: |
+          set -euo pipefail
+          echo "Inspecting training history from original checkpoint..."
+          python scripts/inspect_training_history.py || true
+          echo "--- Content of training_history_summary.json ---"
+          cat diagnostics/training_history_summary.json || true
+          echo "------------------------------------------------"
 
       - name: Upload diagnostics as artifact
         uses: actions/upload-artifact@v4
