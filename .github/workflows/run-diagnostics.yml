@@ -63,7 +63,6 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src:${{ github.workspace }}/scripts
         run: |
           echo "PYTHONPATH=$PYTHONPATH"
-          # Direct invocation (do not embed quotes into a single CMD string)
           python scripts/diagnose_model_confidence.py \
             --model "$MODEL_PATH" \
             --csv "$SAMPLES_PATH" \
