@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """
 diagnose_model_confidence.py
----------------------------------
-Loads a model (optional) and a CSV of samples, runs inference to compute per-sample
-probabilities, confidences, and predictions, and writes a JSON report.
 """
-
 from __future__ import annotations
 import argparse
 import json
@@ -13,6 +9,7 @@ import os
 import sys
 from typing import Any, Dict, Optional, List
 import importlib
+from scripts.safe_torch_load import safe_torch_load # <-- YENİ İMPORT
 
 import numpy as np
 
@@ -29,13 +26,11 @@ except Exception:  # pragma: no cover
     torch = None
     F = None
 
-# joblib is optional for sklearn pickle loads
 try:
     import joblib
 except Exception:  # pragma: no cover
     joblib = None
 
-# Optional YAML (when configs are used to describe models)
 try:
     import yaml
 except Exception:  # pragma: no cover
@@ -71,11 +66,9 @@ def load_samples(csv_path: str, limit: Optional[int] = None) -> np.ndarray:
     return X.astype(np.float32, copy=False)
 
 
-def try_load_model(model_path: Optional[str]) -> Dict[str, Any]:
+def try_load_model(model_path: Optional[str], model_class_import: Optional[str] = None) -> Dict[str, Any]:
     """
-    Best-effort model loader. Returns dict with keys:
-        - model: loaded model object or None
-        - note: str describing what happened
+    Best-effort model loader.
     """
     if not model_path:
         return {"model": None, "note": "No model path provided"}
@@ -87,13 +80,11 @@ def try_load_model(model_path: Optional[str]) -> Dict[str, Any]:
         if torch is None:
             return {"model": None, "note": "torch not available to load .pt/.pth"}
         try:
-            # Bu, 'canlı' modeli yükler.
-            # main() fonksiyonunun, pickle'ın sınıfı bulabilmesi için
-            # sınıfı önceden import ettiğini varsayar.
-            obj = torch.load(model_path, map_location="cpu")
-            return {"model": obj, "note": "Loaded torch object via torch.load"}
+            # --- ÇÖZÜM: safe_torch_load kullanılıyor ---
+            obj = safe_torch_load(model_path, model_class_import=model_class_import, map_location="cpu")
+            return {"model": obj, "note": "Loaded torch object via safe_torch_load"}
         except Exception as e:
-            return {"model": None, "note": f"Failed torch.load: {e}"}
+            return {"model": None, "note": f"Failed safe_torch_load: {e}"}
 
     if ext in (".pkl", ".pickle"):
         try:
@@ -158,6 +149,10 @@ def _logits_to_probs(x: Any) -> np.ndarray:
 
 def compute_confidences_and_stats(model_obj: Any, X: np.ndarray, batch_size: int = 512) -> Dict[str, np.ndarray]:
     probs_list: List[np.ndarray] = []
+    
+    if isinstance(model_obj, dict):
+        raise RuntimeError("Model object is a dictionary (checkpoint), not an instantiated model. Cannot run inference.")
+
     if hasattr(model_obj, "q_network") and getattr(model_obj, "q_network") is not None:
         if torch is None:
             raise RuntimeError("torch is required to use q_network")
@@ -269,7 +264,6 @@ def parse_args(argv=None):
     p.add_argument("--batch-size", type=int, default=512, help="Inference batch size")
     p.add_argument("--out-dir", default="diagnostics", help="Optional diagnostics output directory")
     
-    # --- PICKLE HATASINI ÇÖZMEK İÇİN BU ARGÜMAN GERİ GELDİ ---
     p.add_argument("--model-class-import", default=None, help="Python import path for model class (e.g. src.agent.MyAgent)")
     
     return p.parse_args(argv)
@@ -297,20 +291,6 @@ def main(argv=None) -> int:
     report_extras = {}
     inference_err = None
 
-    # --- PICKLE HATASINI ÇÖZMEK İÇİN BU BLOK GELDİ ---
-    # torch.load'un 'canlı' modeli (inst_model.pth) bulabilmesi için
-    # sınıf tanımını (pickle'ın ihtiyaç duyduğu) import etmemiz gerekiyor.
-    if args.model_class_import:
-        try:
-            print(f"Pre-importing class {args.model_class_import} for torch.load...")
-            module_path, class_name = args.model_class_import.rsplit(".", 1)
-            mod = importlib.import_module(module_path)
-            Klass = getattr(mod, class_name)
-            print("Class imported successfully.")
-        except Exception as e:
-            print(f"[WARN] Failed to pre-import model class: {e}. torch.load might fail.")
-    # --- YENİ BLOK SONU ---
-
     # Load samples
     try:
         X = load_samples(args.csv, limit=args.limit)
@@ -324,7 +304,7 @@ def main(argv=None) -> int:
         return 2
 
     # Load model (optional)
-    loaded = try_load_model(args.model)
+    loaded = try_load_model(args.model, args.model_class_import)
     model_obj = loaded.get("model", None)
     load_note = loaded.get("note", "")
 
@@ -332,7 +312,7 @@ def main(argv=None) -> int:
     result = None
     if inference_err is None:
         if model_obj is None:
-            inference_err = "No model object available for inference"
+            inference_err = load_note 
         else:
             try:
                 result = compute_confidences_and_stats(model_obj, X, batch_size=args.batch_size)
