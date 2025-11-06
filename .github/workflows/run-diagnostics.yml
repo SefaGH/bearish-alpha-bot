@@ -20,7 +20,7 @@ on:
         required: false
         default: 'env.state_vector'
       model_class_import:
-        description: 'Optional: model class import path if model is state_dict (e.g. models.rl_agent.RLAgent)'
+        description: 'Optional: model class import path if model is state_dict (e.g. src.ml.reinforcement_learning.TradingRLAgent)'
         required: false
         default: ''
       label_col:
@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v4
@@ -43,11 +43,10 @@ jobs:
       - name: Install dependencies
         shell: bash
         run: |
+          python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
-            pip install --upgrade pip
             pip install -r requirements.txt
           else
-            pip install --upgrade pip
             pip install torch pandas scikit-learn joblib matplotlib numpy
           fi
 
@@ -64,7 +63,6 @@ jobs:
           MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
           LABEL_COL: ${{ github.event.inputs.label_col }}
         run: |
-          # Build command depending on which optional inputs are provided
           CMD="python scripts/diagnose_model_confidence.py --model \"${MODEL_PATH}\""
           if [ -n "${SAMPLES_PATH}" ]; then CMD="${CMD} --samples \"${SAMPLES_PATH}\""; fi
           if [ -n "${SCALER_PATH}" ]; then CMD="${CMD} --scaler \"${SCALER_PATH}\""; fi
@@ -72,12 +70,12 @@ jobs:
           if [ -n "${MODEL_CLASS_IMPORT}" ]; then CMD="${CMD} --model-class-import \"${MODEL_CLASS_IMPORT}\""; fi
           if [ -n "${LABEL_COL}" ]; then CMD="${CMD} --label-col \"${LABEL_COL}\""; fi
           echo "Running: $CMD"
-          # run and capture logs
+          # Run and capture output (do not fail workflow on nonzero exit so we still get logs/artifacts)
+          set -o pipefail
           $CMD 2>&1 | tee diagnostics/diagnostics_stdout.log || true
-          # ensure results file(s) are in diagnostics/ if script wrote them elsewhere, move/copy here as needed
 
       - name: Upload diagnostics as artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: diagnostics
           path: diagnostics/
