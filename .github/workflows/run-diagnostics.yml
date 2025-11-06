@@ -14,7 +14,7 @@ on:
       scaler_path:
         description: 'Path to scaler file (optional, leave empty if none)'
         required: false
-        default: 'data/models/scaler.pkl'
+        default: 'data/models/regime/scaler.pkl'
       state_import:
         description: 'Python import path for state vector builder (e.g. env.state_vector) (optional)'
         required: false
