@@ -1,3 +1,33 @@
+#!/usr/bin/env python3
+"""
+Diagnosis script for low-confidence predictions.
+
+Usage examples (Python 3.11 required):
+  python scripts/diagnose_model_confidence.py --model data/models/rl_agent_final.pth --samples sample_data/test_samples.csv --scaler data/models/scaler.pkl --state-import env.state_vector
+
+Notes:
+- The script tries multiple ways to load the model. If your repo provides a model class,
+  set --model-class-import to the import path (e.g. models.rl_agent.RLAgent) so the script can
+  recreate and load state_dict.
+- Outputs: diagnostics/report.json and plots in diagnostics/
+"""
+from __future__ import annotations
+import argparse
+import importlib
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import torch
+import joblib
+from sklearn.metrics import brier_score_loss
+import math
+import matplotlib.pyplot as plt
+
 def try_load_model(model_path: str, model_class_import: Optional[str] = None):
     """
     Robust loader for models and checkpoints.
@@ -23,6 +53,7 @@ def try_load_model(model_path: str, model_class_import: Optional[str] = None):
 
     model_path = _strip(model_path)
     model_class_import = _strip(model_class_import)
+    
 
     model_path = Path(model_path)
     if not model_path.exists():
