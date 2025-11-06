@@ -133,8 +133,21 @@ class RLModelTrainer:
             log_dir = 'logs'
             os.makedirs(log_dir, exist_ok=True)
             
+            # Validate and normalize training history entries
+            normalized_history = []
+            for entry in self.training_history:
+                normalized_entry = {
+                    'episode': entry.get('episode', 0),
+                    'total_reward': entry.get('total_reward', 0.0),
+                    'avg_reward': entry.get('avg_reward', 0.0),
+                    'pnl': entry.get('pnl', 0.0),
+                    'epsilon': entry.get('epsilon', 0.0),
+                    'loss': entry.get('loss', 0.0)
+                }
+                normalized_history.append(normalized_entry)
+            
             # Save as CSV
-            df = pd.DataFrame(self.training_history)
+            df = pd.DataFrame(normalized_history)
             csv_path = os.path.join(log_dir, 'rl_training_metrics.csv')
             df.to_csv(csv_path, index=False)
             logger.info(f"✅ Saved RL training metrics: {csv_path}")

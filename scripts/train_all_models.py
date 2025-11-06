@@ -86,8 +86,9 @@ async def main():
         logger.info("PyTorch not installed, GPU check skipped")
     
     # Initialize metrics tracking
+    start_time = datetime.now()
     training_metrics = {
-        'start_time': datetime.now().isoformat(),
+        'start_time': start_time.isoformat(),
         'symbols': SYMBOLS_TO_TRAIN,
         'timeframes': ALL_TIMEFRAMES,
         'regime_models': {},
@@ -178,12 +179,19 @@ async def main():
                 results = regime_trainer.train_ensemble_models(final_X, final_y)
                 logger.info(f"✅ Rejim modelleri birleşik veri seti ile eğitildi ve kaydedildi.")
                 
-                # Store regime model metrics
-                training_metrics['regime_models'] = {
-                    'total_samples': final_X.shape[0],
-                    'feature_count': final_X.shape[1],
-                    'metrics': results.get('metrics', {})
-                }
+                # Store regime model metrics (safely handle None results)
+                if results:
+                    training_metrics['regime_models'] = {
+                        'total_samples': final_X.shape[0],
+                        'feature_count': final_X.shape[1],
+                        'metrics': results.get('metrics', {})
+                    }
+                else:
+                    training_metrics['regime_models'] = {
+                        'total_samples': final_X.shape[0],
+                        'feature_count': final_X.shape[1],
+                        'metrics': {}
+                    }
 
     # 2. FİYAT TAHMİN MODELLERİ EĞİTİMİ
     logger.info("\n" + "="*60)
@@ -303,11 +311,9 @@ async def main():
 
 
     # Save training metrics to files
-    training_metrics['end_time'] = datetime.now().isoformat()
-    training_metrics['duration_seconds'] = (
-        datetime.fromisoformat(training_metrics['end_time']) - 
-        datetime.fromisoformat(training_metrics['start_time'])
-    ).total_seconds()
+    end_time = datetime.now()
+    training_metrics['end_time'] = end_time.isoformat()
+    training_metrics['duration_seconds'] = (end_time - start_time).total_seconds()
     
     # Create logs directory if it doesn't exist
     os.makedirs('logs', exist_ok=True)
