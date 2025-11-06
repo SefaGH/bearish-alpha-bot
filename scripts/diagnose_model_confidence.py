@@ -363,6 +363,222 @@ def compute_confidences_and_stats(model_obj, X: np.ndarray, batch_size: int = 51
     elif probs.shape[1] == 1:
         probs = _np.hstack([1 - probs, probs])
 
+def _compute_reliability(probs, labels=None, n_bins=10):
+    import numpy as _np
+    confidences = probs.max(axis=1)
+    preds = probs.argmax(axis=1)
+    bins = _np.linspace(0.0, 1.0, n_bins + 1)
+    bin_centers = ((bins[:-1] + bins[1:]) / 2).tolist()
+    accuracies = [None] * n_bins
+    avg_conf = [None] * n_bins
+    for i in range(n_bins):
+        mask = (confidences > bins[i]) & (confidences <= bins[i+1])
+        if mask.sum() == 0:
+            accuracies[i] = None
+            avg_conf[i] = None
+            continue
+        if labels is not None:
+            acc = float((preds[mask] == labels[mask]).mean())
+            accuracies[i] = acc
+        else:
+            accuracies[i] = None
+        avg_conf[i] = float(confidences[mask].mean())
+    return {"bin_centers": bin_centers, "accuracies": accuracies, "avg_conf": avg_conf}
+
+def _plot_confidence_hist(confs, out_path):
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(6,3))
+    plt.hist(confs, bins=10, range=(0.0,1.0), color="#1f77b4")
+    plt.xlabel("Confidence")
+    plt.ylabel("Count")
+    plt.title("Confidence histogram")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model", required=True, help="Path to .pth or scripted model")
+    ap.add_argument("--samples", required=False, help="CSV file of sample inputs for inference (rows of raw features)")
+    ap.add_argument("--scaler", required=False, help="Path to scaler (joblib pickle)")
+    ap.add_argument("--model-class-import", required=False, help="Optional: import path for model class to load state_dict, e.g. src.ml.reinforcement_learning.TradingRLAgent")
+    ap.add_argument("--state-import", required=False, help="Optional: import path for state vector builder module, e.g. scripts.state_vector_wrapper")
+    ap.add_argument("--label-col", default="label", help="If samples CSV has a label column")
+    args = ap.parse_args()
+
+    args.model = args.model.strip() if args.model else None
+    args.samples = args.samples.strip() if args.samples else None
+    args.scaler = args.scaler.strip() if args.scaler else None
+    args.state_import = args.state_import.strip() if args.state_import else None
+    args.model_class_import = args.model_class_import.strip() if args.model_class_import else None
+
+    report = {}
+    X = None
+    df = None
+
+    # Load samples CSV (if provided)
+    if args.samples:
+        df = pd.read_csv(args.samples)
+        report["X_shape_raw"] = list(df.shape)
+    else:
+        df = None
+
+    # If a state-import module is provided and has compute_state_vector, use it.
+    if args.state_import and df is not None:
+        try:
+            mod = importlib.import_module(args.state_import)
+            if hasattr(mod, "compute_state_vector"):
+                records = df.to_dict(orient="records")
+                X_list = []
+                for r in records:
+                    sv = mod.compute_state_vector(r)
+                    X_list.append(sv)
+                X = np.vstack(X_list).astype(np.float32)
+                print("Using compute_state_vector from", args.state_import)
+                report["notes"] = report.get("notes", []) + [f"Used state_import: {args.state_import}"]
+        except Exception as e:
+            print(f"Import of {args.state_import} failed: {e}")
+            report["notes"] = report.get("notes", []) + [f"state_import failed: {str(e)}"]
+
+    # If compute_state_vector not used, but df has f0..fN style columns, use them
+    if X is None and df is not None:
+        f_cols = [c for c in df.columns if c.startswith("f") and c[1:].isdigit()]
+        if f_cols:
+            # sort by numeric index
+            f_cols = sorted(f_cols, key=lambda k: int(k[1:]))
+            X = df[f_cols].to_numpy(dtype=np.float32)
+            print("Using f* columns:", len(f_cols))
+            report["notes"] = report.get("notes", []) + [f"Used {len(f_cols)} f* columns"]
+        else:
+            # fallback: use numeric columns in natural order (excluding label)
+            numeric_df = df.select_dtypes(include=[np.number]).copy() if df is not None else None
+            if numeric_df is not None and args.label_col in numeric_df.columns:
+                numeric_df = numeric_df.drop(columns=[args.label_col])
+            if numeric_df is not None and numeric_df.shape[1] > 0:
+                X = numeric_df.to_numpy(dtype=np.float32)
+                report["notes"] = report.get("notes", []) + [f"Used numeric columns fallback: {numeric_df.shape[1]} cols"]
+
+    # Apply scaler if provided
+    scaler = None
+    if args.scaler and os.path.exists(args.scaler):
+        try:
+            scaler = joblib.load(args.scaler)
+            if X is not None:
+                try:
+                    X = scaler.transform(X)
+                    print("Applied scaler.transform to X")
+                    report["notes"] = report.get("notes", []) + [f"Applied scaler: {args.scaler}"]
+                except Exception as e:
+                    print("Scaler.transform failed:", e)
+                    report["notes"] = report.get("notes", []) + [f"scaler.transform failed: {e}"]
+        except Exception as e:
+            print("Scaler not found or failed to load:", e)
+            report["notes"] = report.get("notes", []) + [f"scaler load failed: {e}"]
+
+    # If still no X, error
+    if X is None:
+        report["error"] = "No input features X could be built from samples."
+        os.makedirs("diagnostics", exist_ok=True)
+        with open("diagnostics/report.json", "w") as f:
+            json.dump(report, f, indent=2)
+        print("No X constructed; exiting")
+        return
+
+    # Basic X stats
+    report["X_shape"] = [int(X.shape[0]), int(X.shape[1])]
+    report["X_nan_count"] = int(np.isnan(X).sum())
+    report["X_inf_count"] = int(np.isinf(X).sum())
+    report["X_mean"] = np.nanmean(X, axis=0)[:20].tolist()  # small preview
+    report["X_std"] = np.nanstd(X, axis=0)[:20].tolist()
+
+    # Load model using robust loader
+    loaded = try_load_model(args.model, args.model_class_import)
+    model_obj = loaded.get("model") if isinstance(loaded, dict) and "model" in loaded else loaded
+    report["model_load"] = loaded.get("type") if isinstance(loaded, dict) else str(type(loaded))
+
+    # Compute probabilities / confidences
+    probs = None
+    confs = None
+    preds = None
+    try:
+        res = compute_confidences_and_stats(model_obj, X)
+        probs = res["probs"]
+        confs = res["confs"]
+        preds = res["preds"]
+    except Exception as e:
+        print("Error computing confidences:", e)
+        report["inference_error"] = str(e)
+
+    # Save probs for inspection
+    os.makedirs("diagnostics", exist_ok=True)
+    if probs is not None:
+        try:
+            np.save("diagnostics/probs_sample.npy", probs.astype(np.float32))
+        except Exception as e:
+            print("Failed to save probs_sample.npy:", e)
+
+    # Update report with confidence statistics
+    if confs is not None:
+        report["conf_mean"] = float(np.mean(confs))
+        report["conf_median"] = float(np.median(confs))
+        report["conf_std"] = float(np.std(confs))
+        # mean prob per class
+        try:
+            class_means = {str(i): float(probs[:, i].mean()) for i in range(probs.shape[1])}
+            report["class_confidence_mean"] = class_means
+        except Exception:
+            pass
+
+    # If labels present, compute Brier and ECE
+    if df is not None and args.label_col in df.columns and probs is not None:
+        try:
+            y_true = df[args.label_col].to_numpy().astype(int)
+            # multiclass Brier
+            y_onehot = np.zeros_like(probs)
+            for i, yy in enumerate(y_true):
+                if 0 <= int(yy) < probs.shape[1]:
+                    y_onehot[i, int(yy)] = 1.0
+            report["brier_score"] = float(((probs - y_onehot) ** 2).sum(axis=1).mean())
+            # ECE
+            def compute_ece(probs_arr, labels_arr, n_bins=10):
+                confidences = probs_arr.max(axis=1)
+                predictions = probs_arr.argmax(axis=1)
+                ece = 0.0
+                bins = np.linspace(0.0, 1.0, n_bins + 1)
+                for i in range(n_bins):
+                    mask = (confidences > bins[i]) & (confidences <= bins[i+1])
+                    if mask.sum() == 0:
+                        continue
+                    acc = (predictions[mask] == labels_arr[mask]).mean()
+                    avg_conf = confidences[mask].mean()
+                    ece += (mask.sum() / len(confidences)) * abs(avg_conf - acc)
+                return float(ece)
+            report["ece"] = compute_ece(probs, y_true, n_bins=10)
+        except Exception as e:
+            report["brier_ece_error"] = str(e)
+
+    # Reliability (binning) and save
+    try:
+        rel = _compute_reliability(probs, labels=(df[args.label_col].to_numpy() if (df is not None and args.label_col in df.columns) else None), n_bins=10)
+        with open("diagnostics/reliability.json", "w") as f:
+            json.dump(rel, f, indent=2)
+    except Exception as e:
+        report["reliability_error"] = str(e)
+
+    # Save confidence histogram
+    if confs is not None:
+        try:
+            _plot_confidence_hist(confs, "diagnostics/confidence_hist.png")
+        except Exception as e:
+            report["hist_plot_error"] = str(e)
+
+    # Final report write
+    with open("diagnostics/report.json", "w") as f:
+        json.dump(report, f, indent=2)
+
+if __name__ == "__main__":
+    main()
+
     confs = probs.max(axis=1)
     preds = probs.argmax(axis=1)
     return {"probs": probs, "confs": confs, "preds": preds}
