@@ -185,7 +185,7 @@ async def main():
     else:
         logger.warning("Fiyat tahmini eğitimi için veri bulunamadı, bu adım atlanıyor.")
 
-    # 3. REINFORCEMENT LEARNING AJANI EĞİTİMİ
+    # 3. REINFORCEMENT LEARNING AJANI EĞİTİLİYOR
     logger.info("\n" + "="*60)
     logger.info("🤖 ADIM 3: REINFORCEMENT LEARNING AJANI EĞİTİLİYOR 🤖")
     logger.info(f"   Eğitim Zaman Dilimi: {RL_TRAINING_TIMEFRAME}, Bölüm Sayısı: {RL_NUM_EPISODES}")
@@ -195,15 +195,15 @@ async def main():
     if symbol_for_rl in training_data and RL_TRAINING_TIMEFRAME in training_data[symbol_for_rl]:
         logger.info(f"RL ajanı için {RL_TRAINING_TIMEFRAME} verisi hazırlanıyor...")
         
+        # ... (RL için veri hazırlama kısmı aynı kalır)
         rl_data_raw = training_data[symbol_for_rl][RL_TRAINING_TIMEFRAME].copy()
         rl_features_df = feature_engine.extract_features(rl_data_raw)
         
         common_index = rl_data_raw.index.intersection(rl_features_df.index)
         rl_data_raw = rl_data_raw.loc[common_index]
         rl_features_df = rl_features_df.loc[common_index]
-
-        rl_features_df.fillna(method='ffill', inplace=True)
-        rl_features_df.fillna(method='bfill', inplace=True)
+        rl_features_df.ffill(inplace=True)
+        rl_features_df.bfill(inplace=True)
         rl_features_df.dropna(inplace=True)
         
         final_index = rl_features_df.index
@@ -215,16 +215,18 @@ async def main():
             logger.info(f"✅ RL eğitimi için {len(rl_features_df)} adet kullanılabilir veri noktası hazırlandı.")
             
             env = RLTradingEnv(features_df=rl_features_df, raw_df=rl_data_raw)
-            state_dim = env.state_dim  # Artık burası 42 dönecek
+            state_dim = env.state_dim
             action_dim = env.action_dim
             
             logger.info(f"✅ RL Ortamı oluşturuldu. State boyutu: {state_dim}, Aksiyon boyutu: {action_dim}")
 
-            # Ajanı doğru state boyutu ve batch_size ile başlat
+            # ✔️ KESİN ÇÖZÜM: 'TradingRLAgent' sınıfı, `__init__` metodunda 'batch_size' argümanı beklemiyor.
+            # Bunun yerine, tüm 'reinforcement_learning' konfigürasyon bloğunu ('rl_config') bekliyor.
+            # 'batch_size' parametresini kaldırıp, 'config' parametresini ekliyoruz.
             agent = TradingRLAgent(
                 state_size=state_dim, 
                 action_size=action_dim,
-                batch_size=RL_BATCH_SIZE # Batch size parametresini ajana ver
+                config=rl_config  # <-- `batch_size` yerine bu satırı ekliyoruz.
             )
 
             # Deneyim belleğini doğru buffer boyutu ile başlat
@@ -234,13 +236,13 @@ async def main():
             rl_trainer = RLModelTrainer(agent, env, experience_replay)
             
             try:
-                # Trainer'ın train metodu artık batch_size'a ihtiyaç duymuyor.
                 rl_trainer.train(num_episodes=RL_NUM_EPISODES)
                 logger.info("✅ RL Ajanı başarıyla eğitildi ve kaydedildi.")
             except Exception as e:
                 logger.error(f"❌ RL eğitimi sırasında bir hata oluştu: {e}", exc_info=True)
     else:
         logger.error(f"RL eğitimi için gerekli olan {symbol_for_rl} sembolüne ait {RL_TRAINING_TIMEFRAME} verisi bulunamadı.")
+
 
     logger.info("\n" + "="*60)
     logger.info("✅ TÜM MODEL EĞİTİMLERİ TAMAMLANDI ✅")
