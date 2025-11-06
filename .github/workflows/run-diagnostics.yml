@@ -65,7 +65,10 @@ jobs:
           MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
           LABEL_COL: ${{ github.event.inputs.label_col }}
           MPLBACKEND: Agg
+          # <-- add these lines so Python can import `src.*` and modules in scripts/
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src:${{ github.workspace }}/scripts
         run: |
+          echo "PYTHONPATH=$PYTHONPATH"
           CMD="python scripts/diagnose_model_confidence.py --model \"${MODEL_PATH}\""
           if [ -n "${SAMPLES_PATH}" ]; then CMD="${CMD} --samples \"${SAMPLES_PATH}\""; fi
           if [ -n "${SCALER_PATH}" ]; then CMD="${CMD} --scaler \"${SCALER_PATH}\""; fi
