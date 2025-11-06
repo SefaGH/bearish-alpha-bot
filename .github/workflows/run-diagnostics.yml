@@ -8,11 +8,10 @@ on:
         required: true
         default: 'data/models/rl_agent_final.pth'
       
-      # --- YENİ GİRDİ ---
       model_class_import:
         description: 'Model class import path (e.g. src.agent.MyAgentClass)'
-        required: false
-        default: ''
+        required: true
+        default: 'src.ml.reinforcement_learning.TradingRLAgent'
         
       samples_path:
         description: 'Path to sample CSV (optional, leave empty if none)'
@@ -95,7 +94,6 @@ jobs:
           echo "PYTHONPATH=$PYTHONPATH"
           mkdir -p "$OUT_DIR"
           
-          # ARGS array'ine --model-class-import eklendi
           ARGS=(
             --model "$MODEL_PATH"
             --csv "$SAMPLES_PATH"
