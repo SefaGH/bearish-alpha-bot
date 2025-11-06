@@ -63,7 +63,7 @@ jobs:
           fi
           pip install --prefer-binary matplotlib pillow
 
-      - name: Ensure diagnostics directories exist
+      - name: (Adım 1) Ensure diagnostics directories exist
         shell: bash
         run: |
           set -euxo pipefail
@@ -72,7 +72,7 @@ jobs:
             mkdir -p "${{ github.event.inputs.out_dir }}"
           fi
 
-      - name: (Adım 1) Inspect model checkpoint
+      - name: (Adım 2) Inspect model checkpoint
         shell: bash
         env:
           MODEL_PATH: ${{ github.event.inputs.model_path }}
@@ -80,7 +80,7 @@ jobs:
           set -euo pipefail
           python scripts/inspect_model.py
 
-      - name: (Adım 2) Try instantiate model
+      - name: (Adım 3) Try instantiate model
         shell: bash
         env:
           MODEL_PATH: ${{ github.event.inputs.model_path }}
@@ -90,7 +90,7 @@ jobs:
           python scripts/instantiate_model.py || true
           ls -la diagnostics
 
-      - name: (Adım 3) Verify instantiated model
+      - name: (Adım 4) Verify instantiated model
         shell: bash
         env:
           MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
@@ -98,7 +98,7 @@ jobs:
           set -euo pipefail
           python scripts/verify_model.py || true
 
-      - name: (Adım 4) Run diagnostics script
+      - name: (Adım 5) Run diagnostics script
         shell: bash
         env:
           ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
@@ -136,15 +136,13 @@ jobs:
           python scripts/diagnose_model_confidence.py "${ARGS[@]}" \
             2>&1 | tee diagnostics/diagnostics_stdout.log || true
 
-      # --- GÜNCELLENMİŞ ADIM 5 ---
-      - name: (Adım 5) Inspect Logits and Feature Stats
+      - name: (Adım 6) Inspect Logits and Feature Stats
         shell: bash
         env:
-          # Bu script'in hem "canlı" modele hem de "orijinal" checkpoint'e ihtiyacı var
           MODEL_TO_USE: "diagnostics/inst_model.pth"
           ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
           SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
-          INSPECT_N: "10" # İlk 10 örneğe bak
+          INSPECT_N: "10"
         run: |
           set -euo pipefail
           if [ -f "$MODEL_TO_USE" ]; then
@@ -155,6 +153,36 @@ jobs:
             echo "----------------------------------------"
           else
             echo "Skipping logit/stats inspection, $MODEL_TO_USE not found."
+          fi
+
+      # --- YENİ ADIM 7 (Analiz I'den) ---
+      - name: (Adım 7) Summarize logits_and_stats.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Summarizing logits_and_stats.json..."
+          if [ -f "diagnostics/logits_and_stats.json" ]; then
+            python scripts/summarize_logits_and_stats.py diagnostics/logits_and_stats.json diagnostics/logits_summary.json || true
+            echo "--- Content of logits_summary.json ---"
+            cat diagnostics/logits_summary.json || true
+            echo "--------------------------------------"
+          else
+            echo "Skipping logits summary, file not found."
+          fi
+
+      # --- YENİ ADIM 8 (Analiz I'den) ---
+      - name: (Adım 8) Summarize probs_sample.npy
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Summarizing probs_sample.npy..."
+          if [ -f "diagnostics/probs_sample.npy" ]; then
+            python scripts/summarize_probs_npy.py diagnostics/probs_sample.npy diagnostics/probs_summary.json || true
+            echo "--- Content of probs_summary.json ---"
+            cat diagnostics/probs_summary.json || true
+            echo "---------------------------------------"
+          else
+            echo "Skipping probs_sample.npy summary, file not found."
           fi
 
       - name: Upload diagnostics as artifact
