@@ -44,18 +44,32 @@ if TORCH_AVAILABLE:
 
 
     class LSTMRegimePredictor(nn.Module):
-        """LSTM network for regime sequence prediction."""
+        """
+        LSTM network for regime sequence prediction.
         
-        def __init__(self, input_size: int = 50, hidden_size: int = 128, 
-                     num_layers: int = 3, num_classes: int = 3):
+        DEFAULT ARCHITECTURE (synchronized with central config):
+        - input_size: 42 (number of features from feature engineering)
+        - hidden_size: 64 (smaller, safer architecture to prevent overfitting)
+        - num_layers: 2 (shallower network for better generalization)
+        - num_classes: 3 (bullish, neutral, bearish)
+        
+        These defaults MUST match the ML configuration file at:
+          ml -> regime_prediction -> model_params -> lstm_regime
+        
+        NOTE: If config parameters change, this architecture must be updated
+        and models must be retrained to avoid size mismatch errors.
+        """
+        
+        def __init__(self, input_size: int = 42, hidden_size: int = 64, 
+                     num_layers: int = 2, num_classes: int = 3):
             """
             Initialize LSTM regime predictor.
             
             Args:
-                input_size: Number of input features
-                hidden_size: Size of LSTM hidden state
-                num_layers: Number of LSTM layers
-                num_classes: Number of regime classes
+                input_size: Number of input features (default: 42)
+                hidden_size: Size of LSTM hidden state (default: 64)
+                num_layers: Number of LSTM layers (default: 2)
+                num_classes: Number of regime classes (default: 3)
             """
             super().__init__()
             self.hidden_size = hidden_size
@@ -194,8 +208,8 @@ else:
     class LSTMRegimePredictor:
         """Mock LSTM network for regime prediction (PyTorch not available)."""
         
-        def __init__(self, input_size: int = 50, hidden_size: int = 128,
-                     num_layers: int = 3, num_classes: int = 3):
+        def __init__(self, input_size: int = 42, hidden_size: int = 64,
+                     num_layers: int = 2, num_classes: int = 3):
             """Initialize mock LSTM predictor."""
             self.input_size = input_size
             self.hidden_size = hidden_size

@@ -1,9 +1,27 @@
+"""
+Unified ML Model Training Script for Bearish Alpha Bot.
+
+This script trains all ML models (Regime Prediction, Price Prediction, RL Agent)
+with architecture parameters synchronized from config.example.yaml.
+
+CRITICAL: All model architectures MUST be synchronized with config.example.yaml:
+  - Regime LSTM: hidden_size=64, num_layers=2 (from ml.regime_prediction.model_params.lstm_regime)
+  - Price models: parameters from ml.price_prediction.model_params
+  - RL Agent: parameters from ml.reinforcement_learning
+
+This ensures:
+  1. No size mismatch errors during model loading
+  2. Consistent architecture across training and inference
+  3. Reduced overfitting risk with smaller, safer models
+"""
+
 import asyncio
 import os
 import sys
 import pandas as pd
 import numpy as np
 import logging
+import yaml
 
 # --- YOL AYARLAMASI (IMPORT HATALARINI ÖNLER) ---
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -55,6 +73,28 @@ async def main():
     logger.info("="*60)
     logger.info("🤖 BAŞLIYOR: BİRLEŞİK ML MODEL EĞİTİM BETİĞİ 🤖")
     logger.info("="*60)
+
+    # Load configuration from config.example.yaml
+    config_path = os.path.join(project_root, 'config', 'config.example.yaml')
+    
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+    except FileNotFoundError:
+        logger.error(f"❌ Configuration file not found: {config_path}")
+        logger.error("Please ensure config.example.yaml exists in the config/ directory.")
+        raise
+    except yaml.YAMLError as e:
+        logger.error(f"❌ Error parsing configuration file: {e}")
+        raise
+    
+    ml_config = config.get('ml', {})
+    regime_pred_config = ml_config.get('regime_prediction', {})
+    price_pred_config = ml_config.get('price_prediction', {})
+    rl_config = ml_config.get('reinforcement_learning', {})
+    
+    logger.info(f"✅ Configuration loaded from {config_path}")
+    logger.info(f"   Regime LSTM params: {regime_pred_config.get('model_params', {}).get('lstm_regime', {})}")
 
     exchange_client = CcxtClient('bingx')
     feature_engine = FeatureEngineeringPipeline()
@@ -109,7 +149,8 @@ async def main():
             final_y = np.concatenate(all_regime_labels)
             
             if final_X.shape[0] >= MIN_SAMPLES_FOR_RF:
-                regime_trainer = RegimeModelTrainer()
+                # Pass regime_prediction config to trainer so it uses correct architecture
+                regime_trainer = RegimeModelTrainer(config=regime_pred_config)
                 regime_trainer.train_ensemble_models(final_X, final_y)
                 logger.info(f"✅ Rejim modelleri birleşik veri seti ile eğitildi ve kaydedildi.")
 

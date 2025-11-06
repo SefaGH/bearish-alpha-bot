@@ -294,6 +294,12 @@ ml:
     min_confidence_threshold: 0.6     # Bir rejim tahmininin geçerli sayılması için gereken min. güven skoru. Override: ML_REGIME_MIN_CONFIDENCE
     
     # 1. Model Parametreleri (SADECE Rejim Tahmincisi için)
+    # ⚠️ KRİTİK: Bu parametreler TÜM kod tabanında kullanılır:
+    #   - src/ml/neural_networks.py (LSTMRegimePredictor default değerleri)
+    #   - src/ml/model_trainer.py (model eğitimi sırasında)
+    #   - src/ml/regime_predictor.py (model yükleme sırasında)
+    #   - scripts/train_all_models.py (eğitim betiğinde)
+    # Bu değerleri değiştirirseniz, eski modelleri SİLİP yeniden eğitmelisiniz!
     model_params:
       random_forest:
         n_estimators: 150
@@ -302,8 +308,8 @@ ml:
         n_estimators: 200
         learning_rate: 0.05
       lstm_regime:
-        hidden_size: 64
-        num_layers: 2
+        hidden_size: 64   # Küçük ve güvenli mimari (overfitting'i önler)
+        num_layers: 2     # Daha az katman = daha iyi genelleme
     
     # 2. Ensemble Ağırlıkları
     ensemble_weights:
