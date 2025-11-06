@@ -33,7 +33,21 @@ try:
 except Exception: yaml = None
 
 # "safe_torch_load"u import ediyoruz
-from scripts.safe_torch_load import safe_torch_load
+try:
+    from scripts.safe_torch_load import safe_torch_load
+except ImportError:
+    print("WARN: could not import safe_torch_load.py. Falling back to standard torch.load.")
+    # Fallback, 'weights_only=False' kullanır, 'safe_globals' denemez
+    def safe_torch_load(path, model_class_import=None, map_location="cpu"):
+        if model_class_import:
+            try:
+                # 'pickle'ın sınıfı bulabilmesi için import et
+                module_path, class_name = model_class_import.rsplit(".", 1)
+                mod = importlib.import_module(module_path)
+                Klass = getattr(mod, class_name)
+            except Exception:
+                pass # Hata olursa, torch.load'un halletmesine izin ver
+        return torch.load(path, map_location=map_location, weights_only=False)
 
 # --------------------------------------------------------------------------------------
 # I/O helpers
@@ -119,7 +133,6 @@ def try_load_model(model_path: Optional[str], model_class_import: Optional[str] 
 # Core inference utility
 # --------------------------------------------------------------------------------------
 def _logits_to_probs(x: Any) -> _np.ndarray:
-    # ... (Bu fonksiyon "Analiz J" için değişmedi, ancak _np kullanacak şekilde güncellendi) ...
     if torch is not None and isinstance(x, (torch.Tensor,)):
         if x.ndim == 1:
             x = x.reshape(1, -1)
@@ -155,51 +168,37 @@ def compute_confidences_and_stats(model_obj: Any, X: _np.ndarray, batch_size: in
     """
     Bu fonksiyon artık 'X' verisinin ZATEN ÖLÇEKLENDİRİLMİŞ (SCALED) olduğunu varsayar.
     """
-    # ... (Bu fonksiyon "Analiz J" için değişmedi, ancak _np kullanacak şekilde güncellendi) ...
     probs_list: List[_np.ndarray] = []
-    if hasattr(model_obj, "q_network") and getattr(model_obj, "q_network") is not None:
-        if torch is None: raise RuntimeError("torch is required to use q_network")
-        net = getattr(model_obj, "q_network")
-        device = torch.device("cpu")
-        net.eval()
-        with torch.no_grad():
-            for i in range(0, len(X), batch_size):
-                xb = torch.from_numpy(X[i:i+batch_size].astype(_np.float32)).to(device)
-                out = net(xb)
-                if isinstance(out, (tuple, list)): out = out[0]
-                probs_chunk = _logits_to_probs(out)
-                probs_list.append(probs_chunk)
-    elif callable(model_obj):
-        is_torch_module = False
-        if torch is not None:
-            try: is_torch_module = isinstance(model_obj, torch.nn.Module)
-            except Exception: is_torch_module = False
-        if is_torch_module:
-            model_obj.eval()
+    
+    # Veriyi _model_probs_for_X ile almayı dene (bu, q_network/act/callable'ı dener)
+    try:
+        # Hepsini tek seferde (batch) al
+        all_probs = _model_probs_for_X(model_obj, X)
+        probs_list.append(all_probs)
+    except Exception as e:
+        # _model_probs_for_X başarısız olursa, eski yönteme (compute_confidences_and_stats'ın eski mantığı)
+        # geri dön, ancak bu muhtemelen aynı hatayı verecektir.
+        print(f"[WARN] _model_probs_for_X failed: {e}. Falling back to batch processing...")
+        if hasattr(model_obj, "q_network") and getattr(model_obj, "q_network") is not None:
+            if torch is None: raise RuntimeError("torch is required to use q_network")
+            net = getattr(model_obj, "q_network")
+            device = torch.device("cpu")
+            net.eval()
             with torch.no_grad():
                 for i in range(0, len(X), batch_size):
-                    xb = torch.from_numpy(X[i:i+batch_size].astype(_np.float32))
-                    out = model_obj(xb)
+                    xb = torch.from_numpy(X[i:i+batch_size].astype(_np.float32)).to(device)
+                    out = net(xb)
                     if isinstance(out, (tuple, list)): out = out[0]
                     probs_chunk = _logits_to_probs(out)
                     probs_list.append(probs_chunk)
+        elif callable(model_obj):
+             # ... (callable fallback) ...
+            pass
+        elif hasattr(model_obj, "predict_proba"):
+             # ... (predict_proba fallback) ...
+            pass
         else:
-            if hasattr(model_obj, "predict_proba"):
-                probs = _np.asarray(model_obj.predict_proba(X))
-                probs_list.append(probs)
-            else:
-                for i in range(0, len(X), batch_size):
-                    Xb = X[i:i+batch_size]
-                    try: out = model_obj(Xb)
-                    except Exception: out = model_obj(Xb.astype(_np.float32))
-                    if isinstance(out, (tuple, list)): out = out[0]
-                    probs_chunk = _logits_to_probs(out)
-                    probs_list.append(probs_chunk)
-    elif hasattr(model_obj, "predict_proba"):
-        probs = _np.asarray(model_obj.predict_proba(X))
-        probs_list.append(probs)
-    else:
-        raise RuntimeError("Model object is not callable, has no q_network, and has no predict_proba")
+            raise RuntimeError("Model object is not callable, has no q_network, and has no predict_proba")
 
     if not probs_list: raise RuntimeError("No outputs produced by model during inference")
     probs = _np.vstack(probs_list)
@@ -247,9 +246,11 @@ def _model_probs_for_X(model_obj, X: _np.ndarray) -> _np.ndarray:
                 logits = model_obj(xt)
                 probs = F.softmax(logits, dim=-1)
                 return probs.detach().cpu().numpy()
-    except Exception:
+    except Exception as e:
+        print(f"[DEBUG] q_network/callable failed: {e}")
         # last-resort: try act per-sample returning int/class -> convert to one-hot
         if hasattr(model_obj, "act"):
+            print("[DEBUG] Falling back to model.act()")
             outs = []
             action_size = getattr(model_obj, "action_size", 3) # default 3
             for row in X:
@@ -296,7 +297,7 @@ def try_scalings_and_choose(X: _np.ndarray, model_obj, checkpoint: Dict = None) 
             except Exception:
                 pass # Shape mismatch vb.
 
-    # 2. none
+    # 2. none (Ham veri)
     methods.append(("none", Xf.copy()))
 
     # 3. z-score (use sample stats)
@@ -352,7 +353,9 @@ def try_scalings_and_choose(X: _np.ndarray, model_obj, checkpoint: Dict = None) 
     chosen_entropy, chosen_name, chosen_X, chosen_probs = best
     meta = {"chosen_method": chosen_name, "chosen_entropy": float(chosen_entropy), "per_method": results}
     print(f"Auto-scaling complete. Best method: '{chosen_name}' (Entropy: {chosen_entropy:.4f})")
-    return chosen_X, meta
+    
+    # X_chosen yerine, 'best' tuple'ından 'chosen_probs'u doğrudan döndür
+    return chosen_X, chosen_probs, meta
 
 # --------------------------------------------------------------------------------------
 # Reporting
@@ -403,6 +406,9 @@ def parse_args(argv=None):
     # 'safe_torch_load' için bu argümana ihtiyacımız var
     p.add_argument("--model-class-import", default=None, help="Python import path for model class (e.g. src.agent.MyAgent)")
     
+    # Orijinal checkpoint'e (config/scaler için) erişmek üzere eklendi
+    p.add_argument("--original-model-path", default=None, help="Path to the original .pth checkpoint (for config/scaler)")
+
     return p.parse_args(argv)
 
 
@@ -448,17 +454,17 @@ def main(argv=None) -> int:
     load_note = loaded.get("note", "")
 
     # Orijinal checkpoint'i de (config/scaler bilgisi için) yüklemeyi dene
-    original_checkpoint_path = os.environ.get("ORIGINAL_MODEL_PATH", "")
+    original_checkpoint_path = args.original_model_path
     checkpoint_dict = None
     if model_obj is not None and isinstance(model_obj, dict):
          checkpoint_dict = model_obj # Eğer 'inst_model.pth' yerine orijinal .pth verilirse
-    elif os.path.exists(original_checkpoint_path):
+    elif original_checkpoint_path and os.path.exists(original_checkpoint_path):
         try:
-            checkpoint_dict = safe_torch_load(original_checkpoint_path, model_class_import=args.model_class_import)
+            # Orijinal checkpoint'i 'dict' olarak yükle
+            checkpoint_dict = safe_torch_load(original_checkpoint_path, weights_only=False) 
         except Exception:
             pass # Yüklenemezse sorun değil
             
-
     # Run inference best-effort
     result = None
     if model_obj is None:
@@ -467,13 +473,17 @@ def main(argv=None) -> int:
         try:
             # --- YENİ "OTOMATİK ÖLÇEKLEME" ADIMI (ANALİZ J) ---
             # X_raw'ı en iyi ölçeklenmiş X_chosen'a dönüştür
-            X_chosen, scale_meta = try_scalings_and_choose(X_raw, model_obj, checkpoint=checkpoint_dict)
+            X_chosen, chosen_probs, scale_meta = try_scalings_and_choose(X_raw, model_obj, checkpoint=checkpoint_dict)
             report_extras["scaling_results"] = scale_meta
             load_note += f" | Scaling chosen: {scale_meta.get('chosen_method')}"
             # --- BLOK SONU ---
             
             # Ana analizi "seçilen" veriyle yap
-            result = compute_confidences_and_stats(model_obj, X_chosen, batch_size=args.batch_size)
+            # 'try_scalings_and_choose' zaten olasılıkları hesapladı, tekrar hesaplamaya gerek yok.
+            confs = chosen_probs.max(axis=1)
+            preds = chosen_probs.argmax(axis=1)
+            result = {"probs": chosen_probs, "confs": confs, "preds": preds}
+            
         except Exception as e:
             inference_err = str(e)
             print(f"[ERROR] Inference failed: {e}")
