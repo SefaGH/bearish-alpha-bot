@@ -5,6 +5,7 @@ Checkpoint'ten 'state_size' ve 'action_size' gibi kurucu (constructor)
 argümanlarını tahmin etmeye çalışır.
 Başarılı olursa, sınıfı bu argümanlarla "canlandırır", ağırlıkları yükler
 ve çalıştırılabilir modeli 'diagnostics/inst_model.pth' olarak kaydeder.
+Ayrıca tahmin ettiği 'state_size'ı 'diagnostics/inferred_state_size.txt'ye yazar.
 """
 import torch
 import json
@@ -12,7 +13,7 @@ import os
 import importlib
 import traceback
 import inspect
-import sys
+import sys # sys.exit için eklendi
 
 def main():
     CHECKPOINT_PATH = os.environ.get("MODEL_PATH", "data/models/rl_agent_final.pth")
@@ -99,6 +100,16 @@ def main():
     
     try:
         inst = Klass(**kwargs)
+        
+        # --- YENİ EKLENEN ADIM ---
+        # Tahmin ettiğimiz state_size'ı diğer script'ler için kaydet
+        state_size_to_save = inferred["state_size"]
+        os.makedirs("diagnostics", exist_ok=True) # Dizin yoksa oluştur
+        with open("diagnostics/inferred_state_size.txt", "w") as f:
+            f.write(str(state_size_to_save))
+        print(f"Wrote inferred state_size ({state_size_to_save}) to diagnostics/inferred_state_size.txt")
+        # --- YENİ EKLENEN ADIM SONU ---
+
     except Exception as e:
         report["instantiate_error"] = str(e)
         report["instantiate_traceback"] = traceback.format_exc()
