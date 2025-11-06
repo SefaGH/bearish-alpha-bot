@@ -72,15 +72,15 @@ jobs:
             mkdir -p "${{ github.event.inputs.out_dir }}"
           fi
 
-      - name: 1. Inspect model checkpoint (dump keys/types)
+      - name: (Adım 1) Inspect model checkpoint
         shell: bash
         env:
           MODEL_PATH: ${{ github.event.inputs.model_path }}
         run: |
           set -euo pipefail
           python scripts/inspect_model.py
-      
-      - name: 2. Try instantiate model with inferred kwargs
+
+      - name: (Adım 2) Try instantiate model
         shell: bash
         env:
           MODEL_PATH: ${{ github.event.inputs.model_path }}
@@ -90,7 +90,7 @@ jobs:
           python scripts/instantiate_model.py || true
           ls -la diagnostics
 
-      - name: 3. Verify instantiated model object (for debugging)
+      - name: (Adım 3) Verify instantiated model
         shell: bash
         env:
           MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
@@ -98,7 +98,7 @@ jobs:
           set -euo pipefail
           python scripts/verify_model.py || true
 
-      - name: 4. Run diagnostics script (using instantiated model if available)
+      - name: (Adım 4) Run diagnostics script
         shell: bash
         env:
           ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
@@ -126,32 +126,36 @@ jobs:
             --csv "$SAMPLES_PATH"
             --out "$OUT"
             --out-dir "$OUT_DIR"
+            --model-class-import "$MODEL_CLASS_IMPORT"
           )
           
           if [[ -n "${LIMIT}" ]]; then
             ARGS+=(--limit "$LIMIT")
           fi
           
-          if [[ -n "${MODEL_CLASS_IMPORT}" ]]; then
-            ARGS+=(--model-class-import "$MODEL_CLASS_IMPORT")
-          fi
-          
           python scripts/diagnose_model_confidence.py "${ARGS[@]}" \
             2>&1 | tee diagnostics/diagnostics_stdout.log || true
 
-      # --- YENİ HATA AYIKLAMA ADIMI (ANALİZ F) ---
-      - name: 5. Inspect model predictions (debug)
+      # --- GÜNCELLENMİŞ ADIM 5 ---
+      - name: (Adım 5) Inspect Logits and Feature Stats
         shell: bash
         env:
-          INST_MODEL_PATH: "diagnostics/inst_model.pth"
+          # Bu script'in hem "canlı" modele hem de "orijinal" checkpoint'e ihtiyacı var
+          MODEL_TO_USE: "diagnostics/inst_model.pth"
+          ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
           SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
-          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
+          INSPECT_N: "10" # İlk 10 örneğe bak
         run: |
           set -euo pipefail
-          python scripts/inspect_predictions.py || true
-          echo "--- Content of predictions_debug.json ---"
-          cat diagnostics/predictions_debug.json || true
-          echo "-----------------------------------------"
+          if [ -f "$MODEL_TO_USE" ]; then
+            echo "Running logit/stats inspection on $MODEL_TO_USE..."
+            python scripts/inspect_logits_and_stats.py
+            echo "--- Content of logits_and_stats.json ---"
+            cat diagnostics/logits_and_stats.json || true
+            echo "----------------------------------------"
+          else
+            echo "Skipping logit/stats inspection, $MODEL_TO_USE not found."
+          fi
 
       - name: Upload diagnostics as artifact
         uses: actions/upload-artifact@v4
