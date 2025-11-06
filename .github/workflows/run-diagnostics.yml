@@ -1,233 +1,76 @@
-name: Run Diagnostics
-
-on:
-  workflow_dispatch:
-    inputs:
-      model_path:
-        description: 'Path to model file in repo (e.g. data/models/rl_agent_final.pth)'
-        required: true
-        default: 'data/models/rl_agent_final.pth'
-      
-      model_class_import:
-        description: 'Model class import path (e.g. src.agent.MyAgentClass)'
-        required: true
-        default: 'src.ml.reinforcement_learning.TradingRLAgent'
-        
-      samples_path:
-        description: 'Path to sample CSV (optional, leave empty if none)'
-        required: false
-        default: 'sample_data/test_samples.csv'
-      limit:
-        description: 'Optional row limit from CSV'
-        required: false
-        default: ''
-      out:
-        description: 'Output report JSON path'
-        required: false
-        default: 'diagnostics/report.json'
-      out_dir:
-        description: 'Diagnostics output directory (optional)'
-        required: false
-        default: 'diagnostics'
-
-permissions:
-  contents: read
-
-jobs:
-  diagnostic:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      MPLBACKEND: Agg
-      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src:${{ github.workspace }}/scripts
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -euxo pipefail
-          python -m pip install --upgrade pip setuptools wheel
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            pip install --prefer-binary torch pandas scikit-learn joblib numpy PyYAML
-          fi
-          pip install --prefer-binary matplotlib pillow
-
-      - name: (Adım 1) Ensure diagnostics directories exist
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p diagnostics
-          if [ -n "${{ github.event.inputs.out_dir }}" ]; then
-            mkdir -p "${{ github.event.inputs.out_dir }}"
-          fi
-
-      - name: (Adım 2) Inspect model checkpoint
-        shell: bash
-        env:
-          MODEL_PATH: ${{ github.event.inputs.model_path }}
-        run: |
-          set -euo pipefail
-          python scripts/inspect_model.py
-
-      - name: (Adım 3) Try instantiate model
-        shell: bash
-        env:
-          MODEL_PATH: ${{ github.event.inputs.model_path }}
-          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
-        run: |
-          set -euo pipefail
-          python scripts/instantiate_model.py || true
-          ls -la diagnostics
-
-      - name: (Adım 4) Verify instantiated model
-        shell: bash
-        env:
-          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
-        run: |
-          set -euo pipefail
-          python scripts/verify_model.py || true
-
-      - name: (Adım 5) Run diagnostics script
-        shell: bash
-        env:
-          ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
-          INSTANTIATED_MODEL_PATH: "diagnostics/inst_model.pth"
-          SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
-          LIMIT: ${{ github.event.inputs.limit }}
-          OUT: ${{ github.event.inputs.out }}
-          OUT_DIR: ${{ github.event.inputs.out_dir }}
-          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
-        run: |
-          set -euxo pipefail
-          echo "PYTHONPATH=$PYTHONPATH"
-          mkdir -p "$OUT_DIR"
-          
-          if [ -f "$INSTANTIATED_MODEL_PATH" ]; then
-            echo "SUCCESS: Using instantiated model: $INSTANTIATED_MODEL_PATH"
-            MODEL_TO_USE="$INSTANTIATED_MODEL_PATH"
-          else
-            echo "WARN: Instantiated model not found. Falling back to original checkpoint."
-            MODEL_TO_USE="$ORIGINAL_MODEL_PATH"
-          fi
-          
-          ARGS=(
-            --model "$MODEL_TO_USE"
-            --csv "$SAMPLES_PATH"
-            --out "$OUT"
-            --out-dir "$OUT_DIR"
-            --model-class-import "$MODEL_CLASS_IMPORT"
-            # 'diagnose' script'inin 'checkpoint'i (config için) bulabilmesi için
-            --original-model-path "$ORIGINAL_MODEL_PATH"
-          )
-          
-          if [[ -n "${LIMIT}" ]]; then
-            ARGS+=(--limit "$LIMIT")
-          fi
-          
-          python scripts/diagnose_model_confidence.py "${ARGS[@]}" \
-            2>&1 | tee diagnostics/diagnostics_stdout.log || true
-
-      - name: (Adım 6) Inspect Logits and Feature Stats
-        shell: bash
-        env:
-          MODEL_TO_USE: "diagnostics/inst_model.pth"
-          ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
-          SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
-          INSPECT_N: "10"
-        run: |
-          set -euo pipefail
-          if [ -f "$MODEL_TO_USE" ]; then
-            echo "Running logit/stats inspection on $MODEL_TO_USE..."
-            python scripts/inspect_logits_and_stats.py
-            echo "--- Content of logits_and_stats.json ---"
-            cat diagnostics/logits_and_stats.json || true
-            echo "----------------------------------------"
-          else
-            echo "Skipping logit/stats inspection, $MODEL_TO_USE not found."
-          fi
-
-      - name: (Adım 7) Summarize logits_and_stats.json
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Summarizing logits_and_stats.json..."
-          if [ -f "diagnostics/logits_and_stats.json" ]; then
-            python scripts/summarize_logits_and_stats.py diagnostics/logits_and_stats.json diagnostics/logits_summary.json || true
-            echo "--- Content of logits_summary.json ---"
-            cat diagnostics/logits_summary.json || true
-            echo "--------------------------------------"
-          else
-            echo "Skipping logits summary, file not found."
-          fi
-
-      - name: (Adım 8) Summarize probs_sample.npy
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Summarizing probs_sample.npy..."
-          if [ -f "diagnostics/probs_sample.npy" ]; then
-            python scripts/summarize_probs_npy.py diagnostics/probs_sample.npy diagnostics/probs_summary.json || true
-            echo "--- Content of probs_summary.json ---"
-            cat diagnostics/probs_summary.json || true
-            echo "---------------------------------------"
-          else
-            echo "Skipping probs_sample.npy summary, file not found."
-          fi
-
-      # --- YENİ ADIMLAR (ANALİZ J+) ---
-      - name: (Adım 9) Inspect Model Weights
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Inspecting model weights..."
-          python scripts/weight_stats.py || true
-          echo "--- Content of weight_stats.json ---"
-          cat diagnostics/weight_stats.json || true
-          echo "------------------------------------"
-
-      - name: (Adım 10) Test Input Responses
-        shell: bash
-        env:
-          SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
-          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
-        run: |
-          set -euo pipefail
-          echo "Testing model response to various input scalings..."
-          python scripts/test_input_responses.py || true
-          echo "--- Content of input_response_summary.json ---"
-          cat diagnostics/input_response_summary.json || true
-          echo "----------------------------------------------"
-          
+... (existing code) ...
       - name: (Adım 11) Inspect Training History
         shell: bash
-        env:
-          ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
-          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
-        run: |
-          set -euo pipefail
-          echo "Inspecting training history from original checkpoint..."
-          python scripts/inspect_training_history.py || true
-          echo "--- Content of training_history_summary.json ---"
+... (existing code) ...
           cat diagnostics/training_history_summary.json || true
           echo "------------------------------------------------"
 
+      # --- YENİ ADIM (ÖZETLEME) ---
+      - name: (Adım 12) Summarize model_inst_attempt.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Summarizing model_inst_attempt.json..."
+          # Python script'ini 'bash' içinde 'heredoc' ile çalıştırıyoruz
+          python - <<'PY'
+import json, textwrap, os, sys
+
+F="diagnostics/model_inst_attempt.json"
+OUT_F="diagnostics/model_inst_summary.txt"
+
+os.makedirs("diagnostics", exist_ok=True) # Dizin yoksa oluştur
+
+if not os.path.exists(F):
+    print(f"File not found, skipping summary: {F}")
+    with open(OUT_F, "w") as f:
+        f.write(f"File not found: {F}")
+    sys.exit(0)
+
+try:
+    o=json.load(open(F))
+except Exception as e:
+    print(f"Failed to load JSON from {F}: {e}")
+    with open(OUT_F, "w") as f:
+        f.write(f"Failed to load JSON from {F}: {e}")
+    sys.exit(0)
+
+def short(x, n=1000):
+    if x is None: return None
+    s=str(x)
+    return s if len(s)<=n else s[:n]+"...[truncated]"
+
+keys_to_show = [
+ "import_error","import_traceback",
+ "instantiation_kwargs","inferred","inferred_state_size","inferred_action_size",
+ "instantiate_error","instantiate_traceback",
+ "load_error","load_traceback",
+ "model_inst_load_errors","inst_saved","loaded"
+]
+out=[]
+out.append("ALL_KEYS: "+", ".join(sorted(o.keys())))
+for k in keys_to_show:
+     if k in o:
+         out.append(f"--- {k} ---")
+         v=o[k]
+         if isinstance(v, dict):
+             for kk,vv in list(v.items())[:40]:
+                 out.append(f"{kk}: {short(vv,400)}")
+             if len(v)>40:
+                 out.append(f"... {len(v)-40} more keys ...")
+         else:
+             out.append(short(v,1000))
+
+# 'loaded', 'inst_saved' ve 'inferred' zaten keys_to_show'da var veya (inferred)
+# instantiation_kwargs içinde yer alıyor.
+
+txt="\n".join(out)
+open(OUT_F,"w").write(txt)
+print(f"Wrote {OUT_F}")
+print("\n--- Content of model_inst_summary.txt ---")
+print(txt)
+print("------------------------------------------")
+PY
+
       - name: Upload diagnostics as artifact
         uses: actions/upload-artifact@v4
-        with:
-          name: diagnostics
-          path: |
-            diagnostics/
-            ${{ github.event.inputs.out_dir }}/
-          if-no-files-found: warn
-          retention-days: 7
+... (existing code) ...
