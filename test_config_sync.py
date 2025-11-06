@@ -47,7 +47,6 @@ def test_config_loading():
     assert lstm_config.get('num_layers') == 2, f"Expected num_layers=2, got {lstm_config.get('num_layers')}"
     
     print("\n✅ Config values are correct (hidden_size=64, num_layers=2)")
-    return regime_config
 
 def test_neural_network_defaults():
     """Test that LSTMRegimePredictor defaults match config."""
@@ -135,7 +134,7 @@ def main():
     
     try:
         # Run all tests
-        regime_config = test_config_loading()
+        test_config_loading()
         test_neural_network_defaults()
         test_model_trainer_config()
         test_architecture_consistency()
