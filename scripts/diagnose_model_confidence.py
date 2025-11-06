@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-"""Diagnosis script for low-confidence predictions.
+Diagnosis script for low-confidence predictions.
 
 Usage examples (Python 3.11 required):
   python scripts/diagnose_model_confidence.py --model data/models/rl_agent_final.pth --samples sample_data/test_samples.csv --scaler data/models/scaler.pkl --state-import env.state_vector
@@ -51,7 +51,8 @@ def try_load_model(model_path: str, model_class_import: Optional[str]=None):
         Klass = getattr(mod, class_name)
         model = Klass()
         try:
-            model.load_state_dict(obj if "state_dict" not in obj else obj["state_dict"])
+            state = obj if "state_dict" not in obj else obj["state_dict"]
+            model.load_state_dict(state)
             model.eval()
             return {"type":"nn_module", "model": model}
         except Exception as e:
@@ -86,22 +87,20 @@ def compute_confidences_and_stats(model_obj, X: np.ndarray, batch_size=512):
     """
     probs_list = []
     model = model_obj
-    # If scripted module with forward that accepts tensor
+    # If module/callable that accepts tensors
     if hasattr(model, "forward") or hasattr(model, "__call__"):
         device = torch.device("cpu")
-        model = model
         with torch.no_grad():
             for i in range(0, len(X), batch_size):
                 xb = torch.from_numpy(X[i:i+batch_size].astype(np.float32)).to(device)
                 out = model(xb)
-                # try to handle if model returns logits or probs
-                if isinstance(out, tuple) or isinstance(out, list):
+                if isinstance(out, (tuple, list)):
                     out = out[0]
                 out = out.cpu().numpy()
                 probs_list.append(out)
         probs = np.vstack(probs_list)
     else:
-        # fallback if model object is a dict with 'predict_proba'
+        # fallback if model object has predict_proba
         if hasattr(model_obj, "predict_proba"):
             probs = model_obj.predict_proba(X)
         else:
@@ -138,7 +137,7 @@ def main():
     ap.add_argument("--model", required=True, help="Path to .pth or scripted model")
     ap.add_argument("--samples", required=False, help="CSV file of sample inputs for inference (rows of raw features)")
     ap.add_argument("--scaler", required=False, help="Path to scaler (joblib pickle)")
-    ap.add_argument("--model-class-import", required=False, help="Optional: import path for model class to load state_dict, e.g. models.rl_agent.RLAgent")
+    ap.add_argument("--model-class-import", required=False, help="Optional: import path for model class to load state_dict, e.g. src.ml.reinforcement_learning.TradingRLAgent")
     ap.add_argument("--state-import", required=False, help="Optional: import path for state vector builder module, e.g. env.state_vector")
     ap.add_argument("--label-col", default="label", help="If samples CSV has a label column")
     args = ap.parse_args()
@@ -262,7 +261,7 @@ def main():
     # Save report
     with open(out_dir / "report.json","w") as f:
         json.dump(report, f, indent=2)
-    print("Diagnostics written to diagnostics/\")
+    print("Diagnostics written to diagnostics/")
 
 if __name__ == "__main__":
     main()
