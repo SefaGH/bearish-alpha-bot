@@ -1,3 +1,20 @@
+"""
+Unified ML Model Training Script for Bearish Alpha Bot.
+
+This script trains all ML models (Regime Prediction, Price Prediction, RL Agent)
+with architecture parameters synchronized from config.example.yaml.
+
+CRITICAL: All model architectures MUST be synchronized with config.example.yaml:
+  - Regime LSTM: hidden_size=64, num_layers=2 (from ml.regime_prediction.model_params.lstm_regime)
+  - Price models: parameters from ml.price_prediction.model_params
+  - RL Agent: parameters from ml.reinforcement_learning
+
+This ensures:
+  1. No size mismatch errors during model loading
+  2. Consistent architecture across training and inference
+  3. Reduced overfitting risk with smaller, safer models
+"""
+
 import asyncio
 import os
 import sys

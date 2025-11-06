@@ -44,7 +44,18 @@ if TORCH_AVAILABLE:
 
 
     class LSTMRegimePredictor(nn.Module):
-        """LSTM network for regime sequence prediction."""
+        """
+        LSTM network for regime sequence prediction.
+        
+        DEFAULT ARCHITECTURE (synchronized with config.example.yaml):
+        - input_size: 42 (number of features from feature engineering)
+        - hidden_size: 64 (smaller, safer architecture to prevent overfitting)
+        - num_layers: 2 (shallower network for better generalization)
+        - num_classes: 3 (bullish, neutral, bearish)
+        
+        These defaults MUST match config.example.yaml:
+          ml.regime_prediction.model_params.lstm_regime
+        """
         
         def __init__(self, input_size: int = 42, hidden_size: int = 64, 
                      num_layers: int = 2, num_classes: int = 3):
@@ -52,10 +63,10 @@ if TORCH_AVAILABLE:
             Initialize LSTM regime predictor.
             
             Args:
-                input_size: Number of input features
-                hidden_size: Size of LSTM hidden state
-                num_layers: Number of LSTM layers
-                num_classes: Number of regime classes
+                input_size: Number of input features (default: 42)
+                hidden_size: Size of LSTM hidden state (default: 64)
+                num_layers: Number of LSTM layers (default: 2)
+                num_classes: Number of regime classes (default: 3)
             """
             super().__init__()
             self.hidden_size = hidden_size
