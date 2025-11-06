@@ -159,28 +159,31 @@ async def main():
     logger.info("📈 ADIM 2: FİYAT TAHMİN MODELLERİ EĞİTİLİYOR 📈")
     logger.info("="*60)
     
-    price_timeframes = [tf for tf in ['5m', '15m', '1h'] if tf in training_data.get(SYMBOLS_TO_TRAIN[0], {})]
-    if SYMBOLS_TO_TRAIN[0] in training_data and price_timeframes:
-        sample_df = training_data[SYMBOLS_TO_TRAIN[0]][price_timeframes[0]].copy()
-        sample_features = feature_engine.extract_features(sample_df)
-        input_feature_size = sample_features.shape[1]
-        
-        transformer_d_model = input_feature_size
-        if transformer_d_model % 2 != 0:
-            transformer_d_model += 1
+    # ✔️ KESİN ÇÖZÜM: 'AdvancedPricePredictionEngine' sınıfını, ana uygulamadaki gibi
+    # doğru konfigürasyon bloğuyla başlatıyoruz. Bu sınıf, artık kendi içinde
+    # MultiTimeframePricePredictor ve diğer alt modelleri kendi inşa edecektir.
+    # Bu, hem TypeError hatasını çözer hem de yapısal senkronizasyonu sağlar.
 
-        timeframe_models = {}
-        for tf in price_timeframes:
-            base_models = {
-                'lstm': LSTMPricePredictor(input_size=input_feature_size),
-                'transformer': TransformerPricePredictor(d_model=transformer_d_model)
-            }
-            timeframe_models[tf] = EnsemblePricePredictor(base_models)
-        
-        multi_tf_predictor = MultiTimeframePricePredictor(timeframe_models)
-        price_engine = AdvancedPricePredictionEngine(multi_tf_predictor)
-        
-        price_engine.train_and_save_models(training_data)
+    if SYMBOLS_TO_TRAIN[0] in training_data:
+        try:
+            logger.info("AdvancedPricePredictionEngine konfigürasyona göre başlatılıyor...")
+            price_engine = AdvancedPricePredictionEngine(
+                market_data_pipeline=None,      # Eğitim sırasında pipeline gerekmez
+                feature_pipeline=feature_engine,  # Önceden oluşturulan özellik motorunu ver
+                config=price_pred_config          # Sadece fiyat tahminine özel konfigürasyonu ver
+            )
+            logger.info("✅ Fiyat tahmin motoru, eğitim için başarıyla başlatıldı.")
+            
+            # Ana sınıf üzerinden eğitimi ve kaydetmeyi tetikle
+            logger.info("Model eğitimi ve kaydetme süreci başlatılıyor...")
+            price_engine.train_and_save_models(training_data)
+            logger.info("✅ Fiyat tahmin modellerinin eğitimi ve kaydı tamamlandı.")
+
+        except Exception as e:
+            logger.error(f"❌ Fiyat tahmin modelleri eğitimi sırasında kritik hata: {e}", exc_info=True)
+
+    else:
+        logger.warning("Fiyat tahmini eğitimi için veri bulunamadı, bu adım atlanıyor.")
 
     # 3. REINFORCEMENT LEARNING AJANI EĞİTİMİ
     logger.info("\n" + "="*60)
