@@ -255,3 +255,114 @@ def try_load_model(model_path: str, model_class_import: Optional[str] = None):
 
     # If obj is something else (e.g., list/tuple), just return it
     return {"type": "unknown", "obj": obj, "note": "torch.load returned non-dict object"}
+
+def compute_confidences_and_stats(model_obj, X: np.ndarray, batch_size: int = 512):
+    """
+    Return dict {"probs": probs, "confs": confs, "preds": preds}.
+    Behavior:
+      - If model_obj has attribute 'q_network' (PyTorch nn.Module), use it to compute logits -> softmax -> probs.
+      - Else if model_obj is a torch.nn.Module or callable, call it with tensors -> softmax -> probs.
+      - Else if model_obj has predict_proba, use it.
+      - Otherwise raise RuntimeError.
+    """
+    import numpy as _np
+    try:
+        import torch
+        import torch.nn.functional as F
+    except Exception:
+        torch = None
+        F = None
+
+    if X is None or len(X) == 0:
+        raise RuntimeError("Empty X passed to compute_confidences_and_stats")
+
+    probs_list = []
+
+    def logits_to_probs(x):
+        # x may be torch.Tensor or numpy array
+        if 'torch' in globals() and isinstance(x, torch.Tensor):
+            if F is not None:
+                return F.softmax(x, dim=1).cpu().numpy()
+            else:
+                t = x.detach().cpu()
+                e = torch.exp(t - t.max(dim=1, keepdim=True)[0])
+                p = (e / e.sum(dim=1, keepdim=True)).cpu().numpy()
+                return p
+        else:
+            arr = _np.asarray(x)
+            if arr.ndim == 1:
+                arr = arr.reshape(1, -1)
+            # stable softmax
+            arr = arr - arr.max(axis=1, keepdims=True)
+            ex = _np.exp(arr)
+            return ex / ex.sum(axis=1, keepdims=True)
+
+    # Case A: agent has q_network
+    if hasattr(model_obj, "q_network") and getattr(model_obj, "q_network") is not None:
+        net = getattr(model_obj, "q_network")
+        if 'torch' not in globals():
+            raise RuntimeError("torch is required to use q_network")
+        device = torch.device("cpu")
+        net.eval()
+        with torch.no_grad():
+            for i in range(0, len(X), batch_size):
+                xb = torch.from_numpy(X[i:i+batch_size].astype(_np.float32)).to(device)
+                out = net(xb)
+                if isinstance(out, (tuple, list)):
+                    out = out[0]
+                probs_chunk = logits_to_probs(out)
+                probs_list.append(probs_chunk)
+        probs = _np.vstack(probs_list)
+
+    # Case B: callable model (nn.Module/scripted)
+    elif callable(model_obj):
+        # prefer torch if module
+        try:
+            is_torch = 'torch' in globals() and isinstance(model_obj, torch.nn.Module)
+        except Exception:
+            is_torch = False
+        if is_torch:
+            model_obj.eval()
+            with torch.no_grad():
+                for i in range(0, len(X), batch_size):
+                    xb = torch.from_numpy(X[i:i+batch_size].astype(_np.float32))
+                    out = model_obj(xb)
+                    if isinstance(out, (tuple, list)):
+                        out = out[0]
+                    probs_chunk = logits_to_probs(out)
+                    probs_list.append(probs_chunk)
+            probs = _np.vstack(probs_list)
+        else:
+            # try sklearn-like or callable that returns numpy
+            if hasattr(model_obj, "predict_proba"):
+                probs = model_obj.predict_proba(X)
+                probs = _np.asarray(probs)
+            else:
+                # try calling with numpy batches
+                for i in range(0, len(X), batch_size):
+                    try:
+                        out = model_obj(X[i:i+batch_size])
+                    except Exception:
+                        out = model_obj(X[i:i+batch_size].astype(_np.float32))
+                    if isinstance(out, (tuple, list)):
+                        out = out[0]
+                    probs_chunk = logits_to_probs(out)
+                    probs_list.append(probs_chunk)
+                probs = _np.vstack(probs_list)
+
+    # Case C: sklearn-like predict_proba attribute (fallback)
+    elif hasattr(model_obj, "predict_proba"):
+        probs = _np.asarray(model_obj.predict_proba(X))
+
+    else:
+        raise RuntimeError("Model object is not callable, has no q_network, and has no predict_proba")
+
+    # Normalize shapes (binary -> 2-col, 1D -> softmax)
+    if probs.ndim == 1:
+        probs = _np.vstack([1 - probs, probs]).T
+    elif probs.shape[1] == 1:
+        probs = _np.hstack([1 - probs, probs])
+
+    confs = probs.max(axis=1)
+    preds = probs.argmax(axis=1)
+    return {"probs": probs, "confs": confs, "preds": preds}
