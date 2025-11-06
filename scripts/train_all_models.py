@@ -76,8 +76,17 @@ async def main():
 
     # Load configuration from config.example.yaml
     config_path = os.path.join(project_root, 'config', 'config.example.yaml')
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
+    
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+    except FileNotFoundError:
+        logger.error(f"❌ Configuration file not found: {config_path}")
+        logger.error("Please ensure config.example.yaml exists in the config/ directory.")
+        raise
+    except yaml.YAMLError as e:
+        logger.error(f"❌ Error parsing configuration file: {e}")
+        raise
     
     ml_config = config.get('ml', {})
     regime_pred_config = ml_config.get('regime_prediction', {})

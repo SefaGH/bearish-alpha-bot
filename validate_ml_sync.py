@@ -11,8 +11,9 @@ import numpy as np
 import pandas as pd
 import logging
 
-# Enable ML features
-os.environ['ML_ENABLED'] = 'true'
+# Enable ML features (only if not already set)
+if 'ML_ENABLED' not in os.environ:
+    os.environ['ML_ENABLED'] = 'true'
 
 # Add project root to path
 project_root = os.path.abspath(os.path.dirname(__file__))
@@ -26,9 +27,14 @@ from src.core.logger import setup_logger
 logger = setup_logger("ml-validation", level=logging.INFO)
 
 
-def create_synthetic_data(n_samples=200):
-    """Create synthetic OHLCV data for testing."""
-    np.random.seed(42)
+def create_synthetic_data(n_samples=200, seed=42):
+    """Create synthetic OHLCV data for testing.
+    
+    Args:
+        n_samples: Number of samples to generate
+        seed: Random seed for reproducibility
+    """
+    np.random.seed(seed)
     
     dates = pd.date_range(start='2024-01-01', periods=n_samples, freq='1h')
     
@@ -62,6 +68,13 @@ def main():
         # 1. Load config
         print("\n[1/5] Loading configuration...")
         config_path = os.path.join(project_root, 'config', 'config.example.yaml')
+        
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(
+                f"Config file not found: {config_path}\n"
+                "Please ensure config.example.yaml exists in the config/ directory."
+            )
+        
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
         

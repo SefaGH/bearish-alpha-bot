@@ -47,14 +47,17 @@ if TORCH_AVAILABLE:
         """
         LSTM network for regime sequence prediction.
         
-        DEFAULT ARCHITECTURE (synchronized with config.example.yaml):
+        DEFAULT ARCHITECTURE (synchronized with central config):
         - input_size: 42 (number of features from feature engineering)
         - hidden_size: 64 (smaller, safer architecture to prevent overfitting)
         - num_layers: 2 (shallower network for better generalization)
         - num_classes: 3 (bullish, neutral, bearish)
         
-        These defaults MUST match config.example.yaml:
-          ml.regime_prediction.model_params.lstm_regime
+        These defaults MUST match the ML configuration file at:
+          ml -> regime_prediction -> model_params -> lstm_regime
+        
+        NOTE: If config parameters change, this architecture must be updated
+        and models must be retrained to avoid size mismatch errors.
         """
         
         def __init__(self, input_size: int = 42, hidden_size: int = 64, 

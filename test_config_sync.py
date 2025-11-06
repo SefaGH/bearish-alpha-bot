@@ -8,8 +8,9 @@ import os
 import sys
 import yaml
 
-# Enable ML features for testing
-os.environ['ML_ENABLED'] = 'true'
+# Enable ML features for testing (only if not already set)
+if 'ML_ENABLED' not in os.environ:
+    os.environ['ML_ENABLED'] = 'true'
 
 # Add project root to path
 project_root = os.path.abspath(os.path.dirname(__file__))
