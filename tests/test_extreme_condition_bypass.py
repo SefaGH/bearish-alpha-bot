@@ -98,7 +98,7 @@ def test_bypass_config_structure():
     
     # Verify config is accessible
     bypass_config = coordinator.portfolio_manager.cfg.get('signals', {}).get('bypass', {})
-    assert bypass_config.get('enabled') == True
+    assert bypass_config.get('enabled') is True
     assert bypass_config.get('rsi_oversold_threshold') == 20
     assert bypass_config.get('rsi_overbought_threshold') == 80
 
@@ -196,7 +196,7 @@ async def test_extreme_oversold_bypass_triggers_on_buy_signal():
     )
     
     # Verify bypass is triggered
-    assert bypass_triggered == True
+    assert bypass_triggered is True
 
 
 @pytest.mark.unit
@@ -240,7 +240,7 @@ async def test_extreme_overbought_bypass_triggers_on_sell_signal():
     )
     
     # Verify bypass is triggered
-    assert bypass_triggered == True
+    assert bypass_triggered is True
 
 
 @pytest.mark.unit
@@ -284,7 +284,7 @@ async def test_no_bypass_on_normal_rsi_buy_signal():
     )
     
     # Verify bypass is NOT triggered
-    assert bypass_triggered == False
+    assert bypass_triggered is False
 
 
 @pytest.mark.unit
@@ -328,7 +328,7 @@ async def test_no_bypass_on_mismatched_signal_type():
     )
     
     # Verify bypass is NOT triggered
-    assert bypass_triggered == False
+    assert bypass_triggered is False
 
 
 @pytest.mark.unit
@@ -372,7 +372,7 @@ async def test_bypass_disabled_in_config():
     )
     
     # Verify bypass is NOT triggered
-    assert bypass_triggered == False
+    assert bypass_triggered is False
 
 
 @pytest.mark.unit
@@ -416,7 +416,7 @@ async def test_custom_thresholds():
     )
     
     # Verify bypass is triggered with custom threshold
-    assert bypass_triggered == True
+    assert bypass_triggered is True
 
 
 @pytest.mark.unit
@@ -460,7 +460,7 @@ async def test_long_signal_synonym():
     )
     
     # Verify bypass is triggered
-    assert bypass_triggered == True
+    assert bypass_triggered is True
 
 
 @pytest.mark.unit
@@ -504,7 +504,93 @@ async def test_short_signal_synonym():
     )
     
     # Verify bypass is triggered
-    assert bypass_triggered == True
+    assert bypass_triggered is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_invalid_threshold_validation():
+    """Test that invalid thresholds are properly validated and bypass is not triggered."""
+    # Test case 1: oversold >= overbought (invalid)
+    config = {
+        'signals': {
+            'bypass': {
+                'enabled': True,
+                'rsi_oversold_threshold': 80,  # Invalid: higher than overbought
+                'rsi_overbought_threshold': 20
+            }
+        }
+    }
+    
+    portfolio_mgr = MockPortfolioManager(config)
+    risk_mgr = MockRiskManager()
+    market_pipeline = MockMarketDataPipeline(rsi_value=15.0)
+    
+    coordinator = StrategyCoordinator(
+        portfolio_manager=portfolio_mgr,
+        risk_manager=risk_mgr,
+        market_data_pipeline=market_pipeline,
+        config=config
+    )
+    
+    signal = {
+        'symbol': 'BTC/USDT:USDT',
+        'side': 'buy',
+        'entry': 50000.0,
+        'stop': 49000.0,
+        'target': 52000.0,
+        'strategy_name': 'test_strategy'
+    }
+    
+    # Check bypass - should NOT trigger due to invalid thresholds
+    bypass_triggered = await coordinator._check_extreme_condition_bypass(
+        signal, 15.0, 'BTC/USDT:USDT', 'buy'
+    )
+    
+    assert bypass_triggered is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_out_of_range_threshold_validation():
+    """Test that out-of-range thresholds (< 0 or > 100) are rejected."""
+    # Test case: threshold > 100 (invalid)
+    config = {
+        'signals': {
+            'bypass': {
+                'enabled': True,
+                'rsi_oversold_threshold': 20,
+                'rsi_overbought_threshold': 150  # Invalid: > 100
+            }
+        }
+    }
+    
+    portfolio_mgr = MockPortfolioManager(config)
+    risk_mgr = MockRiskManager()
+    market_pipeline = MockMarketDataPipeline(rsi_value=85.0)
+    
+    coordinator = StrategyCoordinator(
+        portfolio_manager=portfolio_mgr,
+        risk_manager=risk_mgr,
+        market_data_pipeline=market_pipeline,
+        config=config
+    )
+    
+    signal = {
+        'symbol': 'BTC/USDT:USDT',
+        'side': 'sell',
+        'entry': 50000.0,
+        'stop': 51000.0,
+        'target': 48000.0,
+        'strategy_name': 'test_strategy'
+    }
+    
+    # Check bypass - should NOT trigger due to out-of-range threshold
+    bypass_triggered = await coordinator._check_extreme_condition_bypass(
+        signal, 85.0, 'BTC/USDT:USDT', 'sell'
+    )
+    
+    assert bypass_triggered is False
 
 
 if __name__ == '__main__':

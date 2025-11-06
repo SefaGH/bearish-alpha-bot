@@ -635,13 +635,28 @@ class StrategyCoordinator:
         config = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
         bypass_config = config.get('signals', {}).get('bypass', {})
         
-        # Check if bypass is enabled
+        # Check if bypass is enabled (default: True as per issue requirements)
         if not bypass_config.get('enabled', True):
             return False
         
-        # Get thresholds
+        # Get thresholds with validation
         oversold_threshold = float(bypass_config.get('rsi_oversold_threshold', 20))
         overbought_threshold = float(bypass_config.get('rsi_overbought_threshold', 80))
+        
+        # Validate thresholds
+        if not (0 <= oversold_threshold <= 100 and 0 <= overbought_threshold <= 100):
+            logger.error(
+                f"[BYPASS] Invalid RSI thresholds: oversold={oversold_threshold}, "
+                f"overbought={overbought_threshold}. Must be in range [0, 100]."
+            )
+            return False
+        
+        if oversold_threshold >= overbought_threshold:
+            logger.error(
+                f"[BYPASS] Invalid RSI thresholds: oversold ({oversold_threshold}) "
+                f"must be < overbought ({overbought_threshold})"
+            )
+            return False
         
         # Normalize side for comparison
         normalized_side = original_side.lower()
