@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 diagnose_model_confidence.py
@@ -15,6 +14,7 @@ probabilities, confidences, and predictions, and writes a JSON report.
 Usage (examples):
     python diagnose_model_confidence.py --csv data/samples.csv --model model.pth
     python diagnose_model_confidence.py --csv data/samples.csv --limit 500
+    python diagnose_model_confidence.py --csv data/samples.csv --model model.pth --model-class-import src.agent.MyAgent
 
 Output:
     report.json in the current directory (configurable via --out)
@@ -26,6 +26,7 @@ import json
 import os
 import sys
 from typing import Any, Dict, Optional, List
+import importlib  # <-- YENİ EKLENDİ
 
 import numpy as np
 
@@ -109,12 +110,19 @@ def try_load_model(model_path: Optional[str]) -> Dict[str, Any]:
             # Detect typical checkpoint dict/state_dict
             if isinstance(obj, dict):
                 sample_keys: List[str] = list(obj.keys())[:20]
-                is_state_like = any("." in str(k) for k in sample_keys) or                                     ("state_dict" in obj) or                                     any(str(k).endswith("state_dict") for k in sample_keys)
-                if is_state_like:
-                    # do not attempt to instantiate arbitrary models here
+                is_state_like = any("." in str(k) for k in sample_keys) or \
+                                ("state_dict" in obj) or \
+                                any(str(k).endswith("state_dict") for k in sample_keys)
+                
+                # model_load.json'a göre bizimkisi 'q_network' içeriyor.
+                is_our_checkpoint = "q_network" in obj
+                
+                if is_state_like or is_our_checkpoint:
+                    # Bu bir dict (checkpoint), çalıştırılabilir bir model değil.
+                    # main() fonksiyonunun bunu "canlandırmasına" izin ver.
                     return {
-                        "model": None,
-                        "note": f"Loaded torch checkpoint dict (not a model instance). Keys sample: {sample_keys[:10]}"
+                        "model": obj, # Sözlüğü olduğu gibi döndür
+                        "note": f"Loaded torch checkpoint dict. Keys sample: {sample_keys[:10]}"
                     }
             return {"model": obj, "note": "Loaded torch object via torch.load"}
         except Exception as e:
@@ -140,8 +148,6 @@ def try_load_model(model_path: Optional[str]) -> Dict[str, Any]:
         try:
             with open(model_path, "r", encoding="utf-8") as f:
                 y = yaml.safe_load(f)
-            # We do not execute user-provided code to instantiate arbitrary models for safety.
-            # Return the parsed YAML so caller can inspect or handle externally.
             keys_desc = list(y) if isinstance(y, dict) else str(type(y))
             return {"model": None, "note": f"Parsed YAML (not instantiating): keys={keys_desc}"}
         except Exception as e:
@@ -166,10 +172,18 @@ def _logits_to_probs(x: Any) -> np.ndarray:
         # If input looks like probs already (non-negative & rows sum ~1), leave as is
         with torch.no_grad():
             row_sums = x.sum(dim=1, keepdim=True)
-            try_probs = bool(torch.all(x >= 0)) and bool(torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-4))
+            try:
+                # Use torch.allclose with default atol
+                is_close_to_one = torch.allclose(row_sums, torch.ones_like(row_sums))
+            except Exception:
+                is_close_to_one = False # Fallback
+            
+            try_probs = bool(torch.all(x >= 0)) and is_close_to_one
+            
             if try_probs:
                 arr = x.detach().cpu().numpy()
                 return arr
+                
             # Softmax logits -> probs
             if F is not None:
                 return F.softmax(x, dim=1).cpu().numpy()
@@ -335,6 +349,8 @@ def parse_args(argv=None):
     p.add_argument("--out", default="report.json", help="Path to write JSON report")
     p.add_argument("--batch-size", type=int, default=512, help="Inference batch size")
     p.add_argument("--out-dir", default="diagnostics", help="Optional diagnostics output directory")
+    # --- YENİ ARGÜMAN EKLENDİ ---
+    p.add_argument("--model-class-import", default=None, help="Python import path for model class (e.g. src.agent.MyAgent)")
     return p.parse_args(argv)
 
 
@@ -358,6 +374,10 @@ def _write_diagnostics(out_dir: str, result: Dict[str, np.ndarray]) -> None:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    
+    # Rapor için erken başlatma
+    report_extras = {}
+    inference_err = None
 
     # Load samples
     try:
@@ -379,18 +399,70 @@ def main(argv=None) -> int:
     model_obj = loaded.get("model", None)
     load_note = loaded.get("note", "")
 
+    # --- YENİ "MODEL CANLANDIRMA" BLOĞU ---
+    # `model_load.json` dosyamıza dayanarak, model_obj bir checkpoint (dict) ise
+    # ve kullanıcı --model-class-import sağladıysa, modeli "canlandırmayı" dene.
+    if isinstance(model_obj, dict) and args.model_class_import:
+        print(f"Loaded object is a dict. Attempting to instantiate from: {args.model_class_import}")
+        checkpoint = model_obj  # Yüklenen nesne checkpoint'in kendisi
+        instantiated_model = None
+        try:
+            # 1. Sınıfı (mimarîyi) import et
+            module_path, class_name = args.model_class_import.rsplit(".", 1)
+            mod = importlib.import_module(module_path)
+            Klass = getattr(mod, class_name)
+            
+            # 2. Mimarîden boş bir model nesnesi oluştur
+            # Varsayım: __init__ argüman almaz. Alırsa burası hata verir.
+            instantiated_model = Klass()
+            print(f"Instantiated model class: {class_name}")
+
+            # 3. Ağırlıkları (state_dict) modele yükle
+            # model_load.json'a göre: anahtar "q_network"
+            if "q_network" in checkpoint and hasattr(instantiated_model, "q_network"):
+                print("Found 'q_network' key, loading into model.q_network...")
+                instantiated_model.q_network.load_state_dict(checkpoint["q_network"])
+                load_note = f"Instantiated {args.model_class_import} and loaded 'q_network' state_dict."
+                # Başarılı! model_obj'yi "canlı" modelle değiştir
+                model_obj = instantiated_model
+            
+            # Analizdeki diğer fallbacks (güvenlik için)
+            elif "state_dict" in checkpoint and hasattr(instantiated_model, "load_state_dict"):
+                print("Found 'state_dict' key, loading into model.load_state_dict()...")
+                instantiated_model.load_state_dict(checkpoint["state_dict"])
+                load_note = f"Instantiated {args.model_class_import} and loaded 'state_dict'."
+                model_obj = instantiated_model
+
+            else:
+                print("[WARN] Checkpoint dict loaded, but could not find a matching state_dict key ('q_network' or 'state_dict') to load.")
+                load_note = f"Instantiated {args.model_class_import} but FAILED to find state_dict key."
+                # model_obj'yi dict olarak bırak, bu alt satırda hataya düşecek
+            
+            report_extras["model_instantiation"] = "success"
+
+        except Exception as e:
+            print(f"[ERROR] Failed during model instantiation/loading: {e}")
+            inference_err = f"Failed to instantiate model {args.model_class_import}: {e}"
+            report_extras["model_instantiation"] = f"failed: {e}"
+            # model_obj'nin dict olarak kalmasını sağla
+            model_obj = checkpoint
+    # --- YENİ BLOK SONU ---
+
+
     # Run inference best-effort
     result = None
-    inference_err = None
-    if model_obj is None:
-        inference_err = "No model object available for inference"
-    else:
-        try:
-            result = compute_confidences_and_stats(model_obj, X, batch_size=args.batch_size)
-        except Exception as e:
-            inference_err = str(e)
+    if inference_err is None: # Sadece canlandırma başarısız olmadıysa dene
+        if model_obj is None:
+            inference_err = "No model object available for inference"
+        else:
+            try:
+                result = compute_confidences_and_stats(model_obj, X, batch_size=args.batch_size)
+            except Exception as e:
+                # Bu, "Model object is not callable..." hatasını yakalayan yer
+                inference_err = str(e)
 
     report = build_report(X, result, load_note, inference_err)
+    report.update(report_extras) # Canlandırma loglarını rapora ekle
     save_report(report, args.out)
 
     # Always write diagnostics if out_dir is provided
