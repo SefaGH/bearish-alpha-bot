@@ -7,7 +7,7 @@ import json
 import traceback
 import sys # sys.exit için eklendi
 
-OUT="diagnostics/training_history_summary.json"
+OUT = "diagnostics/training_history_summary.json"
 os.makedirs("diagnostics", exist_ok=True) # Dizin yoksa oluştur
 
 try:
@@ -15,57 +15,43 @@ try:
     import numpy as np
     from scripts.safe_torch_load import safe_torch_load # 'safe_torch_load'u kullan
 except Exception as e:
-    with open(OUT,"w") as f:
-        json.dump({"error":f"import failed: {e}","trace":traceback.format_exc()}, f, indent=2)
+    with open(OUT, "w") as f:
+        json.dump({"error": str(e), "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (import error)")
     sys.exit(0)
 
-# Orijinal checkpoint path'ini env değişkeninden al
+# Orijinal checkpoint'i (ağırlıklar/dict) oku
 cp = os.environ.get("ORIGINAL_MODEL_PATH", "data/models/rl_agent_final.pth")
 model_class_import = os.environ.get("MODEL_CLASS_IMPORT", None) # safe_torch_load için gerekli
 
 if not os.path.exists(cp):
-    with open(OUT,"w") as f:
-        json.dump({"error":"checkpoint not found: "+cp}, indent=2)
-    print(f"Wrote {OUT} (file not found)")
+    with open(OUT, "w") as f:
+        json.dump({"error": "checkpoint not found: " + cp}, f, indent=2)
+    print(f"Wrote {OUT} (checkpoint not found)")
     sys.exit(0)
 
 try:
-    # Orijinal checkpoint'i (bir dict olmalı) güvenle yükle
     ck = safe_torch_load(cp, model_class_import=model_class_import)
 except Exception as e:
-    with open(OUT,"w") as f:
-        json.dump({"error":f"safe_torch_load failed: {e}","trace":traceback.format_exc()}, f, indent=2)
+    with open(OUT, "w") as f:
+        json.dump({"error": f"safe_torch_load failed: {e}", "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (load error)")
     sys.exit(0)
-
-
+    
 res = {"checkpoint_keys": list(ck.keys()) if isinstance(ck, dict) else "not-dict"}
 if isinstance(ck, dict) and "training_history" in ck:
     th = ck["training_history"]
     out = {}
-    
-    # 'config'i de ekle (Analiz J+'da istenmişti)
-    if "config" in ck:
-        # Sadece serileştirilebilir (basit) config değerlerini al
-        try:
-            config_simple = {k: v for k, v in ck["config"].items() if isinstance(v, (str, int, float, bool, list, dict))}
-            out["config"] = config_simple
-        except Exception:
-            out["config"] = "Config object found but could not be serialized."
-
-    # common patterns for losses
-    for k in ("losses","train_loss","val_loss","loss_history"):
-        if k in th and isinstance(th[k], (list, tuple)):
-            arr_data = th[k]
+    for k in ("losses", "train_loss", "val_loss", "loss_history"):
+        if k in th:
+            arr = th[k]
             try:
-                arr = np.asarray(arr_data)
+                arr = np.asarray(arr)
                 out[k] = {"len": int(arr.size), "min": float(arr.min()), "max": float(arr.max()), "last": float(arr[-1])}
             except Exception:
-                out[k] = f"present (len {len(arr_data)}) but unreadable as numpy array"
-    
-    # fallback: if training_history itself is a list of dicts with 'loss'
-    if not out and isinstance(th, (list,tuple)) and len(th)>0 and isinstance(th[0], dict):
+                out[k] = "present but unreadable"
+                
+    if not out and isinstance(th, (list, tuple)) and len(th) > 0 and isinstance(th[0], dict):
         losses = []
         for e in th:
             if "loss" in e:
@@ -78,6 +64,6 @@ if isinstance(ck, dict) and "training_history" in ck:
 else:
     res["training_history_summary"] = "no training_history key found"
 
-with open(OUT,"w") as f:
-    json.dump(res, indent=2, default=str) # default=str (numpy türleri için)
-print(f"Wrote {OUT}")
+with open(OUT, "w") as f:
+    json.dump(res, f, indent=2, default=str) # default=str eklendi
+print("Wrote", OUT)
