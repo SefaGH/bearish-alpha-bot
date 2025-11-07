@@ -59,7 +59,8 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            pip install --prefer-binary torch pandas scikit-learn joblib numpy PyYAML
+            # 'feature_matcher' için 'scipy' eklendi
+            pip install --prefer-binary torch pandas scikit-learn joblib numpy PyYAML scipy
           fi
           pip install --prefer-binary matplotlib pillow
 
@@ -174,14 +175,28 @@ jobs:
         run: |
           set -euo pipefail
           echo "Inspecting saved scaler (data/models/regime/scaler.pkl)..."
-          # Çıktıyı (JSON) yakalayıp bir dosyaya yazıyoruz
           python scripts/inspect_saved_scaler.py > diagnostics/scaler_inspect_report.json || true
           echo "--- Content of scaler_inspect_report.json ---"
           cat diagnostics/scaler_inspect_report.json || true
           echo "----------------------------------------------"
 
-      # (Adım 9d) 'run_with_saved_scaler.py' kaldırıldı, çünkü (Adım 5)
-      # artık 'apply_saved_scaler'ı kullanarak bu işlevi yerine getiriyor.
+      # --- YENİ ADIM: FEATURE MATCHER ---
+      - name: (Adım 9d) Run Feature Matcher
+        shell: bash
+        env:
+          SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
+        run: |
+          set -euo pipefail
+          echo "Running feature matcher..."
+          # Betik, SAMPLES_PATH'i argüman olarak alır
+          python scripts/feature_matcher.py "$SAMPLES_PATH" || true
+          echo "--- Content of mapping.json ---"
+          cat diagnostics/mapping.json || true
+          echo "-----------------------------------"
+          echo "--- Content of mapping_apply_result.json ---"
+          cat diagnostics/mapping_apply_result.json || true
+          echo "-----------------------------------"
+      # --- YENİ ADIM SONU ---
 
       # ... (Adım 10, 11, 12 atlandı) ...
 
