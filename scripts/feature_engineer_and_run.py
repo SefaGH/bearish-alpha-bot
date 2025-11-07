@@ -139,31 +139,51 @@ except Exception:
 res["scaled_mean_sample"] = list(np.nan_to_num(np.nanmean(Xs, axis=0))[:20])
 res["scaled_std_sample"] = list(np.nan_to_num(np.nanstd(Xs, axis=0))[:20])
 
-# Run model on last row(s) (use last row)
-model_path = "diagnostics/inst_model.pth"
-if not os.path.exists(model_path):
-    res["model_error"] = f"inst_model.pth not found at {model_path}"
-    open(os.path.join(OUT_DIR, "scaler_apply_result.json"), "w").write(json.dumps(res, indent=2))
-    raise SystemExit(0)
-
-try:
-    model_obj = torch.load(model_path, map_location="cpu", weights_only=False)
-    net = getattr(model_obj, "q_network", model_obj)
-    if hasattr(net, "eval"):
-        net.eval()
-    with torch.no_grad():
-        # use last row for inference
-        logits = net(torch.tensor(Xs[-1:].astype(np.float32))).detach().cpu().numpy()
-        probs = softmax(torch.tensor(logits), dim=-1).detach().cpu().numpy()
-    res["model_results"] = {
-        "logits_mean": logits.mean(axis=0).tolist(),
-        "logits_std": logits.std(axis=0).tolist(),
-        "probs_mean": probs.mean(axis=0).tolist(),
-        "entropy_mean": float(- (probs * np.log(np.clip(probs, 1e-12, 1.0))).sum(axis=1).mean())
-    }
-except Exception as e:
-    res["model_error"] = str(e)
-    res["model_trace"] = traceback.format_exc()[:4000]
-
+# Save scaler results first
 open(os.path.join(OUT_DIR, "scaler_apply_result.json"), "w").write(json.dumps(res, indent=2))
-print("Wrote diagnostics:", fe_path, "and scaler_apply_result.json")
+
+# Run model on last row(s) (use last row)
+# Try multiple possible model paths
+model_paths = [
+    "data/models/regime/rl_agent_final.pth",
+    "diagnostics/inst_model.pth",
+    "data/models/rl_agent_final.pth",
+    "data/models/regime/transformer_regime.pth",
+    "data/models/regime/lstm_regime.pth"
+]
+
+model_path = None
+for path in model_paths:
+    if os.path.exists(path):
+        model_path = path
+        print(f"Using model: {model_path}")
+        break
+
+model_res = {}
+if model_path is None:
+    model_res["error"] = "No model found in any of the expected paths"
+    model_res["searched_paths"] = model_paths
+else:
+    try:
+        model_obj = torch.load(model_path, map_location="cpu", weights_only=False)
+        net = getattr(model_obj, "q_network", model_obj)
+        if hasattr(net, "eval"):
+            net.eval()
+        with torch.no_grad():
+            # use last row for inference
+            logits = net(torch.tensor(Xs[-1:].astype(np.float32))).detach().cpu().numpy()
+            probs = softmax(torch.tensor(logits), dim=-1).detach().cpu().numpy()
+        model_res = {
+            "model_path": model_path,
+            "logits": logits.tolist(),
+            "probabilities": probs.tolist(),
+            "entropy_mean": float(- (probs * np.log(np.clip(probs, 1e-12, 1.0))).sum(axis=1).mean())
+        }
+    except Exception as e:
+        model_res["error"] = str(e)
+        model_res["trace"] = traceback.format_exc()[:4000]
+        model_res["model_path"] = model_path
+
+# Save model results to separate file
+open(os.path.join(OUT_DIR, "model_results.json"), "w").write(json.dumps(model_res, indent=2))
+print("Wrote diagnostics:", fe_path, ", scaler_apply_result.json, and model_results.json")
