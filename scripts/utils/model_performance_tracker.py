@@ -96,6 +96,36 @@ class ModelPerformanceTracker:
         except Exception as e:
             logger.error(f"Failed to save history: {e}")
     
+    def _clean_metrics(self, metrics: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Clean metrics to ensure proper types for logging.
+        Converts string values that look like numbers to float.
+        
+        Args:
+            metrics: Dictionary of metrics (possibly with mixed types)
+        
+        Returns:
+            Dictionary with cleaned metrics (proper types)
+        """
+        cleaned = {}
+        for key, value in metrics.items():
+            if isinstance(value, dict):
+                # Nested dict - recursive cleaning
+                cleaned[key] = self._clean_metrics(value)
+            elif isinstance(value, str):
+                # String value - try to convert to float if it looks like a number
+                try:
+                    if '.' in value or value.replace('-', '').replace('.', '').isdigit():
+                        cleaned[key] = float(value)
+                    else:
+                        cleaned[key] = value
+                except (ValueError, AttributeError):
+                    cleaned[key] = value
+            else:
+                # Keep other types as-is
+                cleaned[key] = value
+        return cleaned
+    
     def record_training(self,
                        model_type: str,
                        model_name: str,
@@ -127,6 +157,9 @@ class ModelPerformanceTracker:
         if run_number is None:
             run_number = os.environ.get('GITHUB_RUN_NUMBER', 'local')
         
+        # Clean metrics to ensure proper types
+        cleaned_metrics = self._clean_metrics(metrics)
+        
         # Create training record
         training_record = {
             "timestamp": datetime.now().isoformat(),
@@ -134,7 +167,7 @@ class ModelPerformanceTracker:
             "model_name": model_name,
             "git_sha": git_sha,
             "run_number": run_number,
-            "metrics": metrics,
+            "metrics": cleaned_metrics,
             "data_info": data_info,
             "training_time_seconds": training_time
         }
@@ -148,8 +181,15 @@ class ModelPerformanceTracker:
         # Also save individual model training record
         self._save_individual_record(model_type, model_name, training_record)
         
+        # Log with safe formatting (handle cases where accuracy might not exist or be non-numeric)
+        accuracy_val = cleaned_metrics.get('accuracy', 'N/A')
+        if isinstance(accuracy_val, (int, float)):
+            accuracy_str = f"{accuracy_val:.4f}"
+        else:
+            accuracy_str = str(accuracy_val)
+        
         logger.info(f"✅ Recorded training: {model_type}/{model_name} "
-                   f"(accuracy={metrics.get('accuracy', 'N/A'):.4f}, "
+                   f"(accuracy={accuracy_str}, "
                    f"time={training_time:.2f}s)")
         
         return training_record

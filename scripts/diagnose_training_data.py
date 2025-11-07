@@ -147,10 +147,10 @@ class DataQualityDiagnostics:
         # Parse timeframe to timedelta
         timeframe_map = {
             '1m': '1min', '5m': '5min', '15m': '15min', '30m': '30min',
-            '1h': '1H', '4h': '4H', '1d': '1D'
+            '1h': '1h', '4h': '4h', '1d': '1d'
         }
         
-        expected_freq = timeframe_map.get(timeframe, '1H')
+        expected_freq = timeframe_map.get(timeframe, '1h')
         
         if len(df) < 2:
             return 0, {"gap_count": 0, "gaps": []}
