@@ -13,7 +13,17 @@ Outputs:
 Usage:
   python scripts/feature_matcher.py sample_data/test_samples.csv
 """
-import os, sys, json, traceback
+import os
+import sys
+
+# Add project root to Python path
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, PROJECT_ROOT)
+
+# Now imports will work
+import json
+import traceback
 from pathlib import Path
 
 IN_CSV = sys.argv[1] if len(sys.argv) > 1 else "sample_data/test_samples.csv"

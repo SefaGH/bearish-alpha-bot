@@ -9,7 +9,18 @@ scripts/feature_engineer_and_run.py
  - warn and abort if too many NaNs or zero rows remain
  - use last row(s) for inference
 """
-import os, sys, json, traceback
+import os
+import sys
+
+# Add project root to Python path
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, PROJECT_ROOT)
+
+# Now imports will work
+import json
+import traceback
+
 OUT_DIR = "diagnostics"
 os.makedirs(OUT_DIR, exist_ok=True)
 
