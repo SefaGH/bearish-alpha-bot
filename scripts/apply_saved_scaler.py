@@ -4,7 +4,21 @@ Apply saved scaler (data/models/regime/scaler.pkl) to an input DataFrame or nump
 Returns (X_scaled, meta) where X_scaled is np.ndarray suitable for model forward.
 Safe: tries scaler.transform, falls back to manual mean_/scale_; attempts column mapping.
 """
-import os, json
+import os
+import sys
+
+# Add scripts directory to path to import setup_path module
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+# Setup Python path to enable imports from src module
+from setup_path import setup_project_path
+setup_project_path()
+
+# Now imports will work
+import json
+
 def apply_saved_scaler(X_df, model_obj=None, scaler_path="data/models/regime/scaler.pkl"):
     """
     X_df: pandas.DataFrame containing either FEATURE_COLUMNS-named columns or numeric columns in order.

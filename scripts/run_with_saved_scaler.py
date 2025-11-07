@@ -4,7 +4,22 @@ Load sample_data/test_samples.csv, align columns to FeatureEngineeringPipeline.F
 load scaler (data/models/regime/scaler.pkl), apply scaler.transform and run model.q_network to get probs.
 Writes diagnostics/scaler_apply_result.json (small).
 """
-import os, json, traceback
+import os
+import sys
+
+# Add scripts directory to path to import setup_path module
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+# Setup Python path to enable imports from src module
+from setup_path import setup_project_path
+setup_project_path()
+
+# Now imports will work
+import json
+import traceback
+
 OUT="diagnostics/scaler_apply_result.json"
 res = {}
 
@@ -12,7 +27,6 @@ try:
     import joblib, pandas as pd, numpy as np, torch
     from torch.nn.functional import softmax
     
-    # PYTHONPATH'ın src'yi içerdiğini varsayarak
     from src.ml.feature_engineering import FeatureEngineeringPipeline
     from scripts.safe_torch_load import safe_torch_load
 
