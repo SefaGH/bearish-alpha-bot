@@ -146,7 +146,7 @@ jobs:
           SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
           INSPECT_N: "10"
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           if [ -f "$MODEL_TO_USE" ]; then
             echo "Running logit/stats inspection on $MODEL_TO_USE..."
             python scripts/inspect_logits_and_stats.py
@@ -227,65 +227,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "Summarizing model_inst_attempt.json..."
-          # Python script'ini 'bash' içinde 'heredoc' ile çalıştırıyoruz
-          python - <<'PY'
-import json, textwrap, os, sys
-
-F="diagnostics/model_inst_attempt.json"
-OUT_F="diagnostics/model_inst_summary.txt"
-
-os.makedirs("diagnostics", exist_ok=True) # Dizin yoksa oluştur
-
-if not os.path.exists(F):
-    print(f"File not found, skipping summary: {F}")
-    with open(OUT_F, "w") as f:
-        f.write(f"File not found: {F}")
-    sys.exit(0)
-
-try:
-    o=json.load(open(F))
-except Exception as e:
-    print(f"Failed to load JSON from {F}: {e}")
-    with open(OUT_F, "w") as f:
-        f.write(f"Failed to load JSON from {F}: {e}")
-    sys.exit(0)
-
-def short(x, n=1000):
-    if x is None: return None
-    s=str(x)
-    return s if len(s)<=n else s[:n]+"...[truncated]"
-
-keys_to_show = [
- "import_error","import_traceback",
- "instantiation_kwargs","inferred","inferred_state_size","inferred_action_size",
- "instantiate_error","instantiate_traceback",
- "load_error","load_traceback",
- "model_inst_load_errors","inst_saved","loaded"
-]
-out=[]
-out.append("ALL_KEYS: "+", ".join(sorted(o.keys())))
-for k in keys_to_show:
-     if k in o:
-         out.append(f"--- {k} ---")
-         v=o[k]
-         if isinstance(v, dict):
-             for kk,vv in list(v.items())[:40]:
-                 out.append(f"{kk}: {short(vv,400)}")
-             if len(v)>40:
-                 out.append(f"... {len(v)-40} more keys ...")
-         else:
-             out.append(short(v,1000))
-
-# 'loaded', 'inst_saved' ve 'inferred' zaten keys_to_show'da var veya (inferred)
-# instantiation_kwargs içinde yer alıyor.
-
-txt="\n".join(out)
-open(OUT_F,"w").write(txt)
-print(f"Wrote {OUT_F}")
-print("\n--- Content of model_inst_summary.txt ---")
-print(txt)
-print("------------------------------------------")
-PY
+          # Artık YAML içine gömülü kod yok, harici script'i çağırıyoruz
+          python scripts/summarize_inst_attempt.py || true
+          # 'summarize_inst_attempt.py' script'i zaten içeriği loglara basıyor
+          # Bu yüzden 'cat' komutuna burada gerek yok.
 
       - name: Upload diagnostics as artifact
         uses: actions/upload-artifact@v4
