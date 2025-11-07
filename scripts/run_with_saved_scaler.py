@@ -7,10 +7,14 @@ Writes diagnostics/scaler_apply_result.json (small).
 import os
 import sys
 
-# Add project root to Python path (insert at beginning to ensure local src module is used)
+# Add scripts directory to path to import setup_path module
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-sys.path.insert(0, PROJECT_ROOT)
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+# Setup Python path to enable imports from src module
+from setup_path import setup_project_path
+setup_project_path()
 
 # Now imports will work
 import json
