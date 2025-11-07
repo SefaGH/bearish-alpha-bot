@@ -1,5 +1,0 @@
-{
-  "error": "'dict' object is not callable",
-  "trace": "Traceback (most recent call last):\n  File \"/home/runner/work/bearish-alpha-bot/bearish-alpha-bot/scripts/feature_engineer_and_run.py\", line 191, in <module>\n    logits = net(torch.tensor(Xs[-1:].astype(np.float32))).detach().cpu().numpy()\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: 'dict' object is not callable\n",
-  "model_path": "data/models/rl_agent_final.pth"
-}
