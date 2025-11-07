@@ -14,9 +14,16 @@ on:
         default: 'src.ml.reinforcement_learning.TradingRLAgent'
         
       samples_path:
-        description: 'Path to sample CSV (optional, leave empty if none)'
+        description: 'Path to feature CSV (f0..fN) (e.g. sample_data/test_samples.csv)'
         required: false
         default: 'sample_data/test_samples.csv'
+      
+      # YENİ GİRDİ
+      ohlcv_samples_path:
+        description: 'Path to raw OHLCV CSV (e.g. sample_data/test_samples_ohlcv.csv)'
+        required: false
+        default: 'sample_data/test_samples_ohlcv.csv'
+
       limit:
         description: 'Optional row limit from CSV'
         required: false
@@ -99,7 +106,7 @@ jobs:
           set -euo pipefail
           python scripts/verify_model.py || true
 
-      - name: (Adım 5) Run diagnostics script
+      - name: (Adım 5) Run diagnostics script (on Feature CSV)
         shell: bash
         env:
           ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
@@ -111,7 +118,7 @@ jobs:
           MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
         run: |
           set -euxo pipefail
-          echo "PYTHONPATH=$PYTHONPATH"
+          echo "Running diagnostics on FEATURE CSV: $SAMPLES_PATH"
           mkdir -p "$OUT_DIR"
           
           if [ -f "$INSTANTIATED_MODEL_PATH" ]; then
@@ -135,7 +142,6 @@ jobs:
             ARGS+=(--limit "$LIMIT")
           fi
           
-          # 'diagnose_model_confidence.py' artık 'apply_saved_scaler'ı otomatik deneyecek
           python scripts/diagnose_model_confidence.py "${ARGS[@]}" \
             2>&1 | tee diagnostics/diagnostics_stdout.log || true
 
@@ -151,10 +157,7 @@ jobs:
           set -euo pipefail
           echo "Running model scale sensitivity probe..."
           python scripts/scale_probe.py || true
-          echo "--- Content of scale_probe.json ---"
-          cat diagnostics/scale_probe.json || true
-          echo "-----------------------------------"
-          
+
       - name: (Adım 9b) Run Multiplier Probe (Entropi Testi)
         shell: bash
         env:
@@ -166,9 +169,6 @@ jobs:
           set -euo pipefail
           echo "Running multiplier entropy probe..."
           python scripts/multiplier_probe.py > diagnostics/multiplier_probe_report.json || true
-          echo "--- Content of multiplier_probe_report.json ---"
-          cat diagnostics/multiplier_probe_report.json || true
-          echo "-----------------------------------------------"
 
       - name: (Adım 9c) Inspect Saved Scaler
         shell: bash
@@ -176,25 +176,35 @@ jobs:
           set -euo pipefail
           echo "Inspecting saved scaler (data/models/regime/scaler.pkl)..."
           python scripts/inspect_saved_scaler.py > diagnostics/scaler_inspect_report.json || true
-          echo "--- Content of scaler_inspect_report.json ---"
-          cat diagnostics/scaler_inspect_report.json || true
-          echo "----------------------------------------------"
 
-      # --- YENİ ADIM: FEATURE MATCHER ---
-      - name: (Adım 9d) Run Feature Matcher
+      - name: (Adım 9d) Run Feature Matcher (on Feature CSV)
         shell: bash
         env:
           SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
         run: |
           set -euo pipefail
-          echo "Running feature matcher..."
-          # Betik, SAMPLES_PATH'i argüman olarak alır
+          echo "Running feature matcher on: $SAMPLES_PATH"
           python scripts/feature_matcher.py "$SAMPLES_PATH" || true
           echo "--- Content of mapping.json ---"
           cat diagnostics/mapping.json || true
-          echo "-----------------------------------"
           echo "--- Content of mapping_apply_result.json ---"
           cat diagnostics/mapping_apply_result.json || true
+          echo "-----------------------------------"
+          
+      # --- YENİ ADIM: TAM BORU HATTI TESTİ ---
+      - name: (Adım 9e) Run Feature Engineering Pipeline Test (on OHLCV CSV)
+        shell: bash
+        env:
+          OHLCV_SAMPLES_PATH: ${{ github.event.inputs.ohlcv_samples_path }}
+        run: |
+          set -euo pipefail
+          echo "Running full feature engineering pipeline test on: $OHLCV_SAMPLES_PATH"
+          python scripts/feature_engineer_and_run.py "$OHLCV_SAMPLES_PATH" || true
+          echo "--- Content of feature_stats.json ---"
+          cat diagnostics/feature_stats.json || true
+          echo "-----------------------------------"
+          echo "--- Content of scaler_apply_result.json (from OHLCV) ---"
+          cat diagnostics/scaler_apply_result.json || true
           echo "-----------------------------------"
       # --- YENİ ADIM SONU ---
 
