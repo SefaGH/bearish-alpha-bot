@@ -36,7 +36,9 @@ def generate_regime_labels(price_data: pd.DataFrame, window: int = 20, threshold
     
     # Son 'window' kadar veri NaN (boş) olacağından,
     # bu boşlukları bir önceki geçerli etiketle doldur.
-    labels.fillna(method='ffill', inplace=True)
+    # --- DÜZELTME (FutureWarning) ---
+    # labels.fillna(method='ffill', inplace=True) -> labels.ffill(inplace=True)
+    labels.ffill(inplace=True)
     
     # Oluşturulan etiketlerin sayısını logla (hata ayıklama için yararlı)
     label_counts = labels.value_counts()
