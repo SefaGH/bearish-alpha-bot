@@ -64,14 +64,40 @@ aligned = pipe.align_and_finalize_features(features)
 fe_path = os.path.join(OUT_DIR, "feature_engineered_samples.csv")
 aligned.to_csv(fe_path, index=False)
 
+# --- GÜVENLİK DÜZELTMESİ (ANALİZ-O) ---
+# np.isinf'in 'object' tipiyle çalışabilmesi için önce sayısala zorla
+# Ve 'object' tipindeki sütunları (örn. boş stringler) sayısala dönüştür
+aligned_numeric = aligned.apply(pd.to_numeric, errors='coerce')
+# --- DÜZELTME SONU ---
+
 # Feature stats (NaN, inf, mean/std)
 feat_stats = {}
-feat_stats["shape"] = list(aligned.shape)
-feat_stats["nan_counts"] = aligned.isna().sum().to_dict()
-feat_stats["inf_counts"] = np.isinf(aligned.values).sum(axis=0).tolist()
-feat_stats["per_col_mean_sample"] = aligned.mean().fillna(0).tolist()[:20]
-feat_stats["per_col_std_sample"] = aligned.std().fillna(0).tolist()[:20]
+feat_stats["shape"] = list(aligned_numeric.shape)
+feat_stats["nan_counts"] = aligned_numeric.isna().sum().to_dict()
+# Güvenli .values kullanımı (artık 'object' tipi içermiyor)
+# --- GÜNCELLENMİŞ BLOK (ANALİZ-P) ---
+# Coerce to numeric (safe): convert all columns to numeric, non-convertible -> NaN
+aligned_numeric = aligned.apply(pd.to_numeric, errors='coerce')
+
+# Feature stats (NaN, inf, mean/std)
+feat_stats = {}
+feat_stats["shape"] = list(aligned_numeric.shape)
+feat_stats["nan_counts"] = aligned_numeric.isna().sum().to_dict()
+
+# Now compute inf counts safely on numeric array
+arr = aligned_numeric.values.astype(float)
+feat_stats["inf_counts"] = np.isinf(arr).sum(axis=0).tolist()
+feat_stats["per_col_mean_sample"] = np.nan_to_num(np.nanmean(arr, axis=0))[:20].tolist()
+feat_stats["per_col_std_sample"] = np.nan_to_num(np.nanstd(arr, axis=0))[:20].tolist()
 open(os.path.join(OUT_DIR, "feature_stats.json"), "w").write(json.dumps(feat_stats, indent=2))
+
+# If no rows after extraction, bail out gracefully
+if arr.shape[0] == 0:
+    res = {"error": "No feature rows after extraction (0 samples). Aborting scaler/model step."}
+    open(os.path.join(OUT_DIR, "scaler_apply_result.json"), "w").write(json.dumps(res, indent=2))
+    print("No features to process; wrote scaler_apply_result.json with error.")
+    raise SystemExit(0)
+# --- GÜNCELLEME SONU ---
 
 # Load scaler and apply
 scaler_path = "data/models/regime/scaler.pkl"
@@ -83,7 +109,16 @@ if not os.path.exists(scaler_path):
     raise SystemExit(0)
 
 scaler = joblib.load(scaler_path)
-X = aligned.values.astype(float)
+
+# --- GÜVENLİK DÜZELTMESİ (ANALİZ-O) ---
+# Scaler'a göndermeden önce NaN değerleri doldur (prepare_for_training gibi)
+# Önce ffill (ileri doldurma), sonra bfill (geri doldurma)
+aligned_filled = aligned_numeric.ffill().bfill()
+# Hala NaN kaldıysa (örn. tüm sütun NaN ise) 0 ile doldur
+aligned_filled = aligned_filled.fillna(0)
+X = aligned_filled.values.astype(float)
+# --- DÜZELTME SONU ---
+
 # Try transform
 try:
     Xs = scaler.transform(X)
@@ -120,7 +155,9 @@ try:
     if hasattr(net, "eval"):
         net.eval()
     with torch.no_grad():
-        logits = net(torch.tensor(Xs[:5], dtype=torch.float32)).detach().cpu().numpy()
+        # Xs'te hala NaN varsa (çok olası değil ama)
+        Xs_safe = np.nan_to_num(Xs, nan=0.0, posinf=0.0, neginf=0.0)
+        logits = net(torch.tensor(Xs_safe[:5], dtype=torch.float32)).detach().cpu().numpy()
         probs = softmax(torch.tensor(logits), dim=-1).detach().cpu().numpy()
     res["model_results"] = {
         "logits_mean": logits.mean(axis=0).tolist(),
