@@ -150,7 +150,7 @@ class DataQualityDiagnostics:
             '1h': '1h', '4h': '4h', '1d': '1d'
         }
         
-        expected_freq = timeframe_map.get(timeframe, '1H')
+        expected_freq = timeframe_map.get(timeframe, '1h')
         
         if len(df) < 2:
             return 0, {"gap_count": 0, "gaps": []}
