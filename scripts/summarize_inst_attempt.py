@@ -31,7 +31,8 @@ except Exception as e:
     sys.exit(0)
 
 def short(x, n=1000):
-    if x is None: return None
+    if x is None:
+        return "None" # <--- DÜZELTME BURADA (None yerine "None" metni döndür)
     s = str(x)
     return s if len(s) <= n else s[:n] + "...[truncated]"
 
