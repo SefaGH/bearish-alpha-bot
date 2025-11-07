@@ -48,36 +48,79 @@ class TechnicalIndicatorFeatures:
             DataFrame with technical indicator features
         """
         features = pd.DataFrame(index=price_data.index)
+        n = len(price_data) # Hata durumunda NaN serisi oluşturmak için
         
         try:
-            # RSI
-            features['rsi'] = ta.rsi(price_data['close'], length=self.rsi_period)
-            features['rsi_oversold'] = (features['rsi'] < 30).astype(float)
-            features['rsi_overbought'] = (features['rsi'] > 70).astype(float)
+            # --- GÜNCELLENMİŞ BLOK (ANALİZ-O) ---
+            # RSI (Guarded)
+            try:
+                rsi_series = ta.rsi(price_data['close'], length=self.rsi_period)
+                features['rsi'] = rsi_series
+                features['rsi_oversold'] = (features['rsi'] < 30).astype(float)
+                features['rsi_overbought'] = (features['rsi'] > 70).astype(float)
+            except Exception:
+                features['rsi'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['rsi_oversold'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['rsi_overbought'] = pd.Series([np.nan] * n, index=price_data.index)
+
+            # MACD (Guarded)
+            try:
+                macd = ta.macd(price_data['close'], fast=self.macd_fast, slow=self.macd_slow, signal=self.macd_signal)
+                if macd is None or not isinstance(macd, (pd.DataFrame, pd.Series)):
+                    raise ValueError("macd returned None or unsupported type")
+                # Protect against differing column names
+                try:
+                    features['macd'] = macd[f'MACD_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}']
+                    features['macd_signal'] = macd[f'MACDs_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}']
+                    features['macd_histogram'] = macd[f'MACDh_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}']
+                except Exception:
+                    # best-effort: try to pick first three columns if named differently
+                    if isinstance(macd, pd.DataFrame) and macd.shape[1] >= 3:
+                        features['macd'] = macd.iloc[:, 0]
+                        features['macd_signal'] = macd.iloc[:, 1]
+                        features['macd_histogram'] = macd.iloc[:, 2]
+                    else:
+                        raise
+                features['macd_cross'] = np.sign(features['macd_histogram'])
+            except Exception:
+                # fallback: fill NaNs
+                features['macd'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['macd_signal'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['macd_histogram'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['macd_cross'] = pd.Series([0.0] * n, index=price_data.index)
+            # --- GÜNCELLEME SONU ---
             
-            # MACD
-            macd = ta.macd(price_data['close'], fast=self.macd_fast, slow=self.macd_slow, signal=self.macd_signal)
-            features['macd'] = macd[f'MACD_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}']
-            features['macd_signal'] = macd[f'MACDs_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}']
-            features['macd_histogram'] = macd[f'MACDh_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}']
-            features['macd_cross'] = np.sign(features['macd_histogram'])
-            
-            # EMA
-            features['ema_20'] = ta.ema(price_data['close'], length=20)
-            features['ema_50'] = ta.ema(price_data['close'], length=50)
-            features['ema_cross'] = (features['ema_20'] > features['ema_50']).astype(float)
-            
-            # Bollinger Bands
-            bbands = ta.bbands(price_data['close'], length=self.bb_period)
-            features['bb_upper'] = bbands[f'BBU_{self.bb_period}_2.0']
-            features['bb_lower'] = bbands[f'BBL_{self.bb_period}_2.0']
-            bb_range = features['bb_upper'] - features['bb_lower']
-            features['bb_width'] = bb_range / price_data['close']
-            features['bb_position'] = (price_data['close'] - features['bb_lower']) / (bb_range + 1e-10)
-            
-            # ATR
-            features['atr'] = ta.atr(price_data['high'], price_data['low'], price_data['close'], length=self.atr_period)
-            features['atr_pct'] = features['atr'] / price_data['close']
+            # EMA (Bu bölümü de güvenli hale getirelim)
+            try:
+                features['ema_20'] = ta.ema(price_data['close'], length=20)
+                features['ema_50'] = ta.ema(price_data['close'], length=50)
+                features['ema_cross'] = (features['ema_20'] > features['ema_50']).astype(float)
+            except Exception:
+                features['ema_20'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['ema_50'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['ema_cross'] = pd.Series([np.nan] * n, index=price_data.index)
+
+            # Bollinger Bands (Bu bölümü de güvenli hale getirelim)
+            try:
+                bbands = ta.bbands(price_data['close'], length=self.bb_period)
+                features['bb_upper'] = bbands[f'BBU_{self.bb_period}_2.0']
+                features['bb_lower'] = bbands[f'BBL_{self.bb_period}_2.0']
+                bb_range = features['bb_upper'] - features['bb_lower']
+                features['bb_width'] = bb_range / price_data['close']
+                features['bb_position'] = (price_data['close'] - features['bb_lower']) / (bb_range + 1e-10)
+            except Exception:
+                features['bb_upper'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['bb_lower'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['bb_width'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['bb_position'] = pd.Series([np.nan] * n, index=price_data.index)
+
+            # ATR (Bu bölümü de güvenli hale getirelim)
+            try:
+                features['atr'] = ta.atr(price_data['high'], price_data['low'], price_data['close'], length=self.atr_period)
+                features['atr_pct'] = features['atr'] / price_data['close']
+            except Exception:
+                features['atr'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['atr_pct'] = pd.Series([np.nan] * n, index=price_data.index)
             
         except Exception as e:
             logger.error(f"Error computing technical indicators: {e}")
