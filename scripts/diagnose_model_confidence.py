@@ -8,10 +8,9 @@ probabilities, confidences, and predictions, and writes a JSON report.
 BU SÜRÜM: "Analiz J"ye göre güncellendi.
 Otomatik ölçeklendirme (auto-scaling) mantığını (`try_scalings_and_choose`) içerir.
 
-ANALİZ L GÜNCELLEMESİ:
-'try_scalings_and_choose' fonksiyonu, 'data/models/regime/scaler.pkl'
-dosyasını bularak ve FeatureEngineeringPipeline ile hizalama yaparak
-kayıtlı scaler'ı ilk yöntem olarak deneyecek şekilde güncellendi.
+ANALİZ M GÜNCELLEMESİ:
+'try_scalings_and_choose' fonksiyonu, 'scripts/apply_saved_scaler.py'
+yardımcı betiğini kullanarak kayıtlı scaler'ı ilk yöntem olarak dener.
 """
 
 from __future__ import annotations
@@ -57,7 +56,9 @@ except Exception:  # pragma: no cover
 
 # "safe_torch_load"u import ediyoruz
 from scripts.safe_torch_load import safe_torch_load
-# "multiplier_probe" import'u kaldırıldı, Analiz J'yi kullanıyoruz.
+# "apply_saved_scaler"ı import ediyoruz (ANALİZ M)
+from scripts.apply_saved_scaler import apply_saved_scaler
+
 
 # --------------------------------------------------------------------------------------
 # I/O helpers
@@ -185,7 +186,7 @@ def _logits_to_probs(x: Any) -> np.ndarray:
 
 # --------------------------------------------------------------------------------------
 # "ANALİZ J"DEN GELEN OTOMATİK ÖLÇEKLENDİRME (AUTO-SCALING) FONKSİYONLARI
-# (ANALİZ L YAMASI İLE GÜNCELLENDİ)
+# (ANALİZ M YAMASI İLE GÜNCELLENDİ)
 # --------------------------------------------------------------------------------------
 
 def _entropy_rows(probs: _np.ndarray) -> _np.ndarray:
@@ -251,14 +252,14 @@ def try_scalings_and_choose(
     X: _np.ndarray, 
     model_obj, 
     checkpoint: Dict = None,
-    csv_path: str = None, # ANALİZ L: CSV yolunu al
-    report: Dict = None   # ANALİZ L: Rapor sözlüğünü al
+    csv_path: str = None, # ANALİZ L/M: CSV yolunu al
+    report: Dict = None   # ANALİZ L/M: Rapor sözlüğünü al
 ) -> Tuple[_np.ndarray, Dict]:
     """
     Try several scaling strategies on X, run model, compute mean entropy and choose best (lowest mean entropy).
     Returns (X_chosen, metadata) where metadata contains method and per-method stats.
     
-    ANALİZ L GÜNCELLEMESİ: Kayıtlı scaler'ı ilk olarak dener.
+    ANALİZ M GÜNCELLEMESİ: Kayıtlı scaler'ı (apply_saved_scaler.py) ilk olarak dener.
     """
     print("Starting auto-scaling probe... Trying different scaling strategies.")
     results = {}
@@ -266,71 +267,37 @@ def try_scalings_and_choose(
     
     if report is None: report = {} # Güvenlik için
 
-    # --- ANALİZ L PATCH KODU BAŞLANGICI ---
-    # 1. YÖNTEM: Kayıtlı scaler'ı (data/models/regime/scaler.pkl) dene
-    scaler_path = "data/models/regime/scaler.pkl"
-    if os.path.exists(scaler_path) and csv_path and pd and joblib:
+    # --- ANALİZ M (apply_saved_scaler.py) PATCH KODU BAŞLANGICI ---
+    # 1. YÖNTEM: Kayıtlı scaler'ı (apply_saved_scaler.py helper'ı ile) dene
+    if csv_path and pd and joblib: # Check if we can even load a DF
         try:
-            print(f"Attempting to apply saved scaler from: {scaler_path}")
-            scaler = joblib.load(scaler_path)
-            
-            # CSV'yi (DataFrame olarak) YENİDEN YÜKLE
-            # 'load_samples'da yapılan kesme (limit) ve
-            # sütun düşürme (drop) işlemlerini yansıtmalı.
+            print(f"Attempting to apply saved scaler using helper...")
             df_for_scaler = pd.read_csv(csv_path)
             
-            # FeatureEngineeringPipeline'den "altın" sütun listesini al
-            from src.ml.feature_engineering import FeatureEngineeringPipeline
-            pipe = FeatureEngineeringPipeline()
-            FEATURE_COLUMNS = pipe.FEATURE_COLUMNS
-
-            # 'run_with_saved_scaler.py' script'indeki hizalama mantığı
-            if list(df_for_scaler.columns)[:len(FEATURE_COLUMNS)] == [f"f{i}" for i in range(len(FEATURE_COLUMNS))]:
-                print("CSV has generic f0..fN headers, renaming to FEATURE_COLUMNS.")
-                df_for_scaler = df_for_scaler.rename(columns={f"f{i}": FEATURE_COLUMNS[i] for i in range(len(FEATURE_COLUMNS))})
-            else:
-                # Başlıklar farklıysa, sayısal sütunları seçip eşleştirmeyi dene
-                num_cols = df_for_scaler.select_dtypes(include=[float,int]).columns.tolist()
-                if len(num_cols) >= len(FEATURE_COLUMNS):
-                    df_cols_to_use = num_cols[:len(FEATURE_COLUMNS)]
-                    print(f"CSV has different headers, mapping {len(df_cols_to_use)} numeric cols to FEATURE_COLUMNS.")
-                    df_for_scaler = df_for_scaler[df_cols_to_use]
-                    df_for_scaler.columns = FEATURE_COLUMNS
-                else:
-                    raise RuntimeError("CSV does not contain enough numeric columns to map to FEATURE_COLUMNS")
-            
-            # Hizala (sütun sırasını/eksik sütunları düzelt)
-            X_df_aligned = pipe.align_and_finalize_features(df_for_scaler)
-            
-            # X'i (numpy array) al
             # 'load_samples' tarafından uygulanan 'limit'i burada da uygula
-            X_aligned_np = X_df_aligned.values.astype(float)
-            if X.shape[0] < X_aligned_np.shape[0]:
-                X_aligned_np = X_aligned_np[:X.shape[0]] # X'in limitiyle eşleştir
+            if X.shape[0] < len(df_for_scaler):
+                df_for_scaler = df_for_scaler.iloc[:X.shape[0]]
+            
+            # Helper'ı çağır
+            Xs, meta = apply_saved_scaler(df_for_scaler, model_obj=model_obj)
+            report.setdefault("scaler_apply", meta) # Raporu ana 'report'a ekle
 
-            # 'expected_shape' (state_size) kesmesini uygula
-            if X.shape[1] < X_aligned_np.shape[1]:
-                X_aligned_np = X_aligned_np[:, :X.shape[1]] # X'in state_size'ı ile eşleştir
+            if Xs is not None:
+                # 'expected_shape' (state_size) kesmesini uygula
+                if X.shape[1] < Xs.shape[1]:
+                    Xs = Xs[:, :X.shape[1]] # X'in state_size'ı ile eşleştir
 
-            # Sonunda scaler'ı uygula
-            if hasattr(scaler, "transform"):
-                Xc = scaler.transform(X_aligned_np)
-            else: # Fallback
-                print("Scaler has no 'transform' method, using manual (X - mean) / std.")
-                Xc = (X_aligned_np - scaler.mean_.reshape(1,-1)) / (scaler.scale_.reshape(1,-1) + 1e-12)
-
-            methods.append(("saved_scaler", Xc))
-            print(f"Successfully prepared 'saved_scaler' method.")
-            report.setdefault("scaling_results", {})["applied"] = {"method": "saved_scaler", "path": scaler_path}
-
+                methods.append(("saved_scaler_helper", Xs))
+                print(f"Successfully prepared 'saved_scaler_helper' method. Shape: {Xs.shape}")
+            else:
+                print(f"[WARN] apply_saved_scaler helper failed or returned None. Meta: {meta.get('error')}")
+                
         except Exception as e:
-            print(f"[WARN] Failed to apply saved_scaler: {e}")
-            report.setdefault("scaling_results", {})["saved_scaler_error"] = str(e)
+            print(f"[WARN] Failed to apply saved_scaler_helper: {e}")
+            report.setdefault("scaler_apply", {})["helper_error"] = str(e)
     elif not (csv_path and pd and joblib):
-        print("[INFO] Skipping saved_scaler: pandas, joblib, or csv_path not available.")
-    elif not os.path.exists(scaler_path):
-        print(f"[INFO] Skipping saved_scaler: file not found at {scaler_path}")
-    # --- ANALİZ L PATCH KODU SONU ---
+        print("[INFO] Skipping saved_scaler_helper: pandas, joblib, or csv_path not available.")
+    # --- ANALİZ M PATCH KODU SONU ---
 
 
     # prepare input
@@ -417,8 +384,8 @@ def compute_confidences_and_stats(
     X: np.ndarray, 
     batch_size: int = 512, 
     checkpoint: Dict = None,
-    csv_path: str = None,               # ANALİZ L: csv_path'i al
-    report_dict_for_patch: Dict = None  # ANALİZ L: Rapor sözlüğünü al
+    csv_path: str = None,               # ANALİZ L/M: csv_path'i al
+    report_dict_for_patch: Dict = None  # ANALİZ L/M: Rapor sözlüğünü al
 ) -> Dict[str, Any]:
     """
     Runs auto-scaling probe, selects best probabilities, and returns stats.
@@ -430,8 +397,8 @@ def compute_confidences_and_stats(
         X, 
         model_obj, 
         checkpoint=checkpoint,
-        csv_path=csv_path,                 # ANALİZ L: csv_path'i ilet
-        report=report_dict_for_patch       # ANALİZ L: Rapor sözlüğünü ilet
+        csv_path=csv_path,                 # ANALİZ L/M: csv_path'i ilet
+        report=report_dict_for_patch       # ANALİZ L/M: Rapor sözlüğünü ilet
     )
     
     # Probs üzerinden istatistikleri hesapla
@@ -530,7 +497,7 @@ def _write_diagnostics(out_dir: str, result: Dict[str, np.ndarray]) -> None:
 def main(argv=None) -> int:
     args = parse_args(argv)
     
-    # ANALİZ L: Rapor sözlüğünü en başta başlat
+    # ANALİZ L/M: Rapor sözlüğünü en başta başlat
     report: Dict[str, Any] = {}
     inference_err = None
     
@@ -586,8 +553,8 @@ def main(argv=None) -> int:
                     X, 
                     batch_size=args.batch_size, 
                     checkpoint=checkpoint_dict,
-                    csv_path=args.csv,               # ANALİZ L: csv_path'i ilet
-                    report_dict_for_patch=report   # ANALİZ L: Rapor sözlüğünü ilet
+                    csv_path=args.csv,               # ANALİZ L/M: csv_path'i ilet
+                    report_dict_for_patch=report   # ANALİZ L/M: Rapor sözlüğünü ilet
                 )
             except Exception as e:
                 inference_err = str(e)
