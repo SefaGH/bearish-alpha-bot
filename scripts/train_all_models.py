@@ -59,14 +59,14 @@ logger = setup_logger("model-trainer", level=logging.INFO, log_to_file=True, log
 
 # --- EĞİTİM PARAMETRELERİ ---
 SYMBOLS_TO_TRAIN = ['BTC/USDT']
-ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h']
-REGIME_TRAINING_TIMEFRAMES = ['30m', '1h', '4h'] 
+ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d']  # 1d eklendi - regime için gerekli
+REGIME_TRAINING_TIMEFRAMES = ['15m', '30m', '1h', '4h', '1d']  # 5 timeframe - regime detection için optimal
 
 # === DÜZELTME: CANDLE_LIMIT, BingX API limitine (1440) uyacak şekilde güncellendi ===
-CANDLE_LIMIT = 1440 # Daha fazla veri, daha iyi eğitim
+CANDLE_LIMIT = 1440  # BingX limiti (değişmez)
 
 MIN_SAMPLES_FOR_RF = 100
-MIN_SAMPLES_FOR_NN = 500
+MIN_SAMPLES_FOR_NN = 1000  # Daha stabil model eğitimi için artırıldı
 
 # --- YENİ: RL EĞİTİM PARAMETRELERİ ---
 RL_TRAINING_TIMEFRAME = '15m'  # RL eğitimi için kullanılacak zaman dilimi
@@ -160,7 +160,12 @@ async def main():
     # 1. REJİM MODELLERİ EĞİTİMİ
     logger.info("\n" + "="*60)
     logger.info("🧠 ADIM 1: PİYASA REJİMİ MODELLERİ EĞİTİLİYOR 🧠")
-    logger.info(f"   Eğitim Zaman Dilimleri: {REGIME_TRAINING_TIMEFRAMES}")
+    logger.info("="*60)
+    logger.info("🧠 REGIME MODEL TRAINING CONFIGURATION")
+    logger.info(f"   Timeframes: {REGIME_TRAINING_TIMEFRAMES}")
+    logger.info(f"   Candle limit per timeframe: {CANDLE_LIMIT}")
+    logger.info(f"   Expected total samples: {len(REGIME_TRAINING_TIMEFRAMES) * CANDLE_LIMIT}")
+    logger.info(f"   Minimum NN samples: {MIN_SAMPLES_FOR_NN}")
     logger.info("="*60)
     
     all_regime_features = []
@@ -185,10 +190,16 @@ async def main():
                     all_regime_features.append(X_prepared)
                     all_regime_labels.append(y_prepared)
                     logger.info(f"✅ {tf} verisinden {X_prepared.shape[0]} örnek eklendi.")
+            else:
+                logger.warning(f"⚠️ {tf} için veri bulunamadı, atlanıyor...")
         
         if all_regime_features and all_regime_labels:
             final_X = np.vstack(all_regime_features)
             final_y = np.concatenate(all_regime_labels)
+            
+            logger.info("="*60)
+            logger.info(f"✅ Total training samples: {len(final_X)} (from {len(REGIME_TRAINING_TIMEFRAMES)} timeframes)")
+            logger.info("="*60)
             
             if final_X.shape[0] >= MIN_SAMPLES_FOR_RF:
                 # Pass regime_prediction config to trainer so it uses correct architecture
@@ -218,7 +229,8 @@ async def main():
                                 'train_samples': final_X.shape[0],
                                 'features': final_X.shape[1],
                                 'timeframes': ','.join(REGIME_TRAINING_TIMEFRAMES),
-                                'symbol': symbol_for_regime
+                                'symbol': symbol_for_regime,
+                                'timeframe_count': len(REGIME_TRAINING_TIMEFRAMES)  # EKLE: Kaç timeframe kullanıldı
                             },
                             training_time=regime_training_time
                         )
