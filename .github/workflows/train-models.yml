@@ -36,19 +36,39 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # PRE-TRAINING DIAGNOSTICS
+      - name: 📊 Pre-training diagnostics
+        run: python scripts/diagnose_training_data.py
+        continue-on-error: true
+        env:
+          ML_ENABLED: "true"
+
       - name: Run model training script
         env:
           ML_ENABLED: "true"
         run: python scripts/train_all_models.py
 
+      # POST-TRAINING PERFORMANCE REPORT
+      - name: 📈 Generate performance report
+        run: python scripts/generate_performance_report.py
+        if: always()
+        env:
+          ML_ENABLED: "true"
+
       # List model directory contents before archiving
-      - name: List trained models
+      - name: List trained models and reports
         run: |
           echo "=== Trained Models ==="
           ls -lah data/models/
           echo ""
           echo "=== Training Logs ==="
           ls -lah logs/
+          echo ""
+          echo "=== Diagnostics Reports ==="
+          ls -lah logs/diagnostics/ || echo "No diagnostics directory"
+          echo ""
+          echo "=== Performance Reports ==="
+          ls -lah logs/performance/ || echo "No performance directory"
         if: always()
 
       # Archive trained models with SHA and run number
@@ -73,4 +93,15 @@ jobs:
             logs/regime_training_metrics.csv
             logs/rl_training_metrics.csv
           retention-days: 14
+          if-no-files-found: warn
+
+      # Archive diagnostics and performance reports
+      - name: Archive diagnostics reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-reports-${{ github.sha }}-${{ github.run_number }}
+          path: |
+            logs/diagnostics/
+            logs/performance/
+          retention-days: 30
           if-no-files-found: warn
