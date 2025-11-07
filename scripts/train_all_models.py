@@ -33,6 +33,7 @@ sys.path.insert(0, project_root)
 # Gerekli modüllerin import edilmesi
 from src.core.ccxt_client import CcxtClient
 from src.core.logger import setup_logger
+from src.core.market_data_pipeline import MarketDataPipeline
 from src.ml.feature_engineering import FeatureEngineeringPipeline
 from src.ml.model_trainer import RegimeModelTrainer
 from src.ml.price_predictor import (
@@ -131,6 +132,14 @@ async def main():
     
     exchange_client = CcxtClient('bingx')
     feature_engine = FeatureEngineeringPipeline()
+    
+    # Create MarketDataPipeline for price predictor (avoids warning during initialization)
+    # During training we don't actually use it, but passing it prevents the warning
+    market_pipeline = MarketDataPipeline(
+        exchanges={'bingx': exchange_client},
+        config=config
+    )
+    
     logger.info("✅ Borsa istemcisi ve özellik motoru başlatıldı.")
 
     training_data = {symbol: {} for symbol in SYMBOLS_TO_TRAIN}
@@ -238,7 +247,7 @@ async def main():
             price_training_start = datetime.now()
             
             price_engine = AdvancedPricePredictionEngine(
-                market_data_pipeline=None,      # Eğitim sırasında pipeline gerekmez
+                market_data_pipeline=market_pipeline,  # Pass MarketDataPipeline to avoid warning
                 feature_pipeline=feature_engine,  # Önceden oluşturulan özellik motorunu ver
                 config=price_pred_config          # Sadece fiyat tahminine özel konfigürasyonu ver
             )
