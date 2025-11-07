@@ -37,6 +37,7 @@ csv_path = sys.argv[1]
 try:
     import pandas as pd, numpy as np, joblib
     from src.ml.feature_engineering import FeatureEngineeringPipeline
+    from src.ml.reinforcement_learning import DQNNetwork
     import torch
     from torch.nn.functional import softmax
 except Exception as e:
@@ -182,14 +183,34 @@ for path in model_paths:
 
 model_res = {}
 if model_path is None:
-    model_res["error"] = "No model found in any of the expected paths"
+    model_res["error"] = "No RL model found. Please train the model first using 'python scripts/train_full_ml_pipeline.py'"
     model_res["searched_paths"] = model_paths
 else:
     try:
-        model_obj = torch.load(model_path, map_location="cpu", weights_only=False)
-        net = getattr(model_obj, "q_network", model_obj)
-        if hasattr(net, "eval"):
-            net.eval()
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+        
+        # Determine state_size from scaled features
+        state_size = Xs.shape[1]
+        action_size = 3  # BUY, HOLD, SELL
+        
+        # Create model instance
+        if isinstance(checkpoint, dict):
+            # If checkpoint is a dict, look for q_network state_dict
+            if 'q_network' in checkpoint:
+                net = DQNNetwork(state_size=state_size, action_size=action_size)
+                net.load_state_dict(checkpoint['q_network'])
+            elif 'model_state_dict' in checkpoint:
+                net = DQNNetwork(state_size=state_size, action_size=action_size)
+                net.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                # Assume checkpoint is state_dict itself
+                net = DQNNetwork(state_size=state_size, action_size=action_size)
+                net.load_state_dict(checkpoint)
+        else:
+            # If checkpoint is already a model instance
+            net = checkpoint
+        
+        net.eval()
         with torch.no_grad():
             # use last row for inference
             logits = net(torch.tensor(Xs[-1:].astype(np.float32))).detach().cpu().numpy()
