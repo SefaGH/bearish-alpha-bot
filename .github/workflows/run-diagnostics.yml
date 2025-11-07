@@ -134,24 +134,12 @@ jobs:
             ARGS+=(--limit "$LIMIT")
           fi
           
+          # 'diagnose_model_confidence.py' artık 'scaler'ı otomatik deneyecek
           python scripts/diagnose_model_confidence.py "${ARGS[@]}" \
             2>&1 | tee diagnostics/diagnostics_stdout.log || true
 
-      - name: (Adım 6) Inspect Logits and Feature Stats (DEPRECATED by Adım 9)
-        # Bu adımı atlıyoruz, çünkü 'scale_probe' daha spesifik bir test.
-        shell: bash
-        run: echo "Skipping. Replaced by scale_probe.py step."
+      # ... (Adım 6, 7, 8 atlandı) ...
 
-      - name: (Adım 7) Summarize logits_and_stats.json (DEPRECATED)
-        shell: bash
-        run: echo "Skipping. Replaced by scale_probe.py step."
-        
-      - name: (Adım 8) Summarize probs_sample.npy (DEPRECATED)
-        shell: bash
-        run: echo "Skipping. Replaced by scale_probe.py step."
-
-      # --- YENİ ADIM (ANALİZ L) ---
-      
       - name: (Adım 9) Run Scale Probe (Duyarlılık Testi)
         shell: bash
         env:
@@ -166,38 +154,50 @@ jobs:
           cat diagnostics/scale_probe.json || true
           echo "-----------------------------------"
           
-      # --- YENİ EKLENEN ADIM ---
       - name: (Adım 9b) Run Multiplier Probe (Entropi Testi)
         shell: bash
         env:
           SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
           MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
           MODEL_TO_USE: "diagnostics/inst_model.pth"
-          # 'multiplier_probe.py' içindeki varsayılan değerleri kullanıyoruz:
           MULTIPLIERS: "1,2,5,10,20,50,100,200,500,1000"
         run: |
           set -euo pipefail
           echo "Running multiplier entropy probe..."
-          # Betik çıktısını (JSON) yakalayıp bir dosyaya yazıyoruz
           python scripts/multiplier_probe.py > diagnostics/multiplier_probe_report.json || true
           echo "--- Content of multiplier_probe_report.json ---"
           cat diagnostics/multiplier_probe_report.json || true
           echo "-----------------------------------------------"
-      # --- YENİ ADIM SONU ---
 
-      # --- Önceki Patoloji Adımları (Devre Dışı Bırakıldı) ---
-      
-      - name: (Adım 10) Inspect Model Weights (DEPRECATED)
+      # --- ANALİZ L YENİ ADIMLARI ---
+      - name: (Adım 9c) Inspect Saved Scaler
         shell: bash
-        run: echo "Skipping. Focusing on scale_probe."
-          
-      - name: (Adım 11) Inspect Training History (DEPRECATED)
-        shell: bash
-        run: echo "Skipping. Focusing on scale_probe."
+        run: |
+          set -euo pipefail
+          echo "Inspecting saved scaler (data/models/regime/scaler.pkl)..."
+          # Çıktıyı (JSON) yakalayıp bir dosyaya yazıyoruz
+          python scripts/inspect_saved_scaler.py > diagnostics/scaler_inspect_report.json || true
+          echo "--- Content of scaler_inspect_report.json ---"
+          cat diagnostics/scaler_inspect_report.json || true
+          echo "----------------------------------------------"
 
-      - name: (Adım 12) Summarize model_inst_attempt.json (DEPRECATED)
+      - name: (Adım 9d) Test Run with Saved Scaler
         shell: bash
-        run: echo "Skipping. Focusing on scale_probe."
+        env:
+          SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
+          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
+          MODEL_TO_USE: "diagnostics/inst_model.pth"
+        run: |
+          set -euo pipefail
+          echo "Running test inference with saved scaler..."
+          # Bu betik zaten 'diagnostics/scaler_apply_result.json' dosyasına yazıyor
+          python scripts/run_with_saved_scaler.py || true
+          echo "--- Content of scaler_apply_result.json ---"
+          cat diagnostics/scaler_apply_result.json || true
+          echo "-------------------------------------------"
+      # --- YENİ ADIMLAR SONU ---
+
+      # ... (Adım 10, 11, 12 atlandı) ...
 
       - name: Upload diagnostics as artifact
         uses: actions/upload-artifact@v4
