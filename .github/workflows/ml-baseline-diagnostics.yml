@@ -36,7 +36,6 @@ jobs:
 
       - name: Run feature engineering and diagnostics
         run: |
-          export PYTHONPATH="${PYTHONPATH}:${GITHUB_WORKSPACE}"
           python scripts/feature_engineer_and_run.py sample_data/test_samples_ohlcv.csv
         env:
           PYTHONPATH: ${{ github.workspace }}

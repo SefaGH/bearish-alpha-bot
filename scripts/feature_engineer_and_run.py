@@ -12,7 +12,7 @@ scripts/feature_engineer_and_run.py
 import os
 import sys
 
-# Add project root to Python path
+# Add project root to Python path (insert at beginning to ensure local src module is used)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, PROJECT_ROOT)
