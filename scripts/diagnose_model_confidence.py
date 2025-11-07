@@ -5,8 +5,8 @@ diagnose_model_confidence.py
 Loads a model (optional) and a CSV of samples, runs inference to compute per-sample
 probabilities, confidences, and predictions, and writes a JSON report.
 
-BU SÜRÜM: "Analiz J"ye göre otomatik ölçeklendirme (auto-scaling) 
-mantığını (`try_scalings_and_choose`) içerir.
+BU SÜRÜM: "Analiz J"ye göre güncellendi.
+Otomatik ölçeklendirme (auto-scaling) mantığını (`try_scalings_and_choose`) içerir.
 """
 
 from __future__ import annotations
@@ -52,6 +52,7 @@ except Exception:  # pragma: no cover
 
 # "safe_torch_load"u import ediyoruz
 from scripts.safe_torch_load import safe_torch_load
+# "multiplier_probe" import'u kaldırıldı, Analiz J'yi kullanıyoruz.
 
 # --------------------------------------------------------------------------------------
 # I/O helpers
@@ -83,8 +84,6 @@ def load_samples(csv_path: str, limit: Optional[int] = None, expected_shape: Opt
         num_df = num_df.drop(columns=label_cols_found, errors='ignore')
 
     if num_df.empty:
-        # Eğer 'label'ı attıktan sonra sayısal sütun kalmazsa, tüm df'i dene
-        # (ancak label'ları tekrar çıkar)
         if label_cols_found:
              X = df.drop(columns=label_cols_found, errors='ignore').values
         else:
@@ -97,41 +96,32 @@ def load_samples(csv_path: str, limit: Optional[int] = None, expected_shape: Opt
     if X.ndim == 1:
         X = X.reshape(-1, 1)
     
-    # --- VERİ KESME (SLICING) BLOĞU ---
     if expected_shape is not None:
         print(f"Data shape is {X.shape}, model expects {expected_shape}.")
         if X.shape[1] > expected_shape:
-            # Slicing from {X.shape[1]} to {expected_shape}
             X = X[:, :expected_shape]
         elif X.shape[1] < expected_shape:
             print(f"[WARN] Data shape ({X.shape[1]}) is smaller than model expected shape ({expected_shape})!")
-    # --- BLOK SONU ---
             
     return X.astype(np.float32, copy=False)
 
 
 def try_load_model(model_path: Optional[str], model_class_import: Optional[str] = None) -> Dict[str, Any]:
-    """
-    'safe_torch_load' kullanarak modeli yükler.
-    """
+    # ... (bu fonksiyon değişmedi) ...
     if not model_path:
         return {"model": None, "note": "No model path provided"}
     if not os.path.exists(model_path):
         return {"model": None, "note": f"Model path does not exist: {model_path}"}
-
     ext = os.path.splitext(model_path)[1].lower()
     if ext in (".pt", ".pth"):
         if torch is None:
             return {"model": None, "note": "torch not available"}
         try:
-            # 'safe_torch_load'u çağırıyoruz
             obj = safe_torch_load(model_path, model_class_import=model_class_import, map_location="cpu")
             return {"model": obj, "note": "Loaded via safe_torch_load"}
         except Exception as e:
-            # Hata mesajını yakala
             return {"model": None, "note": f"safe_torch_load failed: {e}"}
-            
-    # Diğer dosya türleri (pickle, yaml) değişmedi...
+    # ... (diğer pickle/yaml yükleyicileri değişmedi) ...
     if ext in (".pkl", ".pickle"):
         try:
             if joblib is not None: obj = joblib.load(model_path)
@@ -157,6 +147,7 @@ def try_load_model(model_path: Optional[str], model_class_import: Optional[str] 
 # Core inference utility
 # --------------------------------------------------------------------------------------
 def _logits_to_probs(x: Any) -> np.ndarray:
+    # ... (bu fonksiyon değişmedi) ...
     if torch is not None and isinstance(x, (torch.Tensor,)):
         if x.ndim == 1:
             x = x.reshape(1, -1)
@@ -491,7 +482,7 @@ def main(argv=None) -> int:
                 inference_err = str(e)
 
     report = build_report(X, result, load_note, inference_err)
-    report.update(report_extras)
+    report.update(report_extras) # Ölçeklendirme raporunu ekle
     save_report(report, args.out)
 
     # Always write diagnostics
