@@ -10,37 +10,37 @@ on:
 jobs:
   generate-diagnostics:
     runs-on: ubuntu-latest
-    
+
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"  # ⚠️ MANDATORY - DO NOT CHANGE TO 3.12 OR ANY OTHER VERSION
-          
+
       - name: Verify Python version
         run: |
           python --version
           python -c "import sys; assert sys.version_info[:2] == (3, 11), f'Wrong Python version: {sys.version}'"
-          
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          
+
       - name: Create diagnostics directory
         run: mkdir -p diagnostics
-        
+
       - name: Run feature engineering and diagnostics
         run: |
           python scripts/feature_engineer_and_run.py sample_data/test_samples_ohlcv.csv
-          
+
       - name: Verify diagnostic files
         run: |
           echo "Checking diagnostic files..."
           ls -lh diagnostics/
-          
+
           # Check if all required files exist
           for file in feature_engineered_samples.csv feature_stats.json scaler_apply_result.json model_results.json; do
             if [ -f "diagnostics/$file" ]; then
@@ -50,19 +50,19 @@ jobs:
               exit 1
             fi
           done
-          
+
       - name: Upload diagnostic artifacts
         uses: actions/upload-artifact@v3
         with:
           name: ml-diagnostics
           path: diagnostics/
           retention-days: 30
-          
+
       - name: Display diagnostics summary
         run: |
           echo "## Diagnostic Files Generated" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
           # Feature engineered samples info
           if [ -f diagnostics/feature_engineered_samples.csv ]; then
             echo "### Feature Engineered Samples" >> $GITHUB_STEP_SUMMARY
@@ -70,7 +70,7 @@ jobs:
             echo "- Columns: $(head -1 diagnostics/feature_engineered_samples.csv | tr ',' '\n' | wc -l)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           if [ -f diagnostics/feature_stats.json ]; then
             echo "### Feature Statistics" >> $GITHUB_STEP_SUMMARY
             echo '```json' >> $GITHUB_STEP_SUMMARY
@@ -78,7 +78,7 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           if [ -f diagnostics/scaler_apply_result.json ]; then
             echo "### Scaler Application Result" >> $GITHUB_STEP_SUMMARY
             echo '```json' >> $GITHUB_STEP_SUMMARY
@@ -86,7 +86,7 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           if [ -f diagnostics/model_results.json ]; then
             echo "### Model Results" >> $GITHUB_STEP_SUMMARY
             echo '```json' >> $GITHUB_STEP_SUMMARY
