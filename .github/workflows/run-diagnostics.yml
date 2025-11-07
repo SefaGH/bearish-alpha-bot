@@ -134,7 +134,7 @@ jobs:
             ARGS+=(--limit "$LIMIT")
           fi
           
-          # 'diagnose_model_confidence.py' artık 'scaler'ı otomatik deneyecek
+          # 'diagnose_model_confidence.py' artık 'apply_saved_scaler'ı otomatik deneyecek
           python scripts/diagnose_model_confidence.py "${ARGS[@]}" \
             2>&1 | tee diagnostics/diagnostics_stdout.log || true
 
@@ -169,7 +169,6 @@ jobs:
           cat diagnostics/multiplier_probe_report.json || true
           echo "-----------------------------------------------"
 
-      # --- ANALİZ L YENİ ADIMLARI ---
       - name: (Adım 9c) Inspect Saved Scaler
         shell: bash
         run: |
@@ -181,21 +180,8 @@ jobs:
           cat diagnostics/scaler_inspect_report.json || true
           echo "----------------------------------------------"
 
-      - name: (Adım 9d) Test Run with Saved Scaler
-        shell: bash
-        env:
-          SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
-          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
-          MODEL_TO_USE: "diagnostics/inst_model.pth"
-        run: |
-          set -euo pipefail
-          echo "Running test inference with saved scaler..."
-          # Bu betik zaten 'diagnostics/scaler_apply_result.json' dosyasına yazıyor
-          python scripts/run_with_saved_scaler.py || true
-          echo "--- Content of scaler_apply_result.json ---"
-          cat diagnostics/scaler_apply_result.json || true
-          echo "-------------------------------------------"
-      # --- YENİ ADIMLAR SONU ---
+      # (Adım 9d) 'run_with_saved_scaler.py' kaldırıldı, çünkü (Adım 5)
+      # artık 'apply_saved_scaler'ı kullanarak bu işlevi yerine getiriyor.
 
       # ... (Adım 10, 11, 12 atlandı) ...
 
