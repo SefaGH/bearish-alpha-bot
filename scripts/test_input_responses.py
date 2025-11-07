@@ -1,109 +1,164 @@
 #!/usr/bin/env python3
 """
-Dump per-parameter statistics for the instantiated model at diagnostics/inst_model.pth
-Writes diagnostics/weight_stats.json
-Handles agent wrappers that expose a .q_network attribute.
+Run model on multiple input variants and summarize logits/probs/entropy.
+Writes diagnostics/input_response_summary.json
+
+This version is robust to agent wrappers that don't implement .eval()
+and will call .eval() on the underlying q_network module when present.
+Ayrıca "inferred_state_size.txt" okur ve veriyi doğru boyuta keser.
 """
+import os
 import json
 import traceback
-import os
-import sys  # sys.exit için eklendi
+import sys # sys.exit için eklendi
 
-OUT = "diagnostics/weight_stats.json"
+OUT = "diagnostics/input_response_summary.json"
 os.makedirs("diagnostics", exist_ok=True) # Dizin yoksa oluştur
 
 try:
     import torch
     import numpy as np
+    import pandas as pd
+    from torch.nn import functional as F
+    from scripts.safe_torch_load import safe_torch_load # 'safe_torch_load'u kullanıyoruz
 except Exception as e:
     with open(OUT, "w") as f:
         json.dump({"error": str(e), "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (import error)")
     sys.exit(0)
 
-p = "diagnostics/inst_model.pth"
-if not os.path.exists(p):
+def entropy_rows(probs):
+    p = np.clip(probs, 1e-12, 1.0)
+    return -np.sum(p * np.log(p), axis=1)
+
+model_path = os.environ.get("MODEL_TO_USE", "diagnostics/inst_model.pth")
+model_class_import = os.environ.get("MODEL_CLASS_IMPORT", None) # safe_torch_load için gerekli
+
+if not os.path.exists(model_path):
     with open(OUT, "w") as f:
-        json.dump({"error": "file not found: " + p}, f, indent=2)
-    print(f"Wrote {OUT} (file not found)")
+        json.dump({"error": "inst_model.pth not found"}, f, indent=2)
+    print(f"Wrote {OUT} (model not found)")
     sys.exit(0)
 
-# Load full object (we saved the instance)
 try:
-    # 'safe_torch_load'u burada KULLANMIYORUZ, çünkü 'weights_only=False'
-    # bu script'in (verify_model'in aksine) varsayılan beklentisidir.
-    # verify_model'da bu hatayı zaten aştık.
-    obj = torch.load(p, map_location="cpu", weights_only=False)
+    model = safe_torch_load(model_path, model_class_import=model_class_import, map_location="cpu")
 except Exception as e:
     with open(OUT, "w") as f:
-        json.dump({"error": "torch.load failed: " + str(e), "trace": traceback.format_exc()}, f, indent=2)
+        json.dump({"error": "safe_torch_load failed: " + str(e), "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (load error)")
     sys.exit(0)
 
-# Resolve the network module to inspect
-net = None
-candidates = []
-if hasattr(obj, "q_network"):
-    net = getattr(obj, "q_network")
-    candidates.append("q_network")
-# common fallbacks
-for attr in ("model", "net", "network", "policy", "actor", "critic"):
-    if net is None and hasattr(obj, attr):
-        cand = getattr(obj, attr)
-        # take it only if it's a torch.nn.Module-like object (has named_parameters)
-        if hasattr(cand, "named_parameters"):
-            net = cand
-            candidates.append(attr)
-            break
+# Put underlying module in eval mode if available
+def set_eval_on_module(obj):
+    try:
+        if hasattr(obj, "eval") and callable(getattr(obj, "eval")):
+            obj.eval()
+            return True
+        if hasattr(obj, "q_network"):
+            q = getattr(obj, "q_network")
+            if hasattr(q, "eval") and callable(q.eval):
+                q.eval()
+                return True
+    except Exception:
+        return False
+    return False
 
-# if the loaded object itself is a Module
+set_eval_on_module(model)
+
+# Resolve forward function
+def model_forward_logits(x_tensor):
+    # x_tensor: torch.Tensor (N, D)
+    if hasattr(model, "q_network"):
+        with torch.no_grad():
+            return model.q_network(x_tensor).detach().cpu().numpy()
+    try:
+        with torch.no_grad():
+            out = model(x_tensor)
+            return out.detach().cpu().numpy()
+    except Exception:
+        pass
+    if hasattr(model, "act"):
+        outs = []
+        action_size = getattr(model, "action_size", 3)
+        for row in x_tensor.detach().cpu().numpy():
+            try:
+                a = model.act(row)
+                if isinstance(a, int):
+                    v = np.zeros(action_size)
+                    v[a] = 1.0
+                    outs.append(v)
+                else:
+                    outs.append(np.asarray(a))
+            except Exception:
+                outs.append(np.zeros(action_size))
+        return np.vstack(outs)
+    raise RuntimeError("No usable forward interface found on model (q_network, callable, act)")
+
+# state_size'ı oku (veri kesmek için)
+expected_state_size = None
 try:
-    import torch.nn as _nn
-    if net is None and isinstance(obj, _nn.Module):
-        net = obj
-        candidates.append("self_module")
-except Exception:
-    pass
+    with open("diagnostics/inferred_state_size.txt", "r") as f:
+        expected_state_size = int(f.read().strip())
+    print(f"Read expected state_size: {expected_state_size}")
+except Exception as e:
+    print(f"[WARN] Could not read 'inferred_state_size.txt': {e}")
 
-if net is None:
+# load samples
+csv = os.environ.get("SAMPLES_PATH", "sample_data/test_samples.csv")
+X_raw = None
+if os.path.exists(csv):
+    df = pd.read_csv(csv)
+    label_cols = [c for c in df.columns if c.lower() in ("label", "target", "y", "class")]
+    if label_cols:
+        df = df.drop(columns=label_cols)
+    X_raw = df.select_dtypes(include=[float, int]).to_numpy(dtype=float)[:10]
+    
+    # Veriyi kes (slice)
+    if expected_state_size is not None and X_raw.shape[1] > expected_state_size:
+        print(f"Slicing data from {X_raw.shape[1]} to {expected_state_size} features.")
+        X_raw = X_raw[:, :expected_state_size]
+else:
+    # Fallback: Rastgele veri oluştur
+    state_size_to_use = expected_state_size if expected_state_size else 42
+    print(f"CSV not found. Generating random data with shape (5, {state_size_to_use}).")
+    X_raw = np.random.randn(5, state_size_to_use)
+
+if X_raw is None or X_raw.size == 0:
     with open(OUT, "w") as f:
-        json.dump({"error": "Could not find a torch module (q_network/model/net) on the loaded object", "available_attrs": [a for a in dir(obj) if not a.startswith('_')][:200]}, indent=2)
-    print(f"Wrote {OUT} (module not found)")
+        json.dump({"error": "No sample data (X_raw) could be loaded or generated."}, f, indent=2)
+    print(f"Wrote {OUT} (no sample data)")
     sys.exit(0)
 
-summary = {"model_type": str(type(obj)), "net_attr_candidates_used": candidates}
-params = []
-try:
-    for name, param in net.named_parameters():
-        arr = param.detach().cpu().numpy()
-        params.append({
-            "name": name,
-            "shape": list(arr.shape),
-            "mean": float(arr.mean()),
-            "std": float(arr.std()),
-            "min": float(arr.min()),
-            "max": float(arr.max()),
-            "abs_mean": float(abs(arr).mean())
-        })
-except Exception as e:
-    summary["error_listing_params"] = str(e)
-    params = [] # Parametreleri listeleme başarısız oldu
+variants = {}
+variants["raw"] = X_raw
+means = X_raw.mean(axis=0)
+stds = X_raw.std(axis=0) + 1e-12
+variants["zscore_sample"] = (X_raw - means) / stds
+mn = X_raw.min(axis=0); mx = X_raw.max(axis=0)
+variants["minmax_sample"] = (X_raw - mn) / (mx - mn + 1e-12)
+maxabs = np.max(np.abs(X_raw), axis=0); maxabs[maxabs == 0] = 1.0
+variants["maxabs_sample"] = X_raw / maxabs
+variants["rand_normal_scaled"] = np.random.randn(*X_raw.shape) * (stds.reshape(1, -1)) + means.reshape(1, -1)
+variants["rand_uniform"] = np.random.uniform(low=-1.0, high=1.0, size=X_raw.shape)
 
-# Heuristic: find final linear layers (named like fc, out, head, final, value, adv)
-final_candidates = [p for p in params if any(s in p["name"].lower() for s in ("out", "head", "fc", "final", "value", "adv", "action", "bias"))]
-# Also consider last N params as candidates
-if not final_candidates and params:
-    final_candidates = params[-6:]
+res = {"model_type": str(type(model)), "variants": {}}
 
-summary["param_count"] = len(params)
-summary["params_sample_count"] = min(40, len(params))
-summary["params_sample"] = params[:summary["params_sample_count"]]
-summary["final_layer_candidates"] = final_candidates[:20]
-# quick checks for collapsed weights
-collapsed = [p["name"] for p in params if (p["abs_mean"] < 1e-6 and p["std"] < 1e-6)]
-summary["collapsed_param_count"] = len(collapsed)
-summary["collapsed_params"] = collapsed[:50]
+for k, X in variants.items():
+    entry = {"shape": list(X.shape)}
+    try:
+        xt = torch.tensor(X, dtype=torch.float32)
+        logits = model_forward_logits(xt)  # numpy
+        probs = F.softmax(torch.tensor(logits), dim=-1).numpy()
+        entry["logits_mean"] = logits.mean(axis=0).tolist()
+        entry["logits_std"] = logits.std(axis=0).tolist()
+        entry["probs_mean"] = probs.mean(axis=0).tolist()
+        entry["probs_std"] = probs.std(axis=0).tolist()
+        entry["entropy_mean"] = float(entropy_rows(probs).mean())
+    except Exception as e:
+        entry["error"] = str(e)
+        entry["trace"] = traceback.format_exc()[:2000]
+    res["variants"][k] = entry
 
 with open(OUT, "w") as f:
-    json.dump(summary, f, indent=2, default=str) # default=str eklendi
+    json.dump(res, f, indent=2, default=str)
 print("Wrote", OUT)
