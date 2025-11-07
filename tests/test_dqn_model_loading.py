@@ -11,6 +11,7 @@ import numpy as np
 import tempfile
 import os
 from pathlib import Path
+from torch.nn.functional import softmax
 
 # Import the DQNNetwork class
 from src.ml.reinforcement_learning import DQNNetwork
@@ -143,7 +144,6 @@ class TestDQNModelLoadingFix:
             logits = trained_model(tensor_input).detach().cpu().numpy()
             
             # Apply softmax to get probabilities
-            from torch.nn.functional import softmax
             probs = softmax(torch.tensor(logits), dim=-1).detach().cpu().numpy()
         
         # Verify shapes
