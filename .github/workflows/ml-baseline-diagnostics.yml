@@ -37,8 +37,6 @@ jobs:
       - name: Run feature engineering and diagnostics
         run: |
           python scripts/feature_engineer_and_run.py sample_data/test_samples_ohlcv.csv
-        env:
-          PYTHONPATH: ${{ github.workspace }}
 
       - name: Verify diagnostic files
         run: |
