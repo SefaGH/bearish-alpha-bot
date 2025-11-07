@@ -13,9 +13,9 @@ def setup_project_path():
     """
     Add project root to Python path.
     
-    This function calculates the project root directory (parent of scripts/)
-    and adds it to the beginning of sys.path to ensure local 'src' module
-    takes precedence over any system-installed package with the same name.
+    This function calculates the project root directory (parent of the directory
+    containing this script file) and adds it to the beginning of sys.path to ensure
+    local 'src' module takes precedence over any system-installed package with the same name.
     
     This function is idempotent - calling it multiple times has no adverse effects.
     """
