@@ -49,6 +49,10 @@ from src.ml.rl_trading_env import RLTradingEnv
 from src.ml.rl_model_trainer import RLModelTrainer
 # --- YENİ IMPORT'LAR SONU ---
 
+# --- PERFORMANCE TRACKING ---
+from scripts.utils.model_performance_tracker import ModelPerformanceTracker
+# --- PERFORMANCE TRACKING SONU ---
+
 # Logger kurulumu
 logger = setup_logger("model-trainer", level=logging.INFO, log_to_file=True, log_filename="training.log")
 
@@ -84,6 +88,10 @@ async def main():
         logger.info(f"CUDA Available: {cuda_available} | Device: {device_name}")
     except ImportError:
         logger.info("PyTorch not installed, GPU check skipped")
+    
+    # Initialize performance tracker
+    tracker = ModelPerformanceTracker()
+    logger.info("✅ Performance tracker initialized")
     
     # Initialize metrics tracking
     start_time = datetime.now()
@@ -175,8 +183,11 @@ async def main():
             
             if final_X.shape[0] >= MIN_SAMPLES_FOR_RF:
                 # Pass regime_prediction config to trainer so it uses correct architecture
+                regime_training_start = datetime.now()
                 regime_trainer = RegimeModelTrainer(config=regime_pred_config)
                 results = regime_trainer.train_ensemble_models(final_X, final_y)
+                regime_training_time = (datetime.now() - regime_training_start).total_seconds()
+                
                 logger.info(f"✅ Rejim modelleri birleşik veri seti ile eğitildi ve kaydedildi.")
                 
                 # Store regime model metrics (safely handle None results)
@@ -186,6 +197,24 @@ async def main():
                         'feature_count': final_X.shape[1],
                         'metrics': results.get('metrics', {})
                     }
+                    
+                    # Record to performance tracker
+                    try:
+                        tracker.record_training(
+                            model_type="regime",
+                            model_name=f"{symbol_for_regime.replace('/', '-')}_ensemble",
+                            metrics=results.get('metrics', {}),
+                            data_info={
+                                'total_samples': final_X.shape[0],
+                                'train_samples': final_X.shape[0],
+                                'features': final_X.shape[1],
+                                'timeframes': ','.join(REGIME_TRAINING_TIMEFRAMES),
+                                'symbol': symbol_for_regime
+                            },
+                            training_time=regime_training_time
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to record regime training metrics: {e}")
                 else:
                     training_metrics['regime_models'] = {
                         'total_samples': final_X.shape[0],
@@ -206,6 +235,8 @@ async def main():
     if SYMBOLS_TO_TRAIN[0] in training_data:
         try:
             logger.info("AdvancedPricePredictionEngine konfigürasyona göre başlatılıyor...")
+            price_training_start = datetime.now()
+            
             price_engine = AdvancedPricePredictionEngine(
                 market_data_pipeline=None,      # Eğitim sırasında pipeline gerekmez
                 feature_pipeline=feature_engine,  # Önceden oluşturulan özellik motorunu ver
@@ -216,6 +247,8 @@ async def main():
             # Ana sınıf üzerinden eğitimi ve kaydetmeyi tetikle
             logger.info("Model eğitimi ve kaydetme süreci başlatılıyor...")
             price_engine.train_and_save_models(training_data)
+            price_training_time = (datetime.now() - price_training_start).total_seconds()
+            
             logger.info("✅ Fiyat tahmin modellerinin eğitimi ve kaydı tamamlandı.")
             
             # Store price model metrics
@@ -223,6 +256,25 @@ async def main():
                 'status': 'completed',
                 'models_trained': ['LSTM', 'Transformer', 'Ensemble']
             }
+            
+            # Record to performance tracker (generic metrics since we don't have detailed results)
+            try:
+                tracker.record_training(
+                    model_type="price",
+                    model_name=f"{SYMBOLS_TO_TRAIN[0].replace('/', '-')}_ensemble",
+                    metrics={
+                        'status': 'completed',
+                        'training_time_seconds': price_training_time
+                    },
+                    data_info={
+                        'symbol': SYMBOLS_TO_TRAIN[0],
+                        'timeframes': ','.join(ALL_TIMEFRAMES),
+                        'models': ['LSTM', 'Transformer', 'Ensemble']
+                    },
+                    training_time=price_training_time
+                )
+            except Exception as e:
+                logger.error(f"Failed to record price training metrics: {e}")
 
         except Exception as e:
             logger.error(f"❌ Fiyat tahmin modelleri eğitimi sırasında kritik hata: {e}", exc_info=True)
@@ -285,7 +337,10 @@ async def main():
             rl_trainer = RLModelTrainer(agent, env, experience_replay)
             
             try:
+                rl_training_start = datetime.now()
                 rl_trainer.train(num_episodes=RL_NUM_EPISODES)
+                rl_training_time = (datetime.now() - rl_training_start).total_seconds()
+                
                 logger.info("✅ RL Ajanı başarıyla eğitildi ve kaydedildi.")
                 
                 # Store RL model metrics
@@ -296,6 +351,26 @@ async def main():
                     'action_dim': action_dim,
                     'training_samples': len(rl_features_df)
                 }
+                
+                # Record to performance tracker
+                try:
+                    tracker.record_training(
+                        model_type="rl",
+                        model_name=f"{symbol_for_rl.replace('/', '-')}_{RL_TRAINING_TIMEFRAME}",
+                        metrics={
+                            'num_episodes': RL_NUM_EPISODES,
+                            'state_dim': state_dim,
+                            'action_dim': action_dim
+                        },
+                        data_info={
+                            'training_samples': len(rl_features_df),
+                            'symbol': symbol_for_rl,
+                            'timeframe': RL_TRAINING_TIMEFRAME
+                        },
+                        training_time=rl_training_time
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to record RL training metrics: {e}")
             except Exception as e:
                 logger.error(f"❌ RL eğitimi sırasında bir hata oluştu: {e}", exc_info=True)
                 training_metrics['rl_models'] = {
