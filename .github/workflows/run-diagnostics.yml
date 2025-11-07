@@ -127,7 +127,6 @@ jobs:
             --out "$OUT"
             --out-dir "$OUT_DIR"
             --model-class-import "$MODEL_CLASS_IMPORT"
-            # 'diagnose' script'inin 'checkpoint'i (config için) bulabilmesi için
             --original-model-path "$ORIGINAL_MODEL_PATH"
           )
           
@@ -138,102 +137,48 @@ jobs:
           python scripts/diagnose_model_confidence.py "${ARGS[@]}" \
             2>&1 | tee diagnostics/diagnostics_stdout.log || true
 
-      - name: (Adım 6) Inspect Logits and Feature Stats
+      - name: (Adım 6) Inspect Logits and Feature Stats (DEPRECATED by Adım 9)
+        # Bu adımı atlıyoruz, çünkü 'scale_probe' daha spesifik bir test.
         shell: bash
-        env:
-          MODEL_TO_USE: "diagnostics/inst_model.pth"
-          ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
-          SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
-          INSPECT_N: "10"
-        run: |
-          set -euxo pipefail
-          if [ -f "$MODEL_TO_USE" ]; then
-            echo "Running logit/stats inspection on $MODEL_TO_USE..."
-            python scripts/inspect_logits_and_stats.py
-            echo "--- Content of logits_and_stats.json ---"
-            cat diagnostics/logits_and_stats.json || true
-            echo "----------------------------------------"
-          else
-            echo "Skipping logit/stats inspection, $MODEL_TO_USE not found."
-          fi
+        run: echo "Skipping. Replaced by scale_probe.py step."
 
-      - name: (Adım 7) Summarize logits_and_stats.json
+      - name: (Adım 7) Summarize logits_and_stats.json (DEPRECATED)
         shell: bash
-        run: |
-          set -euxo pipefail
-          echo "Summarizing logits_and_stats.json..."
-          if [ -f "diagnostics/logits_and_stats.json" ]; then
-            python scripts/summarize_logits_and_stats.py diagnostics/logits_and_stats.json diagnostics/logits_summary.json || true
-            echo "--- Content of logits_summary.json ---"
-            cat diagnostics/logits_summary.json || true
-            echo "--------------------------------------"
-          else
-            echo "Skipping logits summary, file not found."
-          fi
-
-      - name: (Adım 8) Summarize probs_sample.npy
+        run: echo "Skipping. Replaced by scale_probe.py step."
+        
+      - name: (Adım 8) Summarize probs_sample.npy (DEPRECATED)
         shell: bash
-        run: |
-          set -euxo pipefail
-          echo "Summarizing probs_sample.npy..."
-          if [ -f "diagnostics/probs_sample.npy" ]; then
-            python scripts/summarize_probs_npy.py diagnostics/probs_sample.npy diagnostics/probs_summary.json || true
-            echo "--- Content of probs_summary.json ---"
-            cat diagnostics/probs_summary.json || true
-            echo "---------------------------------------"
-          else
-            echo "Skipping probs_sample.npy summary, file not found."
-          fi
+        run: echo "Skipping. Replaced by scale_probe.py step."
 
-      # --- "ANALİZ J+" SCRIPTLERİ BURAYA EKLENDİ ---
+      # --- YENİ ADIM (ANALİZ L) ---
       
-      - name: (Adım 9) Inspect Model Weights
-        shell: bash
-        run: |
-          set -euxo pipefail
-          echo "Inspecting model weights..."
-          python scripts/weight_stats.py || true
-          echo "--- Content of weight_stats.json ---"
-          cat diagnostics/weight_stats.json || true
-          echo "------------------------------------"
-
-      - name: (Adım 10) Test Input Responses
+      - name: (Adım 9) Run Scale Probe (Duyarlılık Testi)
         shell: bash
         env:
           SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
           MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
+          MODEL_TO_USE: "diagnostics/inst_model.pth"
         run: |
-          set -euxo pipefail
-          echo "Testing model response to various input scalings..."
-          python scripts/test_input_responses.py || true
-          echo "--- Content of input_response_summary.json ---"
-          cat diagnostics/input_response_summary.json || true
-          echo "----------------------------------------------"
+          set -euo pipefail
+          echo "Running model scale sensitivity probe..."
+          python scripts/scale_probe.py || true
+          echo "--- Content of scale_probe.json ---"
+          cat diagnostics/scale_probe.json || true
+          echo "-----------------------------------"
+
+      # --- Önceki Patoloji Adımları (Devre Dışı Bırakıldı) ---
+      
+      - name: (Adım 10) Inspect Model Weights (DEPRECATED)
+        shell: bash
+        run: echo "Skipping. Focusing on scale_probe."
           
-      - name: (Adım 11) Inspect Training History
+      - name: (Adım 11) Inspect Training History (DEPRECATED)
         shell: bash
-        env:
-          ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
-          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
-        run: |
-          set -euxo pipefail
-          echo "Inspecting training history from original checkpoint..."
-          python scripts/inspect_training_history.py || true
-          echo "--- Content of training_history_summary.json ---"
-          cat diagnostics/training_history_summary.json || true
-          echo "------------------------------------------------"
+        run: echo "Skipping. Focusing on scale_probe."
 
-      # --- "ANALİZ K" ÖZETLEME ADIMI ---
-
-      - name: (Adım 12) Summarize model_inst_attempt.json
+      - name: (Adım 12) Summarize model_inst_attempt.json (DEPRECATED)
         shell: bash
-        run: |
-          set -euxo pipefail
-          echo "Summarizing model_inst_attempt.json..."
-          # Artık YAML içine gömülü kod yok, harici script'i çağırıyoruz
-          python scripts/summarize_inst_attempt.py || true
-          # 'summarize_inst_attempt.py' script'i zaten içeriği loglara basıyor
-          # (stdout'a '--- Content of ...' olarak yazdırır)
+        run: echo "Skipping. Focusing on scale_probe."
 
       - name: Upload diagnostics as artifact
         uses: actions/upload-artifact@v4
