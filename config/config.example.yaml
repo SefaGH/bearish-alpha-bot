@@ -384,7 +384,9 @@ ml:
     # Exploration Parameters (Epsilon-Greedy Strategy)
     epsilon_inference: 0.01           # Override: ML_RL_EPSILON_INFERENCE (for live trading, minimal exploration)
     epsilon_start: 1.0                # ✅ ADDED: Override: ML_RL_EPSILON_START (training: start with full exploration)
-    epsilon_decay: 0.995              # ✅ ADDED: Override: ML_RL_EPSILON_DECAY (training: decay rate per episode)
+    epsilon_decay: 0.9897             # ✅ ADDED: Override: ML_RL_EPSILON_DECAY (training: decay rate per episode)
+                                      # Previous: 0.995 (too slow, resulted in 29% final epsilon)
+                                      # Formula: (target_final/initial)^(1/episodes) = (0.08/1.0)^(1/250)
     epsilon_min: 0.01                 # ✅ ADDED: Override: ML_RL_EPSILON_MIN (training: minimum exploration floor)
     
     regime_bias_strength: 5.0         # Override: ML_RL_REGIME_BIAS
