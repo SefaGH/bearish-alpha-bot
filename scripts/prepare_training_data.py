@@ -36,17 +36,19 @@ CANDLE_LIMIT = 1440
 REGIME_TRAINING_TIMEFRAMES = ['15m', '30m', '1h', '4h', '1d']
 
 
-async def fetch_and_process_data(symbol='BTC/USDT', timeframes=None, use_feature_selection=True):
+async def fetch_and_process_data(symbol='BTC/USDT', 
+                                 timeframes=None,
+                                 use_feature_selection=True,
+                                 use_all_features=False):
     """
     Fetch real market data and prepare for training.
-    Uses same architecture as train_all_models.py.
     
     Args:
-        symbol: Trading symbol (e.g., 'BTC/USDT')
-        timeframes: List of timeframes to fetch data from
-        use_feature_selection: Whether to apply feature selection mask (default: True)
+        symbol: Trading symbol
+        timeframes: List of timeframes
+        use_feature_selection: Apply feature selection mask
+        use_all_features: Use all 87 features instead of legacy 42
     """
-    
     if timeframes is None:
         timeframes = REGIME_TRAINING_TIMEFRAMES
     
@@ -95,11 +97,11 @@ async def fetch_and_process_data(symbol='BTC/USDT', timeframes=None, use_feature
             regime_labels = generate_regime_labels(ohlcv_df)
             logger.info(f"  ✅ Generated {len(regime_labels)} labels")
             
-            # Prepare for training
-            logger.info(f"  Preparing training data...")
+            # Prepare for training with flag
             X_prepared, y_prepared = feature_engine.prepare_for_training(
                 features_df,
-                regime_labels
+                regime_labels,
+                use_all_features=use_all_features  # ← Pass the flag
             )
             
             if X_prepared.shape[0] > 0:
@@ -204,19 +206,20 @@ async def async_main():
         default=REGIME_TRAINING_TIMEFRAMES,
         help='Timeframes to fetch (default: 15m 30m 1h 4h 1d)'
     )
+    # CLI argument
     parser.add_argument(
-        '--no-feature-selection',
+        '--use-all-features',
         action='store_true',
-        help='Disable automatic feature selection (default: enabled)'
+        help='Use all 87 extracted features instead of legacy 42 (TEST MODE)'
     )
     
+    # Parse and use
     args = parser.parse_args()
-    
-    # Fetch and process
     X, y = await fetch_and_process_data(
-        args.symbol, 
+        args.symbol,
         args.timeframes,
-        use_feature_selection=not args.no_feature_selection
+        use_feature_selection=not args.no_feature_selection,
+        use_all_features=args.use_all_features  # ← Use the flag
     )
     
     logger.info(f"\n✅ COMPLETE: {len(X)} samples ready for tuning")
