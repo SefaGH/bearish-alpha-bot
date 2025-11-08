@@ -46,3 +46,7 @@ sentry-sdk
 torch>=2.0.0              # PyTorch for neural networks
 torchvision>=0.15.0       # Computer vision (optional)
 scikit-learn>=1.0
+
+# === DATA AUGMENTATION (FAZ 3.2 + 2.2) ===
+imbalanced-learn==0.12.0  # SMOTE for class balancing
+scipy>=1.11.0             # Required by imbalanced-learn
