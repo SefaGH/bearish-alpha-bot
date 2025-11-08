@@ -327,8 +327,14 @@ class RegimeModelTuner:
         filename = f"{model_type}_tuning_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
         filepath = output_dir / filename
         
+        # Convert numpy arrays to lists for JSON serialization
+        serializable_results = results.copy()
+        if 'class_weights' in serializable_results:
+            if isinstance(serializable_results['class_weights'], np.ndarray):
+                serializable_results['class_weights'] = serializable_results['class_weights'].tolist()
+        
         with open(filepath, 'w') as f:
-            json.dump(results, f, indent=2)
+            json.dump(serializable_results, f, indent=2)
         
         logger.info(f"✅ Results saved: {filepath}")
 
