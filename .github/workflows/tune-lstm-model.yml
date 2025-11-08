@@ -45,12 +45,21 @@ jobs:
       
       - name: 🎯 Run Tuning
         run: |
-          python scripts/tune_regime_models.py \
-            --model lstm \
-            --trials ${{ github.event.inputs.trials }} \
-            --cv-splits ${{ github.event.inputs.cv_splits }} \
-            --symbol '${{ github.event.inputs.symbol }}' \
-            2>&1 | tee logs/tuning_output.log
+          # Try regular version first, fallback to standalone
+          if python scripts/tune_regime_models.py --model lstm --trials 1 2>&1 | grep -q "ImportError"; then
+            echo "⚠️  Using standalone version due to import issues"
+            python scripts/tune_regime_models_standalone.py \
+              --model lstm \
+              --trials ${{ github.event.inputs.trials }} \
+              --cv-splits ${{ github.event.inputs.cv_splits }} \
+              --symbol 'BTC-USDT'
+          else
+            python scripts/tune_regime_models.py \
+              --model lstm \
+              --trials ${{ github.event.inputs.trials }} \
+              --cv-splits ${{ github.event.inputs.cv_splits }} \
+              --symbol '${{ github.event.inputs.symbol }}'
+          fi
       
       - name: 📊 Extract Results
         id: results
