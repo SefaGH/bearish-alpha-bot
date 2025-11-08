@@ -76,7 +76,7 @@ class RegimeModelTuner:
         return X, y
     
     def create_lstm_model(self, params: dict):
-        """Create sklearn-compatible LSTM wrapper."""
+        """Create sklearn-compatible LSTM wrapper with class weighting."""
         import torch
         import torch.nn as nn
         from torch.utils.data import TensorDataset, DataLoader
@@ -98,207 +98,226 @@ class RegimeModelTuner:
                 out = self.fc(lstm_out[:, -1, :])
                 return out
         
-class SklearnLSTMWrapper:
-    """Sklearn-compatible wrapper for PyTorch LSTM with anti-overfitting measures."""
-    
-    def __init__(self, input_size, hidden_size, num_layers, num_classes, dropout, 
-                learning_rate, weight_decay, batch_size):
-        self.model = SimpleLSTM(input_size, hidden_size, num_layers, num_classes, dropout)
-        self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.Adam(
-            self.model.parameters(),
-            lr=learning_rate,
-            weight_decay=weight_decay
-        )
-        self.batch_size = batch_size
-        self.num_epochs = 30  # Increased for early stopping
-        self.patience = 5     # Early stopping patience
-    
-    def fit(self, X, y):
-        """Sklearn-style fit with validation split and early stopping."""
-        import torch
-        from torch.utils.data import TensorDataset, DataLoader
-        
-        # Validation split (20% of training data)
-        val_split = int(len(X) * 0.8)
-        X_train, X_val = X[:val_split], X[val_split:]
-        y_train, y_val = y[:val_split], y[val_split:]
-        
-        # Create data loaders
-        train_dataset = TensorDataset(
-            torch.FloatTensor(X_train),
-            torch.LongTensor(y_train)
-        )
-        val_dataset = TensorDataset(
-            torch.FloatTensor(X_val),
-            torch.LongTensor(y_val)
-        )
-        
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=self.batch_size,
-            shuffle=True
-        )
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=self.batch_size,
-            shuffle=False
-        )
-        
-        # Early stopping variables
-        best_val_loss = float('inf')
-        patience_counter = 0
-        best_model_state = None
-        
-        # Training loop with early stopping
-        for epoch in range(self.num_epochs):
-            # Training phase
-            self.model.train()
-            train_loss = 0
-            for batch_X, batch_y in train_loader:
-                self.optimizer.zero_grad()
-                outputs = self.model(batch_X)
-                loss = self.criterion(outputs, batch_y)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)  # Gradient clipping
-                self.optimizer.step()
-                train_loss += loss.item()
+        class SklearnLSTMWrapper:
+            """Sklearn-compatible wrapper with class weighting and early stopping."""
             
-            train_loss /= len(train_loader)
+            def __init__(self, input_size, hidden_size, num_layers, num_classes, dropout, 
+                        learning_rate, weight_decay, batch_size, class_weights=None):
+                self.model = SimpleLSTM(input_size, hidden_size, num_layers, num_classes, dropout)
+                
+                # Use class weights if provided
+                if class_weights is not None:
+                    self.criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(class_weights))
+                else:
+                    self.criterion = nn.CrossEntropyLoss()
+                
+                self.optimizer = torch.optim.Adam(
+                    self.model.parameters(),
+                    lr=learning_rate,
+                    weight_decay=weight_decay
+                )
+                self.batch_size = batch_size
+                self.num_epochs = 30
+                self.patience = 5
             
-            # Validation phase
-            self.model.eval()
-            val_loss = 0
-            with torch.no_grad():
-                for batch_X, batch_y in val_loader:
-                    outputs = self.model(batch_X)
-                    loss = self.criterion(outputs, batch_y)
-                    val_loss += loss.item()
-            
-            val_loss /= len(val_loader)
-            
-            # Early stopping check
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            def fit(self, X, y):
+                """Sklearn-style fit with validation split and early stopping."""
+                import torch
+                from torch.utils.data import TensorDataset, DataLoader
+                
+                # Validation split (20% of training data)
+                val_split = int(len(X) * 0.8)
+                X_train, X_val = X[:val_split], X[val_split:]
+                y_train, y_val = y[:val_split], y[val_split:]
+                
+                # Create data loaders
+                train_dataset = TensorDataset(
+                    torch.FloatTensor(X_train),
+                    torch.LongTensor(y_train)
+                )
+                val_dataset = TensorDataset(
+                    torch.FloatTensor(X_val),
+                    torch.LongTensor(y_val)
+                )
+                
+                train_loader = DataLoader(
+                    train_dataset,
+                    batch_size=self.batch_size,
+                    shuffle=True
+                )
+                val_loader = DataLoader(
+                    val_dataset,
+                    batch_size=self.batch_size,
+                    shuffle=False
+                )
+                
+                # Early stopping variables
+                best_val_loss = float('inf')
                 patience_counter = 0
-                best_model_state = self.model.state_dict().copy()
-            else:
-                patience_counter += 1
-                if patience_counter >= self.patience:
-                    # Restore best model
-                    if best_model_state is not None:
-                        self.model.load_state_dict(best_model_state)
-                    break
-        
-        return self
-    
-    def predict(self, X):
-        """Sklearn-style predict method."""
-        import torch
-        self.model.eval()
-        with torch.no_grad():
-            X_tensor = torch.FloatTensor(X)
-            outputs = self.model(X_tensor)
-            _, predicted = torch.max(outputs, 1)
-            return predicted.numpy()
-    
-    def score(self, X, y):
-        """Sklearn-style score method (accuracy)."""
-        predictions = self.predict(X)
-        correct = (predictions == y).sum()
-        return correct / len(y)
-        
-        # Return wrapped model
-        return SklearnLSTMWrapper(
-            input_size=params.get('input_size', 42),
-            hidden_size=params['hidden_size'],
-            num_layers=params['num_layers'],
-            num_classes=4,
-            dropout=params['dropout'],
-            learning_rate=params.get('learning_rate', 0.001),
-            weight_decay=params.get('weight_decay', 0.0001),
-            batch_size=params.get('batch_size', 32)
-        )
-    
-    def create_rf_model(self, params: dict):
-        """Create Random Forest model."""
-        from sklearn.ensemble import RandomForestClassifier
-        return RandomForestClassifier(
-            n_estimators=params['n_estimators'],
-            max_depth=params['max_depth'],
-            min_samples_split=params['min_samples_split'],
-            min_samples_leaf=params['min_samples_leaf'],
-            max_features=params['max_features'],
-            random_state=42,
-            n_jobs=-1
-        )
-    
-    def tune_model(self, model_type: str, X: np.ndarray, y: np.ndarray,
-                   n_trials: int = 30, cv_splits: int = 5):
-        """Run hyperparameter tuning."""
-        logger.info("="*70)
-        logger.info(f"🎯 TUNING {model_type.upper()} MODEL")
-        logger.info("="*70)
-        
-        validator = TimeSeriesValidator(n_splits=cv_splits)
-        X_cv, y_cv, X_test, y_test = validator.split_with_holdout(X, y)
-        
-        tuner = OptunaModelTuner(
-            model_type=model_type,
-            n_trials=n_trials,
-            cv_splits=cv_splits,
-            direction='maximize'
-        )
-        
-        def model_factory(params):
-            if model_type == 'lstm':
-                params['input_size'] = X.shape[1]
-                return self.create_lstm_model(params)
-            elif model_type == 'rf':
-                return self.create_rf_model(params)
-            else:
-                raise ValueError(f"Unknown model: {model_type}")
-        
-        # For LSTM, use default score method (already implemented in wrapper)
-        # For RF, use sklearn's score method
-        best_params, best_score, study = tuner.tune(
-            X=X_cv, y=y_cv,
-            model_factory=model_factory,
-            metric_fn=None  # Use default score() method
-        )
-        
-        logger.info("\n🔬 Validating on hold-out...")
-        final_model = model_factory(best_params)
-        final_model.fit(X_cv, y_cv)
-        holdout_score = final_model.score(X_test, y_test)
-        
-        logger.info(f"Hold-out score: {holdout_score:.4f}")
-        
-        results = {
-            'model_type': model_type,
-            'best_params': best_params,
-            'cv_score': float(best_score),
-            'holdout_score': float(holdout_score),
-            'n_trials': n_trials,
-            'cv_splits': cv_splits,
-            'timestamp': datetime.utcnow().isoformat()
-        }
-        
-        self._save_results(results, model_type)
-        return results
-    
-    def _save_results(self, results: dict, model_type: str):
-        """Save results."""
-        output_dir = Path('logs/tuning_results')
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        filename = f"{model_type}_tuning_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
-        filepath = output_dir / filename
-        
-        with open(filepath, 'w') as f:
-            json.dump(results, f, indent=2)
-        
-        logger.info(f"✅ Results saved: {filepath}")
+                best_model_state = None
+                
+                # Training loop with early stopping
+                for epoch in range(self.num_epochs):
+                    # Training phase
+                    self.model.train()
+                    train_loss = 0
+                    for batch_X, batch_y in train_loader:
+                        self.optimizer.zero_grad()
+                        outputs = self.model(batch_X)
+                        loss = self.criterion(outputs, batch_y)
+                        loss.backward()
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)  # Gradient clipping
+                        self.optimizer.step()
+                        train_loss += loss.item()
+                    
+                    train_loss /= len(train_loader)
+                    
+                    # Validation phase
+                    self.model.eval()
+                    val_loss = 0
+                    with torch.no_grad():
+                        for batch_X, batch_y in val_loader:
+                            outputs = self.model(batch_X)
+                            loss = self.criterion(outputs, batch_y)
+                            val_loss += loss.item()
+                    
+                    val_loss /= len(val_loader)
+                    
+                    # Early stopping check
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        patience_counter = 0
+                        best_model_state = self.model.state_dict().copy()
+                    else:
+                        patience_counter += 1
+                        if patience_counter >= self.patience:
+                            # Restore best model
+                            if best_model_state is not None:
+                                self.model.load_state_dict(best_model_state)
+                            break
+                
+                return self
+            
+            def predict(self, X):
+                """Sklearn-style predict method."""
+                import torch
+                self.model.eval()
+                with torch.no_grad():
+                    X_tensor = torch.FloatTensor(X)
+                    outputs = self.model(X_tensor)
+                    _, predicted = torch.max(outputs, 1)
+                    return predicted.numpy()
+            
+            def score(self, X, y):
+                """Sklearn-style score method (accuracy)."""
+                predictions = self.predict(X)
+                correct = (predictions == y).sum()
+                return correct / len(y)
+                
+                # Calculate class weights from training data
+                # This will be set during tune_model when we have access to y
+                return SklearnLSTMWrapper(
+                    input_size=params.get('input_size', 42),
+                    hidden_size=params['hidden_size'],
+                    num_layers=params['num_layers'],
+                    num_classes=4,
+                    dropout=params['dropout'],
+                    learning_rate=params.get('learning_rate', 0.001),
+                    weight_decay=params.get('weight_decay', 0.01),
+                    batch_size=params.get('batch_size', 32),
+                    class_weights=params.get('class_weights', None)
+                )
+            
+            def create_rf_model(self, params: dict):
+                """Create Random Forest model."""
+                from sklearn.ensemble import RandomForestClassifier
+                return RandomForestClassifier(
+                    n_estimators=params['n_estimators'],
+                    max_depth=params['max_depth'],
+                    min_samples_split=params['min_samples_split'],
+                    min_samples_leaf=params['min_samples_leaf'],
+                    max_features=params['max_features'],
+                    random_state=42,
+                    n_jobs=-1
+                )
+            
+            def tune_model(self, model_type: str, X: np.ndarray, y: np.ndarray,
+                           n_trials: int = 30, cv_splits: int = 5):
+                """Run hyperparameter tuning with class weighting."""
+                logger.info("="*70)
+                logger.info(f"🎯 TUNING {model_type.upper()} MODEL")
+                logger.info("="*70)
+                
+                # Calculate class weights (inverse frequency)
+                from sklearn.utils.class_weight import compute_class_weight
+                
+                class_weights = compute_class_weight(
+                    'balanced',
+                    classes=np.unique(y),
+                    y=y
+                )
+                logger.info(f"Class weights: {class_weights}")
+                
+                validator = TimeSeriesValidator(n_splits=cv_splits)
+                X_cv, y_cv, X_test, y_test = validator.split_with_holdout(X, y)
+                
+                tuner = OptunaModelTuner(
+                    model_type=model_type,
+                    n_trials=n_trials,
+                    cv_splits=cv_splits,
+                    direction='maximize'
+                )
+                
+                def model_factory(params):
+                    if model_type == 'lstm':
+                        params['input_size'] = X.shape[1]
+                        params['class_weights'] = class_weights  # ADD CLASS WEIGHTS
+                        return self.create_lstm_model(params)
+                    elif model_type == 'rf':
+                        return self.create_rf_model(params)
+                    else:
+                        raise ValueError(f"Unknown model: {model_type}")
+                
+                # For LSTM, use default score method (already implemented in wrapper)
+                # For RF, use sklearn's score method
+                best_params, best_score, study = tuner.tune(
+                    X=X_cv, y=y_cv,
+                    model_factory=model_factory,
+                    metric_fn=None  # Use default score() method
+                )
+                
+                logger.info("\n🔬 Validating on hold-out...")
+                final_model = model_factory(best_params)
+                final_model.fit(X_cv, y_cv)
+                holdout_score = final_model.score(X_test, y_test)
+                
+                logger.info(f"Hold-out score: {holdout_score:.4f}")
+                
+                results = {
+                    'model_type': model_type,
+                    'best_params': best_params,
+                    'cv_score': float(best_score),
+                    'holdout_score': float(holdout_score),
+                    'n_trials': n_trials,
+                    'cv_splits': cv_splits,
+                    'timestamp': datetime.utcnow().isoformat()
+                }
+                
+                self._save_results(results, model_type)
+                return results
+            
+            def _save_results(self, results: dict, model_type: str):
+                """Save results."""
+                output_dir = Path('logs/tuning_results')
+                output_dir.mkdir(parents=True, exist_ok=True)
+                
+                filename = f"{model_type}_tuning_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+                filepath = output_dir / filename
+                
+                with open(filepath, 'w') as f:
+                    json.dump(results, f, indent=2)
+                
+                logger.info(f"✅ Results saved: {filepath}")
 
 def main():
     parser = argparse.ArgumentParser()
