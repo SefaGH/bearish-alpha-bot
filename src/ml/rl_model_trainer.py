@@ -72,11 +72,6 @@ class RLModelTrainer:
         logger.info(f"   Epsilon Decay:     {self.agent.epsilon_decay:.4f}")
         logger.info(f"   Epsilon Min:       {self.agent.epsilon_min:.4f}")
         
-        # Calculate final epsilon after training
-        final_epsilon = self.agent.epsilon * (self.agent.epsilon_decay ** num_episodes)
-        final_epsilon = max(final_epsilon, self.agent.epsilon_min)
-        logger.info(f"   Expected Final:    {final_epsilon:.4f} (after {num_episodes} episodes)")
-        
         # Learning Parameters
         logger.info(f"📚 Learning Parameters:")
         try:
@@ -122,8 +117,6 @@ class RLModelTrainer:
         logger.info(f"🌍 Environment:")
         logger.info(f"   State Dimension:   {self.agent.state_size}")
         logger.info(f"   Action Dimension:  {self.agent.action_size}")
-        logger.info(f"   Episodes:          {num_episodes}")
-        logger.info(f"   Save Frequency:    Every {save_every} episodes")
         
         # Behavior Modifiers (if available)
         logger.info(f"⚙️  Behavior Modifiers:")
@@ -146,12 +139,36 @@ class RLModelTrainer:
 
     def train(self,
               num_episodes: int,
-              batch_size: int = 64, # Bu parametre artık doğrudan ajan tarafından kullanılıyor
+              batch_size: int = 64,
               save_every: int = 10,
               checkpoint_path: Optional[str] = None):
         """
         Runs the main training loop for the specified number of episodes.
         """
+        # =====================================================================
+        # TRAINING SESSION CONFIGURATION
+        # =====================================================================
+        logger.info("")
+        logger.info("="*70)
+        logger.info("🚀 STARTING RL TRAINING SESSION")
+        logger.info("="*70)
+        logger.info(f"📊 Training Parameters:")
+        logger.info(f"   Total Episodes:    {num_episodes}")
+        logger.info(f"   Save Every:        {save_every} episodes")
+        logger.info(f"   Batch Size:        {batch_size}")
+        
+        # Calculate expected final epsilon
+        final_epsilon = self.agent.epsilon * (self.agent.epsilon_decay ** num_episodes)
+        final_epsilon = max(final_epsilon, self.agent.epsilon_min)
+        logger.info(f"   Expected Final ε:  {final_epsilon:.4f} (after {num_episodes} episodes)")
+        
+        if checkpoint_path:
+            logger.info(f"   Checkpoint:        {checkpoint_path}")
+        
+        logger.info("="*70)
+        logger.info("")
+        # =====================================================================
+                  
         # === GÜNCELLEME: Doğru metod adı 'load_model' ===
         if checkpoint_path and os.path.exists(checkpoint_path):
             self.agent.load_model(checkpoint_path)
