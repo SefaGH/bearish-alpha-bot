@@ -9,7 +9,7 @@ Date: 2025-11-08
 import optuna
 import numpy as np
 import logging
-from typing import Dict, Any, Callable, Optional
+from typing import Dict, Any, Callable, Optional, Tuple
 from .validation_framework import TimeSeriesValidator
 
 logger = logging.getLogger(__name__)
