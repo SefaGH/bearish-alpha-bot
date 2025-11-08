@@ -1,4 +1,4 @@
-name: Tune LSTM Model
+name: Tune LSTM Regime Model
 
 on:
   workflow_dispatch:
@@ -247,33 +247,54 @@ jobs:
       - name: 📝 Generate Summary Report
         if: always()
         run: |
-          cat << 'EOF' >> $GITHUB_STEP_SUMMARY
+          # Extract values to variables first
+          CV_SCORE="${{ steps.extract_results.outputs.cv_score }}"
+          HOLDOUT_SCORE="${{ steps.extract_results.outputs.holdout_score }}"
+          HIDDEN_SIZE="${{ steps.extract_results.outputs.hidden_size }}"
+          NUM_LAYERS="${{ steps.extract_results.outputs.num_layers }}"
+          DROPOUT="${{ steps.extract_results.outputs.dropout }}"
+          LEARNING_RATE="${{ steps.extract_results.outputs.learning_rate }}"
+          TRIALS="${{ github.event.inputs.trials }}"
+          CV_SPLITS="${{ github.event.inputs.cv_splits }}"
+          SYMBOL="${{ github.event.inputs.symbol }}"
+          JOB_STATUS="${{ job.status }}"
+          RUN_ID="${{ github.run_id }}"
+          ACTOR="${{ github.actor }}"
+          
+          # Calculate improvement
+          BASELINE=0.433
+          IMPROVEMENT=$(python3 -c "print(f'{float('$CV_SCORE') - $BASELINE:+.4f}')")
+          IMPROVEMENT_PCT=$(python3 -c "print(f'{(float('$CV_SCORE') - $BASELINE) / $BASELINE * 100:+.1f}%')")
+          DURATION=$(python3 -c "print(f'{int('$TRIALS') * 2 / 60:.1f}')")
+          
+          # Generate report
+          cat << EOF >> $GITHUB_STEP_SUMMARY
           # 🎯 LSTM Hyperparameter Tuning Results
           
           ## 📊 Performance Metrics
           
           | Metric | Score |
           |--------|-------|
-          | **CV Score** | ${{ steps.extract_results.outputs.cv_score }} |
-          | **Hold-out Score** | ${{ steps.extract_results.outputs.holdout_score }} |
+          | **CV Score** | ${CV_SCORE} |
+          | **Hold-out Score** | ${HOLDOUT_SCORE} |
           | **Phase B Baseline** | 0.433 (43.3%) |
-          | **Improvement** | +${{ steps.extract_results.outputs.cv_score }} |
+          | **Improvement** | ${IMPROVEMENT} (${IMPROVEMENT_PCT}) |
           
           ## 🏆 Best Hyperparameters
           
           | Parameter | Value |
           |-----------|-------|
-          | **hidden_size** | ${{ steps.extract_results.outputs.hidden_size }} |
-          | **num_layers** | ${{ steps.extract_results.outputs.num_layers }} |
-          | **dropout** | ${{ steps.extract_results.outputs.dropout }} |
-          | **learning_rate** | ${{ steps.extract_results.outputs.learning_rate }} |
+          | **hidden_size** | ${HIDDEN_SIZE} |
+          | **num_layers** | ${NUM_LAYERS} |
+          | **dropout** | ${DROPOUT} |
+          | **learning_rate** | ${LEARNING_RATE} |
           
           ## 📈 Tuning Configuration
           
-          - **Trials**: ${{ github.event.inputs.trials }}
-          - **CV Splits**: ${{ github.event.inputs.cv_splits }}
-          - **Symbol**: ${{ github.event.inputs.symbol }}
-          - **Duration**: ~${{ github.event.inputs.trials }} trials × 2 min = ${{ github.event.inputs.trials * 2 / 60 }} hours
+          - **Trials**: ${TRIALS}
+          - **CV Splits**: ${CV_SPLITS}
+          - **Symbol**: ${SYMBOL}
+          - **Duration**: ~${DURATION} hours
           
           ## 📥 Artifacts
           
@@ -281,9 +302,9 @@ jobs:
           
           ---
           
-          **Status**: ${{ job.status }}
-          **Run ID**: ${{ github.run_id }}
-          **Triggered by**: @${{ github.actor }}
+          **Status**: ${JOB_STATUS}
+          **Run ID**: ${RUN_ID}
+          **Triggered by**: @${ACTOR}
           EOF
       
       # ================================================================
