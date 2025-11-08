@@ -107,9 +107,9 @@ class FeatureAnalyzer:
             logger.info(f"Loading data from {self.data_path}...")
             data = np.load(self.data_path)
             
-            # Extract features and labels
-            self.features = data['features']
-            self.labels = data['labels']
+            # Extract features and labels (using keys 'X' and 'y' to match prepare_training_data.py)
+            self.features = data['X']
+            self.labels = data['y']
             
             self.n_samples, self.n_features = self.features.shape
             

@@ -61,10 +61,10 @@ def sample_training_data(test_data_dir):
     labels += np.random.randn(n_samples) * 2
     labels = np.digitize(labels, bins=[np.percentile(labels, 33), np.percentile(labels, 67)])
     
-    # Save to file
+    # Save to file (using keys 'X' and 'y' to match production code)
     data_file = test_data_dir / "test_training_data.npz"
     feature_names = [f"feature_{i}" for i in range(n_features)]
-    np.savez(data_file, features=features, labels=labels, feature_names=feature_names)
+    np.savez(data_file, X=features, y=labels, feature_names=feature_names)
     
     return data_file
 
