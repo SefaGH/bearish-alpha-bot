@@ -30,6 +30,10 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 # --- YOL AYARLAMASI SONU ---
 
+# --- YENİ: Merkezi Config Import ---
+from src.config.live_trading_config import LiveTradingConfiguration
+# --- YENİ IMPORT SONU ---
+
 # Gerekli modüllerin import edilmesi
 from src.core.ccxt_client import CcxtClient
 from src.core.logger import setup_logger
@@ -53,6 +57,8 @@ from src.ml.rl_model_trainer import RLModelTrainer
 # --- PERFORMANCE TRACKING ---
 from scripts.utils.model_performance_tracker import ModelPerformanceTracker
 # --- PERFORMANCE TRACKING SONU ---
+
+from scripts.utils.training_validator import TrainingConfigValidator
 
 # Logger kurulumu
 logger = setup_logger("model-trainer", level=logging.INFO, log_to_file=True, log_filename="training.log")
@@ -105,30 +111,138 @@ async def main():
         'rl_models': {}
     }
 
-    # Load configuration from config.example.yaml
-    config_path = os.path.join(project_root, 'config', 'config.example.yaml')
+    # =========================================================================
+    # CONFIGURATION LOADING (Using Centralized System)
+    # =========================================================================
+    # Use LiveTradingConfiguration for consistent config loading across
+    # training and live trading. This ensures:
+    #   1. Environment variable overrides work correctly
+    #   2. Config validation is applied
+    #   3. Type casting is automatic
+    #   4. Single source of truth
+    # =========================================================================
+    
+    logger.info("Loading configuration using centralized system...")
     
     try:
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-    except FileNotFoundError:
-        logger.error(f"❌ Configuration file not found: {config_path}")
-        logger.error("Please ensure config.example.yaml exists in the config/ directory.")
+        # Use centralized config loader (handles env vars, validation, etc.)
+        # Suppress duplicate logging since we'll log training-specific details
+        config = LiveTradingConfiguration.load(log_summary=False)
+        logger.info("✅ Configuration loaded successfully via centralized system")
+        
+        # Extract ML configuration blocks
+        ml_config = config.get('ml', {})
+        regime_pred_config = ml_config.get('regime_prediction', {})
+        price_pred_config = ml_config.get('price_prediction', {})
+        rl_config = ml_config.get('reinforcement_learning', {})
+        
+        # =====================================================================
+        # TRAINING-SPECIFIC CONFIGURATION LOGGING
+        # =====================================================================
+        logger.info("="*60)
+        logger.info("🎓 TRAINING CONFIGURATION")
+        logger.info("="*60)
+        
+        # RL Training Mode Validation
+        rl_training_mode = rl_config.get('training_mode', False)
+        logger.info(f"   RL Training Mode: {rl_training_mode}")
+        
+        if not rl_training_mode:
+            logger.warning("="*60)
+            logger.warning("⚠️  WARNING: RL training_mode is False in config!")
+            logger.warning("⚠️  This may be due to:")
+            logger.warning("    1. config.example.yaml has training_mode: false")
+            logger.warning("    2. ML_RL_TRAINING_MODE env var is not set/false")
+            logger.warning("⚠️  Forcing training_mode=True for this training session")
+            logger.warning("="*60)
+            rl_config['training_mode'] = True
+            logger.info(f"   RL Training Mode (forced): {rl_config['training_mode']}")
+        
+        # RL Epsilon Parameters Check
+        epsilon_params = {
+            'epsilon_start': rl_config.get('epsilon_start'),
+            'epsilon_decay': rl_config.get('epsilon_decay'),
+            'epsilon_min': rl_config.get('epsilon_min')
+        }
+        logger.info("   RL Epsilon Schedule:")
+        for param, value in epsilon_params.items():
+            if value is None:
+                logger.warning(f"      {param}: NOT SET (will use default)")
+            else:
+                logger.info(f"      {param}: {value}")
+        
+        # Regime LSTM Parameters
+        lstm_params = regime_pred_config.get('model_params', {}).get('lstm_regime', {})
+        logger.info("   Regime LSTM Parameters (from config):")
+        if lstm_params:
+            logger.info(f"      hidden_size: {lstm_params.get('hidden_size', 'NOT SET')}")
+            logger.info(f"      num_layers: {lstm_params.get('num_layers', 'NOT SET')}")
+            logger.info(f"      dropout: {lstm_params.get('dropout', 'NOT SET')}")
+        else:
+            logger.warning("      ⚠️  LSTM params not found in config (will use defaults)")
+        
+        # Training Symbols
+        logger.info(f"   Training Symbols: {', '.join(SYMBOLS_TO_TRAIN)}")
+        logger.info("="*60)
+        
+    except FileNotFoundError as e:
+        logger.error(f"❌ Configuration file not found: {e}")
+        logger.error("Please ensure config/config.example.yaml exists.")
         raise
-    except yaml.YAMLError as e:
-        logger.error(f"❌ Error parsing configuration file: {e}")
+    except Exception as e:
+        logger.error(f"❌ Error loading configuration: {e}", exc_info=True)
         raise
     
-    ml_config = config.get('ml', {})
-    regime_pred_config = ml_config.get('regime_prediction', {})
-    price_pred_config = ml_config.get('price_prediction', {})
-    rl_config = ml_config.get('reinforcement_learning', {})
+    # =========================================================================
+    # END CONFIGURATION LOADING
+    # ==========================================================================
     
-    logger.info(f"✅ Configuration loaded from {config_path}")
-    logger.info(f"   Regime LSTM params: {regime_pred_config.get('model_params', {}).get('lstm_regime', {})}")
-
-    # Log symbols being trained
-    logger.info(f"Training symbols: {', '.join(SYMBOLS_TO_TRAIN)}")
+    # =========================================================================
+    # PRE-TRAINING VALIDATION
+    # =========================================================================
+    # Validate configuration before starting expensive training process
+    # This catches common issues early and provides clear error messages
+    # =========================================================================
+    
+    logger.info("\n" + "="*60)
+    logger.info("🔍 VALIDATING TRAINING CONFIGURATION")
+    logger.info("="*60)
+    
+    # Run validation
+    is_valid, issues = TrainingConfigValidator.validate(config)
+    TrainingConfigValidator.log_validation_results(is_valid, issues)
+    
+    # Check for critical issues
+    critical_issues = [i for i in issues if i.startswith("CRITICAL:")]
+    if critical_issues:
+        logger.error("❌ Critical validation errors found. Aborting training.")
+        for issue in critical_issues:
+            logger.error(f"   - {issue}")
+        raise ValueError(f"Training validation failed with {len(critical_issues)} critical issues")
+    
+    # Check parameter synchronization
+    logger.info("Checking parameter synchronization between config and code...")
+    sync_issues = TrainingConfigValidator.validate_model_params_sync(config)
+    
+    if sync_issues:
+        logger.warning("="*60)
+        logger.warning("⚠️  PARAMETER SYNCHRONIZATION ISSUES DETECTED")
+        logger.warning("="*60)
+        for issue in sync_issues:
+            logger.warning(f"   - {issue}")
+        logger.warning("⚠️  Training will use config values (config takes precedence)")
+        logger.warning("⚠️  Consider updating model_trainer.py constants to match")
+        logger.warning("="*60)
+    else:
+        logger.info("✅ Config and code parameters are synchronized")
+    
+    logger.info("="*60)
+    logger.info("✅ VALIDATION COMPLETE - PROCEEDING WITH TRAINING")
+    logger.info("="*60 + "\n")
+    
+    # =========================================================================
+    # END VALIDATION
+    # =========================================================================
     
     exchange_client = CcxtClient('bingx')
     feature_engine = FeatureEngineeringPipeline()
