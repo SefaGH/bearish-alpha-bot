@@ -6,7 +6,7 @@ on:
       trials:
         description: 'Number of Optuna trials'
         required: true
-        default: '30'
+        default: '10'
       cv_splits:
         description: 'Number of cross-validation splits'
         required: true
@@ -15,6 +15,10 @@ on:
         description: 'Trading symbol'
         required: true
         default: 'BTC/USDT'
+      run_diagnosis:
+        description: 'Run data quality diagnosis'
+        type: boolean
+        default: true
 
 env:
   PYTHON_VERSION: '3.11'
@@ -50,21 +54,39 @@ jobs:
           echo "📊 FETCHING REAL MARKET DATA"
           echo "======================================================================"
           
-          # Run data preparation script
           python scripts/prepare_training_data.py --symbol '${{ github.event.inputs.symbol }}'
           
-          # Verify cache was created
           SYMBOL_SAFE=$(echo '${{ github.event.inputs.symbol }}' | sed 's/\//-/g')
           CACHE_FILE="data/cache/${SYMBOL_SAFE}_training_data.npz"
           
           if [ -f "$CACHE_FILE" ]; then
-            echo "✅ Training data cached successfully: $CACHE_FILE"
-            
-            # Show data info
-            python -c "import numpy as np; import sys; data=np.load(sys.argv[1]); X=data['X']; y=data['y']; print(f'\n📊 Cached Data Info:'); print(f'   Samples: {len(X)}'); print(f'   Features: {X.shape[1]}'); print(f'   Label classes: {len(np.unique(y))}'); unique, counts = np.unique(y, return_counts=True); print('   Distribution:'); labels=['Bullish','Bearish','Neutral','Volatile']; [print(f'     {labels[l]}: {c} ({c/len(y)*100:.1f}%)') for l,c in zip(unique,counts)]" "$CACHE_FILE"
+            echo "✅ Training data cached: $CACHE_FILE"
+            ls -lh "$CACHE_FILE"
           else
             echo "❌ Failed to cache training data"
             exit 1
+          fi
+          
+          echo "======================================================================"
+      
+      - name: 🔬 Diagnose Data Quality
+        if: ${{ github.event.inputs.run_diagnosis == 'true' }}
+        run: |
+          echo "======================================================================"
+          echo "🔬 DATA QUALITY DIAGNOSIS"
+          echo "======================================================================"
+          
+          python scripts/diagnose_overfitting.py 2>&1 | tee logs/diagnosis.log
+          
+          # Check if diagnosis found critical issues
+          if grep -q "❌" logs/diagnosis.log; then
+            echo ""
+            echo "⚠️  WARNING: Critical issues detected in diagnosis"
+            echo "⚠️  Review logs/diagnosis.log for details"
+            echo "⚠️  Continuing with tuning anyway..."
+            echo ""
+          else
+            echo "✅ No critical issues detected"
           fi
           
           echo "======================================================================"
@@ -73,7 +95,6 @@ jobs:
         run: |
           echo "Starting tuning with REAL cached data..."
           
-          # Convert symbol format (BTC/USDT -> BTC-USDT)
           SYMBOL_SAFE=$(echo '${{ github.event.inputs.symbol }}' | sed 's/\//-/g')
           
           python scripts/tune_regime_models_standalone.py \
@@ -93,13 +114,21 @@ jobs:
             echo "num_layers=$(jq -r '.best_params.num_layers // "N/A"' $FILE)" >> $GITHUB_OUTPUT
             echo "dropout=$(jq -r '.best_params.dropout // "N/A"' $FILE)" >> $GITHUB_OUTPUT
             echo "learning_rate=$(jq -r '.best_params.learning_rate // "N/A"' $FILE)" >> $GITHUB_OUTPUT
+            
+            # Calculate overfitting gap
+            CV=$(jq -r '.cv_score' $FILE)
+            HOLDOUT=$(jq -r '.holdout_score' $FILE)
+            if [ "$CV" != "null" ] && [ "$HOLDOUT" != "null" ]; then
+              GAP=$(python3 -c "print(f'{float('$CV') - float('$HOLDOUT'):.4f}')")
+              echo "gap=$GAP" >> $GITHUB_OUTPUT
+            fi
           fi
       
       - name: 📦 Upload Artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: lstm-tuning-results
+          name: lstm-tuning-results-${{ github.run_number }}
           path: |
             logs/
             data/cache/*.npz
@@ -111,24 +140,43 @@ jobs:
           {
             echo "# 🎯 LSTM Hyperparameter Tuning Results"
             echo ""
-            echo "## 📊 Performance"
+            echo "## 📊 Performance Metrics"
             echo ""
-            echo "| Metric | Value |"
-            echo "|--------|-------|"
-            echo "| CV Score | ${{ steps.results.outputs.cv_score }} |"
-            echo "| Hold-out | ${{ steps.results.outputs.holdout_score }} |"
-            echo "| Baseline (Phase B) | 0.433 |"
+            echo "| Metric | Value | Target |"
+            echo "|--------|-------|--------|"
+            echo "| **CV Score** | ${{ steps.results.outputs.cv_score }} | >0.35 |"
+            echo "| **Hold-out Score** | ${{ steps.results.outputs.holdout_score }} | >0.35 |"
+            echo "| **Overfitting Gap** | ${{ steps.results.outputs.gap }} | <0.10 |"
+            echo "| **Phase B Baseline** | 0.433 | Reference |"
             echo ""
-            echo "## 🏆 Best Parameters"
+            
+            # Status indicator
+            HOLDOUT="${{ steps.results.outputs.holdout_score }}"
+            if [ "$HOLDOUT" != "N/A" ]; then
+              HOLDOUT_NUM=$(echo "$HOLDOUT" | bc)
+              if (( $(echo "$HOLDOUT_NUM > 0.35" | bc -l) )); then
+                echo "**Status**: ✅ Good generalization"
+              elif (( $(echo "$HOLDOUT_NUM > 0.25" | bc -l) )); then
+                echo "**Status**: ⚠️ Acceptable but needs improvement"
+              else
+                echo "**Status**: 🔴 Poor generalization - severe overfitting"
+              fi
+            fi
+            
+            echo ""
+            echo "## 🏆 Best Hyperparameters"
             echo ""
             echo "| Parameter | Value |"
             echo "|-----------|-------|"
-            echo "| hidden_size | ${{ steps.results.outputs.hidden_size }} |"
-            echo "| num_layers | ${{ steps.results.outputs.num_layers }} |"
-            echo "| dropout | ${{ steps.results.outputs.dropout }} |"
-            echo "| learning_rate | ${{ steps.results.outputs.learning_rate }} |"
+            echo "| **hidden_size** | ${{ steps.results.outputs.hidden_size }} |"
+            echo "| **num_layers** | ${{ steps.results.outputs.num_layers }} |"
+            echo "| **dropout** | ${{ steps.results.outputs.dropout }} |"
+            echo "| **learning_rate** | ${{ steps.results.outputs.learning_rate }} |"
             echo ""
-            echo "## 📥 Download Results"
+            echo "## 📥 Artifacts"
             echo ""
-            echo "See artifacts above for detailed logs and cached data."
+            echo "- Full training logs"
+            echo "- Data quality diagnosis report"
+            echo "- Cached training data"
+            echo "- Tuning results JSON"
           } >> $GITHUB_STEP_SUMMARY
