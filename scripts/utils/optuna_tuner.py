@@ -133,14 +133,19 @@ class OptunaModelTuner:
             raise ValueError(f"Unknown model type: {self.model_type}")
     
     def _suggest_lstm_params(self, trial: optuna.Trial) -> Dict[str, Any]:
-        """Suggest LSTM hyperparameters."""
+        """Suggest LSTM hyperparameters - ANTI-OVERFITTING VERSION."""
         return {
-            'hidden_size': trial.suggest_categorical('hidden_size', [64, 96, 128, 160]),
-            'num_layers': trial.suggest_int('num_layers', 1, 3),
-            'dropout': trial.suggest_float('dropout', 0.2, 0.6, step=0.1),
-            'learning_rate': trial.suggest_float('learning_rate', 1e-4, 1e-2, log=True),
-            'weight_decay': trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True),
-            'batch_size': trial.suggest_categorical('batch_size', [16, 32, 64])
+            # REDUCED COMPLEXITY
+            'hidden_size': trial.suggest_categorical('hidden_size', [32, 64]),  # Was: [64, 96, 128, 160]
+            'num_layers': trial.suggest_int('num_layers', 1, 2),  # Was: 1-3
+            
+            # INCREASED REGULARIZATION
+            'dropout': trial.suggest_float('dropout', 0.5, 0.7, step=0.1),  # Was: 0.2-0.6
+            'learning_rate': trial.suggest_float('learning_rate', 1e-4, 1e-3, log=True),  # Same
+            'weight_decay': trial.suggest_float('weight_decay', 1e-3, 1e-1, log=True),  # Was: 1e-6 to 1e-3
+            
+            # TRAINING
+            'batch_size': trial.suggest_categorical('batch_size', [32, 64])  # Same
         }
     
     def _suggest_transformer_params(self, trial: optuna.Trial) -> Dict[str, Any]:
