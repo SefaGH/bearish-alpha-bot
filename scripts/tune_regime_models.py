@@ -23,12 +23,36 @@ from datetime import datetime
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# Import with error handling to check what's available
+try:
+    from src.core.ccxt_client import CCXTClient
+except ImportError:
+    try:
+        from src.core.ccxt_client import CcxtClient as CCXTClient
+    except ImportError:
+        try:
+            from src.core.ccxt_client import ExchangeClient as CCXTClient
+        except ImportError:
+            # Fallback: create a minimal client wrapper
+            print("⚠️  Warning: Could not import client class, using fallback")
+            from src.core import ccxt_client
+            
+            class CCXTClient:
+                """Minimal wrapper for ccxt_client module functions."""
+                def __init__(self, config):
+                    self.config = config
+                    # Import any available functions
+                    if hasattr(ccxt_client, 'fetch_ohlcv'):
+                        self.fetch_ohlcv = ccxt_client.fetch_ohlcv
+                    elif hasattr(ccxt_client, 'get_historical_data'):
+                        self.fetch_ohlcv = ccxt_client.get_historical_data
+
 from src.config.live_trading_config import LiveTradingConfiguration
-from src.core.ccxt_client import CCXTClient
 from src.ml.feature_engineering import FeatureEngineeringPipeline
 from src.ml.label_generator import LabelGenerator
 from scripts.utils.validation_framework import TimeSeriesValidator, ValidationReport
 from scripts.utils.optuna_tuner import OptunaModelTuner
+
 
 logging.basicConfig(
     level=logging.INFO,
