@@ -2,6 +2,18 @@
 Feature Engineering Pipeline for ML Market Regime Prediction.
 
 Advanced feature extraction from market data for regime prediction models.
+
+This module provides a comprehensive feature engineering pipeline with ~87 features
+including:
+- Technical indicators (RSI, MACD, EMA, Bollinger Bands, ATR)
+- Market microstructure (price range, volume patterns, returns)
+- Volatility features (realized volatility, Parkinson volatility, regime classification)
+- Momentum features (ROC, MA slopes, trend strength)
+- Advanced momentum (momentum at multiple periods, acceleration, cumulative)
+- Advanced volume (volume momentum, VWAP, OBV)
+- Advanced volatility (ATR ratio, BB width, historical volatility)
+- Advanced trend (ADX, directional indicators, MA distance ratios)
+- Support/resistance (distance from highs/lows, range position)
 """
 
 import pandas as pd
