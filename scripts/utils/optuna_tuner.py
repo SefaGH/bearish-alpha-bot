@@ -138,8 +138,8 @@ class OptunaModelTuner:
             'hidden_size': trial.suggest_categorical('hidden_size', [64, 96, 128, 160]),
             'num_layers': trial.suggest_int('num_layers', 1, 3),
             'dropout': trial.suggest_float('dropout', 0.2, 0.6, step=0.1),
-            'learning_rate': trial.suggest_loguniform('learning_rate', 1e-4, 1e-2),
-            'weight_decay': trial.suggest_loguniform('weight_decay', 1e-6, 1e-3),
+            'learning_rate': trial.suggest_float('learning_rate', 1e-4, 1e-2, log=True),
+            'weight_decay': trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True),
             'batch_size': trial.suggest_categorical('batch_size', [16, 32, 64])
         }
     
@@ -150,8 +150,8 @@ class OptunaModelTuner:
             'num_layers': trial.suggest_int('num_layers', 2, 6),
             'dim_feedforward': trial.suggest_categorical('dim_feedforward', [128, 256, 512]),
             'dropout': trial.suggest_float('dropout', 0.1, 0.5, step=0.1),
-            'learning_rate': trial.suggest_loguniform('learning_rate', 1e-4, 1e-2),
-            'weight_decay': trial.suggest_loguniform('weight_decay', 1e-6, 1e-3)
+            'learning_rate': trial.suggest_float('learning_rate', 1e-4, 1e-2, log=True),
+            'weight_decay': trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True),
         }
     
     def _suggest_rf_params(self, trial: optuna.Trial) -> Dict[str, Any]:
