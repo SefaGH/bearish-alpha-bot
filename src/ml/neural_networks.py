@@ -47,11 +47,11 @@ if TORCH_AVAILABLE:
         """
         LSTM network for regime sequence prediction.
         
-        OPTIMIZED ARCHITECTURE (FAZ 3.1):
+        OPTIMIZED ARCHITECTURE (FAZ 3.2 - ANTI-OVERFIT):
         - input_size: 42 (number of features from feature engineering)
-        - hidden_size: 128 (increased from 64 for more capacity)
-        - num_layers: 3 (increased from 2 for deeper network)
-        - dropout: 0.3 (increased from 0.2 for better regularization)
+        - hidden_size: 96 (reduced from 128 to prevent overfitting)
+        - num_layers: 3 (maintained for depth)
+        - dropout: 0.5 (increased from 0.3 for stronger regularization)
         - num_classes: 3 (bullish, neutral, bearish)
         
         These defaults MUST match the ML configuration file at:
@@ -61,17 +61,17 @@ if TORCH_AVAILABLE:
         and models must be retrained to avoid size mismatch errors.
         """
         
-        def __init__(self, input_size: int = 42, hidden_size: int = 128, 
-                     num_layers: int = 3, num_classes: int = 3, dropout: float = 0.3):
+        def __init__(self, input_size: int = 42, hidden_size: int = 96, 
+                     num_layers: int = 3, num_classes: int = 3, dropout: float = 0.5):
             """
             Initialize LSTM regime predictor.
             
             Args:
                 input_size: Number of input features (default: 42)
-                hidden_size: Size of LSTM hidden state (default: 128, increased from 64)
-                num_layers: Number of LSTM layers (default: 3, increased from 2)
+                hidden_size: Size of LSTM hidden state (default: 96, reduced from 128)
+                num_layers: Number of LSTM layers (default: 3)
                 num_classes: Number of regime classes (default: 3)
-                dropout: Dropout rate (default: 0.3, increased from 0.2)
+                dropout: Dropout rate (default: 0.5, increased from 0.3)
             """
             super().__init__()
             self.hidden_size = hidden_size
