@@ -38,18 +38,18 @@ logger = logging.getLogger(__name__)
 NUM_EPOCHS = 50  # Increased from 10 for better convergence
 EARLY_STOPPING_PATIENCE = 5  # Default patience (overridden per model)
 MIN_DELTA = 0.001  # Minimum improvement to be considered progress
-MIN_EPOCHS = 20  # Minimum epochs before early stopping can trigger
+MIN_EPOCHS = 15  # 20 → 15 (daha hızlı training, overfit riski azalır)
 
 SEQUENCE_LENGTH = 20  # Increased from 10 for better temporal context
 
 LEARNING_RATE = 0.0005  # Reduced from 0.001 for more stable training
-WEIGHT_DECAY = 1e-4  # 1e-5 → 1e-4 (10x stronger L2 regularization)
+WEIGHT_DECAY = 5e-4  # 1e-4 → 5e-4 (5x stronger, total 50x from baseline)
 
-# ===== LSTM CONFIGURATION (FAZ 3.2 - ANTI-OVERFIT) =====
-LSTM_HIDDEN_SIZE = 96  # 128 → 96 (reduced to prevent overfit)
-LSTM_NUM_LAYERS = 3
-LSTM_DROPOUT = 0.5  # 0.3 → 0.5 (stronger regularization)
-LSTM_EARLY_STOPPING_PATIENCE = 3  # 5 → 3 (stop earlier)
+# ===== LSTM CONFIGURATION (FAZ 3.3 - ANTI-OVERFIT V2) =====
+LSTM_HIDDEN_SIZE = 64          # 96 → 64 (daha küçük kapasite)
+LSTM_NUM_LAYERS = 2            # 3 → 2 (daha az layer, daha az overfit)
+LSTM_DROPOUT = 0.6             # 0.5 → 0.6 (daha güçlü regularization)
+LSTM_EARLY_STOPPING_PATIENCE = 2  # 3 → 2 (daha erken dur)
 
 # ===== TRANSFORMER CONFIGURATION =====
 TRANSFORMER_NHEAD = 6  # Increased from 2 for better attention
@@ -58,11 +58,11 @@ TRANSFORMER_DIM_FEEDFORWARD = 256  # Increased from 128
 TRANSFORMER_DROPOUT = 0.3
 TRANSFORMER_EARLY_STOPPING_PATIENCE = 5  # Keep same, transformer is healthy
 
-# ===== DATA AUGMENTATION (FAZ 2.2) =====
-USE_DATA_AUGMENTATION = True
-USE_SMOTE = True
-USE_JITTERING = True
-JITTERING_NOISE_LEVEL = 0.01
+# ===== DATA AUGMENTATION (FAZ 3.3 - DISABLED) =====
+USE_DATA_AUGMENTATION = False  # SMOTE/Jittering time-series'e uygun değil
+USE_SMOTE = False              # Synthetic data overfitting'e yol açıyor
+USE_JITTERING = False          # Temporal dependencies bozuyor
+JITTERING_NOISE_LEVEL = 0.01   # (Kullanılmayacak ama tanımlı kalsın)
 # ============================================================================
 
 
@@ -309,8 +309,8 @@ class RegimeModelTrainer:
             Dictionary with training results and metrics
         """
         logger.info("="*60)
-        logger.info("🧠 NEURAL NETWORK TRAINING CONFIGURATION (FAZ 3.2 + 2.2)")
-        logger.info(f"   Total Samples (Original): {len(X)}")
+        logger.info("🧠 NEURAL NETWORK TRAINING CONFIGURATION (FAZ 3.3 - CLEAN)")
+        logger.info(f"   Total Samples: {len(X)} (REAL DATA ONLY - No Augmentation)")
         logger.info(f"   Features: {X.shape[1]}")
         logger.info(f"   Sequence Length: {seq_length}")
         logger.info(f"   Max Epochs: {NUM_EPOCHS} (min: {MIN_EPOCHS})")
@@ -329,10 +329,7 @@ class RegimeModelTrainer:
         logger.info(f"      Dropout: {TRANSFORMER_DROPOUT}")
         logger.info(f"      Early Stop Patience: {TRANSFORMER_EARLY_STOPPING_PATIENCE}")
         logger.info("")
-        logger.info("   Data Augmentation:")
-        logger.info(f"      Enabled: {USE_DATA_AUGMENTATION}")
-        logger.info(f"      SMOTE: {USE_SMOTE}")
-        logger.info(f"      Jittering: {USE_JITTERING} (noise={JITTERING_NOISE_LEVEL})")
+        logger.info("   Data Augmentation: DISABLED (using real market data only)")
         logger.info("="*60)
         
         logger.info(f"Training ensemble models with {validation_method} validation")
