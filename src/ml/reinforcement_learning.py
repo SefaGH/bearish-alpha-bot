@@ -171,6 +171,24 @@ if TORCH_AVAILABLE:
             self.epsilon_decay = self.config.get('epsilon_decay', 0.995)
             self.epsilon_min = self.config.get('epsilon_min', 0.01)
             
+            # === DEBUG: Log epsilon initialization ===
+            logger.info(f"🎯 Epsilon Initialization:")
+            logger.info(f"   training_mode:      {self.training_mode}")
+            logger.info(f"   epsilon_start:      {self.config.get('epsilon_start', 'NOT SET')}")
+            logger.info(f"   epsilon_inference:  {self.config.get('epsilon_inference', 'NOT SET')}")
+            logger.info(f"   epsilon (selected): {self.epsilon:.4f}")
+            logger.info(f"   epsilon_decay:      {self.epsilon_decay:.4f}")
+            logger.info(f"   epsilon_min:        {self.epsilon_min:.4f}")
+            
+            if self.training_mode and self.epsilon != 1.0:
+                logger.error("="*70)
+                logger.error("❌ EPSILON INITIALIZATION ERROR!")
+                logger.error("="*70)
+                logger.error(f"   Expected: 1.0 (training mode)")
+                logger.error(f"   Got:      {self.epsilon:.4f}")
+                logger.error(f"   This will prevent exploration during training!")
+                logger.error("="*70)
+            
             # Bias strengths from config
             self.regime_bias_strength = self.config.get('regime_bias_strength', 5.0)
             self.risk_penalty_strength = self.config.get('risk_penalty_strength', 100.0)
@@ -304,10 +322,23 @@ if TORCH_AVAILABLE:
             if self.memory is not None:
                 self.memory.add_experience(state, action, reward, next_state, done)
             
-            metrics = {'loss': 0.0, 'q_value': 0.0}
+            metrics = {'loss': 0.0, 'q_value': 0.0, 'epsilon': self.epsilon}
             
             # Only train if we have enough experiences
-            if self.memory is None or len(self.memory.buffer) < self.batch_size:
+            if self.memory is None:
+                logger.debug("⚠️ learn_from_experience: memory is None, skipping training")
+                return metrics
+            
+            buffer_size = len(self.memory.buffer)
+            if buffer_size < self.batch_size:
+                # Log only occasionally to avoid spam (every 10th call)
+                if hasattr(self, '_learn_call_count'):
+                    self._learn_call_count += 1
+                else:
+                    self._learn_call_count = 1
+                
+                if self._learn_call_count % 10 == 0:
+                    logger.debug(f"⚠️ Buffer not full yet: {buffer_size}/{self.batch_size} samples, skipping training")
                 return metrics
             
             # Sample batch from replay buffer
@@ -349,8 +380,20 @@ if TORCH_AVAILABLE:
                 logger.debug(f"Target network updated at step {self.update_counter}")
             
             # Decay epsilon
+            old_epsilon = self.epsilon
             if self.epsilon > self.epsilon_min:
                 self.epsilon *= self.epsilon_decay
+            
+            # Log epsilon decay (only first time and every 50 times)
+            if not hasattr(self, '_epsilon_decay_count'):
+                self._epsilon_decay_count = 0
+                logger.info(f"✅ First successful learning! Epsilon decay started:")
+                logger.info(f"   Epsilon: {old_epsilon:.4f} → {self.epsilon:.4f}")
+                logger.info(f"   Buffer: {len(self.memory.buffer)}/{self.memory.buffer.maxlen} samples")
+            
+            self._epsilon_decay_count += 1
+            if self._epsilon_decay_count % 50 == 0:
+                logger.info(f"📊 Learning update #{self._epsilon_decay_count}: Epsilon = {self.epsilon:.4f}")
             
             # Track metrics
             metrics = {
