@@ -319,6 +319,42 @@ class RegimeModelTuner:
         self._save_results(results, model_type)
         return results
     
+    def _convert_numpy_to_python(self, obj):
+        """
+        Recursively convert numpy types to Python native types for JSON serialization.
+        
+        Args:
+            obj: Any object that may contain numpy types
+            
+        Returns:
+            Object with all numpy types converted to Python native types
+        """
+        if isinstance(obj, np.ndarray):
+            # Convert numpy arrays to lists
+            return obj.tolist()
+        elif isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
+            # Convert numpy integers to Python int
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32, np.float16)):
+            # Convert numpy floats to Python float
+            return float(obj)
+        elif isinstance(obj, np.bool_):
+            # Convert numpy bool to Python bool
+            return bool(obj)
+        elif isinstance(obj, dict):
+            # Recursively convert dictionary values
+            return {key: self._convert_numpy_to_python(value) for key, value in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            # Recursively convert list/tuple elements
+            converted = [self._convert_numpy_to_python(item) for item in obj]
+            return converted if isinstance(obj, list) else tuple(converted)
+        elif obj is None:
+            # Handle None explicitly
+            return None
+        else:
+            # Return as-is for Python native types (str, int, float, bool)
+            return obj
+    
     def _save_results(self, results: dict, model_type: str):
         """Save tuning results to JSON file."""
         output_dir = Path('logs/tuning_results')
@@ -327,23 +363,8 @@ class RegimeModelTuner:
         filename = f"{model_type}_tuning_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
         filepath = output_dir / filename
         
-        # Deep copy to avoid modifying original
-        serializable_results = {}
-        for key, value in results.items():
-            if isinstance(value, np.ndarray):
-                serializable_results[key] = value.tolist()
-            elif isinstance(value, (np.int64, np.int32, np.float64, np.float32)):
-                serializable_results[key] = float(value)
-            elif isinstance(value, dict):
-                # Handle nested dicts
-                serializable_results[key] = {}
-                for k, v in value.items():
-                    if isinstance(v, np.ndarray):
-                        serializable_results[key][k] = v.tolist()
-                    else:
-                        serializable_results[key][k] = v
-            else:
-                serializable_results[key] = value
+        # Convert all numpy types to Python native types recursively
+        serializable_results = self._convert_numpy_to_python(results)
         
         with open(filepath, 'w') as f:
             json.dump(serializable_results, f, indent=2)
