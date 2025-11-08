@@ -37,29 +37,50 @@ jobs:
       
       - name: 📦 Install Dependencies
         run: |
+          pip install --upgrade pip
           pip install -r requirements.txt
           pip install optuna scikit-learn scipy
       
       - name: 📁 Create Directories
         run: mkdir -p logs/tuning_results data/models data/cache
       
-      - name: 🎯 Run Tuning
+      - name: 📊 Prepare Real Training Data
         run: |
-          # Try regular version first, fallback to standalone
-          if python scripts/tune_regime_models.py --model lstm --trials 1 2>&1 | grep -q "ImportError"; then
-            echo "⚠️  Using standalone version due to import issues"
-            python scripts/tune_regime_models_standalone.py \
-              --model lstm \
-              --trials ${{ github.event.inputs.trials }} \
-              --cv-splits ${{ github.event.inputs.cv_splits }} \
-              --symbol 'BTC-USDT'
+          echo "======================================================================"
+          echo "📊 FETCHING REAL MARKET DATA"
+          echo "======================================================================"
+          
+          # Run data preparation script
+          python scripts/prepare_training_data.py --symbol '${{ github.event.inputs.symbol }}'
+          
+          # Verify cache was created
+          SYMBOL_SAFE=$(echo '${{ github.event.inputs.symbol }}' | sed 's/\//-/g')
+          CACHE_FILE="data/cache/${SYMBOL_SAFE}_training_data.npz"
+          
+          if [ -f "$CACHE_FILE" ]; then
+            echo "✅ Training data cached successfully: $CACHE_FILE"
+            
+            # Show data info
+            python -c "import numpy as np; import sys; data=np.load(sys.argv[1]); X=data['X']; y=data['y']; print(f'\n📊 Cached Data Info:'); print(f'   Samples: {len(X)}'); print(f'   Features: {X.shape[1]}'); print(f'   Label classes: {len(np.unique(y))}'); unique, counts = np.unique(y, return_counts=True); print('   Distribution:'); labels=['Bullish','Bearish','Neutral','Volatile']; [print(f'     {labels[l]}: {c} ({c/len(y)*100:.1f}%)') for l,c in zip(unique,counts)]" "$CACHE_FILE"
           else
-            python scripts/tune_regime_models.py \
-              --model lstm \
-              --trials ${{ github.event.inputs.trials }} \
-              --cv-splits ${{ github.event.inputs.cv_splits }} \
-              --symbol '${{ github.event.inputs.symbol }}'
+            echo "❌ Failed to cache training data"
+            exit 1
           fi
+          
+          echo "======================================================================"
+      
+      - name: 🎯 Run LSTM Tuning
+        run: |
+          echo "Starting tuning with REAL cached data..."
+          
+          # Convert symbol format (BTC/USDT -> BTC-USDT)
+          SYMBOL_SAFE=$(echo '${{ github.event.inputs.symbol }}' | sed 's/\//-/g')
+          
+          python scripts/tune_regime_models_standalone.py \
+            --model lstm \
+            --trials ${{ github.event.inputs.trials }} \
+            --cv-splits ${{ github.event.inputs.cv_splits }} \
+            --symbol "$SYMBOL_SAFE"
       
       - name: 📊 Extract Results
         id: results
@@ -79,7 +100,9 @@ jobs:
         if: always()
         with:
           name: lstm-tuning-results
-          path: logs/
+          path: |
+            logs/
+            data/cache/*.npz
           retention-days: 30
       
       - name: 📝 Summary Report
@@ -94,7 +117,7 @@ jobs:
             echo "|--------|-------|"
             echo "| CV Score | ${{ steps.results.outputs.cv_score }} |"
             echo "| Hold-out | ${{ steps.results.outputs.holdout_score }} |"
-            echo "| Baseline | 0.433 |"
+            echo "| Baseline (Phase B) | 0.433 |"
             echo ""
             echo "## 🏆 Best Parameters"
             echo ""
@@ -107,5 +130,5 @@ jobs:
             echo ""
             echo "## 📥 Download Results"
             echo ""
-            echo "See artifacts above for detailed logs."
+            echo "See artifacts above for detailed logs and cached data."
           } >> $GITHUB_STEP_SUMMARY
