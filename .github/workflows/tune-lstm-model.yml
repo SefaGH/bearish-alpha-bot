@@ -1,4 +1,4 @@
-name: Tune LSTM Regime Model
+name: Tune LSTM Model
 
 on:
   workflow_dispatch:
