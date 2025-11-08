@@ -35,7 +35,7 @@ class RegimeModelTuner:
     
     def __init__(self):
         self.data_cache_dir = Path('data/cache')
-        
+    
     def load_cached_data(self, symbol='BTC-USDT'):
         """Load pre-processed training data from cache or generate synthetic."""
         logger.info(f"Loading data for {symbol}...")
@@ -69,9 +69,10 @@ class RegimeModelTuner:
         return X, y
     
     def create_lstm_model(self, params: dict):
-        """Create LSTM model."""
+        """Create sklearn-compatible LSTM wrapper."""
         import torch
         import torch.nn as nn
+        from torch.utils.data import TensorDataset, DataLoader
         
         class SimpleLSTM(nn.Module):
             def __init__(self, input_size, hidden_size, num_layers, num_classes, dropout):
@@ -90,22 +91,65 @@ class RegimeModelTuner:
                 out = self.fc(lstm_out[:, -1, :])
                 return out
         
-        model = SimpleLSTM(
+        class SklearnLSTMWrapper:
+            """Sklearn-compatible wrapper for PyTorch LSTM."""
+            
+            def __init__(self, input_size, hidden_size, num_layers, num_classes, dropout, 
+                        learning_rate, weight_decay, batch_size):
+                self.model = SimpleLSTM(input_size, hidden_size, num_layers, num_classes, dropout)
+                self.criterion = nn.CrossEntropyLoss()
+                self.optimizer = torch.optim.Adam(
+                    self.model.parameters(),
+                    lr=learning_rate,
+                    weight_decay=weight_decay
+                )
+                self.batch_size = batch_size
+                self.num_epochs = 10  # Quick training for CV
+            
+            def fit(self, X, y):
+                """Sklearn-style fit method."""
+                dataset = TensorDataset(
+                    torch.FloatTensor(X),
+                    torch.LongTensor(y)
+                )
+                loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+                
+                self.model.train()
+                for epoch in range(self.num_epochs):
+                    for batch_X, batch_y in loader:
+                        self.optimizer.zero_grad()
+                        outputs = self.model(batch_X)
+                        loss = self.criterion(outputs, batch_y)
+                        loss.backward()
+                        self.optimizer.step()
+                return self
+            
+            def predict(self, X):
+                """Sklearn-style predict method."""
+                self.model.eval()
+                with torch.no_grad():
+                    X_tensor = torch.FloatTensor(X)
+                    outputs = self.model(X_tensor)
+                    _, predicted = torch.max(outputs, 1)
+                    return predicted.numpy()
+            
+            def score(self, X, y):
+                """Sklearn-style score method (accuracy)."""
+                predictions = self.predict(X)
+                correct = (predictions == y).sum()
+                return correct / len(y)
+        
+        # Return wrapped model
+        return SklearnLSTMWrapper(
             input_size=params.get('input_size', 42),
             hidden_size=params['hidden_size'],
             num_layers=params['num_layers'],
             num_classes=4,
-            dropout=params['dropout']
+            dropout=params['dropout'],
+            learning_rate=params.get('learning_rate', 0.001),
+            weight_decay=params.get('weight_decay', 0.0001),
+            batch_size=params.get('batch_size', 32)
         )
-        
-        model.criterion = nn.CrossEntropyLoss()
-        model.optimizer = torch.optim.Adam(
-            model.parameters(),
-            lr=params.get('learning_rate', 0.001),
-            weight_decay=params.get('weight_decay', 0.0001)
-        )
-        
-        return model
     
     def create_rf_model(self, params: dict):
         """Create Random Forest model."""
@@ -146,34 +190,18 @@ class RegimeModelTuner:
             else:
                 raise ValueError(f"Unknown model: {model_type}")
         
-        def metric_fn(model, X, y):
-            if model_type == 'lstm':
-                import torch
-                model.eval()
-                with torch.no_grad():
-                    X_tensor = torch.FloatTensor(X)
-                    outputs = model(X_tensor)
-                    _, predicted = torch.max(outputs, 1)
-                    correct = (predicted.numpy() == y).sum()
-                    return correct / len(y)
-            else:
-                return model.score(X, y)
-        
+        # For LSTM, use default score method (already implemented in wrapper)
+        # For RF, use sklearn's score method
         best_params, best_score, study = tuner.tune(
             X=X_cv, y=y_cv,
             model_factory=model_factory,
-            metric_fn=metric_fn
+            metric_fn=None  # Use default score() method
         )
         
         logger.info("\n🔬 Validating on hold-out...")
         final_model = model_factory(best_params)
-        
-        if model_type == 'lstm':
-            self._quick_train_lstm(final_model, X_cv, y_cv, epochs=10)
-            holdout_score = metric_fn(final_model, X_test, y_test)
-        else:
-            final_model.fit(X_cv, y_cv)
-            holdout_score = final_model.score(X_test, y_test)
+        final_model.fit(X_cv, y_cv)
+        holdout_score = final_model.score(X_test, y_test)
         
         logger.info(f"Hold-out score: {holdout_score:.4f}")
         
@@ -190,26 +218,6 @@ class RegimeModelTuner:
         self._save_results(results, model_type)
         return results
     
-    def _quick_train_lstm(self, model, X, y, epochs=10):
-        """Quick LSTM training."""
-        import torch
-        from torch.utils.data import TensorDataset, DataLoader
-        
-        dataset = TensorDataset(
-            torch.FloatTensor(X),
-            torch.LongTensor(y)
-        )
-        loader = DataLoader(dataset, batch_size=64, shuffle=True)
-        
-        model.train()
-        for epoch in range(epochs):
-            for batch_X, batch_y in loader:
-                model.optimizer.zero_grad()
-                outputs = model(batch_X)
-                loss = model.criterion(outputs, batch_y)
-                loss.backward()
-                model.optimizer.step()
-    
     def _save_results(self, results: dict, model_type: str):
         """Save results."""
         output_dir = Path('logs/tuning_results')
@@ -222,7 +230,6 @@ class RegimeModelTuner:
             json.dump(results, f, indent=2)
         
         logger.info(f"✅ Results saved: {filepath}")
-
 
 def main():
     parser = argparse.ArgumentParser()
