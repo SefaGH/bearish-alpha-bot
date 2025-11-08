@@ -98,53 +98,115 @@ class RegimeModelTuner:
                 out = self.fc(lstm_out[:, -1, :])
                 return out
         
-        class SklearnLSTMWrapper:
-            """Sklearn-compatible wrapper for PyTorch LSTM."""
+class SklearnLSTMWrapper:
+    """Sklearn-compatible wrapper for PyTorch LSTM with anti-overfitting measures."""
+    
+    def __init__(self, input_size, hidden_size, num_layers, num_classes, dropout, 
+                learning_rate, weight_decay, batch_size):
+        self.model = SimpleLSTM(input_size, hidden_size, num_layers, num_classes, dropout)
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay
+        )
+        self.batch_size = batch_size
+        self.num_epochs = 30  # Increased for early stopping
+        self.patience = 5     # Early stopping patience
+    
+    def fit(self, X, y):
+        """Sklearn-style fit with validation split and early stopping."""
+        import torch
+        from torch.utils.data import TensorDataset, DataLoader
+        
+        # Validation split (20% of training data)
+        val_split = int(len(X) * 0.8)
+        X_train, X_val = X[:val_split], X[val_split:]
+        y_train, y_val = y[:val_split], y[val_split:]
+        
+        # Create data loaders
+        train_dataset = TensorDataset(
+            torch.FloatTensor(X_train),
+            torch.LongTensor(y_train)
+        )
+        val_dataset = TensorDataset(
+            torch.FloatTensor(X_val),
+            torch.LongTensor(y_val)
+        )
+        
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False
+        )
+        
+        # Early stopping variables
+        best_val_loss = float('inf')
+        patience_counter = 0
+        best_model_state = None
+        
+        # Training loop with early stopping
+        for epoch in range(self.num_epochs):
+            # Training phase
+            self.model.train()
+            train_loss = 0
+            for batch_X, batch_y in train_loader:
+                self.optimizer.zero_grad()
+                outputs = self.model(batch_X)
+                loss = self.criterion(outputs, batch_y)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)  # Gradient clipping
+                self.optimizer.step()
+                train_loss += loss.item()
             
-            def __init__(self, input_size, hidden_size, num_layers, num_classes, dropout, 
-                        learning_rate, weight_decay, batch_size):
-                self.model = SimpleLSTM(input_size, hidden_size, num_layers, num_classes, dropout)
-                self.criterion = nn.CrossEntropyLoss()
-                self.optimizer = torch.optim.Adam(
-                    self.model.parameters(),
-                    lr=learning_rate,
-                    weight_decay=weight_decay
-                )
-                self.batch_size = batch_size
-                self.num_epochs = 10  # Quick training for CV
+            train_loss /= len(train_loader)
             
-            def fit(self, X, y):
-                """Sklearn-style fit method."""
-                dataset = TensorDataset(
-                    torch.FloatTensor(X),
-                    torch.LongTensor(y)
-                )
-                loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
-                
-                self.model.train()
-                for epoch in range(self.num_epochs):
-                    for batch_X, batch_y in loader:
-                        self.optimizer.zero_grad()
-                        outputs = self.model(batch_X)
-                        loss = self.criterion(outputs, batch_y)
-                        loss.backward()
-                        self.optimizer.step()
-                return self
+            # Validation phase
+            self.model.eval()
+            val_loss = 0
+            with torch.no_grad():
+                for batch_X, batch_y in val_loader:
+                    outputs = self.model(batch_X)
+                    loss = self.criterion(outputs, batch_y)
+                    val_loss += loss.item()
             
-            def predict(self, X):
-                """Sklearn-style predict method."""
-                self.model.eval()
-                with torch.no_grad():
-                    X_tensor = torch.FloatTensor(X)
-                    outputs = self.model(X_tensor)
-                    _, predicted = torch.max(outputs, 1)
-                    return predicted.numpy()
+            val_loss /= len(val_loader)
             
-            def score(self, X, y):
-                """Sklearn-style score method (accuracy)."""
-                predictions = self.predict(X)
-                correct = (predictions == y).sum()
-                return correct / len(y)
+            # Early stopping check
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+                best_model_state = self.model.state_dict().copy()
+            else:
+                patience_counter += 1
+                if patience_counter >= self.patience:
+                    # Restore best model
+                    if best_model_state is not None:
+                        self.model.load_state_dict(best_model_state)
+                    break
+        
+        return self
+    
+    def predict(self, X):
+        """Sklearn-style predict method."""
+        import torch
+        self.model.eval()
+        with torch.no_grad():
+            X_tensor = torch.FloatTensor(X)
+            outputs = self.model(X_tensor)
+            _, predicted = torch.max(outputs, 1)
+            return predicted.numpy()
+    
+    def score(self, X, y):
+        """Sklearn-style score method (accuracy)."""
+        predictions = self.predict(X)
+        correct = (predictions == y).sum()
+        return correct / len(y)
         
         # Return wrapped model
         return SklearnLSTMWrapper(
