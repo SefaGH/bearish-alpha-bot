@@ -157,6 +157,16 @@ class RLModelTrainer:
         logger.info(f"   Save Every:        {save_every} episodes")
         logger.info(f"   Batch Size:        {batch_size}")
         
+        # === DEBUG: Log epsilon BEFORE any checkpoint loading ===
+        logger.info("="*70)
+        logger.info("🔍 DEBUG: Epsilon Status BEFORE Checkpoint Loading")
+        logger.info("="*70)
+        logger.info(f"   Agent Training Mode:  {self.agent.training_mode}")
+        logger.info(f"   Current Epsilon:      {self.agent.epsilon:.4f}")
+        logger.info(f"   Epsilon Decay:        {self.agent.epsilon_decay:.4f}")
+        logger.info(f"   Epsilon Min:          {self.agent.epsilon_min:.4f}")
+        logger.info(f"   Expected for Training: 1.0000 (if training_mode=True)")
+        
         # Calculate expected final epsilon
         final_epsilon = self.agent.epsilon * (self.agent.epsilon_decay ** num_episodes)
         final_epsilon = max(final_epsilon, self.agent.epsilon_min)
@@ -171,8 +181,37 @@ class RLModelTrainer:
                   
         # === GÜNCELLEME: Doğru metod adı 'load_model' ===
         if checkpoint_path and os.path.exists(checkpoint_path):
+            logger.info(f"📥 Loading checkpoint from: {checkpoint_path}")
+            logger.info(f"   Epsilon BEFORE load: {self.agent.epsilon:.4f}")
             self.agent.load_model(checkpoint_path)
+            logger.info(f"   Epsilon AFTER load:  {self.agent.epsilon:.4f}")
             logger.info(f"Resumed training from checkpoint: {checkpoint_path}")
+            
+            # === FIX: Reset epsilon for fresh training if in training mode ===
+            if self.agent.training_mode:
+                old_epsilon = self.agent.epsilon
+                self.agent.epsilon = self.agent.config.get('epsilon_start', 1.0)
+                logger.warning("="*70)
+                logger.warning("⚠️  EPSILON RESET FOR TRAINING MODE")
+                logger.warning("="*70)
+                logger.warning(f"   Checkpoint had epsilon: {old_epsilon:.4f}")
+                logger.warning(f"   Reset to epsilon_start:  {self.agent.epsilon:.4f}")
+                logger.warning(f"   Reason: Starting fresh training session")
+                logger.warning("="*70)
+        
+        # === DEBUG: Log epsilon AFTER checkpoint loading (if any) ===
+        logger.info("="*70)
+        logger.info("🔍 DEBUG: Epsilon Status AFTER Checkpoint Loading")
+        logger.info("="*70)
+        logger.info(f"   Current Epsilon:      {self.agent.epsilon:.4f}")
+        logger.info(f"   Expected for Training: 1.0000 (if training_mode=True)")
+        if self.agent.epsilon != 1.0 and self.agent.training_mode:
+            logger.error("❌ ERROR: Epsilon is NOT 1.0 despite being in training mode!")
+            logger.error("   This will prevent proper exploration and learning.")
+        else:
+            logger.info("✅ Epsilon is correctly set for training")
+        logger.info("="*70)
+        logger.info("")
 
         scores = deque(maxlen=100)
         latest_metrics = {}
@@ -195,6 +234,9 @@ class RLModelTrainer:
                 
                 state = next_state
                 total_reward += reward
+            
+            # === FIX: Decay epsilon once per episode (not per learning step) ===
+            self.agent.decay_epsilon()
 
             scores.append(total_reward)
             avg_score = np.mean(scores)
