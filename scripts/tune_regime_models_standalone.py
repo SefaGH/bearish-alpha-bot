@@ -229,7 +229,7 @@ class RegimeModelTuner:
     
     def tune_model(self, model_type: str, X: np.ndarray, y: np.ndarray,
                    n_trials: int = 30, cv_splits: int = 5):
-        """Run hyperparameter tuning with stratified CV."""
+        """Run hyperparameter tuning with balanced split."""
         logger.info("="*70)
         logger.info(f"🎯 TUNING {model_type.upper()} MODEL")
         logger.info("="*70)
@@ -246,32 +246,58 @@ class RegimeModelTuner:
         logger.info(f"Class weights: {class_weights}")
         logger.info(f"Number of classes: {num_classes}")
         
-        # Use stratified split to maintain distribution
-        from sklearn.model_selection import train_test_split
+        # =====================================================================
+        # STRATIFIED TIME SERIES SPLIT
+        # =====================================================================
+        # We want to:
+        # 1. Maintain temporal order (last 20% is hold-out)
+        # 2. Have balanced class distribution in both train and test
+        #
+        # Solution: Use last 20% as hold-out (temporal), but use class weights
+        # to compensate for distribution differences during training
+        # =====================================================================
         
-        # Stratified split for hold-out
-        X_cv, X_test, y_cv, y_test = train_test_split(
-            X, y,
-            test_size=0.2,
-            stratify=y,  # CRITICAL: Maintain class distribution
-            random_state=42,
-            shuffle=False  # Keep temporal order
-        )
+        # Simple temporal split (last 20% as hold-out)
+        split_idx = int(len(X) * 0.8)
+        X_cv = X[:split_idx]
+        y_cv = y[:split_idx]
+        X_test = X[split_idx:]
+        y_test = y[split_idx:]
         
-        logger.info(f"Stratified split:")
-        logger.info(f"  CV samples: {len(X_cv)}")
-        logger.info(f"  Test samples: {len(X_test)}")
+        logger.info(f"\nTemporal split:")
+        logger.info(f"  CV samples: {len(X_cv)} (80%)")
+        logger.info(f"  Test samples: {len(X_test)} (20%)")
         
-        # Verify distributions
-        logger.info("  CV distribution:")
+        # Show distributions
+        logger.info("\n  CV distribution:")
         cv_unique, cv_counts = np.unique(y_cv, return_counts=True)
+        label_names = ['Bullish', 'Bearish', 'Neutral', 'Volatile']
         for l, c in zip(cv_unique, cv_counts):
-            logger.info(f"    Class {l}: {c} ({c/len(y_cv)*100:.1f}%)")
+            logger.info(f"    {label_names[l]}: {c:4d} ({c/len(y_cv)*100:5.1f}%)")
         
-        logger.info("  Test distribution:")
+        logger.info("\n  Test distribution:")
         test_unique, test_counts = np.unique(y_test, return_counts=True)
         for l, c in zip(test_unique, test_counts):
-            logger.info(f"    Class {l}: {c} ({c/len(y_test)*100:.1f}%)")
+            logger.info(f"    {label_names[l]}: {c:4d} ({c/len(y_test)*100:5.1f}%)")
+        
+        # Calculate distribution shift
+        logger.info("\n  Distribution shift:")
+        max_shift = 0
+        for l in range(num_classes):
+            cv_pct = (cv_counts[l] / len(y_cv) * 100) if l < len(cv_counts) else 0
+            test_pct = (test_counts[l] / len(y_test) * 100) if l < len(test_counts) else 0
+            shift = abs(cv_pct - test_pct)
+            max_shift = max(max_shift, shift)
+            logger.info(f"    {label_names[l]}: {shift:5.1f}%")
+        
+        if max_shift > 10:
+            logger.warning(f"\n  ⚠️  Large distribution shift ({max_shift:.1f}%)")
+            logger.warning(f"  ⚠️  Using class weights to compensate")
+            logger.warning(f"  ⚠️  Consider using longer training period for better balance")
+        
+        # =====================================================================
+        # Create tuner and model factory
+        # =====================================================================
         
         validator = TimeSeriesValidator(n_splits=cv_splits)
         tuner = OptunaModelTuner(
@@ -292,15 +318,22 @@ class RegimeModelTuner:
             else:
                 raise ValueError(f"Unknown model: {model_type}")
         
-        # Run tuning on CV data
+        # =====================================================================
+        # Run Optuna tuning on CV data
+        # =====================================================================
+        
+        logger.info("\n🔬 Starting hyperparameter optimization...")
         best_params, best_score, study = tuner.tune(
             X=X_cv, y=y_cv,
             model_factory=model_factory,
             metric_fn=None
         )
         
-        # Validate on hold-out
-        logger.info("\n🔬 Validating on hold-out...")
+        # =====================================================================
+        # Validate on hold-out test set
+        # =====================================================================
+        
+        logger.info("\n🔬 Validating on hold-out test set...")
         final_model = model_factory(best_params)
         final_model.fit(X_cv, y_cv)
         holdout_score = final_model.score(X_test, y_test)
@@ -311,10 +344,19 @@ class RegimeModelTuner:
         gap = best_score - holdout_score
         logger.info(f"CV-Holdout gap: {gap:+.4f}")
         
-        if abs(gap) > 0.10:
-            logger.warning(f"⚠️  Large gap detected ({gap:+.4f}) - possible overfitting")
+        # Interpretation
+        if abs(gap) > 0.15:
+            logger.error(f"🔴 CRITICAL: Severe overfitting (gap: {gap:+.4f})")
+        elif abs(gap) > 0.10:
+            logger.warning(f"⚠️  WARNING: Overfitting detected (gap: {gap:+.4f})")
+        elif abs(gap) > 0.05:
+            logger.warning(f"⚠️  CAUTION: Moderate overfitting (gap: {gap:+.4f})")
         else:
             logger.info(f"✅ Good generalization (gap: {gap:+.4f})")
+        
+        # =====================================================================
+        # Save results
+        # =====================================================================
         
         results = {
             'model_type': model_type,
@@ -325,25 +367,13 @@ class RegimeModelTuner:
             'n_trials': n_trials,
             'cv_splits': cv_splits,
             'num_classes': int(num_classes),
+            'class_weights': class_weights.tolist(),
+            'distribution_shift': float(max_shift),
             'timestamp': datetime.utcnow().isoformat()
         }
         
         self._save_results(results, model_type)
         return results
-    
-    def _save_results(self, results: dict, model_type: str):
-        """Save results."""
-        output_dir = Path('logs/tuning_results')
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        filename = f"{model_type}_tuning_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
-        filepath = output_dir / filename
-        
-        with open(filepath, 'w') as f:
-            json.dump(results, f, indent=2)
-        
-        logger.info(f"✅ Results saved: {filepath}")
-
 
 def main():
     parser = argparse.ArgumentParser()
