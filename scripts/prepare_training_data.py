@@ -36,10 +36,15 @@ CANDLE_LIMIT = 1440
 REGIME_TRAINING_TIMEFRAMES = ['15m', '30m', '1h', '4h', '1d']
 
 
-async def fetch_and_process_data(symbol='BTC/USDT', timeframes=None):
+async def fetch_and_process_data(symbol='BTC/USDT', timeframes=None, use_feature_selection=True):
     """
     Fetch real market data and prepare for training.
     Uses same architecture as train_all_models.py.
+    
+    Args:
+        symbol: Trading symbol (e.g., 'BTC/USDT')
+        timeframes: List of timeframes to fetch data from
+        use_feature_selection: Whether to apply feature selection mask (default: True)
     """
     
     if timeframes is None:
@@ -120,7 +125,43 @@ async def fetch_and_process_data(symbol='BTC/USDT', timeframes=None):
     y = np.concatenate(all_labels)
     
     logger.info(f"✅ Total samples: {len(X)}")
-    logger.info(f"✅ Total features: {X.shape[1]}")
+    logger.info(f"✅ Original features: {X.shape[1]}")
+    
+    # Apply feature selection if enabled
+    if use_feature_selection:
+        feature_mask_path = Path('data/cache/feature_selection_mask.npy')
+        
+        if feature_mask_path.exists():
+            try:
+                feature_mask = np.load(feature_mask_path)
+                
+                # Validate mask shape
+                if len(feature_mask) != X.shape[1]:
+                    logger.warning(
+                        f"⚠️ Feature mask size mismatch! "
+                        f"Mask: {len(feature_mask)}, Features: {X.shape[1]}. "
+                        f"Skipping feature selection."
+                    )
+                else:
+                    # Apply mask
+                    original_count = X.shape[1]
+                    X = X[:, feature_mask]
+                    removed_count = (~feature_mask).sum()
+                    
+                    logger.info(
+                        f"✅ Selected {X.shape[1]} features (removed {removed_count})"
+                    )
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to load feature mask: {e}. Continuing without selection.")
+        else:
+            logger.warning(
+                f"⚠️ Feature selection mask not found at {feature_mask_path}. "
+                f"Continuing with all features."
+            )
+    else:
+        logger.info("⚠️ Feature selection skipped (disabled via --no-feature-selection)")
+    
+    logger.info(f"✅ Final features: {X.shape[1]}")
     logger.info(f"✅ Label distribution:")
     
     # Show label distribution
@@ -163,11 +204,20 @@ async def async_main():
         default=REGIME_TRAINING_TIMEFRAMES,
         help='Timeframes to fetch (default: 15m 30m 1h 4h 1d)'
     )
+    parser.add_argument(
+        '--no-feature-selection',
+        action='store_true',
+        help='Disable automatic feature selection (default: enabled)'
+    )
     
     args = parser.parse_args()
     
     # Fetch and process
-    X, y = await fetch_and_process_data(args.symbol, args.timeframes)
+    X, y = await fetch_and_process_data(
+        args.symbol, 
+        args.timeframes,
+        use_feature_selection=not args.no_feature_selection
+    )
     
     logger.info(f"\n✅ COMPLETE: {len(X)} samples ready for tuning")
 
