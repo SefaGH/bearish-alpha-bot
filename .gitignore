@@ -63,3 +63,5 @@ venv311/
 # Local configuration (users should copy from config.example.yaml)
 config/config.yaml
 .venv311/
+data/cache/*.npz
+data/cache/feature_selection*
