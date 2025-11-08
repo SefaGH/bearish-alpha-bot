@@ -895,14 +895,29 @@ class FeatureEngineeringPipeline:
         return combined
 
     def prepare_for_training(self, features: pd.DataFrame, 
-                           labels: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
+                           labels: pd.Series,
+                           use_all_features: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Prepare features and labels for model training by aligning, cleaning, and converting them.
-        (Nihai ve en sağlamlaştırılmış versiyon)
+        Prepare features and labels for model training.
+        
+        Args:
+            features: DataFrame with features
+            labels: Series with labels
+            use_all_features: If True, use ALL extracted features (87).
+                             If False (default), use legacy FEATURE_COLUMNS (42).
         """
         try:
-            # 1. Özellikleri, sabit listeye göre hizala ve sırala.
-            features_aligned = self.align_and_finalize_features(features)
+            # IMPLEMENTATION MODE SELECTION
+            if use_all_features:
+                # TEST MODE: Use all features
+                features_aligned = features
+                feature_columns = features.columns.tolist()
+                logger.info(f"🔬 TEST MODE: Using all {len(feature_columns)} features")
+            else:
+                # NORMAL MODE: Use legacy 42 features
+                features_aligned = self.align_and_finalize_features(features)
+                feature_columns = self.FEATURE_COLUMNS
+                logger.info(f"📦 NORMAL MODE: Using legacy {len(feature_columns)} features")
             
             # 2. Etiketleri bir DataFrame'e dönüştür ve adını 'label' yap.
             labels_df = labels.to_frame(name='label')
