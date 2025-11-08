@@ -108,8 +108,8 @@ class FeatureAnalyzer:
             data = np.load(self.data_path)
             
             # Extract features and labels
-            self.features = data['features']
-            self.labels = data['labels']
+            self.features = data['X']
+            self.labels = data['y']
             
             self.n_samples, self.n_features = self.features.shape
             

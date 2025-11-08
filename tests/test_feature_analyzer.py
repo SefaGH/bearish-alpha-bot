@@ -64,7 +64,7 @@ def sample_training_data(test_data_dir):
     # Save to file
     data_file = test_data_dir / "test_training_data.npz"
     feature_names = [f"feature_{i}" for i in range(n_features)]
-    np.savez(data_file, features=features, labels=labels, feature_names=feature_names)
+    np.savez(data_file, X=features, y=labels, feature_names=feature_names)
     
     return data_file
 
