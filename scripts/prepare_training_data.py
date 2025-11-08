@@ -212,6 +212,11 @@ async def async_main():
         action='store_true',
         help='Use all 87 extracted features instead of legacy 42 (TEST MODE)'
     )
+    parser.add_argument(
+        '--no-feature-selection',
+        action='store_true',
+        help='Disable automatic feature selection (default: enabled)'
+    )
     
     # Parse and use
     args = parser.parse_args()
