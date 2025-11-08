@@ -48,6 +48,49 @@ class RLModelTrainer:
         if not os.path.exists(self.model_save_path):
             os.makedirs(self.model_save_path, exist_ok=True)
             logger.info(f"Created directory for saving models: {self.model_save_path}")
+        
+        # =====================================================================
+        # ENHANCED CONFIGURATION LOGGING
+        # =====================================================================
+        
+        logger.info("="*70)
+        logger.info("🤖 RL AGENT TRAINING CONFIGURATION")
+        logger.info("="*70)
+        
+        # Training Mode
+        training_mode_icon = "🎓" if self.agent.training_mode else "🔒"
+        logger.info(f"{training_mode_icon} Training Mode:     {self.agent.training_mode}")
+        
+        if not self.agent.training_mode:
+            logger.warning("⚠️  WARNING: Agent is in INFERENCE mode!")
+            logger.warning("⚠️  Agent will NOT learn during this training session")
+            logger.warning("⚠️  This is likely a configuration error")
+        
+        # Exploration Strategy
+        logger.info(f"🎯 Exploration Strategy (Epsilon-Greedy):")
+        logger.info(f"   Initial Epsilon:   {self.agent.epsilon:.4f}")
+        
+        # Log epsilon parameters if available
+        if hasattr(self.agent, 'epsilon_start'):
+            logger.info(f"   Epsilon Start:     {self.agent.epsilon_start:.4f}")
+        if hasattr(self.agent, 'epsilon_decay'):
+            logger.info(f"   Epsilon Decay:     {self.agent.epsilon_decay:.4f}")
+        if hasattr(self.agent, 'epsilon_min'):
+            logger.info(f"   Epsilon Min:       {self.agent.epsilon_min:.4f}")
+        
+        # Learning Parameters
+        logger.info(f"📚 Learning Parameters:")
+        logger.info(f"   Learning Rate:     {self.agent.learning_rate}")
+        logger.info(f"   Gamma (discount):  {self.agent.gamma}")
+        logger.info(f"   Batch Size:        {self.agent.batch_size}")
+        
+        # Memory Configuration
+        logger.info(f"💾 Experience Replay:")
+        logger.info(f"   Buffer Capacity:   {self.experience_replay.capacity}")
+        logger.info(f"   Current Size:      {len(self.experience_replay.memory)}")
+        
+        logger.info("="*70)
+
 
     def train(self,
               num_episodes: int,

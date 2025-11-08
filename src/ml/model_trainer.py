@@ -33,37 +33,101 @@ else:
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# TRAINING HYPERPARAMETERS - FAZ 3.2 + 2.2 OPTIMIZATION
+# TRAINING HYPERPARAMETERS - SYNCHRONIZED WITH config.example.yaml
 # ============================================================================
-NUM_EPOCHS = 50  # Increased from 10 for better convergence
-EARLY_STOPPING_PATIENCE = 5  # Default patience (overridden per model)
-MIN_DELTA = 0.001  # Minimum improvement to be considered progress
-MIN_EPOCHS = 15  # 20 → 15 (daha hızlı training, overfit riski azalır)
+# These constants serve as FALLBACK VALUES when config is not provided.
+# The actual training process SHOULD use values from config whenever possible.
+#
+# CRITICAL SYNCHRONIZATION REQUIREMENTS:
+# ================================================================================
+# These values MUST match config.example.yaml defaults:
+#   - LSTM_HIDDEN_SIZE  = ml.regime_prediction.model_params.lstm_regime.hidden_size
+#   - LSTM_NUM_LAYERS   = ml.regime_prediction.model_params.lstm_regime.num_layers
+#   - LSTM_DROPOUT      = ml.regime_prediction.model_params.lstm_regime.dropout
+#
+# WHY? Because:
+#   1. Model architecture is defined by these parameters
+#   2. Saved models cannot be loaded if parameters mismatch
+#   3. Training and inference must use identical architectures
+#   4. Config allows runtime override via environment variables
+#
+# If you change these, you MUST:
+#   1. Update config.example.yaml to match
+#   2. Delete old trained models (data/models/regime/)
+#   3. Retrain all models
+#   4. Commit both changes together
+# ================================================================================
 
-SEQUENCE_LENGTH = 20  # Increased from 10 for better temporal context
-
-LEARNING_RATE = 0.0005  # Reduced from 0.001 for more stable training
-WEIGHT_DECAY = 5e-4  # 1e-4 → 5e-4 (5x stronger, total 50x from baseline)
+# General Training Parameters
+NUM_EPOCHS = 50                      # Maximum epochs per model
+EARLY_STOPPING_PATIENCE = 5          # Default patience (overridden per model)
+MIN_DELTA = 0.001                    # Minimum improvement threshold
+MIN_EPOCHS = 15                      # Minimum epochs before early stopping
+SEQUENCE_LENGTH = 20                 # Temporal sequence length for LSTM/Transformer
+LEARNING_RATE = 0.0005               # Adam optimizer learning rate
+WEIGHT_DECAY = 5e-4                  # L2 regularization strength
 
 # ===== LSTM CONFIGURATION (FAZ 3.3 - ANTI-OVERFIT V2) =====
-LSTM_HIDDEN_SIZE = 64          # 96 → 64 (daha küçük kapasite)
-LSTM_NUM_LAYERS = 2            # 3 → 2 (daha az layer, daha az overfit)
-LSTM_DROPOUT = 0.6             # 0.5 → 0.6 (daha güçlü regularization)
-LSTM_EARLY_STOPPING_PATIENCE = 2  # 3 → 2 (daha erken dur)
+# MUST MATCH: config.example.yaml → ml.regime_prediction.model_params.lstm_regime
+LSTM_HIDDEN_SIZE = 64                # ✅ SYNCED with config (reduced capacity)
+LSTM_NUM_LAYERS = 2                  # ✅ SYNCED with config (shallower network)
+LSTM_DROPOUT = 0.6                   # ✅ SYNCED with config (stronger regularization)
+LSTM_EARLY_STOPPING_PATIENCE = 2     # Aggressive early stopping
 
-# ===== TRANSFORMER CONFIGURATION =====
-TRANSFORMER_NHEAD = 6  # Increased from 2 for better attention
-TRANSFORMER_NUM_LAYERS = 4  # Increased from 2 for deeper network
-TRANSFORMER_DIM_FEEDFORWARD = 256  # Increased from 128
-TRANSFORMER_DROPOUT = 0.3
-TRANSFORMER_EARLY_STOPPING_PATIENCE = 5  # Keep same, transformer is healthy
+# ===== TRANSFORMER CONFIGURATION (FAZ 3.1 PROVEN SETTINGS) =====
+TRANSFORMER_NHEAD = 6                # Attention heads
+TRANSFORMER_NUM_LAYERS = 4           # Encoder layers
+TRANSFORMER_DIM_FEEDFORWARD = 256    # FFN hidden dimension
+TRANSFORMER_DROPOUT = 0.3            # Dropout rate
+TRANSFORMER_EARLY_STOPPING_PATIENCE = 5  # More patient (transformer is stable)
 
 # ===== DATA AUGMENTATION (FAZ 3.3 - DISABLED) =====
-USE_DATA_AUGMENTATION = False  # SMOTE/Jittering time-series'e uygun değil
-USE_SMOTE = False              # Synthetic data overfitting'e yol açıyor
-USE_JITTERING = False          # Temporal dependencies bozuyor
-JITTERING_NOISE_LEVEL = 0.01   # (Kullanılmayacak ama tanımlı kalsın)
+USE_DATA_AUGMENTATION = False        # SMOTE/Jittering harmful for time-series
+USE_SMOTE = False                    # Synthetic data causes overfitting
+USE_JITTERING = False                # Breaks temporal dependencies
+JITTERING_NOISE_LEVEL = 0.01         # (Unused but defined)
 # ============================================================================
+
+
+def get_lstm_params_from_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Extract LSTM parameters from config or use fallback constants.
+    
+    This function implements the config-first strategy:
+      1. Try to get values from ml.regime_prediction.model_params.lstm_regime
+      2. Fall back to module-level constants if config missing
+      3. Log which source was used for transparency
+    
+    Args:
+        config: Optional config dict from ml.regime_prediction section
+        
+    Returns:
+        Dict with keys: hidden_size, num_layers, dropout
+        
+    Example:
+        >>> config = {'model_params': {'lstm_regime': {'hidden_size': 64}}}
+        >>> params = get_lstm_params_from_config(config)
+        >>> params['hidden_size']
+        64
+    """
+    if config and 'model_params' in config and 'lstm_regime' in config['model_params']:
+        lstm_config = config['model_params']['lstm_regime']
+        params = {
+            'hidden_size': lstm_config.get('hidden_size', LSTM_HIDDEN_SIZE),
+            'num_layers': lstm_config.get('num_layers', LSTM_NUM_LAYERS),
+            'dropout': lstm_config.get('dropout', LSTM_DROPOUT)
+        }
+        logger.info(f"Using LSTM params from config: {params}")
+        return params
+    
+    # Fallback to constants
+    params = {
+        'hidden_size': LSTM_HIDDEN_SIZE,
+        'num_layers': LSTM_NUM_LAYERS,
+        'dropout': LSTM_DROPOUT
+    }
+    logger.warning(f"Config not provided, using fallback LSTM params: {params}")
+    return params
 
 
 class EarlyStopping:
@@ -250,6 +314,11 @@ class RegimeModelTrainer:
             config: Optional configuration dictionary from ml.regime_prediction config block
         """
         self.config = config or {}
+        
+        # ✅ NEW: Extract LSTM parameters from config
+        self.lstm_params = get_lstm_params_from_config(config)
+        logger.info(f"RegimeModelTrainer initialized with LSTM params: {self.lstm_params}")
+        
         self.models = {}
         self.scalers = {}
         self.validators = {
@@ -381,9 +450,9 @@ class RegimeModelTrainer:
                 X_seq_aug,  # Augmented data
                 y_seq_aug,  # Augmented labels
                 validation_method,
-                hidden_size=LSTM_HIDDEN_SIZE,
-                num_layers=LSTM_NUM_LAYERS,
-                dropout=LSTM_DROPOUT,
+                hidden_size=self.lstm_params['hidden_size'],     # ✅ CHANGED: Use config
+                num_layers=self.lstm_params['num_layers'],       # ✅ CHANGED: Use config
+                dropout=self.lstm_params['dropout'],             # ✅ CHANGED: Use config
                 patience=LSTM_EARLY_STOPPING_PATIENCE
             )
             results['models']['lstm'] = lstm_model
