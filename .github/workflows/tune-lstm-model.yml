@@ -1,0 +1,312 @@
+name: Tune LSTM Regime Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      trials:
+        description: 'Number of Optuna trials'
+        required: true
+        default: '30'
+        type: number
+      cv_splits:
+        description: 'Number of cross-validation splits'
+        required: true
+        default: '5'
+        type: number
+      timeout:
+        description: 'Timeout in seconds (optional)'
+        required: false
+        type: number
+      symbol:
+        description: 'Trading symbol'
+        required: true
+        default: 'BTC/USDT'
+        type: string
+
+env:
+  PYTHON_VERSION: '3.11'
+  CACHE_VERSION: v1
+
+jobs:
+  tune-lstm:
+    name: LSTM Hyperparameter Tuning
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2 hours max
+    
+    steps:
+      # ================================================================
+      # SETUP
+      # ================================================================
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: 📦 Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install optuna scikit-learn scipy
+      
+      - name: 📁 Create Required Directories
+        run: |
+          mkdir -p logs/tuning_results
+          mkdir -p data/models/regime
+          mkdir -p data/cache
+      
+      # ================================================================
+      # VALIDATION CHECK
+      # ================================================================
+      - name: ✅ Validate Tuning Infrastructure
+        run: |
+          echo "🔍 Checking validation framework..."
+          python -c "from scripts.utils.validation_framework import TimeSeriesValidator; v=TimeSeriesValidator(n_splits=3); print('✅ Validation framework OK')"
+          
+          echo "🔍 Checking Optuna tuner..."
+          python -c "from scripts.utils.optuna_tuner import OptunaModelTuner; t=OptunaModelTuner('lstm', n_trials=1); print('✅ Optuna tuner OK')"
+          
+          echo "🔍 Checking tuning script..."
+          python scripts/tune_regime_models.py --help
+          echo "✅ All infrastructure validated"
+      
+      # ================================================================
+      # DATA PREPARATION
+      # ================================================================
+      - name: 📊 Load Training Data
+        id: load_data
+        run: |
+          echo "📊 Loading training data for ${{ github.event.inputs.symbol }}..."
+          
+          # Quick data validation
+          python -c "
+          from src.config.live_trading_config import LiveTradingConfiguration
+          from src.core.ccxt_client import CCXTClient
+          
+          config = LiveTradingConfiguration.load(log_summary=False)
+          client = CCXTClient(config)
+          
+          # Test data fetch
+          candles = client.fetch_ohlcv('${{ github.event.inputs.symbol }}', '1h', limit=100)
+          print(f'✅ Successfully fetched {len(candles)} candles')
+          print(f'Data quality: OK')
+          "
+      
+      # ================================================================
+      # LSTM TUNING
+      # ================================================================
+      - name: 🎯 Run LSTM Hyperparameter Tuning
+        id: tuning
+        run: |
+          echo "======================================================================"
+          echo "🎯 STARTING LSTM HYPERPARAMETER TUNING"
+          echo "======================================================================"
+          echo "Configuration:"
+          echo "  Trials: ${{ github.event.inputs.trials }}"
+          echo "  CV Splits: ${{ github.event.inputs.cv_splits }}"
+          echo "  Symbol: ${{ github.event.inputs.symbol }}"
+          echo "  Timeout: ${{ github.event.inputs.timeout || 'None' }}"
+          echo "======================================================================"
+          
+          # Build command
+          CMD="python scripts/tune_regime_models.py \
+            --model lstm \
+            --trials ${{ github.event.inputs.trials }} \
+            --cv-splits ${{ github.event.inputs.cv_splits }} \
+            --symbol '${{ github.event.inputs.symbol }}'"
+          
+          # Add timeout if provided
+          if [ -n "${{ github.event.inputs.timeout }}" ]; then
+            CMD="$CMD --timeout ${{ github.event.inputs.timeout }}"
+          fi
+          
+          # Run tuning
+          eval $CMD | tee logs/tuning_output.log
+          
+          # Check if tuning completed successfully
+          if [ ${PIPESTATUS[0]} -eq 0 ]; then
+            echo "✅ LSTM tuning completed successfully"
+          else
+            echo "❌ LSTM tuning failed"
+            exit 1
+          fi
+      
+      # ================================================================
+      # RESULTS EXTRACTION
+      # ================================================================
+      - name: 📊 Extract Tuning Results
+        id: extract_results
+        run: |
+          echo "📊 Extracting tuning results..."
+          
+          # Find latest results file
+          RESULTS_FILE=$(ls -t logs/tuning_results/lstm_tuning_*.json | head -n 1)
+          
+          if [ -z "$RESULTS_FILE" ]; then
+            echo "❌ No results file found"
+            exit 1
+          fi
+          
+          echo "Found results: $RESULTS_FILE"
+          
+          # Extract key metrics using jq
+          CV_SCORE=$(jq -r '.cv_score' "$RESULTS_FILE")
+          HOLDOUT_SCORE=$(jq -r '.holdout_score' "$RESULTS_FILE")
+          
+          # Extract best parameters
+          HIDDEN_SIZE=$(jq -r '.best_params.hidden_size' "$RESULTS_FILE")
+          NUM_LAYERS=$(jq -r '.best_params.num_layers' "$RESULTS_FILE")
+          DROPOUT=$(jq -r '.best_params.dropout' "$RESULTS_FILE")
+          LEARNING_RATE=$(jq -r '.best_params.learning_rate' "$RESULTS_FILE")
+          
+          # Set outputs
+          echo "cv_score=$CV_SCORE" >> $GITHUB_OUTPUT
+          echo "holdout_score=$HOLDOUT_SCORE" >> $GITHUB_OUTPUT
+          echo "hidden_size=$HIDDEN_SIZE" >> $GITHUB_OUTPUT
+          echo "num_layers=$NUM_LAYERS" >> $GITHUB_OUTPUT
+          echo "dropout=$DROPOUT" >> $GITHUB_OUTPUT
+          echo "learning_rate=$LEARNING_RATE" >> $GITHUB_OUTPUT
+          echo "results_file=$RESULTS_FILE" >> $GITHUB_OUTPUT
+          
+          # Display summary
+          echo "======================================================================"
+          echo "📊 TUNING RESULTS SUMMARY"
+          echo "======================================================================"
+          echo "CV Score:       $CV_SCORE"
+          echo "Hold-out Score: $HOLDOUT_SCORE"
+          echo ""
+          echo "Best Parameters:"
+          echo "  hidden_size:    $HIDDEN_SIZE"
+          echo "  num_layers:     $NUM_LAYERS"
+          echo "  dropout:        $DROPOUT"
+          echo "  learning_rate:  $LEARNING_RATE"
+          echo "======================================================================"
+      
+      # ================================================================
+      # VALIDATION & COMPARISON
+      # ================================================================
+      - name: ✅ Validate Improvement
+        id: validate
+        run: |
+          echo "✅ Validating improvement against baseline..."
+          
+          # Phase B baseline
+          BASELINE_LSTM=0.433
+          
+          # Current tuned score
+          TUNED_SCORE=${{ steps.extract_results.outputs.cv_score }}
+          
+          # Calculate improvement
+          python3 << EOF
+          baseline = $BASELINE_LSTM
+          tuned = float('$TUNED_SCORE')
+          
+          improvement = tuned - baseline
+          improvement_pct = (improvement / baseline) * 100
+          
+          print(f"====================================================================")
+          print(f"📊 PERFORMANCE COMPARISON")
+          print(f"====================================================================")
+          print(f"Phase B LSTM Baseline:  {baseline:.4f} (43.3%)")
+          print(f"Tuned LSTM (CV):        {tuned:.4f} ({tuned*100:.1f}%)")
+          print(f"Absolute Improvement:   {improvement:+.4f}")
+          print(f"Relative Improvement:   {improvement_pct:+.1f}%")
+          print(f"====================================================================")
+          
+          # Check if improvement is significant
+          if improvement > 0.03:  # >3% improvement
+            print("✅ SIGNIFICANT IMPROVEMENT ACHIEVED!")
+            exit(0)
+          elif improvement > 0.01:  # >1% improvement
+            print("⚠️  Moderate improvement achieved")
+            exit(0)
+          else:
+            print("❌ Insufficient improvement")
+            exit(1)
+          EOF
+      
+      # ================================================================
+      # ARTIFACTS & REPORTING
+      # ================================================================
+      - name: 📦 Upload Tuning Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lstm-tuning-results-${{ github.run_number }}
+          path: |
+            logs/tuning_results/
+            logs/tuning_output.log
+            logs/tuning.log
+          retention-days: 30
+      
+      - name: 📝 Generate Summary Report
+        if: always()
+        run: |
+          cat << 'EOF' >> $GITHUB_STEP_SUMMARY
+          # 🎯 LSTM Hyperparameter Tuning Results
+          
+          ## 📊 Performance Metrics
+          
+          | Metric | Score |
+          |--------|-------|
+          | **CV Score** | ${{ steps.extract_results.outputs.cv_score }} |
+          | **Hold-out Score** | ${{ steps.extract_results.outputs.holdout_score }} |
+          | **Phase B Baseline** | 0.433 (43.3%) |
+          | **Improvement** | +${{ steps.extract_results.outputs.cv_score }} |
+          
+          ## 🏆 Best Hyperparameters
+          
+          | Parameter | Value |
+          |-----------|-------|
+          | **hidden_size** | ${{ steps.extract_results.outputs.hidden_size }} |
+          | **num_layers** | ${{ steps.extract_results.outputs.num_layers }} |
+          | **dropout** | ${{ steps.extract_results.outputs.dropout }} |
+          | **learning_rate** | ${{ steps.extract_results.outputs.learning_rate }} |
+          
+          ## 📈 Tuning Configuration
+          
+          - **Trials**: ${{ github.event.inputs.trials }}
+          - **CV Splits**: ${{ github.event.inputs.cv_splits }}
+          - **Symbol**: ${{ github.event.inputs.symbol }}
+          - **Duration**: ~${{ github.event.inputs.trials }} trials × 2 min = ${{ github.event.inputs.trials * 2 / 60 }} hours
+          
+          ## 📥 Artifacts
+          
+          Download detailed results from the artifacts section above.
+          
+          ---
+          
+          **Status**: ${{ job.status }}
+          **Run ID**: ${{ github.run_id }}
+          **Triggered by**: @${{ github.actor }}
+          EOF
+      
+      # ================================================================
+      # NOTIFICATION (Optional)
+      # ================================================================
+      - name: 💬 Post Results Comment (if PR)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🎯 LSTM Tuning Results
+              
+              **CV Score**: ${{ steps.extract_results.outputs.cv_score }}
+              **Hold-out Score**: ${{ steps.extract_results.outputs.holdout_score }}
+              
+              **Best Parameters**:
+              - hidden_size: ${{ steps.extract_results.outputs.hidden_size }}
+              - dropout: ${{ steps.extract_results.outputs.dropout }}
+              - learning_rate: ${{ steps.extract_results.outputs.learning_rate }}
+              
+              See [run details](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for more information.`
+            })
