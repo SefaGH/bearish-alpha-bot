@@ -103,7 +103,7 @@ class RegimeModelTuner:
                     weight_decay=weight_decay
                 )
                 self.batch_size = batch_size
-                self.num_epochs = 20  # Reduced for faster iteration
+                self.num_epochs = 25  # Reduced for faster iteration
                 self.patience = 7     # More lenient
                 self.min_delta = 0.001
             
