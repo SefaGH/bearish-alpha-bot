@@ -234,6 +234,9 @@ class RLModelTrainer:
                 
                 state = next_state
                 total_reward += reward
+            
+            # === FIX: Decay epsilon once per episode (not per learning step) ===
+            self.agent.decay_epsilon()
 
             scores.append(total_reward)
             avg_score = np.mean(scores)

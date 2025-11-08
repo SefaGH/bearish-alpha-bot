@@ -379,21 +379,16 @@ if TORCH_AVAILABLE:
                 self.target_network.load_state_dict(self.q_network.state_dict())
                 logger.debug(f"Target network updated at step {self.update_counter}")
             
-            # Decay epsilon
-            old_epsilon = self.epsilon
-            if self.epsilon > self.epsilon_min:
-                self.epsilon *= self.epsilon_decay
-            
-            # Log epsilon decay (only first time and every 50 times)
+            # Log first successful learning event
             if not hasattr(self, '_epsilon_decay_count'):
                 self._epsilon_decay_count = 0
-                logger.info(f"✅ First successful learning! Epsilon decay started:")
-                logger.info(f"   Epsilon: {old_epsilon:.4f} → {self.epsilon:.4f}")
+                logger.info(f"✅ First successful learning! Network weights updated")
                 logger.info(f"   Buffer: {len(self.memory.buffer)}/{self.memory.buffer.maxlen} samples")
+                logger.info(f"   Loss: {loss.item():.4f}")
             
             self._epsilon_decay_count += 1
             if self._epsilon_decay_count % 50 == 0:
-                logger.info(f"📊 Learning update #{self._epsilon_decay_count}: Epsilon = {self.epsilon:.4f}")
+                logger.info(f"📊 Learning update #{self._epsilon_decay_count}: Loss = {loss.item():.4f}")
             
             # Track metrics
             metrics = {
@@ -407,6 +402,17 @@ if TORCH_AVAILABLE:
             self.training_history['rewards'].append(rewards.mean().item())
             
             return metrics
+        
+        def decay_epsilon(self):
+            """
+            Decay epsilon for exploration-exploitation trade-off.
+            Should be called once per episode (not per step).
+            """
+            if self.epsilon > self.epsilon_min:
+                old_epsilon = self.epsilon
+                self.epsilon *= self.epsilon_decay
+                self.epsilon = max(self.epsilon, self.epsilon_min)  # Ensure we don't go below min
+                logger.debug(f"Epsilon decayed: {old_epsilon:.4f} → {self.epsilon:.4f}")
         
         def save_model(self, path: str):
             """Save model weights."""
