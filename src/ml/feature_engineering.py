@@ -2,6 +2,18 @@
 Feature Engineering Pipeline for ML Market Regime Prediction.
 
 Advanced feature extraction from market data for regime prediction models.
+
+This module provides a comprehensive feature engineering pipeline with ~87 features
+including:
+- Technical indicators (RSI, MACD, EMA, Bollinger Bands, ATR)
+- Market microstructure (price range, volume patterns, returns)
+- Volatility features (realized volatility, Parkinson volatility, regime classification)
+- Momentum features (ROC, MA slopes, trend strength)
+- Advanced momentum (momentum at multiple periods, acceleration, cumulative)
+- Advanced volume (volume momentum, VWAP, OBV)
+- Advanced volatility (ATR ratio, BB width, historical volatility)
+- Advanced trend (ADX, directional indicators, MA distance ratios)
+- Support/resistance (distance from highs/lows, range position)
 """
 
 import pandas as pd
@@ -289,6 +301,331 @@ class CrossAssetFeatures:
         return features
 
 
+class AdvancedMomentumFeatures:
+    """Extract advanced momentum features for improved prediction."""
+    
+    def compute(self, price_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Compute advanced momentum features.
+        
+        Args:
+            price_data: DataFrame with OHLCV data
+            
+        Returns:
+            DataFrame with advanced momentum features
+        """
+        features = pd.DataFrame(index=price_data.index)
+        n = len(price_data)
+        
+        try:
+            close = price_data['close']
+            
+            # Price momentum at multiple periods
+            for period in [3, 5, 10, 14, 20, 30]:
+                features[f'momentum_{period}'] = close.pct_change(period)
+            
+            # Momentum acceleration (rate of change of momentum)
+            features['momentum_acceleration'] = features['momentum_10'].diff()
+            
+            # Cumulative momentum (rolling sum of returns)
+            returns = close.pct_change()
+            features['cumulative_momentum_10'] = returns.rolling(window=10).sum()
+            features['cumulative_momentum_20'] = returns.rolling(window=20).sum()
+            
+        except Exception as e:
+            logger.error(f"Error computing advanced momentum features: {e}")
+            # Fill with NaN on error
+            for col in features.columns:
+                if col not in features or features[col].isna().all():
+                    features[col] = pd.Series([np.nan] * n, index=price_data.index)
+        
+        return features
+
+
+class AdvancedVolumeFeatures:
+    """Extract advanced volume features for improved prediction."""
+    
+    def compute(self, price_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Compute advanced volume features.
+        
+        Args:
+            price_data: DataFrame with OHLCV data
+            
+        Returns:
+            DataFrame with advanced volume features
+        """
+        features = pd.DataFrame(index=price_data.index)
+        n = len(price_data)
+        
+        try:
+            if 'volume' not in price_data.columns:
+                logger.warning("Volume data not available for advanced volume features")
+                # Return empty features with NaN
+                for col_name in ['volume_momentum_5', 'volume_momentum_10', 'volume_ma_ratio_5', 
+                                 'volume_ma_ratio_20', 'vwap', 'distance_from_vwap', 'obv', 'obv_momentum']:
+                    features[col_name] = pd.Series([np.nan] * n, index=price_data.index)
+                return features
+            
+            volume = price_data['volume']
+            close = price_data['close']
+            
+            # Volume momentum (rate of change of volume)
+            features['volume_momentum_5'] = volume.pct_change(5)
+            features['volume_momentum_10'] = volume.pct_change(10)
+            
+            # Volume MA ratios
+            volume_ma_5 = volume.rolling(window=5).mean()
+            volume_ma_20 = volume.rolling(window=20).mean()
+            features['volume_ma_ratio_5'] = volume / (volume_ma_5 + 1e-10)
+            features['volume_ma_ratio_20'] = volume / (volume_ma_20 + 1e-10)
+            
+            # VWAP (Volume Weighted Average Price)
+            if 'high' in price_data.columns and 'low' in price_data.columns:
+                typical_price = (price_data['high'] + price_data['low'] + close) / 3
+                features['vwap'] = (typical_price * volume).rolling(window=20).sum() / volume.rolling(window=20).sum()
+                features['distance_from_vwap'] = (close - features['vwap']) / (features['vwap'] + 1e-10)
+            else:
+                features['vwap'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['distance_from_vwap'] = pd.Series([np.nan] * n, index=price_data.index)
+            
+            # OBV (On-Balance Volume)
+            price_change = close.diff()
+            obv = pd.Series(index=price_data.index, dtype=float)
+            obv.iloc[0] = volume.iloc[0]
+            
+            for i in range(1, len(price_data)):
+                if price_change.iloc[i] > 0:
+                    obv.iloc[i] = obv.iloc[i-1] + volume.iloc[i]
+                elif price_change.iloc[i] < 0:
+                    obv.iloc[i] = obv.iloc[i-1] - volume.iloc[i]
+                else:
+                    obv.iloc[i] = obv.iloc[i-1]
+            
+            features['obv'] = obv
+            features['obv_momentum'] = obv.pct_change(10)
+            
+        except Exception as e:
+            logger.error(f"Error computing advanced volume features: {e}")
+            # Fill with NaN on error
+            for col in features.columns:
+                if col not in features or features[col].isna().all():
+                    features[col] = pd.Series([np.nan] * n, index=price_data.index)
+        
+        return features
+
+
+class AdvancedVolatilityFeatures:
+    """Extract advanced volatility features for improved prediction."""
+    
+    def __init__(self, config: Dict[str, Any] = None):
+        """Initialize with config."""
+        config = config or {}
+        self.atr_period = config.get('atr_period', 14)
+        self.bb_period = config.get('bb_period', 20)
+    
+    def compute(self, price_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Compute advanced volatility features.
+        
+        Args:
+            price_data: DataFrame with OHLCV data
+            
+        Returns:
+            DataFrame with advanced volatility features
+        """
+        features = pd.DataFrame(index=price_data.index)
+        n = len(price_data)
+        
+        try:
+            close = price_data['close']
+            returns = close.pct_change()
+            
+            # ATR ratio (normalized volatility)
+            if 'high' in price_data.columns and 'low' in price_data.columns:
+                atr = ta.atr(price_data['high'], price_data['low'], close, length=self.atr_period)
+                if atr is not None:
+                    features['atr_ratio'] = atr / close
+                    features['atr_momentum'] = atr.pct_change(5)
+                else:
+                    features['atr_ratio'] = pd.Series([np.nan] * n, index=price_data.index)
+                    features['atr_momentum'] = pd.Series([np.nan] * n, index=price_data.index)
+            else:
+                features['atr_ratio'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['atr_momentum'] = pd.Series([np.nan] * n, index=price_data.index)
+            
+            # Bollinger Band width and momentum
+            bbands = ta.bbands(close, length=self.bb_period)
+            if bbands is not None and not bbands.empty:
+                try:
+                    bb_upper = bbands[f'BBU_{self.bb_period}_2.0']
+                    bb_lower = bbands[f'BBL_{self.bb_period}_2.0']
+                    bb_middle = bbands[f'BBM_{self.bb_period}_2.0']
+                    
+                    bb_width = (bb_upper - bb_lower) / (bb_middle + 1e-10)
+                    features['bb_width_normalized'] = bb_width
+                    features['bb_width_momentum'] = bb_width.pct_change(5)
+                    
+                    # BB position (where price is in BB channel)
+                    features['bb_position_advanced'] = (close - bb_lower) / (bb_upper - bb_lower + 1e-10)
+                except Exception:
+                    features['bb_width_normalized'] = pd.Series([np.nan] * n, index=price_data.index)
+                    features['bb_width_momentum'] = pd.Series([np.nan] * n, index=price_data.index)
+                    features['bb_position_advanced'] = pd.Series([np.nan] * n, index=price_data.index)
+            else:
+                features['bb_width_normalized'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['bb_width_momentum'] = pd.Series([np.nan] * n, index=price_data.index)
+                features['bb_position_advanced'] = pd.Series([np.nan] * n, index=price_data.index)
+            
+            # Historical volatility (rolling std of returns)
+            features['hist_volatility_5'] = returns.rolling(window=5).std()
+            features['hist_volatility_10'] = returns.rolling(window=10).std()
+            features['hist_volatility_20'] = returns.rolling(window=20).std()
+            
+            # Volatility ratio (short-term / long-term)
+            features['volatility_ratio'] = features['hist_volatility_5'] / (features['hist_volatility_20'] + 1e-10)
+            
+        except Exception as e:
+            logger.error(f"Error computing advanced volatility features: {e}")
+            # Fill with NaN on error
+            for col in features.columns:
+                if col not in features or features[col].isna().all():
+                    features[col] = pd.Series([np.nan] * n, index=price_data.index)
+        
+        return features
+
+
+class AdvancedTrendFeatures:
+    """Extract advanced trend features for improved prediction."""
+    
+    def __init__(self, config: Dict[str, Any] = None):
+        """Initialize with config."""
+        config = config or {}
+        self.adx_period = config.get('adx_period', 14)
+    
+    def compute(self, price_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Compute advanced trend features.
+        
+        Args:
+            price_data: DataFrame with OHLCV data
+            
+        Returns:
+            DataFrame with advanced trend features
+        """
+        features = pd.DataFrame(index=price_data.index)
+        n = len(price_data)
+        
+        try:
+            close = price_data['close']
+            
+            # ADX indicators
+            if 'high' in price_data.columns and 'low' in price_data.columns:
+                adx_result = ta.adx(price_data['high'], price_data['low'], close, length=self.adx_period)
+                if adx_result is not None and not adx_result.empty:
+                    try:
+                        features['adx'] = adx_result[f'ADX_{self.adx_period}']
+                        features['adx_strong_trend'] = (features['adx'] > 25).astype(float)
+                        features['adx_momentum'] = features['adx'].pct_change(5)
+                        
+                        # Directional indicators
+                        features['plus_di'] = adx_result[f'DMP_{self.adx_period}']
+                        features['minus_di'] = adx_result[f'DMN_{self.adx_period}']
+                        features['di_difference'] = features['plus_di'] - features['minus_di']
+                        features['di_ratio'] = features['plus_di'] / (features['minus_di'] + 1e-10)
+                    except Exception:
+                        for col_name in ['adx', 'adx_strong_trend', 'adx_momentum', 'plus_di', 
+                                        'minus_di', 'di_difference', 'di_ratio']:
+                            features[col_name] = pd.Series([np.nan] * n, index=price_data.index)
+                else:
+                    for col_name in ['adx', 'adx_strong_trend', 'adx_momentum', 'plus_di', 
+                                    'minus_di', 'di_difference', 'di_ratio']:
+                        features[col_name] = pd.Series([np.nan] * n, index=price_data.index)
+            else:
+                for col_name in ['adx', 'adx_strong_trend', 'adx_momentum', 'plus_di', 
+                                'minus_di', 'di_difference', 'di_ratio']:
+                    features[col_name] = pd.Series([np.nan] * n, index=price_data.index)
+            
+            # Moving average features
+            ema_10 = ta.ema(close, length=10)
+            ema_20 = ta.ema(close, length=20)
+            ema_50 = ta.ema(close, length=50)
+            
+            if ema_10 is not None and ema_20 is not None:
+                features['ma_distance_ratio_10_20'] = (ema_10 - ema_20) / (ema_20 + 1e-10)
+            else:
+                features['ma_distance_ratio_10_20'] = pd.Series([np.nan] * n, index=price_data.index)
+            
+            if ema_20 is not None and ema_50 is not None:
+                features['ma_distance_ratio_20_50'] = (ema_20 - ema_50) / (ema_50 + 1e-10)
+            else:
+                features['ma_distance_ratio_20_50'] = pd.Series([np.nan] * n, index=price_data.index)
+            
+            # Trend consistency (% time price above MA)
+            if ema_20 is not None:
+                price_above_ma = (close > ema_20).astype(float)
+                features['trend_consistency'] = price_above_ma.rolling(window=20).mean()
+            else:
+                features['trend_consistency'] = pd.Series([np.nan] * n, index=price_data.index)
+            
+        except Exception as e:
+            logger.error(f"Error computing advanced trend features: {e}")
+            # Fill with NaN on error
+            for col in features.columns:
+                if col not in features or features[col].isna().all():
+                    features[col] = pd.Series([np.nan] * n, index=price_data.index)
+        
+        return features
+
+
+class SupportResistanceFeatures:
+    """Extract support/resistance features for improved prediction."""
+    
+    def compute(self, price_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Compute support/resistance features.
+        
+        Args:
+            price_data: DataFrame with OHLCV data
+            
+        Returns:
+            DataFrame with support/resistance features
+        """
+        features = pd.DataFrame(index=price_data.index)
+        n = len(price_data)
+        
+        try:
+            close = price_data['close']
+            high = price_data.get('high', close)
+            low = price_data.get('low', close)
+            
+            # Distance from recent highs
+            for period in [10, 20, 50]:
+                recent_high = high.rolling(window=period).max()
+                features[f'distance_from_high_{period}'] = (close - recent_high) / (recent_high + 1e-10)
+            
+            # Distance from recent lows
+            for period in [10, 20, 50]:
+                recent_low = low.rolling(window=period).min()
+                features[f'distance_from_low_{period}'] = (close - recent_low) / (recent_low + 1e-10)
+            
+            # Range position (where price is in recent range)
+            for period in [20, 50]:
+                recent_high = high.rolling(window=period).max()
+                recent_low = low.rolling(window=period).min()
+                range_size = recent_high - recent_low
+                features[f'range_position_{period}'] = (close - recent_low) / (range_size + 1e-10)
+            
+        except Exception as e:
+            logger.error(f"Error computing support/resistance features: {e}")
+            # Fill with NaN on error
+            for col in features.columns:
+                if col not in features or features[col].isna().all():
+                    features[col] = pd.Series([np.nan] * n, index=price_data.index)
+        
+        return features
+
+
 class FeatureEngineeringPipeline:
     """
     Advanced feature engineering pipeline for regime prediction.
@@ -324,6 +661,11 @@ class FeatureEngineeringPipeline:
         # Debug log ekle
         logger.info(f"FeatureEngineeringPipeline initialized with config: {list(self.config.keys())}")
         
+        # Determine if we should use advanced features (default: True for new training)
+        self.use_advanced_features = self.config.get('use_advanced_features', True)
+        # Determine if we should align to legacy feature set (default: False for new models)
+        self.use_legacy_alignment = self.config.get('use_legacy_alignment', False)
+        
         # Pass config to sub-components
         self.technical_indicators = TechnicalIndicatorFeatures(self.config)
         self.market_microstructure = MarketMicrostructureFeatures()
@@ -345,6 +687,13 @@ class FeatureEngineeringPipeline:
         self.momentum_features = MomentumFeatures(windows=mom_windows)
         
         self.cross_asset_features = CrossAssetFeatures()
+        
+        # Initialize advanced feature extractors
+        self.advanced_momentum = AdvancedMomentumFeatures()
+        self.advanced_volume = AdvancedVolumeFeatures()
+        self.advanced_volatility = AdvancedVolatilityFeatures(self.config)
+        self.advanced_trend = AdvancedTrendFeatures(self.config)
+        self.support_resistance = SupportResistanceFeatures()
         
     def extract_features(self, price_data: pd.DataFrame, 
                         volume_data: Optional[pd.DataFrame] = None,
@@ -380,10 +729,22 @@ class FeatureEngineeringPipeline:
             # Combine all features
             combined_features = self._combine_features(features)
             
-            # ==================== KESİN ÇÖZÜM ADIM 3: FİNAL HİZALAMA ====================
-            # Özellikleri, scaler'ın beklediği kesin formata getir.
-            finalized_features = self.align_and_finalize_features(combined_features)
-            # ==========================================================================
+            # Extract and merge advanced features if enabled
+            if self.use_advanced_features:
+                logger.info("Extracting advanced features...")
+                advanced_features = self.extract_advanced_features(price_data)
+                if not advanced_features.empty:
+                    combined_features = pd.concat([combined_features, advanced_features], axis=1)
+            
+            # Apply alignment for legacy compatibility if needed
+            if self.use_legacy_alignment:
+                # ==================== KESİN ÇÖZÜM ADIM 3: FİNAL HİZALAMA ====================
+                # Özellikleri, scaler'ın beklediği kesin formata getir.
+                finalized_features = self.align_and_finalize_features(combined_features)
+                # ==========================================================================
+            else:
+                # Use all features without alignment (for new model training)
+                finalized_features = combined_features
 
             finalized_features.replace([np.inf, -np.inf], np.nan, inplace=True)
             # NOT: Buradaki dropna(), tahmin sırasında en son satırı kaybedebileceği için
@@ -396,6 +757,66 @@ class FeatureEngineeringPipeline:
         except Exception as e:
             logger.error(f"Error in feature extraction pipeline: {e}", exc_info=True)
             return pd.DataFrame()
+
+    def extract_advanced_features(self, price_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Extract all advanced features from price data.
+        
+        This method calls all advanced feature extraction sub-methods and combines
+        them into a single DataFrame with appropriate prefixes.
+        
+        Args:
+            price_data: DataFrame with OHLCV data
+            
+        Returns:
+            DataFrame with all advanced features
+        """
+        advanced_features = pd.DataFrame(index=price_data.index)
+        
+        try:
+            logger.info("Extracting advanced features...")
+            
+            # Extract advanced momentum features
+            logger.debug("Computing advanced momentum features...")
+            momentum_adv = self.advanced_momentum.compute(price_data)
+            if not momentum_adv.empty:
+                momentum_adv = momentum_adv.add_prefix('advanced_momentum_')
+                advanced_features = pd.concat([advanced_features, momentum_adv], axis=1)
+            
+            # Extract advanced volume features
+            logger.debug("Computing advanced volume features...")
+            volume_adv = self.advanced_volume.compute(price_data)
+            if not volume_adv.empty:
+                volume_adv = volume_adv.add_prefix('advanced_volume_')
+                advanced_features = pd.concat([advanced_features, volume_adv], axis=1)
+            
+            # Extract advanced volatility features
+            logger.debug("Computing advanced volatility features...")
+            volatility_adv = self.advanced_volatility.compute(price_data)
+            if not volatility_adv.empty:
+                volatility_adv = volatility_adv.add_prefix('advanced_volatility_')
+                advanced_features = pd.concat([advanced_features, volatility_adv], axis=1)
+            
+            # Extract advanced trend features
+            logger.debug("Computing advanced trend features...")
+            trend_adv = self.advanced_trend.compute(price_data)
+            if not trend_adv.empty:
+                trend_adv = trend_adv.add_prefix('advanced_trend_')
+                advanced_features = pd.concat([advanced_features, trend_adv], axis=1)
+            
+            # Extract support/resistance features
+            logger.debug("Computing support/resistance features...")
+            sr_features = self.support_resistance.compute(price_data)
+            if not sr_features.empty:
+                sr_features = sr_features.add_prefix('support_resistance_')
+                advanced_features = pd.concat([advanced_features, sr_features], axis=1)
+            
+            logger.info(f"✅ Extracted {len(advanced_features.columns)} advanced features")
+            
+        except Exception as e:
+            logger.error(f"Error extracting advanced features: {e}", exc_info=True)
+        
+        return advanced_features
 
     # ==================== KESİN ÇÖZÜM ADIM 2: YENİ HİZALAMA METODU ====================
     def align_and_finalize_features(self, df: pd.DataFrame) -> pd.DataFrame:
