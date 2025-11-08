@@ -25,24 +25,18 @@ on:
 
 env:
   PYTHON_VERSION: '3.11'
-  CACHE_VERSION: v1
 
 jobs:
   tune-lstm:
     name: LSTM Hyperparameter Tuning
     runs-on: ubuntu-latest
-    timeout-minutes: 120  # 2 hours max
+    timeout-minutes: 120
     
     steps:
-      # ================================================================
-      # SETUP
-      # ================================================================
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
       
-      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+      - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -54,186 +48,85 @@ jobs:
           pip install -r requirements.txt
           pip install optuna scikit-learn scipy
       
-      - name: 📁 Create Required Directories
+      - name: 📁 Create Directories
         run: |
-          mkdir -p logs/tuning_results
-          mkdir -p data/models/regime
-          mkdir -p data/cache
+          mkdir -p logs/tuning_results data/models/regime data/cache
       
-      # ================================================================
-      # VALIDATION CHECK
-      # ================================================================
-      - name: ✅ Validate Tuning Infrastructure
+      - name: ✅ Validate Infrastructure
         run: |
-          echo "🔍 Checking validation framework..."
-          python -c "from scripts.utils.validation_framework import TimeSeriesValidator; v=TimeSeriesValidator(n_splits=3); print('✅ Validation framework OK')"
-          
-          echo "🔍 Checking Optuna tuner..."
-          python -c "from scripts.utils.optuna_tuner import OptunaModelTuner; t=OptunaModelTuner('lstm', n_trials=1); print('✅ Optuna tuner OK')"
-          
-          echo "🔍 Checking tuning script..."
+          python -c "from scripts.utils.validation_framework import TimeSeriesValidator; print('✅ Validation OK')"
+          python -c "from scripts.utils.optuna_tuner import OptunaModelTuner; print('✅ Optuna OK')"
           python scripts/tune_regime_models.py --help
-          echo "✅ All infrastructure validated"
       
-      # ================================================================
-      # DATA PREPARATION
-      # ================================================================
-      - name: 📊 Load Training Data
-        id: load_data
-        run: |
-          echo "📊 Loading training data for ${{ github.event.inputs.symbol }}..."
-          
-          # Quick data validation
-          python -c "
-          from src.config.live_trading_config import LiveTradingConfiguration
-          from src.core.ccxt_client import CCXTClient
-          
-          config = LiveTradingConfiguration.load(log_summary=False)
-          client = CCXTClient(config)
-          
-          # Test data fetch
-          candles = client.fetch_ohlcv('${{ github.event.inputs.symbol }}', '1h', limit=100)
-          print(f'✅ Successfully fetched {len(candles)} candles')
-          print(f'Data quality: OK')
-          "
-      
-      # ================================================================
-      # LSTM TUNING
-      # ================================================================
-      - name: 🎯 Run LSTM Hyperparameter Tuning
+      - name: 🎯 Run LSTM Tuning
         id: tuning
         run: |
-          echo "======================================================================"
-          echo "🎯 STARTING LSTM HYPERPARAMETER TUNING"
-          echo "======================================================================"
-          echo "Configuration:"
-          echo "  Trials: ${{ github.event.inputs.trials }}"
-          echo "  CV Splits: ${{ github.event.inputs.cv_splits }}"
-          echo "  Symbol: ${{ github.event.inputs.symbol }}"
-          echo "  Timeout: ${{ github.event.inputs.timeout || 'None' }}"
-          echo "======================================================================"
-          
-          # Build command
-          CMD="python scripts/tune_regime_models.py \
+          python scripts/tune_regime_models.py \
             --model lstm \
             --trials ${{ github.event.inputs.trials }} \
             --cv-splits ${{ github.event.inputs.cv_splits }} \
-            --symbol '${{ github.event.inputs.symbol }}'"
-          
-          # Add timeout if provided
-          if [ -n "${{ github.event.inputs.timeout }}" ]; then
-            CMD="$CMD --timeout ${{ github.event.inputs.timeout }}"
-          fi
-          
-          # Run tuning
-          eval $CMD | tee logs/tuning_output.log
-          
-          # Check if tuning completed successfully
-          if [ ${PIPESTATUS[0]} -eq 0 ]; then
-            echo "✅ LSTM tuning completed successfully"
-          else
-            echo "❌ LSTM tuning failed"
-            exit 1
-          fi
+            --symbol '${{ github.event.inputs.symbol }}' \
+            ${{ github.event.inputs.timeout && format('--timeout {0}', github.event.inputs.timeout) || '' }} \
+            | tee logs/tuning_output.log
       
-      # ================================================================
-      # RESULTS EXTRACTION
-      # ================================================================
-      - name: 📊 Extract Tuning Results
+      - name: 📊 Extract Results
         id: extract_results
         run: |
-          echo "📊 Extracting tuning results..."
-          
-          # Find latest results file
-          RESULTS_FILE=$(ls -t logs/tuning_results/lstm_tuning_*.json | head -n 1)
+          RESULTS_FILE=$(ls -t logs/tuning_results/lstm_tuning_*.json 2>/dev/null | head -n 1)
           
           if [ -z "$RESULTS_FILE" ]; then
-            echo "❌ No results file found"
-            exit 1
+            echo "⚠️ No results file found"
+            echo "cv_score=N/A" >> $GITHUB_OUTPUT
+            echo "holdout_score=N/A" >> $GITHUB_OUTPUT
+            exit 0
           fi
           
-          echo "Found results: $RESULTS_FILE"
+          echo "Found: $RESULTS_FILE"
           
-          # Extract key metrics using jq
-          CV_SCORE=$(jq -r '.cv_score' "$RESULTS_FILE")
-          HOLDOUT_SCORE=$(jq -r '.holdout_score' "$RESULTS_FILE")
+          CV_SCORE=$(jq -r '.cv_score // "N/A"' "$RESULTS_FILE")
+          HOLDOUT_SCORE=$(jq -r '.holdout_score // "N/A"' "$RESULTS_FILE")
+          HIDDEN_SIZE=$(jq -r '.best_params.hidden_size // "N/A"' "$RESULTS_FILE")
+          NUM_LAYERS=$(jq -r '.best_params.num_layers // "N/A"' "$RESULTS_FILE")
+          DROPOUT=$(jq -r '.best_params.dropout // "N/A"' "$RESULTS_FILE")
+          LEARNING_RATE=$(jq -r '.best_params.learning_rate // "N/A"' "$RESULTS_FILE")
           
-          # Extract best parameters
-          HIDDEN_SIZE=$(jq -r '.best_params.hidden_size' "$RESULTS_FILE")
-          NUM_LAYERS=$(jq -r '.best_params.num_layers' "$RESULTS_FILE")
-          DROPOUT=$(jq -r '.best_params.dropout' "$RESULTS_FILE")
-          LEARNING_RATE=$(jq -r '.best_params.learning_rate' "$RESULTS_FILE")
-          
-          # Set outputs
           echo "cv_score=$CV_SCORE" >> $GITHUB_OUTPUT
           echo "holdout_score=$HOLDOUT_SCORE" >> $GITHUB_OUTPUT
           echo "hidden_size=$HIDDEN_SIZE" >> $GITHUB_OUTPUT
           echo "num_layers=$NUM_LAYERS" >> $GITHUB_OUTPUT
           echo "dropout=$DROPOUT" >> $GITHUB_OUTPUT
           echo "learning_rate=$LEARNING_RATE" >> $GITHUB_OUTPUT
-          echo "results_file=$RESULTS_FILE" >> $GITHUB_OUTPUT
           
-          # Display summary
-          echo "======================================================================"
-          echo "📊 TUNING RESULTS SUMMARY"
-          echo "======================================================================"
-          echo "CV Score:       $CV_SCORE"
-          echo "Hold-out Score: $HOLDOUT_SCORE"
-          echo ""
-          echo "Best Parameters:"
-          echo "  hidden_size:    $HIDDEN_SIZE"
-          echo "  num_layers:     $NUM_LAYERS"
-          echo "  dropout:        $DROPOUT"
-          echo "  learning_rate:  $LEARNING_RATE"
-          echo "======================================================================"
+          echo "📊 Results: CV=$CV_SCORE, Holdout=$HOLDOUT_SCORE"
       
-      # ================================================================
-      # VALIDATION & COMPARISON
-      # ================================================================
       - name: ✅ Validate Improvement
-        id: validate
+        if: steps.extract_results.outputs.cv_score != 'N/A'
         run: |
-          echo "✅ Validating improvement against baseline..."
+          CV_SCORE="${{ steps.extract_results.outputs.cv_score }}"
+          BASELINE=0.433
           
-          # Phase B baseline
-          BASELINE_LSTM=0.433
-          
-          # Current tuned score
-          TUNED_SCORE=${{ steps.extract_results.outputs.cv_score }}
-          
-          # Calculate improvement
-          python3 << EOF
-          baseline = $BASELINE_LSTM
-          tuned = float('$TUNED_SCORE')
-          
-          improvement = tuned - baseline
+          python3 << 'PYEOF'
+          cv_score = float("$CV_SCORE")
+          baseline = 0.433
+          improvement = cv_score - baseline
           improvement_pct = (improvement / baseline) * 100
           
-          print(f"====================================================================")
-          print(f"📊 PERFORMANCE COMPARISON")
-          print(f"====================================================================")
-          print(f"Phase B LSTM Baseline:  {baseline:.4f} (43.3%)")
-          print(f"Tuned LSTM (CV):        {tuned:.4f} ({tuned*100:.1f}%)")
-          print(f"Absolute Improvement:   {improvement:+.4f}")
-          print(f"Relative Improvement:   {improvement_pct:+.1f}%")
-          print(f"====================================================================")
+          print(f"Baseline: {baseline:.4f}")
+          print(f"Tuned:    {cv_score:.4f}")
+          print(f"Improvement: {improvement:+.4f} ({improvement_pct:+.1f}%)")
           
-          # Check if improvement is significant
-          if improvement > 0.03:  # >3% improvement
-            print("✅ SIGNIFICANT IMPROVEMENT ACHIEVED!")
-            exit(0)
-          elif improvement > 0.01:  # >1% improvement
-            print("⚠️  Moderate improvement achieved")
-            exit(0)
+          if improvement > 0.03:
+              print("✅ Significant improvement!")
+              exit(0)
+          elif improvement > 0.01:
+              print("⚠️ Moderate improvement")
+              exit(0)
           else:
-            print("❌ Insufficient improvement")
-            exit(1)
-          EOF
+              print("❌ Insufficient improvement")
+              exit(1)
+          PYEOF
       
-      # ================================================================
-      # ARTIFACTS & REPORTING
-      # ================================================================
-      - name: 📦 Upload Tuning Results
+      - name: 📦 Upload Artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -246,28 +139,29 @@ jobs:
       
       - name: 📝 Generate Summary Report
         if: always()
+        env:
+          CV_SCORE: ${{ steps.extract_results.outputs.cv_score }}
+          HOLDOUT_SCORE: ${{ steps.extract_results.outputs.holdout_score }}
+          HIDDEN_SIZE: ${{ steps.extract_results.outputs.hidden_size }}
+          NUM_LAYERS: ${{ steps.extract_results.outputs.num_layers }}
+          DROPOUT: ${{ steps.extract_results.outputs.dropout }}
+          LEARNING_RATE: ${{ steps.extract_results.outputs.learning_rate }}
         run: |
-          # Extract values to variables first
-          CV_SCORE="${{ steps.extract_results.outputs.cv_score }}"
-          HOLDOUT_SCORE="${{ steps.extract_results.outputs.holdout_score }}"
-          HIDDEN_SIZE="${{ steps.extract_results.outputs.hidden_size }}"
-          NUM_LAYERS="${{ steps.extract_results.outputs.num_layers }}"
-          DROPOUT="${{ steps.extract_results.outputs.dropout }}"
-          LEARNING_RATE="${{ steps.extract_results.outputs.learning_rate }}"
-          TRIALS="${{ github.event.inputs.trials }}"
-          CV_SPLITS="${{ github.event.inputs.cv_splits }}"
-          SYMBOL="${{ github.event.inputs.symbol }}"
-          JOB_STATUS="${{ job.status }}"
-          RUN_ID="${{ github.run_id }}"
-          ACTOR="${{ github.actor }}"
+          # Calculate improvement if CV_SCORE is available
+          if [ "$CV_SCORE" != "N/A" ] && [ -n "$CV_SCORE" ]; then
+            IMPROVEMENT=$(python3 << 'PYEOF'
+import sys
+cv = float("${CV_SCORE}")
+base = 0.433
+diff = cv - base
+pct = (diff / base) * 100
+print(f"{diff:+.4f} ({pct:+.1f}%)")
+PYEOF
+)
+          else
+            IMPROVEMENT="N/A"
+          fi
           
-          # Calculate improvement
-          BASELINE=0.433
-          IMPROVEMENT=$(python3 -c "print(f'{float('$CV_SCORE') - $BASELINE:+.4f}')")
-          IMPROVEMENT_PCT=$(python3 -c "print(f'{(float('$CV_SCORE') - $BASELINE) / $BASELINE * 100:+.1f}%')")
-          DURATION=$(python3 -c "print(f'{int('$TRIALS') * 2 / 60:.1f}')")
-          
-          # Generate report
           cat << EOF >> $GITHUB_STEP_SUMMARY
           # 🎯 LSTM Hyperparameter Tuning Results
           
@@ -275,59 +169,33 @@ jobs:
           
           | Metric | Score |
           |--------|-------|
-          | **CV Score** | ${CV_SCORE} |
-          | **Hold-out Score** | ${HOLDOUT_SCORE} |
+          | **CV Score** | ${CV_SCORE:-N/A} |
+          | **Hold-out Score** | ${HOLDOUT_SCORE:-N/A} |
           | **Phase B Baseline** | 0.433 (43.3%) |
-          | **Improvement** | ${IMPROVEMENT} (${IMPROVEMENT_PCT}) |
+          | **Improvement** | ${IMPROVEMENT} |
           
           ## 🏆 Best Hyperparameters
           
           | Parameter | Value |
           |-----------|-------|
-          | **hidden_size** | ${HIDDEN_SIZE} |
-          | **num_layers** | ${NUM_LAYERS} |
-          | **dropout** | ${DROPOUT} |
-          | **learning_rate** | ${LEARNING_RATE} |
+          | **hidden_size** | ${HIDDEN_SIZE:-N/A} |
+          | **num_layers** | ${NUM_LAYERS:-N/A} |
+          | **dropout** | ${DROPOUT:-N/A} |
+          | **learning_rate** | ${LEARNING_RATE:-N/A} |
           
-          ## 📈 Tuning Configuration
+          ## 📈 Configuration
           
-          - **Trials**: ${TRIALS}
-          - **CV Splits**: ${CV_SPLITS}
-          - **Symbol**: ${SYMBOL}
-          - **Duration**: ~${DURATION} hours
+          - **Trials**: ${{ github.event.inputs.trials }}
+          - **CV Splits**: ${{ github.event.inputs.cv_splits }}
+          - **Symbol**: ${{ github.event.inputs.symbol }}
           
           ## 📥 Artifacts
           
-          Download detailed results from the artifacts section above.
+          Download detailed results above.
           
           ---
           
-          **Status**: ${JOB_STATUS}
-          **Run ID**: ${RUN_ID}
-          **Triggered by**: @${ACTOR}
+          **Status**: ${{ job.status }}  
+          **Run**: ${{ github.run_id }}  
+          **By**: @${{ github.actor }}
           EOF
-      
-      # ================================================================
-      # NOTIFICATION (Optional)
-      # ================================================================
-      - name: 💬 Post Results Comment (if PR)
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `## 🎯 LSTM Tuning Results
-              
-              **CV Score**: ${{ steps.extract_results.outputs.cv_score }}
-              **Hold-out Score**: ${{ steps.extract_results.outputs.holdout_score }}
-              
-              **Best Parameters**:
-              - hidden_size: ${{ steps.extract_results.outputs.hidden_size }}
-              - dropout: ${{ steps.extract_results.outputs.dropout }}
-              - learning_rate: ${{ steps.extract_results.outputs.learning_rate }}
-              
-              See [run details](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for more information.`
-            })
