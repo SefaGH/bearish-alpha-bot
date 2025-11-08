@@ -37,28 +37,35 @@ class RegimeModelTuner:
         self.data_cache_dir = Path('data/cache')
     
     def load_cached_data(self, symbol='BTC-USDT'):
-        """Load pre-processed training data from cache or generate synthetic."""
-        logger.info(f"Loading data for {symbol}...")
+        """Load pre-processed training data from cache."""
+        logger.info(f"Loading cached data for {symbol}...")
         
-        # Try cache locations
-        possible_files = [
-            self.data_cache_dir / f'{symbol}_training_data.npz',
-            self.data_cache_dir / 'regime_training_data.npz',
-            Path('data') / 'regime_training_data.npz'
-        ]
+        # Try cache locations (matching prepare_training_data.py naming)
+        cache_file = self.data_cache_dir / f'{symbol}_training_data.npz'
         
-        for filepath in possible_files:
-            if filepath.exists():
-                logger.info(f"Found cached data: {filepath}")
-                data = np.load(filepath)
-                X = data['X']
-                y = data['y']
-                logger.info(f"✅ Loaded {len(X)} samples with {X.shape[1]} features")
-                return X, y
+        if cache_file.exists():
+            logger.info(f"✅ Found cached data: {cache_file}")
+            data = np.load(cache_file)
+            X = data['X']
+            y = data['y']
+            
+            logger.info(f"✅ Loaded {len(X)} real samples with {X.shape[1]} features")
+            
+            # Show label distribution
+            unique, counts = np.unique(y, return_counts=True)
+            logger.info("Label distribution:")
+            label_names = ['Bullish', 'Bearish', 'Neutral', 'Volatile']
+            for label, count in zip(unique, counts):
+                percentage = (count / len(y)) * 100
+                logger.info(f"  {label_names[label]}: {count} ({percentage:.1f}%)")
+            
+            return X, y
         
-        # Generate synthetic data
-        logger.warning("⚠️  No cache found, generating synthetic data")
-        return self._generate_synthetic_data()
+        # ❌ NO SYNTHETIC DATA FALLBACK
+        raise FileNotFoundError(
+            f"Training data not found: {cache_file}\n"
+            f"Please run: python scripts/prepare_training_data.py --symbol {symbol.replace('-', '/')}"
+        )
     
     def _generate_synthetic_data(self, n_samples=7200, n_features=42):
         """Generate synthetic training data."""
