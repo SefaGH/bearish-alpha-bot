@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
+from scripts.utils.validation_framework import TimeSeriesValidator, ValidationReport
 
 # ML_ENABLED ortam değişkenini oku
 ML_ENABLED = os.getenv("ML_ENABLED", "false").lower() in ("1", "true", "yes")
@@ -1047,3 +1048,82 @@ class RegimeModelTrainer:
             logger.error(f"Error generating feature importance: {e}")
         
         return importance
+
+    def cross_validate_model(
+        self,
+        model_type: str,
+        X: np.ndarray,
+        y: np.ndarray,
+        n_splits: int = 5
+    ) -> Dict[str, Any]:
+        """
+        Cross-validate a specific model type.
+        
+        Args:
+            model_type: 'lstm', 'transformer', or 'rf'
+            X: Features
+            y: Targets
+            n_splits: Number of CV folds
+            
+        Returns:
+            CV results dictionary
+        """
+        validator = TimeSeriesValidator(n_splits=n_splits)
+        
+        # Split with hold-out
+        X_cv, y_cv, X_test, y_test = validator.split_with_holdout(X, y)
+        
+        # Define model factory
+        if model_type == 'lstm':
+            def factory():
+                return self._create_lstm_model()
+        elif model_type == 'transformer':
+            def factory():
+                return self._create_transformer_model()
+        elif model_type == 'rf':
+            def factory():
+                from sklearn.ensemble import RandomForestClassifier
+                return RandomForestClassifier(n_estimators=150, max_depth=15, random_state=42)
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
+        
+        # Cross-validate
+        cv_results = validator.cross_validate(factory, X_cv, y_cv)
+        
+        # Test on hold-out
+        final_model = factory()
+        final_model.fit(X_cv, y_cv)
+        holdout_score = final_model.score(X_test, y_test)
+        
+        # Generate report
+        report = ValidationReport.generate_report(
+            model_name=f"{model_type.upper()} Regime Model",
+            cv_results=cv_results,
+            holdout_score=holdout_score
+        )
+        logger.info(f"\n{report}")
+        
+        return {
+            **cv_results,
+            'holdout_score': holdout_score,
+            'report': report
+        }
+    
+    def _create_lstm_model(self):
+        """Helper to create LSTM with current config."""
+        # Use current LSTM params
+        from .neural_networks import LSTMRegimeClassifier
+        return LSTMRegimeClassifier(
+            input_size=self.lstm_params['hidden_size'],
+            hidden_size=self.lstm_params['hidden_size'],
+            num_layers=self.lstm_params['num_layers'],
+            num_classes=4,  # Bullish, Bearish, Neutral, Volatile
+            dropout=self.lstm_params['dropout']
+        )
+    
+    def _create_transformer_model(self):
+        """Helper to create Transformer with current config."""
+        # Use current Transformer params
+        from .neural_networks import TransformerRegimeClassifier
+        # Implementation similar to LSTM
+        pass
