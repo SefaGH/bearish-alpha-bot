@@ -734,7 +734,6 @@ class RegimeModelTrainer:
             mode='min',
             factor=0.5,
             patience=3,
-            verbose=False,
             min_lr=1e-6
         )
         
