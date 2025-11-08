@@ -313,6 +313,8 @@ ml:
     #   - src/ml/regime_predictor.py (model yükleme sırasında)
     #   - scripts/train_all_models.py (eğitim betiğinde)
     # Bu değerleri değiştirirseniz, eski modelleri SİLİP yeniden eğitmelisiniz!
+    # 
+    # FAZ 3.1 OPTIMIZATION: Neural network parameters optimized for better performance
     model_params:
       random_forest:
         n_estimators: 150
@@ -321,8 +323,9 @@ ml:
         n_estimators: 200
         learning_rate: 0.05
       lstm_regime:
-        hidden_size: 64   # Küçük ve güvenli mimari (overfitting'i önler)
-        num_layers: 2     # Daha az katman = daha iyi genelleme
+        hidden_size: 128   # Increased from 64 - more capacity for 7200 samples
+        num_layers: 3      # Increased from 2 - deeper network for better learning
+        dropout: 0.3       # Increased from 0.2 - better regularization
     
     # 2. Ensemble Ağırlıkları
     ensemble_weights:

@@ -47,10 +47,11 @@ if TORCH_AVAILABLE:
         """
         LSTM network for regime sequence prediction.
         
-        DEFAULT ARCHITECTURE (synchronized with central config):
+        OPTIMIZED ARCHITECTURE (FAZ 3.1):
         - input_size: 42 (number of features from feature engineering)
-        - hidden_size: 64 (smaller, safer architecture to prevent overfitting)
-        - num_layers: 2 (shallower network for better generalization)
+        - hidden_size: 128 (increased from 64 for more capacity)
+        - num_layers: 3 (increased from 2 for deeper network)
+        - dropout: 0.3 (increased from 0.2 for better regularization)
         - num_classes: 3 (bullish, neutral, bearish)
         
         These defaults MUST match the ML configuration file at:
@@ -60,16 +61,17 @@ if TORCH_AVAILABLE:
         and models must be retrained to avoid size mismatch errors.
         """
         
-        def __init__(self, input_size: int = 42, hidden_size: int = 64, 
-                     num_layers: int = 2, num_classes: int = 3):
+        def __init__(self, input_size: int = 42, hidden_size: int = 128, 
+                     num_layers: int = 3, num_classes: int = 3, dropout: float = 0.3):
             """
             Initialize LSTM regime predictor.
             
             Args:
                 input_size: Number of input features (default: 42)
-                hidden_size: Size of LSTM hidden state (default: 64)
-                num_layers: Number of LSTM layers (default: 2)
+                hidden_size: Size of LSTM hidden state (default: 128, increased from 64)
+                num_layers: Number of LSTM layers (default: 3, increased from 2)
                 num_classes: Number of regime classes (default: 3)
+                dropout: Dropout rate (default: 0.3, increased from 0.2)
             """
             super().__init__()
             self.hidden_size = hidden_size
@@ -77,14 +79,17 @@ if TORCH_AVAILABLE:
             
             self.lstm = nn.LSTM(
                 input_size, hidden_size, num_layers,
-                batch_first=True, dropout=0.2
+                batch_first=True, dropout=dropout if num_layers > 1 else 0
             )
             self.attention = MultiHeadAttention(hidden_size, num_heads=8)
+            
+            # Enhanced classifier with batch normalization
             self.classifier = nn.Sequential(
-                nn.Linear(hidden_size, 64),
+                nn.Linear(hidden_size, hidden_size // 2),
+                nn.BatchNorm1d(hidden_size // 2),
                 nn.ReLU(),
-                nn.Dropout(0.3),
-                nn.Linear(64, num_classes)
+                nn.Dropout(dropout),
+                nn.Linear(hidden_size // 2, num_classes)
             )
             
         def forward(self, x, return_probs=False):
@@ -119,15 +124,18 @@ if TORCH_AVAILABLE:
     class PositionalEncoding(nn.Module):
         """Positional encoding for transformer."""
         
-        def __init__(self, d_model: int, max_len: int = 5000):
+        def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
             """
             Initialize positional encoding.
             
             Args:
                 d_model: Model dimension
+                dropout: Dropout rate (default: 0.1)
                 max_len: Maximum sequence length
             """
             super().__init__()
+            
+            self.dropout = nn.Dropout(p=dropout)
             
             position = torch.arange(max_len).unsqueeze(1)
             div_term = torch.exp(torch.arange(0, d_model, 2) * (-np.log(10000.0) / d_model))
@@ -140,39 +148,54 @@ if TORCH_AVAILABLE:
             
         def forward(self, x):
             """Add positional encoding to input."""
-            return x + self.pe[:x.size(0)]
+            x = x + self.pe[:x.size(0)]
+            return self.dropout(x)
 
 
     class TransformerRegimePredictor(nn.Module):
-        """Transformer architecture for regime prediction."""
+        """
+        Transformer architecture for regime prediction.
         
-        def __init__(self, d_model: int = 256, nhead: int = 8, 
-                     num_layers: int = 6, num_classes: int = 3):
+        OPTIMIZED ARCHITECTURE (FAZ 3.1):
+        - d_model: 256 (model dimension)
+        - nhead: 6 (increased from 2/8 for better multi-head attention)
+        - num_layers: 4 (increased from 2/6 for deeper network)
+        - dim_feedforward: 256 (feedforward dimension)
+        - dropout: 0.3 (for regularization)
+        """
+        
+        def __init__(self, d_model: int = 256, nhead: int = 6, 
+                     num_layers: int = 4, num_classes: int = 3,
+                     dim_feedforward: int = 256, dropout: float = 0.3):
             """
             Initialize Transformer regime predictor.
             
             Args:
-                d_model: Model dimension
-                nhead: Number of attention heads
-                num_layers: Number of transformer layers
-                num_classes: Number of regime classes
+                d_model: Model dimension (must be divisible by nhead)
+                nhead: Number of attention heads (default: 6, optimized for FAZ 3.1)
+                num_layers: Number of transformer layers (default: 4, increased from 2)
+                num_classes: Number of regime classes (default: 3)
+                dim_feedforward: Feedforward dimension (default: 256)
+                dropout: Dropout rate (default: 0.3)
             """
             super().__init__()
             self.d_model = d_model
             
-            self.pos_encoding = PositionalEncoding(d_model)
+            self.pos_encoding = PositionalEncoding(d_model, dropout=dropout)
             
             encoder_layer = nn.TransformerEncoderLayer(
-                d_model, nhead, dim_feedforward=d_model*4,
-                dropout=0.1, batch_first=True
+                d_model, nhead, dim_feedforward=dim_feedforward,
+                dropout=dropout, batch_first=True
             )
             self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
             
+            # Enhanced classifier with batch normalization
             self.classifier = nn.Sequential(
-                nn.Linear(d_model, 128),
+                nn.Linear(d_model, d_model // 2),
+                nn.BatchNorm1d(d_model // 2),
                 nn.ReLU(),
-                nn.Dropout(0.2),
-                nn.Linear(128, num_classes)
+                nn.Dropout(dropout),
+                nn.Linear(d_model // 2, num_classes)
             )
             
         def forward(self, x, return_probs=False):
