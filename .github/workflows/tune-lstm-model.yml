@@ -119,7 +119,8 @@ jobs:
             CV=$(jq -r '.cv_score' $FILE)
             HOLDOUT=$(jq -r '.holdout_score' $FILE)
             if [ "$CV" != "null" ] && [ "$HOLDOUT" != "null" ]; then
-              GAP=$(python3 -c "print(f'{float('$CV') - float('$HOLDOUT'):.4f}')")
+              # Calculate gap using bc
+              GAP=$(echo "$CV - $HOLDOUT" | bc -l)
               echo "gap=$GAP" >> $GITHUB_OUTPUT
             fi
           fi
