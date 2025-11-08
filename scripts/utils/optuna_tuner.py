@@ -2,7 +2,7 @@
 Optuna-based Hyperparameter Tuning with CV Validation
 Integrates Optuna optimization with time series cross-validation.
 
-Author: SefaGH & GitHub Copilot
+Author: SefaGH & GitHub Copilot  
 Date: 2025-11-08
 """
 
@@ -10,9 +10,17 @@ import optuna
 import numpy as np
 import logging
 from typing import Dict, Any, Callable, Optional, Tuple
-from .validation_framework import TimeSeriesValidator
 
 logger = logging.getLogger(__name__)
+
+# Import with fallback
+try:
+    from scripts.utils.validation_framework import TimeSeriesValidator
+except ImportError:
+    try:
+        from .validation_framework import TimeSeriesValidator
+    except ImportError:
+        from validation_framework import TimeSeriesValidator
 
 
 class OptunaModelTuner:
