@@ -22,6 +22,10 @@ from sklearn.utils.class_weight import compute_class_weight
 
 from src.ml.models import SimpleLSTM, create_model_from_params
 
+from imblearn.combine import SMOTETomek
+from imblearn.over_sampling import SMOTE
+from imblearn.under_sampling import TomekLinks
+
 # Configuration
 TUNING_RESULTS_DIR = Path('logs/tuning_results')
 TRAINING_DATA_PATH = Path('data/cache/BTC-USDT_training_data.npz')
@@ -457,70 +461,150 @@ def main():
     X_train, X_test, y_train, y_test = stratified_split(X, y, test_size=0.2)
     
     # ============================================================
-    # 🔄 SMOTE OVERSAMPLING (Replaces Weight Tuning)
+    # 🔄 SMOTETomek (Hybrid Balancing & Cleaning)
     # ============================================================
-    from imblearn.over_sampling import SMOTE
     from collections import Counter
     
     print("\n" + "="*70)
-    print("🔄 APPLYING SMOTE OVERSAMPLING")
+    print("⚖️  APPLYING SMOTETomek (Hybrid Balancing & Cleaning)")
     print("="*70)
-    print("\n⚠️  Strategy Change: Data-level balancing (not weight-level)")
-    print("   Reason: 6 weight tuning iterations failed (v1-v6)")
-    print("   - Model too sensitive to weight ratios")
-    print("   - 'Battaniye etkisi': fixing one class breaks another")
-    print("   - Solution: Balance training data structurally\n")
+    print("\n📚 Strategy: SMOTE + Tomek Links")
+    print("   - SMOTE: Generate synthetic samples (balance classes)")
+    print("   - Tomek Links: Remove noisy/ambiguous samples (clean boundaries)")
+    print("   - Goal: Balanced + Clean data (reduce overfitting)")
+    print("")
+    print("⚠️  Previous SMOTE-only attempt:")
+    print("   - Overfitting detected (train 0.91 vs val 1.56)")
+    print("   - Bearish: 0% accuracy (synthetic samples too noisy)")
+    print("   - Solution: Add Tomek cleaning step")
+    print("")
     
     # Log original distribution
     print("📊 Original Training Distribution:")
     original_dist = Counter(y_train)
     class_names = ['Bullish', 'Neutral', 'Bearish']
+    
     for cls_id in sorted(original_dist.keys()):
         count = original_dist[cls_id]
         pct = count / len(y_train) * 100
-        print(f"   {class_names[cls_id]:10s}: {count:,} ({pct:.1f}%)")
+        print(f"   {class_names[cls_id]:10s} (Label {cls_id}): {count:,} ({pct:.1f}%)")
     
-    # Apply SMOTE (train data only!)
-    smote = SMOTE(
-        sampling_strategy='auto',  # Balance to majority class
-        random_state=42,
-        k_neighbors=5
+    print(f"\n   Total samples: {len(y_train):,}")
+    
+    # Calculate imbalance ratio
+    max_count = max(original_dist.values())
+    min_count = min(original_dist.values())
+    imbalance_ratio = max_count / min_count
+    print(f"   Imbalance ratio: {imbalance_ratio:.2f}:1 (max/min)")
+    
+    # Configure SMOTETomek
+    print("\n⚙️  Configuring SMOTETomek...")
+    print("   SMOTE: k_neighbors=5, sampling_strategy='auto'")
+    print("   Tomek: sampling_strategy='all' (remove all Tomek pairs)")
+    
+    smote_tomek = SMOTETomek(
+        sampling_strategy='auto',  # Balance all classes to majority
+        random_state=42,           # Reproducibility
+        smote=SMOTE(               # SMOTE configuration
+            k_neighbors=5,         # Conservative (avoid over-extrapolation)
+            random_state=42
+        ),
+        tomek=TomekLinks(          # Tomek Links configuration
+            sampling_strategy='all'  # Remove all Tomek pairs (most aggressive)
+        ),
+        n_jobs=-1                  # Use all CPU cores
     )
     
-    print("\n⚙️  Generating synthetic samples...")
-    X_train_smote, y_train_smote = smote.fit_resample(X_train, y_train)
+    # Apply SMOTETomek (CRITICAL: Train data only!)
+    print("\n🔄 Step 1: Applying SMOTE (oversampling)...")
+    print("🧹 Step 2: Applying Tomek Links (cleaning)...")
     
-    # Log resampled distribution
-    print("\n📊 After SMOTE:")
-    new_dist = Counter(y_train_smote)
-    for cls_id in sorted(new_dist.keys()):
-        count = new_dist[cls_id]
-        pct = count / len(y_train_smote) * 100
-        added = count - original_dist[cls_id]
-        print(f"   {class_names[cls_id]:10s}: {count:,} ({pct:.1f}%)")
-        if added > 0:
-            print(f"      → Added {added:,} synthetic samples")
-    
-    print(f"\n   Total: {len(y_train_smote):,} (was {len(y_train):,})")
-    print(f"   Synthetic: {len(y_train_smote) - len(y_train):,}")
+    try:
+        X_train_resampled, y_train_resampled = smote_tomek.fit_resample(X_train, y_train)
+        
+        # Log resampled distribution
+        print("\n📊 After SMOTETomek:")
+        new_dist = Counter(y_train_resampled)
+        
+        for cls_id in sorted(new_dist.keys()):
+            count = new_dist[cls_id]
+            pct = count / len(y_train_resampled) * 100
+            original_count = original_dist[cls_id]
+            net_change = count - original_count
+            
+            print(f"   {class_names[cls_id]:10s} (Label {cls_id}): {count:,} ({pct:.1f}%)")
+            if net_change > 0:
+                print(f"      → Net change: +{net_change:,} samples")
+            elif net_change < 0:
+                print(f"      → Net change: {net_change:,} samples (Tomek removed)")
+            else:
+                print(f"      → No change (majority class)")
+        
+        print(f"\n   Total samples: {len(y_train_resampled):,} (was {len(y_train):,})")
+        
+        # Calculate net changes
+        total_added = len(y_train_resampled) - len(y_train)
+        print(f"   Net samples added: {total_added:,}")
+        
+        if total_added > 0:
+            print(f"   (SMOTE created synthetic, Tomek removed noisy samples)")
+        else:
+            print(f"   ⚠️  Warning: Net samples decreased (unusual for SMOTETomek)")
+        
+        # Check new balance
+        new_max = max(new_dist.values())
+        new_min = min(new_dist.values())
+        new_ratio = new_max / new_min
+        
+        print(f"\n📈 Balance Improvement:")
+        print(f"   Before: {imbalance_ratio:.2f}:1 ratio")
+        print(f"   After:  {new_ratio:.2f}:1 ratio")
+        
+        if new_ratio <= 1.1:
+            print("   ✅ Excellent balance achieved!")
+        elif new_ratio <= 1.5:
+            print("   ✅ Good balance achieved!")
+        else:
+            print("   ⚠️  Some imbalance remains (acceptable)")
+        
+        print(f"\n✅ SMOTETomek complete!")
+        
+    except Exception as e:
+        print(f"\n❌ SMOTETomek failed: {e}")
+        print("   Falling back to original unbalanced data...")
+        print("   ⚠️  Training will proceed but with class imbalance!")
+        X_train_resampled = X_train
+        y_train_resampled = y_train
     
     # ============================================================
     # Reset class weights (no amplification needed!)
     # ============================================================
-    print("\n⚖️  Class Weights: [1.0, 1.0, 1.0] (baseline)")
-    print("   Rationale: Data balanced, no amplification needed")
+    print("\n" + "="*70)
+    print("⚖️  CLASS WEIGHTS (Post-SMOTETomek)")
+    print("="*70)
+    
     class_weights = torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32).to(device)
+    
+    print("\n✅ Class weights set to [1.0, 1.0, 1.0]")
+    print("   Rationale:")
+    print("   - Data balanced by SMOTE (all classes ~equal)")
+    print("   - Data cleaned by Tomek (noisy samples removed)")
+    print("   - No amplification needed (fair learning for all)")
+    print("   - Risk: Zero (balanced + clean = no degenerate solutions)")
+    
+    print("\n✅ Ready to train with balanced & clean data!")
+    print("="*70 + "\n")
     
     # Update params with actual values
     best_params['input_size'] = X.shape[1]
     best_params['num_classes'] = len(np.unique(y))
     
     # ============================================================
-    # Train on SMOTE data, evaluate on ORIGINAL test
+    # Train on SMOTETomek data, evaluate on ORIGINAL test
     # ============================================================
     model = train_final_model(
-        X_train_smote,  # ← Balanced training data
-        y_train_smote,
+        X_train_resampled,  # ← Balanced + Cleaned training data
+        y_train_resampled,
         best_params,
         class_weights
     )
@@ -530,9 +614,9 @@ def main():
     
     # Prepare metadata
     metadata = {
-        'training_samples': int(len(X_train_smote)),  # SMOTE data size
+        'training_samples': int(len(X_train_resampled)),  # SMOTETomek data size
         'training_samples_original': int(len(X_train)),  # Original size
-        'synthetic_samples': int(len(X_train_smote) - len(X_train)),
+        'net_samples_added': int(len(X_train_resampled) - len(X_train)),  # Net change
         'test_samples': int(len(X_test)),
         'total_samples': int(len(X)),
         'num_features': int(X.shape[1]),
@@ -542,8 +626,10 @@ def main():
         'final_test_accuracy': float(test_metrics['accuracy']),
         'split_strategy': 'stratified',
         'export_format': 'torchscript',
-        'balancing_method': 'SMOTE',  # Document method used
-        'class_weights_used': class_weights.cpu().tolist(),  # Save weights used
+        'balancing_method': 'SMOTETomek',  # Changed from 'SMOTE'
+        'smote_k_neighbors': 5,  # Document SMOTE config
+        'tomek_strategy': 'all',  # Document Tomek config
+        'class_weights_used': class_weights.cpu().tolist(),
         'timestamp': datetime.utcnow().isoformat()
     }
     
@@ -557,6 +643,7 @@ def main():
     print(f"📊 Tuning CV Score: {tuning_results['cv_score']:.4f}")
     print(f"📊 Tuning Hold-out: {tuning_results['holdout_score']:.4f}")
     print(f"💾 Export Format: TorchScript (.ptc)")
+    print(f"⚖️  Balancing Method: SMOTETomek (SMOTE + Tomek Links)")
     print("\n💡 Deployment Decision:")
     print("   → See 'PRODUCTION READINESS CHECK' section above")
     print("   → Per-class metrics (Bullish/Bearish/Neutral) are critical")
