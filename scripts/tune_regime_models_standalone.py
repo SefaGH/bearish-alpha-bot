@@ -45,8 +45,9 @@ class RegimeModelTuner:
         
         Raises:
             FileNotFoundError: If cache file doesn't exist
+            KeyError: If cache file has wrong structure
         """
-        # ✅ FIX: Convert symbol to filesystem-safe filename
+        # Convert symbol to filesystem-safe filename
         symbol_safe = symbol.replace('/', '-')  # BTC/USDT → BTC-USDT
         cache_file = f"data/cache/{symbol_safe}_training_data.npz"
         
@@ -61,19 +62,36 @@ class RegimeModelTuner:
         
         logger.info(f"✅ Found cached data: {cache_file}")
         
-        # Load data
+        # Load and debug
         data = np.load(cache_file)
-        X, y = data['features'], data['labels']
         
-        logger.info(f"✅ Loaded {len(X)} real samples with {X.shape[1]} features")
+        # ✅ DEBUG: Print available keys
+        logger.info(f"📋 Available keys in NPZ: {list(data.keys())}")
+        
+        # Try to detect correct keys automatically
+        if 'X' in data and 'y' in data:
+            logger.info("✅ Using keys: 'X', 'y'")
+            X, y = data['X'], data['y']
+        elif 'features' in data and 'labels' in data:
+            logger.info("✅ Using keys: 'features', 'labels'")
+            X, y = data['features'], data['labels']
+        else:
+            raise KeyError(
+                f"Unknown NPZ structure. Available keys: {list(data.keys())}\n"
+                f"Expected: ('X', 'y') or ('features', 'labels')"
+            )
+        
+        logger.info(f"✅ Loaded {len(X)} samples with {X.shape[1]} features")
+        return X, y
         
         # Log label distribution
         unique, counts = np.unique(y, return_counts=True)
         label_dist = dict(zip(unique, counts))
         logger.info("Label distribution:")
+        label_names = {0: 'Bullish', 1: 'Neutral', 2: 'Bearish'}
         for label, count in label_dist.items():
             percentage = count / len(y) * 100
-            label_name = ['Bullish', 'Neutral', 'Bearish'][int(label)]
+            label_name = label_names.get(int(label), f'Unknown({label})')
             logger.info(f"  {label_name}: {count} ({percentage:.1f}%)")
         
         return X, y
