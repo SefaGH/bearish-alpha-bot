@@ -1,18 +1,14 @@
 """
-Final Model Training with Tuned Hyperparameters
-Uses stratified split and TorchScript export for production
+Final Model Training with Aggressive Class Weights
+Fixes class imbalance issue for Bearish detection
 """
 
-# ============================================================
-# CRITICAL: Import sys and Path FIRST for PYTHONPATH fix
-# ============================================================
 import sys
 from pathlib import Path
 
-# Add project root to Python path (for GitHub Actions)
+# Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
-# ============================================================
 
 import json
 import os
@@ -24,7 +20,6 @@ import torch.nn as nn
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 
-# ✅ Import from src (now works because project_root in sys.path)
 from src.ml.models import SimpleLSTM, create_model_from_params
 
 # Configuration
@@ -75,17 +70,106 @@ def stratified_split(X, y, test_size=0.2, random_state=42):
     return X_train, X_test, y_train, y_test
 
 
-def train_final_model(X_train, y_train, params, class_weights):
-    """Train final model with best hyperparameters"""
+def calculate_aggressive_class_weights(y_train, device):
+    """
+    Calculate aggressive class weights to fix minority class detection
+    
+    Strategy:
+    1. Calculate baseline balanced weights
+    2. Amplify Bearish weight aggressively (3x-6x)
+    3. Amplify Bullish weight moderately (1.5x-2x)
+    4. Keep Neutral weight low
+    
+    Args:
+        y_train: Training labels
+        device: Torch device (cuda/cpu)
+    
+    Returns:
+        Tensor of class weights [Bullish, Neutral, Bearish]
+    """
     print("\n" + "="*70)
-    print("🚀 TRAINING FINAL MODEL")
+    print("⚖️  CALCULATING AGGRESSIVE CLASS WEIGHTS")
     print("="*70)
     
-    # ✅ Create model using factory function
-    model = create_model_from_params(params)
+    # Class distribution
+    unique, counts = np.unique(y_train, return_counts=True)
+    total_samples = len(y_train)
+    num_classes = len(unique)
     
-    # Loss and optimizer
-    criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(class_weights))
+    print(f"\n📊 Training Set Distribution:")
+    class_names = ['Bullish', 'Neutral', 'Bearish']
+    for cls_id, count in zip(unique, counts):
+        pct = count / total_samples * 100
+        print(f"   {class_names[cls_id]:10s}: {count:,} samples ({pct:.1f}%)")
+    
+    # ============================================================
+    # BASELINE: Balanced weights (inverse frequency)
+    # ============================================================
+    baseline_weights = np.zeros(num_classes, dtype=np.float32)
+    for cls_id, count in zip(unique, counts):
+        baseline_weights[cls_id] = total_samples / (num_classes * count)
+    
+    print(f"\n⚖️  Baseline Weights (Balanced):")
+    for cls_id in unique:
+        print(f"   {class_names[cls_id]:10s}: {baseline_weights[cls_id]:.4f}")
+    
+    # ============================================================
+    # AGGRESSIVE: Amplify minority classes
+    # ============================================================
+    aggressive_weights = baseline_weights.copy()
+    
+    # Amplification factors (TUNE THESE!)
+    BULLISH_AMPLIFY = 1.75  # Bullish needs moderate boost
+    BEARISH_AMPLIFY = 2.60  # Bearish needs MASSIVE boost
+    NEUTRAL_REDUCE = 0.80   # Neutral can afford slight reduction
+    
+    aggressive_weights[0] *= BULLISH_AMPLIFY  # Bullish
+    aggressive_weights[1] *= NEUTRAL_REDUCE   # Neutral
+    aggressive_weights[2] *= BEARISH_AMPLIFY  # Bearish
+    
+    print(f"\n🚀 Aggressive Weights (Amplified):")
+    for cls_id in unique:
+        boost = aggressive_weights[cls_id] / baseline_weights[cls_id]
+        print(f"   {class_names[cls_id]:10s}: {aggressive_weights[cls_id]:.4f} ({boost:.2f}x)")
+    
+    # ============================================================
+    # CONVERT TO TORCH TENSOR
+    # ============================================================
+    class_weights_tensor = torch.tensor(aggressive_weights, dtype=torch.float32).to(device)
+    
+    print(f"\n✅ Class weights ready on device: {device}")
+    print(f"   Weights tensor: {class_weights_tensor}")
+    
+    return class_weights_tensor
+
+
+def train_final_model(X_train, y_train, params, class_weights):
+    """Train final model with aggressive class weights"""
+    print("\n" + "="*70)
+    print("🚀 TRAINING FINAL MODEL (AGGRESSIVE CLASS WEIGHTS)")
+    print("="*70)
+    
+    # Device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"\n🖥️  Using device: {device}")
+    
+    # Create model
+    model = create_model_from_params(params)
+    model = model.to(device)
+    
+    print(f"\n📐 Model Architecture:")
+    print(f"   Input: {params['input_size']} features")
+    print(f"   Hidden: {params['hidden_size']}")
+    print(f"   Layers: {params['num_layers']}")
+    print(f"   Dropout: {params['dropout']}")
+    print(f"   Output: {params['num_classes']} classes")
+    
+    # ============================================================
+    # CRITICAL: Loss with Class Weights
+    # ============================================================
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    print(f"\n🎯 Loss Function: CrossEntropyLoss with class weights")
+    
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=params['learning_rate'],
@@ -120,12 +204,16 @@ def train_final_model(X_train, y_train, params, class_weights):
     best_model_state = None
     
     print(f"\n🔄 Training for up to {num_epochs} epochs...")
+    print(f"   Early stopping patience: {patience}")
+    print(f"   Batch size: {params['batch_size']}")
     
     for epoch in range(num_epochs):
         # Train
         model.train()
         train_loss = 0
         for batch_X, batch_y in train_loader:
+            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+            
             optimizer.zero_grad()
             outputs = model(batch_X)
             loss = criterion(outputs, batch_y)
@@ -141,6 +229,8 @@ def train_final_model(X_train, y_train, params, class_weights):
         total = 0
         with torch.no_grad():
             for batch_X, batch_y in val_loader:
+                batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+                
                 outputs = model(batch_X)
                 loss = criterion(outputs, batch_y)
                 val_loss += loss.item()
@@ -183,12 +273,15 @@ def evaluate_model(model, X_test, y_test):
     print("📊 EVALUATING ON HOLD-OUT TEST SET")
     print("="*70)
     
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
     model.eval()
+    
     with torch.no_grad():
-        X_tensor = torch.FloatTensor(X_test)
+        X_tensor = torch.FloatTensor(X_test).to(device)
         outputs = model(X_tensor)
         _, predicted = torch.max(outputs, 1)
-        predicted = predicted.numpy()
+        predicted = predicted.cpu().numpy()
     
     # Calculate metrics
     accuracy = (predicted == y_test).mean()
@@ -223,67 +316,47 @@ def evaluate_model(model, X_test, y_test):
         'per_class_accuracy': per_class_acc
     }
 
+
 def save_model_torchscript(model, params, metrics, metadata):
-    """
-    Save model using TorchScript (production-safe format)
-    
-    TorchScript benefits:
-    - Self-contained (no class definition needed)
-    - Version-independent
-    - Faster inference
-    - C++ compatible
-    - More secure than pickle
-    """
+    """Save model using TorchScript"""
     MODEL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     METRICS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     
     timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
     
-    # Set model to eval mode (CRITICAL!)
+    # Set model to eval mode
     model.eval()
+    model.cpu()  # Move to CPU for saving
     
-    # Create dummy input matching training data shape
+    # Create dummy input
     dummy_input = torch.randn(1, params['input_size'])
     
     try:
-        # ============================================================
-        # STEP 1: TRACE MODEL
-        # ============================================================
+        # Trace model
         print(f"\n🔄 Tracing model with input shape: {dummy_input.shape}")
         traced_model = torch.jit.trace(model, dummy_input)
         
-        # ============================================================
-        # STEP 2: VERIFY TRACED MODEL ✅
-        # ============================================================
+        # Verify
         print("🔍 Verifying traced model...")
         with torch.no_grad():
             original_out = model(dummy_input)
             traced_out = traced_model(dummy_input)
             
-            # Check if outputs are close (within tolerance)
             if torch.allclose(original_out, traced_out, rtol=1e-3):
                 print("✅ Traced model verification PASSED (outputs match)")
             else:
                 max_diff = (original_out - traced_out).abs().max().item()
                 print(f"⚠️  WARNING: Traced model outputs differ (max diff: {max_diff:.6f})")
-                print("   This may be acceptable for small differences due to numerical precision")
                 
-                # Fail if difference is too large
-                if max_diff > 1e-2:  # More than 1% difference
-                    raise ValueError(
-                        f"Traced model verification FAILED: "
-                        f"max diff {max_diff:.6f} exceeds threshold 1e-2"
-                    )
+                if max_diff > 1e-2:
+                    raise ValueError(f"Traced model verification FAILED: max diff {max_diff:.6f}")
         
-        # ============================================================
-        # STEP 3: SAVE TORCHSCRIPT MODEL
-        # ============================================================
         # Save with timestamp
         script_path = MODEL_OUTPUT_DIR / f'lstm_final_{timestamp}.ptc'
         traced_model.save(str(script_path))
         print(f"✅ TorchScript model saved: {script_path}")
         
-        # Also save as "latest" for easy access
+        # Also save as "latest"
         latest_path = MODEL_OUTPUT_DIR / 'lstm_final_latest.ptc'
         traced_model.save(str(latest_path))
         print(f"✅ Latest model saved: {latest_path}")
@@ -291,13 +364,10 @@ def save_model_torchscript(model, params, metrics, metadata):
     except Exception as e:
         print(f"❌ Error tracing/saving model: {e}")
         import traceback
-        traceback.print_exc()  # Full stack trace for debugging
+        traceback.print_exc()
         raise
     
-    # ============================================================
-    # STEP 4: SAVE METADATA
-    # ============================================================
-    # Save metadata with timestamp
+    # Save metadata
     metadata_path = METRICS_OUTPUT_DIR / f'metadata_{timestamp}.json'
     with open(metadata_path, 'w') as f:
         json.dump({
@@ -326,9 +396,12 @@ def save_model_torchscript(model, params, metrics, metadata):
 
 def main():
     print("="*70)
-    print("🚀 FINAL MODEL TRAINING (TorchScript Export)")
+    print("🚀 FINAL MODEL TRAINING (AGGRESSIVE CLASS WEIGHTS FIX)")
     print("="*70)
     print(f"⏰ Timestamp: {datetime.utcnow().isoformat()}")
+    
+    # Device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Load best hyperparameters
     best_params, tuning_results = load_best_hyperparameters()
@@ -344,16 +417,16 @@ def main():
     # Stratified split
     X_train, X_test, y_train, y_test = stratified_split(X, y, test_size=0.2)
     
-    # Calculate class weights
-    class_weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
-    print(f"\n⚖️  Class weights: {class_weights}")
+    # ============================================================
+    # CRITICAL: Calculate Aggressive Class Weights
+    # ============================================================
+    class_weights = calculate_aggressive_class_weights(y_train, device)
     
     # Update params with actual values
     best_params['input_size'] = X.shape[1]
     best_params['num_classes'] = len(np.unique(y))
-    best_params['class_weights'] = class_weights.tolist()
     
-    # Train model
+    # Train model with aggressive class weights
     model = train_final_model(X_train, y_train, best_params, class_weights)
     
     # Evaluate on hold-out
@@ -371,10 +444,11 @@ def main():
         'final_test_accuracy': float(test_metrics['accuracy']),
         'split_strategy': 'stratified',
         'export_format': 'torchscript',
+        'class_weights_used': class_weights.cpu().tolist(),  # Save weights used
         'timestamp': datetime.utcnow().isoformat()
     }
     
-    # ✅ Save using TorchScript
+    # Save model
     save_model_torchscript(model, best_params, test_metrics, metadata)
     
     print("\n" + "="*70)
@@ -384,6 +458,42 @@ def main():
     print(f"📊 Tuning CV Score: {tuning_results['cv_score']:.4f}")
     print(f"📊 Tuning Hold-out: {tuning_results['holdout_score']:.4f}")
     print(f"💾 Export Format: TorchScript (.ptc)")
+    print("="*70)
+    
+    # ============================================================
+    # SUCCESS CRITERIA CHECK
+    # ============================================================
+    bearish_acc = test_metrics['per_class_accuracy'].get('Bearish', 0)
+    bullish_acc = test_metrics['per_class_accuracy'].get('Bullish', 0)
+    
+    print("\n" + "="*70)
+    print("🎯 PRODUCTION READINESS CHECK")
+    print("="*70)
+    
+    print(f"\n📊 Minority Class Performance:")
+    print(f"   Bearish: {bearish_acc:.4f} ({bearish_acc*100:.2f}%)")
+    print(f"   Bullish: {bullish_acc:.4f} ({bullish_acc*100:.2f}%)")
+    
+    # New criteria
+    BEARISH_MIN = 0.50  # 50% minimum
+    BULLISH_MIN = 0.60  # 60% minimum
+    
+    bearish_ok = bearish_acc >= BEARISH_MIN
+    bullish_ok = bullish_acc >= BULLISH_MIN
+    
+    if bearish_ok and bullish_ok:
+        print(f"\n✅ MODEL IS PRODUCTION READY!")
+        print(f"   Bearish: {bearish_acc:.2%} >= {BEARISH_MIN:.0%} ✅")
+        print(f"   Bullish: {bullish_acc:.2%} >= {BULLISH_MIN:.0%} ✅")
+    else:
+        print(f"\n⚠️  MODEL NEEDS FURTHER IMPROVEMENT")
+        if not bearish_ok:
+            print(f"   Bearish: {bearish_acc:.2%} < {BEARISH_MIN:.0%} ❌")
+            print(f"   → Need to increase Bearish class weight further")
+        if not bullish_ok:
+            print(f"   Bullish: {bullish_acc:.2%} < {BULLISH_MIN:.0%} ❌")
+            print(f"   → Need to increase Bullish class weight further")
+    
     print("="*70)
 
 
