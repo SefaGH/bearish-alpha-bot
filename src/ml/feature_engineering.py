@@ -896,87 +896,127 @@ class FeatureEngineeringPipeline:
 
     def prepare_for_training(self, features: pd.DataFrame, 
                            labels: pd.Series,
-                           use_all_features: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+                           feature_selection_mode: str = 'auto') -> Tuple[np.ndarray, np.ndarray]:
         """
-        Prepare features and labels for model training by aligning, cleaning, and converting them.
+        Prepare features and labels for model training with PROPER ALIGNMENT.
+        
+        CRITICAL: This method MUST preserve temporal alignment between features and labels.
+        DO NOT trim features and labels separately - this breaks prediction relationships!
         
         Args:
-            features: DataFrame with extracted features (42 basic or 87 with advanced)
-            labels: Series with regime labels
-            use_all_features: If True, use ALL extracted features (87).
-                             If False (default), use legacy FEATURE_COLUMNS (42).
+            features: DataFrame with features (can be 42, 82, or 87 features)
+            labels: Series with regime labels (same index as features)
+            feature_selection_mode: 
+                'auto' - Use features as-is from input (respects feature selection)
+                'legacy' - Use hardcoded 42 FEATURE_COLUMNS (backward compatibility)
+                'all' - Use all available features (for testing)
         
         Returns:
-            Tuple of (X: np.ndarray, y: np.ndarray) ready for model training
+            Tuple of (X, y) as numpy arrays, properly aligned
         """
         try:
-            # IMPLEMENTATION MODE SELECTION
-            if use_all_features:
-                # TEST MODE: Use all features (87)
-                # Keep all features as-is without alignment to FEATURE_COLUMNS
-                features_aligned = features.copy()
-                feature_columns = features_aligned.columns.tolist()
-                
-                # Drop first N rows to handle NaN from rolling windows in advanced features
-                # Advanced features (momentum, volume, volatility) need initial rows for calculation
-                MIN_VALID_ROWS = 50  # Adjust based on max rolling window size
-                
-                if len(features_aligned) > MIN_VALID_ROWS:
-                    features_aligned = features_aligned.iloc[MIN_VALID_ROWS:].reset_index(drop=True)
-                    labels = labels.iloc[MIN_VALID_ROWS:].reset_index(drop=True)
-                    logger.info(f"🔬 TEST MODE: Using all {len(feature_columns)} features (dropped first {MIN_VALID_ROWS} rows with NaN)")
-                else:
-                    logger.warning(f"⚠️ Insufficient data: {len(features_aligned)} rows < {MIN_VALID_ROWS} minimum")
-                    features_aligned = features_aligned.reset_index(drop=True)
-                    labels = labels.reset_index(drop=True)
-                    logger.info(f"🔬 TEST MODE: Using all {len(feature_columns)} features (no rows dropped)")
-                    
-            else:
-                # NORMAL MODE: Use legacy 42 features
-                # Align to FEATURE_COLUMNS for backward compatibility
-                features_aligned = self.align_and_finalize_features(features)
-                feature_columns = self.FEATURE_COLUMNS
-                logger.info(f"📦 NORMAL MODE: Using legacy {len(feature_columns)} features")
+            logger.info("="*70)
+            logger.info("🔧 PREPARING DATA FOR TRAINING (PROPER ALIGNMENT)")
+            logger.info("="*70)
             
-            # Convert labels to DataFrame
+            # =================================================================
+            # STEP 1: JOIN FEATURES AND LABELS (PRESERVES ALIGNMENT!)
+            # =================================================================
+            logger.info("Step 1: Joining features and labels on index (preserves alignment)...")
+            
             labels_df = labels.to_frame(name='label')
-            
-            # Combine features and labels
-            combined_df = pd.concat([features_aligned, labels_df], axis=1)
-            
-            # Drop rows where label is NaN (critical data)
-            combined_df.dropna(subset=['label'], inplace=True)
+            combined_df = features.join(labels_df, how='inner')
             
             if combined_df.empty:
-                logger.warning("⚠️ No data remains after dropping rows with missing labels.")
+                logger.error("❌ No data remains after inner join of features and labels!")
+                logger.error("   Check: Do features and labels have matching indices?")
                 return np.array([]), np.array([])
             
-            # Convert label to integer
+            logger.info(f"   Joined {len(combined_df)} rows with matching indices")
+            
+            # =================================================================
+            # STEP 2: DROP ROWS WITH NaN LABELS (PREDICTION HORIZON)
+            # =================================================================
+            logger.info("Step 2: Dropping rows with NaN labels (prediction horizon)...")
+            
+            initial_rows = len(combined_df)
+            combined_df.dropna(subset=['label'], inplace=True)
+            dropped = initial_rows - len(combined_df)
+            
+            if dropped > 0:
+                logger.info(f"   Dropped {dropped} rows with NaN labels")
+            
+            if combined_df.empty:
+                logger.error("❌ No data remains after dropping NaN labels!")
+                return np.array([]), np.array([])
+            
+            # =================================================================
+            # STEP 3: DETERMINE FEATURE COLUMNS BASED ON MODE
+            # =================================================================
+            logger.info(f"Step 3: Selecting features (mode: {feature_selection_mode})...")
+            
+            if feature_selection_mode == 'auto':
+                # Use features as-is (respects feature selection)
+                feature_columns = [col for col in combined_df.columns if col != 'label']
+                logger.info(f"   🎯 AUTO MODE: Using {len(feature_columns)} features from input")
+                
+            elif feature_selection_mode == 'legacy':
+                # Use hardcoded 42 features (backward compatibility)
+                # Check which are available
+                available_features = [col for col in self.FEATURE_COLUMNS if col in combined_df.columns]
+                if len(available_features) < len(self.FEATURE_COLUMNS):
+                    missing = set(self.FEATURE_COLUMNS) - set(available_features)
+                    logger.warning(f"   ⚠️ Missing {len(missing)} legacy features: {list(missing)[:5]}...")
+                feature_columns = available_features
+                logger.info(f"   📦 LEGACY MODE: Using {len(feature_columns)} hardcoded features")
+                
+            elif feature_selection_mode == 'all':
+                # Use all features (for testing)
+                feature_columns = [col for col in combined_df.columns if col != 'label']
+                logger.info(f"   🔬 ALL MODE: Using {len(feature_columns)} features")
+                
+            else:
+                raise ValueError(f"Invalid feature_selection_mode: {feature_selection_mode}")
+            
+            # =================================================================
+            # STEP 4: DROP ROWS WITH NaN FEATURES (WARMUP PERIOD)
+            # =================================================================
+            logger.info("Step 4: Dropping rows with NaN features (warmup period)...")
+            
+            initial_rows = len(combined_df)
+            combined_df.dropna(subset=feature_columns, inplace=True)
+            dropped = initial_rows - len(combined_df)
+            
+            if dropped > 0:
+                logger.info(f"   Dropped {dropped} rows with NaN features")
+            
+            if combined_df.empty:
+                logger.error("❌ No data remains after dropping NaN features!")
+                return np.array([]), np.array([])
+            
+            # =================================================================
+            # STEP 5: CONVERT LABEL TO INTEGER
+            # =================================================================
             combined_df['label'] = combined_df['label'].astype(int)
             
-            # Handle NaN in features
-            # Method 1: Forward fill then backward fill
-            combined_df[feature_columns] = combined_df[feature_columns].ffill().bfill()
-            
-            # Method 2: If still NaN (shouldn't happen with use_all_features after dropping first N rows)
-            initial_shape = combined_df.shape[0]
-            combined_df.dropna(inplace=True)
-            final_shape = combined_df.shape[0]
-            
-            if initial_shape > final_shape:
-                dropped = initial_shape - final_shape
-                logger.warning(f"⚠️ Dropped {dropped} rows that still contained NaNs after ffill/bfill")
-            
-            # Final check
-            if combined_df.empty:
-                logger.warning("⚠️ After all cleaning steps, no data remains for training.")
-                return np.array([]), np.array([])
-            
-            # Extract final X and y
+            # =================================================================
+            # STEP 6: EXTRACT FINAL X AND Y (PERFECTLY ALIGNED!)
+            # =================================================================
             X = combined_df[feature_columns].values
             y = combined_df['label'].values
             
-            logger.info(f"✅ Prepared {len(X)} samples with {X.shape[1]} features for training")
+            logger.info("="*70)
+            logger.info("✅ DATA PREPARATION COMPLETE")
+            logger.info("="*70)
+            logger.info(f"   Final samples: {len(X)}")
+            logger.info(f"   Features: {X.shape[1]}")
+            logger.info(f"   Label distribution:")
+            unique, counts = np.unique(y, return_counts=True)
+            for label_val, count in zip(unique, counts):
+                pct = count / len(y) * 100
+                label_name = {0: 'Bullish', 1: 'Neutral', 2: 'Bearish'}.get(label_val, f'Class{label_val}')
+                logger.info(f"      {label_name}: {count} ({pct:.1f}%)")
+            logger.info("="*70)
             
             return X, y
             
