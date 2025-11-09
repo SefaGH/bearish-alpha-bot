@@ -46,19 +46,123 @@ jobs:
           echo "📥 DOWNLOADING TRAINED MODEL"
           echo "======================================================================"
           
+          # Determine which run to use
           if [ -n "${{ inputs.artifact_run_id }}" ]; then
-            echo "Using specified run ID: ${{ inputs.artifact_run_id }}"
-            # TODO: Download artifact from specific run
-            echo "⚠️  Custom run ID not yet implemented"
-            echo "Using latest model from repository..."
+            RUN_ID="${{ inputs.artifact_run_id }}"
+            echo "Using specified run ID: $RUN_ID"
           else
-            echo "Using latest model from repository..."
+            echo "Finding latest successful training run..."
+            
+            # Get latest successful run
+            gh run list \
+              --workflow=train-models.yml \
+              --limit 1 \
+              --status success \
+              --json databaseId,conclusion,createdAt \
+              --jq '.[0] | .databaseId' > latest_run_id.txt
+            
+            RUN_ID=$(cat latest_run_id.txt)
+            
+            if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+              echo ""
+              echo "❌ ERROR: No successful training run found!"
+              echo ""
+              echo "Please run 'Train Final Production Model' workflow first:"
+              echo "  1. Go to Actions → Train Final Production Model"
+              echo "  2. Click 'Run workflow'"
+              echo "  3. Wait for completion"
+              echo "  4. Then re-run this deployment"
+              echo ""
+              exit 1
+            fi
+            
+            echo "✅ Found latest successful run: $RUN_ID"
+            
+            # Get run details
+            gh run view $RUN_ID --json displayTitle,createdAt,conclusion \
+              --jq '. | "Title: \(.displayTitle)\nDate: \(.createdAt)\nStatus: \(.conclusion)"'
           fi
           
-          # For now, we'll use the model from the repo
-          # In production, you'd download from artifacts
-          ls -lh data/models/final/ || echo "⚠️  Models directory not found"
-          ls -lh logs/final_training/ || echo "⚠️  Metrics directory not found"
+          echo ""
+          echo "📥 Downloading artifacts from run $RUN_ID..."
+          
+          # Create temp directory
+          mkdir -p .artifacts_temp
+          
+          # Download artifacts
+          gh run download $RUN_ID \
+            --pattern "final-model-torchscript-*" \
+            --dir .artifacts_temp || {
+            echo "❌ Failed to download artifacts!"
+            exit 1
+          }
+          
+          echo "✅ Artifacts downloaded"
+          
+          # Find the artifact directory (name includes SHA)
+          ARTIFACT_DIR=$(find .artifacts_temp -type d -name "final-model-torchscript-*" | head -1)
+          
+          if [ -z "$ARTIFACT_DIR" ]; then
+            echo "❌ Artifact directory not found!"
+            ls -la .artifacts_temp
+            exit 1
+          fi
+          
+          echo "Artifact directory: $ARTIFACT_DIR"
+          
+          # Create target directories
+          mkdir -p data/models/final
+          mkdir -p logs/final_training
+          
+          # Move files to expected locations
+          echo "Moving model files..."
+          if [ -d "$ARTIFACT_DIR/data/models/final" ]; then
+            cp -r "$ARTIFACT_DIR/data/models/final"/* data/models/final/
+            echo "✅ Model files moved"
+          else
+            echo "❌ Model directory not found in artifact!"
+            exit 1
+          fi
+          
+          echo "Moving metadata files..."
+          if [ -d "$ARTIFACT_DIR/logs/final_training" ]; then
+            cp -r "$ARTIFACT_DIR/logs/final_training"/* logs/final_training/
+            echo "✅ Metadata files moved"
+          else
+            echo "❌ Metadata directory not found in artifact!"
+            exit 1
+          fi
+          
+          # Verify critical files exist
+          echo ""
+          echo "Verifying downloaded files..."
+          
+          if [ ! -f "data/models/final/lstm_final_latest.ptc" ]; then
+            echo "❌ Model file missing: lstm_final_latest.ptc"
+            exit 1
+          fi
+          
+          if [ ! -f "logs/final_training/metadata_latest.json" ]; then
+            echo "❌ Metadata file missing: metadata_latest.json"
+            exit 1
+          fi
+          
+          # Display file info
+          echo ""
+          echo "✅ Downloaded files:"
+          echo "Model:"
+          ls -lh data/models/final/
+          echo ""
+          echo "Metadata:"
+          ls -lh logs/final_training/
+          
+          # Cleanup temp directory
+          rm -rf .artifacts_temp
+          
+          echo ""
+          echo "✅ Model download complete!"
+        env:
+          GH_TOKEN: ${{ github.token }}
       
       # =================================================================
       # VERIFY MODEL
@@ -73,48 +177,115 @@ jobs:
           import torch
           from pathlib import Path
           import json
+          import hashlib
+          
+          def compute_file_hash(filepath):
+              """Compute SHA256 hash of file"""
+              sha256 = hashlib.sha256()
+              with open(filepath, 'rb') as f:
+                  for chunk in iter(lambda: f.read(4096), b''):
+                      sha256.update(chunk)
+              return sha256.hexdigest()
           
           try:
+              # Load metadata first
+              metadata_path = Path('logs/final_training/metadata_latest.json')
+              if not metadata_path.exists():
+                  print(f"❌ Metadata not found: {metadata_path}")
+                  exit(1)
+              
+              print(f"✅ Metadata file exists: {metadata_path}")
+              
+              with open(metadata_path) as f:
+                  data = json.load(f)
+              
+              metadata = data['metadata']
+              num_features = metadata['num_features']
+              expected_accuracy = metadata['final_test_accuracy']
+              
+              print(f"✅ Metadata loaded:")
+              print(f"   Features: {num_features}")
+              print(f"   Accuracy: {expected_accuracy:.4f}")
+              print(f"   Format: {metadata.get('export_format', 'unknown')}")
+              print(f"   Timestamp: {metadata.get('timestamp', 'unknown')}")
+              
               # Check TorchScript model
               model_path = Path('data/models/final/lstm_final_latest.ptc')
               if not model_path.exists():
                   print(f"❌ Model not found: {model_path}")
                   exit(1)
               
-              print(f"✅ Model file exists: {model_path}")
-              print(f"   Size: {model_path.stat().st_size / 1024:.2f} KB")
+              file_size = model_path.stat().st_size
+              print(f"\n✅ Model file exists: {model_path}")
+              print(f"   Size: {file_size / 1024:.2f} KB")
               
-              # Try to load model
-              print("\n🔄 Loading TorchScript model...")
+              # Compute checksum
+              print("\n🔒 Computing model checksum...")
+              model_hash = compute_file_hash(model_path)
+              print(f"   SHA256: {model_hash[:16]}...")
+              
+              # Sanity check: Model size
+              if file_size < 1024:  # Less than 1KB
+                  print("⚠️  WARNING: Model file is very small (<1KB)")
+                  print("   This may indicate an incomplete download")
+              elif file_size > 10 * 1024 * 1024:  # More than 10MB
+                  print("⚠️  WARNING: Model file is very large (>10MB)")
+                  print("   This is unusual for a simple LSTM")
+              else:
+                  print("✅ Model size looks reasonable")
+              
+              # Load model
+              print(f"\n🔄 Loading TorchScript model...")
               model = torch.jit.load(str(model_path))
               model.eval()
               print("✅ Model loaded successfully!")
               
-              # Check metadata
-              metadata_path = Path('logs/final_training/metadata_latest.json')
-              if not metadata_path.exists():
-                  print(f"⚠️  Metadata not found: {metadata_path}")
-              else:
-                  print(f"✅ Metadata exists: {metadata_path}")
-                  with open(metadata_path) as f:
-                      data = json.load(f)
-                  print(f"   Accuracy: {data['metadata']['final_test_accuracy']:.4f}")
-                  print(f"   Format: {data['metadata']['export_format']}")
+              # Test inference with DYNAMIC feature count
+              print(f"\n🧪 Testing inference with {num_features} features...")
+              dummy_input = torch.randn(1, num_features)  # ✅ Dynamic!
               
-              # Test inference
-              print("\n🧪 Testing inference...")
-              import torch
-              dummy_input = torch.randn(1, 82)  # Adjust if different
               with torch.no_grad():
                   output = model(dummy_input)
+              
+              output_classes = output.shape[1]
               print(f"✅ Inference test passed!")
               print(f"   Input shape: {dummy_input.shape}")
               print(f"   Output shape: {output.shape}")
+              print(f"   Output classes: {output_classes}")
+              
+              # Validate output shape
+              expected_classes = 3  # Bullish, Neutral, Bearish
+              if output_classes != expected_classes:
+                  print(f"⚠️  WARNING: Expected {expected_classes} output classes, got {output_classes}")
+              
+              # Check if accuracy meets threshold
+              min_accuracy = 0.53
+              if expected_accuracy < min_accuracy:
+                  print(f"\n⚠️  WARNING: Model accuracy ({expected_accuracy:.4f}) below threshold ({min_accuracy:.4f})")
+                  print("   Consider re-training with more data or different parameters")
+              else:
+                  print(f"\n✅ Model accuracy ({expected_accuracy:.4f}) meets threshold ({min_accuracy:.4f})")
+              
+              # Save verification results
+              verification = {
+                  'model_path': str(model_path),
+                  'model_size_kb': file_size / 1024,
+                  'model_hash': model_hash,
+                  'num_features': num_features,
+                  'output_classes': output_classes,
+                  'expected_accuracy': expected_accuracy,
+                  'verification_passed': True,
+                  'timestamp': metadata.get('timestamp', '')
+              }
+              
+              with open('logs/final_training/verification.json', 'w') as f:
+                  json.dump(verification, f, indent=2)
               
               print("\n✅ Model verification complete!")
+              print("   Verification saved to: logs/final_training/verification.json")
               
           except Exception as e:
-              print(f"❌ Model verification failed: {e}")
+              print(f"\n❌ Model verification failed: {e}")
               import traceback
               traceback.print_exc()
               exit(1)
@@ -151,6 +322,24 @@ jobs:
           echo "🧪 TESTING PREDICTION API"
           echo "======================================================================"
           
+          # Get feature count dynamically
+          NUM_FEATURES=$(python3 -c "
+          import json
+          with open('logs/final_training/metadata_latest.json') as f:
+              print(json.load(f)['metadata']['num_features'])
+          ")
+          
+          echo "Model expects $NUM_FEATURES features"
+          
+          # Generate features array dynamically
+          FEATURES=$(python3 -c "
+          import json
+          features = [0.0] * $NUM_FEATURES
+          print(json.dumps(features))
+          ")
+          
+          echo "Generated test features: ${FEATURES:0:50}..."
+          
           # Start service in background
           cd src/api
           python prediction_service.py &
@@ -158,50 +347,74 @@ jobs:
           cd ../..
           
           # Wait for service to start
+          echo ""
           echo "⏳ Waiting for API to start..."
           sleep 10
           
           # Test health endpoint
           echo ""
           echo "Testing GET /health..."
-          curl -f http://localhost:8000/health || {
-            echo "❌ Health check failed!"
-            kill $API_PID
-            exit 1
-          }
+          HEALTH_RESPONSE=$(curl -s http://localhost:8000/health)
+          echo "Response: $HEALTH_RESPONSE"
           
-          echo ""
-          echo "✅ Health check passed!"
+          # Verify health response
+          if echo "$HEALTH_RESPONSE" | grep -q '"status":"healthy"'; then
+            echo "✅ Health check passed!"
+          else
+            echo "❌ Health check failed!"
+            kill $API_PID 2>/dev/null || true
+            exit 1
+          fi
           
           # Test metrics endpoint
           echo ""
           echo "Testing GET /metrics..."
-          curl -f http://localhost:8000/metrics || {
+          METRICS_RESPONSE=$(curl -s http://localhost:8000/metrics)
+          echo "Response: $METRICS_RESPONSE"
+          
+          if echo "$METRICS_RESPONSE" | grep -q '"test_accuracy"'; then
+            echo "✅ Metrics endpoint passed!"
+          else
             echo "❌ Metrics endpoint failed!"
-            kill $API_PID
+            kill $API_PID 2>/dev/null || true
             exit 1
-          }
+          fi
           
+          # Test prediction endpoint with DYNAMIC features
           echo ""
-          echo "✅ Metrics endpoint passed!"
-          
-          # Test prediction endpoint (with dummy data)
-          echo ""
-          echo "Testing POST /predict..."
-          curl -X POST http://localhost:8000/predict \
+          echo "Testing POST /predict with $NUM_FEATURES features..."
+          PREDICT_RESPONSE=$(curl -s -X POST http://localhost:8000/predict \
             -H "Content-Type: application/json" \
-            -d '{"features": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}' \
-            || {
-            echo "❌ Prediction endpoint failed!"
-            kill $API_PID
-            exit 1
-          }
+            -d "{\"features\": $FEATURES}")
           
-          echo ""
-          echo "✅ Prediction endpoint passed!"
+          echo "Response: $PREDICT_RESPONSE"
+          
+          # Verify prediction response
+          if echo "$PREDICT_RESPONSE" | grep -q '"prediction"'; then
+            echo "✅ Prediction endpoint passed!"
+            
+            # Extract prediction details
+            PREDICTION=$(echo "$PREDICT_RESPONSE" | python3 -c "
+            import json, sys
+            data = json.load(sys.stdin)
+            print(f\"Prediction: {data['class_name']}\")
+            print(f\"Confidence: {data['confidence']:.4f}\")
+            for cls, prob in data['probabilities'].items():
+                print(f\"  {cls}: {prob:.4f}\")
+            ")
+            
+            echo ""
+            echo "Prediction Details:"
+            echo "$PREDICTION"
+          else
+            echo "❌ Prediction endpoint failed!"
+            echo "Response: $PREDICT_RESPONSE"
+            kill $API_PID 2>/dev/null || true
+            exit 1
+          fi
           
           # Stop service
-          kill $API_PID
+          kill $API_PID 2>/dev/null || true
           
           echo ""
           echo "✅ All API tests passed!"
