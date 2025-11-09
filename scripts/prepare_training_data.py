@@ -93,8 +93,15 @@ async def fetch_and_process_data(symbol='BTC/USDT',
             logger.info(f"  ✅ Extracted {features_df.shape[1]} features")
             
             # Generate labels
-            logger.info(f"  Generating regime labels...")
-            regime_labels = generate_regime_labels(ohlcv_df)
+            logger.info("  Generating regime labels...")
+            regime_labels = generate_regime_labels(
+                candles,
+                window=20,                    # Lookback period
+                threshold=0.015,              # 1.5% threshold (was 0.01)
+                prediction_horizon=5,         # Predict 5 periods ahead
+                volume_confirm=True,          # Require volume confirmation
+                multi_timeframe=True          # Use multi-timeframe consensus
+            )
             logger.info(f"  ✅ Generated {len(regime_labels)} labels")
             
             # Prepare for training with flag
