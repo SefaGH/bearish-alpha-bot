@@ -56,7 +56,7 @@ jobs:
           echo "======================================================================"
           echo "🎯 FEATURE ANALYSIS & SELECTION"
           echo "======================================================================"
-          python scripts/feature_selection.py
+          python scripts/analyze_features.py --analyze --select
         env:
           ML_ENABLED: "true"
       
