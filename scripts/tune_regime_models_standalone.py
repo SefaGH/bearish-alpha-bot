@@ -21,6 +21,9 @@ from scripts.utils.validation_framework import TimeSeriesValidator, ValidationRe
 from scripts.utils.optuna_tuner import OptunaModelTuner
 from sklearn.model_selection import train_test_split
 
+from sklearn.metrics import balanced_accuracy_score, make_scorer
+from sklearn.utils.class_weight import compute_class_weight
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - [%(name)s] - %(levelname)s - %(message)s'
@@ -316,31 +319,46 @@ class RegimeModelTuner:
         
     def tune_model(self, model_type: str, X: np.ndarray, y: np.ndarray,
                    n_trials: int = 30, cv_splits: int = 5):
-        """Run hyperparameter tuning with stratified split."""
+        """
+        Tune on REAL data with balanced_accuracy metric.
+        NO SMOTETomek in tuning (correct ML practice).
+        """
         logger.info("="*70)
-        logger.info(f"🎯 TUNING {model_type.upper()} MODEL (STRATIFIED SPLIT)")
+        logger.info(f"🎯 TUNING {model_type.upper()} MODEL (Stratified + Balanced Accuracy)")  # FIX: .upper()
         logger.info("="*70)
-        
-        from sklearn.utils.class_weight import compute_class_weight
         
         num_classes = len(np.unique(y))
-        class_weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
         
-        logger.info(f"Class weights: {class_weights}")
+        # 1. Calculate class weights from REAL data
+        class_weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
+        logger.info(f"Class weights (for imbalanced data): {class_weights}")
         logger.info(f"Number of classes: {num_classes}")
         
-        # ================================================================
-        # STRATIFIED SPLIT - All logging done inside prepare_data_splits
-        # ================================================================
+        # 2. Stratified split (NO SMOTETomek - keep data REAL!)
         X_cv, X_test, y_cv, y_test = self.prepare_data_splits(
             X, y, 
             test_size=0.2, 
-            strategy='stratified'  # Change to 'time_last' or 'time_middle' if needed
+            strategy='stratified'
         )
         
-        # ================================================================
-        # CREATE TUNER (no need for duplicate logging)
-        # ================================================================
+        logger.info(f"\n📊 Data Split:")
+        logger.info(f"   CV samples: {len(X_cv)} (80%)")
+        logger.info(f"   Test samples: {len(X_test)} (20%)")
+        
+        # Log REAL distribution
+        unique, counts = np.unique(y_cv, return_counts=True)
+        logger.info(f"\n📊 CV Distribution (REAL data, no synthetic):")
+        class_names = {0: 'Bullish', 1: 'Neutral', 2: 'Bearish'}
+        for cls_id, count in zip(unique, counts):
+            pct = count / len(y_cv) * 100
+            logger.info(f"   {class_names[cls_id]:10s}: {count:,} ({pct:.1f}%)")
+        
+        # 3. Define balanced_accuracy scorer (NEW!)
+        logger.info("\n🎯 Optimization Metric: balanced_accuracy_score")
+        logger.info("   (Treats all classes equally, not biased to majority)")
+        balanced_accuracy_scorer = make_scorer(balanced_accuracy_score)
+        
+        # 4. Create tuner
         validator = TimeSeriesValidator(n_splits=cv_splits)
         tuner = OptunaModelTuner(
             model_type=model_type,
@@ -349,64 +367,81 @@ class RegimeModelTuner:
             direction='maximize'
         )
         
+        # 5. Model factory WITH class weights (for imbalanced data)
         def model_factory(params):
             if model_type == 'lstm':
                 params['input_size'] = X.shape[1]
                 params['num_classes'] = num_classes
-                params['class_weights'] = class_weights
+                params['class_weights'] = class_weights  # Help model learn minority
                 return self.create_lstm_model(params)
             else:
                 raise ValueError(f"Unknown model: {model_type}")
         
-        # Run tuning
-        logger.info("\n🔬 Starting hyperparameter optimization...")
+        # 6. Tune on REAL data with balanced_accuracy (NEW!)
+        logger.info("\n🔬 Starting hyperparameter optimization on REAL data...")
+        logger.info("   (NO SMOTETomek - tuning on original distribution)")
         best_params, best_score, study = tuner.tune(
-            X=X_cv, y=y_cv,
+            X=X_cv, y=y_cv,  # REAL data (not synthetic!)
             model_factory=model_factory,
-            metric_fn=None
+            metric_fn=balanced_accuracy_scorer  # NEW: Balanced metric
         )
         
-        # Validate on hold-out
+        logger.info(f"\n✅ Best CV Balanced Accuracy: {best_score:.4f}")
+        
+        # 7. Validate on hold-out with BOTH metrics (ENHANCED!)
         logger.info("\n🔬 Validating on stratified hold-out test set...")
         final_model = model_factory(best_params)
-        final_model.fit(X_cv, y_cv)
-        holdout_score = final_model.score(X_test, y_test)
+        final_model.fit(X_cv, y_cv)  # Train on REAL CV data
         
-        gap = best_score - holdout_score
+        # Calculate both metrics
+        holdout_score_total_acc = final_model.score(X_test, y_test)
+        y_pred_test = final_model.predict(X_test)
+        holdout_score_balanced_acc = balanced_accuracy_score(y_test, y_pred_test)
         
-        logger.info(f"Hold-out score: {holdout_score:.4f}")
-        logger.info(f"CV-Holdout gap: {gap:+.4f}")
+        gap = best_score - holdout_score_balanced_acc
         
-        if abs(gap) > 0.15:
-            logger.error(f"🔴 CRITICAL: Severe overfitting (gap: {gap:+.4f})")
-        elif abs(gap) > 0.10:
-            logger.warning(f"⚠️  WARNING: Overfitting (gap: {gap:+.4f})")
-        elif abs(gap) > 0.05:
-            logger.warning(f"⚠️  CAUTION: Moderate overfitting (gap: {gap:+.4f})")
+        logger.info(f"   Hold-out Total Accuracy: {holdout_score_total_acc:.4f} (Yanıltıcı metrik)")  # FIX: Typo
+        logger.info(f"   Hold-out Balanced Accuracy: {holdout_score_balanced_acc:.4f} (Asıl metrik)")
+        logger.info(f"   Best CV Balanced Accuracy: {best_score:.4f}")
+        logger.info(f"   CV-Holdout (Balanced) Gap: {gap:+.4f}")
+        
+        if abs(gap) < 0.05:
+            logger.info("   ✅ Excellent generalization (gap < 5%)")
+        elif abs(gap) < 0.10:
+            logger.info("   ✅ Good generalization (gap < 10%)")
         else:
-            logger.info(f"✅ Good generalization (gap: {gap:+.4f})")
+            logger.info("   ⚠️  Warning: Large gap suggests overfitting/underfitting")
         
-        # ✅ ADD: Get max_shift from prepare_data_splits result (optional)
-        # For now, just use 0.0 since stratified guarantees perfect balance
-        max_shift = 0.0  # Stratified split guarantees 0% shift
+        # 8. Save results with BOTH metrics (NEW!)
+        # Calculate distribution shift
+        max_shift = 0.0  # Stratified split has 0% shift
         
         results = {
             'model_type': model_type,
             'best_params': best_params,
-            'cv_score': float(best_score),
-            'holdout_score': float(holdout_score),
-            'gap': float(gap),
+            
+            # Old metrics (for compatibility)
+            'cv_score': float(best_score),  # Now balanced (not total)
+            'holdout_score': float(holdout_score_total_acc),  # Total accuracy
+            
+            # NEW: Balanced metrics (PRIMARY)
+            'balanced_cv_score': float(best_score),
+            'balanced_holdout_score': float(holdout_score_balanced_acc),
+            
+            'gap': float(gap),  # Now uses balanced metric
             'n_trials': n_trials,
             'cv_splits': cv_splits,
             'num_classes': int(num_classes),
             'class_weights': class_weights.tolist(),
             'distribution_shift': float(max_shift),
-            'split_strategy': 'stratified',  # ← Changed from 'balanced_middle'
+            'split_strategy': 'stratified_class_weights',  # Updated name
             'timestamp': datetime.utcnow().isoformat()
         }
         
         self._save_results(results, model_type)
-        return results 
+        logger.info("\n✅ Tuning complete! Results saved with balanced metrics.")
+        
+        return results
     
     def _convert_numpy_to_python(self, obj):
         """
