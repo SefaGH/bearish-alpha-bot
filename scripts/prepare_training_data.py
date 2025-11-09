@@ -6,7 +6,7 @@ Usage:
     python scripts/prepare_training_data.py --symbol BTC/USDT
 
 Author: SefaGH
-Date: 2025-11-08
+Date: 2025-11-09 (Updated: Fixed prepare_for_training parameter)
 """
 
 import asyncio
@@ -21,7 +21,7 @@ import logging
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # ✅ CORRECT IMPORTS (matching train_all_models.py)
-from src.core.ccxt_client import CcxtClient  # ✅ CcxtClient, not CCXTClient
+from src.core.ccxt_client import CcxtClient
 from src.ml.feature_engineering import FeatureEngineeringPipeline
 from src.ml.label_generator import generate_regime_labels
 
@@ -38,8 +38,7 @@ REGIME_TRAINING_TIMEFRAMES = ['15m', '30m', '1h', '4h', '1d']
 
 async def fetch_and_process_data(symbol='BTC/USDT', 
                                  timeframes=None,
-                                 use_feature_selection=True,
-                                 use_all_features=False):
+                                 use_feature_selection=True):  # ✅ REMOVED: use_all_features parameter
     """
     Fetch real market data and prepare for training.
     
@@ -47,7 +46,6 @@ async def fetch_and_process_data(symbol='BTC/USDT',
         symbol: Trading symbol
         timeframes: List of timeframes
         use_feature_selection: Apply feature selection mask
-        use_all_features: Use all 87 features instead of legacy 42
     """
     if timeframes is None:
         timeframes = REGIME_TRAINING_TIMEFRAMES
@@ -104,22 +102,27 @@ async def fetch_and_process_data(symbol='BTC/USDT',
             )
             logger.info(f"  ✅ Generated {len(regime_labels)} labels")
             
-            # Prepare for training with flag
+            # ==================== CRITICAL FIX (Line 104-109) ==================== #
+            # Prepare for training (clean and align)
+            logger.info("  Preparing data (cleaning and alignment)...")
             X_prepared, y_prepared = feature_engine.prepare_for_training(
                 features_df,
                 regime_labels,
-                use_all_features=use_all_features  # ← Pass the flag
+                feature_selection_mode='auto'  # ✅ FIXED: New parameter name!
             )
+            # ===================================================================== #
             
-            if X_prepared.shape[0] > 0:
+            if len(X_prepared) > 0:
                 all_features.append(X_prepared)
                 all_labels.append(y_prepared)
-                logger.info(f"  ✅ Added {X_prepared.shape[0]} samples")
+                logger.info(f"  ✅ Added {len(X_prepared)} samples")
             else:
                 logger.warning(f"  ⚠️ No samples after preparation")
             
         except Exception as e:
-            logger.error(f"  ❌ Error processing {tf}: {e}", exc_info=True)
+            logger.error(f"  ❌ Error processing {tf}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
     
     # 4. Combine all timeframes
@@ -175,9 +178,10 @@ async def fetch_and_process_data(symbol='BTC/USDT',
     
     # Show label distribution
     unique, counts = np.unique(y, return_counts=True)
+    label_names = {0: 'Bullish', 1: 'Neutral', 2: 'Bearish'}
     for label, count in zip(unique, counts):
         percentage = (count / len(y)) * 100
-        label_name = ['Bullish', 'Neutral', 'Bearish', 'Volatile'][label]
+        label_name = label_names.get(int(label), f'Class_{label}')
         logger.info(f"     {label_name}: {count} ({percentage:.1f}%)")
     
     # 5. Save to cache
@@ -213,12 +217,7 @@ async def async_main():
         default=REGIME_TRAINING_TIMEFRAMES,
         help='Timeframes to fetch (default: 15m 30m 1h 4h 1d)'
     )
-    # CLI argument
-    parser.add_argument(
-        '--use-all-features',
-        action='store_true',
-        help='Use all 87 extracted features instead of legacy 42 (TEST MODE)'
-    )
+    # ✅ REMOVED: --use-all-features argument (no longer needed)
     parser.add_argument(
         '--no-feature-selection',
         action='store_true',
@@ -230,11 +229,17 @@ async def async_main():
     X, y = await fetch_and_process_data(
         args.symbol,
         args.timeframes,
-        use_feature_selection=not args.no_feature_selection,
-        use_all_features=args.use_all_features  # ← Use the flag
+        use_feature_selection=not args.no_feature_selection
+        # ✅ REMOVED: use_all_features parameter
     )
     
     logger.info(f"\n✅ COMPLETE: {len(X)} samples ready for tuning")
+    
+    # Log additional info
+    if X.shape[1] == 82:
+        logger.info("✅ Training data prepared with 82 selected features")
+    else:
+        logger.info(f"✅ Training data prepared with {X.shape[1]} features")
 
 
 def main():
