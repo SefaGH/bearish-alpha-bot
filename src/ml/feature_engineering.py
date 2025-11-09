@@ -898,71 +898,88 @@ class FeatureEngineeringPipeline:
                            labels: pd.Series,
                            use_all_features: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Prepare features and labels for model training.
+        Prepare features and labels for model training by aligning, cleaning, and converting them.
         
         Args:
-            features: DataFrame with features
-            labels: Series with labels
+            features: DataFrame with extracted features (42 basic or 87 with advanced)
+            labels: Series with regime labels
             use_all_features: If True, use ALL extracted features (87).
                              If False (default), use legacy FEATURE_COLUMNS (42).
+        
+        Returns:
+            Tuple of (X: np.ndarray, y: np.ndarray) ready for model training
         """
         try:
             # IMPLEMENTATION MODE SELECTION
             if use_all_features:
-                # TEST MODE: Use all features
-                features_aligned = features
-                feature_columns = features.columns.tolist()
-                logger.info(f"🔬 TEST MODE: Using all {len(feature_columns)} features")
+                # TEST MODE: Use all features (87)
+                # Keep all features as-is without alignment to FEATURE_COLUMNS
+                features_aligned = features.copy()
+                feature_columns = features_aligned.columns.tolist()
+                
+                # Drop first N rows to handle NaN from rolling windows in advanced features
+                # Advanced features (momentum, volume, volatility) need initial rows for calculation
+                MIN_VALID_ROWS = 50  # Adjust based on max rolling window size
+                
+                if len(features_aligned) > MIN_VALID_ROWS:
+                    features_aligned = features_aligned.iloc[MIN_VALID_ROWS:].reset_index(drop=True)
+                    labels = labels.iloc[MIN_VALID_ROWS:].reset_index(drop=True)
+                    logger.info(f"🔬 TEST MODE: Using all {len(feature_columns)} features (dropped first {MIN_VALID_ROWS} rows with NaN)")
+                else:
+                    logger.warning(f"⚠️ Insufficient data: {len(features_aligned)} rows < {MIN_VALID_ROWS} minimum")
+                    features_aligned = features_aligned.reset_index(drop=True)
+                    labels = labels.reset_index(drop=True)
+                    logger.info(f"🔬 TEST MODE: Using all {len(feature_columns)} features (no rows dropped)")
+                    
             else:
                 # NORMAL MODE: Use legacy 42 features
+                # Align to FEATURE_COLUMNS for backward compatibility
                 features_aligned = self.align_and_finalize_features(features)
                 feature_columns = self.FEATURE_COLUMNS
                 logger.info(f"📦 NORMAL MODE: Using legacy {len(feature_columns)} features")
             
-            # 2. Etiketleri bir DataFrame'e dönüştür ve adını 'label' yap.
+            # Convert labels to DataFrame
             labels_df = labels.to_frame(name='label')
             
-            # 3. Özellikler ve etiketleri birleştir.
+            # Combine features and labels
             combined_df = pd.concat([features_aligned, labels_df], axis=1)
             
-            # 4. SADECE etiketi olmayan (NaN) satırları sil.
+            # Drop rows where label is NaN (critical data)
             combined_df.dropna(subset=['label'], inplace=True)
             
             if combined_df.empty:
-                logger.warning("No data remains after dropping rows with missing labels.")
+                logger.warning("⚠️ No data remains after dropping rows with missing labels.")
                 return np.array([]), np.array([])
             
-            # 5. Etiketleri tamsayıya dönüştür.
+            # Convert label to integer
             combined_df['label'] = combined_df['label'].astype(int)
             
-            # --- 🔥🔥🔥 NİHAİ DÜZELTME: Veri Temizleme Mantığı ---
-            # 6. Özellik (X) tarafındaki NaN değerleri doldur.
-            # Önce ffill (ileri doldurma), sonra bfill (geri doldurma).
-            # Bu, hem baştaki hem de ortadaki boşlukları doldurmayı garanti eder.
-            feature_columns = self.FEATURE_COLUMNS
+            # Handle NaN in features
+            # Method 1: Forward fill then backward fill
             combined_df[feature_columns] = combined_df[feature_columns].ffill().bfill()
             
-            # 7. Bu adımdan sonra hala NaN kalıyorsa, bu satırlar gerçekten sorunludur.
-            # Bu yüzden bu satırları atıyoruz. Bu işlem artık tüm tabloyu silmemeli.
+            # Method 2: If still NaN (shouldn't happen with use_all_features after dropping first N rows)
             initial_shape = combined_df.shape[0]
             combined_df.dropna(inplace=True)
             final_shape = combined_df.shape[0]
-
+            
             if initial_shape > final_shape:
-                 logger.warning(f"Dropped {initial_shape - final_shape} rows that still contained NaNs after ffill/bfill.")
-            # --- 🔥🔥🔥 DÜZELTME SONU ---
-
-            # 8. Nihai X ve y'yi oluştur.
+                dropped = initial_shape - final_shape
+                logger.warning(f"⚠️ Dropped {dropped} rows that still contained NaNs after ffill/bfill")
+            
+            # Final check
             if combined_df.empty:
-                logger.warning("After all cleaning steps, no data remains for training.")
+                logger.warning("⚠️ After all cleaning steps, no data remains for training.")
                 return np.array([]), np.array([])
-                
+            
+            # Extract final X and y
             X = combined_df[feature_columns].values
             y = combined_df['label'].values
             
             logger.info(f"✅ Prepared {len(X)} samples with {X.shape[1]} features for training")
+            
             return X, y
             
         except Exception as e:
-            logger.error(f"Veri hazırlama hatası: {e}", exc_info=True)
+            logger.error(f"❌ Error in prepare_for_training: {e}", exc_info=True)
             return np.array([]), np.array([])
