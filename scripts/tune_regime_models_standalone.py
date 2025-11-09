@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from scripts.utils.validation_framework import TimeSeriesValidator, ValidationReport
 from scripts.utils.optuna_tuner import OptunaModelTuner
+from sklearn.model_selection import train_test_split
 
 logging.basicConfig(
     level=logging.INFO,
