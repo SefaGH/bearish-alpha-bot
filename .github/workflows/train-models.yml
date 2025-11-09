@@ -37,38 +37,102 @@ jobs:
           pip install -r requirements.txt
       
       # =================================================================
-      # STEP 1: Prepare Training Data
+      # STEP 1: Prepare Training Data with ALL FEATURES
       # =================================================================
       - name: 📊 Step 1/5 - Prepare training data
         run: |
           echo "======================================================================"
-          echo "📊 PREPARING TRAINING DATA"
+          echo "📊 PREPARING TRAINING DATA WITH ALL FEATURES"
           echo "======================================================================"
-          python scripts/prepare_training_data.py --symbol "${{ inputs.symbol }}"
+          echo ""
+          echo "Configuration:"
+          echo "  - Symbol: ${{ inputs.symbol }}"
+          echo "  - Use all features: YES (87 total)"
+          echo "  - Advanced features: ENABLED"
+          echo ""
+          
+          python scripts/prepare_training_data.py \
+            --symbol "${{ inputs.symbol }}" \
+            --use-all-features
+          
+          echo ""
+          echo "✅ Training data prepared with all 87 features"
         env:
           ML_ENABLED: "true"
       
       # =================================================================
-      # STEP 2: Feature Analysis & Selection
+      # STEP 2: Feature Analysis & Selection (Lenient Thresholds)
       # =================================================================
       - name: 🎯 Step 2/5 - Feature analysis & selection
         run: |
           echo "======================================================================"
           echo "🎯 FEATURE ANALYSIS & SELECTION"
           echo "======================================================================"
-          python scripts/analyze_features.py --analyze --select
+          echo ""
+          echo "Using lenient thresholds to match tuning configuration..."
+          echo "  - Variance threshold: 0.00005"
+          echo "  - Correlation threshold: 0.005"
+          echo ""
+          
+          # First analyze
+          python scripts/analyze_features.py --analyze
+          
+          echo ""
+          echo "Running feature selection..."
+          
+          # Then select with lenient thresholds
+          python scripts/analyze_features.py \
+            --select \
+            --variance-threshold 0.00005 \
+            --correlation-threshold 0.005
+          
+          echo ""
+          echo "✅ Feature selection completed"
+          
+          # Verify selection results
+          if [ -f "data/cache/feature_selection_mask.npy" ]; then
+            SELECTED=$(python3 -c "
+            import numpy as np
+            mask = np.load('data/cache/feature_selection_mask.npy')
+            print(f'{mask.sum()}/{len(mask)}')
+            ")
+            echo "✅ Selected features: $SELECTED"
+          fi
         env:
           ML_ENABLED: "true"
       
       # =================================================================
-      # STEP 3: Re-prepare with Selected Features
+      # STEP 3: Re-prepare with Selected Features (ALL FEATURES ENABLED)
       # =================================================================
       - name: 🔄 Step 3/5 - Re-prepare data with selected features
         run: |
           echo "======================================================================"
           echo "🔄 RE-PREPARING DATA WITH SELECTED FEATURES"
           echo "======================================================================"
-          python scripts/prepare_training_data.py --symbol "${{ inputs.symbol }}"
+          echo ""
+          
+          python scripts/prepare_training_data.py \
+            --symbol "${{ inputs.symbol }}" \
+            --use-all-features
+          
+          echo ""
+          
+          # Verify final feature count
+          FINAL_FEATURES=$(python3 -c "
+          import numpy as np
+          data = np.load('data/cache/BTC-USDT_training_data.npz')
+          print(data['X'].shape[1])
+          ")
+          
+          echo "✅ Data re-prepared"
+          echo "✅ Final feature count: $FINAL_FEATURES"
+          
+          # Check if matches tuning (should be ~82)
+          if [ "$FINAL_FEATURES" -ge 80 ] && [ "$FINAL_FEATURES" -le 85 ]; then
+            echo "✅ Feature count matches tuning configuration! (80-85 range)"
+          else
+            echo "⚠️  WARNING: Feature count ($FINAL_FEATURES) may not match tuning (expected ~82)"
+          fi
         env:
           ML_ENABLED: "true"
       
