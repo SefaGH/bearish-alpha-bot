@@ -3,14 +3,20 @@ Final Model Training with Tuned Hyperparameters
 Uses stratified split and TorchScript export for production
 """
 
+# ============================================================
+# CRITICAL: Import sys and Path FIRST for PYTHONPATH fix
+# ============================================================
+import sys
+from pathlib import Path
+
+# Add project root to Python path (for GitHub Actions)
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+# ============================================================
+
 import json
 import os
 from datetime import datetime
-from pathlib import Path
-
-# Add project root to Python path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
 
 import numpy as np
 import torch
@@ -18,7 +24,7 @@ import torch.nn as nn
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 
-# ✅ Import from shared models
+# ✅ Import from src (now works because project_root in sys.path)
 from src.ml.models import SimpleLSTM, create_model_from_params
 
 # Configuration
