@@ -43,49 +43,40 @@ jobs:
           echo "✅ Directories created"
       
       # ==================== STEP 1: UPDATED ==================== #
-      - name: 📊 Step 1 - Prepare Training Data
+      # Step 1: Prepare Training Data
+      - name: Prepare Training Data
         run: |
           echo "======================================================================"
-          echo "📊 PREPARING TRAINING DATA (BALANCED ACCURACY READY)"
+          echo "📊 PREPARING TRAINING DATA WITH AUTOMATIC FEATURE SELECTION"
           echo "======================================================================"
-          echo ""
           echo "Configuration:"
-          echo "  - Symbol: ${{ github.event.inputs.symbol }}"
-          echo "  - Label threshold: 0.010 (1.0% - fixed from 0.015)"
-          echo "  - Volume confirmation: ENABLED (volume_confirm=True)"  # ← UPDATED!
-          echo "  - Multi-timeframe: ENABLED"
-          echo "  - Use all features: YES (87 → selected ~80)"
+          echo "  - Symbol: BTC/USDT"
+          echo "  - Timeframes: 15m, 30m, 1h, 4h, 1d"
+          echo "  - Feature extraction: 87 features (basic + advanced)"
+          echo "  - Data cleaning: prepare_for_training (mode='auto')"
+          echo "  - Alignment: Feature-label alignment fixed"
+          echo "  - Volume confirmation: ENABLED"
+          echo "  - Multi-timeframe labels: ENABLED"
           echo ""
-          echo "⚠️  Note: volume_confirm=True requires code change in prepare_training_data.py"
-          echo "   Make sure line 101 has: volume_confirm=True"
-          echo ""
-          
-          python scripts/prepare_training_data.py \
-            --symbol '${{ github.event.inputs.symbol }}' \
-            --use-all-features
-          
-          echo ""
-          echo "✅ Training data prepared with volume-confirmed labels"
-      
-      - name: 🎯 Step 2 - Feature Analysis & Selection
+          python scripts/prepare_training_data.py --symbol BTC/USDT
+  
+      # Step 2: Feature Analysis & Selection
+      - name: Feature Analysis & Selection
         run: |
           echo "======================================================================"
           echo "🎯 FEATURE ANALYSIS & SELECTION"
           echo "======================================================================"
+          echo "Using lenient thresholds to match tuning configuration..."
+          echo "  - Variance threshold: 0.00005"
+          echo "  - Correlation threshold: 0.005"
           echo ""
-          
-          # Analyze features
-          python scripts/analyze_features.py --analyze
+          python scripts/analyze_features.py
           
           echo ""
-          echo "Running feature selection with lenient thresholds..."
-          python scripts/analyze_features.py \
-            --select \
+          echo "Running feature selection..."
+          python scripts/analyze_features.py --select \
             --variance-threshold 0.00005 \
             --correlation-threshold 0.005
-          
-          echo ""
-          echo "✅ Feature selection completed"
       
       - name: 🔄 Step 3 - Re-prepare with Selected Features
         run: |
