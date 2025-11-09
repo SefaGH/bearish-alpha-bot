@@ -89,13 +89,9 @@ jobs:
           echo ""
           echo "✅ Feature selection completed"
           
-          # Verify selection results (FIXED INDENTATION)
+          # Verify selection results (FIXED)
           if [ -f "data/cache/feature_selection_mask.npy" ]; then
-            SELECTED=$(python3 -c "
-              import numpy as np
-              mask = np.load('data/cache/feature_selection_mask.npy')
-              print(f'{mask.sum()}/{len(mask)}')
-")
+            SELECTED=$(python3 -c "import numpy as np; mask = np.load('data/cache/feature_selection_mask.npy'); print(f'{mask.sum()}/{len(mask)}')")
             echo "✅ Selected features: $SELECTED"
           fi
         env:
@@ -117,12 +113,8 @@ jobs:
           
           echo ""
           
-          # Verify final feature count
-          FINAL_FEATURES=$(python3 -c "
-          import numpy as np
-          data = np.load('data/cache/BTC-USDT_training_data.npz')
-          print(data['X'].shape[1])
-")
+          # Verify final feature count (FIXED)
+          FINAL_FEATURES=$(python3 -c "import numpy as np; data = np.load('data/cache/BTC-USDT_training_data.npz'); print(data['X'].shape[1])")
           
           echo "✅ Data re-prepared"
           echo "✅ Final feature count: $FINAL_FEATURES"
@@ -413,7 +405,7 @@ jobs:
               
           else:
               shortfall = threshold - accuracy
-              print("⚠️  MODEL BELOW PRODUCTION THRESHROLL")
+              print("⚠️  MODEL BELOW PRODUCTION THOLD")
               print("")
               print(f"   Required: {threshold:.2%}")
               print(f"   Achieved: {accuracy:.2%}")
