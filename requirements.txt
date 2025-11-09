@@ -43,6 +43,7 @@ pytest-mock>=3.11.0       # Mock support for pytest
 sentry-sdk
 
 # === MACHINE LEARNING (Optional) ===
+optuna>=3.0.0
 torch>=2.0.0              # PyTorch for neural networks
 torchvision>=0.15.0       # Computer vision (optional)
 scikit-learn>=1.0
