@@ -205,7 +205,10 @@ jobs:
           CACHE_FILE="data/cache/${SYMBOL_SAFE}_training_data.npz"
           
           echo "Re-running data preparation to apply feature selection..."
-          python scripts/prepare_training_data.py --symbol '${{ github.event.inputs.symbol }}'
+          echo "⚠️  Using --use-all-features flag to maintain 87 feature mode"
+          python scripts/prepare_training_data.py \
+            --symbol '${{ github.event.inputs.symbol }}' \
+            --use-all-features
           
           echo ""
           echo "Verifying cached training data..."
