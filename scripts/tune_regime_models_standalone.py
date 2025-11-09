@@ -33,34 +33,50 @@ class RegimeModelTuner:
     def __init__(self):
         self.data_cache_dir = Path('data/cache')
         
-    def load_cached_data(self, symbol='BTC-USDT'):
-        """Load pre-processed training data from cache."""
+    def load_cached_data(self, symbol: str) -> tuple:
+        """
+        Load cached training data for a symbol.
+        
+        Args:
+            symbol: Trading pair (e.g., 'BTC/USDT')
+        
+        Returns:
+            tuple: (X, y) features and labels
+        
+        Raises:
+            FileNotFoundError: If cache file doesn't exist
+        """
+        # ✅ FIX: Convert symbol to filesystem-safe filename
+        symbol_safe = symbol.replace('/', '-')  # BTC/USDT → BTC-USDT
+        cache_file = f"data/cache/{symbol_safe}_training_data.npz"
+        
         logger.info(f"Loading cached data for {symbol}...")
+        logger.info(f"Cache file: {cache_file}")
         
-        cache_file = self.data_cache_dir / f'{symbol}_training_data.npz'
+        if not os.path.exists(cache_file):
+            raise FileNotFoundError(
+                f"Training data not found: {cache_file}\n"
+                f"Please run: python scripts/prepare_training_data.py --symbol {symbol}"
+            )
         
-        if cache_file.exists():
-            logger.info(f"✅ Found cached data: {cache_file}")
-            data = np.load(cache_file)
-            X = data['X']
-            y = data['y']
-            
-            logger.info(f"✅ Loaded {len(X)} real samples with {X.shape[1]} features")
-            
-            # Show label distribution
-            unique, counts = np.unique(y, return_counts=True)
-            logger.info("Label distribution:")
-            label_names = ['Bullish', 'Bearish', 'Neutral', 'Volatile']
-            for label, count in zip(unique, counts):
-                percentage = (count / len(y)) * 100
-                logger.info(f"  {label_names[label]}: {count} ({percentage:.1f}%)")
-            
-            return X, y
+        logger.info(f"✅ Found cached data: {cache_file}")
         
-        raise FileNotFoundError(
-            f"Training data not found: {cache_file}\n"
-            f"Please run: python scripts/prepare_training_data.py --symbol {symbol.replace('-', '/')}"
-        )
+        # Load data
+        data = np.load(cache_file)
+        X, y = data['features'], data['labels']
+        
+        logger.info(f"✅ Loaded {len(X)} real samples with {X.shape[1]} features")
+        
+        # Log label distribution
+        unique, counts = np.unique(y, return_counts=True)
+        label_dist = dict(zip(unique, counts))
+        logger.info("Label distribution:")
+        for label, count in label_dist.items():
+            percentage = count / len(y) * 100
+            label_name = ['Bullish', 'Neutral', 'Bearish'][int(label)]
+            logger.info(f"  {label_name}: {count} ({percentage:.1f}%)")
+        
+        return X, y
     
     def create_lstm_model(self, params: dict):
         """Create sklearn-compatible LSTM wrapper."""
