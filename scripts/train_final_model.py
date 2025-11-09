@@ -132,6 +132,31 @@ def calculate_aggressive_class_weights(y_train, device):
         boost = aggressive_weights[cls_id] / baseline_weights[cls_id]
         print(f"   {class_names[cls_id]:10s}: {aggressive_weights[cls_id]:.4f} ({boost:.2f}x)")
     
+    # ⚠️  CRITICAL WARNING: CLASS WEIGHT AMPLIFICATION ⚠️
+    # 
+    # HISTORY OF FAILURES:
+    # - 2025-11-09: Aggressive weights (2.60x) caused 14.51% collapse
+    #   Model predicted everything as Bearish (minority class)
+    #   
+    # LESSONS LEARNED:
+    # - Start with conservative amplification (1.1x-1.3x)
+    # - Test incrementally before increasing
+    # - Monitor ALL class accuracies, not just overall
+    # - Confusion matrix is critical metric
+    # - If val_acc stuck at same value → model collapsed
+    # 
+    # SAFE RANGES (based on testing):
+    # - For minority classes (14-20%): 1.2x - 1.5x MAX
+    # - For majority classes (60%+): 0.7x - 0.9x
+    # - Never exceed 2.0x amplification
+    # 
+    # TESTING PROCEDURE:
+    # 1. Train with conservative values
+    # 2. Check confusion matrix (not just accuracy!)
+    # 3. Verify all classes have predictions
+    # 4. Gradually increase if minorities still low
+    # 5. Stop when balanced performance achieved
+    
     # ============================================================
     # CONVERT TO TORCH TENSOR
     # ============================================================
