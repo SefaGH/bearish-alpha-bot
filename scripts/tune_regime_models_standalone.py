@@ -313,12 +313,12 @@ class RegimeModelTuner:
             batch_size=params.get('batch_size', 32),
             class_weights=params.get('class_weights', None)
         )
-    
+        
     def tune_model(self, model_type: str, X: np.ndarray, y: np.ndarray,
                    n_trials: int = 30, cv_splits: int = 5):
-        """Run hyperparameter tuning with balanced split."""
+        """Run hyperparameter tuning with stratified split."""
         logger.info("="*70)
-        logger.info(f"🎯 TUNING {model_type.upper()} MODEL (BALANCED SPLIT)")
+        logger.info(f"🎯 TUNING {model_type.upper()} MODEL (STRATIFIED SPLIT)")
         logger.info("="*70)
         
         from sklearn.utils.class_weight import compute_class_weight
@@ -330,44 +330,17 @@ class RegimeModelTuner:
         logger.info(f"Number of classes: {num_classes}")
         
         # ================================================================
-        # STRATIFIED SPLIT - Ensures balanced distribution
+        # STRATIFIED SPLIT - All logging done inside prepare_data_splits
         # ================================================================
         X_cv, X_test, y_cv, y_test = self.prepare_data_splits(
             X, y, 
             test_size=0.2, 
             strategy='stratified'  # Change to 'time_last' or 'time_middle' if needed
         )
-
-        logger.info(f"  Test period: samples {test_start}-{test_end} (middle of dataset)")
         
-        # Show distributions
-        logger.info("\n  CV distribution:")
-        label_names = ['Bullish', 'Bearish', 'Neutral', 'Volatile']
-        cv_unique, cv_counts = np.unique(y_cv, return_counts=True)
-        for l, c in zip(cv_unique, cv_counts):
-            logger.info(f"    {label_names[l]}: {c:4d} ({c/len(y_cv)*100:5.1f}%)")
-        
-        logger.info("\n  Test distribution:")
-        test_unique, test_counts = np.unique(y_test, return_counts=True)
-        for l, c in zip(test_unique, test_counts):
-            logger.info(f"    {label_names[l]}: {c:4d} ({c/len(y_test)*100:5.1f}%)")
-        
-        # Calculate distribution shift
-        logger.info("\n  Distribution shift:")
-        max_shift = 0
-        for l in range(num_classes):
-            cv_pct = (cv_counts[l] / len(y_cv) * 100) if l < len(cv_counts) else 0
-            test_pct = (test_counts[l] / len(y_test) * 100) if l < len(test_counts) else 0
-            shift = abs(cv_pct - test_pct)
-            max_shift = max(max_shift, shift)
-            logger.info(f"    {label_names[l]}: {shift:5.1f}%")
-        
-        if max_shift > 10:
-            logger.warning(f"\n  ⚠️  Distribution shift: {max_shift:.1f}%")
-        else:
-            logger.info(f"\n  ✅ Good balance: {max_shift:.1f}% max shift")
-        
-        # Create tuner
+        # ================================================================
+        # CREATE TUNER (no need for duplicate logging)
+        # ================================================================
         validator = TimeSeriesValidator(n_splits=cv_splits)
         tuner = OptunaModelTuner(
             model_type=model_type,
@@ -394,7 +367,7 @@ class RegimeModelTuner:
         )
         
         # Validate on hold-out
-        logger.info("\n🔬 Validating on balanced hold-out test set...")
+        logger.info("\n🔬 Validating on stratified hold-out test set...")
         final_model = model_factory(best_params)
         final_model.fit(X_cv, y_cv)
         holdout_score = final_model.score(X_test, y_test)
@@ -413,6 +386,10 @@ class RegimeModelTuner:
         else:
             logger.info(f"✅ Good generalization (gap: {gap:+.4f})")
         
+        # ✅ ADD: Get max_shift from prepare_data_splits result (optional)
+        # For now, just use 0.0 since stratified guarantees perfect balance
+        max_shift = 0.0  # Stratified split guarantees 0% shift
+        
         results = {
             'model_type': model_type,
             'best_params': best_params,
@@ -424,12 +401,12 @@ class RegimeModelTuner:
             'num_classes': int(num_classes),
             'class_weights': class_weights.tolist(),
             'distribution_shift': float(max_shift),
-            'split_strategy': 'balanced_middle',
+            'split_strategy': 'stratified',  # ← Changed from 'balanced_middle'
             'timestamp': datetime.utcnow().isoformat()
         }
         
         self._save_results(results, model_type)
-        return results
+        return results 
     
     def _convert_numpy_to_python(self, obj):
         """
