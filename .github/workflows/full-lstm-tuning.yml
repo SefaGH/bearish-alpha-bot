@@ -71,7 +71,7 @@ jobs:
           echo ""
           
           # Analyze features
-          python scripts/analyze_features.py
+          python scripts/analyze_features.py --analyze
           
           echo ""
           echo "Running feature selection with lenient thresholds..."
