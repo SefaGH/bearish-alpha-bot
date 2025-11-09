@@ -1,1 +1,32 @@
-
+{
+  "model_type": "lstm",
+  "best_params": {
+    "hidden_size": 64,
+    "num_layers": 1,
+    "dropout": 0.6,
+    "learning_rate": 0.0009443504645479598,
+    "weight_decay": 0.002239316698793713,
+    "batch_size": 32,
+    "input_size": 82,
+    "num_classes": 3,
+    "class_weights": [
+      1.7086109055020973,
+      0.5056589996349032,
+      2.287743640568219
+    ]
+  },
+  "cv_score": 0.7137594799566631,
+  "holdout_score": 0.7249097472924187,
+  "gap": -0.011150267335755637,
+  "n_trials": 30,
+  "cv_splits": 5,
+  "num_classes": 3,
+  "class_weights": [
+    1.7086109055020973,
+    0.5056589996349032,
+    2.287743640568219
+  ],
+  "distribution_shift": 0.0,
+  "split_strategy": "stratified",
+  "timestamp": "2025-11-09T14:06:51.070664"
+}
