@@ -1,6 +1,6 @@
 """
-Final Model Training with Aggressive Class Weights
-Fixes class imbalance issue for Bearish detection
+Final Model Training with SMOTE Data Balancing
+Replaces failed weight tuning strategy with data-level class balancing
 """
 
 import sys
@@ -72,13 +72,20 @@ def stratified_split(X, y, test_size=0.2, random_state=42):
 
 def calculate_aggressive_class_weights(y_train, device):
     """
-    Calculate aggressive class weights to fix minority class detection
+    [DEPRECATED] Calculate aggressive class weights to fix minority class detection
     
-    Strategy:
-    1. Calculate baseline balanced weights
-    2. Amplify Bearish weight aggressively (3x-6x)
-    3. Amplify Bullish weight moderately (1.5x-2x)
-    4. Keep Neutral weight low
+    ⚠️  WARNING: This function is DEPRECATED as of 2025-11-09!
+    
+    After 6 iterations (v1-v6), weight tuning proven ineffective:
+    - v1: Bearish 100% collapse (weights 5.96/2.99/0.40)
+    - v2: Bullish 0.37% collapse (weights 2.98/1.97/0.40)
+    - v3: Bullish 100% collapse (weights 2.86/4.27/0.40)
+    - v4: Bearish 100% collapse (weights 4.58/3.08/0.40)
+    
+    Root Cause: Model oversensitive to weight ratios (>10x = collapse)
+    Solution: Use SMOTE (see main() function)
+    
+    This function kept for historical reference only.
     
     Args:
         y_train: Training labels
@@ -87,6 +94,13 @@ def calculate_aggressive_class_weights(y_train, device):
     Returns:
         Tensor of class weights [Bullish, Neutral, Bearish]
     """
+    import warnings
+    warnings.warn(
+        "calculate_aggressive_class_weights() is deprecated! "
+        "Use SMOTE instead (see main() function).",
+        DeprecationWarning,
+        stacklevel=2
+    )
     print("\n" + "="*70)
     print("⚖️  CALCULATING AGGRESSIVE CLASS WEIGHTS")
     print("="*70)
@@ -169,9 +183,9 @@ def calculate_aggressive_class_weights(y_train, device):
 
 
 def train_final_model(X_train, y_train, params, class_weights):
-    """Train final model with aggressive class weights"""
+    """Train final model with provided class weights"""
     print("\n" + "="*70)
-    print("🚀 TRAINING FINAL MODEL (AGGRESSIVE CLASS WEIGHTS)")
+    print("🚀 TRAINING FINAL MODEL")
     print("="*70)
     
     # Device
@@ -421,7 +435,7 @@ def save_model_torchscript(model, params, metrics, metadata):
 
 def main():
     print("="*70)
-    print("🚀 FINAL MODEL TRAINING (AGGRESSIVE CLASS WEIGHTS FIX)")
+    print("🚀 FINAL MODEL TRAINING (SMOTE DATA BALANCING)")
     print("="*70)
     print(f"⏰ Timestamp: {datetime.utcnow().isoformat()}")
     
@@ -443,23 +457,82 @@ def main():
     X_train, X_test, y_train, y_test = stratified_split(X, y, test_size=0.2)
     
     # ============================================================
-    # CRITICAL: Calculate Aggressive Class Weights
+    # 🔄 SMOTE OVERSAMPLING (Replaces Weight Tuning)
     # ============================================================
-    class_weights = calculate_aggressive_class_weights(y_train, device)
+    from imblearn.over_sampling import SMOTE
+    from collections import Counter
+    
+    print("\n" + "="*70)
+    print("🔄 APPLYING SMOTE OVERSAMPLING")
+    print("="*70)
+    print("\n⚠️  Strategy Change: Data-level balancing (not weight-level)")
+    print("   Reason: 6 weight tuning iterations failed (v1-v6)")
+    print("   - Model too sensitive to weight ratios")
+    print("   - 'Battaniye etkisi': fixing one class breaks another")
+    print("   - Solution: Balance training data structurally\n")
+    
+    # Log original distribution
+    print("📊 Original Training Distribution:")
+    original_dist = Counter(y_train)
+    class_names = ['Bullish', 'Neutral', 'Bearish']
+    for cls_id in sorted(original_dist.keys()):
+        count = original_dist[cls_id]
+        pct = count / len(y_train) * 100
+        print(f"   {class_names[cls_id]:10s}: {count:,} ({pct:.1f}%)")
+    
+    # Apply SMOTE (train data only!)
+    smote = SMOTE(
+        sampling_strategy='auto',  # Balance to majority class
+        random_state=42,
+        k_neighbors=5
+    )
+    
+    print("\n⚙️  Generating synthetic samples...")
+    X_train_smote, y_train_smote = smote.fit_resample(X_train, y_train)
+    
+    # Log resampled distribution
+    print("\n📊 After SMOTE:")
+    new_dist = Counter(y_train_smote)
+    for cls_id in sorted(new_dist.keys()):
+        count = new_dist[cls_id]
+        pct = count / len(y_train_smote) * 100
+        added = count - original_dist[cls_id]
+        print(f"   {class_names[cls_id]:10s}: {count:,} ({pct:.1f}%)")
+        if added > 0:
+            print(f"      → Added {added:,} synthetic samples")
+    
+    print(f"\n   Total: {len(y_train_smote):,} (was {len(y_train):,})")
+    print(f"   Synthetic: {len(y_train_smote) - len(y_train):,}")
+    
+    # ============================================================
+    # Reset class weights (no amplification needed!)
+    # ============================================================
+    print("\n⚖️  Class Weights: [1.0, 1.0, 1.0] (baseline)")
+    print("   Rationale: Data balanced, no amplification needed")
+    class_weights = torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32).to(device)
     
     # Update params with actual values
     best_params['input_size'] = X.shape[1]
     best_params['num_classes'] = len(np.unique(y))
     
-    # Train model with aggressive class weights
-    model = train_final_model(X_train, y_train, best_params, class_weights)
+    # ============================================================
+    # Train on SMOTE data, evaluate on ORIGINAL test
+    # ============================================================
+    model = train_final_model(
+        X_train_smote,  # ← Balanced training data
+        y_train_smote,
+        best_params,
+        class_weights
+    )
     
-    # Evaluate on hold-out
-    test_metrics = evaluate_model(model, X_test, y_test)
+    # CRITICAL: Test on original unbalanced data (real-world distribution)
+    test_metrics = evaluate_model(model, X_test, y_test)  # ← Original test set
     
     # Prepare metadata
     metadata = {
-        'training_samples': int(len(X_train)),
+        'training_samples': int(len(X_train_smote)),  # SMOTE data size
+        'training_samples_original': int(len(X_train)),  # Original size
+        'synthetic_samples': int(len(X_train_smote) - len(X_train)),
         'test_samples': int(len(X_test)),
         'total_samples': int(len(X)),
         'num_features': int(X.shape[1]),
@@ -469,6 +542,7 @@ def main():
         'final_test_accuracy': float(test_metrics['accuracy']),
         'split_strategy': 'stratified',
         'export_format': 'torchscript',
+        'balancing_method': 'SMOTE',  # Document method used
         'class_weights_used': class_weights.cpu().tolist(),  # Save weights used
         'timestamp': datetime.utcnow().isoformat()
     }
