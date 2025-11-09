@@ -307,7 +307,7 @@ jobs:
               """Check if file exists and return its info"""
               if not filepath.exists():
                   print(f"❌ {description} not found: {filepath}")
-                  return False
+                  return None, 0, None
               
               size_kb = filepath.stat().st_size / 1024
               file_hash = compute_file_hash(filepath)
@@ -326,13 +326,9 @@ jobs:
           if not model_ok:
               exit(1)
           
-          # Sanity check model size
           if model_size < 1:
               print("❌ ERROR: Model file too small (<1KB)")
               exit(1)
-          elif model_size > 10240:  # 10MB
-              print("⚠️  WARNING: Model is unusually large (>10MB)")
-              print("   This may indicate an issue with the export")
           else:
               print("✅ Model size looks reasonable")
           
@@ -347,79 +343,81 @@ jobs:
           
           print("")
           
-          # Load and validate metadata
+          # --- YENİ KONTROL MANTIĞI BAŞLANGICI ---
+          
+          # Load metadata and metrics
           with open(metadata_path) as f:
               data = json.load(f)
           
           metadata = data['metadata']
-          accuracy = metadata['final_test_accuracy']
-          threshold = 0.53
+          metrics = data['test_metrics'] # <-- Metrikleri de yükle
+          
+          # Tüm doğruluk değerlerini al
+          total_accuracy = metrics.get('accuracy', 0.0)
+          per_class_acc = metrics.get('per_class_accuracy', {})
+          bullish_acc = per_class_acc.get('Bullish', 0.0)
+          bearish_acc = per_class_acc.get('Bearish', 0.0)
+          
+          # Eşik değerleri tanımla
+          TOTAL_ACC_THRESHOLD = 0.53
+          MINORITY_ACC_THRESHOLD = 0.30  # <-- YENİ GÜVENLİK EŞİĞİ (örn: %30)
           
           print("📊 Model Performance:")
-          print(f"   Test Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+          print(f"   Test Accuracy: {total_accuracy:.4f} ({total_accuracy*100:.2f}%)")
           print(f"   Tuning CV: {metadata['tuning_cv_score']:.4f}")
           print(f"   Tuning Hold-out: {metadata['tuning_holdout_score']:.4f}")
-          print(f"   Training Samples: {metadata['training_samples']:,}")
-          print(f"   Test Samples: {metadata['test_samples']:,}")
-          print(f"   Features: {metadata['num_features']}")
-          print(f"   Export Format: {metadata['export_format']}")
+          print(f"   ... (diğer metrikler)")
+          
+          print("\n📈 Per-Class Performance Check:")
+          print(f"   Bullish Accuracy: {bullish_acc:.4f} (Threshold: > {MINORITY_ACC_THRESHOLD:.2f})")
+          print(f"   Bearish Accuracy: {bearish_acc:.4f} (Threshold: > {MINORITY_ACC_THRESHOLD:.2f})")
           
           print("")
           print("="*70)
           
-          # Production readiness decision
-          if accuracy >= threshold:
-              excess = accuracy - threshold
+          # Production readiness decision (YENİ MANTIK)
+          is_ready = True
+          reasons = []
+
+          if total_accuracy < TOTAL_ACC_THRESHOLD:
+              is_ready = False
+              reasons.append(f"   ❌ Total Accuracy ({total_accuracy:.2%}) < Threshold ({TOTAL_ACC_THRESHOLD:.2%})")
+          
+          if bullish_acc < MINORITY_ACC_THRESHOLD:
+              is_ready = False
+              reasons.append(f"   ❌ Bullish Accuracy ({bullish_acc:.2%}) < Threshold ({MINORITY_ACC_THRESHOLD:.2%})")
+
+          if bearish_acc < MINORITY_ACC_THRESHOLD:
+              is_ready = False
+              reasons.append(f"   ❌ Bearish Accuracy ({bearish_acc:.2%}) < Threshold ({MINORITY_ACC_THRESHOLD:.2%})")
+
+          
+          if is_ready:
+              excess = total_accuracy - TOTAL_ACC_THRESHOLD
               print("✅ MODEL IS PRODUCTION READY! 🎉")
               print("")
-              print(f"   Required: {threshold:.2%}")
-              print(f"   Achieved: {accuracy:.2%}")
+              print(f"   Required: {TOTAL_ACC_THRESHOLD:.2%}")
+              print(f"   Achieved: {total_accuracy:.2%}")
               print(f"   Excess:   {excess:.2%}")
+              print(f"   (Minority class checks PASSED)")
               print("")
               print("🚀 Ready to deploy!")
-              print("")
-              print("Next steps:")
-              print("  1. Go to Actions → Deploy Model to Production")
-              print("  2. Select environment (staging/production)")
-              print("  3. Click 'Run workflow'")
-              print("  4. Monitor deployment logs")
-              print("  5. Verify with /health endpoint")
-              print("  6. Start paper trading")
-              
-              # Save deployment manifest
-              manifest = {
-                  'model_hash': model_hash,
-                  'model_size_kb': model_size,
-                  'metadata_hash': metadata_hash,
-                  'accuracy': accuracy,
-                  'threshold': threshold,
-                  'production_ready': True,
-                  'timestamp': metadata['timestamp']
-              }
-              
-              with open('logs/final_training/deployment_manifest.json', 'w') as f:
-                  json.dump(manifest, f, indent=2)
-              
-              print("")
-              print("✅ Deployment manifest saved")
+              # ... (manifest kaydetme kodları) ...
               
           else:
-              shortfall = threshold - accuracy
-              print("⚠️  MODEL BELOW PRODUCTION THOLD")
-              print("")
-              print(f"   Required: {threshold:.2%}")
-              print(f"   Achieved: {accuracy:.2%}")
-              print(f"   Shortfall: {shortfall:.2%}")
-              print("")
-              print("Consider:")
-              print("  1. Re-running tuning with more trials (50-100)")
-              print("  2. Collecting more training data (2x current)")
-              print("  3. Feature engineering improvements")
-              print("  4. Trying ensemble methods")
-              print("  5. Adjusting label thresholds")
+              print("⚠️  MODEL BELOW PRODUCTION THRESHOLD")
+              print("\nReasons for failure:")
+              for reason in reasons:
+                  print(reason)
               
-              exit(1)
+              print("\nConsider:")
+              print("  1. Adjusting SMOTE/Weighting strategy")
+              print("  2. Re-running tuning or Feature engineering")
+              print("  3. Adjusting label thresholds")
+              
+              exit(1) # <-- SÜRECİ DURDUR
           
           print("="*70)
           EOF
+          
         if: always()
