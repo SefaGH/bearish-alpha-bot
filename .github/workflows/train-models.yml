@@ -233,59 +233,137 @@ jobs:
           echo "======================================================================"
           echo "🚀 DEPLOYMENT READINESS CHECK"
           echo "======================================================================"
-          echo ""
           
-          # Check if model file exists
-          if [ ! -f "data/models/final/lstm_final_latest.ptc" ]; then
-            echo "❌ Model file not found: data/models/final/lstm_final_latest.ptc"
-            exit 1
-          fi
-          
-          # Check if metadata exists
-          if [ ! -f "logs/final_training/metadata_latest.json" ]; then
-            echo "❌ Metadata file not found: logs/final_training/metadata_latest.json"
-            exit 1
-          fi
-          
-          # Check model accuracy
-          ACCURACY=$(python3 -c "
+          python3 << 'EOF'
           import json
-          with open('logs/final_training/metadata_latest.json') as f:
+          from pathlib import Path
+          import hashlib
+          
+          def compute_file_hash(filepath):
+              """Compute SHA256 hash"""
+              sha256 = hashlib.sha256()
+              with open(filepath, 'rb') as f:
+                  for chunk in iter(lambda: f.read(4096), b''):
+                      sha256.update(chunk)
+              return sha256.hexdigest()
+          
+          def check_file(filepath, description):
+              """Check if file exists and return its info"""
+              if not filepath.exists():
+                  print(f"❌ {description} not found: {filepath}")
+                  return False
+              
+              size_kb = filepath.stat().st_size / 1024
+              file_hash = compute_file_hash(filepath)
+              
+              print(f"✅ {description} found:")
+              print(f"   Path: {filepath}")
+              print(f"   Size: {size_kb:.2f} KB")
+              print(f"   SHA256: {file_hash[:16]}...")
+              
+              return True, size_kb, file_hash
+          
+          # Check model file
+          model_path = Path('data/models/final/lstm_final_latest.ptc')
+          model_ok, model_size, model_hash = check_file(model_path, "Model file")
+          
+          if not model_ok:
+              exit(1)
+          
+          # Sanity check model size
+          if model_size < 1:
+              print("❌ ERROR: Model file too small (<1KB)")
+              exit(1)
+          elif model_size > 10240:  # 10MB
+              print("⚠️  WARNING: Model is unusually large (>10MB)")
+              print("   This may indicate an issue with the export")
+          else:
+              print("✅ Model size looks reasonable")
+          
+          print("")
+          
+          # Check metadata file
+          metadata_path = Path('logs/final_training/metadata_latest.json')
+          metadata_ok, _, metadata_hash = check_file(metadata_path, "Metadata file")
+          
+          if not metadata_ok:
+              exit(1)
+          
+          print("")
+          
+          # Load and validate metadata
+          with open(metadata_path) as f:
               data = json.load(f)
-          print(data['metadata']['final_test_accuracy'])
-          ")
           
-          echo "✅ Model file found: data/models/final/lstm_final_latest.ptc"
-          echo "✅ Metadata file found: logs/final_training/metadata_latest.json"
-          echo "✅ Model accuracy: $ACCURACY"
-          echo ""
-          
-          # Check if meets production threshold
-          python3 << EOF
-          accuracy = float("$ACCURACY")
+          metadata = data['metadata']
+          accuracy = metadata['final_test_accuracy']
           threshold = 0.53
           
+          print("📊 Model Performance:")
+          print(f"   Test Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+          print(f"   Tuning CV: {metadata['tuning_cv_score']:.4f}")
+          print(f"   Tuning Hold-out: {metadata['tuning_holdout_score']:.4f}")
+          print(f"   Training Samples: {metadata['training_samples']:,}")
+          print(f"   Test Samples: {metadata['test_samples']:,}")
+          print(f"   Features: {metadata['num_features']}")
+          print(f"   Export Format: {metadata['export_format']}")
+          
+          print("")
+          print("="*70)
+          
+          # Production readiness decision
           if accuracy >= threshold:
-              print(f"✅ Model meets production threshold!")
+              excess = accuracy - threshold
+              print("✅ MODEL IS PRODUCTION READY! 🎉")
+              print("")
               print(f"   Required: {threshold:.2%}")
               print(f"   Achieved: {accuracy:.2%}")
-              print(f"   Excess:   {(accuracy-threshold):.2%}")
+              print(f"   Excess:   {excess:.2%}")
               print("")
               print("🚀 Ready to deploy!")
               print("")
               print("Next steps:")
-              print("  1. Download artifacts from this run")
-              print("  2. Run 'Deploy Model to Production' workflow")
-              print("  3. Start paper trading")
+              print("  1. Go to Actions → Deploy Model to Production")
+              print("  2. Select environment (staging/production)")
+              print("  3. Click 'Run workflow'")
+              print("  4. Monitor deployment logs")
+              print("  5. Verify with /health endpoint")
+              print("  6. Start paper trading")
+              
+              # Save deployment manifest
+              manifest = {
+                  'model_hash': model_hash,
+                  'model_size_kb': model_size,
+                  'metadata_hash': metadata_hash,
+                  'accuracy': accuracy,
+                  'threshold': threshold,
+                  'production_ready': True,
+                  'timestamp': metadata['timestamp']
+              }
+              
+              with open('logs/final_training/deployment_manifest.json', 'w') as f:
+                  json.dump(manifest, f, indent=2)
+              
+              print("")
+              print("✅ Deployment manifest saved")
+              
           else:
-              print(f"⚠️  Model below production threshold")
+              shortfall = threshold - accuracy
+              print("⚠️  MODEL BELOW PRODUCTION THRESHOLD")
+              print("")
               print(f"   Required: {threshold:.2%}")
               print(f"   Achieved: {accuracy:.2%}")
-              print(f"   Shortfall: {(threshold-accuracy):.2%}")
+              print(f"   Shortfall: {shortfall:.2%}")
               print("")
               print("Consider:")
-              print("  1. Re-running tuning with more trials")
-              print("  2. Collecting more training data")
+              print("  1. Re-running tuning with more trials (50-100)")
+              print("  2. Collecting more training data (2x current)")
               print("  3. Feature engineering improvements")
+              print("  4. Trying ensemble methods")
+              print("  5. Adjusting label thresholds")
+              
+              exit(1)
+          
+          print("="*70)
           EOF
         if: always()
