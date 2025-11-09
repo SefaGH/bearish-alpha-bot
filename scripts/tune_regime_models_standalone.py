@@ -324,7 +324,7 @@ class RegimeModelTuner:
         NO SMOTETomek in tuning (correct ML practice).
         """
         logger.info("="*70)
-        logger.info(f"🎯 TUNING {model_type.upper()} MODEL (Stratified + Balanced Accuracy)")  # FIX: .upper()
+        logger.info(f"🎯 TUNING {model_type.upper()} MODEL (Stratified + Balanced Accuracy)")
         logger.info("="*70)
         
         num_classes = len(np.unique(y))
@@ -334,9 +334,43 @@ class RegimeModelTuner:
         logger.info(f"Class weights (for imbalanced data): {class_weights}")
         logger.info(f"Number of classes: {num_classes}")
         
-        # 2. Stratified split (NO SMOTETomek - keep data REAL!)
+        # ==================== NEW BLOCK: DATA CLEANING & ALIGNMENT ==================== #
+        logger.info("\n" + "="*70)
+        logger.info("🔧 PREPARING DATA (CLEANING & ALIGNMENT)")
+        logger.info("="*70)
+        
+        # Import pipeline
+        from src.ml.feature_engineering import FeatureEngineeringPipeline
+        import pandas as pd
+        
+        # Convert numpy arrays to DataFrame/Series for prepare_for_training
+        logger.info("Converting numpy arrays to pandas format...")
+        X_df = pd.DataFrame(X)
+        y_series = pd.Series(y, name='label')
+        logger.info(f"   Input shape: X={X_df.shape}, y={y_series.shape}")
+        
+        # Create pipeline instance
+        pipeline = FeatureEngineeringPipeline()
+        
+        # Clean and align data using prepare_for_training
+        logger.info("Calling prepare_for_training (mode='auto')...")
+        X_clean, y_clean = pipeline.prepare_for_training(
+            features=X_df,
+            labels=y_series,
+            feature_selection_mode='auto'  # Uses features as-is (respects selection)
+        )
+        
+        if len(X_clean) == 0 or len(y_clean) == 0:
+            logger.error("❌ No data remains after cleaning! Cannot tune.")
+            return None
+        
+        logger.info(f"✅ Data cleaned: {len(X_clean)} samples, {X_clean.shape[1]} features")
+        logger.info("="*70)
+        # ============================================================================== #
+        
+        # 2. Stratified split (NOW USING CLEAN DATA!)
         X_cv, X_test, y_cv, y_test = self.prepare_data_splits(
-            X, y, 
+            X_clean, y_clean,  # ✅ CHANGED: Use clean data
             test_size=0.2, 
             strategy='stratified'
         )
@@ -370,9 +404,9 @@ class RegimeModelTuner:
         # 5. Model factory WITH class weights (for imbalanced data)
         def model_factory(params):
             if model_type == 'lstm':
-                params['input_size'] = X.shape[1]
+                params['input_size'] = X_clean.shape[1]
                 params['num_classes'] = num_classes
-                params['class_weights'] = class_weights  # Help model learn minority
+                params['class_weights'] = class_weights
                 return self.create_lstm_model(params)
             else:
                 raise ValueError(f"Unknown model: {model_type}")
