@@ -99,7 +99,7 @@ async def fetch_and_process_data(symbol='BTC/USDT',
                 window=20,
                 threshold=0.015,
                 prediction_horizon=5,
-                volume_confirm=True,
+                volume_confirm=False,
                 multi_timeframe=True
             )
             logger.info(f"  ✅ Generated {len(regime_labels)} labels")
