@@ -113,8 +113,8 @@ def generate_regime_labels(
     
     if multi_timeframe:
         # Multi-timeframe: Use consensus thresholds
-        labels[regime_score > 0.3] = 0   # Bullish (weighted majority bullish)
-        labels[regime_score < -0.3] = 2  # Bearish (weighted majority bearish)
+        labels[regime_score > 0.2] = 0   # Bullish (weighted majority bullish)
+        labels[regime_score < -0.4] = 2  # Bearish (weighted majority bearish)
     else:
         # Single timeframe: Use simple thresholds
         labels[regime_score > 0.5] = 0   # Bullish
