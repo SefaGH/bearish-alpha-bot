@@ -89,13 +89,13 @@ jobs:
           echo ""
           echo "✅ Feature selection completed"
           
-          # Verify selection results
+          # Verify selection results (FIXED INDENTATION)
           if [ -f "data/cache/feature_selection_mask.npy" ]; then
             SELECTED=$(python3 -c "
-            import numpy as np
-            mask = np.load('data/cache/feature_selection_mask.npy')
-            print(f'{mask.sum()}/{len(mask)}')
-            ")
+      import numpy as np
+      mask = np.load('data/cache/feature_selection_mask.npy')
+      print(f'{mask.sum()}/{len(mask)}')
+      ")
             echo "✅ Selected features: $SELECTED"
           fi
         env:
