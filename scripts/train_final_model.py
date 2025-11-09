@@ -1,11 +1,10 @@
 """
 Final Model Training with Tuned Hyperparameters
-Uses stratified split and best params from tuning results
+Uses stratified split and TorchScript export for production
 """
 
 import json
 import os
-import pickle
 from datetime import datetime
 from pathlib import Path
 
@@ -15,34 +14,39 @@ import torch.nn as nn
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 
+# ✅ Import from shared models
+from src.ml.models import SimpleLSTM, create_model_from_params
+
 # Configuration
 TUNING_RESULTS_DIR = Path('logs/tuning_results')
 TRAINING_DATA_PATH = Path('data/cache/BTC-USDT_training_data.npz')
 MODEL_OUTPUT_DIR = Path('data/models/final')
 METRICS_OUTPUT_DIR = Path('logs/final_training')
 
+
 def load_best_hyperparameters():
     """Load best hyperparameters from tuning results"""
-    # Find latest tuning results
     tuning_files = list(TUNING_RESULTS_DIR.glob('lstm_tuning_*.json'))
     if not tuning_files:
         raise FileNotFoundError("No tuning results found!")
     
     latest_file = max(tuning_files, key=lambda p: p.stat().st_mtime)
-    print(f"Loading hyperparameters from: {latest_file}")
+    print(f"✅ Loading hyperparameters from: {latest_file}")
     
     with open(latest_file, 'r') as f:
         results = json.load(f)
     
     return results['best_params'], results
 
+
 def load_training_data():
     """Load preprocessed training data"""
-    print(f"Loading training data from: {TRAINING_DATA_PATH}")
+    print(f"✅ Loading training data from: {TRAINING_DATA_PATH}")
     data = np.load(TRAINING_DATA_PATH)
     X, y = data['X'], data['y']
-    print(f"Loaded {len(X)} samples with {X.shape[1]} features")
+    print(f"✅ Loaded {len(X)} samples with {X.shape[1]} features")
     return X, y
+
 
 def stratified_split(X, y, test_size=0.2, random_state=42):
     """Create stratified train/test split"""
@@ -54,45 +58,21 @@ def stratified_split(X, y, test_size=0.2, random_state=42):
         shuffle=True
     )
     
-    # Log distributions
-    print("\nStratified Split:")
+    print("\n📊 Stratified Split:")
     print(f"  Train: {len(X_train)} samples ({len(X_train)/len(X)*100:.1f}%)")
     print(f"  Test:  {len(X_test)} samples ({len(X_test)/len(X)*100:.1f}%)")
     
     return X_train, X_test, y_train, y_test
 
-class SimpleLSTM(nn.Module):
-    """LSTM Model Architecture"""
-    def __init__(self, input_size, hidden_size, num_layers, num_classes, dropout):
-        super().__init__()
-        self.lstm = nn.LSTM(
-            input_size, hidden_size, num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0
-        )
-        self.fc = nn.Linear(hidden_size, num_classes)
-    
-    def forward(self, x):
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-        lstm_out, _ = self.lstm(x)
-        out = self.fc(lstm_out[:, -1, :])
-        return out
 
 def train_final_model(X_train, y_train, params, class_weights):
     """Train final model with best hyperparameters"""
     print("\n" + "="*70)
-    print("TRAINING FINAL MODEL")
+    print("🚀 TRAINING FINAL MODEL")
     print("="*70)
     
-    # Create model
-    model = SimpleLSTM(
-        input_size=params['input_size'],
-        hidden_size=params['hidden_size'],
-        num_layers=params['num_layers'],
-        num_classes=params['num_classes'],
-        dropout=params['dropout']
-    )
+    # ✅ Create model using factory function
+    model = create_model_from_params(params)
     
     # Loss and optimizer
     criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(class_weights))
@@ -129,7 +109,7 @@ def train_final_model(X_train, y_train, params, class_weights):
     patience_counter = 0
     best_model_state = None
     
-    print(f"\nTraining for up to {num_epochs} epochs...")
+    print(f"\n🔄 Training for up to {num_epochs} epochs...")
     
     for epoch in range(num_epochs):
         # Train
@@ -163,7 +143,7 @@ def train_final_model(X_train, y_train, params, class_weights):
         val_acc = correct / total
         
         if (epoch + 1) % 5 == 0:
-            print(f"Epoch {epoch+1}/{num_epochs}: "
+            print(f"  Epoch {epoch+1}/{num_epochs}: "
                   f"Train Loss={train_loss:.4f}, "
                   f"Val Loss={val_loss:.4f}, "
                   f"Val Acc={val_acc:.4f}")
@@ -176,20 +156,21 @@ def train_final_model(X_train, y_train, params, class_weights):
         else:
             patience_counter += 1
             if patience_counter >= patience:
-                print(f"\nEarly stopping at epoch {epoch+1}")
+                print(f"\n⏹️  Early stopping at epoch {epoch+1}")
                 break
     
     # Load best model
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
     
-    print(f"\nTraining complete! Best val loss: {best_val_loss:.4f}")
+    print(f"\n✅ Training complete! Best val loss: {best_val_loss:.4f}")
     return model
+
 
 def evaluate_model(model, X_test, y_test):
     """Evaluate model on hold-out test set"""
     print("\n" + "="*70)
-    print("EVALUATING ON HOLD-OUT TEST SET")
+    print("📊 EVALUATING ON HOLD-OUT TEST SET")
     print("="*70)
     
     model.eval()
@@ -203,84 +184,146 @@ def evaluate_model(model, X_test, y_test):
     accuracy = (predicted == y_test).mean()
     
     # Per-class accuracy
-    from collections import Counter
     class_names = ['Bullish', 'Neutral', 'Bearish']
     
-    print(f"\nOverall Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
-    print("\nPer-Class Performance:")
+    print(f"\n✅ Overall Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+    print("\n📊 Per-Class Performance:")
     
+    per_class_acc = {}
     for class_id in sorted(np.unique(y_test)):
         mask = y_test == class_id
         class_acc = (predicted[mask] == y_test[mask]).mean()
         count = mask.sum()
+        per_class_acc[class_names[class_id]] = float(class_acc)
         print(f"  {class_names[class_id]}: {class_acc:.4f} ({count} samples)")
     
     # Confusion matrix
     from sklearn.metrics import confusion_matrix, classification_report
     cm = confusion_matrix(y_test, predicted)
     
-    print("\nConfusion Matrix:")
+    print("\n📊 Confusion Matrix:")
     print(cm)
     
-    print("\nClassification Report:")
+    print("\n📊 Classification Report:")
     print(classification_report(y_test, predicted, target_names=class_names))
     
     return {
         'accuracy': float(accuracy),
         'confusion_matrix': cm.tolist(),
-        'per_class_accuracy': {
-            class_names[i]: float((predicted[y_test == i] == y_test[y_test == i]).mean())
-            for i in sorted(np.unique(y_test))
-        }
+        'per_class_accuracy': per_class_acc
     }
 
-def save_model(model, params, metrics, metadata):
-    """Save model with all metadata"""
+def save_model_torchscript(model, params, metrics, metadata):
+    """
+    Save model using TorchScript (production-safe format)
+    
+    TorchScript benefits:
+    - Self-contained (no class definition needed)
+    - Version-independent
+    - Faster inference
+    - C++ compatible
+    - More secure than pickle
+    """
     MODEL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     METRICS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     
     timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
     
-    # Save PyTorch model
-    model_path = MODEL_OUTPUT_DIR / f'lstm_final_{timestamp}.pt'
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'hyperparameters': params,
-        'metadata': metadata
-    }, model_path)
-    print(f"\n✅ Model saved: {model_path}")
+    # Set model to eval mode (CRITICAL!)
+    model.eval()
     
-    # Save metrics
-    metrics_path = METRICS_OUTPUT_DIR / f'metrics_{timestamp}.json'
-    with open(metrics_path, 'w') as f:
+    # Create dummy input matching training data shape
+    dummy_input = torch.randn(1, params['input_size'])
+    
+    try:
+        # ============================================================
+        # STEP 1: TRACE MODEL
+        # ============================================================
+        print(f"\n🔄 Tracing model with input shape: {dummy_input.shape}")
+        traced_model = torch.jit.trace(model, dummy_input)
+        
+        # ============================================================
+        # STEP 2: VERIFY TRACED MODEL ✅
+        # ============================================================
+        print("🔍 Verifying traced model...")
+        with torch.no_grad():
+            original_out = model(dummy_input)
+            traced_out = traced_model(dummy_input)
+            
+            # Check if outputs are close (within tolerance)
+            if torch.allclose(original_out, traced_out, rtol=1e-3):
+                print("✅ Traced model verification PASSED (outputs match)")
+            else:
+                max_diff = (original_out - traced_out).abs().max().item()
+                print(f"⚠️  WARNING: Traced model outputs differ (max diff: {max_diff:.6f})")
+                print("   This may be acceptable for small differences due to numerical precision")
+                
+                # Fail if difference is too large
+                if max_diff > 1e-2:  # More than 1% difference
+                    raise ValueError(
+                        f"Traced model verification FAILED: "
+                        f"max diff {max_diff:.6f} exceeds threshold 1e-2"
+                    )
+        
+        # ============================================================
+        # STEP 3: SAVE TORCHSCRIPT MODEL
+        # ============================================================
+        # Save with timestamp
+        script_path = MODEL_OUTPUT_DIR / f'lstm_final_{timestamp}.ptc'
+        traced_model.save(str(script_path))
+        print(f"✅ TorchScript model saved: {script_path}")
+        
+        # Also save as "latest" for easy access
+        latest_path = MODEL_OUTPUT_DIR / 'lstm_final_latest.ptc'
+        traced_model.save(str(latest_path))
+        print(f"✅ Latest model saved: {latest_path}")
+        
+    except Exception as e:
+        print(f"❌ Error tracing/saving model: {e}")
+        import traceback
+        traceback.print_exc()  # Full stack trace for debugging
+        raise
+    
+    # ============================================================
+    # STEP 4: SAVE METADATA
+    # ============================================================
+    # Save metadata with timestamp
+    metadata_path = METRICS_OUTPUT_DIR / f'metadata_{timestamp}.json'
+    with open(metadata_path, 'w') as f:
         json.dump({
             'hyperparameters': params,
             'test_metrics': metrics,
             'metadata': metadata,
-            'timestamp': timestamp
+            'timestamp': timestamp,
+            'format': 'torchscript'
         }, f, indent=2)
-    print(f"✅ Metrics saved: {metrics_path}")
+    print(f"✅ Metadata saved: {metadata_path}")
     
-    # Save as pickle for easy loading
-    pickle_path = MODEL_OUTPUT_DIR / 'lstm_final_latest.pkl'
-    with open(pickle_path, 'wb') as f:
-        pickle.dump({
-            'model_state_dict': model.state_dict(),
+    # Also save as "latest" metadata
+    latest_metadata_path = METRICS_OUTPUT_DIR / 'metadata_latest.json'
+    with open(latest_metadata_path, 'w') as f:
+        json.dump({
             'hyperparameters': params,
-            'metadata': metadata
-        }, f)
-    print(f"✅ Pickle saved: {pickle_path}")
+            'test_metrics': metrics,
+            'metadata': metadata,
+            'timestamp': timestamp,
+            'format': 'torchscript'
+        }, f, indent=2)
+    print(f"✅ Latest metadata saved: {latest_metadata_path}")
+    
+    return script_path, metadata_path
+
 
 def main():
     print("="*70)
-    print("🚀 FINAL MODEL TRAINING")
+    print("🚀 FINAL MODEL TRAINING (TorchScript Export)")
     print("="*70)
-    print(f"Timestamp: {datetime.utcnow().isoformat()}")
+    print(f"⏰ Timestamp: {datetime.utcnow().isoformat()}")
     
     # Load best hyperparameters
     best_params, tuning_results = load_best_hyperparameters()
     
-    print("\nBest Hyperparameters:")
+    print("\n📋 Best Hyperparameters:")
     for key, value in best_params.items():
         if key not in ['input_size', 'num_classes', 'class_weights']:
             print(f"  {key}: {value}")
@@ -293,7 +336,7 @@ def main():
     
     # Calculate class weights
     class_weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
-    print(f"\nClass weights: {class_weights}")
+    print(f"\n⚖️  Class weights: {class_weights}")
     
     # Update params with actual values
     best_params['input_size'] = X.shape[1]
@@ -306,7 +349,7 @@ def main():
     # Evaluate on hold-out
     test_metrics = evaluate_model(model, X_test, y_test)
     
-    # Save everything
+    # Prepare metadata
     metadata = {
         'training_samples': int(len(X_train)),
         'test_samples': int(len(X_test)),
@@ -317,18 +360,22 @@ def main():
         'tuning_gap': float(tuning_results['gap']),
         'final_test_accuracy': float(test_metrics['accuracy']),
         'split_strategy': 'stratified',
+        'export_format': 'torchscript',
         'timestamp': datetime.utcnow().isoformat()
     }
     
-    save_model(model, best_params, test_metrics, metadata)
+    # ✅ Save using TorchScript
+    save_model_torchscript(model, best_params, test_metrics, metadata)
     
     print("\n" + "="*70)
     print("✅ FINAL MODEL TRAINING COMPLETE!")
     print("="*70)
-    print(f"Test Accuracy: {test_metrics['accuracy']:.4f} ({test_metrics['accuracy']*100:.2f}%)")
-    print(f"Tuning CV Score: {tuning_results['cv_score']:.4f}")
-    print(f"Tuning Hold-out: {tuning_results['holdout_score']:.4f}")
+    print(f"📊 Test Accuracy: {test_metrics['accuracy']:.4f} ({test_metrics['accuracy']*100:.2f}%)")
+    print(f"📊 Tuning CV Score: {tuning_results['cv_score']:.4f}")
+    print(f"📊 Tuning Hold-out: {tuning_results['holdout_score']:.4f}")
+    print(f"💾 Export Format: TorchScript (.ptc)")
     print("="*70)
+
 
 if __name__ == '__main__':
     main()
