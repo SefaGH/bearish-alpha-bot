@@ -177,7 +177,7 @@ async def fetch_and_process_data(symbol='BTC/USDT',
     unique, counts = np.unique(y, return_counts=True)
     for label, count in zip(unique, counts):
         percentage = (count / len(y)) * 100
-        label_name = ['Bullish', 'Bearish', 'Neutral', 'Volatile'][label]
+        label_name = ['Bullish', 'Neutral', 'Bearish', 'Volatile'][label]
         logger.info(f"     {label_name}: {count} ({percentage:.1f}%)")
     
     # 5. Save to cache
