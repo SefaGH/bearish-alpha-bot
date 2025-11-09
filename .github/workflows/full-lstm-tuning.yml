@@ -50,8 +50,8 @@ jobs:
           echo ""
           echo "Configuration:"
           echo "  - Symbol: ${{ github.event.inputs.symbol }}"
-          echo "  - Label threshold: 0.015 (1.5%)"
-          echo "  - Volume confirmation: ENABLED"
+          echo "  - Label threshold: 0.010
+          echo "  - Volume confirmation: DISABLED"
           echo "  - Multi-timeframe: ENABLED"
           echo "  - Use all features: YES (87 → selected)"
           echo ""
