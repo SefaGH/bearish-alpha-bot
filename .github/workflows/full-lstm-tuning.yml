@@ -1,0 +1,188 @@
+name: 🚀 Full LSTM Tuning (30 Trials)
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: 'Trading pair (e.g., BTC/USDT)'
+        required: true
+        default: 'BTC/USDT'
+      trials:
+        description: 'Number of Optuna trials'
+        required: true
+        default: '30'
+      cv_splits:
+        description: 'Number of CV splits'
+        required: true
+        default: '5'
+
+jobs:
+  full-tuning:
+    name: 🎯 Full LSTM Hyperparameter Tuning
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2 hours max
+    
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 📦 Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: 📁 Create Directories
+        run: |
+          mkdir -p logs data/cache data/models logs/tuning_results
+          echo "✅ Directories created"
+      
+      - name: 📊 Step 1 - Prepare Training Data
+        run: |
+          echo "======================================================================"
+          echo "📊 PREPARING TRAINING DATA WITH IMPROVED LABELS"
+          echo "======================================================================"
+          echo ""
+          echo "Configuration:"
+          echo "  - Symbol: ${{ github.event.inputs.symbol }}"
+          echo "  - Label threshold: 0.015 (1.5%)"
+          echo "  - Volume confirmation: ENABLED"
+          echo "  - Multi-timeframe: ENABLED"
+          echo "  - Use all features: YES (87 → selected)"
+          echo ""
+          
+          python scripts/prepare_training_data.py \
+            --symbol '${{ github.event.inputs.symbol }}' \
+            --use-all-features
+          
+          echo ""
+          echo "✅ Training data prepared with improved labels"
+      
+      - name: 🎯 Step 2 - Feature Analysis & Selection
+        run: |
+          echo "======================================================================"
+          echo "🎯 FEATURE ANALYSIS & SELECTION"
+          echo "======================================================================"
+          echo ""
+          
+          # Analyze features
+          python scripts/analyze_features.py
+          
+          echo ""
+          echo "Running feature selection with lenient thresholds..."
+          python scripts/analyze_features.py \
+            --select \
+            --variance-threshold 0.00005 \
+            --correlation-threshold 0.005
+          
+          echo ""
+          echo "✅ Feature selection completed"
+      
+      - name: 🔄 Step 3 - Re-prepare with Selected Features
+        run: |
+          echo "======================================================================"
+          echo "🔄 RE-PREPARING DATA WITH SELECTED FEATURES"
+          echo "======================================================================"
+          echo ""
+          
+          python scripts/prepare_training_data.py \
+            --symbol '${{ github.event.inputs.symbol }}' \
+            --use-all-features
+          
+          echo ""
+          echo "✅ Data re-prepared with feature selection applied"
+      
+      - name: 🚀 Step 4 - Full LSTM Tuning
+        run: |
+          echo "======================================================================"
+          echo "🚀 FULL LSTM HYPERPARAMETER TUNING"
+          echo "======================================================================"
+          echo ""
+          echo "Configuration:"
+          echo "  - Model: LSTM"
+          echo "  - Trials: ${{ github.event.inputs.trials }}"
+          echo "  - CV Splits: ${{ github.event.inputs.cv_splits }}"
+          echo "  - Symbol: ${{ github.event.inputs.symbol }}"
+          echo ""
+          echo "This will take approximately 60-90 minutes..."
+          echo ""
+          
+          python scripts/tune_regime_models_standalone.py \
+            --model lstm \
+            --symbol '${{ github.event.inputs.symbol }}' \
+            --trials ${{ github.event.inputs.trials }} \
+            --cv-splits ${{ github.event.inputs.cv_splits }}
+          
+          echo ""
+          echo "✅ Full tuning completed!"
+      
+      - name: 📊 Step 5 - Analyze Results
+        run: |
+          echo "======================================================================"
+          echo "📊 TUNING RESULTS ANALYSIS"
+          echo "======================================================================"
+          echo ""
+          
+          # Find the latest results file
+          LATEST_RESULT=$(ls -t logs/tuning_results/lstm_tuning_*.json | head -1)
+          
+          if [ -f "$LATEST_RESULT" ]; then
+            echo "Results file: $LATEST_RESULT"
+            echo ""
+            
+            # Extract key metrics
+            CV_SCORE=$(python -c "import json; print(json.load(open('$LATEST_RESULT'))['cv_score'])")
+            HOLDOUT_SCORE=$(python -c "import json; print(json.load(open('$LATEST_RESULT'))['holdout_score'])")
+            GAP=$(python -c "import json; print(json.load(open('$LATEST_RESULT'))['gap'])")
+            
+            echo "=== FINAL RESULTS ==="
+            echo "CV Score:     $(python -c "print(f'{float($CV_SCORE)*100:.2f}%')")"
+            echo "Hold-out:     $(python -c "print(f'{float($HOLDOUT_SCORE)*100:.2f}%')")"
+            echo "Gap:          $(python -c "print(f'{float($GAP)*100:.2f}%')")"
+            echo ""
+            
+            # Success criteria
+            HOLDOUT_PERCENT=$(python -c "print(float($HOLDOUT_SCORE)*100)")
+            
+            if (( $(echo "$HOLDOUT_PERCENT >= 53" | bc -l) )); then
+              echo "🎉 SUCCESS! Hold-out accuracy >= 53%"
+              echo "✅ Model ready for production!"
+            elif (( $(echo "$HOLDOUT_PERCENT >= 50" | bc -l) )); then
+              echo "✅ GOOD! Hold-out accuracy >= 50%"
+              echo "⚠️  Consider further tuning for production"
+            else
+              echo "⚠️  WARNING! Hold-out accuracy < 50%"
+              echo "❌ Model needs improvement"
+            fi
+          else
+            echo "❌ No results file found"
+            exit 1
+          fi
+      
+      - name: 💾 Upload Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tuning-results-${{ github.run_number }}
+          path: |
+            logs/tuning_results/*.json
+            logs/*.log
+          retention-days: 30
+      
+      - name: 📈 Summary
+        if: always()
+        run: |
+          echo "======================================================================"
+          echo "✅ FULL TUNING WORKFLOW COMPLETED"
+          echo "======================================================================"
+          echo ""
+          echo "Next steps:"
+          echo "1. Review results in logs/tuning_results/"
+          echo "2. If hold-out >= 53%: Deploy to production"
+          echo "3. If hold-out 50-53%: Consider more trials"
+          echo "4. If hold-out < 50%: Review label/feature configuration"
