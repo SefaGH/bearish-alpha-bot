@@ -95,7 +95,7 @@ async def fetch_and_process_data(symbol='BTC/USDT',
             # Generate labels
             logger.info("  Generating regime labels...")
             regime_labels = generate_regime_labels(
-                price_data,
+                ohlcv_df,
                 window=20,
                 threshold=0.015,
                 prediction_horizon=5,
