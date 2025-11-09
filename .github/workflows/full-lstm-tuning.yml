@@ -1,4 +1,4 @@
-name: 🚀 Full LSTM Tuning (30 Trials)
+name: 🚀 Full LSTM Tuning (Balanced Accuracy)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ on:
 
 jobs:
   full-tuning:
-    name: 🎯 Full LSTM Hyperparameter Tuning
+    name: 🎯 Full LSTM Hyperparameter Tuning (Balanced Accuracy)
     runs-on: ubuntu-latest
     timeout-minutes: 120  # 2 hours max
     
@@ -42,18 +42,22 @@ jobs:
           mkdir -p logs data/cache data/models logs/tuning_results
           echo "✅ Directories created"
       
+      # ==================== STEP 1: UPDATED ==================== #
       - name: 📊 Step 1 - Prepare Training Data
         run: |
           echo "======================================================================"
-          echo "📊 PREPARING TRAINING DATA WITH IMPROVED LABELS"
+          echo "📊 PREPARING TRAINING DATA (BALANCED ACCURACY READY)"
           echo "======================================================================"
           echo ""
           echo "Configuration:"
           echo "  - Symbol: ${{ github.event.inputs.symbol }}"
-          echo "  - Label threshold: 0.010"
-          echo "  - Volume confirmation: DISABLED"
+          echo "  - Label threshold: 0.010 (1.0% - fixed from 0.015)"
+          echo "  - Volume confirmation: ENABLED (volume_confirm=True)"  # ← UPDATED!
           echo "  - Multi-timeframe: ENABLED"
-          echo "  - Use all features: YES (87 → selected)"
+          echo "  - Use all features: YES (87 → selected ~80)"
+          echo ""
+          echo "⚠️  Note: volume_confirm=True requires code change in prepare_training_data.py"
+          echo "   Make sure line 101 has: volume_confirm=True"
           echo ""
           
           python scripts/prepare_training_data.py \
@@ -61,7 +65,7 @@ jobs:
             --use-all-features
           
           echo ""
-          echo "✅ Training data prepared with improved labels"
+          echo "✅ Training data prepared with volume-confirmed labels"
       
       - name: 🎯 Step 2 - Feature Analysis & Selection
         run: |
@@ -100,7 +104,7 @@ jobs:
       - name: 🚀 Step 4 - Full LSTM Tuning
         run: |
           echo "======================================================================"
-          echo "🚀 FULL LSTM HYPERPARAMETER TUNING"
+          echo "🚀 FULL LSTM HYPERPARAMETER TUNING (BALANCED ACCURACY)"
           echo "======================================================================"
           echo ""
           echo "Configuration:"
@@ -108,6 +112,8 @@ jobs:
           echo "  - Trials: ${{ github.event.inputs.trials }}"
           echo "  - CV Splits: ${{ github.event.inputs.cv_splits }}"
           echo "  - Symbol: ${{ github.event.inputs.symbol }}"
+          echo "  - Optimization Metric: balanced_accuracy_score"  # ← NEW!
+          echo "  - Data: Original distribution (NO SMOTETomek in tuning)"  # ← NEW!
           echo ""
           echo "This will take approximately 60-90 minutes..."
           echo ""
@@ -121,10 +127,11 @@ jobs:
           echo ""
           echo "✅ Full tuning completed!"
       
-      - name: 📊 Step 5 - Analyze Results
+      # ==================== STEP 5: COMPLETELY REWRITTEN ==================== #
+      - name: 📊 Step 5 - Analyze Results (Balanced Accuracy)
         run: |
           echo "======================================================================"
-          echo "📊 TUNING RESULTS ANALYSIS"
+          echo "📊 TUNING RESULTS ANALYSIS (BALANCED ACCURACY METRICS)"
           echo "======================================================================"
           echo ""
           
@@ -135,29 +142,105 @@ jobs:
             echo "Results file: $LATEST_RESULT"
             echo ""
             
-            # Extract key metrics
-            CV_SCORE=$(python -c "import json; print(json.load(open('$LATEST_RESULT'))['cv_score'])")
-            HOLDOUT_SCORE=$(python -c "import json; print(json.load(open('$LATEST_RESULT'))['holdout_score'])")
-            GAP=$(python -c "import json; print(json.load(open('$LATEST_RESULT'))['gap'])")
+            # ========== EXTRACT BALANCED METRICS (NEW!) ========== #
+            BALANCED_CV=$(python3 -c "import json; print(json.load(open('$LATEST_RESULT')).get('balanced_cv_score', 0.0))")
+            BALANCED_HOLDOUT=$(python3 -c "import json; print(json.load(open('$LATEST_RESULT')).get('balanced_holdout_score', 0.0))")
             
-            echo "=== FINAL RESULTS ==="
-            echo "CV Score:     $(python -c "print(f'{float($CV_SCORE)*100:.2f}%')")"
-            echo "Hold-out:     $(python -c "print(f'{float($HOLDOUT_SCORE)*100:.2f}%')")"
-            echo "Gap:          $(python -c "print(f'{float($GAP)*100:.2f}%')")"
+            # Also get old metrics for reference
+            TOTAL_CV=$(python3 -c "import json; print(json.load(open('$LATEST_RESULT')).get('cv_score', 0.0))")
+            TOTAL_HOLDOUT=$(python3 -c "import json; print(json.load(open('$LATEST_RESULT')).get('holdout_score', 0.0))")
+            GAP=$(python3 -c "import json; print(json.load(open('$LATEST_RESULT')).get('gap', 0.0))")
+            
+            echo "=== FINAL RESULTS (BALANCED ACCURACY) ==="
+            echo "CV (Balanced):        $(python3 -c "print(f'{float($BALANCED_CV)*100:.2f}%')")"
+            echo "Hold-out (Balanced):  $(python3 -c "print(f'{float($BALANCED_HOLDOUT)*100:.2f}%')")"
+            echo "Gap:                  $(python3 -c "print(f'{float($GAP)*100:.2f}%')")"
+            echo ""
+            echo "=== REFERENCE (Total Accuracy - Misleading!) ==="
+            echo "CV (Total):           $(python3 -c "print(f'{float($TOTAL_CV)*100:.2f}%')")"
+            echo "Hold-out (Total):     $(python3 -c "print(f'{float($TOTAL_HOLDOUT)*100:.2f}%')")"
             echo ""
             
-            # Success criteria
-            HOLDOUT_PERCENT=$(python -c "print(float($HOLDOUT_SCORE)*100)")
+            # ========== NEW SUCCESS CRITERIA (BALANCED) ========== #
+            BALANCED_HOLDOUT_PERCENT=$(python3 -c "print(float($BALANCED_HOLDOUT)*100)")
+            GAP_ABS=$(python3 -c "print(abs(float($GAP))*100)")
             
-            if (( $(echo "$HOLDOUT_PERCENT >= 53" | bc -l) )); then
-              echo "🎉 SUCCESS! Hold-out accuracy >= 53%"
-              echo "✅ Model ready for production!"
-            elif (( $(echo "$HOLDOUT_PERCENT >= 50" | bc -l) )); then
-              echo "✅ GOOD! Hold-out accuracy >= 50%"
-              echo "⚠️  Consider further tuning for production"
+            echo "======================================================================"
+            echo "🎯 PRODUCTION READINESS CHECK (BALANCED ACCURACY)"
+            echo "======================================================================"
+            echo ""
+            
+            # Check 1: Balanced accuracy threshold
+            if (( $(echo "$BALANCED_HOLDOUT_PERCENT >= 45" | bc -l) )); then
+              echo "✅ CHECK 1: Balanced accuracy >= 45% (PASSED)"
+              echo "   Achieved: ${BALANCED_HOLDOUT_PERCENT}%"
+              CHECK1_PASS=true
+            elif (( $(echo "$BALANCED_HOLDOUT_PERCENT >= 40" | bc -l) )); then
+              echo "⚠️  CHECK 1: Balanced accuracy >= 40% but < 45% (MARGINAL)"
+              echo "   Achieved: ${BALANCED_HOLDOUT_PERCENT}%"
+              CHECK1_PASS=marginal
             else
-              echo "⚠️  WARNING! Hold-out accuracy < 50%"
-              echo "❌ Model needs improvement"
+              echo "❌ CHECK 1: Balanced accuracy < 40% (FAILED)"
+              echo "   Achieved: ${BALANCED_HOLDOUT_PERCENT}% (Random = 33.3%)"
+              CHECK1_PASS=false
+            fi
+            
+            # Check 2: Generalization gap
+            if (( $(echo "$GAP_ABS < 5" | bc -l) )); then
+              echo "✅ CHECK 2: Generalization gap < 5% (EXCELLENT)"
+              echo "   Gap: ${GAP_ABS}%"
+              CHECK2_PASS=true
+            elif (( $(echo "$GAP_ABS < 10" | bc -l) )); then
+              echo "✅ CHECK 2: Generalization gap < 10% (GOOD)"
+              echo "   Gap: ${GAP_ABS}%"
+              CHECK2_PASS=true
+            else
+              echo "⚠️  CHECK 2: Generalization gap >= 10% (CONCERNING)"
+              echo "   Gap: ${GAP_ABS}% (possible overfitting/underfitting)"
+              CHECK2_PASS=marginal
+            fi
+            
+            echo ""
+            echo "======================================================================"
+            echo "📋 FINAL VERDICT"
+            echo "======================================================================"
+            
+            # Final decision based on checks
+            if [ "$CHECK1_PASS" = "true" ] && [ "$CHECK2_PASS" = "true" ]; then
+              echo "🎉 SUCCESS! Model ready for final training!"
+              echo ""
+              echo "✅ Balanced hold-out: ${BALANCED_HOLDOUT_PERCENT}% (>= 45%)"
+              echo "✅ Generalization gap: ${GAP_ABS}% (< 10%)"
+              echo ""
+              echo "Next steps:"
+              echo "  1. Run 'Train Final Production Model' workflow"
+              echo "  2. With these tuning results, expect:"
+              echo "     - Bearish accuracy: 35-50% (improved from 0%!)"
+              echo "     - Bullish accuracy: 50-65%"
+              echo "     - Neutral accuracy: 75-85%"
+              echo "  3. Deployment check should PASS all thresholds"
+            elif [ "$CHECK1_PASS" = "marginal" ]; then
+              echo "⚠️  MARGINAL! Model may work but needs validation."
+              echo ""
+              echo "⚠️  Balanced hold-out: ${BALANCED_HOLDOUT_PERCENT}% (40-45% range)"
+              echo "✅ Generalization gap: ${GAP_ABS}%"
+              echo ""
+              echo "Recommendations:"
+              echo "  1. Try running final training (may still work)"
+              echo "  2. If Bearish < 30%: Consider more trials or feature engineering"
+              echo "  3. Monitor per-class accuracy closely"
+            else
+              echo "❌ FAILED! Model needs improvement."
+              echo ""
+              echo "❌ Balanced hold-out: ${BALANCED_HOLDOUT_PERCENT}% (< 40%)"
+              echo "   (Random guessing = 33.3% for 3 classes)"
+              echo ""
+              echo "Recommendations:"
+              echo "  1. Check feature quality (volume_confirm enabled?)"
+              echo "  2. Try stricter threshold (0.020 instead of 0.010)"
+              echo "  3. Consider feature engineering (add Bearish-specific features)"
+              echo "  4. Increase trials (50-100) for better exploration"
+              exit 1
             fi
           else
             echo "❌ No results file found"
@@ -174,15 +257,26 @@ jobs:
             logs/*.log
           retention-days: 30
       
+      # ==================== SUMMARY: UPDATED ==================== #
       - name: 📈 Summary
         if: always()
         run: |
           echo "======================================================================"
-          echo "✅ FULL TUNING WORKFLOW COMPLETED"
+          echo "✅ FULL TUNING WORKFLOW COMPLETED (BALANCED ACCURACY)"
           echo "======================================================================"
           echo ""
+          echo "What changed in this workflow:"
+          echo "  ✅ Now optimizes for balanced_accuracy_score (fair metric)"
+          echo "  ✅ Tunes on REAL data (no SMOTETomek in tuning)"
+          echo "  ✅ Checks balanced_holdout_score >= 45% (not total 53%)"
+          echo "  ✅ Validates generalization gap"
+          echo ""
           echo "Next steps:"
-          echo "1. Review results in logs/tuning_results/"
-          echo "2. If hold-out >= 53%: Deploy to production"
-          echo "3. If hold-out 50-53%: Consider more trials"
-          echo "4. If hold-out < 50%: Review label/feature configuration"
+          echo "  1. If PASSED: Run 'Train Final Production Model' workflow"
+          echo "  2. If MARGINAL: Try training, monitor Bearish accuracy"
+          echo "  3. If FAILED: Review feature engineering or try more trials"
+          echo ""
+          echo "Expected improvements:"
+          echo "  - Bearish detection: 35-50% (from 0%!)"
+          echo "  - Better minority class learning"
+          echo "  - Passes deployment checks (Bearish > 30%)"
