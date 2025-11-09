@@ -119,9 +119,9 @@ def calculate_aggressive_class_weights(y_train, device):
     aggressive_weights = baseline_weights.copy()
     
     # Amplification factors (TUNE THESE!)
-    BULLISH_AMPLIFY = 1.0  # Bullish needs moderate boost
-    BEARISH_AMPLIFY = 1.0  # Bearish needs MASSIVE boost
-    NEUTRAL_REDUCE = 1.0   # Neutral can afford slight reduction
+    BULLISH_AMPLIFY = 1.80  # Bullish needs moderate boost
+    BEARISH_AMPLIFY = 2.0  # Bearish needs MASSIVE boost
+    NEUTRAL_REDUCE = 0.80   # Neutral can afford slight reduction
     
     aggressive_weights[0] *= BULLISH_AMPLIFY  # Bullish
     aggressive_weights[1] *= NEUTRAL_REDUCE   # Neutral
