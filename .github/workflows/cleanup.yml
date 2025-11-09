@@ -1,0 +1,25 @@
+name: cleanup cache files
+
+on:
+  workflow_dispatch:   # Manuel tetikleme
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Remove cached training data
+        run: |
+          rm -f data/cache/BTC-USDT_training_data.npz
+          rm -f data/cache/feature_selection_mask.npy
+          rm -f data/cache/feature_selection_metadata.json
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add -u
+          git commit -m "Cleanup cache files"
+          git push
