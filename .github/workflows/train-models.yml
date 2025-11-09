@@ -1,8 +1,6 @@
-name: Manually and Scheduled Train ML Models
+name: Train Final Production Model (TorchScript)
 
 on:
-  schedule:
-    - cron: '0 5 * * 0'
   workflow_dispatch:
     inputs:
       log_level:
@@ -13,95 +11,281 @@ on:
         options:
           - INFO
           - DEBUG
+      symbol:
+        description: 'Trading Symbol'
+        required: true
+        default: 'BTC/USDT'
+        type: string
 
 jobs:
-  train-and-save-models:
+  train-final-model:
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: Check out repository code
         uses: actions/checkout@v4
-
-      # Python 3.11 ortamını kur
+      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip setuptools wheel
-
-      # Bağımlılıkları kur (artık 'pandas-ta-classic' ile sorunsuz çalışacak)
+      
       - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      # PRE-TRAINING DIAGNOSTICS
-      - name: 📊 Pre-training diagnostics
-        run: python scripts/diagnose_training_data.py
-        continue-on-error: true
-        env:
-          ML_ENABLED: "true"
-
-      - name: Run model training script
-        env:
-          ML_ENABLED: "true"
-        run: python scripts/train_all_models.py
-
-      # POST-TRAINING PERFORMANCE REPORT
-      - name: 📈 Generate performance report
-        run: python scripts/generate_performance_report.py
-        if: always()
-        env:
-          ML_ENABLED: "true"
-
-      # List model directory contents before archiving
-      - name: List trained models and reports
         run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+      
+      # =================================================================
+      # STEP 1: Prepare Training Data
+      # =================================================================
+      - name: 📊 Step 1/5 - Prepare training data
+        run: |
+          echo "======================================================================"
+          echo "📊 PREPARING TRAINING DATA"
+          echo "======================================================================"
+          python scripts/prepare_training_data.py --symbol "${{ inputs.symbol }}"
+        env:
+          ML_ENABLED: "true"
+      
+      # =================================================================
+      # STEP 2: Feature Analysis & Selection
+      # =================================================================
+      - name: 🎯 Step 2/5 - Feature analysis & selection
+        run: |
+          echo "======================================================================"
+          echo "🎯 FEATURE ANALYSIS & SELECTION"
+          echo "======================================================================"
+          python scripts/feature_selection.py
+        env:
+          ML_ENABLED: "true"
+      
+      # =================================================================
+      # STEP 3: Re-prepare with Selected Features
+      # =================================================================
+      - name: 🔄 Step 3/5 - Re-prepare data with selected features
+        run: |
+          echo "======================================================================"
+          echo "🔄 RE-PREPARING DATA WITH SELECTED FEATURES"
+          echo "======================================================================"
+          python scripts/prepare_training_data.py --symbol "${{ inputs.symbol }}"
+        env:
+          ML_ENABLED: "true"
+      
+      # =================================================================
+      # STEP 4: Verify Tuning Results
+      # =================================================================
+      - name: ✅ Step 4/5 - Verify tuning results exist
+        run: |
+          echo "======================================================================"
+          echo "✅ VERIFYING TUNING RESULTS"
+          echo "======================================================================"
+          if [ ! -d "logs/tuning_results" ] || [ -z "$(ls -A logs/tuning_results)" ]; then
+            echo ""
+            echo "❌ ERROR: No tuning results found!"
+            echo ""
+            echo "Please run the 'Tune LSTM Model' workflow first:"
+            echo "  1. Go to Actions tab"
+            echo "  2. Select 'Tune LSTM Hyperparameters'"
+            echo "  3. Run workflow"
+            echo "  4. Wait for completion (30 trials, ~5 minutes)"
+            echo "  5. Then re-run this workflow"
+            echo ""
+            exit 1
+          fi
+          echo ""
+          echo "✅ Tuning results found:"
+          ls -lh logs/tuning_results/
+          echo ""
+          echo "Latest tuning result:"
+          ls -lt logs/tuning_results/ | head -2
+      
+      # =================================================================
+      # STEP 5: Train Final Model with TorchScript Export
+      # =================================================================
+      - name: 🚀 Step 5/5 - Train final production model
+        run: |
+          echo "======================================================================"
+          echo "🚀 TRAINING FINAL PRODUCTION MODEL"
+          echo "======================================================================"
+          echo ""
+          echo "Configuration:"
+          echo "  - Export Format: TorchScript (.ptc)"
+          echo "  - Split Strategy: Stratified (0% shift)"
+          echo "  - Best Hyperparameters: From tuning results"
+          echo "  - Model Architecture: src/ml/models.py"
+          echo ""
+          python scripts/train_final_model.py
+        env:
+          ML_ENABLED: "true"
+      
+      # =================================================================
+      # VERIFICATION & REPORTING
+      # =================================================================
+      - name: 📋 List training outputs
+        run: |
+          echo "======================================================================"
+          echo "📋 TRAINING OUTPUTS"
+          echo "======================================================================"
+          echo ""
           echo "=== Trained Models ==="
-          ls -lah data/models/
+          if [ -d "data/models/final" ]; then
+            ls -lah data/models/final/
+          else
+            echo "⚠️  No models directory found"
+          fi
           echo ""
-          echo "=== Training Logs ==="
-          ls -lah logs/
+          echo "=== Training Metrics ==="
+          if [ -d "logs/final_training" ]; then
+            ls -lah logs/final_training/
+          else
+            echo "⚠️  No metrics directory found"
+          fi
           echo ""
-          echo "=== Diagnostics Reports ==="
-          ls -lah logs/diagnostics/ || echo "No diagnostics directory"
-          echo ""
-          echo "=== Performance Reports ==="
-          ls -lah logs/performance/ || echo "No performance directory"
         if: always()
-
-      # Archive trained models with SHA and run number
-      - name: Archive trained models
+      
+      - name: 📊 Display final metrics
+        run: |
+          echo "======================================================================"
+          echo "📊 FINAL MODEL METRICS"
+          echo "======================================================================"
+          python3 << 'EOF'
+          import json
+          from pathlib import Path
+          
+          try:
+              metadata_file = Path('logs/final_training/metadata_latest.json')
+              
+              if not metadata_file.exists():
+                  print("⚠️  Metadata file not found")
+                  exit(0)
+              
+              with open(metadata_file) as f:
+                  data = json.load(f)
+              
+              metadata = data['metadata']
+              metrics = data['test_metrics']
+              
+              print(f"\n✅ Training Complete!")
+              print(f"\n📊 Final Performance:")
+              print(f"   Test Accuracy:      {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)")
+              print(f"   Tuning CV Score:    {metadata['tuning_cv_score']:.4f}")
+              print(f"   Tuning Hold-out:    {metadata['tuning_holdout_score']:.4f}")
+              print(f"   Training Samples:   {metadata['training_samples']:,}")
+              print(f"   Test Samples:       {metadata['test_samples']:,}")
+              print(f"   Features:           {metadata['num_features']}")
+              
+              print(f"\n💾 Model Details:")
+              print(f"   Export Format:      {metadata['export_format']}")
+              print(f"   Split Strategy:     {metadata['split_strategy']}")
+              print(f"   Timestamp:          {metadata['timestamp']}")
+              
+              print(f"\n📈 Per-Class Accuracy:")
+              for class_name, acc in metrics['per_class_accuracy'].items():
+                  print(f"   {class_name:12s}: {acc:.4f}")
+              
+              print("\n" + "="*70)
+              
+              # Check if production-ready
+              if metrics['accuracy'] >= 0.53:
+                  print("✅ MODEL IS PRODUCTION READY!")
+                  print(f"   Target: 53%, Achieved: {metrics['accuracy']*100:.2f}%")
+              else:
+                  print("⚠️  Model below production threshold")
+                  print(f"   Target: 53%, Achieved: {metrics['accuracy']*100:.2f}%")
+              
+              print("="*70)
+              
+          except Exception as e:
+              print(f"❌ Error reading metrics: {e}")
+              import traceback
+              traceback.print_exc()
+          EOF
+        if: always()
+      
+      # =================================================================
+      # ARCHIVE ARTIFACTS
+      # =================================================================
+      - name: 📦 Archive final model (TorchScript)
         uses: actions/upload-artifact@v4
         with:
-          name: trained-models-${{ github.sha }}-${{ github.run_number }}
+          name: final-model-torchscript-${{ github.sha }}
           path: |
-            data/models/
+            data/models/final/*.ptc
+            logs/final_training/*.json
+          retention-days: 90
+          if-no-files-found: error
+      
+      - name: 📦 Archive training cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-cache-${{ github.sha }}
+          path: |
+            data/cache/
           retention-days: 14
           if-no-files-found: warn
-
-      # Archive training logs
-      - name: Archive training logs
-        uses: actions/upload-artifact@v4
-        with:
-          name: training-logs-${{ github.sha }}-${{ github.run_number }}
-          path: |
-            logs/training.log
-            logs/training_metrics.json
-            logs/training_metrics.csv
-            logs/regime_training_metrics.csv
-            logs/rl_training_metrics.csv
-          retention-days: 14
-          if-no-files-found: warn
-
-      # Archive diagnostics and performance reports
-      - name: Archive diagnostics reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: diagnostics-reports-${{ github.sha }}-${{ github.run_number }}
-          path: |
-            logs/diagnostics/
-            logs/performance/
-          retention-days: 30
-          if-no-files-found: warn
+      
+      # =================================================================
+      # DEPLOYMENT CHECK
+      # =================================================================
+      - name: 🚀 Deployment readiness check
+        run: |
+          echo "======================================================================"
+          echo "🚀 DEPLOYMENT READINESS CHECK"
+          echo "======================================================================"
+          echo ""
+          
+          # Check if model file exists
+          if [ ! -f "data/models/final/lstm_final_latest.ptc" ]; then
+            echo "❌ Model file not found: data/models/final/lstm_final_latest.ptc"
+            exit 1
+          fi
+          
+          # Check if metadata exists
+          if [ ! -f "logs/final_training/metadata_latest.json" ]; then
+            echo "❌ Metadata file not found: logs/final_training/metadata_latest.json"
+            exit 1
+          fi
+          
+          # Check model accuracy
+          ACCURACY=$(python3 -c "
+          import json
+          with open('logs/final_training/metadata_latest.json') as f:
+              data = json.load(f)
+          print(data['metadata']['final_test_accuracy'])
+          ")
+          
+          echo "✅ Model file found: data/models/final/lstm_final_latest.ptc"
+          echo "✅ Metadata file found: logs/final_training/metadata_latest.json"
+          echo "✅ Model accuracy: $ACCURACY"
+          echo ""
+          
+          # Check if meets production threshold
+          python3 << EOF
+          accuracy = float("$ACCURACY")
+          threshold = 0.53
+          
+          if accuracy >= threshold:
+              print(f"✅ Model meets production threshold!")
+              print(f"   Required: {threshold:.2%}")
+              print(f"   Achieved: {accuracy:.2%}")
+              print(f"   Excess:   {(accuracy-threshold):.2%}")
+              print("")
+              print("🚀 Ready to deploy!")
+              print("")
+              print("Next steps:")
+              print("  1. Download artifacts from this run")
+              print("  2. Run 'Deploy Model to Production' workflow")
+              print("  3. Start paper trading")
+          else:
+              print(f"⚠️  Model below production threshold")
+              print(f"   Required: {threshold:.2%}")
+              print(f"   Achieved: {accuracy:.2%}")
+              print(f"   Shortfall: {(threshold-accuracy):.2%}")
+              print("")
+              print("Consider:")
+              print("  1. Re-running tuning with more trials")
+              print("  2. Collecting more training data")
+              print("  3. Feature engineering improvements")
+          EOF
+        if: always()
