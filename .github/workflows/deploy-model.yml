@@ -1,0 +1,286 @@
+name: Deploy Model to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment Environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      artifact_run_id:
+        description: 'Training Run ID (optional - uses latest if empty)'
+        required: false
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install fastapi uvicorn python-multipart pydantic
+      
+      # =================================================================
+      # DOWNLOAD TRAINED MODEL
+      # =================================================================
+      - name: 📥 Download trained model artifact
+        run: |
+          echo "======================================================================"
+          echo "📥 DOWNLOADING TRAINED MODEL"
+          echo "======================================================================"
+          
+          if [ -n "${{ inputs.artifact_run_id }}" ]; then
+            echo "Using specified run ID: ${{ inputs.artifact_run_id }}"
+            # TODO: Download artifact from specific run
+            echo "⚠️  Custom run ID not yet implemented"
+            echo "Using latest model from repository..."
+          else
+            echo "Using latest model from repository..."
+          fi
+          
+          # For now, we'll use the model from the repo
+          # In production, you'd download from artifacts
+          ls -lh data/models/final/ || echo "⚠️  Models directory not found"
+          ls -lh logs/final_training/ || echo "⚠️  Metrics directory not found"
+      
+      # =================================================================
+      # VERIFY MODEL
+      # =================================================================
+      - name: ✅ Verify model integrity
+        run: |
+          echo "======================================================================"
+          echo "✅ VERIFYING MODEL"
+          echo "======================================================================"
+          
+          python3 << 'EOF'
+          import torch
+          from pathlib import Path
+          import json
+          
+          try:
+              # Check TorchScript model
+              model_path = Path('data/models/final/lstm_final_latest.ptc')
+              if not model_path.exists():
+                  print(f"❌ Model not found: {model_path}")
+                  exit(1)
+              
+              print(f"✅ Model file exists: {model_path}")
+              print(f"   Size: {model_path.stat().st_size / 1024:.2f} KB")
+              
+              # Try to load model
+              print("\n🔄 Loading TorchScript model...")
+              model = torch.jit.load(str(model_path))
+              model.eval()
+              print("✅ Model loaded successfully!")
+              
+              # Check metadata
+              metadata_path = Path('logs/final_training/metadata_latest.json')
+              if not metadata_path.exists():
+                  print(f"⚠️  Metadata not found: {metadata_path}")
+              else:
+                  print(f"✅ Metadata exists: {metadata_path}")
+                  with open(metadata_path) as f:
+                      data = json.load(f)
+                  print(f"   Accuracy: {data['metadata']['final_test_accuracy']:.4f}")
+                  print(f"   Format: {data['metadata']['export_format']}")
+              
+              # Test inference
+              print("\n🧪 Testing inference...")
+              import torch
+              dummy_input = torch.randn(1, 82)  # Adjust if different
+              with torch.no_grad():
+                  output = model(dummy_input)
+              print(f"✅ Inference test passed!")
+              print(f"   Input shape: {dummy_input.shape}")
+              print(f"   Output shape: {output.shape}")
+              
+              print("\n✅ Model verification complete!")
+              
+          except Exception as e:
+              print(f"❌ Model verification failed: {e}")
+              import traceback
+              traceback.print_exc()
+              exit(1)
+          EOF
+      
+      # =================================================================
+      # CREATE PREDICTION API
+      # =================================================================
+      - name: 🚀 Create prediction service
+        run: |
+          echo "======================================================================"
+          echo "🚀 CREATING PREDICTION SERVICE"
+          echo "======================================================================"
+          
+          # Ensure directories exist
+          mkdir -p src/api
+          
+          # prediction_service.py already exists in repo
+          # Just verify it's there
+          if [ -f "src/api/prediction_service.py" ]; then
+            echo "✅ Prediction service found: src/api/prediction_service.py"
+            wc -l src/api/prediction_service.py
+          else
+            echo "❌ Prediction service not found!"
+            exit 1
+          fi
+      
+      # =================================================================
+      # TEST API LOCALLY
+      # =================================================================
+      - name: 🧪 Test prediction API locally
+        run: |
+          echo "======================================================================"
+          echo "🧪 TESTING PREDICTION API"
+          echo "======================================================================"
+          
+          # Start service in background
+          cd src/api
+          python prediction_service.py &
+          API_PID=$!
+          cd ../..
+          
+          # Wait for service to start
+          echo "⏳ Waiting for API to start..."
+          sleep 10
+          
+          # Test health endpoint
+          echo ""
+          echo "Testing GET /health..."
+          curl -f http://localhost:8000/health || {
+            echo "❌ Health check failed!"
+            kill $API_PID
+            exit 1
+          }
+          
+          echo ""
+          echo "✅ Health check passed!"
+          
+          # Test metrics endpoint
+          echo ""
+          echo "Testing GET /metrics..."
+          curl -f http://localhost:8000/metrics || {
+            echo "❌ Metrics endpoint failed!"
+            kill $API_PID
+            exit 1
+          }
+          
+          echo ""
+          echo "✅ Metrics endpoint passed!"
+          
+          # Test prediction endpoint (with dummy data)
+          echo ""
+          echo "Testing POST /predict..."
+          curl -X POST http://localhost:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{"features": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}' \
+            || {
+            echo "❌ Prediction endpoint failed!"
+            kill $API_PID
+            exit 1
+          }
+          
+          echo ""
+          echo "✅ Prediction endpoint passed!"
+          
+          # Stop service
+          kill $API_PID
+          
+          echo ""
+          echo "✅ All API tests passed!"
+      
+      # =================================================================
+      # DEPLOY TO ENVIRONMENT
+      # =================================================================
+      - name: 🚀 Deploy to ${{ inputs.environment }}
+        run: |
+          echo "======================================================================"
+          echo "🚀 DEPLOYING TO ${{ inputs.environment }}"
+          echo "======================================================================"
+          echo ""
+          echo "Deployment target: ${{ inputs.environment }}"
+          echo "Model path: data/models/final/lstm_final_latest.ptc"
+          echo "API path: src/api/prediction_service.py"
+          echo ""
+          
+          # TODO: Add actual deployment steps
+          # Examples:
+          
+          # Option 1: Heroku
+          # heroku container:push web --app bearish-alpha-bot-${{ inputs.environment }}
+          # heroku container:release web --app bearish-alpha-bot-${{ inputs.environment }}
+          
+          # Option 2: AWS Lambda
+          # aws s3 cp data/models/final/lstm_final_latest.ptc s3://bearish-alpha-models/
+          # aws lambda update-function-code --function-name BearishAlphaPredict --s3-bucket bearish-alpha-models --s3-key lstm_final_latest.ptc
+          
+          # Option 3: Docker + Cloud Run
+          # docker build -t gcr.io/project-id/bearish-alpha:latest .
+          # docker push gcr.io/project-id/bearish-alpha:latest
+          # gcloud run deploy bearish-alpha --image gcr.io/project-id/bearish-alpha:latest
+          
+          # Option 4: Simple VPS
+          # scp -r data/models/final/* user@server:/app/models/
+          # scp src/api/prediction_service.py user@server:/app/api/
+          # ssh user@server "sudo systemctl restart bearish-alpha-api"
+          
+          echo "⚠️  Deployment step not yet configured"
+          echo "   Add your deployment commands above"
+          echo ""
+          echo "For now, artifacts are available for manual deployment:"
+          echo "  - Model: data/models/final/lstm_final_latest.ptc"
+          echo "  - API: src/api/prediction_service.py"
+          echo "  - Metadata: logs/final_training/metadata_latest.json"
+      
+      # =================================================================
+      # POST-DEPLOYMENT VERIFICATION
+      # =================================================================
+      - name: ✅ Post-deployment verification
+        run: |
+          echo "======================================================================"
+          echo "✅ POST-DEPLOYMENT VERIFICATION"
+          echo "======================================================================"
+          echo ""
+          
+          # TODO: Add verification steps for deployed service
+          # Example:
+          # curl -f https://bearish-alpha-bot-${{ inputs.environment }}.herokuapp.com/health
+          
+          echo "⚠️  Post-deployment verification not yet configured"
+          echo ""
+          echo "Manual verification steps:"
+          echo "  1. Check deployment logs"
+          echo "  2. Test /health endpoint"
+          echo "  3. Test /predict endpoint with real data"
+          echo "  4. Monitor for errors"
+        if: always()
+      
+      # =================================================================
+      # ARCHIVE DEPLOYMENT ARTIFACTS
+      # =================================================================
+      - name: 📦 Archive deployment artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-${{ inputs.environment }}-${{ github.sha }}
+          path: |
+            data/models/final/
+            logs/final_training/
+            src/api/
+          retention-days: 90
