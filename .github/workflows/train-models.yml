@@ -172,6 +172,28 @@ jobs:
           echo ""
           echo "Latest tuning result:"
           ls -lt logs/tuning_results/ | head -2
+
+      # =================================================================
+      # 🚀 YENİ ADIM: Production Scaler'ı İndir
+      # =================================================================
+      - name: 📥 Step 4b/5 - Download Production Scaler
+        uses: actions/download-artifact@v4
+        with:
+          name: production-scaler # 'full-lstm-tuning' workflow'unda kullandığımız isim
+          path: data/cache/
+          if-no-files-found: error # Eğer scaler bulunamazsa, workflow'u durdur
+
+      - name: 📦 Verify Scaler Download
+        run: |
+          echo "Checking for downloaded scaler..."
+          ls -l data/cache/
+          if [ -f "data/cache/scaler_production.joblib" ]; then
+            echo "✅ scaler_production.joblib başarıyla indirildi."
+          else
+            echo "❌ HATA: scaler_production.joblib dosyası indirilmedi!"
+            echo "   Lütfen 'full-lstm-tuning' workflow'unun başarıyla tamamlandığından emin olun."
+            exit 1
+          fi
       
       # =================================================================
       # STEP 5: Train Final Model with TorchScript Export
