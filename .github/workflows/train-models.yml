@@ -42,21 +42,21 @@ jobs:
       - name: 📊 Step 1/5 - Prepare training data
         run: |
           echo "======================================================================"
-          echo "📊 PREPARING TRAINING DATA WITH ALL FEATURES"
+          echo "📊 PREPARING TRAINING DATA WITH AUTOMATIC FEATURE SELECTION"
           echo "======================================================================"
           echo ""
           echo "Configuration:"
           echo "  - Symbol: ${{ inputs.symbol }}"
-          echo "  - Use all features: YES (87 total)"
-          echo "  - Advanced features: ENABLED"
+          echo "  - Feature extraction: 87 features"
+          echo "  - Data cleaning: prepare_for_training (mode='auto')"
+          echo "  - Alignment: Feature-label alignment fixed"
           echo ""
           
-          python scripts/prepare_training_data.py \
-            --symbol "${{ inputs.symbol }}" \
-            --use-all-features
+          python scripts/prepare_training_data.py --symbol "${{ inputs.symbol }}"
+          # ✅ REMOVED: --use-all-features (no longer exists)
           
           echo ""
-          echo "✅ Training data prepared with all 87 features"
+          echo "✅ Training data prepared (87 features, will be selected to 82)"
         env:
           ML_ENABLED: "true"
       
@@ -106,10 +106,15 @@ jobs:
           echo "🔄 RE-PREPARING DATA WITH SELECTED FEATURES"
           echo "======================================================================"
           echo ""
+          echo "This will:"
+          echo "  1. Fetch fresh market data (5 timeframes)"
+          echo "  2. Extract all 87 features"
+          echo "  3. Clean and align (prepare_for_training)"
+          echo "  4. Apply feature selection mask (82 features)"
+          echo ""
           
-          python scripts/prepare_training_data.py \
-            --symbol "${{ inputs.symbol }}" \
-            --use-all-features
+          python scripts/prepare_training_data.py --symbol "${{ inputs.symbol }}"
+          # ✅ REMOVED: --use-all-features (no longer exists)
           
           echo ""
           
@@ -287,7 +292,7 @@ jobs:
       - name: 🚀 Deployment readiness check
         run: |
           echo "======================================================================"
-          echo "🚀 DEPLOYMENT READINESS CHECK"
+          echo "🚀 DEPLOYMENT READINESS CHECK (BALANCED METRICS)"
           echo "======================================================================"
           
           python3 << 'EOF'
@@ -329,93 +334,145 @@ jobs:
           if model_size < 1:
               print("❌ ERROR: Model file too small (<1KB)")
               exit(1)
-          else:
-              print("✅ Model size looks reasonable")
           
           print("")
           
           # Check metadata file
           metadata_path = Path('logs/final_training/metadata_latest.json')
-          metadata_ok, _, metadata_hash = check_file(metadata_path, "Metadata file")
+          metadata_ok, _, _ = check_file(metadata_path, "Metadata file")
           
           if not metadata_ok:
               exit(1)
           
           print("")
+          print("="*70)
           
-          # --- YENİ KONTROL MANTIĞI BAŞLANGICI ---
-          
+          # ==================== NEW DEPLOYMENT LOGIC ==================== #
           # Load metadata and metrics
           with open(metadata_path) as f:
               data = json.load(f)
           
           metadata = data['metadata']
-          metrics = data['test_metrics'] # <-- Metrikleri de yükle
+          metrics = data['test_metrics']
           
-          # Tüm doğruluk değerlerini al
+          # Get all metrics
           total_accuracy = metrics.get('accuracy', 0.0)
           per_class_acc = metrics.get('per_class_accuracy', {})
           bullish_acc = per_class_acc.get('Bullish', 0.0)
+          neutral_acc = per_class_acc.get('Neutral', 0.0)
           bearish_acc = per_class_acc.get('Bearish', 0.0)
           
-          # Eşik değerleri tanımla
-          TOTAL_ACC_THRESHOLD = 0.53
-          MINORITY_ACC_THRESHOLD = 0.30  # <-- YENİ GÜVENLİK EŞİĞİ (örn: %30)
+          # ✅ NEW THRESHOLDS (Minority-focused, not total!)
+          MIN_MINORITY_ACC = 0.30  # 30% for Bullish/Bearish
+          MIN_MAJORITY_ACC = 0.60  # 60% for Neutral
+          MIN_OVERALL_ACC = 0.50   # 50% overall (sanity check)
           
-          print("📊 Model Performance:")
-          print(f"   Test Accuracy: {total_accuracy:.4f} ({total_accuracy*100:.2f}%)")
-          print(f"   Tuning CV: {metadata['tuning_cv_score']:.4f}")
-          print(f"   Tuning Hold-out: {metadata['tuning_holdout_score']:.4f}")
-          print(f"   ... (diğer metrikler)")
+          print("📊 Model Performance (ALL CLASSES):")
+          print(f"   Overall Accuracy:  {total_accuracy:.4f} ({total_accuracy*100:.2f}%)")
+          print(f"   Tuning CV Score:   {metadata.get('tuning_cv_score', 0.0):.4f}")
+          print(f"   Tuning Hold-out:   {metadata.get('tuning_holdout_score', 0.0):.4f}")
           
-          print("\n📈 Per-Class Performance Check:")
-          print(f"   Bullish Accuracy: {bullish_acc:.4f} (Threshold: > {MINORITY_ACC_THRESHOLD:.2f})")
-          print(f"   Bearish Accuracy: {bearish_acc:.4f} (Threshold: > {MINORITY_ACC_THRESHOLD:.2f})")
+          print("\n📈 Per-Class Performance:")
+          print(f"   Bullish: {bullish_acc:.4f} ({bullish_acc*100:.2f}%) - Threshold: {MIN_MINORITY_ACC:.2%}")
+          print(f"   Neutral: {neutral_acc:.4f} ({neutral_acc*100:.2f}%) - Threshold: {MIN_MAJORITY_ACC:.2%}")
+          print(f"   Bearish: {bearish_acc:.4f} ({bearish_acc*100:.2f}%) - Threshold: {MIN_MINORITY_ACC:.2%}")
           
           print("")
           print("="*70)
           
-          # Production readiness decision (YENİ MANTIK)
+          # ✅ PROPER DEPLOYMENT DECISION (All classes must pass!)
           is_ready = True
           reasons = []
-
-          if total_accuracy < TOTAL_ACC_THRESHOLD:
-              is_ready = False
-              reasons.append(f"   ❌ Total Accuracy ({total_accuracy:.2%}) < Threshold ({TOTAL_ACC_THRESHOLD:.2%})")
           
-          if bullish_acc < MINORITY_ACC_THRESHOLD:
+          # Check 1: Overall sanity
+          if total_accuracy < MIN_OVERALL_ACC:
               is_ready = False
-              reasons.append(f"   ❌ Bullish Accuracy ({bullish_acc:.2%}) < Threshold ({MINORITY_ACC_THRESHOLD:.2%})")
-
-          if bearish_acc < MINORITY_ACC_THRESHOLD:
+              reasons.append(f"   ❌ Overall accuracy ({total_accuracy:.2%}) < {MIN_OVERALL_ACC:.2%}")
+          
+          # Check 2: Bearish (CRITICAL!)
+          if bearish_acc < MIN_MINORITY_ACC:
               is_ready = False
-              reasons.append(f"   ❌ Bearish Accuracy ({bearish_acc:.2%}) < Threshold ({MINORITY_ACC_THRESHOLD:.2%})")
-
+              reasons.append(f"   ❌ Bearish accuracy ({bearish_acc:.2%}) < {MIN_MINORITY_ACC:.2%}")
+          
+          # Check 3: Bullish
+          if bullish_acc < MIN_MINORITY_ACC:
+              is_ready = False
+              reasons.append(f"   ❌ Bullish accuracy ({bullish_acc:.2%}) < {MIN_MINORITY_ACC:.2%}")
+          
+          # Check 4: Neutral
+          if neutral_acc < MIN_MAJORITY_ACC:
+              is_ready = False
+              reasons.append(f"   ❌ Neutral accuracy ({neutral_acc:.2%}) < {MIN_MAJORITY_ACC:.2%}")
           
           if is_ready:
-              excess = total_accuracy - TOTAL_ACC_THRESHOLD
               print("✅ MODEL IS PRODUCTION READY! 🎉")
               print("")
-              print(f"   Required: {TOTAL_ACC_THRESHOLD:.2%}")
-              print(f"   Achieved: {total_accuracy:.2%}")
-              print(f"   Excess:   {excess:.2%}")
-              print(f"   (Minority class checks PASSED)")
+              print("   All Per-Class Thresholds: PASSED ✅")
+              print(f"   Bearish: {bearish_acc:.2%} (>= {MIN_MINORITY_ACC:.2%}) ✅")
+              print(f"   Bullish: {bullish_acc:.2%} (>= {MIN_MINORITY_ACC:.2%}) ✅")
+              print(f"   Neutral: {neutral_acc:.2%} (>= {MIN_MAJORITY_ACC:.2%}) ✅")
+              print(f"   Overall: {total_accuracy:.2%} (>= {MIN_OVERALL_ACC:.2%}) ✅")
               print("")
               print("🚀 Ready to deploy!")
-              # ... (manifest kaydetme kodları) ...
+              
+              # Save deployment manifest
+              manifest = {
+                  'model_hash': model_hash,
+                  'model_size_kb': model_size,
+                  'total_accuracy': float(total_accuracy),
+                  'per_class_accuracy': {
+                      'Bullish': float(bullish_acc),
+                      'Neutral': float(neutral_acc),
+                      'Bearish': float(bearish_acc)
+                  },
+                  'thresholds': {
+                      'minority': MIN_MINORITY_ACC,
+                      'majority': MIN_MAJORITY_ACC,
+                      'overall': MIN_OVERALL_ACC
+                  },
+                  'status': 'READY',
+                  'timestamp': metadata.get('timestamp', '')
+              }
+              
+              with open('logs/final_training/deployment_manifest.json', 'w') as f:
+                  json.dump(manifest, f, indent=2)
+              
+              print("✅ Deployment manifest saved!")
               
           else:
-              print("⚠️  MODEL BELOW PRODUCTION THRESHOLD")
-              print("\nReasons for failure:")
+              print("❌ MODEL BELOW PRODUCTION THRESHOLD")
+              print("")
+              print("Reasons for failure:")
               for reason in reasons:
                   print(reason)
               
-              print("\nConsider:")
-              print("  1. Adjusting SMOTE/Weighting strategy")
-              print("  2. Re-running tuning or Feature engineering")
-              print("  3. Adjusting label thresholds")
+              print("")
+              print("💡 Recommendations:")
+              print("  1. Review per-class confusion matrix")
+              print("  2. Check if Bearish samples are being learned")
+              print("  3. Consider:")
+              print("     - Adjusting class weights")
+              print("     - Re-running tuning with more trials")
+              print("     - Feature engineering for weak classes")
               
-              exit(1) # <-- SÜRECİ DURDUR
+              # Save failure report
+              manifest = {
+                  'model_hash': model_hash,
+                  'total_accuracy': float(total_accuracy),
+                  'per_class_accuracy': {
+                      'Bullish': float(bullish_acc),
+                      'Neutral': float(neutral_acc),
+                      'Bearish': float(bearish_acc)
+                  },
+                  'status': 'FAILED',
+                  'reasons': reasons,
+                  'timestamp': metadata.get('timestamp', '')
+              }
+              
+              with open('logs/final_training/deployment_manifest.json', 'w') as f:
+                  json.dump(manifest, f, indent=2)
+              
+              exit(1)
           
           print("="*70)
           EOF
