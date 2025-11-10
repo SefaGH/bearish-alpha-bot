@@ -2,8 +2,10 @@
 Standalone Hyperparameter Tuning for Regime Models - FIXED VERSION
 Addresses: Distribution shift, identical scores, missing method
 
+SÜRÜM 5 - StandardScaler EKLENDİ (Varyans sorununu çözmek için)
+
 Author: SefaGH & GitHub Copilot
-Date: 2025-11-08
+Date: 2025-11-10
 """
 
 import argparse
@@ -14,12 +16,14 @@ import json
 import numpy as np
 from pathlib import Path
 from datetime import datetime
+import joblib # <<< YENİ İMPORT (Scaler'ı kaydetmek için) >>>
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from scripts.utils.validation_framework import TimeSeriesValidator, ValidationReport
 from scripts.utils.optuna_tuner import OptunaModelTuner
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler # <<< YENİ İMPORT >>>
 
 from sklearn.metrics import balanced_accuracy_score, make_scorer
 from sklearn.utils.class_weight import compute_class_weight
@@ -375,9 +379,35 @@ class RegimeModelTuner:
             strategy='stratified'
         )
         
+        # <<< BAŞLANGIÇ: YENİ ÖLÇEKLEME (SCALING) ADIMI >>>
+        # ==============================================================================
+        logger.info("\n" + "="*70)
+        logger.info("⚖️ FITTING STANDARD SCALER (ÖLÇEKLEYİCİ)")
+        logger.info("="*70)
+        
+        scaler = StandardScaler()
+        
+        # SADECE 80% CV verisi üzerinde 'fit' yap (data leakage önlemi)
+        logger.info(f"Fitting scaler on {len(X_cv)} CV samples...")
+        scaler.fit(X_cv)
+        
+        # Hem CV hem de Test verisini 'transform' et
+        logger.info("Transforming CV and Test data...")
+        X_cv_scaled = scaler.transform(X_cv)
+        X_test_scaled = scaler.transform(X_test)
+        
+        # Ölçekleyiciyi (scaler) daha sonra 'train_final_model' 
+        # ve 'analyze_model_explainability' betiklerinin kullanabilmesi için kaydet
+        scaler_path = self.data_cache_dir / 'scaler_production.joblib'
+        joblib.dump(scaler, scaler_path)
+        logger.info(f"✅ Scaler (Ölçekleyici) şuraya kaydedildi: {scaler_path}")
+        logger.info("="*70)
+        # ============================================================================== #
+        # <<< SON: YENİ ÖLÇEKLEME (SCALING) ADIMI >>>
+        
         logger.info(f"\n📊 Data Split:")
-        logger.info(f"   CV samples: {len(X_cv)} (80%)")
-        logger.info(f"   Test samples: {len(X_test)} (20%)")
+        logger.info(f"   CV samples: {len(X_cv_scaled)} (80%)") # <-- Değişti
+        logger.info(f"   Test samples: {len(X_test_scaled)} (20%)") # <-- Değişti
         
         # Log REAL distribution
         unique, counts = np.unique(y_cv, return_counts=True)
@@ -415,7 +445,7 @@ class RegimeModelTuner:
         logger.info("\n🔬 Starting hyperparameter optimization on REAL data...")
         logger.info("   (NO SMOTETomek - tuning on original distribution)")
         best_params, best_score, study = tuner.tune(
-            X=X_cv, y=y_cv,  # REAL data (not synthetic!)
+            X=X_cv_scaled, y=y_cv,  # <<< YENİ: Ölçeklenmiş veri kullanılıyor >>>
             model_factory=model_factory,
             metric_fn=balanced_accuracy_scorer  # NEW: Balanced metric
         )
@@ -425,16 +455,16 @@ class RegimeModelTuner:
         # 7. Validate on hold-out with BOTH metrics (ENHANCED!)
         logger.info("\n🔬 Validating on stratified hold-out test set...")
         final_model = model_factory(best_params)
-        final_model.fit(X_cv, y_cv)  # Train on REAL CV data
+        final_model.fit(X_cv_scaled, y_cv)  # <<< YENİ: Ölçeklenmiş veri kullanılıyor >>>
         
         # Calculate both metrics
-        holdout_score_total_acc = final_model.score(X_test, y_test)
-        y_pred_test = final_model.predict(X_test)
+        holdout_score_total_acc = final_model.score(X_test_scaled, y_test) # <<< YENİ >>>
+        y_pred_test = final_model.predict(X_test_scaled) # <<< YENİ >>>
         holdout_score_balanced_acc = balanced_accuracy_score(y_test, y_pred_test)
         
         gap = best_score - holdout_score_balanced_acc
         
-        logger.info(f"   Hold-out Total Accuracy: {holdout_score_total_acc:.4f} (Yanıltıcı metrik)")  # FIX: Typo
+        logger.info(f"   Hold-out Total Accuracy: {holdout_score_total_acc:.4f} (Yanıltıcı metrik)")
         logger.info(f"   Hold-out Balanced Accuracy: {holdout_score_balanced_acc:.4f} (Asıl metrik)")
         logger.info(f"   Best CV Balanced Accuracy: {best_score:.4f}")
         logger.info(f"   CV-Holdout (Balanced) Gap: {gap:+.4f}")
