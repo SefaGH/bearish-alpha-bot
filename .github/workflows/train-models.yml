@@ -42,11 +42,13 @@ jobs:
       - name: 🧹 Clean old data cache (Hygiene)
         run: |
           echo "Cleaning old data/cache/ directory..."
-          # Önbellek dizinini oluştur (varsa hata verme)
           mkdir -p data/cache
-          # İçeriğini temizle
-          rm -rf data/cache/*
-          echo "✅ Data cache cleaned."
+          
+          # YENİ KOMUT: scaler_production.joblib HARİÇ her şeyi sil
+          echo "Deleting all files in data/cache/ EXCEPT scaler_production.joblib..."
+          find data/cache/ -mindepth 1 -not -name 'scaler_production.joblib' -exec rm -rf {} +
+          
+          echo "✅ Data cache cleaned (scaler preserved)."
       
       # =================================================================
       # STEP 1: Prepare Training Data with ALL FEATURES
