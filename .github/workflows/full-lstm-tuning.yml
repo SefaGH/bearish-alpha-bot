@@ -270,6 +270,25 @@ jobs:
             logs/tuning_results/*.json
             logs/*.log
           retention-days: 30
+
+      # ====================================================================
+      # 🚀 YENİ ADIM: Ölçekleyiciyi (Scaler) Artifact olarak kaydet
+      # ====================================================================
+      - name: 📦 Archive Production Scaler
+        uses: actions/upload-artifact@v4
+        if: always() # Hata alsa bile kaydetmeyi dene
+        with:
+          name: production-scaler # 'train-models' bu ismi arayacak
+          path: data/cache/scaler_production.joblib
+          retention-days: 30
+          if-no-files-found: error # Eğer scaler dosyası yoksa workflow'u durdur
+
+      # ====================================================================
+
+      - name: 📈 Summary
+        if: always()
+        run: |
+          # ... (Bu adım olduğu gibi kalabilir) ...
       
       # ==================== SUMMARY: UPDATED ==================== #
       - name: 📈 Summary
