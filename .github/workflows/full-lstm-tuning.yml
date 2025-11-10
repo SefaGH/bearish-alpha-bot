@@ -282,13 +282,6 @@ jobs:
           path: data/cache/scaler_production.joblib
           retention-days: 30
           if-no-files-found: error # Eğer scaler dosyası yoksa workflow'u durdur
-
-      # ====================================================================
-
-      - name: 📈 Summary
-        if: always()
-        run: |
-          # ... (Bu adım olduğu gibi kalabilir) ...
       
       # ==================== SUMMARY: UPDATED ==================== #
       - name: 📈 Summary
