@@ -302,6 +302,7 @@ jobs:
       # DEPLOYMENT CHECK
       # =================================================================
       - name: 🚀 Deployment readiness check
+        id: deploy_check # <--- YENİ: Bu adıma bir ID verdik
         run: |
           echo "======================================================================"
           echo "🚀 DEPLOYMENT READINESS CHECK (BALANCED METRICS)"
@@ -490,3 +491,37 @@ jobs:
           EOF
           
         if: always()
+
+      # ====================================================================
+      # 🚨 YENİ HATA ANALİZİ ADIMI (SADECE BAŞARISIZ OLURSA ÇALIŞIR) 🚨
+      # ====================================================================
+      - name: 🔍 Run Explainability Analysis on Failure
+        # Sadece bir önceki 'deploy_check' adımı başarısız olursa çalışır
+        if: failure() && steps.deploy_check.outcome == 'failure'
+        run: |
+          echo "🚨 Deployment check FAILED! Running model explainability analysis..."
+          
+          # Gerekli kütüphaneleri kur
+          pip install shap matplotlib
+          
+          # Çıktı dizinini oluştur
+          mkdir -p ./analysis_artifacts
+          
+          # Analiz betiğini çalıştır
+          python scripts/analyze_model_explainability.py \
+            --model-path data/models/final/lstm_final_latest.ptc \
+            --data-path data/cache/BTC-USDT_training_data.npz \
+            --metadata-path data/cache/feature_selection_metadata.json \
+            --output-dir ./analysis_artifacts
+
+      # ====================================================================
+      # 🖼️ YENİ ARTIFACT YÜKLEME ADIMI (SADECE HATA VARSA ÇALIŞIR)
+      # ====================================================================
+      - name: 📤 Upload Failure Analysis Report
+        # Sadece 'deploy_check' başarısız olduysa çalışır
+        if: failure() && steps.deploy_check.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hata-analiz-raporlari-${{ github.sha }}
+          path: ./analysis_artifacts/
+          retention-days: 30
