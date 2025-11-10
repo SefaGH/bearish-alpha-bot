@@ -1,6 +1,6 @@
 """
 Model Yorumlanabilirlik Analiz Betiği (Explainability Script)
-SÜRÜM 2 - Hata Düzeltmesi (KeyError fix)
+SÜRÜM 3 - Hata Düzeltmesi (fit() metodu eklendi)
 
 Bu betik, eğitilmiş bir modeli alır ve neden belirli kararları verdiğini
 analiz etmek için Permutation Importance ve SHAP yöntemlerini kullanır.
@@ -31,6 +31,17 @@ class PyTorchWrapper:
             print(f"HATA: Model yüklenemedi: {model_path}. Hata: {e}")
             sys.exit(1)
 
+    # <<< BAŞLANGIÇ: HATA DÜZELTMESİ (InvalidParameterError) >>>
+    def fit(self, X, y, **kwargs):
+        """
+        Sahte (dummy) .fit() metodu.
+        permutation_importance fonksiyonu, modelin bir 'estimator' olduğunu 
+        doğrulamak için bu metoda sahip olmasını bekler.
+        Model zaten eğitildiği için bu metodun bir işlem yapmasına gerek yoktur.
+        """
+        return self
+    # <<< SON: HATA DÜZELTMESİ >>>
+
     def predict_proba(self, X):
         """Olasılıkları (probabilities) döndürür."""
         try:
@@ -60,6 +71,9 @@ def load_data_and_features(data_path, metadata_path):
     except FileNotFoundError:
         print(f"HATA: Veri dosyası bulunamadı: {data_path}")
         sys.exit(1)
+    except KeyError as e:
+        print(f"HATA: .npz dosyası içinde 'X' veya 'y' anahtarı bulunamadı: {e}")
+        sys.exit(1)
 
     print(f"Özellik isimleri yükleniyor: {metadata_path}")
     feature_names_list = []
@@ -68,15 +82,12 @@ def load_data_and_features(data_path, metadata_path):
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
         
-        # <<< BAŞLANGIÇ: HATA DÜZELTMESİ (Doğru Anahtar Kullanımı) >>>
         # JSON dosyasında doğrulanan anahtar 'selected_features'
         if 'selected_features' in metadata:
             feature_names_list = metadata['selected_features']
             print("   ... 'selected_features' anahtarı başarıyla bulundu.")
         else:
-            # Beklenmedik bir durum olursa diye yedek plan
             raise KeyError(f"JSON içinde 'selected_features' anahtarı bulunamadı.")
-        # <<< SON: HATA DÜZELTMESİ >>>
 
     except FileNotFoundError:
         print(f"HATA: Metadata bulunamadı: {metadata_path}. 'feature_names' olmadan devam edilecek.")
