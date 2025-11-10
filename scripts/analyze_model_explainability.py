@@ -1,6 +1,6 @@
 """
 Model Yorumlanabilirlik Analiz Betiği (Explainability Script)
-SÜRÜM 3 - Hata Düzeltmesi (fit() metodu eklendi)
+SÜRÜM 4 - Hata Düzeltmesi (PicklingError fix)
 
 Bu betik, eğitilmiş bir modeli alır ve neden belirli kararları verdiğini
 analiz etmek için Permutation Importance ve SHAP yöntemlerini kullanır.
@@ -31,16 +31,12 @@ class PyTorchWrapper:
             print(f"HATA: Model yüklenemedi: {model_path}. Hata: {e}")
             sys.exit(1)
 
-    # <<< BAŞLANGIÇ: HATA DÜZELTMESİ (InvalidParameterError) >>>
     def fit(self, X, y, **kwargs):
         """
         Sahte (dummy) .fit() metodu.
-        permutation_importance fonksiyonu, modelin bir 'estimator' olduğunu 
-        doğrulamak için bu metoda sahip olmasını bekler.
-        Model zaten eğitildiği için bu metodun bir işlem yapmasına gerek yoktur.
+        permutation_importance fonksiyonu için gereklidir.
         """
         return self
-    # <<< SON: HATA DÜZELTMESİ >>>
 
     def predict_proba(self, X):
         """Olasılıkları (probabilities) döndürür."""
@@ -111,6 +107,11 @@ def run_permutation_importance(model, X_test, y_test, feature_names, output_dir)
     print("Bu işlem 1-2 dakika sürebilir...")
 
     balanced_scorer = make_scorer(balanced_accuracy_score)
+    
+    # <<< BAŞLANGIÇ: HATA DÜZELTMESİ (PicklingError) >>>
+    # TorchScript modelleri 'pickle' edilemez (serileştirilemez).
+    # Bu nedenle, 'joblib'in paralel çalışmasını (n_jobs=-1) engelleyip
+    # tek çekirdekte (n_jobs=1) çalışmaya zorluyoruz.
     r = permutation_importance(
         model, 
         X_test, 
@@ -118,8 +119,9 @@ def run_permutation_importance(model, X_test, y_test, feature_names, output_dir)
         n_repeats=10,
         random_state=42,
         scoring=balanced_scorer,
-        n_jobs=-1
+        n_jobs=1  # Paralel çalışmayı kapat
     )
+    # <<< SON: HATA DÜZELTMESİ >>>
     
     print("En Önemli 20 Özellik (Modelin Kararlarını En Çok Etkileyenler):")
     sorted_idx = r.importances_mean.argsort()[::-1]
