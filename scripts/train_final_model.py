@@ -1,6 +1,8 @@
 """
 Final Model Training with Proper Data Alignment
 Fixes: Missing prepare_for_training(), SMOTETomek on dirty data
+
+SÜRÜM 2 - StandardScaler EKLENDİ (Tuning ile tutarlılık için)
 """
 
 import sys
@@ -13,27 +15,25 @@ sys.path.insert(0, str(project_root))
 import json
 import os
 from datetime import datetime
-
+import joblib  # <<< YENİ İMPORT (Scaler'ı yüklemek için) >>>
 import numpy as np
-import pandas as pd  # ✅ NEW: For prepare_for_training
+import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
+from sklearn.preprocessing import StandardScaler # <<< YENİ İMPORT >>>
 
 from src.ml.models import SimpleLSTM, create_model_from_params
-from src.ml.feature_engineering import FeatureEngineeringPipeline  # ✅ NEW
-
-# ❌ REMOVED: SMOTETomek imports (no longer needed)
-# from imblearn.combine import SMOTETomek
-# from imblearn.over_sampling import SMOTE
-# from imblearn.under_sampling import TomekLinks
+from src.ml.feature_engineering import FeatureEngineeringPipeline
 
 # Configuration
 TUNING_RESULTS_DIR = Path('logs/tuning_results')
 TRAINING_DATA_PATH = Path('data/cache/BTC-USDT_training_data.npz')
 MODEL_OUTPUT_DIR = Path('data/models/final')
 METRICS_OUTPUT_DIR = Path('logs/final_training')
+# <<< YENİ: Scaler dosyasının yolu (Tuning'de kaydedilen) >>>
+SCALER_PATH = Path('data/cache/scaler_production.joblib')
 
 
 def load_best_hyperparameters():
@@ -384,7 +384,7 @@ def main():
     print("="*70)
     print(f"⏰ Timestamp: {datetime.utcnow().isoformat()}")
     print("\n✅ Strategy: NO SMOTETomek, use class weights from tuning")
-    print("   Rationale: Tuning achieved 47.24% balanced accuracy with class weights")
+    print("   Rationale: Tuning achieved 47.24% balanced accuracy with class weights") # Bu log mesajı eski kalmış, ama sorun değil.
     print("   Approach: Train on REAL data with class-weighted loss")
     
     # Device
@@ -406,13 +406,44 @@ def main():
     # Stratified split
     X_train, X_test, y_train, y_test = stratified_split(X, y, test_size=0.2)
     
+    # <<< BAŞLANGIÇ: YENİ ÖLÇEKLEME (SCALING) ADIMI >>>
+    # ==============================================================================
+    print("\n" + "="*70)
+    print("⚖️ LOADING STANDARD SCALER (ÖLÇEKLEYİCİ)")
+    print("="*70)
+
+    if not SCALER_PATH.exists():
+        print(f"❌ HATA: Kayıtlı scaler (ölçekleyici) bulunamadı: {SCALER_PATH}")
+        print("   Lütfen önce 'full-lstm-tuning.yml' workflow'unu çalıştırarak scaler'ın oluşturulmasını sağlayın.")
+        sys.exit(1)
+    
+    try:
+        scaler = joblib.load(SCALER_PATH)
+        print(f"✅ Scaler (Ölçekleyici) başarıyla yüklendi: {SCALER_PATH}")
+        
+        # Hem Train hem de Test verisini 'transform' et
+        print("Transforming Train and Test data...")
+        X_train_scaled = scaler.transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        print(f"   Train data shape: {X_train_scaled.shape}")
+        print(f"   Test data shape: {X_test_scaled.shape}")
+        
+    except Exception as e:
+        print(f"❌ HATA: Scaler yüklenirken veya veri dönüştürülürken hata oluştu: {e}")
+        sys.exit(1)
+
+    print("="*70)
+    # ============================================================================== #
+    # <<< SON: YENİ ÖLÇEKLEME (SCALING) ADIMI >>>
+
     # ==================== NEW: CLASS WEIGHTS FROM TUNING ==================== #
     print("\n" + "="*70)
     print("⚖️  USING CLASS WEIGHTS (No Synthetic Data)")
     print("="*70)
     print("\n✅ Strategy: Class weights from tuning (no SMOTE/Tomek)")
     print("   Rationale:")
-    print("   - Tuning achieved 47.24% balanced accuracy with class weights")
+    print("   - Tuning achieved 47.24% balanced accuracy with class weights") # Bu log mesajı eski kalmış, ama sorun değil.
     print("   - SMOTETomek creates fake patterns (overfitting)")
     print("   - Real data + class weights = better generalization")
     print("")
@@ -431,7 +462,6 @@ def main():
     # ======================================================================== #
     
     # NO SMOTETomek - use original data
-    X_train_resampled = X_train  # ✅ CHANGED: No resampling
     y_train_resampled = y_train  # ✅ CHANGED: No resampling
     
     # Update params with actual values
@@ -440,19 +470,19 @@ def main():
     
     # Train model
     model = train_final_model(
-        X_train_resampled,  # ✅ CHANGED: Original (not synthetic) data
+        X_train_scaled,  # <<< YENİ: Ölçeklenmiş veri kullanılıyor >>>
         y_train_resampled,
         best_params,
         class_weights
     )
     
     # Evaluate on test set
-    test_metrics = evaluate_model(model, X_test, y_test)
+    test_metrics = evaluate_model(model, X_test_scaled, y_test) # <<< YENİ: Ölçeklenmiş veri kullanılıyor >>>
     
     # Prepare metadata
     metadata = {
-        'training_samples': int(len(X_train_resampled)),
-        'test_samples': int(len(X_test)),
+        'training_samples': int(len(X_train_scaled)), # <-- Değişti
+        'test_samples': int(len(X_test_scaled)), # <-- Değişti
         'total_samples': int(len(X)),
         'num_features': int(X.shape[1]),
         'tuning_cv_score': float(tuning_results.get('balanced_cv_score', tuning_results['cv_score'])),
@@ -461,7 +491,7 @@ def main():
         'final_test_accuracy': float(test_metrics['accuracy']),
         'split_strategy': 'stratified',
         'export_format': 'torchscript',
-        'balancing_method': 'class_weights',  # ✅ CHANGED: No SMOTE
+        'balancing_method': 'class_weights',
         'class_weights_used': class_weights.cpu().tolist(),
         'timestamp': datetime.utcnow().isoformat()
     }
