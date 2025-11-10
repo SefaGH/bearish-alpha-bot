@@ -95,7 +95,7 @@ async def fetch_and_process_data(symbol='BTC/USDT',
             regime_labels = generate_regime_labels(
                 ohlcv_df,
                 window=20,
-                threshold=0.010,
+                threshold=0.020,
                 prediction_horizon=5,
                 volume_confirm=False,
                 multi_timeframe=True
