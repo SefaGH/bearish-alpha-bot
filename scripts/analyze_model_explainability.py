@@ -1,12 +1,9 @@
 """
 Model Yorumlanabilirlik Analiz Betiği (Explainability Script)
+SÜRÜM 2 - Hata Düzeltmesi (KeyError fix)
 
 Bu betik, eğitilmiş bir modeli alır ve neden belirli kararları verdiğini
 analiz etmek için Permutation Importance ve SHAP yöntemlerini kullanır.
-
-Özellikle, 'Deployment Readiness Check' başarısız olduğunda,
-modelin en büyük hatasının (örn: Bearish -> Neutral) kök nedenini
-bulmak için kullanılır.
 """
 
 import torch
@@ -65,17 +62,33 @@ def load_data_and_features(data_path, metadata_path):
         sys.exit(1)
 
     print(f"Özellik isimleri yükleniyor: {metadata_path}")
+    feature_names_list = []
+    
     try:
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
-        feature_names_list = metadata['selected_features_names']
+        
+        # <<< BAŞLANGIÇ: HATA DÜZELTMESİ (Doğru Anahtar Kullanımı) >>>
+        # JSON dosyasında doğrulanan anahtar 'selected_features'
+        if 'selected_features' in metadata:
+            feature_names_list = metadata['selected_features']
+            print("   ... 'selected_features' anahtarı başarıyla bulundu.")
+        else:
+            # Beklenmedik bir durum olursa diye yedek plan
+            raise KeyError(f"JSON içinde 'selected_features' anahtarı bulunamadı.")
+        # <<< SON: HATA DÜZELTMESİ >>>
+
     except FileNotFoundError:
         print(f"HATA: Metadata bulunamadı: {metadata_path}. 'feature_names' olmadan devam edilecek.")
-        feature_names_list = [f"feature_{i}" for i in range(X_full.shape[1])]
-
-    if X_full.shape[1] != len(feature_names_list):
-        print(f"UYARI: Veri {X_full.shape[1]} özelliğe sahip ama metadata {len(feature_names_list)} isim listeliyor.")
-        # Özellik sayısı uyuşmazsa, jenerik isimler kullan (daha güvenli)
+    except KeyError as e:
+        print(f"HATA: Metadata JSON ({metadata_path}) içinde özellik listesi bulunamadı: {e}.")
+        print("Jenerik isimler (feature_0, feature_1...) kullanılacak.")
+    
+    # Güvenlik kontrolü: Eğer isim listesi boşsa veya uzunluğu uyuşmuyorsa, jenerik isimler kullan
+    if not feature_names_list or len(feature_names_list) != X_full.shape[1]:
+        if feature_names_list: # Uyuşmazlık varsa uyar
+             print(f"UYARI: Veri {X_full.shape[1]} özelliğe sahip ama metadata {len(feature_names_list)} isim listeliyor.")
+        print("Jenerik isimlere (feature_0, feature_1...) dönülüyor.")
         feature_names_list = [f"feature_{i}" for i in range(X_full.shape[1])]
         
     return X_full, y_full, feature_names_list
@@ -104,13 +117,15 @@ def run_permutation_importance(model, X_test, y_test, feature_names, output_dir)
     for i in sorted_idx[:20]:
         mean = r.importances_mean[i]
         std = r.importances_std[i]
-        print(f"  {feature_names[i]:<30}: {mean:.4f} +/- {std:.4f}")
+        # Özellik isminin (string) 30 karakterden uzun olmamasını sağla
+        feature_name_str = str(feature_names[i])[:30] 
+        print(f"  {feature_name_str:<30}: {mean:.4f} +/- {std:.4f}")
         top_features.append(feature_names[i])
 
     # Grafik oluştur
     plt.figure(figsize=(10, 8))
     plt.barh(
-        [feature_names[i] for i in sorted_idx[:20]][::-1], 
+        [str(feature_names[i])[:30] for i in sorted_idx[:20]][::-1], 
         r.importances_mean[sorted_idx[:20]][::-1]
     )
     plt.xlabel("Önemlilik (Dengeli Doğruluk Kaybı)")
@@ -137,17 +152,17 @@ def find_biggest_error(y_test, y_pred):
     
     print("\n" + "="*50)
     print("HATA ANALİZİ: Karışıklık Matrisindeki En Büyük Hata:")
-    print(f"  Gerçek Sınıf: {class_map.get(actual_class)}")
-    print(f"  Tahmin Edilen Sınıf: {class_map.get(predicted_class)}")
+    print(f"  Gerçek Sınıf: {class_map.get(actual_class, actual_class)}")
+    print(f"  Tahmin Edilen Sınıf: {class_map.get(predicted_class, predicted_class)}")
     print(f"  Örnek Sayısı: {max_error_count} adet")
     print("="*50)
     
-    return actual_class, predicted_class, max_error_count
+    return actual_class, predicted_class, max_error_count, class_map
 
 def run_shap_analysis(model, X_train, X_test, y_test, y_pred, feature_names, output_dir):
     """Modelin en büyük hatasına odaklanan SHAP analizini çalıştırır."""
     
-    actual_class, predicted_class, error_count = find_biggest_error(y_test, y_pred)
+    actual_class, predicted_class, error_count, class_map = find_biggest_error(y_test, y_pred)
     
     if error_count == 0:
         print("Modelde hiç hata bulunamadı. SHAP analizi atlanıyor.")
@@ -157,7 +172,6 @@ def run_shap_analysis(model, X_train, X_test, y_test, y_pred, feature_names, out
     error_indices = np.where((y_test == actual_class) & (y_pred == predicted_class))[0]
     
     # Analiz için en fazla 10 hatalı örnek al (GitHub Actions'ta hızlı olması için)
-    # ve 50 "iyi" örnek al (karşılaştırma için)
     analysis_samples_bad = X_test[error_indices[:10]]
     
     if len(analysis_samples_bad) == 0:
@@ -176,19 +190,21 @@ def run_shap_analysis(model, X_train, X_test, y_test, y_pred, feature_names, out
     
     print("Hesaplama tamamlandı. Grafikler oluşturuluyor...")
     
-    class_names = ["Bullish", "Neutral", "Bearish"]
+    class_names = [class_map.get(i, f"Class {i}") for i in range(len(class_map))]
+    
+    # Özellik isimlerini DataFrame'e çevir (SHAP'ın bazen ihtiyaç duyduğu format)
+    analysis_samples_df = pd.DataFrame(analysis_samples_bad, columns=feature_names)
     
     # Özet Grafik: Hatalı örnekler için genel özellik etkisi
     plt.figure()
     shap.summary_plot(
         shap_values, 
-        analysis_samples_bad, 
-        feature_names=feature_names,
+        analysis_samples_df, 
         class_names=class_names,
         show=False,
         plot_type="bar" # Hangi özelliğin ORTALAMA etkiye sahip olduğunu göster
     )
-    plt.title(f"Hata Analizi: En Etkili Özellikler (Neden {class_map.get(actual_class)} Olamadı?)")
+    plt.title(f"Hata Analizi: En Etkili Özellikler (Ortalama Etki)")
     output_path = os.path.join(output_dir, "shap_summary_bar.png")
     plt.savefig(output_path, bbox_inches='tight')
     plt.close()
@@ -198,11 +214,11 @@ def run_shap_analysis(model, X_train, X_test, y_test, y_pred, feature_names, out
     plt.figure()
     shap.summary_plot(
         shap_values, 
-        analysis_samples_bad, 
-        feature_names=feature_names,
+        analysis_samples_df, 
         class_names=class_names,
         show=False
     )
+    plt.title(f"Hata Analizi: {class_map.get(actual_class)} -> {class_map.get(predicted_class)}")
     output_path = os.path.join(output_dir, "shap_summary_detailed.png")
     plt.savefig(output_path, bbox_inches='tight')
     plt.close()
@@ -232,9 +248,9 @@ def main():
     X_train, X_test, y_train, y_test = train_test_split(
         X_full, 
         y_full, 
-        test_size=0.20, # [cite: 191]
+        test_size=0.20, #
         random_state=42, 
-        stratify=y_full # [cite: 191]
+        stratify=y_full #
     )
     
     # 4. Genel Özellik Önemliliğini Çalıştır
