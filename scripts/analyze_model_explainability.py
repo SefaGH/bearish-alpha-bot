@@ -1,9 +1,11 @@
 """
 Model Yorumlanabilirlik Analiz Betiği (Explainability Script)
-SÜRÜM 4 - Hata Düzeltmesi (PicklingError fix)
+SÜRÜM 5 - Hata Düzeltmesi (StandardScaler eklendi)
 
 Bu betik, eğitilmiş bir modeli alır ve neden belirli kararları verdiğini
 analiz etmek için Permutation Importance ve SHAP yöntemlerini kullanır.
+
+Tuning'de kullanılan scaler'ı yükleyip veriyi analizden önce ölçekler.
 """
 
 import torch
@@ -15,9 +17,15 @@ import matplotlib.pyplot as plt
 import argparse
 import sys
 import os
+import joblib  # <<< YENİ İMPORT (Scaler'ı yüklemek için) >>>
+from pathlib import Path # <<< YENİ İMPORT >>>
 from sklearn.model_selection import train_test_split
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import balanced_accuracy_score, make_scorer, confusion_matrix
+from sklearn.preprocessing import StandardScaler # <<< YENİ İMPORT >>>
+
+# <<< YENİ: Scaler dosyasının yolu (Tuning'de kaydedilen) >>>
+SCALER_PATH = Path('data/cache/scaler_production.joblib')
 
 # --- PyTorch Modelini Sklearn Uyumlu Hale Getirme ---
 
@@ -108,20 +116,15 @@ def run_permutation_importance(model, X_test, y_test, feature_names, output_dir)
 
     balanced_scorer = make_scorer(balanced_accuracy_score)
     
-    # <<< BAŞLANGIÇ: HATA DÜZELTMESİ (PicklingError) >>>
-    # TorchScript modelleri 'pickle' edilemez (serileştirilemez).
-    # Bu nedenle, 'joblib'in paralel çalışmasını (n_jobs=-1) engelleyip
-    # tek çekirdekte (n_jobs=1) çalışmaya zorluyoruz.
     r = permutation_importance(
         model, 
-        X_test, 
+        X_test, # <<< NOT: Bu veri zaten ölçeklenmiş olarak geliyor >>>
         y_test,
         n_repeats=10,
         random_state=42,
         scoring=balanced_scorer,
-        n_jobs=1  # Paralel çalışmayı kapat
+        n_jobs=1  # Paralel çalışmayı kapat (PicklingError fix)
     )
-    # <<< SON: HATA DÜZELTMESİ >>>
     
     print("En Önemli 20 Özellik (Modelin Kararlarını En Çok Etkileyenler):")
     sorted_idx = r.importances_mean.argsort()[::-1]
@@ -185,14 +188,14 @@ def run_shap_analysis(model, X_train, X_test, y_test, y_pred, feature_names, out
     error_indices = np.where((y_test == actual_class) & (y_pred == predicted_class))[0]
     
     # Analiz için en fazla 10 hatalı örnek al (GitHub Actions'ta hızlı olması için)
-    analysis_samples_bad = X_test[error_indices[:10]]
+    analysis_samples_bad = X_test[error_indices[:10]] # <<< NOT: Bu veri zaten ölçeklenmiş >>>
     
     if len(analysis_samples_bad) == 0:
         print("Analiz edilecek hatalı örnek bulunamadı. (Test setinde bu hata olmayabilir)")
         return
 
     print("SHAP için arka plan (background) veri seti oluşturuluyor (100 örnek)...")
-    background_data = shap.sample(X_train, 100)
+    background_data = shap.sample(X_train, 100) # <<< NOT: Bu veri zaten ölçeklenmiş >>>
     
     print("SHAP Explainer oluşturuluyor...")
     explainer = shap.KernelExplainer(model.predict_proba, background_data)
@@ -254,10 +257,10 @@ def main():
     # 1. Modeli yükle
     model = PyTorchWrapper(args.model_path)
     
-    # 2. Veriyi ve özellikleri yükle
+    # 2. Veriyi ve özellikleri yükle (HENÜZ ÖLÇEKLENMEMİŞ)
     X_full, y_full, feature_names = load_data_and_features(args.data_path, args.metadata_path)
 
-    # 3. Veriyi loglardaki gibi 80/20 böl
+    # 3. Veriyi loglardaki gibi 80/20 böl (HENÜZ ÖLÇEKLENMEMİŞ)
     X_train, X_test, y_train, y_test = train_test_split(
         X_full, 
         y_full, 
@@ -266,13 +269,44 @@ def main():
         stratify=y_full #
     )
     
-    # 4. Genel Özellik Önemliliğini Çalıştır
-    run_permutation_importance(model, X_test, y_test, feature_names, args.output_dir)
+    # <<< BAŞLANGIÇ: YENİ ÖLÇEKLEME (SCALING) ADIMI >>>
+    # ==============================================================================
+    print("\n" + "="*50)
+    print("⚖️ LOADING STANDARD SCALER (ÖLÇEKLEYİCİ)")
+    print("="*50)
 
-    # 5. SHAP ile Hata Analizini Çalıştır
+    if not SCALER_PATH.exists():
+        print(f"❌ HATA: Kayıtlı scaler (ölçekleyici) bulunamadı: {SCALER_PATH}")
+        print("   Bu betik, 'full-lstm-tuning.yml' tarafından oluşturulan scaler'a bağımlıdır.")
+        sys.exit(1)
+    
+    try:
+        scaler = joblib.load(SCALER_PATH)
+        print(f"✅ Scaler (Ölçekleyici) başarıyla yüklendi: {SCALER_PATH}")
+        
+        # Hem Train hem de Test verisini 'transform' et
+        print("Transforming Train and Test data...")
+        X_train_scaled = scaler.transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        print(f"   Train data shape: {X_train_scaled.shape}")
+        print(f"   Test data shape: {X_test_scaled.shape}")
+        
+    except Exception as e:
+        print(f"❌ HATA: Scaler yüklenirken veya veri dönüştürülürken hata oluştu: {e}")
+        sys.exit(1)
+
+    print("="*50)
+    # ============================================================================== #
+    # <<< SON: YENİ ÖLÇEKLEME (SCALING) ADIMI >>>
+    
+    # 4. Genel Özellik Önemliliğini Çalıştır (ÖLÇEKLENMİŞ VERİ İLE)
+    run_permutation_importance(model, X_test_scaled, y_test, feature_names, args.output_dir)
+
+    # 5. SHAP ile Hata Analizini Çalıştır (ÖLÇEKLENMİŞ VERİ İLE)
     print("Modelin hatalarını analiz etmek için test seti üzerinde tahmin yapılıyor...")
-    y_pred = model.predict(X_test)
-    run_shap_analysis(model, X_train, X_test, y_test, y_pred, feature_names, args.output_dir)
+    y_pred = model.predict(X_test_scaled)
+    run_shap_analysis(model, X_train_scaled, X_test_scaled, y_test, y_pred, feature_names, args.output_dir)
 
     print("\nAnaliz tamamlandı.")
 
