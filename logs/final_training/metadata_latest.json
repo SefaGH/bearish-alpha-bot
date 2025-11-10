@@ -1,1 +1,63 @@
-
+{
+  "hyperparameters": {
+    "hidden_size": 32,
+    "num_layers": 2,
+    "dropout": 0.6,
+    "learning_rate": 0.0009747604249550062,
+    "weight_decay": 0.001038607122156858,
+    "batch_size": 64,
+    "input_size": 82,
+    "num_classes": 3,
+    "class_weights": [
+      1.6826804631682681,
+      0.5084114932261427,
+      2.2789456122789455
+    ]
+  },
+  "test_metrics": {
+    "accuracy": 0.7898975109809663,
+    "confusion_matrix": [
+      [
+        233,
+        13,
+        24
+      ],
+      [
+        99,
+        673,
+        124
+      ],
+      [
+        15,
+        12,
+        173
+      ]
+    ],
+    "per_class_accuracy": {
+      "Bullish": 0.8629629629629629,
+      "Neutral": 0.7511160714285714,
+      "Bearish": 0.865
+    }
+  },
+  "metadata": {
+    "training_samples": 5464,
+    "test_samples": 1366,
+    "total_samples": 6830,
+    "num_features": 82,
+    "tuning_cv_score": 0.7952462341013078,
+    "tuning_holdout_score": 0.8188201158547899,
+    "tuning_gap": -0.023573881753482073,
+    "final_test_accuracy": 0.7898975109809663,
+    "split_strategy": "stratified",
+    "export_format": "torchscript",
+    "balancing_method": "class_weights",
+    "class_weights_used": [
+      1.6848597526550293,
+      0.5084682703018188,
+      2.273824453353882
+    ],
+    "timestamp": "2025-11-10T15:07:47.080262"
+  },
+  "timestamp": "20251110_150747",
+  "format": "torchscript"
+}
