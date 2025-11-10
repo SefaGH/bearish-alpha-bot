@@ -178,13 +178,6 @@ jobs:
       # =================================================================
       # 🚀 YENİ ADIM: Production Scaler'ı İndir
       # =================================================================
-      - name: 📥 Step 4b/5 - Download Production Scaler
-        uses: actions/download-artifact@v4
-        with:
-          name: production-scaler # 'full-lstm-tuning' workflow'unda kullandığımız isim
-          path: data/cache/
-          if-no-files-found: error # Eğer scaler bulunamazsa, workflow'u durdur
-
       - name: 📦 Verify Scaler Download
         run: |
           echo "Checking for downloaded scaler..."
