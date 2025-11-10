@@ -66,17 +66,18 @@ jobs:
           echo "======================================================================"
           echo "🎯 FEATURE ANALYSIS & SELECTION"
           echo "======================================================================"
-          echo "Using lenient thresholds to match tuning configuration..."
-          echo "  - Variance threshold: 0.00005"
-          echo "  - Correlation threshold: 0.005"
           echo ""
-          python scripts/analyze_features.py
+          echo "Step 1: Analyzing features (variance & correlation)..."
+          python scripts/analyze_features.py --analyze
           
           echo ""
-          echo "Running feature selection..."
+          echo "Step 2: Selecting features (lenient thresholds)..."
           python scripts/analyze_features.py --select \
             --variance-threshold 0.00005 \
             --correlation-threshold 0.005
+          
+          echo ""
+          echo "✅ Feature selection complete"
       
       - name: 🔄 Step 3 - Re-prepare with Selected Features
         run: |
