@@ -1,0 +1,34 @@
+{
+  "model_type": "lstm",
+  "best_params": {
+    "hidden_size": 64,
+    "num_layers": 1,
+    "dropout": 0.5,
+    "learning_rate": 0.00034113721394491987,
+    "weight_decay": 0.0020969338733841337,
+    "batch_size": 64,
+    "input_size": 82,
+    "num_classes": 3,
+    "class_weights": [
+      1.6801968019680196,
+      0.5087523277467412,
+      2.276666666666667
+    ]
+  },
+  "cv_score": 0.5030840459827589,
+  "holdout_score": 0.7181551976573939,
+  "balanced_cv_score": 0.5030840459827589,
+  "balanced_holdout_score": 0.4871856768847018,
+  "gap": 0.015898369098057086,
+  "n_trials": 30,
+  "cv_splits": 5,
+  "num_classes": 3,
+  "class_weights": [
+    1.6801968019680196,
+    0.5087523277467412,
+    2.276666666666667
+  ],
+  "distribution_shift": 0.0,
+  "split_strategy": "stratified_class_weights",
+  "timestamp": "2025-11-10T11:54:19.681359"
+}
