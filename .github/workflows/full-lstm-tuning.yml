@@ -41,6 +41,18 @@ jobs:
         run: |
           mkdir -p logs data/cache data/models logs/tuning_results
           echo "✅ Directories created"
+
+      # =================================================================
+      # YENİ ADIM: ÖNCEKİ VERİ ÖNBELLEĞİNİ TEMİZLE
+      # =================================================================
+      - name: 🧹 Clean old data cache (Hygiene)
+        run: |
+          echo "Cleaning old data/cache/ directory..."
+          # Önbellek dizinini oluştur (varsa hata verme)
+          mkdir -p data/cache
+          # İçeriğini temizle
+          rm -rf data/cache/*
+          echo "✅ Data cache cleaned."
       
       # ==================== STEP 1: UPDATED ==================== #
       # Step 1: Prepare Training Data
