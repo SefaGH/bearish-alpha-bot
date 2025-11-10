@@ -42,13 +42,11 @@ jobs:
       - name: 🧹 Clean old data cache (Hygiene)
         run: |
           echo "Cleaning old data/cache/ directory..."
+          # Önbellek dizinini oluştur (varsa hata verme)
           mkdir -p data/cache
-          
-          # YENİ KOMUT: scaler_production.joblib HARİÇ her şeyi sil
-          echo "Deleting all files in data/cache/ EXCEPT scaler_production.joblib..."
-          find data/cache/ -mindepth 1 -not -name 'scaler_production.joblib' -exec rm -rf {} +
-          
-          echo "✅ Data cache cleaned (scaler preserved)."
+          # İçeriğini temizle (Basit silme komutu)
+          rm -rf data/cache/*
+          echo "✅ Data cache cleaned."
       
       # =================================================================
       # STEP 1: Prepare Training Data with ALL FEATURES
@@ -176,17 +174,33 @@ jobs:
           ls -lt logs/tuning_results/ | head -2
 
       # =================================================================
-      # 🚀 YENİ ADIM: Production Scaler'ı İndir
+      # 🚀 YENİ ADIM: Scaler'ı Manuel Test İçin Hazırla (Kopyala)
       # =================================================================
-      - name: 📦 Verify Scaler Download
+      - name: 📦 Ensure Production Scaler is Ready
         run: |
-          echo "Checking for downloaded scaler..."
-          ls -l data/cache/
-          if [ -f "data/cache/scaler_production.joblib" ]; then
-            echo "✅ scaler_production.joblib başarıyla indirildi."
+          SCALER_SOURCE="data/models/cache/scaler_production.joblib"
+          SCALER_DEST="data/cache/scaler_production.joblib"
+          
+          echo "Checking for scaler at source: $SCALER_SOURCE"
+          
+          # 1. Manuel olarak yüklenen dosyanın 'checkout' ile gelip gelmediğini kontrol et
+          if [ ! -f "$SCALER_SOURCE" ]; then
+            echo "❌ HATA: Manuel olarak yüklenen scaler dosyası $SCALER_SOURCE konumunda bulunamadı!"
+            echo "   Lütfen 'scaler_production.joblib' dosyasını projenizdeki 'data/models/cache/' klasörüne yüklediğinizden emin olun."
+            exit 1
+          fi
+          
+          echo "✅ Kaynak dosya bulundu. Hedef konuma kopyalanıyor: $SCALER_DEST"
+          
+          # 2. Dosyayı 'data/cache/' klasörüne kopyala
+          cp "$SCALER_SOURCE" "$SCALER_DEST"
+          
+          # 3. Kopyalamanın başarılı olduğunu doğrula
+          if [ -f "$SCALER_DEST" ]; then
+            echo "✅ Scaler başarıyla $SCALER_DEST konumuna kopyalandı."
+            ls -l "$SCALER_DEST"
           else
-            echo "❌ HATA: scaler_production.joblib dosyası indirilmedi!"
-            echo "   Lütfen 'full-lstm-tuning' workflow'unun başarıyla tamamlandığından emin olun."
+            echo "❌ HATA: Scaler kopyalanamadı!"
             exit 1
           fi
       
