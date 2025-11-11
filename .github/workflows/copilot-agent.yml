@@ -1,0 +1,67 @@
+name: Copilot Agent Run
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/**"
+      - ".github/workflows/copilot-agent.yml"
+      - "package.json"
+      - "package-lock.json"
+
+jobs:
+  run-copilot-agent:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+            fetch-depth: 0
+            clean: true
+            persist-credentials: true
+
+      - name: Ensure no stale git lock
+        run: |
+          if [ -f .git/index.lock ]; then
+            echo "Removing stale git index.lock"
+            rm -f .git/index.lock
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'     # Gerekirse '18' yapın; agent beklentisini teyit edin
+          cache: 'npm'
+
+      - name: Display Node/undici versions
+        run: |
+          node -v
+          npm ls undici || true
+
+      - name: Install dependencies
+        run: |
+          npm ci
+
+      - name: Pre-flight repository diff (robust)
+        run: |
+          bash scripts/ci/git-safe-diff.sh
+
+      - name: Run Copilot Agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_OPTIONS: "--enable-source-maps"
+        run: |
+          echo "Starting Copilot Agent..."
+          # Örneğin agent giriş noktası (uyarlayın):
+          node scripts/agent/run.js
+
+      - name: Post-run diagnostics (optional)
+        if: always()
+        run: |
+          echo "Workflow completed with status: ${{ job.status }}"
+          ls -al diagnostics || true
