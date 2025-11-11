@@ -24,6 +24,9 @@ import logging
 import yaml
 import json
 from datetime import datetime
+from pathlib import Path
+import shutil
+import joblib
 
 # --- YOL AYARLAMASI (IMPORT HATALARINI ÖNLER) ---
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -80,6 +83,302 @@ RL_NUM_EPISODES = 250          # Ajanın kaç bölüm (episode) boyunca eğitile
 RL_BATCH_SIZE = 64             # Her öğrenme adımında kullanılacak deneyim sayısı
 RL_BUFFER_SIZE = 100000        # Deneyim tekrarı belleğinin kapasitesi
 # --- YENİ PARAMETRELER SONU ---
+
+
+def train_gemma_model(training_data: dict, feature_engine: FeatureEngineeringPipeline, config: dict, tracker: ModelPerformanceTracker):
+    """
+    Train a GEMMA-based price movement prediction model using 82 engineered features.
+    
+    Args:
+        training_data: Dictionary of training data by symbol and timeframe
+        feature_engine: FeatureEngineeringPipeline instance for feature extraction
+        config: ML configuration dictionary (containing gemma config)
+        tracker: ModelPerformanceTracker for recording metrics
+        
+    Returns:
+        Dictionary containing training results and model information
+    """
+    gemma_config = config.get('gemma', {})
+    if not gemma_config.get('enabled', False):
+        logger.info("GEMMA training is disabled via config. Skipping.")
+        return {'status': 'disabled'}
+
+    logger.info("\n" + "="*60)
+    logger.info("💎 ADIM 4: GEMMA MODELİ EĞİTİLİYOR 💎")
+    logger.info("="*60)
+    
+    # Import PyTorch and sklearn (lazy-loading to avoid import if GEMMA disabled)
+    try:
+        import torch
+        import torch.nn as nn
+        from torch.utils.data import DataLoader, TensorDataset
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.model_selection import train_test_split
+    except ImportError as e:
+        logger.error(f"❌ Required libraries not available for GEMMA training: {e}")
+        return {'status': 'failed', 'error': f'Missing dependencies: {e}'}
+    
+    gemma_results = {}
+    training_start_time = datetime.now()
+    
+    try:
+        # Get training data from the first available symbol
+        if not training_data:
+            logger.warning("⚠️ No training data available for GEMMA.")
+            return {'status': 'skipped', 'reason': 'no_training_data'}
+            
+        symbol = list(training_data.keys())[0]
+        # GEMMA targets the longest timeframe for richest dataset
+        timeframe = '1d' if '1d' in training_data[symbol] else ALL_TIMEFRAMES[-1]
+        
+        logger.info(f"Preparing data for GEMMA using symbol '{symbol}' and timeframe '{timeframe}'")
+        raw_data = training_data[symbol][timeframe]
+
+        # 1. EXTRACT GEMMA FEATURES (82 features from Phase 2)
+        feature_set_name = gemma_config.get('feature_set', 'gemma_v1')
+        logger.info(f"Extracting GEMMA feature set: '{feature_set_name}'")
+        
+        # Use extract_gemma_features to get the 82-feature set
+        features_df = feature_engine.extract_gemma_features(raw_data.copy())
+        
+        # 2. GENERATE TARGET LABELS
+        # Simple price direction prediction: will price increase in next 5 periods?
+        # This follows the pattern used in other price prediction models
+        logger.info("Generating target labels (price direction prediction)...")
+        features_df['target'] = (features_df['close'].shift(-5) > features_df['close']).astype(int)
+        features_df.dropna(inplace=True)
+
+        if features_df.empty:
+            logger.warning("⚠️ No data remaining after feature extraction and label generation.")
+            return {'status': 'skipped', 'reason': 'empty_features'}
+
+        features = features_df.drop(columns=['target'])
+        labels = features_df['target']
+
+        # Check minimum samples requirement
+        min_samples = gemma_config.get('thresholds', {}).get('min_samples', 1000)
+        if features.shape[0] < min_samples:
+            logger.warning(f"⚠️ Not enough data for GEMMA training. Have {features.shape[0]}, need {min_samples}.")
+            return {'status': 'skipped', 'reason': 'insufficient_data', 'samples': features.shape[0]}
+
+        logger.info(f"✅ Feature extraction complete: {features.shape[0]} samples, {features.shape[1]} features")
+
+        # 3. SCALE FEATURES
+        logger.info("Scaling features with StandardScaler...")
+        scaler = StandardScaler()
+        features_scaled = scaler.fit_transform(features)
+        
+        # Save scaler for inference
+        scaler_path = Path('data/cache/gemma/scaler_gemma.joblib')
+        scaler_path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(scaler, scaler_path)
+        logger.info(f"✅ GEMMA scaler saved to {scaler_path}")
+
+        # 4. SPLIT DATA INTO TRAIN AND VALIDATION SETS
+        logger.info("Splitting data into train/validation sets...")
+        X_train, X_val, y_train, y_val = train_test_split(
+            features_scaled, labels.values, test_size=0.2, random_state=42, stratify=labels
+        )
+        
+        logger.info(f"   Training samples: {len(X_train)}")
+        logger.info(f"   Validation samples: {len(X_val)}")
+        
+        # Create PyTorch datasets and dataloaders
+        train_dataset = TensorDataset(
+            torch.tensor(X_train, dtype=torch.float32), 
+            torch.tensor(y_train, dtype=torch.long)
+        )
+        val_dataset = TensorDataset(
+            torch.tensor(X_val, dtype=torch.float32), 
+            torch.tensor(y_val, dtype=torch.long)
+        )
+        
+        batch_size = gemma_config.get('training', {}).get('batch_size', 32)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size)
+
+        # 5. BUILD GEMMA MODEL (Simple MLP)
+        arch = gemma_config.get('architecture', {})
+        input_size = arch.get('input_size', 82)
+        hidden_size = arch.get('hidden_size', 32)
+        num_layers = arch.get('num_layers', 2)
+        dropout = arch.get('dropout', 0.6)
+        num_classes = arch.get('num_classes', 3)
+        
+        logger.info(f"Building GEMMA model architecture:")
+        logger.info(f"   Input size: {input_size}")
+        logger.info(f"   Hidden size: {hidden_size}")
+        logger.info(f"   Num layers: {num_layers}")
+        logger.info(f"   Dropout: {dropout}")
+        logger.info(f"   Output classes: {num_classes}")
+        
+        # Build a simple feed-forward network
+        layers = []
+        layers.append(nn.Linear(input_size, hidden_size))
+        layers.append(nn.ReLU())
+        layers.append(nn.Dropout(dropout))
+        
+        for _ in range(num_layers - 1):
+            layers.append(nn.Linear(hidden_size, hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+        
+        layers.append(nn.Linear(hidden_size, num_classes))
+        
+        model = nn.Sequential(*layers)
+        logger.info(f"✅ Model created with {sum(p.numel() for p in model.parameters())} parameters")
+        
+        # 6. TRAINING LOOP
+        training_params = gemma_config.get('training', {})
+        epochs = training_params.get('epochs', 50)
+        learning_rate = training_params.get('learning_rate', 0.001)
+        early_stopping_patience = training_params.get('early_stopping_patience', 10)
+        
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        
+        logger.info(f"Starting training for {epochs} epochs...")
+        logger.info(f"   Learning rate: {learning_rate}")
+        logger.info(f"   Early stopping patience: {early_stopping_patience}")
+        
+        best_accuracy = 0.0
+        best_loss = float('inf')
+        patience_counter = 0
+        model_path = Path('data/models/gemma/staging/gemma_price.pt')
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        for epoch in range(epochs):
+            # Training phase
+            model.train()
+            train_loss = 0.0
+            train_correct = 0
+            train_total = 0
+            
+            for batch_X, batch_y in train_loader:
+                optimizer.zero_grad()
+                outputs = model(batch_X)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
+                
+                train_loss += loss.item()
+                _, predicted = torch.max(outputs.data, 1)
+                train_total += batch_y.size(0)
+                train_correct += (predicted == batch_y).sum().item()
+            
+            train_accuracy = train_correct / train_total
+            avg_train_loss = train_loss / len(train_loader)
+            
+            # Validation phase
+            model.eval()
+            val_loss = 0.0
+            val_correct = 0
+            val_total = 0
+            
+            with torch.no_grad():
+                for batch_X, batch_y in val_loader:
+                    outputs = model(batch_X)
+                    loss = criterion(outputs, batch_y)
+                    
+                    val_loss += loss.item()
+                    _, predicted = torch.max(outputs.data, 1)
+                    val_total += batch_y.size(0)
+                    val_correct += (predicted == batch_y).sum().item()
+            
+            val_accuracy = val_correct / val_total
+            avg_val_loss = val_loss / len(val_loader)
+            
+            # Log progress every 10 epochs
+            if (epoch + 1) % 10 == 0 or epoch == 0:
+                logger.info(f"Epoch [{epoch+1}/{epochs}] - "
+                          f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f} | "
+                          f"Val Loss: {avg_val_loss:.4f}, Val Acc: {val_accuracy:.4f}")
+            
+            # Check for improvement
+            if val_accuracy > best_accuracy:
+                best_accuracy = val_accuracy
+                best_loss = avg_val_loss
+                patience_counter = 0
+                
+                # Save best model
+                model_scripted = torch.jit.script(model)
+                model_scripted.save(str(model_path))
+                logger.info(f"✅ New best GEMMA model saved with accuracy {best_accuracy:.4f} to {model_path}")
+            else:
+                patience_counter += 1
+                
+            # Early stopping check
+            if patience_counter >= early_stopping_patience:
+                logger.info(f"Early stopping triggered after {epoch + 1} epochs (patience: {early_stopping_patience})")
+                break
+        
+        training_time = (datetime.now() - training_start_time).total_seconds()
+        
+        logger.info("\n" + "="*60)
+        logger.info(f"✅ GEMMA training completed!")
+        logger.info(f"   Best validation accuracy: {best_accuracy:.4f}")
+        logger.info(f"   Best validation loss: {best_loss:.4f}")
+        logger.info(f"   Training time: {training_time:.2f} seconds")
+        logger.info("="*60)
+        
+        # 7. CHECK DEPLOYMENT THRESHOLD AND PROMOTE MODEL IF PASSED
+        deployment_threshold = gemma_config.get('thresholds', {}).get('deployment_accuracy', 0.78)
+        
+        if best_accuracy >= deployment_threshold:
+            logger.info(f"✅ GEMMA model passed deployment threshold ({best_accuracy:.4f} >= {deployment_threshold}).")
+            final_path = Path('data/models/gemma/final/gemma_price.pt')
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(model_path, final_path)
+            logger.info(f"✅ Model promoted to production: {final_path}")
+            deployment_status = 'promoted'
+        else:
+            logger.warning(f"⚠️ GEMMA model accuracy ({best_accuracy:.4f}) is below deployment threshold ({deployment_threshold}).")
+            logger.warning("   Model saved to staging but not promoted to production.")
+            deployment_status = 'staging_only'
+        
+        # 8. RECORD METRICS TO PERFORMANCE TRACKER
+        try:
+            tracker.record_training(
+                model_type="gemma",
+                model_name=f"{symbol.replace('/', '-')}_{timeframe}",
+                metrics={
+                    'accuracy': best_accuracy,
+                    'loss': best_loss,
+                    'epochs_completed': epoch + 1,
+                    'deployment_status': deployment_status
+                },
+                data_info={
+                    'samples': len(features),
+                    'features': input_size,
+                    'train_samples': len(X_train),
+                    'val_samples': len(X_val),
+                    'symbol': symbol,
+                    'timeframe': timeframe
+                },
+                training_time=training_time
+            )
+            logger.info("✅ GEMMA metrics recorded to performance tracker")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to record GEMMA metrics to tracker: {e}")
+        
+        # Return results
+        gemma_results = {
+            'status': 'completed',
+            'model_type': 'GEMMA',
+            'final_accuracy': best_accuracy,
+            'final_loss': best_loss,
+            'epochs_completed': epoch + 1,
+            'training_time': training_time,
+            'deployment_status': deployment_status,
+            'model_path': str(model_path),
+            'samples': len(features)
+        }
+        
+        return gemma_results
+
+    except Exception as e:
+        logger.error(f"❌ GEMMA model training failed: {e}", exc_info=True)
+        return {'status': 'failed', 'error': str(e)}
 
 
 async def main():
@@ -519,6 +818,26 @@ async def main():
             'reason': 'missing_data'
         }
 
+    # =========================================================================
+    # 💎 ADIM 4: GEMMA MODELİ EĞİTİMİ (YENİ BLOK) 💎
+    # =========================================================================
+    if ml_config.get('gemma', {}).get('enabled', False):
+        logger.info("\n" + "="*60)
+        logger.info("💎 Starting GEMMA Model Training 💎")
+        logger.info("="*60)
+        
+        gemma_training_results = train_gemma_model(
+            training_data=training_data,
+            feature_engine=feature_engine,
+            config=ml_config,  # Pass the entire ML config block
+            tracker=tracker
+        )
+        training_metrics['gemma_models'] = gemma_training_results
+        logger.info(f"GEMMA Training Results: {gemma_training_results}")
+    else:
+        logger.info("GEMMA training is disabled in configuration. Skipping.")
+        training_metrics['gemma_models'] = {'status': 'disabled'}
+
 
     # Save training metrics to files
     end_time = datetime.now()
@@ -543,7 +862,9 @@ async def main():
         'regime_samples': [training_metrics.get('regime_models', {}).get('total_samples', 0)],
         'price_status': [training_metrics.get('price_models', {}).get('status', 'unknown')],
         'rl_status': [training_metrics.get('rl_models', {}).get('status', 'unknown')],
-        'rl_episodes': [training_metrics.get('rl_models', {}).get('num_episodes', 0)]
+        'rl_episodes': [training_metrics.get('rl_models', {}).get('num_episodes', 0)],
+        'gemma_status': [training_metrics.get('gemma_models', {}).get('status', 'unknown')],
+        'gemma_accuracy': [training_metrics.get('gemma_models', {}).get('final_accuracy', 0)]
     }
     pd.DataFrame(csv_data).to_csv(metrics_csv_path, index=False)
     logger.info(f"✅ Saved training metrics: {metrics_csv_path}")
