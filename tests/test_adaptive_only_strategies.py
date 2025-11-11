@@ -18,7 +18,7 @@ class TestAdaptiveOnlyStrategies(unittest.TestCase):
         """Verify that production_coordinator imports adaptive strategies."""
         # Read the production coordinator file
         coord_path = os.path.join(os.path.dirname(__file__), '..', 'src', 'core', 'production_coordinator.py')
-        with open(coord_path, 'r') as f:
+        with open(coord_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
         # Check for adaptive imports
@@ -36,7 +36,7 @@ class TestAdaptiveOnlyStrategies(unittest.TestCase):
     def test_strategy_instantiation_uses_adaptive(self):
         """Verify that adaptive strategies are instantiated in production coordinator."""
         coord_path = os.path.join(os.path.dirname(__file__), '..', 'src', 'core', 'production_coordinator.py')
-        with open(coord_path, 'r') as f:
+        with open(coord_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
         # Check for adaptive strategy instantiation
@@ -52,7 +52,7 @@ class TestAdaptiveOnlyStrategies(unittest.TestCase):
     def test_config_has_adaptive_parameters(self):
         """Verify that config file has adaptive parameters."""
         config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'config.example.yaml')
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         signals = config.get('signals', {})

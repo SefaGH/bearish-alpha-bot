@@ -24,7 +24,7 @@ try:
 except Exception as e:
     out["error"] = f"import torch failed: {e}"
     out["traceback"] = traceback.format_exc()
-    with open(OUT_PATH, "w") as f:
+    with open(OUT_PATH, 'w', encoding='utf-8') as f:
         json.dump(out, f, indent=2)
     print(f"Wrote {OUT_PATH} (torch import error)")
     sys.exit(0) # Hata olsa bile CI adımını kırmamak için 0 ile çık
@@ -34,7 +34,7 @@ try:
 except Exception as e:
     out["error"] = f"torch.load failed: {e}"
     out["traceback"] = traceback.format_exc()
-    with open(OUT_PATH, "w") as f:
+    with open(OUT_PATH, 'w', encoding='utf-8') as f:
         json.dump(out, f, indent=2)
     print(f"Wrote {OUT_PATH} (torch.load error)")
     sys.exit(0) # Hata olsa bile 0 ile çık
@@ -76,6 +76,6 @@ else:
     except Exception:
         out["repr_error"] = "repr failed"
 
-with open(OUT_PATH, "w") as f:
+with open(OUT_PATH, 'w', encoding='utf-8') as f:
     json.dump(out, f, indent=2)
 print(f"Wrote {OUT_PATH}")

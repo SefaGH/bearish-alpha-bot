@@ -26,7 +26,7 @@ try:
     # 'safe_torch_load'u kullanarak 'weights_only' hatasını güvenle aşıyoruz
     from scripts.safe_torch_load import safe_torch_load 
 except Exception as e:
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": f"import failed: {e}", "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (import error)")
     sys.exit(0)
@@ -50,7 +50,7 @@ def safe_tolist(t):
 # Modelin beklediği state_size'ı (42) dosyadan oku
 expected_state_size = None
 try:
-    with open("diagnostics/inferred_state_size.txt", "r") as f:
+    with open("diagnostics/inferred_state_size.txt", 'r', encoding='utf-8') as f:
         expected_state_size = int(f.read().strip())
     print(f"Read expected state_size from file: {expected_state_size}")
 except Exception as e:
@@ -106,14 +106,14 @@ try:
 except Exception as e:
     res["load_error"] = str(e)
     res["load_trace"] = traceback.format_exc()
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump(res, f, indent=2)
     print(f"Wrote {OUT} (load error)")
     sys.exit(0)
 
 if X is None:
     print(f"Cannot run predictions, sample data (X) is None.")
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump(res, f, indent=2)
     sys.exit(0)
 
@@ -167,6 +167,6 @@ except Exception as e:
     res["q_network_error"] = str(e)
     res["q_network_trace"] = traceback.format_exc()
 
-with open(OUT, "w") as f:
+with open(OUT, 'w', encoding='utf-8') as f:
     json.dump(res, f, indent=2)
 print(f"Wrote {OUT}")

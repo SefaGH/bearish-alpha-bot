@@ -530,7 +530,7 @@ async def main():
     
     # Save metrics as JSON
     metrics_json_path = 'logs/training_metrics.json'
-    with open(metrics_json_path, 'w') as f:
+    with open(metrics_json_path, 'w', encoding='utf-8') as f:
         json.dump(training_metrics, f, indent=2)
     logger.info(f"✅ Saved training metrics: {metrics_json_path}")
     

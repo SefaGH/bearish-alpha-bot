@@ -12,7 +12,7 @@ def test_configuration_from_file():
     """Test configuration by reading the file directly."""
     
     # Read the training script
-    with open('scripts/train_all_models.py', 'r') as f:
+    with open('scripts/train_all_models.py', 'r', encoding='utf-8') as f:
         content = f.read()
     
     # Test 1: Check REGIME_TRAINING_TIMEFRAMES

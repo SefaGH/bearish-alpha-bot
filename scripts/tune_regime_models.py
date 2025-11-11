@@ -329,7 +329,7 @@ class RegimeModelTuner:
         filename = f"{model_type}_tuning_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
         filepath = output_dir / filename
         
-        with open(filepath, 'w') as f:
+        with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2)
         
         logger.info(f"✅ Results saved to: {filepath}")

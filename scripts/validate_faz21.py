@@ -24,7 +24,7 @@ def validate_changes():
     
     # Read the training script
     train_script = os.path.join(project_root, 'scripts', 'train_all_models.py')
-    with open(train_script, 'r') as f:
+    with open(train_script, 'r', encoding='utf-8') as f:
         content = f.read()
     
     # Validation checks

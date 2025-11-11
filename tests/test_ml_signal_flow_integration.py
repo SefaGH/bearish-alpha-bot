@@ -261,7 +261,7 @@ class TestMLConfigurationSettings:
         if not os.path.exists(config_path):
             pytest.skip("Config file not found")
         
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         # Check for ML section
@@ -292,7 +292,7 @@ class TestMLConfigurationSettings:
         if not os.path.exists(config_path):
             pytest.skip("Config file not found")
         
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         # Check signals.duplicate_prevention

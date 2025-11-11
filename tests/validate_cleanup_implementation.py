@@ -22,7 +22,7 @@ def check_file_syntax(filepath):
     """Check if a Python file has valid syntax."""
     print(f"Checking syntax: {os.path.basename(filepath)}...")
     try:
-        with open(filepath, 'r') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             ast.parse(f.read())
         print(f"  ✅ Syntax valid")
         return True
@@ -36,7 +36,7 @@ def check_method_exists(filepath, class_name, method_name, should_be_async=False
     print(f"Checking {class_name}.{method_name}() exists...")
     
     try:
-        with open(filepath, 'r') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             tree = ast.parse(f.read())
         
         for node in ast.walk(tree):
@@ -66,7 +66,7 @@ def check_string_in_file(filepath, search_string, description):
     print(f"Checking {description}...")
     
     try:
-        with open(filepath, 'r') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
         
         if search_string in content:

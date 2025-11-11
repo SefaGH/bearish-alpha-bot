@@ -19,9 +19,6 @@ from .multi_exchange import build_clients_from_env
 from .ccxt_client import CcxtClient
 
 # Phase 2: Market Intelligence  
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent))  # src/ dizinini ekle
 from core.market_regime import MarketRegimeAnalyzer
 from .performance_monitor import PerformanceMonitor
 from .websocket_manager import WebSocketManager

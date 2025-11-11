@@ -17,16 +17,16 @@ os.makedirs("diagnostics", exist_ok=True) # Dizin yoksa oluştur
 
 if not os.path.exists(F):
     print(f"File not found, skipping summary: {F}")
-    with open(OUT_F, "w") as f:
+    with open(OUT_F, 'w', encoding='utf-8') as f:
         f.write(f"File not found: {F}")
     sys.exit(0)
 
 try:
-    with open(F, 'r') as f:
+    with open(F, 'r', encoding='utf-8') as f:
         o = json.load(f)
 except Exception as e:
     print(f"Failed to load JSON from {F}: {e}")
-    with open(OUT_F, "w") as f:
+    with open(OUT_F, 'w', encoding='utf-8') as f:
         f.write(f"Failed to load JSON from {F}: {e}")
     sys.exit(0)
 
@@ -70,7 +70,7 @@ for k in keys_to_show:
 # instantiation_kwargs içinde yer alıyor.
 
 txt = "\n".join(out)
-with open(OUT_F, "w") as f:
+with open(OUT_F, 'w', encoding='utf-8') as f:
     f.write(txt)
 
 print(f"Wrote {OUT_F}")

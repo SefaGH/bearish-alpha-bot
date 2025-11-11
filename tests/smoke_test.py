@@ -106,7 +106,7 @@ def test_config_sections_present_or_skip():
         import yaml  # type: ignore
     except Exception:
         pytest.skip("PyYAML not installed — skipping config checks")
-    with open(cfg_path, "r") as f:
+    with open(cfg_path, 'r', encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
     required = ["execution", "risk", "signals"]
     missing = [k for k in required if k not in (cfg or {})]
@@ -122,7 +122,7 @@ def test_strategy_initialization_from_config():
     except Exception:
         pytest.skip("PyYAML not installed — skipping config checks")
 
-    with open(cfg_path, "r") as f:
+    with open(cfg_path, 'r', encoding='utf-8') as f:
         cfg = yaml.safe_load(f) or {}
 
     signals_cfg = cfg.get("signals", {})

@@ -90,7 +90,7 @@ class TestPrepareTrainingDataVariableFix:
         assert os.path.exists(script_path), "prepare_training_data.py not found"
         
         # Try to compile the script to check for syntax errors
-        with open(script_path, 'r') as f:
+        with open(script_path, 'r', encoding='utf-8') as f:
             script_content = f.read()
         
         try:
@@ -102,7 +102,7 @@ class TestPrepareTrainingDataVariableFix:
         """Test that the variable name 'ohlcv_df' is used consistently"""
         script_path = os.path.join(project_root, 'scripts', 'prepare_training_data.py')
         
-        with open(script_path, 'r') as f:
+        with open(script_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
         # Check that the bug (using 'price_data' in wrong context) is fixed

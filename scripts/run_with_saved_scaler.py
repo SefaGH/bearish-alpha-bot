@@ -31,7 +31,7 @@ try:
     from scripts.safe_torch_load import safe_torch_load
 
 except Exception as e:
-    open(OUT,"w").write(json.dumps({"error":"imports_failed","exc":str(e), "traceback": traceback.format_exc()}))
+    open(OUT, 'w', encoding='utf-8').write(json.dumps({"error":"imports_failed","exc":str(e), "traceback": traceback.format_exc()}))
     raise SystemExit(0)
 
 # paths
@@ -102,12 +102,12 @@ try:
         "entropy_mean": float(- (probs * np.log(np.clip(probs,1e-12,1))).sum(axis=1).mean())
     })
 
-    open(OUT,"w").write(json.dumps(res, indent=2))
+    open(OUT, 'w', encoding='utf-8').write(json.dumps(res, indent=2))
     print("Wrote", OUT)
 
 except Exception as e:
     res["error"] = str(e)
     res["traceback"] = traceback.format_exc()
-    open(OUT,"w").write(json.dumps(res, indent=2))
+    open(OUT, 'w', encoding='utf-8').write(json.dumps(res, indent=2))
     print(f"Failed to run scaler test: {e}")
     raise SystemExit(0) # CI'da hata vermemesi için 0 ile çık

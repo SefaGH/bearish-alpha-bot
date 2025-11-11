@@ -43,7 +43,7 @@ def test_logger_creates_file():
     assert os.path.getsize(latest_log) > 0, f"Log file {latest_log} is empty (0 bytes)"
     
     # Verify the log message is in the file
-    with open(latest_log, 'r') as f:
+    with open(latest_log, 'r', encoding='utf-8') as f:
         content = f.read()
         assert test_message in content, f"Test message not found in log file"
         assert "test_file_logger" in content, "Logger name not found in log file"
@@ -117,7 +117,7 @@ def test_debug_logger_creates_file():
     assert os.path.getsize(latest_log) > 0, f"Debug log file {latest_log} is empty (0 bytes)"
     
     # Verify the log message is in the file
-    with open(latest_log, 'r') as f:
+    with open(latest_log, 'r', encoding='utf-8') as f:
         content = f.read()
         assert test_message in content, f"Test message not found in debug log file"
         # Check for debug emoji in debug mode
@@ -152,7 +152,7 @@ def test_log_file_format():
     latest_log = max(log_files, key=os.path.getctime)
     
     # Read log file
-    with open(latest_log, 'r') as f:
+    with open(latest_log, 'r', encoding='utf-8') as f:
         content = f.read()
     
     # Verify format: timestamp - name - level - message
@@ -203,7 +203,7 @@ def test_multiple_loggers_same_file():
     # Verify messages are logged
     all_log_content = ""
     for log_file in log_files:
-        with open(log_file, 'r') as f:
+        with open(log_file, 'r', encoding='utf-8') as f:
             all_log_content += f.read()
     
     # At least one of the messages should be in the logs

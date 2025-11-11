@@ -89,7 +89,7 @@ def load_model():
     metadata_path = Path('logs/final_training/metadata_latest.json')
     
     if metadata_path.exists():
-        with open(metadata_path, 'r') as f:
+        with open(metadata_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
             MODEL_METADATA = data['metadata']
         

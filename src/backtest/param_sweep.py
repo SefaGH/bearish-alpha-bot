@@ -6,10 +6,6 @@
 # - Writes results to data/backtests/<symbol>_<ts>.csv
 
 from __future__ import annotations
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent))
-
 import asyncio
 import inspect
 import os, itertools, logging
@@ -21,11 +17,7 @@ import yaml
 from core.multi_exchange import build_clients_from_env
 from core.indicators import add_indicators as ind_enrich
 
-# Setup logging
-logging.basicConfig(
-    level=os.getenv('LOG_LEVEL', 'INFO'),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Logger setup (without basicConfig to avoid import-time side effects)
 logger = logging.getLogger(__name__)
 
 DATA_DIR = "data"
@@ -108,6 +100,12 @@ def sweep_ob(df30: pd.DataFrame, grid: Dict[str, List[Any]], fallbacks: Dict[str
     return pd.DataFrame(res).sort_values(["avg_pnl","win_rate","trades"], ascending=[False, False, False])
 
 def main():
+    # Setup logging (moved from module level to avoid import-time side effects)
+    logging.basicConfig(
+        level=os.getenv('LOG_LEVEL', 'INFO'),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
     symbol = os.getenv("BT_SYMBOL", "BTC/USDT")
     exchange = os.getenv("BT_EXCHANGE", os.getenv("EXECUTION_EXCHANGE", "kucoinfutures"))
     limit = int(os.getenv("BT_LIMIT", "1000"))

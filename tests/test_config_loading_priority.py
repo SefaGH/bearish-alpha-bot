@@ -175,7 +175,7 @@ class TestConfigLoadingPriority:
         scripts_path = os.path.join(os.path.dirname(__file__), '..', 'scripts', 'live_trading_launcher.py')
         assert os.path.exists(scripts_path), "Launcher file should exist"
         
-        with open(scripts_path, 'r') as f:
+        with open(scripts_path, 'r', encoding='utf-8') as f:
             content = f.read()
             # Verify it imports and uses LiveTradingConfiguration
             assert 'from config.live_trading_config import LiveTradingConfiguration' in content

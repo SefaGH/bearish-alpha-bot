@@ -554,7 +554,7 @@ class RegimeModelTuner:
         # Convert all numpy types to Python native types recursively
         serializable_results = self._convert_numpy_to_python(results)
         
-        with open(filepath, 'w') as f:
+        with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(serializable_results, f, indent=2)
         
         logger.info(f"✅ Results saved: {filepath}")

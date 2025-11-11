@@ -98,7 +98,7 @@ if __name__ == "__main__":
         # state_size'ı oku (veri kesmek için)
         expected_state_size = None
         try:
-            with open("diagnostics/inferred_state_size.txt", "r") as f:
+            with open("diagnostics/inferred_state_size.txt", 'r', encoding='utf-8') as f:
                 expected_state_size = int(f.read().strip())
         except Exception:
             pass # Bulamazsa None kalır

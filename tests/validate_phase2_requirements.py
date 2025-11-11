@@ -47,7 +47,7 @@ def test_duplicate_prevention_config():
         print(f"❌ Config file not found: {config_path}")
         return False
     
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
     # Check signals.duplicate_prevention section
@@ -92,7 +92,7 @@ def test_multi_symbol_config():
     
     config_path = 'config/config.example.yaml'
     
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
     # Check signals.short_the_rip.symbols section

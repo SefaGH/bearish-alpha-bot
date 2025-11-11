@@ -145,7 +145,7 @@ class SystemInfoCollector:
                 # Try /etc/os-release if distro module not available
                 if not distro_name:
                     try:
-                        with open('/etc/os-release', 'r') as f:
+                        with open('/etc/os-release', 'r', encoding='utf-8') as f:
                             lines = f.readlines()
                             for line in lines:
                                 if line.startswith('NAME='):

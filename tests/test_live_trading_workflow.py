@@ -26,7 +26,7 @@ class TestLiveTradingWorkflow:
     @pytest.fixture
     def workflow_config(self):
         """Load workflow configuration."""
-        with open(WORKFLOW_PATH, 'r') as f:
+        with open(WORKFLOW_PATH, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
             # Handle YAML 1.1 parsing of 'on:' as boolean True
             if True in config and 'on' not in config:
@@ -320,7 +320,7 @@ class TestWorkflowIntegration:
     @pytest.fixture
     def workflow_config(self):
         """Load workflow configuration."""
-        with open(WORKFLOW_PATH, 'r') as f:
+        with open(WORKFLOW_PATH, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
             # Handle YAML 1.1 parsing of 'on:' as boolean True
             if True in config and 'on' not in config:

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -16,6 +17,9 @@ except ModuleNotFoundError:  # pragma: no cover
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORT_PATH = REPO_ROOT / "diagnostics" / "gemma_readiness_report.json"
+
+# Global variable to store dep-source configuration
+DEP_SOURCE = "auto"
 
 report: dict[str, object] = {
     "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -122,8 +126,38 @@ def check_workflow_python_version() -> None:
         record_check("workflow_python", "pass", "All workflows pin python-version to 3.11.")
 
 
-def load_dependency_names() -> set[str]:
+def parse_requirements_txt(req_file: Path) -> set[str]:
+    """Parse requirements.txt and return set of dependency names."""
+    if not req_file.exists():
+        return set()
+    
+    names: set[str] = set()
+    with open(req_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            # Skip empty lines and comments
+            if not line or line.startswith('#'):
+                continue
+            # Skip lines that are just dashes or equals (section separators)
+            if line.startswith(('===', '---')):
+                continue
+            # Remove inline comments
+            line = line.split('#')[0].strip()
+            if not line:
+                continue
+            # Extract package name (before any version specifier)
+            token = re.split(r'[<>=!~\[;]', line, maxsplit=1)[0].strip().lower()
+            if token:
+                names.add(token)
+    return names
+
+
+def parse_pyproject_toml() -> set[str]:
+    """Parse pyproject.toml and return set of dependency names."""
     pyproject = REPO_ROOT / "pyproject.toml"
+    if not pyproject.exists():
+        return set()
+    
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     deps = data.get("project", {}).get("dependencies", [])
     names: set[str] = set()
@@ -135,16 +169,48 @@ def load_dependency_names() -> set[str]:
     return names
 
 
+def load_dependency_names(source: str = "auto") -> set[str]:
+    """
+    Load dependency names from specified source.
+    
+    Args:
+        source: One of "auto", "requirements", or "pyproject"
+                - "auto": Check requirements.txt first, fallback to pyproject.toml
+                - "requirements": Only parse requirements.txt
+                - "pyproject": Only parse pyproject.toml
+    
+    Returns:
+        Set of dependency package names (lowercase)
+    """
+    if source == "auto":
+        req_file = REPO_ROOT / "requirements.txt"
+        if req_file.exists():
+            return parse_requirements_txt(req_file)
+        return parse_pyproject_toml()
+    elif source == "requirements":
+        return parse_requirements_txt(REPO_ROOT / "requirements.txt")
+    else:  # pyproject
+        return parse_pyproject_toml()
+
+
 def check_ml_dependencies() -> None:
+    global DEP_SOURCE
     required = {"scikit-learn", "torch", "xgboost"}
-    present = load_dependency_names()
+    present = load_dependency_names(source=DEP_SOURCE)
     missing = sorted(dep for dep in required if dep not in present)
+    
+    # Determine which source was actually used
+    source_used = DEP_SOURCE
+    if DEP_SOURCE == "auto":
+        req_file = REPO_ROOT / "requirements.txt"
+        source_used = "requirements.txt" if req_file.exists() else "pyproject.toml"
+    
     if missing:
-        detail = f"Missing ML dependencies in pyproject.toml: {', '.join(missing)}."
+        detail = f"Missing ML dependencies in {source_used}: {', '.join(missing)}."
         record_check("ml_dependencies", "warn", detail)
-        add_migration_item(f"Add GEMMA training deps ({', '.join(missing)}) to pyproject.toml.")
+        add_migration_item(f"Add GEMMA training deps ({', '.join(missing)}) to dependency file.")
     else:
-        record_check("ml_dependencies", "pass", "Key ML dependencies already declared.")
+        record_check("ml_dependencies", "pass", f"Key ML dependencies declared in {source_used}.")
 
 
 def count_files(path: Path) -> int:
@@ -173,11 +239,40 @@ def check_model_and_scaler_artifacts() -> None:
 
 
 def main() -> int:
+    global DEP_SOURCE
+    
+    parser = argparse.ArgumentParser(
+        description="Pre-GEMMA readiness checks for repository health",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Dependency Source Options:
+  auto          Check requirements.txt first, fallback to pyproject.toml (default)
+  requirements  Only parse requirements.txt
+  pyproject     Only parse pyproject.toml
+
+Examples:
+  %(prog)s                      # Use auto detection
+  %(prog)s --dep-source requirements
+  %(prog)s --dep-source pyproject
+        """
+    )
+    parser.add_argument(
+        '--dep-source',
+        choices=['auto', 'requirements', 'pyproject'],
+        default='auto',
+        help='Source for dependency checking (default: auto)'
+    )
+    
+    args = parser.parse_args()
+    DEP_SOURCE = args.dep_source
+    
+    # Run all checks
     check_repo_structure()
     check_workflow_python_version()
     check_ml_dependencies()
     check_model_and_scaler_artifacts()
 
+    # Write report
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     REPORT_PATH.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"GEMMA readiness report stored at {REPORT_PATH.relative_to(REPO_ROOT)}")

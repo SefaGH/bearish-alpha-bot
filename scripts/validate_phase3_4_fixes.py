@@ -18,7 +18,7 @@ def test_fix_1_main_live_trading():
     print("="*70)
     
     # Read main.py without importing (to avoid dependency issues)
-    with open('/home/runner/work/bearish-alpha-bot/bearish-alpha-bot/src/main.py', 'r') as f:
+    with open('/home/runner/work/bearish-alpha-bot/bearish-alpha-bot/src/main.py', 'r', encoding='utf-8') as f:
         content = f.read()
     
     # Check for main_live_trading function
@@ -61,7 +61,7 @@ def test_fix_2_config_loading():
     print("TEST 2: Verify simplified config loading")
     print("="*70)
     
-    with open('/home/runner/work/bearish-alpha-bot/bearish-alpha-bot/src/core/live_trading_engine.py', 'r') as f:
+    with open('/home/runner/work/bearish-alpha-bot/bearish-alpha-bot/src/core/live_trading_engine.py', 'r', encoding='utf-8') as f:
         content = f.read()
     
     # Check for 3-step priority comments
@@ -111,7 +111,7 @@ def test_fix_3_websocket_setup():
     print("TEST 3: Verify WebSocket initialization with validation")
     print("="*70)
     
-    with open('/home/runner/work/bearish-alpha-bot/bearish-alpha-bot/src/core/production_coordinator.py', 'r') as f:
+    with open('/home/runner/work/bearish-alpha-bot/bearish-alpha-bot/src/core/production_coordinator.py', 'r', encoding='utf-8') as f:
         content = f.read()
     
     # Check for return type

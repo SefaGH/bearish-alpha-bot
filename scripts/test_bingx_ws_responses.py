@@ -271,7 +271,7 @@ def save_results():
         "responses": captured_responses
     }
     
-    with open(output_file, 'w') as f:
+    with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2)
     
     logger.info(f"\n✅ Results saved to: {output_file}")

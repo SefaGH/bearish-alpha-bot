@@ -16,14 +16,14 @@ try:
     import torch
     import numpy as np
 except Exception as e:
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": str(e), "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (import error)")
     sys.exit(0)
 
 p = "diagnostics/inst_model.pth"
 if not os.path.exists(p):
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": "file not found: " + p}, f, indent=2)
     print(f"Wrote {OUT} (file not found)")
     sys.exit(0)
@@ -35,7 +35,7 @@ try:
     # verify_model'da bu hatayı zaten aştık.
     obj = torch.load(p, map_location="cpu", weights_only=False)
 except Exception as e:
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": "torch.load failed: " + str(e), "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (load error)")
     sys.exit(0)
@@ -66,7 +66,7 @@ except Exception:
     pass
 
 if net is None:
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": "Could not find a torch module (q_network/model/net) on the loaded object", "available_attrs": [a for a in dir(obj) if not a.startswith('_')][:200]}, indent=2)
     print(f"Wrote {OUT} (module not found)")
     sys.exit(0)
@@ -104,6 +104,6 @@ collapsed = [p["name"] for p in params if (p["abs_mean"] < 1e-6 and p["std"] < 1
 summary["collapsed_param_count"] = len(collapsed)
 summary["collapsed_params"] = collapsed[:50]
 
-with open(OUT, "w") as f:
+with open(OUT, 'w', encoding='utf-8') as f:
     json.dump(summary, f, indent=2, default=str) # default=str eklendi
 print("Wrote", OUT)

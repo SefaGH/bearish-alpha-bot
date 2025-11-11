@@ -94,7 +94,7 @@ class TestSymbolParameterPassing(unittest.TestCase):
     def test_production_coordinator_passes_symbol(self):
         """Verify that production_coordinator.py passes symbol to adaptive strategies."""
         coord_path = os.path.join(os.path.dirname(__file__), '..', 'src', 'core', 'production_coordinator.py')
-        with open(coord_path, 'r') as f:
+        with open(coord_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
         # Check that symbol parameter is passed in adaptive strategy calls
@@ -118,7 +118,7 @@ class TestSymbolParameterPassing(unittest.TestCase):
     def test_live_trading_engine_passes_symbol(self):
         """Verify that live_trading_engine.py passes symbol to strategies."""
         engine_path = os.path.join(os.path.dirname(__file__), '..', 'src', 'core', 'live_trading_engine.py')
-        with open(engine_path, 'r') as f:
+        with open(engine_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
         # Check that symbol parameter check is present

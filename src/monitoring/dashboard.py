@@ -362,7 +362,7 @@ class MonitoringDashboard:
         state_file = Path('data/state.json')
         if state_file.exists():
             try:
-                with open(state_file) as f:
+                with open(state_file, encoding='utf-8') as f:
                     state = json.load(f)
                     return web.json_response({
                         'open': state.get('open', {}),
@@ -378,7 +378,7 @@ class MonitoringDashboard:
         day_stats_file = Path('data/day_stats.json')
         if day_stats_file.exists():
             try:
-                with open(day_stats_file) as f:
+                with open(day_stats_file, encoding='utf-8') as f:
                     stats = json.load(f)
                     return web.json_response(stats)
             except Exception as e:

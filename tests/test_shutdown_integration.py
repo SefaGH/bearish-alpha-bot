@@ -25,7 +25,7 @@ print("-" * 70)
 
 # Read the launcher file
 launcher_file = os.path.join(os.path.dirname(__file__), '..', 'scripts', 'live_trading_launcher.py')
-with open(launcher_file, 'r') as f:
+with open(launcher_file, 'r', encoding='utf-8') as f:
     launcher_code = f.read()
 
 # Check for the correct shutdown order in comments
@@ -71,7 +71,7 @@ print("-" * 70)
 
 # Read the coordinator file
 coordinator_file = os.path.join(os.path.dirname(__file__), '..', 'src', 'core', 'production_coordinator.py')
-with open(coordinator_file, 'r') as f:
+with open(coordinator_file, 'r', encoding='utf-8') as f:
     coordinator_code = f.read()
 
 # Verify that stop_system() does NOT close WebSocket connections

@@ -399,7 +399,7 @@ class FeatureAnalyzer:
             
             # Save metadata
             metadata_file = output_path / "feature_selection_metadata.json"
-            with open(metadata_file, 'w') as f:
+            with open(metadata_file, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, indent=2)
             logger.info(f"✅ Saved metadata to {metadata_file}")
             
@@ -428,7 +428,7 @@ class FeatureAnalyzer:
         report_file = output_path / "feature_analysis_report.md"
         
         try:
-            with open(report_file, 'w') as f:
+            with open(report_file, 'w', encoding='utf-8') as f:
                 # Header
                 f.write("# Feature Analysis Report\n\n")
                 f.write(f"**Generated:** {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")

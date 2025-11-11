@@ -41,7 +41,7 @@ def test_basic_logger():
         # Show content
         print(f"\nLog file content (first 500 chars):")
         print("-" * 70)
-        with open(latest, 'r') as f:
+        with open(latest, 'r', encoding='utf-8') as f:
             content = f.read()
             print(content[:500])
         print("-" * 70)
@@ -78,7 +78,7 @@ def test_debug_logger():
         # Show content
         print(f"\nDebug log file content:")
         print("-" * 70)
-        with open(latest, 'r') as f:
+        with open(latest, 'r', encoding='utf-8') as f:
             content = f.read()
             print(content)
         print("-" * 70)

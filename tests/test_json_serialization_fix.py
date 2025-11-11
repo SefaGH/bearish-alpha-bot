@@ -226,14 +226,14 @@ class TestNumpyToJsonConversion:
                 
                 # Manually save to test file
                 test_file = temp_logs / 'test_output.json'
-                with open(test_file, 'w') as f:
+                with open(test_file, 'w', encoding='utf-8') as f:
                     json.dump(serializable, f, indent=2)
                 
                 # Verify file was created and is readable
                 assert test_file.exists()
                 
                 # Load and verify the saved JSON
-                with open(test_file, 'r') as f:
+                with open(test_file, 'r', encoding='utf-8') as f:
                     loaded_data = json.load(f)
                 
                 # Verify data integrity
