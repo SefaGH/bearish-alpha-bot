@@ -2,7 +2,7 @@
   "repository": "github.com/SefaGH/bearish-alpha-bot",
   "author": "SefaGH",
   "version": "GEMMA-1.0.0",
-  "created": "2025-11-11T21:44:28.029374",
+  "created": "2025-11-11T23:30:08.425195",
   "type": "regime_prediction",
   "count": 82,
   "selection_method": "mutual_info_classif",

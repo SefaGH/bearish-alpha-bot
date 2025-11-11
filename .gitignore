@@ -65,3 +65,4 @@ config/config.yaml
 .venv311/
 data/cache/*.npz
 data/cache/feature_selection*
+backups/
