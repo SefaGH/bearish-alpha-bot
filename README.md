@@ -2,6 +2,15 @@
 
 Kripto türev piyasalarında (özellikle USDT margined perpetual) **ayı piyasası odaklı** fırsatları tarayıp sinyal üreten, GitHub Actions üzerinden tamamen **tarayıcıdan** çalıştırılabilen bot.
 
+## ⚠️ CRITICAL: Python Version Requirement
+
+**This project REQUIRES Python 3.11**
+
+- ✅ **ONLY** Python 3.11.x is supported
+- ❌ **DO NOT USE** Python 3.12, 3.10, or any other version
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions.
+
 ## ✅ Son Güncellemeler (2025-10)
 
 Bu bot ChatGPT ile oluşturulmuş, ancak önemli hatalar ve eksiklikler tespit edilip düzeltilmiştir:
