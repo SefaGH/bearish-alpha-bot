@@ -15,31 +15,37 @@ require_python_311() {
   fi
   candidates+=("python" "python3")
 
-  local resolved=""
-  local resolved_version=""
+  local fallback_interpreter=""
+  local fallback_version=""
+
   for candidate in "${candidates[@]}"; do
-    if command -v "${candidate}" >/dev/null 2>&1; then
-      local candidate_version
-      candidate_version="$(${candidate} -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || true)"
-      if [[ -n "${candidate_version}" ]]; then
-        resolved="${candidate}"
-        resolved_version="${candidate_version}"
-        break
-      fi
+    if ! command -v "${candidate}" >/dev/null 2>&1; then
+      continue
+    fi
+
+    local candidate_version
+    candidate_version="$(${candidate} -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || true)"
+    if [[ -z "${candidate_version}" ]]; then
+      continue
+    fi
+
+    if [[ "${candidate_version}" == "3.11" ]]; then
+      echo "${candidate}"
+      return
+    fi
+
+    if [[ -z "${fallback_interpreter}" ]]; then
+      fallback_interpreter="${candidate}"
+      fallback_version="${candidate_version}"
     fi
   done
 
-  if [[ -z "${resolved}" ]]; then
+  if [[ -n "${fallback_interpreter}" ]]; then
+    log "Python 3.11 is required; detected ${fallback_interpreter} -> ${fallback_version}." "ERROR"
+  else
     log "Python interpreter could not be located." "ERROR"
-    exit 1
   fi
-
-  if [[ "${resolved_version}" != "3.11" ]]; then
-    log "Python 3.11 is required; detected ${resolved} -> ${resolved_version}." "ERROR"
-    exit 1
-  fi
-
-  echo "${resolved}"
+  exit 1
 }
 
 perform_backups() {
