@@ -25,7 +25,7 @@ try:
     import pandas as pd
     from torch.nn import functional as F
 except Exception as e:
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": f"import failed: {e}", "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (import error)")
     sys.exit(0)
@@ -40,7 +40,7 @@ res = {"model_path": MODEL_PATH, "samples_path": SAMPLES_PATH, "N": N}
 # state_size'ı oku (veri kesmek için)
 expected_state_size = None
 try:
-    with open("diagnostics/inferred_state_size.txt", "r") as f:
+    with open("diagnostics/inferred_state_size.txt", 'r', encoding='utf-8') as f:
         expected_state_size = int(f.read().strip())
     print(f"Read expected state_size: {expected_state_size}")
 except Exception as e:
@@ -51,7 +51,7 @@ X_scaled = None
 X_raw = None
 if not os.path.exists(SAMPLES_PATH):
     res["error"] = "samples file not found"
-    with open(OUT, "w") as f: json.dump(res, f, indent=2)
+    with open(OUT, 'w', encoding='utf-8') as f: json.dump(res, f, indent=2)
     print(f"Wrote {OUT} (sample file not found)")
     sys.exit(0)
 
@@ -95,7 +95,7 @@ try:
 except Exception as e:
     res["sample_load_error"] = str(e)
     traceback.print_exc()
-    with open(OUT, "w") as f: json.dump(res, f, indent=2)
+    with open(OUT, 'w', encoding='utf-8') as f: json.dump(res, f, indent=2)
     print(f"Wrote {OUT} (sample load error)")
     sys.exit(0)
 
@@ -110,7 +110,7 @@ try:
 except Exception as e:
     res["load_error"] = str(e)
     res["load_trace"] = traceback.format_exc()
-    with open(OUT, "w") as f: json.dump(res, f, indent=2)
+    with open(OUT, 'w', encoding='utf-8') as f: json.dump(res, f, indent=2)
     print(f"Wrote {OUT} (model load error)")
     sys.exit(0)
 
@@ -160,6 +160,6 @@ if hasattr(obj, "q_network"):
 else:
     res["q_network_error"] = "model has no attribute q_network"
 
-with open(OUT, "w") as f:
+with open(OUT, 'w', encoding='utf-8') as f:
     json.dump(res, f, indent=2)
 print(f"Wrote {OUT}")

@@ -29,7 +29,7 @@ for i in range(N):
     ts = (dt + timedelta(minutes=5*i)).isoformat() + "Z"
     rows.append([ts, round(open_p, 6), round(high, 6), round(low, 6), round(close_p, 6), round(volume, 6)])
 
-with open(OUT, "w", newline="") as f:
+with open(OUT, "w", newline="", encoding="utf-8") as f:
     writer = csv.writer(f)
     writer.writerow(["timestamp","open","high","low","close","volume"])
     writer.writerows(rows)

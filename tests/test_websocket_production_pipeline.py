@@ -252,7 +252,7 @@ class TestTimeframeConfiguration:
         """Test config file has all required timeframes."""
         import yaml
         
-        with open('config/config.example.yaml', 'r') as f:
+        with open('config/config.example.yaml', 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         stream_timeframes = config.get('websocket', {}).get('stream_timeframes', [])

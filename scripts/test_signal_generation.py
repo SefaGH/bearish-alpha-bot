@@ -12,7 +12,7 @@ from core.market_regime import MarketRegimeAnalyzer
 import yaml
 
 # Load config
-with open('config/config.example.yaml', 'r') as f:
+with open('config/config.example.yaml', 'r', encoding='utf-8') as f:
     config = yaml.safe_load(f)
 
 # Create client

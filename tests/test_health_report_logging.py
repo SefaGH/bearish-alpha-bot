@@ -154,7 +154,7 @@ class HealthMonitor:
             }
             
             # Write to file
-            with open(self.health_log_path, 'w') as f:
+            with open(self.health_log_path, 'w', encoding='utf-8') as f:
                 json.dump(report, f, indent=2, default=str)
                 
         except Exception as e:
@@ -207,7 +207,7 @@ class TestHealthReportLogging:
         assert os.path.exists(monitor.health_log_path)
         
         # Check that it's valid JSON
-        with open(monitor.health_log_path, 'r') as f:
+        with open(monitor.health_log_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
         # Verify structure
@@ -225,7 +225,7 @@ class TestHealthReportLogging:
         monitor._write_health_report(final=True)
         
         # Check the file
-        with open(monitor.health_log_path, 'r') as f:
+        with open(monitor.health_log_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
         assert data['report_type'] == 'final'
@@ -244,7 +244,7 @@ class TestHealthReportLogging:
         monitor._write_health_report(final=False)
         
         # Read and verify
-        with open(monitor.health_log_path, 'r') as f:
+        with open(monitor.health_log_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
         health = data['health']
@@ -280,7 +280,7 @@ class TestHealthReportLogging:
             assert os.path.exists(monitor.health_log_path)
             
             # Verify it's a valid JSON file
-            with open(monitor.health_log_path, 'r') as f:
+            with open(monitor.health_log_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             # Should be marked as final (from stop_monitoring)
@@ -303,7 +303,7 @@ class TestHealthReportLogging:
         # Check that final report exists
         assert os.path.exists(monitor.health_log_path)
         
-        with open(monitor.health_log_path, 'r') as f:
+        with open(monitor.health_log_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
         assert data['report_type'] == 'final'
@@ -317,7 +317,7 @@ class TestHealthReportLogging:
         monitor.metrics['loops_completed'] = 1
         monitor._write_health_report(final=False)
         
-        with open(monitor.health_log_path, 'r') as f:
+        with open(monitor.health_log_path, 'r', encoding='utf-8') as f:
             data1 = json.load(f)
         assert data1['health']['metrics']['loops_completed'] == 1
         
@@ -325,7 +325,7 @@ class TestHealthReportLogging:
         monitor.metrics['loops_completed'] = 2
         monitor._write_health_report(final=False)
         
-        with open(monitor.health_log_path, 'r') as f:
+        with open(monitor.health_log_path, 'r', encoding='utf-8') as f:
             data2 = json.load(f)
         assert data2['health']['metrics']['loops_completed'] == 2
     
@@ -354,7 +354,7 @@ class TestHealthReportLogging:
         monitor._write_health_report(final=False)
         
         # Read and verify complete structure
-        with open(monitor.health_log_path, 'r') as f:
+        with open(monitor.health_log_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
         # Top level

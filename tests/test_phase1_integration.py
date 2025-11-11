@@ -171,7 +171,7 @@ def test_performance_improvements():
     # Check live_trading_launcher.py for optimizations
     print("\n[1/2] Market Loading Optimization")
     try:
-        with open('scripts/live_trading_launcher.py', 'r') as f:
+        with open('scripts/live_trading_launcher.py', 'r', encoding='utf-8') as f:
             content = f.read()
         
         # Check that we don't load all markets
@@ -207,7 +207,7 @@ def test_performance_improvements():
     # Check authentication test
     print("\n[2/2] Authentication Verification")
     try:
-        with open('scripts/live_trading_launcher.py', 'r') as f:
+        with open('scripts/live_trading_launcher.py', 'r', encoding='utf-8') as f:
             content = f.read()
         
         if 'get_bingx_balance' in content:

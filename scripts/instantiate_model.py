@@ -105,7 +105,7 @@ def main():
         # Tahmin ettiğimiz state_size'ı diğer script'ler için kaydet
         state_size_to_save = inferred["state_size"]
         os.makedirs("diagnostics", exist_ok=True) # Dizin yoksa oluştur
-        with open("diagnostics/inferred_state_size.txt", "w") as f:
+        with open("diagnostics/inferred_state_size.txt", 'w', encoding='utf-8') as f:
             f.write(str(state_size_to_save))
         print(f"Wrote inferred state_size ({state_size_to_save}) to diagnostics/inferred_state_size.txt")
         # --- YENİ EKLENEN ADIM SONU ---
@@ -145,7 +145,7 @@ def main():
 
 def save_report(report_data: dict):
     os.makedirs("diagnostics", exist_ok=True)
-    with open("diagnostics/model_inst_attempt.json", "w") as f:
+    with open("diagnostics/model_inst_attempt.json", 'w', encoding='utf-8') as f:
         # Tensorları veya diğer serileştirilemeyen objeleri string'e çevir
         try:
             json.dump(report_data, f, indent=2, default=str)

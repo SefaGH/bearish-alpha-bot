@@ -67,7 +67,7 @@ def temp_data_dir():
         ]
     }
     
-    with open(data_dir / 'state.json', 'w') as f:
+    with open(data_dir / 'state.json', 'w', encoding='utf-8') as f:
         json.dump(state, f, indent=2)
     
     # Create test day_stats.json
@@ -77,7 +77,7 @@ def temp_data_dir():
         "date": "2025-10-15"
     }
     
-    with open(data_dir / 'day_stats.json', 'w') as f:
+    with open(data_dir / 'day_stats.json', 'w', encoding='utf-8') as f:
         json.dump(day_stats, f, indent=2)
     
     # Change to temp directory
@@ -235,7 +235,7 @@ def test_html_report_styling():
         Path('data').mkdir()
         generate_html_report()
         
-        with open('data/report.html') as f:
+        with open('data/report.html', encoding='utf-8') as f:
             html = f.read()
         
         # Check for CSS styling

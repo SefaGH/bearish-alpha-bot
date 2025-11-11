@@ -24,7 +24,7 @@ print("-" * 70)
 
 # Read the engine file
 engine_file = os.path.join(os.path.dirname(__file__), '..', 'src', 'core', 'live_trading_engine.py')
-with open(engine_file, 'r') as f:
+with open(engine_file, 'r', encoding='utf-8') as f:
     engine_code = f.read()
 
 # Find the execute_signal method
@@ -53,7 +53,7 @@ print("-" * 70)
 
 # Read the position manager file  
 position_mgr_file = os.path.join(os.path.dirname(__file__), '..', 'src', 'core', 'position_manager.py')
-with open(position_mgr_file, 'r') as f:
+with open(position_mgr_file, 'r', encoding='utf-8') as f:
     position_mgr_code = f.read()
 
 # Find the open_position method
@@ -114,7 +114,7 @@ print("-" * 70)
 
 # Read the order manager file
 order_mgr_file = os.path.join(os.path.dirname(__file__), '..', 'src', 'core', 'order_manager.py')
-with open(order_mgr_file, 'r') as f:
+with open(order_mgr_file, 'r', encoding='utf-8') as f:
     order_mgr_code = f.read()
 
 # Find the place_order method
@@ -150,7 +150,7 @@ print("-" * 70)
 
 # Read the launcher file
 launcher_file = os.path.join(os.path.dirname(__file__), '..', 'scripts', 'live_trading_launcher.py')
-with open(launcher_file, 'r') as f:
+with open(launcher_file, 'r', encoding='utf-8') as f:
     launcher_code = f.read()
 
 # Find the cleanup method

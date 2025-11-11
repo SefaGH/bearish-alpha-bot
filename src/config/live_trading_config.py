@@ -107,7 +107,7 @@ class LiveTradingConfiguration:
         if not os.path.exists(self.CONFIG_FILE_PATH):
             raise FileNotFoundError(f"Configuration file not found at: {self.CONFIG_FILE_PATH}")
     
-        with open(self.CONFIG_FILE_PATH, 'r') as f:
+        with open(self.CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
             lines = f.readlines()
             
         path_stack: List[Tuple[int, str]] = []
@@ -146,7 +146,7 @@ class LiveTradingConfiguration:
                 if 'RSI_THRESHOLD' in env_var or 'ML_' in env_var:
                     logger.debug(f"Mapped ENV '{env_var}' to config path: {'.'.join(current_path)}")
     
-        with open(self.CONFIG_FILE_PATH, 'r') as f:
+        with open(self.CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
             yaml_config = yaml.safe_load(f)
     
         logger.info(f"✅ YAML config loaded. Found {len(env_map)} environment variable mappings.")

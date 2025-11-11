@@ -436,7 +436,7 @@ def generate_backtest_report(results: Dict[str, Any], output_file: str = None) -
 """
     
     if output_file:
-        with open(output_file, 'w') as f:
+        with open(output_file, 'w', encoding='utf-8') as f:
             f.write(report)
         logger.info(f"Report saved to {output_file}")
     

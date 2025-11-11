@@ -120,14 +120,14 @@ def generate_html_report():
     # Save report
     report_path = Path('data/report.html')
     report_path.parent.mkdir(exist_ok=True)
-    with open(report_path, 'w') as f:
+    with open(report_path, 'w', encoding='utf-8') as f:
         f.write(html)
     
     print(f"✅ HTML report saved to {report_path}")
     
     # Also save JSON stats
     stats_path = Path('data/stats.json')
-    with open(stats_path, 'w') as f:
+    with open(stats_path, 'w', encoding='utf-8') as f:
         json.dump({
             'generated_at': datetime.now().isoformat(),
             'total_pnl': stats['total_pnl'],

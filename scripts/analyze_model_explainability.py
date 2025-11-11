@@ -83,7 +83,7 @@ def load_data_and_features(data_path, metadata_path):
     feature_names_list = []
     
     try:
-        with open(metadata_path, 'r') as f:
+        with open(metadata_path, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
         
         # JSON dosyasında doğrulanan anahtar 'selected_features'

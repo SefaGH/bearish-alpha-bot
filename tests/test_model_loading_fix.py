@@ -20,7 +20,7 @@ class TestModelLoadingFix:
         """Verify config.example.yaml has all required ML keys."""
         config_path = Path(__file__).parent.parent / "config" / "config.example.yaml"
         
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         ml_config = config.get('ml', {})
@@ -46,7 +46,7 @@ class TestModelLoadingFix:
         """Verify model_params are still present."""
         config_path = Path(__file__).parent.parent / "config" / "config.example.yaml"
         
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         ml_config = config.get('ml', {})
@@ -69,7 +69,7 @@ class TestModelLoadingFix:
         """Verify prediction.timeframes is present."""
         config_path = Path(__file__).parent.parent / "config" / "config.example.yaml"
         
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         ml_config = config.get('ml', {})
@@ -116,7 +116,7 @@ class TestModelLoadingFix:
         """
         config_path = Path(__file__).parent.parent / "config" / "config.example.yaml"
         
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         ml_config = config.get('ml', {})

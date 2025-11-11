@@ -45,7 +45,7 @@ def load_best_hyperparameters():
     latest_file = max(tuning_files, key=lambda p: p.stat().st_mtime)
     print(f"✅ Loading hyperparameters from: {latest_file}")
     
-    with open(latest_file, 'r') as f:
+    with open(latest_file, 'r', encoding='utf-8') as f:
         results = json.load(f)
     
     return results['best_params'], results
@@ -353,7 +353,7 @@ def save_model_torchscript(model, params, metrics, metadata):
     
     # Save metadata
     metadata_path = METRICS_OUTPUT_DIR / f'metadata_{timestamp}.json'
-    with open(metadata_path, 'w') as f:
+    with open(metadata_path, 'w', encoding='utf-8') as f:
         json.dump({
             'hyperparameters': params,
             'test_metrics': metrics,
@@ -365,7 +365,7 @@ def save_model_torchscript(model, params, metrics, metadata):
     
     # Also save as "latest" metadata
     latest_metadata_path = METRICS_OUTPUT_DIR / 'metadata_latest.json'
-    with open(latest_metadata_path, 'w') as f:
+    with open(latest_metadata_path, 'w', encoding='utf-8') as f:
         json.dump({
             'hyperparameters': params,
             'test_metrics': metrics,

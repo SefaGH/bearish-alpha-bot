@@ -22,7 +22,7 @@ try:
     from torch.nn import functional as F
     from scripts.safe_torch_load import safe_torch_load # 'safe_torch_load'u kullanıyoruz
 except Exception as e:
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": str(e), "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (import error)")
     sys.exit(0)
@@ -35,7 +35,7 @@ model_path = os.environ.get("MODEL_TO_USE", "diagnostics/inst_model.pth")
 model_class_import = os.environ.get("MODEL_CLASS_IMPORT", None) # safe_torch_load için gerekli
 
 if not os.path.exists(model_path):
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": "inst_model.pth not found"}, f, indent=2)
     print(f"Wrote {OUT} (model not found)")
     sys.exit(0)
@@ -43,7 +43,7 @@ if not os.path.exists(model_path):
 try:
     model = safe_torch_load(model_path, model_class_import=model_class_import, map_location="cpu")
 except Exception as e:
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": "safe_torch_load failed: " + str(e), "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (load error)")
     sys.exit(0)
@@ -97,7 +97,7 @@ def model_forward_logits(x_tensor):
 # state_size'ı oku (veri kesmek için)
 expected_state_size = None
 try:
-    with open("diagnostics/inferred_state_size.txt", "r") as f:
+    with open("diagnostics/inferred_state_size.txt", 'r', encoding='utf-8') as f:
         expected_state_size = int(f.read().strip())
     print(f"Read expected state_size: {expected_state_size}")
 except Exception as e:
@@ -124,7 +124,7 @@ else:
     X_raw = np.random.randn(5, state_size_to_use)
 
 if X_raw is None or X_raw.size == 0:
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": "No sample data (X_raw) could be loaded or generated."}, f, indent=2)
     print(f"Wrote {OUT} (no sample data)")
     sys.exit(0)
@@ -159,6 +159,6 @@ for k, X in variants.items():
         entry["trace"] = traceback.format_exc()[:2000]
     res["variants"][k] = entry
 
-with open(OUT, "w") as f:
+with open(OUT, 'w', encoding='utf-8') as f:
     json.dump(res, f, indent=2, default=str)
 print("Wrote", OUT)

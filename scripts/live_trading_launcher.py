@@ -836,7 +836,7 @@ class HealthMonitor:
             }
             
             # Write to file
-            with open(self.health_log_path, 'w') as f:
+            with open(self.health_log_path, 'w', encoding='utf-8') as f:
                 json.dump(report, f, indent=2, default=str)
             
             if final:
@@ -2464,7 +2464,7 @@ class LiveTradingLauncher:
             signal_count = 0
             trade_count = 0
             
-            with open(log_filename, 'r') as f:
+            with open(log_filename, 'r', encoding='utf-8') as f:
                 for line in f:
                     if 'ERROR' in line:
                         error_count += 1
@@ -2900,7 +2900,7 @@ if __name__ == '__main__':
         print("="*80, file=sys.stderr)
         
         # Dosyaya hatayı yaz
-        with open(error_log_path, "w") as f:
+        with open(error_log_path, 'w', encoding='utf-8') as f:
             f.write(f"Timestamp: {datetime.now(timezone.utc).isoformat()}\n")
             f.write("="*80 + "\n")
             f.write("A critical, unhandled error occurred in the launcher:\n")

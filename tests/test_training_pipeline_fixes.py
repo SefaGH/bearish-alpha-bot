@@ -179,7 +179,7 @@ class TestMarketDataPipelineFix:
         if not train_script_path.exists():
             pytest.skip("train_all_models.py not found")
         
-        with open(train_script_path, 'r') as f:
+        with open(train_script_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
         assert 'from src.core.market_data_pipeline import MarketDataPipeline' in content, \
@@ -196,7 +196,7 @@ class TestDiagnoseScriptTimeframes:
         if not diagnose_script_path.exists():
             pytest.skip("diagnose_training_data.py not found")
         
-        with open(diagnose_script_path, 'r') as f:
+        with open(diagnose_script_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
         # Check that uppercase timeframes are not used

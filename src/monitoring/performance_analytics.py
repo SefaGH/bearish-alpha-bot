@@ -260,7 +260,7 @@ class PerformanceAnalytics:
         # Add timestamp
         report['generated_at'] = datetime.now().isoformat()
         
-        with open(report_path, 'w') as f:
+        with open(report_path, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2)
         
         logger.info(f"Performance report saved to {report_path}")
@@ -280,7 +280,7 @@ class PerformanceAnalytics:
         if not report_path.exists():
             return None
         
-        with open(report_path, 'r') as f:
+        with open(report_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     
     def calculate_rolling_metrics(self, trades: List[Dict], 

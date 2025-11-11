@@ -15,7 +15,7 @@ try:
     import numpy as np
     from scripts.safe_torch_load import safe_torch_load # 'safe_torch_load'u kullan
 except Exception as e:
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": str(e), "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (import error)")
     sys.exit(0)
@@ -25,7 +25,7 @@ cp = os.environ.get("ORIGINAL_MODEL_PATH", "data/models/rl_agent_final.pth")
 model_class_import = os.environ.get("MODEL_CLASS_IMPORT", None) # safe_torch_load için gerekli
 
 if not os.path.exists(cp):
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": "checkpoint not found: " + cp}, f, indent=2)
     print(f"Wrote {OUT} (checkpoint not found)")
     sys.exit(0)
@@ -33,7 +33,7 @@ if not os.path.exists(cp):
 try:
     ck = safe_torch_load(cp, model_class_import=model_class_import)
 except Exception as e:
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": f"safe_torch_load failed: {e}", "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (load error)")
     sys.exit(0)
@@ -64,6 +64,6 @@ if isinstance(ck, dict) and "training_history" in ck:
 else:
     res["training_history_summary"] = "no training_history key found"
 
-with open(OUT, "w") as f:
+with open(OUT, 'w', encoding='utf-8') as f:
     json.dump(res, f, indent=2, default=str) # default=str eklendi
 print("Wrote", OUT)

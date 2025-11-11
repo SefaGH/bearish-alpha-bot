@@ -146,7 +146,7 @@ def verify_market_data_pipeline_import():
         print("  ⚠️  train_all_models.py not found")
         return False
     
-    with open(train_script, 'r') as f:
+    with open(train_script, 'r', encoding='utf-8') as f:
         content = f.read()
     
     # Verify import exists
@@ -179,7 +179,7 @@ def verify_diagnose_script_changes():
         print("  ⚠️  diagnose_training_data.py not found")
         return False
     
-    with open(diagnose_script, 'r') as f:
+    with open(diagnose_script, 'r', encoding='utf-8') as f:
         content = f.read()
     
     # Check for uppercase timeframes (should not exist)

@@ -223,7 +223,7 @@ class TestIssue106ConfigurationLogging:
     def test_print_configuration_summary_exists(self):
         """Test that _print_configuration_summary method exists in source"""
         # Read the launcher file to check methods exist
-        with open('scripts/live_trading_launcher.py', 'r') as f:
+        with open('scripts/live_trading_launcher.py', 'r', encoding='utf-8') as f:
             content = f.read()
         
         assert 'def _print_configuration_summary(self):' in content
@@ -234,7 +234,7 @@ class TestIssue106ConfigurationLogging:
     def test_generate_post_session_analysis_exists(self):
         """Test that _generate_post_session_analysis method exists in source"""
         # Read the launcher file to check methods exist
-        with open('scripts/live_trading_launcher.py', 'r') as f:
+        with open('scripts/live_trading_launcher.py', 'r', encoding='utf-8') as f:
             content = f.read()
         
         assert 'def _generate_post_session_analysis(self' in content

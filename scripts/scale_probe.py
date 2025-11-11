@@ -18,7 +18,7 @@ try:
     from torch.nn.functional import softmax
     from scripts.safe_torch_load import safe_torch_load # 'safe_torch_load'u kullan
 except Exception as e:
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": str(e), "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (import error)")
     sys.exit(0)
@@ -31,7 +31,7 @@ multipliers = [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0]
 res = {"model_path": MODEL_PATH, "csv": CSV, "results": {}}
 
 if not os.path.exists(MODEL_PATH):
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": f"model not found: {MODEL_PATH}"}, f, indent=2)
     print(f"Wrote {OUT} (model not found)")
     sys.exit(0)
@@ -39,7 +39,7 @@ if not os.path.exists(MODEL_PATH):
 try:
     m = safe_torch_load(MODEL_PATH, model_class_import=MODEL_CLASS_IMPORT, map_location="cpu")
 except Exception as e:
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": f"safe_torch_load failed: {e}", "trace": traceback.format_exc()}, f, indent=2)
     print(f"Wrote {OUT} (load error)")
     sys.exit(0)
@@ -50,7 +50,7 @@ net = getattr(m, "q_network", m)
 # state_size'ı oku (veri kesmek için)
 expected_state_size = None
 try:
-    with open("diagnostics/inferred_state_size.txt", "r") as f:
+    with open("diagnostics/inferred_state_size.txt", 'r', encoding='utf-8') as f:
         expected_state_size = int(f.read().strip())
     print(f"Read expected state_size: {expected_state_size}")
 except Exception as e:
@@ -75,7 +75,7 @@ else:
     X0 = np.random.randn(5, state_size_to_use)
 
 if X0 is None or X0.size == 0:
-    with open(OUT, "w") as f:
+    with open(OUT, 'w', encoding='utf-8') as f:
         json.dump({"error": "No sample data (X0) could be loaded or generated."}, f, indent=2)
     print(f"Wrote {OUT} (no sample data)")
     sys.exit(0)
@@ -106,6 +106,6 @@ for k in multipliers:
     except Exception as e:
         res["results"][str(k)] = {"error": str(e), "trace": traceback.format_exc()[:2000]}
 
-with open(OUT, "w") as f:
+with open(OUT, 'w', encoding='utf-8') as f:
     json.dump(res, f, indent=2, default=str) # default=str eklendi
 print("Wrote", OUT)

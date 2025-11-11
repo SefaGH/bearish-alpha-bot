@@ -18,7 +18,7 @@ from core.strategy_coordinator import StrategyCoordinator
 def load_config():
     """Load config from config.example.yaml."""
     config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'config.example.yaml')
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
 
