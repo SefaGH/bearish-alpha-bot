@@ -661,6 +661,9 @@ class FeatureEngineeringPipeline:
         # Debug log ekle
         logger.info(f"FeatureEngineeringPipeline initialized with config: {list(self.config.keys())}")
         
+        # GEMMA integration: Check if GEMMA mode is enabled
+        self.gemma_enabled = self.config.get('ml', {}).get('gemma', {}).get('enabled', False)
+        
         # Determine if we should use advanced features (default: True for new training)
         self.use_advanced_features = self.config.get('use_advanced_features', True)
         # Determine if we should align to legacy feature set (default: False for new models)
@@ -699,7 +702,8 @@ class FeatureEngineeringPipeline:
                         volume_data: Optional[pd.DataFrame] = None,
                         orderbook_data: Optional[pd.DataFrame] = None) -> pd.DataFrame:
         """
-        Extract comprehensive feature set for ML models.
+        Main feature extraction method - acts as a dispatcher.
+        Returns 87 features if GEMMA enabled, otherwise uses legacy feature extraction.
         
         Args:
             price_data: DataFrame with OHLCV data and indicators
@@ -707,55 +711,17 @@ class FeatureEngineeringPipeline:
             orderbook_data: Optional order book data
             
         Returns:
-            DataFrame with all extracted features
+            DataFrame with extracted features (87 for GEMMA, or legacy count)
         """
-        features = {}
-        
         try:
-            # Technical indicator features
-            features['technical'] = self.technical_indicators.compute(price_data)
-            
-            # Market microstructure features
-            features['microstructure'] = self.market_microstructure.compute(
-                price_data, volume_data, orderbook_data
-            )
-            
-            # Volatility regime features
-            features['volatility'] = self._compute_volatility_features(price_data)
-            
-            # Momentum and trend features
-            features['momentum'] = self._compute_momentum_features(price_data)
-            
-            # Combine all features
-            combined_features = self._combine_features(features)
-            
-            # Extract and merge advanced features if enabled
-            if self.use_advanced_features:
-                logger.info("Extracting advanced features...")
-                advanced_features = self.extract_advanced_features(price_data)
-                if not advanced_features.empty:
-                    combined_features = pd.concat([combined_features, advanced_features], axis=1)
-            
-            # Apply alignment for legacy compatibility if needed
-            if self.use_legacy_alignment:
-                # ==================== KESİN ÇÖZÜM ADIM 3: FİNAL HİZALAMA ====================
-                # Özellikleri, scaler'ın beklediği kesin formata getir.
-                finalized_features = self.align_and_finalize_features(combined_features)
-                # ==========================================================================
+            if self.gemma_enabled:
+                logger.info("🧬 GEMMA mode enabled - extracting 87 features")
+                return self.extract_gemma_features(price_data)
             else:
-                # Use all features without alignment (for new model training)
-                finalized_features = combined_features
-
-            finalized_features.replace([np.inf, -np.inf], np.nan, inplace=True)
-            # NOT: Buradaki dropna(), tahmin sırasında en son satırı kaybedebileceği için
-            # regime_predictor içinde yapılması daha güvenlidir. Bu yüzden buradan kaldırıyoruz.
-            # finalized_features.dropna(inplace=True)
-
-            logger.info(f"Extracted and aligned {len(finalized_features.columns)} features from price data")
-            return finalized_features
-            
+                logger.info("📦 Legacy mode - extracting standard features")
+                return self.extract_legacy_features(price_data, volume_data, orderbook_data)
         except Exception as e:
-            logger.error(f"Error in feature extraction pipeline: {e}", exc_info=True)
+            logger.error(f"Error in feature extraction dispatcher: {e}", exc_info=True)
             return pd.DataFrame()
 
     def extract_advanced_features(self, price_data: pd.DataFrame) -> pd.DataFrame:
@@ -846,6 +812,340 @@ class FeatureEngineeringPipeline:
         final_df = aligned_df.reindex(columns=self.FEATURE_COLUMNS)
         
         return final_df
+    
+    # ==================== GEMMA FEATURE ENGINEERING METHODS ====================
+    
+    def calculate_rsi(self, series: pd.Series, period: int) -> pd.Series:
+        """Calculate RSI indicator."""
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / (loss + 1e-10)
+        return 100 - (100 / (1 + rs))
+    
+    def calculate_stochastic(self, df: pd.DataFrame, period: int) -> Tuple[pd.Series, pd.Series]:
+        """Calculate Stochastic oscillator."""
+        low_min = df['low'].rolling(window=period).min()
+        high_max = df['high'].rolling(window=period).max()
+        stoch_k = 100 * (df['close'] - low_min) / (high_max - low_min + 1e-10)
+        stoch_d = stoch_k.rolling(window=3).mean()
+        return stoch_k, stoch_d
+    
+    def calculate_williams_r(self, df: pd.DataFrame, period: int) -> pd.Series:
+        """Calculate Williams %R indicator."""
+        high_max = df['high'].rolling(window=period).max()
+        low_min = df['low'].rolling(window=period).min()
+        return -100 * (high_max - df['close']) / (high_max - low_min + 1e-10)
+    
+    def calculate_obv(self, df: pd.DataFrame, period: int) -> pd.Series:
+        """Calculate On-Balance Volume."""
+        obv = (np.sign(df['close'].diff()) * df['volume']).fillna(0).cumsum()
+        return obv.rolling(window=period).mean()
+    
+    def calculate_mfi(self, df: pd.DataFrame, period: int) -> pd.Series:
+        """Calculate Money Flow Index."""
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        money_flow = typical_price * df['volume']
+        positive_flow = money_flow.where(typical_price > typical_price.shift(1), 0).rolling(window=period).sum()
+        negative_flow = money_flow.where(typical_price < typical_price.shift(1), 0).rolling(window=period).sum()
+        mfi = 100 - (100 / (1 + positive_flow / (negative_flow + 1e-10)))
+        return mfi
+    
+    def calculate_vwap(self, df: pd.DataFrame, period: int) -> pd.Series:
+        """Calculate Volume Weighted Average Price."""
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        return (typical_price * df['volume']).rolling(window=period).sum() / df['volume'].rolling(window=period).sum()
+    
+    def calculate_bollinger_bands(self, series: pd.Series, period: int) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        """Calculate Bollinger Bands."""
+        middle = series.rolling(window=period).mean()
+        std = series.rolling(window=period).std()
+        upper = middle + (2 * std)
+        lower = middle - (2 * std)
+        return upper, middle, lower
+    
+    def calculate_atr(self, df: pd.DataFrame, period: int) -> pd.Series:
+        """Calculate Average True Range."""
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['close'].shift())
+        low_close = np.abs(df['low'] - df['close'].shift())
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        return tr.rolling(window=period).mean()
+    
+    def calculate_keltner_channels(self, df: pd.DataFrame, period: int) -> Tuple[pd.Series, pd.Series]:
+        """Calculate Keltner Channels."""
+        ema = df['close'].ewm(span=period).mean()
+        atr = self.calculate_atr(df, period)
+        upper = ema + (2 * atr)
+        lower = ema - (2 * atr)
+        return upper, lower
+    
+    def calculate_donchian(self, df: pd.DataFrame, period: int) -> pd.Series:
+        """Calculate Donchian Channel midpoint."""
+        high_max = df['high'].rolling(window=period).max()
+        low_min = df['low'].rolling(window=period).min()
+        return (high_max + low_min) / 2
+    
+    def calculate_macd(self, series: pd.Series) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        """Calculate MACD indicator."""
+        ema_fast = series.ewm(span=12).mean()
+        ema_slow = series.ewm(span=26).mean()
+        macd = ema_fast - ema_slow
+        signal = macd.ewm(span=9).mean()
+        histogram = macd - signal
+        return macd, signal, histogram
+    
+    def calculate_adx(self, df: pd.DataFrame, period: int) -> pd.Series:
+        """Calculate ADX indicator."""
+        plus_dm = df['high'].diff()
+        minus_dm = -df['low'].diff()
+        plus_dm[plus_dm < 0] = 0
+        minus_dm[minus_dm < 0] = 0
+        
+        tr = self.calculate_atr(df, 1)
+        plus_di = 100 * (plus_dm.rolling(window=period).mean() / (tr.rolling(window=period).mean() + 1e-10))
+        minus_di = 100 * (minus_dm.rolling(window=period).mean() / (tr.rolling(window=period).mean() + 1e-10))
+        
+        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
+        adx = dx.rolling(window=period).mean()
+        return adx
+    
+    def calculate_plus_di(self, df: pd.DataFrame, period: int) -> pd.Series:
+        """Calculate +DI indicator."""
+        plus_dm = df['high'].diff()
+        plus_dm[plus_dm < 0] = 0
+        tr = self.calculate_atr(df, 1)
+        return 100 * (plus_dm.rolling(window=period).mean() / (tr.rolling(window=period).mean() + 1e-10))
+    
+    def calculate_minus_di(self, df: pd.DataFrame, period: int) -> pd.Series:
+        """Calculate -DI indicator."""
+        minus_dm = -df['low'].diff()
+        minus_dm[minus_dm < 0] = 0
+        tr = self.calculate_atr(df, 1)
+        return 100 * (minus_dm.rolling(window=period).mean() / (tr.rolling(window=period).mean() + 1e-10))
+    
+    def calculate_cci(self, df: pd.DataFrame, period: int) -> pd.Series:
+        """Calculate Commodity Channel Index."""
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        sma = typical_price.rolling(window=period).mean()
+        mad = (typical_price - sma).abs().rolling(window=period).mean()
+        return (typical_price - sma) / (0.015 * mad + 1e-10)
+    
+    def calculate_roc(self, series: pd.Series, period: int) -> pd.Series:
+        """Calculate Rate of Change."""
+        return series.pct_change(period) * 100
+    
+    def calculate_momentum(self, series: pd.Series, period: int) -> pd.Series:
+        """Calculate Momentum."""
+        return series.diff(period)
+    
+    def calculate_trix(self, series: pd.Series, period: int) -> pd.Series:
+        """Calculate TRIX indicator."""
+        ema1 = series.ewm(span=period).mean()
+        ema2 = ema1.ewm(span=period).mean()
+        ema3 = ema2.ewm(span=period).mean()
+        return ema3.pct_change() * 100
+    
+    def calculate_dpo(self, series: pd.Series, period: int) -> pd.Series:
+        """Calculate Detrended Price Oscillator."""
+        sma = series.rolling(window=period).mean()
+        return series.shift(int(period/2) + 1) - sma
+    
+    def calculate_vortex(self, df: pd.DataFrame, period: int) -> pd.Series:
+        """Calculate Vortex Indicator (positive)."""
+        vm_plus = np.abs(df['high'] - df['low'].shift(1))
+        vm_minus = np.abs(df['low'] - df['high'].shift(1))
+        tr = self.calculate_atr(df, 1)
+        vi_plus = vm_plus.rolling(window=period).sum() / (tr.rolling(window=period).sum() + 1e-10)
+        return vi_plus
+    
+    def calculate_support_resistance(self, df: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
+        """Calculate support and resistance levels."""
+        support = df['low'].rolling(window=20).min()
+        resistance = df['high'].rolling(window=20).max()
+        return support, resistance
+    
+    def calculate_pivot_points(self, df: pd.DataFrame) -> Dict[str, pd.Series]:
+        """Calculate pivot points."""
+        pivot = (df['high'] + df['low'] + df['close']) / 3
+        r1 = 2 * pivot - df['low']
+        s1 = 2 * pivot - df['high']
+        return {'pivot': pivot, 'r1': r1, 's1': s1}
+    
+    def calculate_fibonacci_levels(self, df: pd.DataFrame) -> Dict[str, pd.Series]:
+        """Calculate Fibonacci retracement levels."""
+        high_20 = df['high'].rolling(window=20).max()
+        low_20 = df['low'].rolling(window=20).min()
+        diff = high_20 - low_20
+        return {
+            '38.2': high_20 - (0.382 * diff),
+            '50.0': high_20 - (0.5 * diff),
+            '61.8': high_20 - (0.618 * diff)
+        }
+    
+    def calculate_trend_strength(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate trend strength."""
+        ema_20 = df['close'].ewm(span=20).mean()
+        ema_50 = df['close'].ewm(span=50).mean()
+        return (ema_20 - ema_50) / (ema_50 + 1e-10)
+    
+    def calculate_market_phase(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate market phase (0=accumulation, 1=uptrend, 2=distribution, 3=downtrend)."""
+        rsi = self.calculate_rsi(df['close'], 14)
+        adx = self.calculate_adx(df, 14)
+        
+        # Simple phase detection based on RSI and ADX
+        phase = pd.Series(0, index=df.index)
+        phase[(rsi < 50) & (adx < 25)] = 0  # Accumulation
+        phase[(rsi >= 50) & (adx >= 25)] = 1  # Uptrend
+        phase[(rsi >= 50) & (adx < 25)] = 2  # Distribution
+        phase[(rsi < 50) & (adx >= 25)] = 3  # Downtrend
+        
+        return phase
+
+    def extract_gemma_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Extract 87 features for GEMMA pipeline.
+        Maintains compatibility with existing 42-feature system.
+        
+        Args:
+            df: DataFrame with OHLCV data
+            
+        Returns:
+            DataFrame with 87 features for GEMMA
+        """
+        features = pd.DataFrame(index=df.index)
+
+        # Price-based features (30)
+        for period in [5, 10, 15, 20, 30]:
+            features[f'sma_{period}'] = df['close'].rolling(period).mean()
+            features[f'ema_{period}'] = df['close'].ewm(span=period).mean()
+            features[f'rsi_{period}'] = self.calculate_rsi(df['close'], period)
+            stoch_k, stoch_d = self.calculate_stochastic(df, period)
+            features[f'stoch_k_{period}'] = stoch_k
+            features[f'stoch_d_{period}'] = stoch_d
+            features[f'williams_r_{period}'] = self.calculate_williams_r(df, period)
+
+        # Volume-based features (15)
+        for period in [5, 10, 15]:
+            features[f'volume_sma_{period}'] = df['volume'].rolling(period).mean()
+            features[f'volume_ratio_{period}'] = df['volume'] / (df['volume'].rolling(period).mean() + 1e-10)
+            features[f'obv_{period}'] = self.calculate_obv(df, period)
+            features[f'mfi_{period}'] = self.calculate_mfi(df, period)
+            features[f'vwap_{period}'] = self.calculate_vwap(df, period)
+
+        # Volatility features (20)
+        for period in [10, 20]:
+            bb_upper, bb_middle, bb_lower = self.calculate_bollinger_bands(df['close'], period)
+            features[f'bb_upper_{period}'] = bb_upper
+            features[f'bb_middle_{period}'] = bb_middle
+            features[f'bb_lower_{period}'] = bb_lower
+            features[f'bb_width_{period}'] = bb_upper - bb_lower
+            features[f'bb_position_{period}'] = (df['close'] - bb_lower) / (bb_upper - bb_lower + 1e-10)
+            features[f'atr_{period}'] = self.calculate_atr(df, period)
+            features[f'volatility_{period}'] = df['close'].rolling(period).std()
+            keltner_upper, keltner_lower = self.calculate_keltner_channels(df, period)
+            features[f'keltner_upper_{period}'] = keltner_upper
+            features[f'keltner_lower_{period}'] = keltner_lower
+            features[f'donchian_{period}'] = self.calculate_donchian(df, period)
+
+        # Trend features (12)
+        macd, signal, histogram = self.calculate_macd(df['close'])
+        features['macd_line'] = macd
+        features['macd_signal'] = signal
+        features['macd_histogram'] = histogram
+        features['adx_14'] = self.calculate_adx(df, 14)
+        features['plus_di_14'] = self.calculate_plus_di(df, 14)
+        features['minus_di_14'] = self.calculate_minus_di(df, 14)
+        features['cci_20'] = self.calculate_cci(df, 20)
+        features['roc_10'] = self.calculate_roc(df['close'], 10)
+        features['momentum_10'] = self.calculate_momentum(df['close'], 10)
+        features['trix_15'] = self.calculate_trix(df['close'], 15)
+        features['dpo_20'] = self.calculate_dpo(df['close'], 20)
+        features['vortex_pos_14'] = self.calculate_vortex(df, 14)
+
+        # Market structure features (10)
+        support, resistance = self.calculate_support_resistance(df)
+        features['support_distance'] = (df['close'] - support) / (df['close'] + 1e-10)
+        features['resistance_distance'] = (resistance - df['close']) / (df['close'] + 1e-10)
+        pivot = self.calculate_pivot_points(df)
+        features['pivot_point'] = pivot['pivot']
+        features['r1_level'] = pivot['r1']
+        features['s1_level'] = pivot['s1']
+        fib_levels = self.calculate_fibonacci_levels(df)
+        features['fib_38'] = fib_levels['38.2']
+        features['fib_50'] = fib_levels['50.0']
+        features['fib_62'] = fib_levels['61.8']
+        features['trend_strength'] = self.calculate_trend_strength(df)
+        features['market_phase'] = self.calculate_market_phase(df)
+
+        # Fill NaN values with forward fill, then zero
+        features = features.fillna(method='ffill').fillna(0)
+        
+        # Validate feature count
+        assert features.shape[1] == 87, f"Expected 87 features, got {features.shape[1]}"
+        
+        logger.info(f"✅ Extracted {features.shape[1]} GEMMA features")
+        return features
+    
+    def extract_legacy_features(self, price_data: pd.DataFrame, 
+                               volume_data: Optional[pd.DataFrame] = None,
+                               orderbook_data: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+        """
+        Extract legacy 42-feature set (existing implementation).
+        This is the original extract_features method behavior.
+        
+        Args:
+            price_data: DataFrame with OHLCV data and indicators
+            volume_data: Optional volume-specific data
+            orderbook_data: Optional order book data
+            
+        Returns:
+            DataFrame with legacy features
+        """
+        features = {}
+        
+        try:
+            # Technical indicator features
+            features['technical'] = self.technical_indicators.compute(price_data)
+            
+            # Market microstructure features
+            features['microstructure'] = self.market_microstructure.compute(
+                price_data, volume_data, orderbook_data
+            )
+            
+            # Volatility regime features
+            features['volatility'] = self._compute_volatility_features(price_data)
+            
+            # Momentum and trend features
+            features['momentum'] = self._compute_momentum_features(price_data)
+            
+            # Combine all features
+            combined_features = self._combine_features(features)
+            
+            # Extract and merge advanced features if enabled
+            if self.use_advanced_features:
+                logger.info("Extracting advanced features...")
+                advanced_features = self.extract_advanced_features(price_data)
+                if not advanced_features.empty:
+                    combined_features = pd.concat([combined_features, advanced_features], axis=1)
+            
+            # Apply alignment for legacy compatibility if needed
+            if self.use_legacy_alignment:
+                finalized_features = self.align_and_finalize_features(combined_features)
+            else:
+                finalized_features = combined_features
+
+            finalized_features.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+            logger.info(f"Extracted {len(finalized_features.columns)} legacy features from price data")
+            return finalized_features
+            
+        except Exception as e:
+            logger.error(f"Error in legacy feature extraction: {e}", exc_info=True)
+            return pd.DataFrame()
+    
+    # ==================== END OF GEMMA METHODS ====================
     
     def _compute_volatility_features(self, price_data: pd.DataFrame) -> pd.DataFrame:
         """
