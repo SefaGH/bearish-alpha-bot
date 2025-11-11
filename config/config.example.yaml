@@ -413,4 +413,32 @@ ml:
       ml_price: 0.3                   # Override: SCORE_WEIGHT_ML (ML price prediction confidence)
       regime: 0.2                     # Override: SCORE_WEIGHT_REGIME (Regime prediction weight)
       risk_reward: 0.2                # Override: SCORE_WEIGHT_RR (Risk/reward ratio quality)
+
+  # ----------------------------------------------------------------------------
+  # F) GEMMA MODEL - Advanced Price Movement Prediction (Phase 3)
+  # Deep learning model using 82 engineered features for price direction prediction
+  # ----------------------------------------------------------------------------
+  gemma:
+    enabled: false                    # Override: ML__GEMMA__ENABLED
+    feature_set: 'gemma_v1'           # Override: ML__GEMMA__FEATURE_SET (Phase 2 feature set)
+    
+    # Model Architecture
+    architecture:
+      input_size: 82                  # Override: ML__GEMMA__ARCHITECTURE__INPUT_SIZE (82 selected features)
+      hidden_size: 32                 # Override: ML__GEMMA__ARCHITECTURE__HIDDEN_SIZE
+      num_layers: 2                   # Override: ML__GEMMA__ARCHITECTURE__NUM_LAYERS
+      dropout: 0.6                    # Override: ML__GEMMA__ARCHITECTURE__DROPOUT
+      num_classes: 3                  # Override: ML__GEMMA__ARCHITECTURE__NUM_CLASSES (bearish=0, neutral=1, bullish=2)
+    
+    # Training Parameters
+    training:
+      epochs: 50                      # Override: ML__GEMMA__TRAINING__EPOCHS
+      batch_size: 32                  # Override: ML__GEMMA__TRAINING__BATCH_SIZE
+      learning_rate: 0.001            # Override: ML__GEMMA__TRAINING__LEARNING_RATE
+      early_stopping_patience: 10     # Override: ML__GEMMA__TRAINING__EARLY_STOPPING_PATIENCE
+    
+    # Deployment Thresholds
+    thresholds:
+      deployment_accuracy: 0.78       # Override: ML__GEMMA__THRESHOLDS__DEPLOYMENT_ACCURACY
+      min_samples: 1000               # Override: ML__GEMMA__THRESHOLDS__MIN_SAMPLES
   
