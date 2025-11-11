@@ -8,7 +8,6 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypedDict
 
 try:  # Python 3.11+
     import tomllib
@@ -18,21 +17,7 @@ except ModuleNotFoundError:  # pragma: no cover
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORT_PATH = REPO_ROOT / "diagnostics" / "gemma_readiness_report.json"
 
-
-class CheckResult(TypedDict):
-    name: str
-    status: str
-    details: str
-
-
-class ReadinessReport(TypedDict):
-    generated_at: str
-    checks: list[CheckResult]
-    warnings: list[str]
-    errors: list[str]
-    migration_plan: list[str]
-
-report: ReadinessReport = {
+report: dict[str, object] = {
     "generated_at": datetime.now(timezone.utc).isoformat(),
     "checks": [],
     "warnings": [],
@@ -42,17 +27,17 @@ report: ReadinessReport = {
 
 
 def add_migration_item(message: str) -> None:
-    if message not in report["migration_plan"]:
-        report["migration_plan"].append(message)
+    entries = report["migration_plan"]  # type: ignore[assignment]
+    if isinstance(entries, list) and message not in entries:
+        entries.append(message)
 
 
 def record_check(name: str, status: str, details: str) -> None:
-    entry: CheckResult = {"name": name, "status": status, "details": details}
-    report["checks"].append(entry)
+    report["checks"].append({"name": name, "status": status, "details": details})  # type: ignore[assignment]
     if status == "fail":
-        report["errors"].append(details)
+        report["errors"].append(details)  # type: ignore[assignment]
     elif status == "warn":
-        report["warnings"].append(details)
+        report["warnings"].append(details)  # type: ignore[assignment]
 
 
 def check_repo_structure() -> None:
