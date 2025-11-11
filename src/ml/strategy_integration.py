@@ -535,7 +535,8 @@ class MLStrategyIntegrationManager:
         logger.warning(
             "ML Adapter not available. Returning original signal without enhancement."
         )
-        # normalize best-effort for consistent return
+        # Normalize best-effort for consistent return
+        # type: ignore needed because adapter could be None, but we check it conditionally
         norm = self.adapter._normalize_signal(base_signal) if self.adapter else {  # type: ignore[attr-defined]
             "signal": (base_signal.get("signal") if isinstance(base_signal, dict) else str(base_signal)),
             "strength": 0.0,
