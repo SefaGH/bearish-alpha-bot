@@ -43,3 +43,8 @@ markers = [
     "phase3: ML/AI features (Phase 3 - Advanced ML models)",
     "slow: Tests that take more than 5 seconds",
 ]
+
+[tool.ruff]
+exclude = [
+    "backups/**",
+]
