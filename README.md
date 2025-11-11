@@ -601,6 +601,45 @@ python src/main.py --live
 - 💻 Örnek: `examples/pipeline_mode_example.py`
 - 🧪 Test: `scripts/test_pipeline_integration.py`
 
+## ML Model Diagnostics
+
+### Running Baseline Diagnostics
+
+To generate diagnostic reports for the ML models:
+
+```bash
+python scripts/feature_engineer_and_run.py sample_data/test_samples_ohlcv.csv
+```
+
+This will create the following files in the `diagnostics/` directory:
+
+- **feature_engineered_samples.csv** - Processed features ready for model input
+- **feature_stats.json** - Statistical summary of features (NaN counts, distributions)
+- **scaler_apply_result.json** - Scaler transformation validation
+- **model_results.json** - Model inference results (entropy, probabilities)
+
+### Interpreting Diagnostics
+
+**Good Indicators:**
+- NaN counts < 1% of total cells
+- entropy_mean < 0.80 (lower is better)
+- Confidence scores > 0.60
+- `applied: "scaler.transform"` in scaler_apply_result.json
+
+**Warning Signs:**
+- High NaN ratios (>5%) after feature engineering
+- entropy_mean > 1.0 (indicates low model confidence)
+- Confidence scores consistently < 0.30
+- Scaler fallback to manual mean/scale
+
+### GitHub Actions Workflow
+
+The diagnostics workflow can be triggered:
+- Manually via workflow_dispatch
+- Automatically when test samples or feature engineering script changes
+
+View results in GitHub Actions artifacts (retained for 30 days).
+
 ## Test Etme
 
 Bot çalışır durumda mı kontrol etmek için:

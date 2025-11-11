@@ -1,8 +1,6 @@
-name: Manually and Scheduled Train ML Models
+name: Train Final Production Model (TorchScript)
 
 on:
-  schedule:
-    - cron: '0 5 * * 0'
   workflow_dispatch:
     inputs:
       log_level:
@@ -13,64 +11,548 @@ on:
         options:
           - INFO
           - DEBUG
+      symbol:
+        description: 'Trading Symbol'
+        required: true
+        default: 'BTC/USDT'
+        type: string
 
 jobs:
-  train-and-save-models:
+  train-final-model:
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: Check out repository code
         uses: actions/checkout@v4
-
-      # Python 3.11 ortamını kur
+      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip setuptools wheel
-
-      # Bağımlılıkları kur (artık 'pandas-ta-classic' ile sorunsuz çalışacak)
+      
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
 
-      - name: Run model training script
+      # =================================================================
+      # YENİ ADIM: ÖNCEKİ VERİ ÖNBELLEĞİNİ TEMİZLE
+      # =================================================================
+      - name: 🧹 Clean old data cache (Hygiene)
+        run: |
+          echo "Cleaning old data/cache/ directory..."
+          # Önbellek dizinini oluştur (varsa hata verme)
+          mkdir -p data/cache
+          # İçeriğini temizle (Basit silme komutu)
+          rm -rf data/cache/*
+          echo "✅ Data cache cleaned."
+      
+      # =================================================================
+      # STEP 1: Prepare Training Data with ALL FEATURES
+      # =================================================================
+      - name: 📊 Step 1/5 - Prepare training data
+        run: |
+          echo "======================================================================"
+          echo "📊 PREPARING TRAINING DATA WITH AUTOMATIC FEATURE SELECTION"
+          echo "======================================================================"
+          echo ""
+          echo "Configuration:"
+          echo "  - Symbol: ${{ inputs.symbol }}"
+          echo "  - Feature extraction: 87 features"
+          echo "  - Data cleaning: prepare_for_training (mode='auto')"
+          echo "  - Alignment: Feature-label alignment fixed"
+          echo ""
+          
+          python scripts/prepare_training_data.py --symbol "${{ inputs.symbol }}"
+          # ✅ REMOVED: --use-all-features (no longer exists)
+          
+          echo ""
+          echo "✅ Training data prepared (87 features, will be selected to 82)"
         env:
           ML_ENABLED: "true"
-        run: python scripts/train_all_models.py
-
-      # List model directory contents before archiving
-      - name: List trained models
+      
+      # =================================================================
+      # STEP 2: Feature Analysis & Selection (Lenient Thresholds)
+      # =================================================================
+      - name: 🎯 Step 2/5 - Feature analysis & selection
         run: |
-          echo "=== Trained Models ==="
-          ls -lah data/models/
+          echo "======================================================================"
+          echo "🎯 FEATURE ANALYSIS & SELECTION"
+          echo "======================================================================"
           echo ""
-          echo "=== Training Logs ==="
-          ls -lah logs/
+          echo "Using lenient thresholds to match tuning configuration..."
+          echo "  - Variance threshold: 0.00005"
+          echo "  - Correlation threshold: 0.005"
+          echo ""
+          
+          # First analyze
+          python scripts/analyze_features.py --analyze
+          
+          echo ""
+          echo "Running feature selection..."
+          
+          # Then select with lenient thresholds
+          python scripts/analyze_features.py \
+            --select \
+            --variance-threshold 0.00005 \
+            --correlation-threshold 0.005
+          
+          echo ""
+          echo "✅ Feature selection completed"
+          
+          # Verify selection results (FIXED)
+          if [ -f "data/cache/feature_selection_mask.npy" ]; then
+            SELECTED=$(python3 -c "import numpy as np; mask = np.load('data/cache/feature_selection_mask.npy'); print(f'{mask.sum()}/{len(mask)}')")
+            echo "✅ Selected features: $SELECTED"
+          fi
+        env:
+          ML_ENABLED: "true"
+      
+      # =================================================================
+      # STEP 3: Re-prepare with Selected Features (ALL FEATURES ENABLED)
+      # =================================================================
+      - name: 🔄 Step 3/5 - Re-prepare data with selected features
+        run: |
+          echo "======================================================================"
+          echo "🔄 RE-PREPARING DATA WITH SELECTED FEATURES"
+          echo "======================================================================"
+          echo ""
+          echo "This will:"
+          echo "  1. Fetch fresh market data (5 timeframes)"
+          echo "  2. Extract all 87 features"
+          echo "  3. Clean and align (prepare_for_training)"
+          echo "  4. Apply feature selection mask (82 features)"
+          echo ""
+          
+          python scripts/prepare_training_data.py --symbol "${{ inputs.symbol }}"
+          # ✅ REMOVED: --use-all-features (no longer exists)
+          
+          echo ""
+          
+          # Verify final feature count (FIXED)
+          FINAL_FEATURES=$(python3 -c "import numpy as np; data = np.load('data/cache/BTC-USDT_training_data.npz'); print(data['X'].shape[1])")
+          
+          echo "✅ Data re-prepared"
+          echo "✅ Final feature count: $FINAL_FEATURES"
+          
+          # Check if matches tuning (should be ~82)
+          if [ "$FINAL_FEATURES" -ge 80 ] && [ "$FINAL_FEATURES" -le 85 ]; then
+            echo "✅ Feature count matches tuning configuration! (80-85 range)"
+          else
+            echo "⚠️  WARNING: Feature count ($FINAL_FEATURES) may not match tuning (expected ~82)"
+          fi
+        env:
+          ML_ENABLED: "true"
+      
+      # =================================================================
+      # STEP 4: Verify Tuning Results
+      # =================================================================
+      - name: ✅ Step 4/5 - Verify tuning results exist
+        run: |
+          echo "======================================================================"
+          echo "✅ VERIFYING TUNING RESULTS"
+          echo "======================================================================"
+          if [ ! -d "logs/tuning_results" ] || [ -z "$(ls -A logs/tuning_results)" ]; then
+            echo ""
+            echo "❌ ERROR: No tuning results found!"
+            echo ""
+            echo "Please run the 'Tune LSTM Model' workflow first:"
+            echo "  1. Go to Actions tab"
+            echo "  2. Select 'Tune LSTM Hyperparameters'"
+            echo "  3. Run workflow"
+            echo "  4. Wait for completion (30 trials, ~5 minutes)"
+            echo "  5. Then re-run this workflow"
+            echo ""
+            exit 1
+          fi
+          echo ""
+          echo "✅ Tuning results found:"
+          ls -lh logs/tuning_results/
+          echo ""
+          echo "Latest tuning result:"
+          ls -lt logs/tuning_results/ | head -2
+
+      # =================================================================
+      # 🚀 YENİ ADIM: Scaler'ı Manuel Test İçin Hazırla (Kopyala)
+      # =================================================================
+      - name: 📦 Ensure Production Scaler is Ready
+        run: |
+          SCALER_SOURCE="data/models/cache/scaler_production.joblib"
+          SCALER_DEST="data/cache/scaler_production.joblib"
+          
+          echo "Checking for scaler at source: $SCALER_SOURCE"
+          
+          # 1. Manuel olarak yüklenen dosyanın 'checkout' ile gelip gelmediğini kontrol et
+          if [ ! -f "$SCALER_SOURCE" ]; then
+            echo "❌ HATA: Manuel olarak yüklenen scaler dosyası $SCALER_SOURCE konumunda bulunamadı!"
+            echo "   Lütfen 'scaler_production.joblib' dosyasını projenizdeki 'data/models/cache/' klasörüne yüklediğinizden emin olun."
+            exit 1
+          fi
+          
+          echo "✅ Kaynak dosya bulundu. Hedef konuma kopyalanıyor: $SCALER_DEST"
+          
+          # 2. Dosyayı 'data/cache/' klasörüne kopyala
+          cp "$SCALER_SOURCE" "$SCALER_DEST"
+          
+          # 3. Kopyalamanın başarılı olduğunu doğrula
+          if [ -f "$SCALER_DEST" ]; then
+            echo "✅ Scaler başarıyla $SCALER_DEST konumuna kopyalandı."
+            ls -l "$SCALER_DEST"
+          else
+            echo "❌ HATA: Scaler kopyalanamadı!"
+            exit 1
+          fi
+      
+      # =================================================================
+      # STEP 5: Train Final Model with TorchScript Export
+      # =================================================================
+      - name: 🚀 Step 5/5 - Train final production model
+        run: |
+          echo "======================================================================"
+          echo "🚀 TRAINING FINAL PRODUCTION MODEL"
+          echo "======================================================================"
+          echo ""
+          echo "Configuration:"
+          echo "  - Export Format: TorchScript (.ptc)"
+          echo "  - Split Strategy: Stratified (0% shift)"
+          echo "  - Best Hyperparameters: From tuning results"
+          echo "  - Model Architecture: src/ml/models.py"
+          echo ""
+          python scripts/train_final_model.py
+        env:
+          ML_ENABLED: "true"
+      
+      # =================================================================
+      # VERIFICATION & REPORTING
+      # =================================================================
+      - name: 📋 List training outputs
+        run: |
+          echo "======================================================================"
+          echo "📋 TRAINING OUTPUTS"
+          echo "======================================================================"
+          echo ""
+          echo "=== Trained Models ==="
+          if [ -d "data/models/final" ]; then
+            ls -lah data/models/final/
+          else
+            echo "⚠️  No models directory found"
+          fi
+          echo ""
+          echo "=== Training Metrics ==="
+          if [ -d "logs/final_training" ]; then
+            ls -lah logs/final_training/
+          else
+            echo "⚠️  No metrics directory found"
+          fi
+          echo ""
+        if: always()
+      
+      - name: 📊 Display final metrics
+        run: |
+          echo "======================================================================"
+          echo "📊 FINAL MODEL METRICS"
+          echo "======================================================================"
+          python3 << 'EOF'
+          import json
+          from pathlib import Path
+          
+          try:
+              metadata_file = Path('logs/final_training/metadata_latest.json')
+              
+              if not metadata_file.exists():
+                  print("⚠️  Metadata file not found")
+                  exit(0)
+              
+              with open(metadata_file) as f:
+                  data = json.load(f)
+              
+              metadata = data['metadata']
+              metrics = data['test_metrics']
+              
+              print(f"\n✅ Training Complete!")
+              print(f"\n📊 Final Performance:")
+              print(f"   Test Accuracy:      {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)")
+              print(f"   Tuning CV Score:    {metadata['tuning_cv_score']:.4f}")
+              print(f"   Tuning Hold-out:    {metadata['tuning_holdout_score']:.4f}")
+              print(f"   Training Samples:   {metadata['training_samples']:,}")
+              print(f"   Test Samples:       {metadata['test_samples']:,}")
+              print(f"   Features:           {metadata['num_features']}")
+              
+              print(f"\n💾 Model Details:")
+              print(f"   Export Format:      {metadata['export_format']}")
+              print(f"   Split Strategy:     {metadata['split_strategy']}")
+              print(f"   Timestamp:          {metadata['timestamp']}")
+              
+              print(f"\n📈 Per-Class Accuracy:")
+              for class_name, acc in metrics['per_class_accuracy'].items():
+                  print(f"   {class_name:12s}: {acc:.4f}")
+              
+              print("\n" + "="*70)
+              
+              # Check if production-ready
+              if metrics['accuracy'] >= 0.53:
+                  print("✅ MODEL IS PRODUCTION READY!")
+                  print(f"   Target: 53%, Achieved: {metrics['accuracy']*100:.2f}%")
+              else:
+                  print("⚠️  Model below production threshold")
+                  print(f"   Target: 53%, Achieved: {metrics['accuracy']*100:.2f}%")
+              
+              print("="*70)
+              
+          except Exception as e:
+              print(f"❌ Error reading metrics: {e}")
+              import traceback
+              traceback.print_exc()
+          EOF
+        if: always()
+      
+      # =================================================================
+      # ARCHIVE ARTIFACTS
+      # =================================================================
+      - name: 📦 Archive final model (TorchScript)
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-model-torchscript-${{ github.sha }}
+          path: |
+            data/models/final/*.ptc
+            logs/final_training/*.json
+          retention-days: 90
+          if-no-files-found: error
+      
+      - name: 📦 Archive training cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-cache-${{ github.sha }}
+          path: |
+            data/cache/
+          retention-days: 14
+          if-no-files-found: warn
+      
+      # =================================================================
+      # DEPLOYMENT CHECK
+      # =================================================================
+      - name: 🚀 Deployment readiness check
+        id: deploy_check # <--- YENİ: Bu adıma bir ID verdik
+        run: |
+          echo "======================================================================"
+          echo "🚀 DEPLOYMENT READINESS CHECK (BALANCED METRICS)"
+          echo "======================================================================"
+          
+          python3 << 'EOF'
+          import json
+          from pathlib import Path
+          import hashlib
+          
+          def compute_file_hash(filepath):
+              """Compute SHA256 hash"""
+              sha256 = hashlib.sha256()
+              with open(filepath, 'rb') as f:
+                  for chunk in iter(lambda: f.read(4096), b''):
+                      sha256.update(chunk)
+              return sha256.hexdigest()
+          
+          def check_file(filepath, description):
+              """Check if file exists and return its info"""
+              if not filepath.exists():
+                  print(f"❌ {description} not found: {filepath}")
+                  return None, 0, None
+              
+              size_kb = filepath.stat().st_size / 1024
+              file_hash = compute_file_hash(filepath)
+              
+              print(f"✅ {description} found:")
+              print(f"   Path: {filepath}")
+              print(f"   Size: {size_kb:.2f} KB")
+              print(f"   SHA256: {file_hash[:16]}...")
+              
+              return True, size_kb, file_hash
+          
+          # Check model file
+          model_path = Path('data/models/final/lstm_final_latest.ptc')
+          model_ok, model_size, model_hash = check_file(model_path, "Model file")
+          
+          if not model_ok:
+              exit(1)
+          
+          if model_size < 1:
+              print("❌ ERROR: Model file too small (<1KB)")
+              exit(1)
+          
+          print("")
+          
+          # Check metadata file
+          metadata_path = Path('logs/final_training/metadata_latest.json')
+          metadata_ok, _, _ = check_file(metadata_path, "Metadata file")
+          
+          if not metadata_ok:
+              exit(1)
+          
+          print("")
+          print("="*70)
+          
+          # ==================== NEW DEPLOYMENT LOGIC ==================== #
+          # Load metadata and metrics
+          with open(metadata_path) as f:
+              data = json.load(f)
+          
+          metadata = data['metadata']
+          metrics = data['test_metrics']
+          
+          # Get all metrics
+          total_accuracy = metrics.get('accuracy', 0.0)
+          per_class_acc = metrics.get('per_class_accuracy', {})
+          bullish_acc = per_class_acc.get('Bullish', 0.0)
+          neutral_acc = per_class_acc.get('Neutral', 0.0)
+          bearish_acc = per_class_acc.get('Bearish', 0.0)
+          
+          # ✅ NEW THRESHOLDS (Minority-focused, not total!)
+          MIN_MINORITY_ACC = 0.30  # 30% for Bullish/Bearish
+          MIN_MAJORITY_ACC = 0.60  # 60% for Neutral
+          MIN_OVERALL_ACC = 0.50   # 50% overall (sanity check)
+          
+          print("📊 Model Performance (ALL CLASSES):")
+          print(f"   Overall Accuracy:  {total_accuracy:.4f} ({total_accuracy*100:.2f}%)")
+          print(f"   Tuning CV Score:   {metadata.get('tuning_cv_score', 0.0):.4f}")
+          print(f"   Tuning Hold-out:   {metadata.get('tuning_holdout_score', 0.0):.4f}")
+          
+          print("\n📈 Per-Class Performance:")
+          print(f"   Bullish: {bullish_acc:.4f} ({bullish_acc*100:.2f}%) - Threshold: {MIN_MINORITY_ACC:.2%}")
+          print(f"   Neutral: {neutral_acc:.4f} ({neutral_acc*100:.2f}%) - Threshold: {MIN_MAJORITY_ACC:.2%}")
+          print(f"   Bearish: {bearish_acc:.4f} ({bearish_acc*100:.2f}%) - Threshold: {MIN_MINORITY_ACC:.2%}")
+          
+          print("")
+          print("="*70)
+          
+          # ✅ PROPER DEPLOYMENT DECISION (All classes must pass!)
+          is_ready = True
+          reasons = []
+          
+          # Check 1: Overall sanity
+          if total_accuracy < MIN_OVERALL_ACC:
+              is_ready = False
+              reasons.append(f"   ❌ Overall accuracy ({total_accuracy:.2%}) < {MIN_OVERALL_ACC:.2%}")
+          
+          # Check 2: Bearish (CRITICAL!)
+          if bearish_acc < MIN_MINORITY_ACC:
+              is_ready = False
+              reasons.append(f"   ❌ Bearish accuracy ({bearish_acc:.2%}) < {MIN_MINORITY_ACC:.2%}")
+          
+          # Check 3: Bullish
+          if bullish_acc < MIN_MINORITY_ACC:
+              is_ready = False
+              reasons.append(f"   ❌ Bullish accuracy ({bullish_acc:.2%}) < {MIN_MINORITY_ACC:.2%}")
+          
+          # Check 4: Neutral
+          if neutral_acc < MIN_MAJORITY_ACC:
+              is_ready = False
+              reasons.append(f"   ❌ Neutral accuracy ({neutral_acc:.2%}) < {MIN_MAJORITY_ACC:.2%}")
+          
+          if is_ready:
+              print("✅ MODEL IS PRODUCTION READY! 🎉")
+              print("")
+              print("   All Per-Class Thresholds: PASSED ✅")
+              print(f"   Bearish: {bearish_acc:.2%} (>= {MIN_MINORITY_ACC:.2%}) ✅")
+              print(f"   Bullish: {bullish_acc:.2%} (>= {MIN_MINORITY_ACC:.2%}) ✅")
+              print(f"   Neutral: {neutral_acc:.2%} (>= {MIN_MAJORITY_ACC:.2%}) ✅")
+              print(f"   Overall: {total_accuracy:.2%} (>= {MIN_OVERALL_ACC:.2%}) ✅")
+              print("")
+              print("🚀 Ready to deploy!")
+              
+              # Save deployment manifest
+              manifest = {
+                  'model_hash': model_hash,
+                  'model_size_kb': model_size,
+                  'total_accuracy': float(total_accuracy),
+                  'per_class_accuracy': {
+                      'Bullish': float(bullish_acc),
+                      'Neutral': float(neutral_acc),
+                      'Bearish': float(bearish_acc)
+                  },
+                  'thresholds': {
+                      'minority': MIN_MINORITY_ACC,
+                      'majority': MIN_MAJORITY_ACC,
+                      'overall': MIN_OVERALL_ACC
+                  },
+                  'status': 'READY',
+                  'timestamp': metadata.get('timestamp', '')
+              }
+              
+              with open('logs/final_training/deployment_manifest.json', 'w') as f:
+                  json.dump(manifest, f, indent=2)
+              
+              print("✅ Deployment manifest saved!")
+              
+          else:
+              print("❌ MODEL BELOW PRODUCTION THRESHOLD")
+              print("")
+              print("Reasons for failure:")
+              for reason in reasons:
+                  print(reason)
+              
+              print("")
+              print("💡 Recommendations:")
+              print("  1. Review per-class confusion matrix")
+              print("  2. Check if Bearish samples are being learned")
+              print("  3. Consider:")
+              print("     - Adjusting class weights")
+              print("     - Re-running tuning with more trials")
+              print("     - Feature engineering for weak classes")
+              
+              # Save failure report
+              manifest = {
+                  'model_hash': model_hash,
+                  'total_accuracy': float(total_accuracy),
+                  'per_class_accuracy': {
+                      'Bullish': float(bullish_acc),
+                      'Neutral': float(neutral_acc),
+                      'Bearish': float(bearish_acc)
+                  },
+                  'status': 'FAILED',
+                  'reasons': reasons,
+                  'timestamp': metadata.get('timestamp', '')
+              }
+              
+              with open('logs/final_training/deployment_manifest.json', 'w') as f:
+                  json.dump(manifest, f, indent=2)
+              
+              exit(1)
+          
+          print("="*70)
+          EOF
+          
         if: always()
 
-      # Archive trained models with SHA and run number
-      - name: Archive trained models
-        uses: actions/upload-artifact@v4
-        with:
-          name: trained-models-${{ github.sha }}-${{ github.run_number }}
-          path: |
-            data/models/
-          retention-days: 14
-          if-no-files-found: warn
+      # ====================================================================
+      # 🚨 YENİ HATA ANALİZİ ADIMI (SADECE BAŞARISIZ OLURSA ÇALIŞIR) 🚨
+      # ====================================================================
+      - name: 🔍 Run Explainability Analysis on Failure
+        # Sadece bir önceki 'deploy_check' adımı başarısız olursa çalışır
+        if: failure() && steps.deploy_check.outcome == 'failure'
+        run: |
+          echo "🚨 Deployment check FAILED! Running model explainability analysis..."
+          
+          # Gerekli kütüphaneleri kur
+          pip install shap matplotlib
+          
+          # Çıktı dizinini oluştur
+          mkdir -p ./analysis_artifacts
+          
+          # Analiz betiğini çalıştır
+          python scripts/analyze_model_explainability.py \
+            --model-path data/models/final/lstm_final_latest.ptc \
+            --data-path data/cache/BTC-USDT_training_data.npz \
+            --metadata-path data/cache/feature_selection_metadata.json \
+            --output-dir ./analysis_artifacts
 
-      # Archive training logs
-      - name: Archive training logs
+      # ====================================================================
+      # 🖼️ YENİ ARTIFACT YÜKLEME ADIMI (SADECE HATA VARSA ÇALIŞIR)
+      # ====================================================================
+      - name: 📤 Upload Failure Analysis Report
+        # Sadece 'deploy_check' başarısız olduysa çalışır
+        if: failure() && steps.deploy_check.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
-          name: training-logs-${{ github.sha }}-${{ github.run_number }}
-          path: |
-            logs/training.log
-            logs/training_metrics.json
-            logs/training_metrics.csv
-            logs/regime_training_metrics.csv
-            logs/rl_training_metrics.csv
-          retention-days: 14
-          if-no-files-found: warn
+          name: hata-analiz-raporlari-${{ github.sha }}
+          path: ./analysis_artifacts/
+          retention-days: 30

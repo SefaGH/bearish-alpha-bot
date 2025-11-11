@@ -40,7 +40,14 @@ pytest-asyncio>=0.21.0    # Async test support
 pytest-timeout>=2.1.0     # Test timeout support
 pytest-mock>=3.11.0       # Mock support for pytest
 
+sentry-sdk
+
 # === MACHINE LEARNING (Optional) ===
+optuna>=3.0.0
 torch>=2.0.0              # PyTorch for neural networks
 torchvision>=0.15.0       # Computer vision (optional)
 scikit-learn>=1.0
+
+# === DATA AUGMENTATION (FAZ 3.2 + 2.2) ===
+imbalanced-learn>=0.12.4  # SMOTE for class balancing (>=0.12.4 for sklearn 1.7+ compat)
+scipy>=1.11.0             # Required by imbalanced-learn

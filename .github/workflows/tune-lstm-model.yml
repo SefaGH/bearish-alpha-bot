@@ -1,0 +1,183 @@
+name: Tune LSTM Regime Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      trials:
+        description: 'Number of Optuna trials'
+        required: true
+        default: '10'
+      cv_splits:
+        description: 'Number of cross-validation splits'
+        required: true
+        default: '5'
+      symbol:
+        description: 'Trading symbol'
+        required: true
+        default: 'BTC/USDT'
+      run_diagnosis:
+        description: 'Run data quality diagnosis'
+        type: boolean
+        default: true
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  tune-lstm:
+    name: LSTM Hyperparameter Tuning
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: 📦 Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install optuna scikit-learn scipy
+      
+      - name: 📁 Create Directories
+        run: mkdir -p logs/tuning_results data/models data/cache
+      
+      - name: 📊 Prepare Real Training Data
+        run: |
+          echo "======================================================================"
+          echo "📊 FETCHING REAL MARKET DATA"
+          echo "======================================================================"
+          
+          python scripts/prepare_training_data.py --symbol '${{ github.event.inputs.symbol }}'
+          
+          SYMBOL_SAFE=$(echo '${{ github.event.inputs.symbol }}' | sed 's/\//-/g')
+          CACHE_FILE="data/cache/${SYMBOL_SAFE}_training_data.npz"
+          
+          if [ -f "$CACHE_FILE" ]; then
+            echo "✅ Training data cached: $CACHE_FILE"
+            ls -lh "$CACHE_FILE"
+          else
+            echo "❌ Failed to cache training data"
+            exit 1
+          fi
+          
+          echo "======================================================================"
+      
+      - name: 🔬 Diagnose Data Quality
+        if: ${{ github.event.inputs.run_diagnosis == 'true' }}
+        run: |
+          echo "======================================================================"
+          echo "🔬 DATA QUALITY DIAGNOSIS"
+          echo "======================================================================"
+          
+          python scripts/diagnose_overfitting.py 2>&1 | tee logs/diagnosis.log
+          
+          # Check if diagnosis found critical issues
+          if grep -q "❌" logs/diagnosis.log; then
+            echo ""
+            echo "⚠️  WARNING: Critical issues detected in diagnosis"
+            echo "⚠️  Review logs/diagnosis.log for details"
+            echo "⚠️  Continuing with tuning anyway..."
+            echo ""
+          else
+            echo "✅ No critical issues detected"
+          fi
+          
+          echo "======================================================================"
+      
+      - name: 🎯 Run LSTM Tuning
+        run: |
+          echo "Starting tuning with REAL cached data..."
+          
+          SYMBOL_SAFE=$(echo '${{ github.event.inputs.symbol }}' | sed 's/\//-/g')
+          
+          python scripts/tune_regime_models_standalone.py \
+            --model lstm \
+            --trials ${{ github.event.inputs.trials }} \
+            --cv-splits ${{ github.event.inputs.cv_splits }} \
+            --symbol "$SYMBOL_SAFE"
+      
+      - name: 📊 Extract Results
+        id: results
+        run: |
+          FILE=$(ls -t logs/tuning_results/lstm_*.json 2>/dev/null | head -1)
+          if [ -n "$FILE" ]; then
+            echo "cv_score=$(jq -r '.cv_score // "N/A"' $FILE)" >> $GITHUB_OUTPUT
+            echo "holdout_score=$(jq -r '.holdout_score // "N/A"' $FILE)" >> $GITHUB_OUTPUT
+            echo "hidden_size=$(jq -r '.best_params.hidden_size // "N/A"' $FILE)" >> $GITHUB_OUTPUT
+            echo "num_layers=$(jq -r '.best_params.num_layers // "N/A"' $FILE)" >> $GITHUB_OUTPUT
+            echo "dropout=$(jq -r '.best_params.dropout // "N/A"' $FILE)" >> $GITHUB_OUTPUT
+            echo "learning_rate=$(jq -r '.best_params.learning_rate // "N/A"' $FILE)" >> $GITHUB_OUTPUT
+            
+            # Calculate overfitting gap
+            CV=$(jq -r '.cv_score' $FILE)
+            HOLDOUT=$(jq -r '.holdout_score' $FILE)
+            if [ "$CV" != "null" ] && [ "$HOLDOUT" != "null" ]; then
+              # Calculate gap using bc
+              GAP=$(echo "$CV - $HOLDOUT" | bc -l)
+              echo "gap=$GAP" >> $GITHUB_OUTPUT
+            fi
+          fi
+      
+      - name: 📦 Upload Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lstm-tuning-results-${{ github.run_number }}
+          path: |
+            logs/
+            data/cache/*.npz
+          retention-days: 30
+      
+      - name: 📝 Summary Report
+        if: always()
+        run: |
+          {
+            echo "# 🎯 LSTM Hyperparameter Tuning Results"
+            echo ""
+            echo "## 📊 Performance Metrics"
+            echo ""
+            echo "| Metric | Value | Target |"
+            echo "|--------|-------|--------|"
+            echo "| **CV Score** | ${{ steps.results.outputs.cv_score }} | >0.35 |"
+            echo "| **Hold-out Score** | ${{ steps.results.outputs.holdout_score }} | >0.35 |"
+            echo "| **Overfitting Gap** | ${{ steps.results.outputs.gap }} | <0.10 |"
+            echo "| **Phase B Baseline** | 0.433 | Reference |"
+            echo ""
+            
+            # Status indicator
+            HOLDOUT="${{ steps.results.outputs.holdout_score }}"
+            if [ "$HOLDOUT" != "N/A" ]; then
+              HOLDOUT_NUM=$(echo "$HOLDOUT" | bc)
+              if (( $(echo "$HOLDOUT_NUM > 0.35" | bc -l) )); then
+                echo "**Status**: ✅ Good generalization"
+              elif (( $(echo "$HOLDOUT_NUM > 0.25" | bc -l) )); then
+                echo "**Status**: ⚠️ Acceptable but needs improvement"
+              else
+                echo "**Status**: 🔴 Poor generalization - severe overfitting"
+              fi
+            fi
+            
+            echo ""
+            echo "## 🏆 Best Hyperparameters"
+            echo ""
+            echo "| Parameter | Value |"
+            echo "|-----------|-------|"
+            echo "| **hidden_size** | ${{ steps.results.outputs.hidden_size }} |"
+            echo "| **num_layers** | ${{ steps.results.outputs.num_layers }} |"
+            echo "| **dropout** | ${{ steps.results.outputs.dropout }} |"
+            echo "| **learning_rate** | ${{ steps.results.outputs.learning_rate }} |"
+            echo ""
+            echo "## 📥 Artifacts"
+            echo ""
+            echo "- Full training logs"
+            echo "- Data quality diagnosis report"
+            echo "- Cached training data"
+            echo "- Tuning results JSON"
+          } >> $GITHUB_STEP_SUMMARY

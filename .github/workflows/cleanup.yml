@@ -1,0 +1,13 @@
+name: clean artifacts
+
+on:
+  workflow_dispatch:   # Manuel tetikleme
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - name: GitHub Actions Artifact Cleaner
+        uses: glassechidna/artifact-cleaner@v2
+        with:
+          minimumAge: 0   # bugün dahil tüm artifact'leri sil

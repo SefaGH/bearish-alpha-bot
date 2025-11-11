@@ -30,9 +30,14 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 # --- YOL AYARLAMASI SONU ---
 
+# --- YENİ: Merkezi Config Import ---
+from src.config.live_trading_config import LiveTradingConfiguration
+# --- YENİ IMPORT SONU ---
+
 # Gerekli modüllerin import edilmesi
 from src.core.ccxt_client import CcxtClient
 from src.core.logger import setup_logger
+from src.core.market_data_pipeline import MarketDataPipeline
 from src.ml.feature_engineering import FeatureEngineeringPipeline
 from src.ml.model_trainer import RegimeModelTrainer
 from src.ml.price_predictor import (
@@ -49,19 +54,25 @@ from src.ml.rl_trading_env import RLTradingEnv
 from src.ml.rl_model_trainer import RLModelTrainer
 # --- YENİ IMPORT'LAR SONU ---
 
+# --- PERFORMANCE TRACKING ---
+from scripts.utils.model_performance_tracker import ModelPerformanceTracker
+# --- PERFORMANCE TRACKING SONU ---
+
+from scripts.utils.training_validator import TrainingConfigValidator
+
 # Logger kurulumu
 logger = setup_logger("model-trainer", level=logging.INFO, log_to_file=True, log_filename="training.log")
 
 # --- EĞİTİM PARAMETRELERİ ---
 SYMBOLS_TO_TRAIN = ['BTC/USDT']
-ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h']
-REGIME_TRAINING_TIMEFRAMES = ['30m', '1h', '4h'] 
+ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d']  # 1d eklendi - regime için gerekli
+REGIME_TRAINING_TIMEFRAMES = ['15m', '30m', '1h', '4h', '1d']  # 5 timeframe - regime detection için optimal
 
 # === DÜZELTME: CANDLE_LIMIT, BingX API limitine (1440) uyacak şekilde güncellendi ===
-CANDLE_LIMIT = 1440 # Daha fazla veri, daha iyi eğitim
+CANDLE_LIMIT = 1440  # BingX limiti (değişmez)
 
 MIN_SAMPLES_FOR_RF = 100
-MIN_SAMPLES_FOR_NN = 500
+MIN_SAMPLES_FOR_NN = 1000  # Daha stabil model eğitimi için artırıldı
 
 # --- YENİ: RL EĞİTİM PARAMETRELERİ ---
 RL_TRAINING_TIMEFRAME = '15m'  # RL eğitimi için kullanılacak zaman dilimi
@@ -85,6 +96,10 @@ async def main():
     except ImportError:
         logger.info("PyTorch not installed, GPU check skipped")
     
+    # Initialize performance tracker
+    tracker = ModelPerformanceTracker()
+    logger.info("✅ Performance tracker initialized")
+    
     # Initialize metrics tracking
     start_time = datetime.now()
     training_metrics = {
@@ -96,33 +111,149 @@ async def main():
         'rl_models': {}
     }
 
-    # Load configuration from config.example.yaml
-    config_path = os.path.join(project_root, 'config', 'config.example.yaml')
+    # =========================================================================
+    # CONFIGURATION LOADING (Using Centralized System)
+    # =========================================================================
+    # Use LiveTradingConfiguration for consistent config loading across
+    # training and live trading. This ensures:
+    #   1. Environment variable overrides work correctly
+    #   2. Config validation is applied
+    #   3. Type casting is automatic
+    #   4. Single source of truth
+    # =========================================================================
+    
+    logger.info("Loading configuration using centralized system...")
     
     try:
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-    except FileNotFoundError:
-        logger.error(f"❌ Configuration file not found: {config_path}")
-        logger.error("Please ensure config.example.yaml exists in the config/ directory.")
+        # Use centralized config loader (handles env vars, validation, etc.)
+        # Suppress duplicate logging since we'll log training-specific details
+        config = LiveTradingConfiguration.load(log_summary=False)
+        logger.info("✅ Configuration loaded successfully via centralized system")
+        
+        # Extract ML configuration blocks
+        ml_config = config.get('ml', {})
+        regime_pred_config = ml_config.get('regime_prediction', {})
+        price_pred_config = ml_config.get('price_prediction', {})
+        rl_config = ml_config.get('reinforcement_learning', {})
+        
+        # =====================================================================
+        # TRAINING-SPECIFIC CONFIGURATION LOGGING
+        # =====================================================================
+        logger.info("="*60)
+        logger.info("🎓 TRAINING CONFIGURATION")
+        logger.info("="*60)
+        
+        # RL Training Mode Validation
+        rl_training_mode = rl_config.get('training_mode', False)
+        logger.info(f"   RL Training Mode: {rl_training_mode}")
+        
+        if not rl_training_mode:
+            logger.warning("="*60)
+            logger.warning("⚠️  WARNING: RL training_mode is False in config!")
+            logger.warning("⚠️  This may be due to:")
+            logger.warning("    1. config.example.yaml has training_mode: false")
+            logger.warning("    2. ML_RL_TRAINING_MODE env var is not set/false")
+            logger.warning("⚠️  Forcing training_mode=True for this training session")
+            logger.warning("="*60)
+            rl_config['training_mode'] = True
+            logger.info(f"   RL Training Mode (forced): {rl_config['training_mode']}")
+        
+        # RL Epsilon Parameters Check
+        epsilon_params = {
+            'epsilon_start': rl_config.get('epsilon_start'),
+            'epsilon_decay': rl_config.get('epsilon_decay'),
+            'epsilon_min': rl_config.get('epsilon_min')
+        }
+        logger.info("   RL Epsilon Schedule:")
+        for param, value in epsilon_params.items():
+            if value is None:
+                logger.warning(f"      {param}: NOT SET (will use default)")
+            else:
+                logger.info(f"      {param}: {value}")
+        
+        # Regime LSTM Parameters
+        lstm_params = regime_pred_config.get('model_params', {}).get('lstm_regime', {})
+        logger.info("   Regime LSTM Parameters (from config):")
+        if lstm_params:
+            logger.info(f"      hidden_size: {lstm_params.get('hidden_size', 'NOT SET')}")
+            logger.info(f"      num_layers: {lstm_params.get('num_layers', 'NOT SET')}")
+            logger.info(f"      dropout: {lstm_params.get('dropout', 'NOT SET')}")
+        else:
+            logger.warning("      ⚠️  LSTM params not found in config (will use defaults)")
+        
+        # Training Symbols
+        logger.info(f"   Training Symbols: {', '.join(SYMBOLS_TO_TRAIN)}")
+        logger.info("="*60)
+        
+    except FileNotFoundError as e:
+        logger.error(f"❌ Configuration file not found: {e}")
+        logger.error("Please ensure config/config.example.yaml exists.")
         raise
-    except yaml.YAMLError as e:
-        logger.error(f"❌ Error parsing configuration file: {e}")
+    except Exception as e:
+        logger.error(f"❌ Error loading configuration: {e}", exc_info=True)
         raise
     
-    ml_config = config.get('ml', {})
-    regime_pred_config = ml_config.get('regime_prediction', {})
-    price_pred_config = ml_config.get('price_prediction', {})
-    rl_config = ml_config.get('reinforcement_learning', {})
+    # =========================================================================
+    # END CONFIGURATION LOADING
+    # ==========================================================================
     
-    logger.info(f"✅ Configuration loaded from {config_path}")
-    logger.info(f"   Regime LSTM params: {regime_pred_config.get('model_params', {}).get('lstm_regime', {})}")
-
-    # Log symbols being trained
-    logger.info(f"Training symbols: {', '.join(SYMBOLS_TO_TRAIN)}")
+    # =========================================================================
+    # PRE-TRAINING VALIDATION
+    # =========================================================================
+    # Validate configuration before starting expensive training process
+    # This catches common issues early and provides clear error messages
+    # =========================================================================
+    
+    logger.info("\n" + "="*60)
+    logger.info("🔍 VALIDATING TRAINING CONFIGURATION")
+    logger.info("="*60)
+    
+    # Run validation
+    is_valid, issues = TrainingConfigValidator.validate(config)
+    TrainingConfigValidator.log_validation_results(is_valid, issues)
+    
+    # Check for critical issues
+    critical_issues = [i for i in issues if i.startswith("CRITICAL:")]
+    if critical_issues:
+        logger.error("❌ Critical validation errors found. Aborting training.")
+        for issue in critical_issues:
+            logger.error(f"   - {issue}")
+        raise ValueError(f"Training validation failed with {len(critical_issues)} critical issues")
+    
+    # Check parameter synchronization
+    logger.info("Checking parameter synchronization between config and code...")
+    sync_issues = TrainingConfigValidator.validate_model_params_sync(config)
+    
+    if sync_issues:
+        logger.warning("="*60)
+        logger.warning("⚠️  PARAMETER SYNCHRONIZATION ISSUES DETECTED")
+        logger.warning("="*60)
+        for issue in sync_issues:
+            logger.warning(f"   - {issue}")
+        logger.warning("⚠️  Training will use config values (config takes precedence)")
+        logger.warning("⚠️  Consider updating model_trainer.py constants to match")
+        logger.warning("="*60)
+    else:
+        logger.info("✅ Config and code parameters are synchronized")
+    
+    logger.info("="*60)
+    logger.info("✅ VALIDATION COMPLETE - PROCEEDING WITH TRAINING")
+    logger.info("="*60 + "\n")
+    
+    # =========================================================================
+    # END VALIDATION
+    # =========================================================================
     
     exchange_client = CcxtClient('bingx')
     feature_engine = FeatureEngineeringPipeline()
+    
+    # Create MarketDataPipeline for price predictor (avoids warning during initialization)
+    # During training we don't actually use it, but passing it prevents the warning
+    market_pipeline = MarketDataPipeline(
+        exchanges={'bingx': exchange_client},
+        config=config
+    )
+    
     logger.info("✅ Borsa istemcisi ve özellik motoru başlatıldı.")
 
     training_data = {symbol: {} for symbol in SYMBOLS_TO_TRAIN}
@@ -143,7 +274,12 @@ async def main():
     # 1. REJİM MODELLERİ EĞİTİMİ
     logger.info("\n" + "="*60)
     logger.info("🧠 ADIM 1: PİYASA REJİMİ MODELLERİ EĞİTİLİYOR 🧠")
-    logger.info(f"   Eğitim Zaman Dilimleri: {REGIME_TRAINING_TIMEFRAMES}")
+    logger.info("="*60)
+    logger.info("🧠 REGIME MODEL TRAINING CONFIGURATION")
+    logger.info(f"   Timeframes: {REGIME_TRAINING_TIMEFRAMES}")
+    logger.info(f"   Candle limit per timeframe: {CANDLE_LIMIT}")
+    logger.info(f"   Expected total samples: {len(REGIME_TRAINING_TIMEFRAMES) * CANDLE_LIMIT}")
+    logger.info(f"   Minimum NN samples: {MIN_SAMPLES_FOR_NN}")
     logger.info("="*60)
     
     all_regime_features = []
@@ -168,15 +304,24 @@ async def main():
                     all_regime_features.append(X_prepared)
                     all_regime_labels.append(y_prepared)
                     logger.info(f"✅ {tf} verisinden {X_prepared.shape[0]} örnek eklendi.")
+            else:
+                logger.warning(f"⚠️ {tf} için veri bulunamadı, atlanıyor...")
         
         if all_regime_features and all_regime_labels:
             final_X = np.vstack(all_regime_features)
             final_y = np.concatenate(all_regime_labels)
             
+            logger.info("="*60)
+            logger.info(f"✅ Total training samples: {len(final_X)} (from {len(REGIME_TRAINING_TIMEFRAMES)} timeframes)")
+            logger.info("="*60)
+            
             if final_X.shape[0] >= MIN_SAMPLES_FOR_RF:
                 # Pass regime_prediction config to trainer so it uses correct architecture
+                regime_training_start = datetime.now()
                 regime_trainer = RegimeModelTrainer(config=regime_pred_config)
                 results = regime_trainer.train_ensemble_models(final_X, final_y)
+                regime_training_time = (datetime.now() - regime_training_start).total_seconds()
+                
                 logger.info(f"✅ Rejim modelleri birleşik veri seti ile eğitildi ve kaydedildi.")
                 
                 # Store regime model metrics (safely handle None results)
@@ -186,6 +331,25 @@ async def main():
                         'feature_count': final_X.shape[1],
                         'metrics': results.get('metrics', {})
                     }
+                    
+                    # Record to performance tracker
+                    try:
+                        tracker.record_training(
+                            model_type="regime",
+                            model_name=f"{symbol_for_regime.replace('/', '-')}_ensemble",
+                            metrics=results.get('metrics', {}),
+                            data_info={
+                                'total_samples': final_X.shape[0],
+                                'train_samples': final_X.shape[0],
+                                'features': final_X.shape[1],
+                                'timeframes': ','.join(REGIME_TRAINING_TIMEFRAMES),
+                                'symbol': symbol_for_regime,
+                                'timeframe_count': len(REGIME_TRAINING_TIMEFRAMES)  # EKLE: Kaç timeframe kullanıldı
+                            },
+                            training_time=regime_training_time
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to record regime training metrics: {e}")
                 else:
                     training_metrics['regime_models'] = {
                         'total_samples': final_X.shape[0],
@@ -206,8 +370,10 @@ async def main():
     if SYMBOLS_TO_TRAIN[0] in training_data:
         try:
             logger.info("AdvancedPricePredictionEngine konfigürasyona göre başlatılıyor...")
+            price_training_start = datetime.now()
+            
             price_engine = AdvancedPricePredictionEngine(
-                market_data_pipeline=None,      # Eğitim sırasında pipeline gerekmez
+                market_data_pipeline=market_pipeline,  # Pass MarketDataPipeline to avoid warning
                 feature_pipeline=feature_engine,  # Önceden oluşturulan özellik motorunu ver
                 config=price_pred_config          # Sadece fiyat tahminine özel konfigürasyonu ver
             )
@@ -216,6 +382,8 @@ async def main():
             # Ana sınıf üzerinden eğitimi ve kaydetmeyi tetikle
             logger.info("Model eğitimi ve kaydetme süreci başlatılıyor...")
             price_engine.train_and_save_models(training_data)
+            price_training_time = (datetime.now() - price_training_start).total_seconds()
+            
             logger.info("✅ Fiyat tahmin modellerinin eğitimi ve kaydı tamamlandı.")
             
             # Store price model metrics
@@ -223,6 +391,25 @@ async def main():
                 'status': 'completed',
                 'models_trained': ['LSTM', 'Transformer', 'Ensemble']
             }
+            
+            # Record to performance tracker (generic metrics since we don't have detailed results)
+            try:
+                tracker.record_training(
+                    model_type="price",
+                    model_name=f"{SYMBOLS_TO_TRAIN[0].replace('/', '-')}_ensemble",
+                    metrics={
+                        'status': 'completed',
+                        'training_time_seconds': price_training_time
+                    },
+                    data_info={
+                        'symbol': SYMBOLS_TO_TRAIN[0],
+                        'timeframes': ','.join(ALL_TIMEFRAMES),
+                        'models': ['LSTM', 'Transformer', 'Ensemble']
+                    },
+                    training_time=price_training_time
+                )
+            except Exception as e:
+                logger.error(f"Failed to record price training metrics: {e}")
 
         except Exception as e:
             logger.error(f"❌ Fiyat tahmin modelleri eğitimi sırasında kritik hata: {e}", exc_info=True)
@@ -285,7 +472,10 @@ async def main():
             rl_trainer = RLModelTrainer(agent, env, experience_replay)
             
             try:
+                rl_training_start = datetime.now()
                 rl_trainer.train(num_episodes=RL_NUM_EPISODES)
+                rl_training_time = (datetime.now() - rl_training_start).total_seconds()
+                
                 logger.info("✅ RL Ajanı başarıyla eğitildi ve kaydedildi.")
                 
                 # Store RL model metrics
@@ -296,6 +486,26 @@ async def main():
                     'action_dim': action_dim,
                     'training_samples': len(rl_features_df)
                 }
+                
+                # Record to performance tracker
+                try:
+                    tracker.record_training(
+                        model_type="rl",
+                        model_name=f"{symbol_for_rl.replace('/', '-')}_{RL_TRAINING_TIMEFRAME}",
+                        metrics={
+                            'num_episodes': RL_NUM_EPISODES,
+                            'state_dim': state_dim,
+                            'action_dim': action_dim
+                        },
+                        data_info={
+                            'training_samples': len(rl_features_df),
+                            'symbol': symbol_for_rl,
+                            'timeframe': RL_TRAINING_TIMEFRAME
+                        },
+                        training_time=rl_training_time
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to record RL training metrics: {e}")
             except Exception as e:
                 logger.error(f"❌ RL eğitimi sırasında bir hata oluştu: {e}", exc_info=True)
                 training_metrics['rl_models'] = {

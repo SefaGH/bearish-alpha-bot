@@ -185,8 +185,13 @@ class AdvancedPositionSizing:
             
             base_size = self._fixed_risk_sizing(base_risk, entry_price, stop_loss)
             
-            # Regime multiplier
+            # Get regime_weight for soft-weighting (default to 1.0 if not available)
+            regime_weight = float(signal.get('regime_weight', 1.0))
+            
+            # Regime multiplier with soft-weighting
             regime_multiplier = market_regime.get('risk_multiplier', 1.0)
+            # Apply soft-weighted regime adjustment: interpolate between 1.0 and regime_multiplier
+            regime_adjustment = 1.0 + (regime_multiplier - 1.0) * regime_weight
             
             # Trend alignment
             trend = market_regime.get('trend', 'neutral')
@@ -214,11 +219,12 @@ class AdvancedPositionSizing:
                 elif win_rate < 0.4:
                     perf_multiplier = 0.8
             
-            # Combine all factors
-            adjusted_size = base_size * regime_multiplier * trend_bonus * vol_adjustment * perf_multiplier
+            # Combine all factors with soft-weighted regime
+            adjusted_size = base_size * regime_adjustment * trend_bonus * vol_adjustment * perf_multiplier
             
             logger.debug(f"Regime-based sizing: {adjusted_size:.4f} "
-                        f"(regime={regime_multiplier:.2f}, trend={trend_bonus:.2f}, "
+                        f"(regime_mult={regime_multiplier:.2f}, regime_weight={regime_weight:.2f}, "
+                        f"regime_adj={regime_adjustment:.2f}, trend={trend_bonus:.2f}, "
                         f"vol={vol_adjustment:.2f}, perf={perf_multiplier:.2f})")
             
             return adjusted_size

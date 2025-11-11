@@ -1,9 +1,9 @@
 # ==============================================================================
-# BEARISH ALPHA BOT - Configuration File (v3.5 - Centralized ML Config)
+# BEARISH ALPHA BOT - Configuration File (v3.6 - Training Pipeline Integration)
 # ==============================================================================
 # This file serves as a template and documents the default values.
 #
-# PRIORITY ORDER (Highest to Lowest):
+# CONFIGURATION PRIORITY ORDER (Highest to Lowest):
 # 1. GitHub Variables (Repository → Settings → Secrets and variables → Actions)
 # 2. Environment Variables (local .env file)
 # 3. This file (config.example.yaml)
@@ -11,6 +11,25 @@
 #
 # To change a setting for production, create a "Repository Variable" in GitHub.
 # The comment next to each setting shows the corresponding GitHub Variable name.
+#
+# ==============================================================================
+# TRAINING vs LIVE TRADING CONFIGURATION
+# ==============================================================================
+# This config file is used by BOTH training and live trading:
+#
+# TRAINING (scripts/train_all_models.py):
+#   - Uses centralized config loader (LiveTradingConfiguration)
+#   - Supports environment variable overrides via GitHub Variables
+#   - ml.reinforcement_learning.training_mode MUST be true
+#   - ml.regime_prediction.model_params defines architecture
+#
+# LIVE TRADING (src/core/main.py):
+#   - Uses same centralized config loader
+#   - ml.reinforcement_learning.training_mode should be false
+#   - Uses pre-trained models from data/models/
+#
+# CRITICAL: Model architecture parameters (LSTM hidden_size, etc.) must match
+# between config and trained models. Changing these requires retraining!
 # ==============================================================================
 
 # ==============================================================================
@@ -300,6 +319,12 @@ ml:
     enabled: true                     # Rejim tahmin motorunu etkinleştirir.
     min_confidence_threshold: 0.6     # Override: ML_REGIME_MIN_CONFIDENCE
     
+    # NEW: Soft-Weighting Configuration
+    # Instead of hard cutoff, use graduated weighting based on confidence
+    soft_weighting_enabled: true      # Override: REGIME_SOFT_WEIGHT_ENABLED
+    min_confidence_hard_reject: 0.30  # Override: REGIME_MIN_CONF_REJECT (Below this, completely ignore)
+    min_confidence_full_weight: 0.60  # Override: REGIME_MIN_CONF_FULL (Above this, use full weight)
+    
     # 1. Model Parametreleri (SADECE Rejim Tahmincisi için)
     # ⚠️ KRİTİK: Bu parametreler TÜM kod tabanında kullanılır:
     #   - src/ml/neural_networks.py (LSTMRegimePredictor default değerleri)
@@ -307,6 +332,8 @@ ml:
     #   - src/ml/regime_predictor.py (model yükleme sırasında)
     #   - scripts/train_all_models.py (eğitim betiğinde)
     # Bu değerleri değiştirirseniz, eski modelleri SİLİP yeniden eğitmelisiniz!
+    # 
+    # FAZ 3.1 OPTIMIZATION: Neural network parameters optimized for better performance
     model_params:
       random_forest:
         n_estimators: 150
@@ -315,8 +342,10 @@ ml:
         n_estimators: 200
         learning_rate: 0.05
       lstm_regime:
-        hidden_size: 64   # Küçük ve güvenli mimari (overfitting'i önler)
-        num_layers: 2     # Daha az katman = daha iyi genelleme
+        # FAZ 3.3 VALUES (Anti-Overfit V2) - SYNCHRONIZED WITH model_trainer.py
+        hidden_size: 64               # ✅ SYNCED: Override: ML_LSTM_HIDDEN (matches model_trainer.py LSTM_HIDDEN_SIZE)
+        num_layers: 2                 # ✅ SYNCED: Override: ML_LSTM_LAYERS (matches model_trainer.py LSTM_NUM_LAYERS)
+        dropout: 0.6                  # ✅ SYNCED: Override: ML_LSTM_DROPOUT (matches model_trainer.py LSTM_DROPOUT)
     
     # 2. Ensemble Ağırlıkları
     ensemble_weights:
@@ -330,18 +359,58 @@ ml:
   # ----------------------------------------------------------------------------
   reinforcement_learning:
     enabled: true                     # Override: ML_RL_ENABLED
-    training_mode: false              # Override: ML_RL_TRAINING_MODE
+    
+    # Training Mode Control
+    # ============================================================================
+    # CRITICAL: This parameter controls the agent's learning behavior
+    # ============================================================================
+    # When TRUE (training mode):
+    #   - Agent starts with high exploration (epsilon_start = 1.0)
+    #   - Epsilon decays over episodes (epsilon_decay = 0.995)
+    #   - Agent learns from experiences and updates weights
+    #   - Use for: Training scripts (train_all_models.py)
+    #
+    # When FALSE (inference mode):
+    #   - Agent uses minimal exploration (epsilon_inference = 0.01)
+    #   - No epsilon decay
+    #   - Agent uses pre-trained weights without learning
+    #   - Use for: Live trading
+    # ============================================================================
+    training_mode: true               # ✅ CHANGED: Override: ML_RL_TRAINING_MODE (false → true for training)
 
     # Davranış Ayarları
     hold_confidence_threshold: 0.60   # Override: ML_RL_HOLD_CONFIDENCE_THRESHOLD
-    epsilon_inference: 0.01           # Override: ML_RL_EPSILON_INFERENCE
+    
+    # Exploration Parameters (Epsilon-Greedy Strategy)
+    epsilon_inference: 0.01           # Override: ML_RL_EPSILON_INFERENCE (for live trading, minimal exploration)
+    epsilon_start: 1.0                # ✅ ADDED: Override: ML_RL_EPSILON_START (training: start with full exploration)
+    epsilon_decay: 0.9897             # ✅ ADDED: Override: ML_RL_EPSILON_DECAY (training: decay rate per episode)
+                                      # Previous: 0.995 (too slow, resulted in 29% final epsilon)
+                                      # Formula: (target_final/initial)^(1/episodes) = (0.08/1.0)^(1/250)
+    epsilon_min: 0.01                 # ✅ ADDED: Override: ML_RL_EPSILON_MIN (training: minimum exploration floor)
+    
     regime_bias_strength: 5.0         # Override: ML_RL_REGIME_BIAS
     risk_penalty_strength: 100.0      # Override: ML_RL_RISK_PENALTY
 
     # Temel Algoritma Parametreleri (Uzman kullanıcılar için)
-    learning_rate: 0.0001             # Override: ML_RL_LEARNING_RATE
+    learning_rate: 0.00001            # Override: ML_RL_LEARNING_RATE
     gamma: 0.99                       # Override: ML_RL_GAMMA
-    target_update_freq: 10            # Override: ML_RL_TARGET_UPDATE_FREQ
-    batch_size: 64                    # Override: ML_RL_BATCH_SIZE
+    target_update_freq: 50            # Override: ML_RL_TARGET_UPDATE_FREQ
+    batch_size: 32                    # Override: ML_RL_BATCH_SIZE
     buffer_size: 100000               # Override: ML_RL_BUFFER_SIZE
+
+  # ----------------------------------------------------------------------------
+  # E) SIGNAL SCORING SYSTEM
+  # Composite scoring system for signal quality assessment
+  # ----------------------------------------------------------------------------
+  signal_scoring:
+    enabled: true                     # Override: SIGNAL_SCORING_ENABLED
+    min_score_to_trade: 60            # Override: SIGNAL_MIN_SCORE (Minimum score to execute trade)
+    
+    # Component weights (should sum to 1.0)
+    weights:
+      strategy: 0.3                   # Override: SCORE_WEIGHT_STRATEGY (Base strategy signal strength)
+      ml_price: 0.3                   # Override: SCORE_WEIGHT_ML (ML price prediction confidence)
+      regime: 0.2                     # Override: SCORE_WEIGHT_REGIME (Regime prediction weight)
+      risk_reward: 0.2                # Override: SCORE_WEIGHT_RR (Risk/reward ratio quality)
   

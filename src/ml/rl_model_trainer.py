@@ -48,19 +48,170 @@ class RLModelTrainer:
         if not os.path.exists(self.model_save_path):
             os.makedirs(self.model_save_path, exist_ok=True)
             logger.info(f"Created directory for saving models: {self.model_save_path}")
+        
+        # =====================================================================
+        # ENHANCED CONFIGURATION LOGGING
+        # =====================================================================
+        
+        logger.info("="*70)
+        logger.info("🤖 RL AGENT TRAINING CONFIGURATION")
+        logger.info("="*70)
+        
+        # Training Mode
+        training_mode_icon = "🎓" if self.agent.training_mode else "🔒"
+        logger.info(f"{training_mode_icon} Training Mode:     {self.agent.training_mode}")
+        
+        if not self.agent.training_mode:
+            logger.warning("⚠️  WARNING: Agent is in INFERENCE mode!")
+            logger.warning("⚠️  Agent will NOT learn during this training session")
+            logger.warning("⚠️  This is likely a configuration error")
+        
+        # Exploration Strategy
+        logger.info(f"🎯 Exploration Strategy (Epsilon-Greedy):")
+        logger.info(f"   Initial Epsilon:   {self.agent.epsilon:.4f}")
+        logger.info(f"   Epsilon Decay:     {self.agent.epsilon_decay:.4f}")
+        logger.info(f"   Epsilon Min:       {self.agent.epsilon_min:.4f}")
+        
+        # Learning Parameters
+        logger.info(f"📚 Learning Parameters:")
+        try:
+            learning_rate = self.agent.config.get('learning_rate', 'N/A')
+            gamma = self.agent.gamma
+            batch_size = self.agent.batch_size
+            target_update = self.agent.config.get('target_update_freq', 'N/A')
+            
+            logger.info(f"   Learning Rate:     {learning_rate}")
+            logger.info(f"   Gamma (Discount):  {gamma}")
+            logger.info(f"   Batch Size:        {batch_size}")
+            logger.info(f"   Target Update:     Every {target_update} steps")
+        except Exception as e:
+            logger.warning(f"   Could not log some parameters: {e}")
+        
+        # Memory Configuration (Experience Replay)
+        logger.info(f"💾 Experience Replay Buffer:")
+        try:
+            # ExperienceReplay uses deque with 'buffer' attribute
+            if hasattr(self.experience_replay, 'buffer'):
+                buffer = self.experience_replay.buffer
+                current_size = len(buffer)
+                # deque.maxlen gives the maximum capacity
+                max_capacity = buffer.maxlen if hasattr(buffer, 'maxlen') else 'Unknown'
+            elif hasattr(self.experience_replay, 'memory'):
+                # Fallback for alternative implementations
+                buffer = self.experience_replay.memory
+                current_size = len(buffer)
+                max_capacity = buffer.maxlen if hasattr(buffer, 'maxlen') else 'Unknown'
+            else:
+                current_size = 0
+                max_capacity = self.agent.config.get('buffer_size', 'Unknown')
+            
+            logger.info(f"   Max Capacity:      {max_capacity}")
+            logger.info(f"   Current Size:      {current_size}")
+            logger.info(f"   Utilization:       {current_size}/{max_capacity} ({(current_size/max_capacity*100) if isinstance(max_capacity, int) else 'N/A'}%)")
+        except Exception as e:
+            logger.warning(f"   Could not retrieve buffer info: {e}")
+            logger.info(f"   Max Capacity:      {self.agent.config.get('buffer_size', 'N/A')}")
+            logger.info(f"   Current Size:      Unknown")
+        
+        # Environment Configuration
+        logger.info(f"🌍 Environment:")
+        logger.info(f"   State Dimension:   {self.agent.state_size}")
+        logger.info(f"   Action Dimension:  {self.agent.action_size}")
+        
+        # Behavior Modifiers (if available)
+        logger.info(f"⚙️  Behavior Modifiers:")
+        try:
+            regime_bias = self.agent.config.get('regime_bias_strength', 'N/A')
+            risk_penalty = self.agent.config.get('risk_penalty_strength', 'N/A')
+            hold_threshold = self.agent.config.get('hold_confidence_threshold', 'N/A')
+            
+            logger.info(f"   Regime Bias:       {regime_bias}")
+            logger.info(f"   Risk Penalty:      {risk_penalty}")
+            logger.info(f"   Hold Threshold:    {hold_threshold}")
+        except Exception as e:
+            logger.warning(f"   Could not log behavior modifiers: {e}")
+        
+        logger.info("="*70)
+        
+        # =====================================================================
+        # END ENHANCED LOGGING
+        # =====================================================================
 
     def train(self,
               num_episodes: int,
-              batch_size: int = 64, # Bu parametre artık doğrudan ajan tarafından kullanılıyor
+              batch_size: int = 64,
               save_every: int = 10,
               checkpoint_path: Optional[str] = None):
         """
         Runs the main training loop for the specified number of episodes.
         """
+        # =====================================================================
+        # TRAINING SESSION CONFIGURATION
+        # =====================================================================
+        logger.info("")
+        logger.info("="*70)
+        logger.info("🚀 STARTING RL TRAINING SESSION")
+        logger.info("="*70)
+        logger.info(f"📊 Training Parameters:")
+        logger.info(f"   Total Episodes:    {num_episodes}")
+        logger.info(f"   Save Every:        {save_every} episodes")
+        logger.info(f"   Batch Size:        {batch_size}")
+        
+        # === DEBUG: Log epsilon BEFORE any checkpoint loading ===
+        logger.info("="*70)
+        logger.info("🔍 DEBUG: Epsilon Status BEFORE Checkpoint Loading")
+        logger.info("="*70)
+        logger.info(f"   Agent Training Mode:  {self.agent.training_mode}")
+        logger.info(f"   Current Epsilon:      {self.agent.epsilon:.4f}")
+        logger.info(f"   Epsilon Decay:        {self.agent.epsilon_decay:.4f}")
+        logger.info(f"   Epsilon Min:          {self.agent.epsilon_min:.4f}")
+        logger.info(f"   Expected for Training: 1.0000 (if training_mode=True)")
+        
+        # Calculate expected final epsilon
+        final_epsilon = self.agent.epsilon * (self.agent.epsilon_decay ** num_episodes)
+        final_epsilon = max(final_epsilon, self.agent.epsilon_min)
+        logger.info(f"   Expected Final ε:  {final_epsilon:.4f} (after {num_episodes} episodes)")
+        
+        if checkpoint_path:
+            logger.info(f"   Checkpoint:        {checkpoint_path}")
+        
+        logger.info("="*70)
+        logger.info("")
+        # =====================================================================
+                  
         # === GÜNCELLEME: Doğru metod adı 'load_model' ===
         if checkpoint_path and os.path.exists(checkpoint_path):
+            logger.info(f"📥 Loading checkpoint from: {checkpoint_path}")
+            logger.info(f"   Epsilon BEFORE load: {self.agent.epsilon:.4f}")
             self.agent.load_model(checkpoint_path)
+            logger.info(f"   Epsilon AFTER load:  {self.agent.epsilon:.4f}")
             logger.info(f"Resumed training from checkpoint: {checkpoint_path}")
+            
+            # === FIX: Reset epsilon for fresh training if in training mode ===
+            if self.agent.training_mode:
+                old_epsilon = self.agent.epsilon
+                self.agent.epsilon = self.agent.config.get('epsilon_start', 1.0)
+                logger.warning("="*70)
+                logger.warning("⚠️  EPSILON RESET FOR TRAINING MODE")
+                logger.warning("="*70)
+                logger.warning(f"   Checkpoint had epsilon: {old_epsilon:.4f}")
+                logger.warning(f"   Reset to epsilon_start:  {self.agent.epsilon:.4f}")
+                logger.warning(f"   Reason: Starting fresh training session")
+                logger.warning("="*70)
+        
+        # === DEBUG: Log epsilon AFTER checkpoint loading (if any) ===
+        logger.info("="*70)
+        logger.info("🔍 DEBUG: Epsilon Status AFTER Checkpoint Loading")
+        logger.info("="*70)
+        logger.info(f"   Current Epsilon:      {self.agent.epsilon:.4f}")
+        logger.info(f"   Expected for Training: 1.0000 (if training_mode=True)")
+        if self.agent.epsilon != 1.0 and self.agent.training_mode:
+            logger.error("❌ ERROR: Epsilon is NOT 1.0 despite being in training mode!")
+            logger.error("   This will prevent proper exploration and learning.")
+        else:
+            logger.info("✅ Epsilon is correctly set for training")
+        logger.info("="*70)
+        logger.info("")
 
         scores = deque(maxlen=100)
         latest_metrics = {}
@@ -83,6 +234,9 @@ class RLModelTrainer:
                 
                 state = next_state
                 total_reward += reward
+            
+            # === FIX: Decay epsilon once per episode (not per learning step) ===
+            self.agent.decay_epsilon()
 
             scores.append(total_reward)
             avg_score = np.mean(scores)

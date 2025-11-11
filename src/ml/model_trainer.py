@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
+from scripts.utils.validation_framework import TimeSeriesValidator, ValidationReport
 
 # ML_ENABLED ortam değişkenini oku
 ML_ENABLED = os.getenv("ML_ENABLED", "false").lower() in ("1", "true", "yes")
@@ -31,6 +32,149 @@ else:
     TimeSeriesSplit = None
 
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# TRAINING HYPERPARAMETERS - SYNCHRONIZED WITH config.example.yaml
+# ============================================================================
+# These constants serve as FALLBACK VALUES when config is not provided.
+# The actual training process SHOULD use values from config whenever possible.
+#
+# CRITICAL SYNCHRONIZATION REQUIREMENTS:
+# ================================================================================
+# These values MUST match config.example.yaml defaults:
+#   - LSTM_HIDDEN_SIZE  = ml.regime_prediction.model_params.lstm_regime.hidden_size
+#   - LSTM_NUM_LAYERS   = ml.regime_prediction.model_params.lstm_regime.num_layers
+#   - LSTM_DROPOUT      = ml.regime_prediction.model_params.lstm_regime.dropout
+#
+# WHY? Because:
+#   1. Model architecture is defined by these parameters
+#   2. Saved models cannot be loaded if parameters mismatch
+#   3. Training and inference must use identical architectures
+#   4. Config allows runtime override via environment variables
+#
+# If you change these, you MUST:
+#   1. Update config.example.yaml to match
+#   2. Delete old trained models (data/models/regime/)
+#   3. Retrain all models
+#   4. Commit both changes together
+# ================================================================================
+
+# General Training Parameters
+NUM_EPOCHS = 50                      # Maximum epochs per model
+EARLY_STOPPING_PATIENCE = 5          # Default patience (overridden per model)
+MIN_DELTA = 0.001                    # Minimum improvement threshold
+MIN_EPOCHS = 15                      # Minimum epochs before early stopping
+SEQUENCE_LENGTH = 20                 # Temporal sequence length for LSTM/Transformer
+LEARNING_RATE = 0.0005               # Adam optimizer learning rate
+WEIGHT_DECAY = 5e-4                  # L2 regularization strength
+
+# ===== LSTM CONFIGURATION (FAZ 3.3 - ANTI-OVERFIT V2) =====
+# MUST MATCH: config.example.yaml → ml.regime_prediction.model_params.lstm_regime
+LSTM_HIDDEN_SIZE = 64                # ✅ SYNCED with config (reduced capacity)
+LSTM_NUM_LAYERS = 2                  # ✅ SYNCED with config (shallower network)
+LSTM_DROPOUT = 0.6                   # ✅ SYNCED with config (stronger regularization)
+LSTM_EARLY_STOPPING_PATIENCE = 2     # Aggressive early stopping
+
+# ===== TRANSFORMER CONFIGURATION (FAZ 3.1 PROVEN SETTINGS) =====
+TRANSFORMER_NHEAD = 6                # Attention heads
+TRANSFORMER_NUM_LAYERS = 4           # Encoder layers
+TRANSFORMER_DIM_FEEDFORWARD = 256    # FFN hidden dimension
+TRANSFORMER_DROPOUT = 0.3            # Dropout rate
+TRANSFORMER_EARLY_STOPPING_PATIENCE = 5  # More patient (transformer is stable)
+
+# ===== DATA AUGMENTATION (FAZ 3.3 - DISABLED) =====
+USE_DATA_AUGMENTATION = False        # SMOTE/Jittering harmful for time-series
+USE_SMOTE = False                    # Synthetic data causes overfitting
+USE_JITTERING = False                # Breaks temporal dependencies
+JITTERING_NOISE_LEVEL = 0.01         # (Unused but defined)
+# ============================================================================
+
+
+def get_lstm_params_from_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Extract LSTM parameters from config or use fallback constants.
+    
+    This function implements the config-first strategy:
+      1. Try to get values from ml.regime_prediction.model_params.lstm_regime
+      2. Fall back to module-level constants if config missing
+      3. Log which source was used for transparency
+    
+    Args:
+        config: Optional config dict from ml.regime_prediction section
+        
+    Returns:
+        Dict with keys: hidden_size, num_layers, dropout
+        
+    Example:
+        >>> config = {'model_params': {'lstm_regime': {'hidden_size': 64}}}
+        >>> params = get_lstm_params_from_config(config)
+        >>> params['hidden_size']
+        64
+    """
+    if config and 'model_params' in config and 'lstm_regime' in config['model_params']:
+        lstm_config = config['model_params']['lstm_regime']
+        params = {
+            'hidden_size': lstm_config.get('hidden_size', LSTM_HIDDEN_SIZE),
+            'num_layers': lstm_config.get('num_layers', LSTM_NUM_LAYERS),
+            'dropout': lstm_config.get('dropout', LSTM_DROPOUT)
+        }
+        logger.info(f"Using LSTM params from config: {params}")
+        return params
+    
+    # Fallback to constants
+    params = {
+        'hidden_size': LSTM_HIDDEN_SIZE,
+        'num_layers': LSTM_NUM_LAYERS,
+        'dropout': LSTM_DROPOUT
+    }
+    logger.warning(f"Config not provided, using fallback LSTM params: {params}")
+    return params
+
+
+class EarlyStopping:
+    """Early stopping to prevent overfitting during training."""
+    
+    def __init__(self, patience: int = 5, min_delta: float = 0.001, min_epochs: int = 20):
+        """
+        Initialize early stopping.
+        
+        Args:
+            patience: Number of epochs to wait for improvement before stopping
+            min_delta: Minimum change to qualify as an improvement
+            min_epochs: Minimum number of epochs to train before considering early stopping
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.min_epochs = min_epochs
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+        
+    def __call__(self, val_loss: float, epoch: int) -> bool:
+        """
+        Check if training should stop.
+        
+        Args:
+            val_loss: Current validation loss
+            epoch: Current epoch number (0-indexed)
+            
+        Returns:
+            True if training should stop, False otherwise
+        """
+        # Don't stop before minimum epochs
+        if epoch < self.min_epochs:
+            return False
+            
+        if self.best_loss is None:
+            self.best_loss = val_loss
+        elif val_loss > self.best_loss - self.min_delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_loss = val_loss
+            self.counter = 0
+        return self.early_stop
 
 
 class TimeSeriesCV:
@@ -171,6 +315,11 @@ class RegimeModelTrainer:
             config: Optional configuration dictionary from ml.regime_prediction config block
         """
         self.config = config or {}
+        
+        # ✅ NEW: Extract LSTM parameters from config
+        self.lstm_params = get_lstm_params_from_config(config)
+        logger.info(f"RegimeModelTrainer initialized with LSTM params: {self.lstm_params}")
+        
         self.models = {}
         self.scalers = {}
         self.validators = {
@@ -182,7 +331,7 @@ class RegimeModelTrainer:
         self.training_history = []  # Store epoch-by-epoch metrics
         os.makedirs(self.MODEL_SAVE_DIR, exist_ok=True) # Klasörün var olduğundan emin ol
     
-    def _create_sequences(self, X: np.ndarray, y: np.ndarray, seq_length: int = 10) -> Tuple[np.ndarray, np.ndarray]:
+    def _create_sequences(self, X: np.ndarray, y: np.ndarray, seq_length: int = SEQUENCE_LENGTH) -> Tuple[np.ndarray, np.ndarray]:
         """
         Convert 2D data (samples, features) to 3D sequences (samples, seq_length, features).
         
@@ -192,7 +341,7 @@ class RegimeModelTrainer:
         Args:
             X: 2D feature array of shape (n_samples, n_features)
             y: 1D label array of shape (n_samples,)
-            seq_length: Length of each sequence (default: 10)
+            seq_length: Length of each sequence (default: SEQUENCE_LENGTH = 20)
             
         Returns:
             Tuple of (X_sequences, y_sequences) where:
@@ -216,7 +365,7 @@ class RegimeModelTrainer:
         return X_sequences, y_sequences
     
     def train_ensemble_models(self, X: np.ndarray, y: np.ndarray,
-                             validation_method: str = 'time_series_cv', seq_length: int = 10) -> Dict[str, Any]:
+                             validation_method: str = 'time_series_cv', seq_length: int = SEQUENCE_LENGTH) -> Dict[str, Any]:
         """
         Train ensemble of regime prediction models.
         
@@ -224,11 +373,35 @@ class RegimeModelTrainer:
             X: Feature array (2D: samples x features)
             y: Label array
             validation_method: Validation method to use
-            seq_length: Sequence length for LSTM/Transformer (default: 10)
+            seq_length: Sequence length for LSTM/Transformer (default: SEQUENCE_LENGTH = 20)
             
         Returns:
             Dictionary with training results and metrics
         """
+        logger.info("="*60)
+        logger.info("🧠 NEURAL NETWORK TRAINING CONFIGURATION (FAZ 3.3 - CLEAN)")
+        logger.info(f"   Total Samples: {len(X)} (REAL DATA ONLY - No Augmentation)")
+        logger.info(f"   Features: {X.shape[1]}")
+        logger.info(f"   Sequence Length: {seq_length}")
+        logger.info(f"   Max Epochs: {NUM_EPOCHS} (min: {MIN_EPOCHS})")
+        logger.info(f"   Learning Rate: {LEARNING_RATE}")
+        logger.info(f"   Weight Decay: {WEIGHT_DECAY}")
+        logger.info("")
+        logger.info("   LSTM Configuration:")
+        logger.info(f"      Hidden Size: {LSTM_HIDDEN_SIZE} (reduced from 128)")
+        logger.info(f"      Layers: {LSTM_NUM_LAYERS}")
+        logger.info(f"      Dropout: {LSTM_DROPOUT} (increased from 0.3)")
+        logger.info(f"      Early Stop Patience: {LSTM_EARLY_STOPPING_PATIENCE}")
+        logger.info("")
+        logger.info("   Transformer Configuration:")
+        logger.info(f"      nhead: {TRANSFORMER_NHEAD}")
+        logger.info(f"      Layers: {TRANSFORMER_NUM_LAYERS}")
+        logger.info(f"      Dropout: {TRANSFORMER_DROPOUT}")
+        logger.info(f"      Early Stop Patience: {TRANSFORMER_EARLY_STOPPING_PATIENCE}")
+        logger.info("")
+        logger.info("   Data Augmentation: DISABLED (using real market data only)")
+        logger.info("="*60)
+        
         logger.info(f"Training ensemble models with {validation_method} validation")
         logger.info(f"Input data shape: X={X.shape}, y={y.shape}")
         
@@ -256,15 +429,44 @@ class RegimeModelTrainer:
             X_seq, y_seq = self._create_sequences(X_scaled, y, seq_length)
             logger.info(f"Sequence data shape: X_seq={X_seq.shape}, y_seq={y_seq.shape}")
             
+            # ===== DATA AUGMENTATION =====
+            if USE_DATA_AUGMENTATION:
+                from src.ml.data_augmentation import DataAugmentation
+                
+                augmenter = DataAugmentation()
+                X_seq_aug, y_seq_aug = augmenter.augment_sequence_data(
+                    X_seq, 
+                    y_seq,
+                    use_smote=USE_SMOTE,
+                    use_jittering=USE_JITTERING,
+                    jitter_noise=JITTERING_NOISE_LEVEL
+                )
+            else:
+                X_seq_aug, y_seq_aug = X_seq, y_seq
+                logger.info("Data augmentation disabled, using original sequences")
+            
             # Train LSTM model with 3D sequence data
             logger.info("Training LSTM model (using 3D sequence data)...")
-            lstm_model, lstm_metrics = self._train_lstm(X_seq, y_seq, validation_method)
+            lstm_model, lstm_metrics = self._train_lstm(
+                X_seq_aug,  # Augmented data
+                y_seq_aug,  # Augmented labels
+                validation_method,
+                hidden_size=self.lstm_params['hidden_size'],     # ✅ CHANGED: Use config
+                num_layers=self.lstm_params['num_layers'],       # ✅ CHANGED: Use config
+                dropout=self.lstm_params['dropout'],             # ✅ CHANGED: Use config
+                patience=LSTM_EARLY_STOPPING_PATIENCE
+            )
             results['models']['lstm'] = lstm_model
             results['metrics']['lstm'] = lstm_metrics
             
             # Train Transformer model with 3D sequence data
             logger.info("Training Transformer model (using 3D sequence data)...")
-            transformer_model, transformer_metrics = self._train_transformer(X_seq, y_seq, validation_method)
+            transformer_model, transformer_metrics = self._train_transformer(
+                X_seq_aug,  # Augmented data
+                y_seq_aug,  # Augmented labels
+                validation_method,
+                patience=TRANSFORMER_EARLY_STOPPING_PATIENCE
+            )
             results['models']['transformer'] = transformer_model
             results['metrics']['transformer'] = transformer_metrics
             
@@ -416,18 +618,29 @@ class RegimeModelTrainer:
         return model, metrics
     
     def _train_lstm(self, X: np.ndarray, y: np.ndarray,
-                   validation_method: str) -> Tuple[Any, Dict[str, float]]:
+                   validation_method: str, hidden_size=None, num_layers=None, 
+                   dropout=None, patience=None) -> Tuple[Any, Dict[str, float]]:
         """
-        Train LSTM model with a real training loop.
+        Train LSTM model with configurable parameters.
         
         Args:
             X: 3D sequence data of shape (n_sequences, seq_length, n_features)
             y: Label array of shape (n_sequences,)
             validation_method: Validation method (not used in this simplified version)
+            hidden_size: LSTM hidden dimension (default: LSTM_HIDDEN_SIZE)
+            num_layers: Number of LSTM layers (default: LSTM_NUM_LAYERS)
+            dropout: Dropout rate (default: LSTM_DROPOUT)
+            patience: Early stopping patience (default: LSTM_EARLY_STOPPING_PATIENCE)
             
         Returns:
             Tuple of (trained_model, metrics_dict)
         """
+        # Use provided params or defaults
+        hidden_size = hidden_size or LSTM_HIDDEN_SIZE
+        num_layers = num_layers or LSTM_NUM_LAYERS
+        dropout = dropout or LSTM_DROPOUT
+        patience = patience or LSTM_EARLY_STOPPING_PATIENCE
+        
         # === YENİ KORUMA: YETERLİ VERİ KONTROLÜ ===
         if X.shape[0] < 20: # Eğitim ve validasyon için makul bir alt sınır
             logger.warning(f"LSTM training skipped: Insufficient sequences ({X.shape[0]}) available.")
@@ -455,24 +668,53 @@ class RegimeModelTrainer:
             return None, {}
         # === KORUMA SONU ===
         
-        # Initialize LSTM model with correct input size (number of features per timestep)
-        # Read parameters from config (ml.regime_prediction.model_params.lstm_regime)
-        model_params = self.config.get('model_params', {})
-        lstm_config = model_params.get('lstm_regime', {})
+        # Initialize LSTM model with configurable parameters
+        input_size = X.shape[2]  # Number of features (last dimension of 3D array)
+        num_classes = len(np.unique(y))
         
         model = LSTMRegimePredictor(
-            input_size=X.shape[2],  # Number of features (last dimension of 3D array)
-            hidden_size=lstm_config.get('hidden_size', 64),
-            num_layers=lstm_config.get('num_layers', 2),
-            num_classes=len(np.unique(y))
+            input_size=input_size,
+            hidden_size=hidden_size,  # Use parameter
+            num_layers=num_layers,    # Use parameter
+            num_classes=num_classes,
+            dropout=dropout           # Use parameter
         )
         
-        criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        # Count trainable parameters
+        total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        logger.info(f"LSTM model: hidden_size={hidden_size}, num_layers={num_layers}, dropout={dropout}")
+        logger.info(f"Total trainable parameters: {total_params:,}")
         
-        logger.info(f"Starting LSTM training for 10 epochs...")
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(
+            model.parameters(), 
+            lr=LEARNING_RATE,
+            weight_decay=WEIGHT_DECAY
+        )
+        
+        # Learning rate scheduler
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.5,
+            patience=3,
+            min_lr=1e-6
+        )
+        
+        # Early stopping
+        early_stopping = EarlyStopping(
+            patience=patience, 
+            min_delta=MIN_DELTA,
+            min_epochs=MIN_EPOCHS
+        )
+        logger.info(f"Early stopping patience: {patience}")
+        
+        logger.info(f"Starting LSTM training for up to {NUM_EPOCHS} epochs (min: {MIN_EPOCHS})...")
         model.train()
-        for epoch in range(10):
+        
+        for epoch in range(NUM_EPOCHS):
+            # Training phase
+            model.train()
             epoch_loss = 0
             for i, (features, labels) in enumerate(train_loader):
                 optimizer.zero_grad()
@@ -481,17 +723,37 @@ class RegimeModelTrainer:
                 loss.backward()
                 optimizer.step()
                 epoch_loss += loss.item()
-            avg_loss = epoch_loss / len(train_loader)
-            logger.info(f"  LSTM Epoch {epoch+1}/10, Loss: {avg_loss:.4f}")
+            train_loss = epoch_loss / len(train_loader)
+            
+            # Validation phase
+            model.eval()
+            with torch.no_grad():
+                val_outputs = model(X_val)
+                val_loss = criterion(val_outputs, y_val)
+                val_loss_value = val_loss.item()
+            
+            # Update learning rate
+            scheduler.step(val_loss_value)
+            current_lr = optimizer.param_groups[0]['lr']
+            
+            # Log progress
+            logger.info(f"  LSTM Epoch {epoch+1}/{NUM_EPOCHS}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss_value:.4f}, LR: {current_lr:.6f}")
             
             # Store epoch metrics
             self.training_history.append({
                 'model': 'lstm',
                 'epoch': epoch + 1,
-                'loss': avg_loss
+                'loss': train_loss,
+                'val_loss': val_loss_value,
+                'learning_rate': current_lr
             })
+            
+            # Check early stopping
+            if early_stopping(val_loss_value, epoch):
+                logger.info(f"  ⏹️  Early stopping triggered at epoch {epoch+1} (no improvement for {patience} epochs)")
+                break
 
-        # Calculate validation accuracy
+        # Calculate final validation accuracy
         model.eval()
         with torch.no_grad():
             val_outputs = model(X_val)  # Returns logits only
@@ -501,25 +763,33 @@ class RegimeModelTrainer:
         metrics = {
             'accuracy': accuracy, 
             'n_features': X.shape[2],
-            'seq_length': X.shape[1]
+            'seq_length': X.shape[1],
+            'hidden_size': hidden_size,
+            'num_layers': num_layers,
+            'total_params': total_params,
+            'final_epoch': epoch + 1
         }
-        logger.info(f"✅ LSTM validation accuracy: {accuracy:.4f}")
+        logger.info(f"✅ LSTM validation accuracy: {accuracy:.4f} (trained for {epoch+1} epochs)")
         
         return model, metrics
 
     def _train_transformer(self, X: np.ndarray, y: np.ndarray,
-                         validation_method: str) -> Tuple[Any, Dict[str, float]]:
+                         validation_method: str, patience=None) -> Tuple[Any, Dict[str, float]]:
         """
-        Train Transformer model with a real training loop.
+        Train Transformer model with configurable patience.
         
         Args:
             X: 3D sequence data of shape (n_sequences, seq_length, n_features)
             y: Label array of shape (n_sequences,)
             validation_method: Validation method (not used in this simplified version)
+            patience: Early stopping patience (default: TRANSFORMER_EARLY_STOPPING_PATIENCE)
             
         Returns:
             Tuple of (trained_model, metrics_dict)
         """
+        # Use provided patience or default
+        patience = patience or TRANSFORMER_EARLY_STOPPING_PATIENCE
+        
         # === YENİ KORUMA: YETERLİ VERİ KONTROLÜ ===
         if X.shape[0] < 20: # Eğitim ve validasyon için makul bir alt sınır
             logger.warning(f"Transformer training skipped: Insufficient sequences ({X.shape[0]}) available.")
@@ -531,20 +801,17 @@ class RegimeModelTrainer:
         logger.info(f"Transformer training - Input shape: X={X.shape}, y={y.shape}")
         
         # Transformer d_model must be divisible by nhead.
+        # Use optimized nhead from constants
         n_features = X.shape[2]
         d_model = n_features
-        nhead = 2 # Start with a reasonable default
-        # Find the smallest d_model >= n_features that is divisible by a reasonable nhead
-        for h in [4, 2]: # Prefer 4 heads, fallback to 2
-            if (n_features % h) == 0:
-                d_model = n_features
-                nhead = h
-                break
-        else: # If not divisible by 4 or 2, pad it
-            nhead = 2
-            d_model = n_features + (nhead - n_features % nhead) % nhead
+        nhead = TRANSFORMER_NHEAD
         
-        logger.info(f"Transformer params: d_model={d_model}, nhead={nhead} (original features: {n_features})")
+        # Find the smallest d_model >= n_features that is divisible by nhead
+        if (n_features % nhead) != 0:
+            d_model = n_features + (nhead - n_features % nhead)
+            logger.info(f"Padding features from {n_features} to {d_model} to be divisible by nhead={nhead}")
+        
+        logger.info(f"Transformer params: d_model={d_model}, nhead={nhead}, num_layers={TRANSFORMER_NUM_LAYERS}, dim_feedforward={TRANSFORMER_DIM_FEEDFORWARD}")
         
         # Convert to PyTorch tensors and pad if necessary
         X_tensor = torch.from_numpy(X).float()
@@ -568,20 +835,51 @@ class RegimeModelTrainer:
             return None, {}
         # === KORUMA SONU ===
         
-        # Initialize Transformer model
+        # Initialize Transformer model with optimized parameters
         model = TransformerRegimePredictor(
             d_model=d_model,
             nhead=nhead,
-            num_layers=2,
-            num_classes=len(np.unique(y))
+            num_layers=TRANSFORMER_NUM_LAYERS,
+            num_classes=len(np.unique(y)),
+            dim_feedforward=TRANSFORMER_DIM_FEEDFORWARD,
+            dropout=TRANSFORMER_DROPOUT
         )
         
+        # Count trainable parameters
+        total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        logger.info(f"Transformer model: d_model={d_model}, nhead={nhead}, num_layers={TRANSFORMER_NUM_LAYERS}")
+        logger.info(f"Total trainable parameters: {total_params:,}")
+        
         criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        optimizer = torch.optim.Adam(
+            model.parameters(), 
+            lr=LEARNING_RATE,
+            weight_decay=WEIGHT_DECAY
+        )
+        
+        # Learning rate scheduler
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.5,
+            patience=3,
+            min_lr=1e-6
+        )
+        
+        # Early stopping
+        early_stopping = EarlyStopping(
+            patience=patience, 
+            min_delta=MIN_DELTA,
+            min_epochs=MIN_EPOCHS
+        )
+        logger.info(f"Early stopping patience: {patience}")
 
-        logger.info(f"Starting Transformer training for 10 epochs...")
+        logger.info(f"Starting Transformer training for up to {NUM_EPOCHS} epochs (min: {MIN_EPOCHS})...")
         model.train()
-        for epoch in range(10):
+        
+        for epoch in range(NUM_EPOCHS):
+            # Training phase
+            model.train()
             epoch_loss = 0
             for features, labels in train_loader:
                 optimizer.zero_grad()
@@ -590,17 +888,37 @@ class RegimeModelTrainer:
                 loss.backward()
                 optimizer.step()
                 epoch_loss += loss.item()
-            avg_loss = epoch_loss / len(train_loader)
-            logger.info(f"  Transformer Epoch {epoch+1}/10, Loss: {avg_loss:.4f}")
+            train_loss = epoch_loss / len(train_loader)
+            
+            # Validation phase
+            model.eval()
+            with torch.no_grad():
+                val_outputs = model(X_val)
+                val_loss = criterion(val_outputs, y_val)
+                val_loss_value = val_loss.item()
+            
+            # Update learning rate
+            scheduler.step(val_loss_value)
+            current_lr = optimizer.param_groups[0]['lr']
+            
+            # Log progress
+            logger.info(f"  Transformer Epoch {epoch+1}/{NUM_EPOCHS}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss_value:.4f}, LR: {current_lr:.6f}")
             
             # Store epoch metrics
             self.training_history.append({
                 'model': 'transformer',
                 'epoch': epoch + 1,
-                'loss': avg_loss
+                'loss': train_loss,
+                'val_loss': val_loss_value,
+                'learning_rate': current_lr
             })
+            
+            # Check early stopping
+            if early_stopping(val_loss_value, epoch):
+                logger.info(f"  ⏹️  Early stopping triggered at epoch {epoch+1} (no improvement for {patience} epochs)")
+                break
 
-        # Calculate validation accuracy
+        # Calculate final validation accuracy
         model.eval()
         with torch.no_grad():
             val_outputs = model(X_val)  # Returns logits only
@@ -611,9 +929,13 @@ class RegimeModelTrainer:
             'accuracy': accuracy, 
             'n_features': n_features,
             'd_model': d_model,
-            'seq_length': X.shape[1]
+            'nhead': nhead,
+            'num_layers': TRANSFORMER_NUM_LAYERS,
+            'seq_length': X.shape[1],
+            'total_params': total_params,
+            'final_epoch': epoch + 1
         }
-        logger.info(f"✅ Transformer validation accuracy: {accuracy:.4f}")
+        logger.info(f"✅ Transformer validation accuracy: {accuracy:.4f} (trained for {epoch+1} epochs)")
         
         return model, metrics
     
@@ -726,3 +1048,82 @@ class RegimeModelTrainer:
             logger.error(f"Error generating feature importance: {e}")
         
         return importance
+
+    def cross_validate_model(
+        self,
+        model_type: str,
+        X: np.ndarray,
+        y: np.ndarray,
+        n_splits: int = 5
+    ) -> Dict[str, Any]:
+        """
+        Cross-validate a specific model type.
+        
+        Args:
+            model_type: 'lstm', 'transformer', or 'rf'
+            X: Features
+            y: Targets
+            n_splits: Number of CV folds
+            
+        Returns:
+            CV results dictionary
+        """
+        validator = TimeSeriesValidator(n_splits=n_splits)
+        
+        # Split with hold-out
+        X_cv, y_cv, X_test, y_test = validator.split_with_holdout(X, y)
+        
+        # Define model factory
+        if model_type == 'lstm':
+            def factory():
+                return self._create_lstm_model()
+        elif model_type == 'transformer':
+            def factory():
+                return self._create_transformer_model()
+        elif model_type == 'rf':
+            def factory():
+                from sklearn.ensemble import RandomForestClassifier
+                return RandomForestClassifier(n_estimators=150, max_depth=15, random_state=42)
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
+        
+        # Cross-validate
+        cv_results = validator.cross_validate(factory, X_cv, y_cv)
+        
+        # Test on hold-out
+        final_model = factory()
+        final_model.fit(X_cv, y_cv)
+        holdout_score = final_model.score(X_test, y_test)
+        
+        # Generate report
+        report = ValidationReport.generate_report(
+            model_name=f"{model_type.upper()} Regime Model",
+            cv_results=cv_results,
+            holdout_score=holdout_score
+        )
+        logger.info(f"\n{report}")
+        
+        return {
+            **cv_results,
+            'holdout_score': holdout_score,
+            'report': report
+        }
+    
+    def _create_lstm_model(self):
+        """Helper to create LSTM with current config."""
+        # Use current LSTM params
+        from .neural_networks import LSTMRegimeClassifier
+        return LSTMRegimeClassifier(
+            input_size=self.lstm_params['hidden_size'],
+            hidden_size=self.lstm_params['hidden_size'],
+            num_layers=self.lstm_params['num_layers'],
+            num_classes=4,  # Bullish, Bearish, Neutral, Volatile
+            dropout=self.lstm_params['dropout']
+        )
+    
+    def _create_transformer_model(self):
+        """Helper to create Transformer with current config."""
+        # Use current Transformer params
+        from .neural_networks import TransformerRegimeClassifier
+        # Implementation similar to LSTM
+        pass

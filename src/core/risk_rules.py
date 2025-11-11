@@ -565,6 +565,14 @@ class RiskRewardRatioRule(BaseRiskRule):
         regime_conf = float(signal.get('regime_confidence', fallback.get('missing_regime_default', 0.3)))
         regime_name = signal.get('regime_name', 'neutral').lower()
         
+        # Get regime_weight (soft-weighting), default to 1.0 if not available
+        # Note: regime_weight is calculated from regime_conf in strategy_integration.py:
+        #   - regime_weight = None if regime_conf < 0.30 (hard reject)
+        #   - regime_weight = regime_conf / 0.60 if 0.30 <= regime_conf < 0.60
+        #   - regime_weight = 1.0 if regime_conf >= 0.60
+        # Legacy signals without regime_weight are assumed to have full confidence (1.0)
+        regime_weight = float(signal.get('regime_weight', 1.0))
+        
         # Calculate relaxation (reduces required R/R for high confidence)
         relaxation = (
             weights['ml_confidence'] * ml_conf +
@@ -572,13 +580,16 @@ class RiskRewardRatioRule(BaseRiskRule):
         )
         
         # Calculate tightening (increases required R/R for uncertainty)
-        tightening = weights['regime_clarity'] * (1.0 - regime_conf)
+        # Apply regime_weight to tightening effect
+        tightening = weights['regime_clarity'] * (1.0 - regime_conf) * regime_weight
         
-        # Apply regime multiplier
+        # Apply regime multiplier with soft-weighting
         regime_mult = regime_mults.get(regime_name, 1.0)
+        # Soft-weighted regime adjustment: interpolate between 1.0 (no effect) and regime_mult
+        regime_adjustment = 1.0 + (regime_mult - 1.0) * regime_weight
         
         # Calculate dynamic target
-        dynamic_target = (base_rr - relaxation + tightening) * regime_mult
+        dynamic_target = (base_rr - relaxation + tightening) * regime_adjustment
         
         # Respect strategy's minimum
         strategy_min = float(signal.get('strategy_min_rr', 0.5))
@@ -589,7 +600,8 @@ class RiskRewardRatioRule(BaseRiskRule):
         
         # Detailed logging
         logger.info(f"📊 [Dynamic R/R Calc] Base={base_rr:.2f} - Relax={relaxation:.2f} + Tight={tightening:.2f} "
-                   f"× Regime({regime_name})={regime_mult:.1f} = {dynamic_target:.2f} → Final={final_target:.2f}")
+                   f"× Regime({regime_name}, mult={regime_mult:.1f}, weight={regime_weight:.2f})={regime_adjustment:.2f} "
+                   f"= {dynamic_target:.2f} → Final={final_target:.2f}")
         
         return final_target
     

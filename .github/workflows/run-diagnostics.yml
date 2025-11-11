@@ -1,0 +1,221 @@
+name: Run Diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_path:
+        description: 'Path to model file in repo (e.g. data/models/rl_agent_final.pth)'
+        required: true
+        default: 'data/models/rl_agent_final.pth'
+      
+      model_class_import:
+        description: 'Model class import path (e.g. src.agent.MyAgentClass)'
+        required: true
+        default: 'src.ml.reinforcement_learning.TradingRLAgent'
+        
+      samples_path:
+        description: 'Path to feature CSV (f0..fN) (e.g. sample_data/test_samples.csv)'
+        required: false
+        default: 'sample_data/test_samples.csv'
+      
+      # YENİ GİRDİ
+      ohlcv_samples_path:
+        description: 'Path to raw OHLCV CSV (e.g. sample_data/test_samples_ohlcv.csv)'
+        required: false
+        default: 'sample_data/test_samples_ohlcv.csv'
+
+      limit:
+        description: 'Optional row limit from CSV'
+        required: false
+        default: ''
+      out:
+        description: 'Output report JSON path'
+        required: false
+        default: 'diagnostics/report.json'
+      out_dir:
+        description: 'Diagnostics output directory (optional)'
+        required: false
+        default: 'diagnostics'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      MPLBACKEND: Agg
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src:${{ github.workspace }}/scripts
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip setuptools wheel
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            # 'feature_matcher' için 'scipy' eklendi
+            pip install --prefer-binary torch pandas scikit-learn joblib numpy PyYAML scipy
+          fi
+          pip install --prefer-binary matplotlib pillow
+
+      - name: (Adım 1) Ensure diagnostics directories exist
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p diagnostics
+          if [ -n "${{ github.event.inputs.out_dir }}" ]; then
+            mkdir -p "${{ github.event.inputs.out_dir }}"
+          fi
+
+      - name: (Adım 2) Inspect model checkpoint
+        shell: bash
+        env:
+          MODEL_PATH: ${{ github.event.inputs.model_path }}
+        run: |
+          set -euo pipefail
+          python scripts/inspect_model.py
+
+      - name: (Adım 3) Try instantiate model
+        shell: bash
+        env:
+          MODEL_PATH: ${{ github.event.inputs.model_path }}
+          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
+        run: |
+          set -euo pipefail
+          python scripts/instantiate_model.py || true
+          ls -la diagnostics
+
+      - name: (Adım 4) Verify instantiated model
+        shell: bash
+        env:
+          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
+        run: |
+          set -euo pipefail
+          python scripts/verify_model.py || true
+
+      - name: (Adım 5) Run diagnostics script (on Feature CSV)
+        shell: bash
+        env:
+          ORIGINAL_MODEL_PATH: ${{ github.event.inputs.model_path }}
+          INSTANTIATED_MODEL_PATH: "diagnostics/inst_model.pth"
+          SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
+          LIMIT: ${{ github.event.inputs.limit }}
+          OUT: ${{ github.event.inputs.out }}
+          OUT_DIR: ${{ github.event.inputs.out_dir }}
+          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
+        run: |
+          set -euxo pipefail
+          echo "Running diagnostics on FEATURE CSV: $SAMPLES_PATH"
+          mkdir -p "$OUT_DIR"
+          
+          if [ -f "$INSTANTIATED_MODEL_PATH" ]; then
+            echo "SUCCESS: Using instantiated model: $INSTANTIATED_MODEL_PATH"
+            MODEL_TO_USE="$INSTANTIATED_MODEL_PATH"
+          else
+            echo "WARN: Instantiated model not found. Falling back to original checkpoint."
+            MODEL_TO_USE="$ORIGINAL_MODEL_PATH"
+          fi
+          
+          ARGS=(
+            --model "$MODEL_TO_USE"
+            --csv "$SAMPLES_PATH"
+            --out "$OUT"
+            --out-dir "$OUT_DIR"
+            --model-class-import "$MODEL_CLASS_IMPORT"
+            --original-model-path "$ORIGINAL_MODEL_PATH"
+          )
+          
+          if [[ -n "${LIMIT}" ]]; then
+            ARGS+=(--limit "$LIMIT")
+          fi
+          
+          python scripts/diagnose_model_confidence.py "${ARGS[@]}" \
+            2>&1 | tee diagnostics/diagnostics_stdout.log || true
+
+      # ... (Adım 6, 7, 8 atlandı) ...
+
+      - name: (Adım 9) Run Scale Probe (Duyarlılık Testi)
+        shell: bash
+        env:
+          SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
+          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
+          MODEL_TO_USE: "diagnostics/inst_model.pth"
+        run: |
+          set -euo pipefail
+          echo "Running model scale sensitivity probe..."
+          python scripts/scale_probe.py || true
+
+      - name: (Adım 9b) Run Multiplier Probe (Entropi Testi)
+        shell: bash
+        env:
+          SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
+          MODEL_CLASS_IMPORT: ${{ github.event.inputs.model_class_import }}
+          MODEL_TO_USE: "diagnostics/inst_model.pth"
+          MULTIPLIERS: "1,2,5,10,20,50,100,200,500,1000"
+        run: |
+          set -euo pipefail
+          echo "Running multiplier entropy probe..."
+          python scripts/multiplier_probe.py > diagnostics/multiplier_probe_report.json || true
+
+      - name: (Adım 9c) Inspect Saved Scaler
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Inspecting saved scaler (data/models/regime/scaler.pkl)..."
+          python scripts/inspect_saved_scaler.py > diagnostics/scaler_inspect_report.json || true
+
+      - name: (Adım 9d) Run Feature Matcher (on Feature CSV)
+        shell: bash
+        env:
+          SAMPLES_PATH: ${{ github.event.inputs.samples_path }}
+        run: |
+          set -euo pipefail
+          echo "Running feature matcher on: $SAMPLES_PATH"
+          python scripts/feature_matcher.py "$SAMPLES_PATH" || true
+          echo "--- Content of mapping.json ---"
+          cat diagnostics/mapping.json || true
+          echo "--- Content of mapping_apply_result.json ---"
+          cat diagnostics/mapping_apply_result.json || true
+          echo "-----------------------------------"
+          
+      # --- YENİ ADIM: TAM BORU HATTI TESTİ ---
+      - name: (Adım 9e) Run Feature Engineering Pipeline Test (on OHLCV CSV)
+        shell: bash
+        env:
+          OHLCV_SAMPLES_PATH: ${{ github.event.inputs.ohlcv_samples_path }}
+        run: |
+          set -euo pipefail
+          echo "Running full feature engineering pipeline test on: $OHLCV_SAMPLES_PATH"
+          python scripts/feature_engineer_and_run.py "$OHLCV_SAMPLES_PATH" || true
+          echo "--- Content of feature_stats.json ---"
+          cat diagnostics/feature_stats.json || true
+          echo "-----------------------------------"
+          echo "--- Content of scaler_apply_result.json (from OHLCV) ---"
+          cat diagnostics/scaler_apply_result.json || true
+          echo "-----------------------------------"
+      # --- YENİ ADIM SONU ---
+
+      # ... (Adım 10, 11, 12 atlandı) ...
+
+      - name: Upload diagnostics as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics
+          path: |
+            diagnostics/
+            ${{ github.event.inputs.out_dir }}/
+          if-no-files-found: warn
+          retention-days: 7

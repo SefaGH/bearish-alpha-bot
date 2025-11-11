@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
+import asyncio
+import inspect
 import os, itertools, logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any
@@ -28,6 +30,16 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = "data"
 BT_DIR = os.path.join(DATA_DIR, "backtests")
+
+def _await_if_needed(value):
+    """Run coroutine-returning exchanges on a dedicated loop when needed."""
+    if inspect.isawaitable(value):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(value)
+        finally:
+            loop.close()
+    return value
 
 def _df_from_ohlcv(rows):
     cols = ["timestamp","open","high","low","close","volume"]
@@ -162,9 +174,13 @@ def main():
         logger.info(f"Fetching OHLCV data: {validated_symbol} 30m limit={limit}...")
         # Use bulk fetch for limits > 500 (up to 2000 candles)
         if limit > 500:
-            rows = client.fetch_ohlcv_bulk(validated_symbol, timeframe="30m", target_limit=limit)
+            rows = _await_if_needed(
+                client.fetch_ohlcv_bulk(validated_symbol, timeframe="30m", target_limit=limit)
+            )
         else:
-            rows = client.ohlcv(validated_symbol, timeframe="30m", limit=limit)
+            rows = _await_if_needed(
+                client.ohlcv(validated_symbol, timeframe="30m", limit=limit)
+            )
         logger.info(f"✓ Fetched {len(rows)} candles")
     except Exception as e:
         logger.error(f"❌ Failed to fetch OHLCV data: {type(e).__name__}: {e}")

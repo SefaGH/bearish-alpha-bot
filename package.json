@@ -1,0 +1,11 @@
+{
+  "name": "bearish-alpha-bot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "agent": "node scripts/agent/run.js"
+  },
+  "dependencies": {
+    "undici": "^5.28.4"
+  }
+}

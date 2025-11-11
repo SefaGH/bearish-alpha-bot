@@ -1,0 +1,75 @@
+name: Copilot Agent
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-copilot-agent:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout (full)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+          persist-credentials: true
+
+      - name: Remove stale git lock if exists
+        run: |
+          if [ -f .git/index.lock ]; then
+            echo "Removing stale index.lock"
+            rm -f .git/index.lock
+          fi
+
+      # Lock dosyası VARSA cache'li setup-node
+      - name: Setup Node.js (with cache)
+        if: ${{ hashFiles('package-lock.json') != '' || hashFiles('npm-shrinkwrap.json') != '' || hashFiles('yarn.lock') != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            npm-shrinkwrap.json
+            yarn.lock
+
+      # Lock dosyası YOKSA cachesiz setup-node
+      - name: Setup Node.js (no cache)
+        if: ${{ hashFiles('package-lock.json') == '' && hashFiles('npm-shrinkwrap.json') == '' && hashFiles('yarn.lock') == '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Display Node/undici versions
+        run: |
+          node -v
+          npm -v
+          npm ls undici || true
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Safe diff against main
+        run: |
+          bash scripts/ci/git-safe-diff.sh || echo "Diff step non-critical"
+
+      - name: Run Copilot Agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/agent/run.js
+
+      - name: Post diagnostics
+        if: always()
+        run: |
+          echo "Job status: ${{ job.status }}"
