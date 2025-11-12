@@ -8,6 +8,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
+from pathlib import Path
 import logging
 import os
 
@@ -330,6 +331,361 @@ class RegimeModelTrainer:
         self.performance_history = []
         self.training_history = []  # Store epoch-by-epoch metrics
         os.makedirs(self.MODEL_SAVE_DIR, exist_ok=True) # Klasörün var olduğundan emin ol
+    
+    def train_and_evaluate(self, X: np.ndarray, y: np.ndarray, model_type: str = 'gemma') -> Dict[str, Any]:
+        """
+        Train and evaluate a model for GEMMA or other regime prediction tasks.
+        
+        This method provides a unified interface for training models with the configuration
+        provided during initialization. It handles data preprocessing, model training,
+        validation, and artifact saving.
+        
+        Args:
+            X: Feature array of shape (n_samples, n_features)
+            y: Label array of shape (n_samples,)
+            model_type: Type of model to train ('gemma', 'regime', etc.)
+            
+        Returns:
+            Dictionary containing training results with keys:
+                - status: 'completed', 'failed', or 'skipped'
+                - train_metrics: Training performance metrics
+                - test_metrics: Test/validation performance metrics
+                - model_info: Information about the trained model
+                - error: Error message if status is 'failed'
+        """
+        logger.info(f"Starting train_and_evaluate for model_type='{model_type}'")
+        logger.info(f"Input data shape: X={X.shape}, y={y.shape}")
+        
+        try:
+            # Validate input data
+            if X.shape[0] < 100:
+                logger.warning(f"Insufficient data for training: {X.shape[0]} samples (minimum: 100)")
+                return {
+                    'status': 'skipped',
+                    'reason': 'insufficient_data',
+                    'samples': X.shape[0]
+                }
+            
+            # Data preprocessing - scale features
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+            
+            # Save scaler for later use
+            scaler_key = f'{model_type}_scaler'
+            self.scalers[scaler_key] = scaler
+            
+            # Get architecture config from self.config
+            architecture_config = self.config.get('architecture', {})
+            model_arch = architecture_config.get('model_type', 'mlp')  # Default to MLP for GEMMA
+            
+            logger.info(f"Training {model_arch.upper()} model for {model_type}")
+            
+            # Split data for train/test
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_scaled, y, test_size=0.2, shuffle=False, random_state=42
+            )
+            
+            logger.info(f"Train samples: {X_train.shape[0]}, Test samples: {X_test.shape[0]}")
+            
+            # Train model based on architecture type
+            if model_arch.lower() == 'mlp':
+                model, train_metrics = self._train_mlp_model(X_train, y_train, X_test, y_test)
+            elif model_arch.lower() == 'lstm':
+                # Create sequences for LSTM
+                seq_length = architecture_config.get('sequence_length', SEQUENCE_LENGTH)
+                X_train_seq, y_train_seq = self._create_sequences(X_train, y_train, seq_length)
+                X_test_seq, y_test_seq = self._create_sequences(X_test, y_test, seq_length)
+                model, train_metrics = self._train_lstm(
+                    X_train_seq, y_train_seq, 
+                    validation_method='time_series_cv'
+                )
+            else:
+                logger.error(f"Unsupported architecture type: {model_arch}")
+                return {
+                    'status': 'failed',
+                    'error': f'Unsupported architecture: {model_arch}'
+                }
+            
+            # Evaluate on test set
+            test_metrics = self._evaluate_model(model, X_test, y_test, model_arch)
+            
+            # Store the trained model
+            self.models[model_type] = model
+            
+            # Save model artifacts
+            self._save_gemma_model(model, model_type, model_arch)
+            self._save_gemma_scaler(scaler, model_type)
+            
+            logger.info(f"✅ {model_type} model training completed successfully")
+            logger.info(f"   Train Accuracy: {train_metrics.get('accuracy', 0):.4f}")
+            logger.info(f"   Test Accuracy: {test_metrics.get('accuracy', 0):.4f}")
+            
+            return {
+                'status': 'completed',
+                'train_metrics': train_metrics,
+                'test_metrics': test_metrics,
+                'model_info': {
+                    'type': model_type,
+                    'architecture': model_arch,
+                    'n_features': X.shape[1],
+                    'n_samples': X.shape[0]
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in train_and_evaluate for {model_type}: {e}", exc_info=True)
+            return {
+                'status': 'failed',
+                'error': str(e),
+                'model_type': model_type
+            }
+    
+    def _train_mlp_model(self, X_train: np.ndarray, y_train: np.ndarray, 
+                         X_test: np.ndarray, y_test: np.ndarray) -> Tuple[Any, Dict[str, float]]:
+        """
+        Train a Multi-Layer Perceptron (MLP) model for GEMMA.
+        
+        Args:
+            X_train: Training features
+            y_train: Training labels
+            X_test: Test features
+            y_test: Test labels
+            
+        Returns:
+            Tuple of (trained_model, metrics_dict)
+        """
+        from .neural_networks import MLPRegimePredictor
+        
+        # Get architecture parameters from config
+        arch_config = self.config.get('architecture', {})
+        hidden_layers = arch_config.get('hidden_layers', [128, 64])
+        dropout = arch_config.get('dropout', 0.3)
+        
+        # Get training parameters
+        train_config = self.config.get('training', {})
+        epochs = train_config.get('epochs', NUM_EPOCHS)
+        batch_size = train_config.get('batch_size', 64)
+        learning_rate = train_config.get('learning_rate', LEARNING_RATE)
+        patience = train_config.get('early_stopping_patience', EARLY_STOPPING_PATIENCE)
+        
+        logger.info(f"MLP Configuration:")
+        logger.info(f"  Hidden Layers: {hidden_layers}")
+        logger.info(f"  Dropout: {dropout}")
+        logger.info(f"  Epochs: {epochs}")
+        logger.info(f"  Batch Size: {batch_size}")
+        logger.info(f"  Learning Rate: {learning_rate}")
+        
+        # Convert to PyTorch tensors
+        X_train_tensor = torch.from_numpy(X_train).float()
+        y_train_tensor = torch.from_numpy(y_train).long()
+        X_test_tensor = torch.from_numpy(X_test).float()
+        y_test_tensor = torch.from_numpy(y_test).long()
+        
+        # Create data loaders
+        train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        
+        # Initialize model
+        input_size = X_train.shape[1]
+        num_classes = len(np.unique(y_train))
+        
+        model = MLPRegimePredictor(
+            input_size=input_size,
+            hidden_layers=hidden_layers,
+            num_classes=num_classes,
+            dropout=dropout
+        )
+        
+        # Count parameters
+        total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        logger.info(f"MLP model created with {total_params:,} trainable parameters")
+        
+        # Training setup
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=WEIGHT_DECAY)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=3, min_lr=1e-6
+        )
+        
+        # Early stopping
+        early_stopping = EarlyStopping(patience=patience, min_delta=MIN_DELTA, min_epochs=MIN_EPOCHS)
+        
+        logger.info(f"Starting MLP training for up to {epochs} epochs...")
+        best_accuracy = 0.0
+        
+        for epoch in range(epochs):
+            # Training phase
+            model.train()
+            epoch_loss = 0
+            for features, labels in train_loader:
+                optimizer.zero_grad()
+                outputs = model(features)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+                epoch_loss += loss.item()
+            
+            train_loss = epoch_loss / len(train_loader)
+            
+            # Validation phase
+            model.eval()
+            with torch.no_grad():
+                test_outputs = model(X_test_tensor)
+                test_loss = criterion(test_outputs, y_test_tensor)
+                test_loss_value = test_loss.item()
+                
+                # Calculate accuracy
+                _, predicted = torch.max(test_outputs, 1)
+                accuracy = (predicted == y_test_tensor).sum().item() / y_test_tensor.size(0)
+                best_accuracy = max(best_accuracy, accuracy)
+            
+            # Update learning rate
+            scheduler.step(test_loss_value)
+            current_lr = optimizer.param_groups[0]['lr']
+            
+            # Log progress
+            if (epoch + 1) % 5 == 0 or epoch == 0:
+                logger.info(f"  MLP Epoch {epoch+1}/{epochs}, Train Loss: {train_loss:.4f}, "
+                          f"Test Loss: {test_loss_value:.4f}, Accuracy: {accuracy:.4f}, LR: {current_lr:.6f}")
+            
+            # Store metrics
+            self.training_history.append({
+                'model': 'mlp',
+                'epoch': epoch + 1,
+                'loss': train_loss,
+                'val_loss': test_loss_value,
+                'accuracy': accuracy,
+                'learning_rate': current_lr
+            })
+            
+            # Check early stopping
+            if early_stopping(test_loss_value, epoch):
+                logger.info(f"  ⏹️  Early stopping triggered at epoch {epoch+1}")
+                break
+        
+        metrics = {
+            'accuracy': best_accuracy,
+            'final_train_loss': train_loss,
+            'final_test_loss': test_loss_value,
+            'total_params': total_params,
+            'final_epoch': epoch + 1
+        }
+        
+        logger.info(f"✅ MLP training completed. Best accuracy: {best_accuracy:.4f}")
+        
+        return model, metrics
+    
+    def _evaluate_model(self, model: Any, X_test: np.ndarray, y_test: np.ndarray, 
+                       model_arch: str) -> Dict[str, float]:
+        """
+        Evaluate a trained model on test data.
+        
+        Args:
+            model: Trained PyTorch model
+            X_test: Test features
+            y_test: Test labels
+            model_arch: Architecture type ('mlp', 'lstm', etc.)
+            
+        Returns:
+            Dictionary with evaluation metrics
+        """
+        model.eval()
+        
+        with torch.no_grad():
+            X_test_tensor = torch.from_numpy(X_test).float()
+            y_test_tensor = torch.from_numpy(y_test).long()
+            
+            outputs = model(X_test_tensor)
+            _, predicted = torch.max(outputs, 1)
+            
+            accuracy = (predicted == y_test_tensor).sum().item() / y_test_tensor.size(0)
+            
+            # Calculate per-class metrics
+            unique_classes = np.unique(y_test)
+            precision_list = []
+            recall_list = []
+            
+            y_pred_np = predicted.numpy()
+            
+            for cls in unique_classes:
+                tp = np.sum((y_pred_np == cls) & (y_test == cls))
+                fp = np.sum((y_pred_np == cls) & (y_test != cls))
+                fn = np.sum((y_pred_np != cls) & (y_test == cls))
+                
+                precision = tp / (tp + fp + 1e-10)
+                recall = tp / (tp + fn + 1e-10)
+                
+                precision_list.append(precision)
+                recall_list.append(recall)
+            
+            avg_precision = np.mean(precision_list)
+            avg_recall = np.mean(recall_list)
+            f1_score = 2 * avg_precision * avg_recall / (avg_precision + avg_recall + 1e-10)
+            
+            metrics = {
+                'accuracy': accuracy,
+                'precision': avg_precision,
+                'recall': avg_recall,
+                'f1': f1_score
+            }
+            
+            logger.info(f"Test Metrics - Accuracy: {accuracy:.4f}, F1: {f1_score:.4f}")
+            
+            return metrics
+    
+    def _save_gemma_model(self, model: Any, model_type: str, model_arch: str):
+        """
+        Save GEMMA model to disk.
+        
+        Args:
+            model: Trained PyTorch model
+            model_type: Type identifier (e.g., 'gemma')
+            model_arch: Architecture type (e.g., 'mlp')
+        """
+        try:
+            # Create GEMMA model directory
+            gemma_dir = Path("data/models/gemma/final")
+            gemma_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save model state dict
+            model_path = gemma_dir / f"gemma_{model_type}.pt"
+            torch.save(model.state_dict(), model_path)
+            logger.info(f"✅ Saved GEMMA model to {model_path}")
+            
+            # Save model configuration
+            config_path = gemma_dir / f"gemma_{model_type}_config.pkl"
+            model_config = {
+                'architecture': model_arch,
+                'input_size': model.layers[0].in_features if hasattr(model, 'layers') else None,
+                'num_classes': model.layers[-1].out_features if hasattr(model, 'layers') else None,
+                'model_type': model_type
+            }
+            joblib.dump(model_config, config_path)
+            logger.info(f"✅ Saved GEMMA model config to {config_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save GEMMA model: {e}", exc_info=True)
+    
+    def _save_gemma_scaler(self, scaler: Any, model_type: str):
+        """
+        Save GEMMA scaler to disk.
+        
+        Args:
+            scaler: Fitted StandardScaler
+            model_type: Type identifier (e.g., 'gemma')
+        """
+        try:
+            # Create GEMMA cache directory
+            cache_dir = Path("data/cache/gemma")
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save scaler
+            scaler_path = cache_dir / f"scaler_{model_type}.joblib"
+            joblib.dump(scaler, scaler_path)
+            logger.info(f"✅ Saved GEMMA scaler to {scaler_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save GEMMA scaler: {e}", exc_info=True)
     
     def _create_sequences(self, X: np.ndarray, y: np.ndarray, seq_length: int = SEQUENCE_LENGTH) -> Tuple[np.ndarray, np.ndarray]:
         """

@@ -21,6 +21,57 @@ except ImportError:
 
 
 if TORCH_AVAILABLE:
+    class MLPRegimePredictor(nn.Module):
+        """
+        Multi-Layer Perceptron (MLP) for regime prediction.
+        
+        A simple feedforward neural network for non-sequential regime classification.
+        This architecture is particularly useful for GEMMA models where temporal
+        dependencies are less critical than feature interactions.
+        """
+        
+        def __init__(self, input_size: int, hidden_layers: list = [128, 64], 
+                     num_classes: int = 3, dropout: float = 0.3):
+            """
+            Initialize MLP regime predictor.
+            
+            Args:
+                input_size: Number of input features
+                hidden_layers: List of hidden layer sizes (default: [128, 64])
+                num_classes: Number of regime classes (default: 3)
+                dropout: Dropout rate for regularization (default: 0.3)
+            """
+            super().__init__()
+            
+            # Build layers dynamically based on hidden_layers list
+            layers = []
+            prev_size = input_size
+            
+            for i, hidden_size in enumerate(hidden_layers):
+                layers.append(nn.Linear(prev_size, hidden_size))
+                layers.append(nn.BatchNorm1d(hidden_size))
+                layers.append(nn.ReLU())
+                layers.append(nn.Dropout(dropout))
+                prev_size = hidden_size
+            
+            # Output layer
+            layers.append(nn.Linear(prev_size, num_classes))
+            
+            self.layers = nn.Sequential(*layers)
+            
+        def forward(self, x):
+            """
+            Forward pass through MLP.
+            
+            Args:
+                x: Input tensor of shape (batch_size, input_size)
+                
+            Returns:
+                Output logits of shape (batch_size, num_classes)
+            """
+            return self.layers(x)
+    
+    
     class MultiHeadAttention(nn.Module):
         """Multi-head attention mechanism for LSTM."""
         
