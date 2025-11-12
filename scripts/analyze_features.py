@@ -166,16 +166,33 @@ def main():
     """Main entry point for the feature analyzer script."""
     parser = argparse.ArgumentParser(description="Feature Analysis Tool")
     parser.add_argument('--select', action='store_true', help='Run selection and save mask.')
-    # Diğer argümanlar (report, analyze) şimdilik kaldırıldı, çünkü workflow sadece --select kullanıyor.
-    # İstenirse kolayca geri eklenebilir.
+    parser.add_argument('--analyze', action='store_true', help='Run feature analysis.')
+    parser.add_argument('--report', action='store_true', help='Generate a detailed report.')
+    parser.add_argument('--variance-threshold', type=float, default=None, 
+                       help='Threshold for variance (overrides config value).')
+    parser.add_argument('--correlation-threshold', type=float, default=None,
+                       help='Threshold for correlation (overrides config value).')
     
     args = parser.parse_args()
     
     project_config = load_config()
     analyzer = FeatureAnalyzer(config=project_config)
+    
+    # Override thresholds from command line if provided
+    if args.variance_threshold is not None:
+        analyzer.variance_threshold = args.variance_threshold
+        logger.info(f"Varyans eşiği komut satırından güncellendi: {args.variance_threshold}")
+    
+    if args.correlation_threshold is not None:
+        analyzer.correlation_threshold = args.correlation_threshold
+        logger.info(f"Korelasyon eşiği komut satırından güncellendi: {args.correlation_threshold}")
 
-    if args.select:
+    if args.select or args.analyze:
         analyzer.run_full_analysis()
+    elif args.report:
+        # Report functionality can be extended later
+        logger.info("Rapor oluşturma özelliği henüz uygulanmadı.")
+        parser.print_help()
     else:
         parser.print_help()
 
