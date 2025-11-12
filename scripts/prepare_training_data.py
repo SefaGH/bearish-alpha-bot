@@ -1,26 +1,23 @@
 """
 Prepare and cache real training data for hyperparameter tuning.
-Uses existing CcxtClient and FeatureEngineeringPipeline.
+This script is a core part of the data pipeline and mirrors the logic
+in train_all_models.py for data preparation.
 
 Usage:
     python scripts/prepare_training_data.py --symbol BTC/USDT
-
-Author: SefaGH
-Date: 2025-11-09 (Updated: Fixed prepare_for_training parameter)
 """
-
 import asyncio
 import argparse
 import sys
 import os
 import numpy as np
+import yaml  # EKLENDİ: Konfigürasyon okumak için
 from pathlib import Path
 import logging
 
-# Add project root
+# Proje kök dizinini Python yoluna ekle
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# ✅ CORRECT IMPORTS (matching train_all_models.py)
 from src.core.ccxt_client import CcxtClient
 from src.ml.feature_engineering import FeatureEngineeringPipeline
 from src.ml.label_generator import generate_regime_labels
@@ -31,221 +28,160 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuration (matching train_all_models.py)
-CANDLE_LIMIT = 1440
-REGIME_TRAINING_TIMEFRAMES = ['15m', '30m', '1h', '4h', '1d']
+# --- YENİ: Konfigürasyon Yükleme Fonksiyonu ---
+def load_config():
+    """Loads the main YAML configuration file."""
+    config_path = Path(__file__).resolve().parent.parent / 'config' / 'config.example.yaml'
+    try:
+        with open(config_path, 'r') as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError:
+        logger.error(f"❌ Kritik Hata: Konfigürasyon dosyası bulunamadı: {config_path}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"❌ Konfigürasyon dosyası okunurken hata: {e}")
+        sys.exit(1)
 
+# Ana konfigürasyonu yükle
+config = load_config()
+ml_config = config.get('ml', {})
 
-async def fetch_and_process_data(symbol='BTC/USDT', 
+# Konfigürasyondan değerleri al
+CANDLE_LIMIT = ml_config.get('data_source', {}).get('candle_limit', 1440)
+REGIME_TRAINING_TIMEFRAMES = ml_config.get('data_source', {}).get('timeframes', ['15m', '30m', '1h', '4h', '1d'])
+
+async def fetch_and_process_data(symbol='BTC/USDT',
                                  timeframes=None,
-                                 use_feature_selection=True):  # ✅ REMOVED: use_all_features parameter
+                                 use_feature_selection=True):
     """
-    Fetch real market data and prepare for training.
-    
-    Args:
-        symbol: Trading symbol
-        timeframes: List of timeframes
-        use_feature_selection: Apply feature selection mask
+    Fetch real market data, apply feature engineering based on config,
+    and prepare it for training.
     """
     if timeframes is None:
         timeframes = REGIME_TRAINING_TIMEFRAMES
     
     logger.info("="*70)
-    logger.info(f"📊 FETCHING REAL MARKET DATA: {symbol}")
+    logger.info(f"📊 GERÇEK PİYASA VERİSİ HAZIRLANIYOR: {symbol}")
     logger.info("="*70)
     
-    # 1. Initialize exchange client (same as train_all_models.py)
     logger.info("Initializing BingX exchange client...")
     exchange_client = CcxtClient('bingx')
     
-    # 2. Initialize feature pipeline
-    logger.info("Initializing feature engineering pipeline...")
-    feature_engine = FeatureEngineeringPipeline()
+    # --- DÜZELTİLDİ: FeatureEngineeringPipeline artık konfigürasyon ile çağrılıyor ---
+    logger.info("Initializing feature engineering pipeline with config...")
+    feature_engine = FeatureEngineeringPipeline(config=ml_config)
     
-    # 3. Fetch data for each timeframe
-    all_features = []
-    all_labels = []
+    all_features, all_labels = [], []
     
     for tf in timeframes:
-        logger.info(f"\n--- Processing {tf} data ---")
-        
+        logger.info(f"\n--- {tf} verisi işleniyor ---")
         try:
-            # Fetch OHLCV data (async)
-            logger.info(f"  Fetching {CANDLE_LIMIT} candles...")
-            ohlcv_df = await exchange_client.ohlcv(
-                symbol,
-                timeframe=tf,
-                limit=CANDLE_LIMIT,
-                add_indicators=False  # Raw data only
-            )
+            logger.info(f"  {CANDLE_LIMIT} adet mum verisi çekiliyor...")
+            ohlcv_df = await exchange_client.ohlcv(symbol, timeframe=tf, limit=CANDLE_LIMIT)
             
-            if ohlcv_df is None or ohlcv_df.empty or len(ohlcv_df) < 200:
-                logger.warning(f"  ⚠️ Insufficient data ({len(ohlcv_df)} candles), skipping")
+            if ohlcv_df is None or len(ohlcv_df) < 200:
+                logger.warning(f"  ⚠️ Yetersiz veri ({len(ohlcv_df)} mum), atlanıyor.")
                 continue
             
-            logger.info(f"  ✅ Fetched {len(ohlcv_df)} candles")
+            logger.info(f"  ✅ {len(ohlcv_df)} adet mum verisi çekildi.")
             
-            # Extract features
-            logger.info(f"  Extracting features...")
+            logger.info("  Özellikler çıkarılıyor...")
             features_df = feature_engine.extract_features(ohlcv_df)
-            logger.info(f"  ✅ Extracted {features_df.shape[1]} features")
+            logger.info(f"  ✅ {features_df.shape[1]} adet özellik çıkarıldı.")
             
-            # Generate labels
-            logger.info("  Generating regime labels...")
-            regime_labels = generate_regime_labels(
-                ohlcv_df,
-                window=20,
-                threshold=0.015,
-                prediction_horizon=5,
-                volume_confirm=False,
-                multi_timeframe=True
-            )
-            logger.info(f"  ✅ Generated {len(regime_labels)} labels")
-            
-            # ==================== CRITICAL FIX (Line 104-109) ==================== #
-            # Prepare for training (clean and align)
-            logger.info("  Preparing data (cleaning and alignment)...")
+            logger.info("  Rejim etiketleri oluşturuluyor...")
+            regime_labels = generate_regime_labels(ohlcv_df, **ml_config.get('regime_detection', {}))
+            logger.info(f"  ✅ {len(regime_labels)} adet etiket oluşturuldu.")
+
+            logger.info("  Veri temizleniyor ve hizalanıyor...")
             X_prepared, y_prepared = feature_engine.prepare_for_training(
                 features_df,
                 regime_labels,
-                feature_selection_mode='auto'  # ✅ FIXED: New parameter name!
+                feature_selection_mode='auto'
             )
-            # ===================================================================== #
             
             if len(X_prepared) > 0:
                 all_features.append(X_prepared)
                 all_labels.append(y_prepared)
-                logger.info(f"  ✅ Added {len(X_prepared)} samples")
+                logger.info(f"  ✅ {len(X_prepared)} adet örnek eklendi.")
             else:
-                logger.warning(f"  ⚠️ No samples after preparation")
+                logger.warning("  ⚠️ Hazırlık sonrası hiç örnek kalmadı.")
             
         except Exception as e:
-            logger.error(f"  ❌ Error processing {tf}: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"  ❌ {tf} işlenirken hata oluştu: {e}", exc_info=True)
             continue
-    
-    # 4. Combine all timeframes
+            
     if not all_features:
-        raise RuntimeError("No data fetched successfully from any timeframe")
+        raise RuntimeError("Hiçbir zaman diliminden başarılı bir şekilde veri çekilemedi.")
     
     logger.info("\n" + "="*70)
-    logger.info("📊 COMBINING DATA FROM ALL TIMEFRAMES")
+    logger.info("📊 TÜM ZAMAN DİLİMLERİNDEN GELEN VERİLER BİRLEŞTİRİLİYOR")
     logger.info("="*70)
     
     X = np.vstack(all_features)
     y = np.concatenate(all_labels)
     
-    logger.info(f"✅ Total samples: {len(X)}")
-    logger.info(f"✅ Original features: {X.shape[1]}")
+    logger.info(f"✅ Toplam örnek sayısı: {len(X)}")
+    logger.info(f"✅ Orijinal özellik sayısı: {X.shape[1]}")
     
-    # Apply feature selection if enabled
     if use_feature_selection:
         feature_mask_path = Path('data/cache/feature_selection_mask.npy')
-        
         if feature_mask_path.exists():
             try:
                 feature_mask = np.load(feature_mask_path)
-                
-                # Validate mask shape
                 if len(feature_mask) != X.shape[1]:
-                    logger.warning(
-                        f"⚠️ Feature mask size mismatch! "
-                        f"Mask: {len(feature_mask)}, Features: {X.shape[1]}. "
-                        f"Skipping feature selection."
-                    )
+                    logger.warning(f"⚠️ Özellik maskesi boyutu uyuşmuyor! Maske: {len(feature_mask)}, Özellikler: {X.shape[1]}. Seçim atlanıyor.")
                 else:
-                    # Apply mask
-                    original_count = X.shape[1]
-                    X = X[:, feature_mask]
                     removed_count = (~feature_mask).sum()
-                    
-                    logger.info(
-                        f"✅ Selected {X.shape[1]} features (removed {removed_count})"
-                    )
+                    X = X[:, feature_mask]
+                    logger.info(f"✅ Özellik seçimi uygulandı. Yeni özellik sayısı: {X.shape[1]} (kaldırılan: {removed_count})")
             except Exception as e:
-                logger.warning(f"⚠️ Failed to load feature mask: {e}. Continuing without selection.")
+                logger.warning(f"⚠️ Özellik maskesi yüklenemedi: {e}. Seçim yapılmadan devam ediliyor.")
         else:
-            logger.warning(
-                f"⚠️ Feature selection mask not found at {feature_mask_path}. "
-                f"Continuing with all features."
-            )
+            logger.warning(f"⚠️ Özellik seçim maskesi bulunamadı: {feature_mask_path}. Tüm özelliklerle devam ediliyor.")
     else:
-        logger.info("⚠️ Feature selection skipped (disabled via --no-feature-selection)")
-    
-    logger.info(f"✅ Final features: {X.shape[1]}")
-    logger.info(f"✅ Label distribution:")
-    
-    # Show label distribution
+        logger.info("⚠️ Özellik seçimi atlandı (--no-feature-selection).")
+        
+    logger.info(f"✅ Nihai özellik sayısı: {X.shape[1]}")
+    logger.info("✅ Etiket dağılımı:")
     unique, counts = np.unique(y, return_counts=True)
     label_names = {0: 'Bullish', 1: 'Neutral', 2: 'Bearish'}
     for label, count in zip(unique, counts):
         percentage = (count / len(y)) * 100
-        label_name = label_names.get(int(label), f'Class_{label}')
-        logger.info(f"     {label_name}: {count} ({percentage:.1f}%)")
+        logger.info(f"     {label_names.get(int(label), f'Class_{label}')}: {count} ({percentage:.1f}%)")
     
-    # 5. Save to cache
     cache_dir = Path('data/cache')
     cache_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Use same naming convention
     cache_file = cache_dir / f'{symbol.replace("/", "-")}_training_data.npz'
     
-    logger.info(f"\n💾 Saving to cache: {cache_file}")
+    logger.info(f"\n💾 Önbelleğe kaydediliyor: {cache_file}")
     np.savez_compressed(cache_file, X=X, y=y)
     
     logger.info("="*70)
-    logger.info("✅ TRAINING DATA READY")
+    logger.info("✅ EĞİTİM VERİSİ HAZIR")
     logger.info("="*70)
     
     return X, y
 
-
 async def async_main():
-    """Async entry point."""
-    parser = argparse.ArgumentParser(
-        description='Prepare real training data for hyperparameter tuning'
-    )
-    parser.add_argument(
-        '--symbol',
-        default='BTC/USDT',
-        help='Trading symbol (default: BTC/USDT)'
-    )
-    parser.add_argument(
-        '--timeframes',
-        nargs='+',
-        default=REGIME_TRAINING_TIMEFRAMES,
-        help='Timeframes to fetch (default: 15m 30m 1h 4h 1d)'
-    )
-    # ✅ REMOVED: --use-all-features argument (no longer needed)
-    parser.add_argument(
-        '--no-feature-selection',
-        action='store_true',
-        help='Disable automatic feature selection (default: enabled)'
-    )
+    """Asenkron ana giriş noktası."""
+    parser = argparse.ArgumentParser(description='Makine öğrenmesi modelleri için eğitim verisi hazırlar.')
+    parser.add_argument('--symbol', default=config.get('trading', {}).get('symbol', 'BTC/USDT'), help='İşlem yapılacak sembol')
+    parser.add_argument('--timeframes', nargs='+', default=REGIME_TRAINING_TIMEFRAMES, help='Veri çekilecek zaman dilimleri')
+    parser.add_argument('--no-feature-selection', action='store_true', help='Özellik seçimini devre dışı bırakır')
     
-    # Parse and use
     args = parser.parse_args()
     X, y = await fetch_and_process_data(
         args.symbol,
         args.timeframes,
         use_feature_selection=not args.no_feature_selection
-        # ✅ REMOVED: use_all_features parameter
     )
     
-    logger.info(f"\n✅ COMPLETE: {len(X)} samples ready for tuning")
-    
-    # Log additional info
-    if X.shape[1] == 82:
-        logger.info("✅ Training data prepared with 82 selected features")
-    else:
-        logger.info(f"✅ Training data prepared with {X.shape[1]} features")
-
+    logger.info(f"\n✅ İŞLEM TAMAMLANDI: {len(X)} adet örnek, {X.shape[1]} özellik ile hazırlandı.")
 
 def main():
-    """Synchronous entry point."""
+    """Senkron ana giriş noktası."""
     asyncio.run(async_main())
-
 
 if __name__ == '__main__':
     main()
