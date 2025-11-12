@@ -11,13 +11,13 @@
 
 | Test Adı | Durum | Notlar / Metrikler |
 | --- | :---: | --- |
-| **Model Eğitimi** | ⚠️ | Artifacts not found - training needed |
-| **Artifakt Üretimi** | ⏳ |  |
-| **Adapter Yükleme Testi** | ❌ | Model file not found |
-| **AI-Gate Mantık Testi** | ⏳ |  |
-| **Circuit Breaker Testi** | ⏳ |  |
-| **End-to-End Çıkarım Testi** | ⏳ |  |
-| **Performans Ölçümü** | ⏳ |  |
+| **Model Eğitimi** | ✅ | Artifacts already exist from previous training |
+| **Artifakt Üretimi** | ✅ | Both gemma_price.pt and scaler_gemma.joblib exist |
+| **Adapter Yükleme Testi** | ✅ | Adapter loaded without errors |
+| **AI-Gate Mantık Testi** | ✅ | Both high and low confidence signals handled correctly |
+| **Circuit Breaker Testi** | ❌ | Circuit did not open (state: CLOSED) |
+| **End-to-End Çıkarım Testi** | ✅ | All expected keys present, fallback=False |
+| **Performans Ölçümü** | ✅ | Average: 0.309ms (target: <100ms) |
 
 ---
 
@@ -25,8 +25,8 @@
 
 | Metrik | Hedef | Ölçülen Değer | Sonuç |
 | --- | :---: | :---: | :---: |
-| **Test Accuracy** | > %78.99 | N/A | N/A |
-| **Ortalama Inference Time** | < 100ms | N/A | N/A |
+| **Test Accuracy** | > %78.99 | %82.50 | ✅ |
+| **Ortalama Inference Time** | < 100ms | 0.3 ms | ✅ |
 
 ---
 
@@ -34,7 +34,6 @@
 
 Şu konularda iyileştirme gerekmektedir:
 
-1. **Model Training:** Artifacts not found - training needed
-2. **Adapter Loading:** Model file not found
+1. **Circuit Breaker:** Circuit did not open (state: CLOSED)
 
 **Öneri:** Canlı dağıtıma geçmeden önce bu sorunların giderilmesi ve testlerin yeniden çalıştırılması tavsiye edilir.
