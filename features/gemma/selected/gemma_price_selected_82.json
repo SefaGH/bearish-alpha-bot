@@ -2,7 +2,7 @@
   "repository": "github.com/SefaGH/bearish-alpha-bot",
   "author": "SefaGH",
   "version": "GEMMA-1.0.0",
-  "created": "2025-11-11T23:30:08.424946",
+  "created": "2025-11-12T00:02:35.747607",
   "type": "price_prediction",
   "count": 82,
   "selection_method": "f_classif",
