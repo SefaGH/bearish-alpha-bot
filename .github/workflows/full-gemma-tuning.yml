@@ -1,0 +1,307 @@
+name: 💎 GEMMA - Full Hyperparameter Tuning
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: 'Trading pair (e.g., BTC/USDT)'
+        required: true
+        default: 'BTC/USDT'
+      trials:
+        description: 'Number of Optuna trials'
+        required: true
+        default: '30'
+      cv_splits:
+        description: 'Number of CV splits'
+        required: true
+        default: '5'
+
+jobs:
+  full-tuning:
+    name: 🎯 Full GEMMA Hyperparameter Tuning (MLP)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2 hours max
+    
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 📦 Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: 📁 Create Directories
+        run: |
+          mkdir -p logs data/cache data/models logs/tuning_results
+          echo "✅ Directories created"
+
+      # =================================================================
+      # YENİ ADIM: ÖNCEKİ VERİ ÖNBELLEĞİNİ TEMİZLE
+      # =================================================================
+      - name: 🧹 Clean old data cache (Hygiene)
+        run: |
+          echo "Cleaning old data/cache/ directory..."
+          # Önbellek dizinini oluştur (varsa hata verme)
+          mkdir -p data/cache
+          # İçeriğini temizle
+          rm -rf data/cache/*
+          echo "✅ Data cache cleaned."
+      
+      # ==================== STEP 1: UPDATED ==================== #
+      # Step 1: Prepare Training Data
+      - name: Prepare Training Data
+        run: |
+          echo "======================================================================"
+          echo "📊 PREPARING TRAINING DATA WITH AUTOMATIC FEATURE SELECTION"
+          echo "======================================================================"
+          echo "Configuration:"
+          echo "  - Symbol: BTC/USDT"
+          echo "  - Timeframes: 15m, 30m, 1h, 4h, 1d"
+          echo "  - Feature extraction: 87 features (basic + advanced)"
+          echo "  - Data cleaning: prepare_for_training (mode='auto')"
+          echo "  - Alignment: Feature-label alignment fixed"
+          echo "  - Volume confirmation: ENABLED"
+          echo "  - Multi-timeframe labels: ENABLED"
+          echo ""
+          python scripts/prepare_training_data.py --symbol BTC/USDT
+  
+      # Step 2: Feature Analysis & Selection
+      - name: Feature Analysis & Selection
+        run: |
+          echo "======================================================================"
+          echo "🎯 FEATURE ANALYSIS & SELECTION"
+          echo "======================================================================"
+          echo ""
+          echo "Step 1: Analyzing features (variance & correlation)..."
+          python scripts/analyze_features.py --analyze
+          
+          echo ""
+          echo "Step 2: Selecting features (lenient thresholds)..."
+          python scripts/analyze_features.py --select \
+            --variance-threshold 0.00005 \
+            --correlation-threshold 0.005
+          
+          echo ""
+          echo "✅ Feature selection complete"
+      
+      # Step 4: Re-prepare Training Data with Selected Features
+      - name: Re-prepare Training Data with Selected Features
+        run: |
+          echo "======================================================================"
+          echo "🔄 RE-PREPARING DATA WITH SELECTED FEATURES"
+          echo "======================================================================"
+          echo ""
+          echo "Configuration:"
+          echo "  - Symbol: BTC/USDT"
+          echo "  - Feature selection: ENABLED (using saved mask)"
+          echo "  - Timeframes: 15m, 30m, 1h, 4h, 1d"
+          echo ""
+          echo "This step will:"
+          echo "  1. Fetch fresh market data"
+          echo "  2. Extract all 87 features"
+          echo "  3. Apply feature selection mask (82-85 features)"
+          echo "  4. Save updated training data"
+          echo ""
+          python scripts/prepare_training_data.py --symbol BTC/USDT
+          
+          echo ""
+          echo "✅ Data re-prepared with selected features"
+          echo "✅ Ready for tuning"
+      
+      - name: 🚀 Step 4 - Full GEMMA Tuning
+        run: |
+          echo "======================================================================"
+          echo "🚀 FULL GEMMA HYPERPARAMETER TUNING (MLP MODEL)"
+          echo "======================================================================"
+          echo ""
+          echo "Configuration:"
+          echo "  - Model: GEMMA (MLP)"
+          echo "  - Trials: ${{ github.event.inputs.trials }}"
+          echo "  - CV Splits: ${{ github.event.inputs.cv_splits }}"
+          echo "  - Symbol: ${{ github.event.inputs.symbol }}"
+          echo "  - Optimization Metric: balanced_accuracy_score"
+          echo ""
+          echo "This will take approximately 45-60 minutes..."
+          echo ""
+          
+          python scripts/tune_gemma_model_standalone.py \
+            --model gemma \
+            --symbol '${{ github.event.inputs.symbol }}' \
+            --trials ${{ github.event.inputs.trials }} \
+            --cv-splits ${{ github.event.inputs.cv_splits }}
+          
+          echo ""
+          echo "✅ Full GEMMA tuning completed!"
+      
+      # ==================== STEP 5: COMPLETELY REWRITTEN ==================== #
+      - name: 📊 Step 5 - Analyze Results (Balanced Accuracy)
+        run: |
+          echo "======================================================================"
+          echo "📊 TUNING RESULTS ANALYSIS (BALANCED ACCURACY METRICS)"
+          echo "======================================================================"
+          echo ""
+          
+          # Find the latest results file
+          LATEST_RESULT=$(ls -t logs/tuning_results/gemma_tuning_*.json | head -1)
+          
+          if [ -f "$LATEST_RESULT" ]; then
+            echo "Results file: $LATEST_RESULT"
+            echo ""
+            
+            # ========== EXTRACT BALANCED METRICS (NEW!) ========== #
+            BALANCED_CV=$(python3 -c "import json; print(json.load(open('$LATEST_RESULT')).get('balanced_cv_score', 0.0))")
+            BALANCED_HOLDOUT=$(python3 -c "import json; print(json.load(open('$LATEST_RESULT')).get('balanced_holdout_score', 0.0))")
+            
+            # Also get old metrics for reference
+            TOTAL_CV=$(python3 -c "import json; print(json.load(open('$LATEST_RESULT')).get('cv_score', 0.0))")
+            TOTAL_HOLDOUT=$(python3 -c "import json; print(json.load(open('$LATEST_RESULT')).get('holdout_score', 0.0))")
+            GAP=$(python3 -c "import json; print(json.load(open('$LATEST_RESULT')).get('gap', 0.0))")
+            
+            echo "=== FINAL RESULTS (BALANCED ACCURACY) ==="
+            echo "CV (Balanced):        $(python3 -c "print(f'{float($BALANCED_CV)*100:.2f}%')")"
+            echo "Hold-out (Balanced):  $(python3 -c "print(f'{float($BALANCED_HOLDOUT)*100:.2f}%')")"
+            echo "Gap:                  $(python3 -c "print(f'{float($GAP)*100:.2f}%')")"
+            echo ""
+            echo "=== REFERENCE (Total Accuracy - Misleading!) ==="
+            echo "CV (Total):           $(python3 -c "print(f'{float($TOTAL_CV)*100:.2f}%')")"
+            echo "Hold-out (Total):     $(python3 -c "print(f'{float($TOTAL_HOLDOUT)*100:.2f}%')")"
+            echo ""
+            
+            # ========== NEW SUCCESS CRITERIA (BALANCED) ========== #
+            BALANCED_HOLDOUT_PERCENT=$(python3 -c "print(float($BALANCED_HOLDOUT)*100)")
+            GAP_ABS=$(python3 -c "print(abs(float($GAP))*100)")
+            
+            echo "======================================================================"
+            echo "🎯 PRODUCTION READINESS CHECK (BALANCED ACCURACY)"
+            echo "======================================================================"
+            echo ""
+            
+            # Check 1: Balanced accuracy threshold
+            if (( $(echo "$BALANCED_HOLDOUT_PERCENT >= 45" | bc -l) )); then
+              echo "✅ CHECK 1: Balanced accuracy >= 45% (PASSED)"
+              echo "   Achieved: ${BALANCED_HOLDOUT_PERCENT}%"
+              CHECK1_PASS=true
+            elif (( $(echo "$BALANCED_HOLDOUT_PERCENT >= 40" | bc -l) )); then
+              echo "⚠️  CHECK 1: Balanced accuracy >= 40% but < 45% (MARGINAL)"
+              echo "   Achieved: ${BALANCED_HOLDOUT_PERCENT}%"
+              CHECK1_PASS=marginal
+            else
+              echo "❌ CHECK 1: Balanced accuracy < 40% (FAILED)"
+              echo "   Achieved: ${BALANCED_HOLDOUT_PERCENT}% (Random = 33.3%)"
+              CHECK1_PASS=false
+            fi
+            
+            # Check 2: Generalization gap
+            if (( $(echo "$GAP_ABS < 5" | bc -l) )); then
+              echo "✅ CHECK 2: Generalization gap < 5% (EXCELLENT)"
+              echo "   Gap: ${GAP_ABS}%"
+              CHECK2_PASS=true
+            elif (( $(echo "$GAP_ABS < 10" | bc -l) )); then
+              echo "✅ CHECK 2: Generalization gap < 10% (GOOD)"
+              echo "   Gap: ${GAP_ABS}%"
+              CHECK2_PASS=true
+            else
+              echo "⚠️  CHECK 2: Generalization gap >= 10% (CONCERNING)"
+              echo "   Gap: ${GAP_ABS}% (possible overfitting/underfitting)"
+              CHECK2_PASS=marginal
+            fi
+            
+            echo ""
+            echo "======================================================================"
+            echo "📋 FINAL VERDICT"
+            echo "======================================================================"
+            
+            # Final decision based on checks
+            if [ "$CHECK1_PASS" = "true" ] && [ "$CHECK2_PASS" = "true" ]; then
+              echo "🎉 SUCCESS! Model ready for final training!"
+              echo ""
+              echo "✅ Balanced hold-out: ${BALANCED_HOLDOUT_PERCENT}% (>= 45%)"
+              echo "✅ Generalization gap: ${GAP_ABS}% (< 10%)"
+              echo ""
+              echo "Next steps:"
+              echo "  1. Run 'Train Final Production Model' workflow"
+              echo "  2. With these tuning results, expect:"
+              echo "     - Bearish accuracy: 35-50% (improved from 0%!)"
+              echo "     - Bullish accuracy: 50-65%"
+              echo "     - Neutral accuracy: 75-85%"
+              echo "  3. Deployment check should PASS all thresholds"
+            elif [ "$CHECK1_PASS" = "marginal" ]; then
+              echo "⚠️  MARGINAL! Model may work but needs validation."
+              echo ""
+              echo "⚠️  Balanced hold-out: ${BALANCED_HOLDOUT_PERCENT}% (40-45% range)"
+              echo "✅ Generalization gap: ${GAP_ABS}%"
+              echo ""
+              echo "Recommendations:"
+              echo "  1. Try running final training (may still work)"
+              echo "  2. If Bearish < 30%: Consider more trials or feature engineering"
+              echo "  3. Monitor per-class accuracy closely"
+            else
+              echo "❌ FAILED! Model needs improvement."
+              echo ""
+              echo "❌ Balanced hold-out: ${BALANCED_HOLDOUT_PERCENT}% (< 40%)"
+              echo "   (Random guessing = 33.3% for 3 classes)"
+              echo ""
+              echo "Recommendations:"
+              echo "  1. Check feature quality (volume_confirm enabled?)"
+              echo "  2. Try stricter threshold (0.020 instead of 0.010)"
+              echo "  3. Consider feature engineering (add Bearish-specific features)"
+              echo "  4. Increase trials (50-100) for better exploration"
+              exit 1
+            fi
+          else
+            echo "❌ No results file found"
+            exit 1
+          fi
+      
+      - name: 💾 Upload Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gemma-tuning-results-${{ github.run_number }}
+          path: |
+            logs/tuning_results/gemma_tuning_*.json
+            logs/*.log
+          retention-days: 30
+
+      # ====================================================================
+      # 🚀 YENİ ADIM: Ölçekleyiciyi (Scaler) Artifact olarak kaydet
+      # ====================================================================
+      - name: 📦 Archive Production Scaler
+        uses: actions/upload-artifact@v4
+        if: always() # Hata alsa bile kaydetmeyi dene
+        with:
+          name: production-scaler # 'train-models' bu ismi arayacak
+          path: data/cache/scaler_production.joblib
+          retention-days: 30
+          if-no-files-found: error # Eğer scaler dosyası yoksa workflow'u durdur
+      
+      # ==================== SUMMARY: UPDATED ==================== #
+      - name: 📈 Summary
+        if: always()
+        run: |
+          echo "======================================================================"
+          echo "✅ FULL TUNING WORKFLOW COMPLETED (BALANCED ACCURACY)"
+          echo "======================================================================"
+          echo ""
+          echo "What changed in this workflow:"
+          echo "  ✅ Now optimizes for balanced_accuracy_score (fair metric)"
+          echo "  ✅ Tunes on REAL data (no SMOTETomek in tuning)"
+          echo "  ✅ Checks balanced_holdout_score >= 45% (not total 53%)"
+          echo "  ✅ Validates generalization gap"
+          echo ""
+          echo "Next steps:"
+          echo "  1. If PASSED: Run 'Train Final Production Model' workflow"
+          echo "  2. If MARGINAL: Try training, monitor Bearish accuracy"
+          echo "  3. If FAILED: Review feature engineering or try more trials"
+          echo ""
+          echo "Expected improvements:"
+          echo "  - Bearish detection: 35-50% (from 0%!)"
+          echo "  - Better minority class learning"
+          echo "  - Passes deployment checks (Bearish > 30%)"
