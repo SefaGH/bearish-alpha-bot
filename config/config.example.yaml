@@ -414,31 +414,47 @@ ml:
       regime: 0.2                     # Override: SCORE_WEIGHT_REGIME (Regime prediction weight)
       risk_reward: 0.2                # Override: SCORE_WEIGHT_RR (Risk/reward ratio quality)
 
-  # ----------------------------------------------------------------------------
-  # F) GEMMA MODEL - Advanced Price Movement Prediction (Phase 3)
-  # Deep learning model using 82 engineered features for price direction prediction
-  # ----------------------------------------------------------------------------
+  # =======================================================
+  # GEMMA ML Pipeline Configuration
+  # =======================================================
   gemma:
-    enabled: false                    # Override: ML__GEMMA__ENABLED
-    feature_set: 'gemma_v1'           # Override: ML__GEMMA__FEATURE_SET (Phase 2 feature set)
+    # GEMMA'yı etkinleştirmek için 'true' yapın veya GEMMA_ENABLED ortam değişkenini kullanın.
+    # Üretimde devreye alınana kadar 'false' kalması önerilir.
+    enabled: false
     
-    # Model Architecture
-    architecture:
-      input_size: 82                  # Override: ML__GEMMA__ARCHITECTURE__INPUT_SIZE (82 selected features)
-      hidden_size: 32                 # Override: ML__GEMMA__ARCHITECTURE__HIDDEN_SIZE
-      num_layers: 2                   # Override: ML__GEMMA__ARCHITECTURE__NUM_LAYERS
-      dropout: 0.6                    # Override: ML__GEMMA__ARCHITECTURE__DROPOUT
-      num_classes: 3                  # Override: ML__GEMMA__ARCHITECTURE__NUM_CLASSES (bearish=0, neutral=1, bullish=2)
+    # Model Yolları (.pt uzantılı TorchScript modelleri olmalıdır)
+    model_path: "data/models/gemma/final/gemma_price.pt"
     
-    # Training Parameters
-    training:
-      epochs: 50                      # Override: ML__GEMMA__TRAINING__EPOCHS
-      batch_size: 32                  # Override: ML__GEMMA__TRAINING__BATCH_SIZE
-      learning_rate: 0.001            # Override: ML__GEMMA__TRAINING__LEARNING_RATE
-      early_stopping_patience: 10     # Override: ML__GEMMA__TRAINING__EARLY_STOPPING_PATIENCE
+    # Özellik (Feature) Konfigürasyon Dosyaları
+    features_path: "features/gemma/selected/gemma_price_selected_82.json"
     
-    # Deployment Thresholds
-    thresholds:
-      deployment_accuracy: 0.78       # Override: ML__GEMMA__THRESHOLDS__DEPLOYMENT_ACCURACY
-      min_samples: 1000               # Override: ML__GEMMA__THRESHOLDS__MIN_SAMPLES
-  
+    # Yardımcı Dosyalar
+    scaler_path: "data/cache/gemma/scaler_gemma.joblib" # Faz 3'te oluşturulan scaler
+    feature_mask_path: "data/cache/gemma/feature_selection_mask.npy"
+    
+    # Gölge Modu (Mevcut sistemle paralel çalışarak doğrulama yapar)
+    shadow_mode: true
+    shadow_duration_hours: 48
+    
+    # Performans Ayarları
+    cache_ttl: 30  # Saniye cinsinden aynı tahminler için önbellek süresi
+    max_inference_time: 0.5 # Saniye cinsinden maksimum tahmin süresi (izleme için)
+    
+    # Circuit Breaker (Hata toleransı)
+    # Model tahmininde art arda hata alınması durumunda devreye girer.
+    circuit_breaker:
+      enabled: true
+      failure_threshold: 5      # Bu sayıda hata sonrası devre açılır
+      recovery_timeout: 60      # Saniye cinsinden tekrar deneme süresi
+    
+  # =======================================================
+  # AI-Gate Güven Eşikleri
+  # =======================================================
+  price:
+    # Fiyat tahmini için minimum güven skoru
+    min_confidence: 0.66
+    
+  regime:
+    # Rejim tahmini için minimum güven skoru
+    min_confidence: 0.60
+
