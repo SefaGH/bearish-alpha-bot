@@ -406,6 +406,8 @@ class RegimeModelTrainer:
             # Train model based on architecture type
             if model_arch.lower() == 'mlp':
                 model, train_metrics = self._train_mlp_model(X_train, y_train, X_test, y_test)
+                # Use original test data for MLP evaluation
+                eval_X_test, eval_y_test = X_test, y_test
             elif model_arch.lower() == 'lstm':
                 # Create sequences for LSTM
                 seq_length = architecture_config.get('sequence_length', SEQUENCE_LENGTH)
@@ -415,6 +417,8 @@ class RegimeModelTrainer:
                     X_train_seq, y_train_seq, 
                     validation_method='time_series_cv'
                 )
+                # Use sequential test data for LSTM evaluation
+                eval_X_test, eval_y_test = X_test_seq, y_test_seq
             else:
                 logger.error(f"Unsupported architecture type: {model_arch}")
                 return {
@@ -422,8 +426,8 @@ class RegimeModelTrainer:
                     'error': f'Unsupported architecture: {model_arch}'
                 }
             
-            # Evaluate on test set
-            test_metrics = self._evaluate_model(model, X_test, y_test, model_arch)
+            # Evaluate on test set with appropriate data format
+            test_metrics = self._evaluate_model(model, eval_X_test, eval_y_test, model_arch)
             
             # Store the trained model
             self.models[model_type] = model
@@ -482,10 +486,16 @@ class RegimeModelTrainer:
             # Convert LSTM-style config to MLP-style
             hidden_size = arch_config.get('hidden_size')
             num_layers = arch_config.get('num_layers')
-            # Create decreasing layer sizes for MLP
-            hidden_layers = [hidden_size // (i + 1) for i in range(num_layers)]
-            logger.info(f"Converted LSTM config (hidden_size={hidden_size}, num_layers={num_layers}) "
-                       f"to MLP layers: {hidden_layers}")
+            
+            # Validate num_layers
+            if num_layers <= 0:
+                logger.warning(f"Invalid num_layers={num_layers}, using default layers")
+                hidden_layers = [128, 64]
+            else:
+                # Create decreasing layer sizes for MLP
+                hidden_layers = [hidden_size // (i + 1) for i in range(num_layers)]
+                logger.info(f"Converted LSTM config (hidden_size={hidden_size}, num_layers={num_layers}) "
+                           f"to MLP layers: {hidden_layers}")
         else:
             # Default layer configuration
             hidden_layers = [128, 64]
@@ -594,12 +604,15 @@ class RegimeModelTrainer:
                 logger.info(f"  ⏹️  Early stopping triggered at epoch {epoch+1}")
                 break
         
+        # Capture final epoch after training loop
+        final_epoch = epoch + 1
+        
         metrics = {
             'accuracy': best_accuracy,
             'final_train_loss': train_loss,
             'final_test_loss': test_loss_value,
             'total_params': total_params,
-            'final_epoch': epoch + 1
+            'final_epoch': final_epoch
         }
         
         logger.info(f"✅ MLP training completed. Best accuracy: {best_accuracy:.4f}")
@@ -683,12 +696,30 @@ class RegimeModelTrainer:
             torch.save(model.state_dict(), model_path)
             logger.info(f"✅ Saved GEMMA model to {model_path}")
             
-            # Save model configuration
+            # Save model configuration - robust extraction of model parameters
+            try:
+                if hasattr(model, 'layers') and isinstance(model.layers, nn.Sequential):
+                    # Extract linear layers for MLP models
+                    linear_layers = [m for m in model.layers if isinstance(m, nn.Linear)]
+                    if linear_layers:
+                        input_size = linear_layers[0].in_features
+                        num_classes = linear_layers[-1].out_features
+                    else:
+                        input_size = None
+                        num_classes = None
+                else:
+                    input_size = None
+                    num_classes = None
+            except (IndexError, AttributeError) as e:
+                logger.warning(f"Could not extract model dimensions: {e}")
+                input_size = None
+                num_classes = None
+            
             config_path = gemma_dir / f"gemma_{model_type}_config.pkl"
             model_config = {
                 'architecture': model_arch,
-                'input_size': model.layers[0].in_features if hasattr(model, 'layers') else None,
-                'num_classes': model.layers[-1].out_features if hasattr(model, 'layers') else None,
+                'input_size': input_size,
+                'num_classes': num_classes,
                 'model_type': model_type
             }
             joblib.dump(model_config, config_path)

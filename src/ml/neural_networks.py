@@ -5,7 +5,7 @@ Implements LSTM and Transformer-based models for regime forecasting.
 """
 
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ if TORCH_AVAILABLE:
         dependencies are less critical than feature interactions.
         """
         
-        def __init__(self, input_size: int, hidden_layers: list = [128, 64], 
+        def __init__(self, input_size: int, hidden_layers: Optional[List[int]] = None, 
                      num_classes: int = 3, dropout: float = 0.3):
             """
             Initialize MLP regime predictor.
@@ -42,6 +42,9 @@ if TORCH_AVAILABLE:
                 dropout: Dropout rate for regularization (default: 0.3)
             """
             super().__init__()
+            
+            if hidden_layers is None:
+                hidden_layers = [128, 64]
             
             # Build layers dynamically based on hidden_layers list
             layers = []
