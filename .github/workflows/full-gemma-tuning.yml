@@ -260,6 +260,16 @@ jobs:
             exit 1
           fi
       
+      # ====================================================================
+      # 🔬 NEW STEP: Formalize R&D Results (Generate Feature Plan)
+      # ====================================================================
+      - name: 4. Ar-Ge Sonucunu Resmileştir (Özellik Planı Üret)
+        run: |
+          echo "======================================================================"
+          echo "🔬 ADIM 4: Nihai Özellik Planı Dosyaları Oluşturuluyor..."
+          echo "======================================================================"
+          python scripts/generate_gemma_features.py
+      
       - name: 💾 Upload Results
         uses: actions/upload-artifact@v4
         if: always()
@@ -281,6 +291,19 @@ jobs:
           path: data/cache/scaler_production.joblib
           retention-days: 30
           if-no-files-found: error # Eğer scaler dosyası yoksa workflow'u durdur
+      
+      # ====================================================================
+      # 📦 NEW STEP: Upload Generated Feature Plan as Artifact
+      # ====================================================================
+      - name: 5. Üretilen Özellik Planını Artifact Olarak Kaydet
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemma-feature-plan-artifacts
+          path: |
+            features/gemma/selected/*.json
+            features/gemma/metadata/feature_metadata.json
+            data/cache/gemma/feature_selection_mask.npy
+          retention-days: 7
       
       # ==================== SUMMARY: UPDATED ==================== #
       - name: 📈 Summary
