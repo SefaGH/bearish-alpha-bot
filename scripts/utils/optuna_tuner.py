@@ -121,6 +121,8 @@ class OptunaModelTuner:
         """
         if self.model_type == 'lstm':
             return self._suggest_lstm_params(trial)
+        elif self.model_type == 'gemma':
+            return self._suggest_gemma_params(trial)
         elif self.model_type == 'transformer':
             return self._suggest_transformer_params(trial)
         elif self.model_type == 'rf':
@@ -146,6 +148,17 @@ class OptunaModelTuner:
             
             # TRAINING
             'batch_size': trial.suggest_categorical('batch_size', [32, 64])  # Same
+        }
+    
+    def _suggest_gemma_params(self, trial: optuna.Trial) -> Dict[str, Any]:
+        """Suggest GEMMA MLP hyperparameters."""
+        return {
+            'hidden_size': trial.suggest_int('hidden_size', 32, 128, log=True),
+            'num_layers': trial.suggest_int('num_layers', 2, 4),
+            'dropout': trial.suggest_uniform('dropout', 0.2, 0.6),
+            'learning_rate': trial.suggest_loguniform('learning_rate', 1e-4, 1e-2),
+            'weight_decay': trial.suggest_loguniform('weight_decay', 1e-6, 1e-3),
+            'batch_size': trial.suggest_categorical('batch_size', [32, 64, 128])
         }
     
     def _suggest_transformer_params(self, trial: optuna.Trial) -> Dict[str, Any]:
