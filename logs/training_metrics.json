@@ -1,5 +1,5 @@
 {
-  "start_time": "2025-11-12T13:48:37.507751",
+  "start_time": "2025-11-12T21:27:29.918794",
   "symbols": [
     "BTC/USDT"
   ],
@@ -12,22 +12,12 @@
     "1d"
   ],
   "regime_models": {},
-  "price_models": {
-    "status": "completed",
-    "models_trained": [
-      "LSTM",
-      "Transformer",
-      "Ensemble"
-    ]
-  },
-  "rl_models": {
-    "status": "skipped",
-    "reason": "missing_data"
-  },
+  "price_models": {},
+  "rl_models": {},
   "gemma_models": {
     "status": "failed",
-    "error": "'1d'"
+    "error": "'RegimeModelTrainer' object has no attribute 'train_and_evaluate'"
   },
-  "end_time": "2025-11-12T13:48:47.974303",
-  "duration_seconds": 10.466552
+  "end_time": "2025-11-12T21:27:33.589985",
+  "duration_seconds": 3.671191
 }
