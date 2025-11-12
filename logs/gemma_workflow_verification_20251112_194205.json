@@ -1,0 +1,73 @@
+{
+  "overall_status": "SUCCESS",
+  "steps": {
+    "Step 1: Prepare Training Data": {
+      "status": "SUCCESS",
+      "duration_seconds": 7.39,
+      "exit_code": 0,
+      "features": 82,
+      "samples": 6830
+    },
+    "Step 2a: Feature Analysis": {
+      "status": "SUCCESS",
+      "duration_seconds": 0.61,
+      "exit_code": 0
+    },
+    "Step 2b: Feature Selection": {
+      "status": "SUCCESS",
+      "duration_seconds": 0.61,
+      "exit_code": 0,
+      "selected_features": 82,
+      "total_features": 82
+    },
+    "Step 3: Re-prepare Training Data": {
+      "status": "SUCCESS",
+      "duration_seconds": 7.14,
+      "exit_code": 0,
+      "features": 87
+    },
+    "Step 4: Full GEMMA Tuning": {
+      "status": "SUCCESS",
+      "duration_seconds": 13.09,
+      "exit_code": 0
+    },
+    "Step 5: Analyze Results": {
+      "status": "SUCCESS",
+      "balanced_cv_score": 0.7983911106252961,
+      "balanced_holdout_score": 0.817798956856671,
+      "gap": -0.019407846231374926,
+      "input_size": 87,
+      "model_type": "gemma",
+      "results_file": "logs/tuning_results/gemma_tuning_20251112_194204.json"
+    },
+    "Step 6: Validate Artifacts": {
+      "status": "SUCCESS",
+      "artifacts": {
+        "training_data": {
+          "exists": true,
+          "path": "data/cache/BTC-USDT_training_data.npz",
+          "size_bytes": 4078213
+        },
+        "feature_mask": {
+          "exists": true,
+          "path": "data/cache/feature_selection_mask.npy",
+          "size_bytes": 210
+        },
+        "scaler": {
+          "exists": true,
+          "path": "data/cache/scaler_production.joblib",
+          "size_bytes": 2687
+        },
+        "results": {
+          "exists": true,
+          "count": 2
+        }
+      }
+    }
+  },
+  "start_time": "2025-11-12T19:41:36.107327",
+  "python_version": "3.11.14 (main, Oct 10 2025, 08:54:04) [GCC 13.3.0]",
+  "workflow_name": "\ud83d\udc8e GEMMA - Full Hyperparameter Tuning",
+  "production_ready": false,
+  "end_time": "2025-11-12T19:42:05.030709"
+}
