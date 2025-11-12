@@ -376,7 +376,23 @@ class RegimeModelTrainer:
             
             # Get architecture config from self.config
             architecture_config = self.config.get('architecture', {})
-            model_arch = architecture_config.get('model_type', 'mlp')  # Default to MLP for GEMMA
+            
+            # Determine model architecture
+            # If model_type is explicitly specified, use it
+            # Otherwise, infer from the presence of certain parameters
+            if 'model_type' in architecture_config:
+                model_arch = architecture_config.get('model_type')
+            elif 'hidden_layers' in architecture_config:
+                # MLP configuration detected (has hidden_layers list)
+                model_arch = 'mlp'
+            elif 'hidden_size' in architecture_config and 'num_layers' in architecture_config:
+                # LSTM configuration detected (has hidden_size and num_layers)
+                # But for GEMMA, we'll convert this to MLP by using hidden_size as layer sizes
+                logger.info("Detected LSTM-style config, converting to MLP for GEMMA")
+                model_arch = 'mlp'
+            else:
+                # Default to MLP for GEMMA
+                model_arch = 'mlp'
             
             logger.info(f"Training {model_arch.upper()} model for {model_type}")
             
@@ -458,7 +474,22 @@ class RegimeModelTrainer:
         
         # Get architecture parameters from config
         arch_config = self.config.get('architecture', {})
-        hidden_layers = arch_config.get('hidden_layers', [128, 64])
+        
+        # Support both MLP-style (hidden_layers list) and LSTM-style (hidden_size, num_layers) configs
+        if 'hidden_layers' in arch_config:
+            hidden_layers = arch_config.get('hidden_layers')
+        elif 'hidden_size' in arch_config and 'num_layers' in arch_config:
+            # Convert LSTM-style config to MLP-style
+            hidden_size = arch_config.get('hidden_size')
+            num_layers = arch_config.get('num_layers')
+            # Create decreasing layer sizes for MLP
+            hidden_layers = [hidden_size // (i + 1) for i in range(num_layers)]
+            logger.info(f"Converted LSTM config (hidden_size={hidden_size}, num_layers={num_layers}) "
+                       f"to MLP layers: {hidden_layers}")
+        else:
+            # Default layer configuration
+            hidden_layers = [128, 64]
+        
         dropout = arch_config.get('dropout', 0.3)
         
         # Get training parameters
