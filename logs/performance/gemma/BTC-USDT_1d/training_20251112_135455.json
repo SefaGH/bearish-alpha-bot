@@ -1,0 +1,22 @@
+{
+  "timestamp": "2025-11-12T13:54:55.279355",
+  "model_type": "gemma",
+  "model_name": "BTC-USDT_1d",
+  "git_sha": "bc84bda3ef6fc05578a80b3d14bd19068c706646",
+  "run_number": "236",
+  "metrics": {
+    "accuracy": 0.5525,
+    "loss": 0.6900737239764287,
+    "epochs_completed": 22,
+    "deployment_status": "staging_only"
+  },
+  "data_info": {
+    "samples": 2000,
+    "features": 87,
+    "train_samples": 1600,
+    "val_samples": 400,
+    "symbol": "BTC/USDT",
+    "timeframe": "1d"
+  },
+  "training_time_seconds": 2.290066
+}

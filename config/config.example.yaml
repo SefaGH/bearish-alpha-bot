@@ -420,7 +420,7 @@ ml:
   gemma:
     # GEMMA'yı etkinleştirmek için 'true' yapın veya GEMMA_ENABLED ortam değişkenini kullanın.
     # Üretimde devreye alınana kadar 'false' kalması önerilir.
-    enabled: false
+    enabled: true  # Override with: GEMMA_ENABLED
     
     # Model Yolları (.pt uzantılı TorchScript modelleri olmalıdır)
     model_path: "data/models/gemma/final/gemma_price.pt"
@@ -446,6 +446,25 @@ ml:
       enabled: true
       failure_threshold: 5      # Bu sayıda hata sonrası devre açılır
       recovery_timeout: 60      # Saniye cinsinden tekrar deneme süresi
+    
+    # Training Configuration
+    thresholds:
+      min_samples: 1000  # Minimum number of samples required for training
+    
+    training:
+      batch_size: 32
+      epochs: 50
+      learning_rate: 0.001
+      early_stopping_patience: 10
+    
+    architecture:
+      input_size: 87  # Updated to match actual GEMMA feature count
+      hidden_size: 32
+      num_layers: 2
+      dropout: 0.6
+      num_classes: 3
+    
+    feature_set: "gemma_v1"
     
   # =======================================================
   # AI-Gate Güven Eşikleri
