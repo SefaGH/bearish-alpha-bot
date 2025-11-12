@@ -1,888 +1,127 @@
 """
-Unified ML Model Training Script for Bearish Alpha Bot.
+Unified ML Model Training Script
 
-This script trains all ML models (Regime Prediction, Price Prediction, RL Agent)
-with architecture parameters synchronized from config.example.yaml.
+This script trains all enabled ML models (e.g., GEMMA, LSTM) based on the
+central project configuration (`config.example.yaml`).
 
-CRITICAL: All model architectures MUST be synchronized with config.example.yaml:
-  - Regime LSTM: hidden_size=64, num_layers=2 (from ml.regime_prediction.model_params.lstm_regime)
-  - Price models: parameters from ml.price_prediction.model_params
-  - RL Agent: parameters from ml.reinforcement_learning
-
-This ensures:
-  1. No size mismatch errors during model loading
-  2. Consistent architecture across training and inference
-  3. Reduced overfitting risk with smaller, safer models
+It performs the following steps:
+1. Loads the prepared training data from `data/cache`.
+2. For each enabled model in the config:
+   a. Initializes the appropriate model trainer (e.g., RegimeModelTrainer).
+   b. Passes the model-specific configuration to the trainer.
+   c. Trains the model using the prepared data.
+   d. Saves the trained model and its performance metrics.
 """
-
-import asyncio
-import os
 import sys
-import pandas as pd
-import numpy as np
+from pathlib import Path
 import logging
+import numpy as np
 import yaml
 import json
 from datetime import datetime
-from pathlib import Path
-import shutil
-import joblib
 
-# --- YOL AYARLAMASI (IMPORT HATALARINI ÖNLER) ---
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, project_root)
-# --- YOL AYARLAMASI SONU ---
+# Proje kök dizinini Python yoluna ekle
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# --- YENİ: Merkezi Config Import ---
-from src.config.live_trading_config import LiveTradingConfiguration
-# --- YENİ IMPORT SONU ---
-
-# Gerekli modüllerin import edilmesi
-from src.core.ccxt_client import CcxtClient
-from src.core.logger import setup_logger
-from src.core.market_data_pipeline import MarketDataPipeline
-from src.ml.feature_engineering import FeatureEngineeringPipeline
 from src.ml.model_trainer import RegimeModelTrainer
-from src.ml.price_predictor import (
-    AdvancedPricePredictionEngine,
-    MultiTimeframePricePredictor,
-    EnsemblePricePredictor,
-    LSTMPricePredictor,
-    TransformerPricePredictor
-)
-from src.ml.label_generator import generate_regime_labels
-# --- YENİ: RL EĞİTİMİ İÇİN GEREKLİ IMPORT'LAR ---
-from src.ml.reinforcement_learning import TradingRLAgent, ExperienceReplay
-from src.ml.rl_trading_env import RLTradingEnv
-from src.ml.rl_model_trainer import RLModelTrainer
-# --- YENİ IMPORT'LAR SONU ---
 
-# --- PERFORMANCE TRACKING ---
-from scripts.utils.model_performance_tracker import ModelPerformanceTracker
-# --- PERFORMANCE TRACKING SONU ---
+# Loglama ayarları
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(name)s] - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-from scripts.utils.training_validator import TrainingConfigValidator
-
-# Logger kurulumu
-logger = setup_logger("model-trainer", level=logging.INFO, log_to_file=True, log_filename="training.log")
-
-# --- EĞİTİM PARAMETRELERİ ---
-SYMBOLS_TO_TRAIN = ['BTC/USDT']
-ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d']  # 1d eklendi - regime için gerekli
-REGIME_TRAINING_TIMEFRAMES = ['15m', '30m', '1h', '4h', '1d']  # 5 timeframe - regime detection için optimal
-
-# === DÜZELTME: CANDLE_LIMIT, BingX API limitine (1440) uyacak şekilde güncellendi ===
-CANDLE_LIMIT = 1440  # BingX limiti (değişmez)
-
-MIN_SAMPLES_FOR_RF = 100
-MIN_SAMPLES_FOR_NN = 1000  # Daha stabil model eğitimi için artırıldı
-
-# --- YENİ: RL EĞİTİM PARAMETRELERİ ---
-RL_TRAINING_TIMEFRAME = '15m'  # RL eğitimi için kullanılacak zaman dilimi
-RL_NUM_EPISODES = 250          # Ajanın kaç bölüm (episode) boyunca eğitileceği
-RL_BATCH_SIZE = 64             # Her öğrenme adımında kullanılacak deneyim sayısı
-RL_BUFFER_SIZE = 100000        # Deneyim tekrarı belleğinin kapasitesi
-# --- YENİ PARAMETRELER SONU ---
-
-
-def train_gemma_model(training_data: dict, feature_engine: FeatureEngineeringPipeline, config: dict, tracker: ModelPerformanceTracker):
-    """
-    Train a GEMMA-based price movement prediction model using 87 engineered features.
-    
-    Args:
-        training_data: Dictionary of training data by symbol and timeframe
-        feature_engine: FeatureEngineeringPipeline instance for feature extraction
-        config: ML configuration dictionary (containing gemma config)
-        tracker: ModelPerformanceTracker for recording metrics
-        
-    Returns:
-        Dictionary containing training results and model information
-    """
-    gemma_config = config.get('gemma', {})
-    if not gemma_config.get('enabled', False):
-        logger.info("GEMMA training is disabled via config. Skipping.")
-        return {'status': 'disabled'}
-
-    logger.info("\n" + "="*60)
-    logger.info("💎 ADIM 4: GEMMA MODELİ EĞİTİLİYOR 💎")
-    logger.info("="*60)
-    
-    # Import PyTorch and sklearn (lazy-loading to avoid import if GEMMA disabled)
+def load_config():
+    """Loads the main YAML configuration file."""
+    config_path = Path(__file__).resolve().parent.parent / 'config' / 'config.example.yaml'
     try:
-        import torch
-        import torch.nn as nn
-        from torch.utils.data import DataLoader, TensorDataset
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.model_selection import train_test_split
-    except ImportError as e:
-        logger.error(f"❌ Required libraries not available for GEMMA training: {e}")
-        return {'status': 'failed', 'error': f'Missing dependencies: {e}'}
+        with open(config_path, 'r') as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError:
+        logger.error(f"❌ Kritik Hata: Konfigürasyon dosyası bulunamadı: {config_path}")
+        sys.exit(1)
+    return None
+
+def load_training_data(config: dict) -> tuple:
+    """Loads the prepared training data from the cache."""
+    data_path_str = config.get('ml', {}).get('feature_selection', {}).get('data_path', 'data/cache/BTC-USDT_training_data.npz')
+    data_path = Path(data_path_str)
     
-    gemma_results = {}
-    training_start_time = datetime.now()
+    if not data_path.exists():
+        logger.error(f"❌ Kritik Hata: Hazırlanmış eğitim verisi bulunamadı: {data_path}")
+        logger.error("Lütfen önce 'prepare_training_data.py' script'ini veya ilgili workflow adımını çalıştırın.")
+        sys.exit(1)
     
     try:
-        # Get training data from the first available symbol
-        if not training_data:
-            logger.warning("⚠️ No training data available for GEMMA.")
-            return {'status': 'skipped', 'reason': 'no_training_data'}
-            
-        symbol = list(training_data.keys())[0]
-        # GEMMA targets the longest timeframe for richest dataset
-        timeframe = '1d' if '1d' in training_data[symbol] else ALL_TIMEFRAMES[-1]
-        
-        logger.info(f"Preparing data for GEMMA using symbol '{symbol}' and timeframe '{timeframe}'")
-        raw_data = training_data[symbol][timeframe]
-
-        # 1. EXTRACT GEMMA FEATURES (82 features from Phase 2)
-        feature_set_name = gemma_config.get('feature_set', 'gemma_v1')
-        logger.info(f"Extracting GEMMA feature set: '{feature_set_name}'")
-        
-        # Use extract_gemma_features to get the 87-feature set
-        features_df = feature_engine.extract_gemma_features(raw_data.copy())
-        
-        # 2. GENERATE TARGET LABELS
-        # Simple price direction prediction: will price increase in next 5 periods?
-        # This follows the pattern used in other price prediction models
-        logger.info("Generating target labels (price direction prediction)...")
-        # Use raw_data for label generation since features_df doesn't have 'close'
-        # Ensure indices match between features_df and raw_data
-        # Safety check: ensure all feature indices exist in raw_data
-        if not features_df.index.isin(raw_data.index).all():
-            logger.warning("⚠️ Some feature indices not found in raw_data; filtering features_df to valid indices.")
-            features_df = features_df[features_df.index.isin(raw_data.index)]
-        aligned_close = raw_data.loc[features_df.index, 'close']
-        features_df['target'] = (aligned_close.shift(-5) > aligned_close).astype(int)
-        features_df.dropna(inplace=True)
-
-        if features_df.empty:
-            logger.warning("⚠️ No data remaining after feature extraction and label generation.")
-            return {'status': 'skipped', 'reason': 'empty_features'}
-
-        features = features_df.drop(columns=['target'])
-        labels = features_df['target']
-
-        # Check minimum samples requirement
-        min_samples = gemma_config.get('thresholds', {}).get('min_samples', 1000)
-        if features.shape[0] < min_samples:
-            logger.warning(f"⚠️ Not enough data for GEMMA training. Have {features.shape[0]}, need {min_samples}.")
-            return {'status': 'skipped', 'reason': 'insufficient_data', 'samples': features.shape[0]}
-
-        logger.info(f"✅ Feature extraction complete: {features.shape[0]} samples, {features.shape[1]} features")
-
-        # 3. SCALE FEATURES
-        logger.info("Scaling features with StandardScaler...")
-        scaler = StandardScaler()
-        features_scaled = scaler.fit_transform(features)
-        
-        # Save scaler for inference
-        scaler_path = Path('data/cache/gemma/scaler_gemma.joblib')
-        scaler_path.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump(scaler, scaler_path)
-        logger.info(f"✅ GEMMA scaler saved to {scaler_path}")
-
-        # 4. SPLIT DATA INTO TRAIN AND VALIDATION SETS
-        logger.info("Splitting data into train/validation sets...")
-        X_train, X_val, y_train, y_val = train_test_split(
-            features_scaled, labels.values, test_size=0.2, random_state=42, stratify=labels
-        )
-        
-        logger.info(f"   Training samples: {len(X_train)}")
-        logger.info(f"   Validation samples: {len(X_val)}")
-        
-        # Create PyTorch datasets and dataloaders
-        train_dataset = TensorDataset(
-            torch.tensor(X_train, dtype=torch.float32), 
-            torch.tensor(y_train, dtype=torch.long)
-        )
-        val_dataset = TensorDataset(
-            torch.tensor(X_val, dtype=torch.float32), 
-            torch.tensor(y_val, dtype=torch.long)
-        )
-        
-        batch_size = gemma_config.get('training', {}).get('batch_size', 32)
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size)
-
-        # 5. BUILD GEMMA MODEL (Simple MLP)
-        arch = gemma_config.get('architecture', {})
-        input_size = arch.get('input_size', 82)
-        hidden_size = arch.get('hidden_size', 32)
-        num_layers = arch.get('num_layers', 2)
-        dropout = arch.get('dropout', 0.6)
-        num_classes = arch.get('num_classes', 3)
-        
-        logger.info(f"Building GEMMA model architecture:")
-        logger.info(f"   Input size: {input_size}")
-        logger.info(f"   Hidden size: {hidden_size}")
-        logger.info(f"   Num layers: {num_layers}")
-        logger.info(f"   Dropout: {dropout}")
-        logger.info(f"   Output classes: {num_classes}")
-        
-        # Build a simple feed-forward network
-        layers = []
-        layers.append(nn.Linear(input_size, hidden_size))
-        layers.append(nn.ReLU())
-        layers.append(nn.Dropout(dropout))
-        
-        for _ in range(num_layers - 1):
-            layers.append(nn.Linear(hidden_size, hidden_size))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout))
-        
-        layers.append(nn.Linear(hidden_size, num_classes))
-        
-        model = nn.Sequential(*layers)
-        logger.info(f"✅ Model created with {sum(p.numel() for p in model.parameters())} parameters")
-        
-        # 6. TRAINING LOOP
-        training_params = gemma_config.get('training', {})
-        epochs = training_params.get('epochs', 50)
-        learning_rate = training_params.get('learning_rate', 0.001)
-        early_stopping_patience = training_params.get('early_stopping_patience', 10)
-        
-        criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-        
-        logger.info(f"Starting training for {epochs} epochs...")
-        logger.info(f"   Learning rate: {learning_rate}")
-        logger.info(f"   Early stopping patience: {early_stopping_patience}")
-        
-        best_accuracy = 0.0
-        best_loss = float('inf')
-        patience_counter = 0
-        model_path = Path('data/models/gemma/staging/gemma_price.pt')
-        model_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        for epoch in range(epochs):
-            # Training phase
-            model.train()
-            train_loss = 0.0
-            train_correct = 0
-            train_total = 0
-            
-            for batch_X, batch_y in train_loader:
-                optimizer.zero_grad()
-                outputs = model(batch_X)
-                loss = criterion(outputs, batch_y)
-                loss.backward()
-                optimizer.step()
-                
-                train_loss += loss.item()
-                _, predicted = torch.max(outputs.data, 1)
-                train_total += batch_y.size(0)
-                train_correct += (predicted == batch_y).sum().item()
-            
-            train_accuracy = train_correct / train_total
-            avg_train_loss = train_loss / len(train_loader)
-            
-            # Validation phase
-            model.eval()
-            val_loss = 0.0
-            val_correct = 0
-            val_total = 0
-            
-            with torch.no_grad():
-                for batch_X, batch_y in val_loader:
-                    outputs = model(batch_X)
-                    loss = criterion(outputs, batch_y)
-                    
-                    val_loss += loss.item()
-                    _, predicted = torch.max(outputs.data, 1)
-                    val_total += batch_y.size(0)
-                    val_correct += (predicted == batch_y).sum().item()
-            
-            val_accuracy = val_correct / val_total
-            avg_val_loss = val_loss / len(val_loader)
-            
-            # Log progress every 10 epochs
-            if (epoch + 1) % 10 == 0 or epoch == 0:
-                logger.info(f"Epoch [{epoch+1}/{epochs}] - "
-                          f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f} | "
-                          f"Val Loss: {avg_val_loss:.4f}, Val Acc: {val_accuracy:.4f}")
-            
-            # Check for improvement
-            if val_accuracy > best_accuracy:
-                best_accuracy = val_accuracy
-                best_loss = avg_val_loss
-                patience_counter = 0
-                
-                # Save best model
-                model_scripted = torch.jit.script(model)
-                model_scripted.save(str(model_path))
-                logger.info(f"✅ New best GEMMA model saved with accuracy {best_accuracy:.4f} to {model_path}")
-            else:
-                patience_counter += 1
-                
-            # Early stopping check
-            if patience_counter >= early_stopping_patience:
-                logger.info(f"Early stopping triggered after {epoch + 1} epochs (patience: {early_stopping_patience})")
-                break
-        
-        training_time = (datetime.now() - training_start_time).total_seconds()
-        
-        logger.info("\n" + "="*60)
-        logger.info(f"✅ GEMMA training completed!")
-        logger.info(f"   Best validation accuracy: {best_accuracy:.4f}")
-        logger.info(f"   Best validation loss: {best_loss:.4f}")
-        logger.info(f"   Training time: {training_time:.2f} seconds")
-        logger.info("="*60)
-        
-        # 7. CHECK DEPLOYMENT THRESHOLD AND PROMOTE MODEL IF PASSED
-        deployment_threshold = gemma_config.get('thresholds', {}).get('deployment_accuracy', 0.78)
-        
-        if best_accuracy >= deployment_threshold:
-            logger.info(f"✅ GEMMA model passed deployment threshold ({best_accuracy:.4f} >= {deployment_threshold}).")
-            final_path = Path('data/models/gemma/final/gemma_price.pt')
-            final_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(model_path, final_path)
-            logger.info(f"✅ Model promoted to production: {final_path}")
-            deployment_status = 'promoted'
-        else:
-            logger.warning(f"⚠️ GEMMA model accuracy ({best_accuracy:.4f}) is below deployment threshold ({deployment_threshold}).")
-            logger.warning("   Model saved to staging but not promoted to production.")
-            deployment_status = 'staging_only'
-        
-        # 8. RECORD METRICS TO PERFORMANCE TRACKER
-        try:
-            tracker.record_training(
-                model_type="gemma",
-                model_name=f"{symbol.replace('/', '-')}_{timeframe}",
-                metrics={
-                    'accuracy': best_accuracy,
-                    'loss': best_loss,
-                    'epochs_completed': epoch + 1,
-                    'deployment_status': deployment_status
-                },
-                data_info={
-                    'samples': len(features),
-                    'features': input_size,
-                    'train_samples': len(X_train),
-                    'val_samples': len(X_val),
-                    'symbol': symbol,
-                    'timeframe': timeframe
-                },
-                training_time=training_time
-            )
-            logger.info("✅ GEMMA metrics recorded to performance tracker")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to record GEMMA metrics to tracker: {e}")
-        
-        # Return results
-        gemma_results = {
-            'status': 'completed',
-            'model_type': 'GEMMA',
-            'final_accuracy': best_accuracy,
-            'final_loss': best_loss,
-            'epochs_completed': epoch + 1,
-            'training_time': training_time,
-            'deployment_status': deployment_status,
-            'model_path': str(model_path),
-            'samples': len(features)
-        }
-        
-        return gemma_results
-
+        logger.info(f"Eğitim verisi yükleniyor: {data_path}")
+        data = np.load(data_path)
+        X, y = data['X'], data['y']
+        logger.info(f"✅ Veri yüklendi: {X.shape[0]} örnek, {X.shape[1]} özellik.")
+        return X, y
     except Exception as e:
-        logger.error(f"❌ GEMMA model training failed: {e}", exc_info=True)
-        return {'status': 'failed', 'error': str(e)}
+        logger.error(f"Eğitim verisi yüklenirken hata oluştu: {e}", exc_info=True)
+        sys.exit(1)
 
+def train_model(model_name: str, model_config: dict, X_train: np.ndarray, y_train: np.ndarray):
+    """
+    Initializes and trains a single model based on its configuration.
+    """
+    logger.info("\n" + "="*70)
+    logger.info(f"🚀 {model_name.upper()} MODELİ EĞİTİMİ BAŞLATILIYOR 🚀")
+    logger.info("="*70)
 
-async def main():
-    logger.info("="*60)
-    logger.info("🤖 BAŞLIYOR: BİRLEŞİK ML MODEL EĞİTİM BETİĞİ 🤖")
-    logger.info("="*60)
+    # Şu an için tüm modeller RegimeModelTrainer'ı kullanıyor.
+    # Gelecekte farklı trainer'lar gerekirse, burada bir koşul eklenebilir.
+    # Örnek: if model_config.get('type') == 'price_prediction': trainer = PriceModelTrainer(...)
+    trainer = RegimeModelTrainer(config=model_config)
     
-    # Report GPU availability
+    # Modeli eğit
+    results = trainer.train_and_evaluate(X_train, y_train, model_type=model_name)
+    
+    if not results or results.get('status') != 'completed':
+        logger.error(f"❌ {model_name.upper()} modeli eğitimi başarısız oldu veya tamamlanamadı.")
+        return
+
+    # Başarı metriklerini kaydet
+    log_dir = Path(f'logs/final_training/{model_name}')
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    metrics_file = log_dir / f"final_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     try:
-        import torch
-        cuda_available = torch.cuda.is_available()
-        device_name = torch.cuda.get_device_name(0) if cuda_available else 'CPU'
-        logger.info(f"CUDA Available: {cuda_available} | Device: {device_name}")
-    except ImportError:
-        logger.info("PyTorch not installed, GPU check skipped")
-    
-    # Initialize performance tracker
-    tracker = ModelPerformanceTracker()
-    logger.info("✅ Performance tracker initialized")
-    
-    # Initialize metrics tracking
-    start_time = datetime.now()
-    training_metrics = {
-        'start_time': start_time.isoformat(),
-        'symbols': SYMBOLS_TO_TRAIN,
-        'timeframes': ALL_TIMEFRAMES,
-        'regime_models': {},
-        'price_models': {},
-        'rl_models': {}
-    }
-
-    # =========================================================================
-    # CONFIGURATION LOADING (Using Centralized System)
-    # =========================================================================
-    # Use LiveTradingConfiguration for consistent config loading across
-    # training and live trading. This ensures:
-    #   1. Environment variable overrides work correctly
-    #   2. Config validation is applied
-    #   3. Type casting is automatic
-    #   4. Single source of truth
-    # =========================================================================
-    
-    logger.info("Loading configuration using centralized system...")
-    
-    try:
-        # Use centralized config loader (handles env vars, validation, etc.)
-        # Suppress duplicate logging since we'll log training-specific details
-        config = LiveTradingConfiguration.load(log_summary=False)
-        logger.info("✅ Configuration loaded successfully via centralized system")
-        
-        # Extract ML configuration blocks
-        ml_config = config.get('ml', {})
-        regime_pred_config = ml_config.get('regime_prediction', {})
-        price_pred_config = ml_config.get('price_prediction', {})
-        rl_config = ml_config.get('reinforcement_learning', {})
-        
-        # =====================================================================
-        # TRAINING-SPECIFIC CONFIGURATION LOGGING
-        # =====================================================================
-        logger.info("="*60)
-        logger.info("🎓 TRAINING CONFIGURATION")
-        logger.info("="*60)
-        
-        # RL Training Mode Validation
-        rl_training_mode = rl_config.get('training_mode', False)
-        logger.info(f"   RL Training Mode: {rl_training_mode}")
-        
-        if not rl_training_mode:
-            logger.warning("="*60)
-            logger.warning("⚠️  WARNING: RL training_mode is False in config!")
-            logger.warning("⚠️  This may be due to:")
-            logger.warning("    1. config.example.yaml has training_mode: false")
-            logger.warning("    2. ML_RL_TRAINING_MODE env var is not set/false")
-            logger.warning("⚠️  Forcing training_mode=True for this training session")
-            logger.warning("="*60)
-            rl_config['training_mode'] = True
-            logger.info(f"   RL Training Mode (forced): {rl_config['training_mode']}")
-        
-        # RL Epsilon Parameters Check
-        epsilon_params = {
-            'epsilon_start': rl_config.get('epsilon_start'),
-            'epsilon_decay': rl_config.get('epsilon_decay'),
-            'epsilon_min': rl_config.get('epsilon_min')
-        }
-        logger.info("   RL Epsilon Schedule:")
-        for param, value in epsilon_params.items():
-            if value is None:
-                logger.warning(f"      {param}: NOT SET (will use default)")
-            else:
-                logger.info(f"      {param}: {value}")
-        
-        # Regime LSTM Parameters
-        lstm_params = regime_pred_config.get('model_params', {}).get('lstm_regime', {})
-        logger.info("   Regime LSTM Parameters (from config):")
-        if lstm_params:
-            logger.info(f"      hidden_size: {lstm_params.get('hidden_size', 'NOT SET')}")
-            logger.info(f"      num_layers: {lstm_params.get('num_layers', 'NOT SET')}")
-            logger.info(f"      dropout: {lstm_params.get('dropout', 'NOT SET')}")
-        else:
-            logger.warning("      ⚠️  LSTM params not found in config (will use defaults)")
-        
-        # Training Symbols
-        logger.info(f"   Training Symbols: {', '.join(SYMBOLS_TO_TRAIN)}")
-        logger.info("="*60)
-        
-    except FileNotFoundError as e:
-        logger.error(f"❌ Configuration file not found: {e}")
-        logger.error("Please ensure config/config.example.yaml exists.")
-        raise
+        with open(metrics_file, 'w') as f:
+            json.dump(results, f, indent=2)
+        logger.info(f"✅ {model_name.upper()} modelinin metrikleri kaydedildi: {metrics_file}")
     except Exception as e:
-        logger.error(f"❌ Error loading configuration: {e}", exc_info=True)
-        raise
-    
-    # =========================================================================
-    # END CONFIGURATION LOADING
-    # ==========================================================================
-    
-    # =========================================================================
-    # PRE-TRAINING VALIDATION
-    # =========================================================================
-    # Validate configuration before starting expensive training process
-    # This catches common issues early and provides clear error messages
-    # =========================================================================
-    
-    logger.info("\n" + "="*60)
-    logger.info("🔍 VALIDATING TRAINING CONFIGURATION")
-    logger.info("="*60)
-    
-    # Run validation
-    is_valid, issues = TrainingConfigValidator.validate(config)
-    TrainingConfigValidator.log_validation_results(is_valid, issues)
-    
-    # Check for critical issues
-    critical_issues = [i for i in issues if i.startswith("CRITICAL:")]
-    if critical_issues:
-        logger.error("❌ Critical validation errors found. Aborting training.")
-        for issue in critical_issues:
-            logger.error(f"   - {issue}")
-        raise ValueError(f"Training validation failed with {len(critical_issues)} critical issues")
-    
-    # Check parameter synchronization
-    logger.info("Checking parameter synchronization between config and code...")
-    sync_issues = TrainingConfigValidator.validate_model_params_sync(config)
-    
-    if sync_issues:
-        logger.warning("="*60)
-        logger.warning("⚠️  PARAMETER SYNCHRONIZATION ISSUES DETECTED")
-        logger.warning("="*60)
-        for issue in sync_issues:
-            logger.warning(f"   - {issue}")
-        logger.warning("⚠️  Training will use config values (config takes precedence)")
-        logger.warning("⚠️  Consider updating model_trainer.py constants to match")
-        logger.warning("="*60)
-    else:
-        logger.info("✅ Config and code parameters are synchronized")
-    
-    logger.info("="*60)
-    logger.info("✅ VALIDATION COMPLETE - PROCEEDING WITH TRAINING")
-    logger.info("="*60 + "\n")
-    
-    # =========================================================================
-    # END VALIDATION
-    # =========================================================================
-    
-    exchange_client = CcxtClient('bingx')
-    feature_engine = FeatureEngineeringPipeline()
-    
-    # Create MarketDataPipeline for price predictor (avoids warning during initialization)
-    # During training we don't actually use it, but passing it prevents the warning
-    market_pipeline = MarketDataPipeline(
-        exchanges={'bingx': exchange_client},
-        config=config
-    )
-    
-    logger.info("✅ Borsa istemcisi ve özellik motoru başlatıldı.")
+        logger.error(f"Metrikler kaydedilirken hata: {e}")
 
-    training_data = {symbol: {} for symbol in SYMBOLS_TO_TRAIN}
-    for symbol in SYMBOLS_TO_TRAIN:
-        for timeframe in ALL_TIMEFRAMES:
-            logger.info(f"\n--- Veri Çekiliyor: {symbol} [{timeframe}] ---")
-            try:
-                ohlcv_df = await exchange_client.ohlcv(symbol, timeframe=timeframe, limit=CANDLE_LIMIT, add_indicators=False)
-                
-                if ohlcv_df is None or ohlcv_df.empty or len(ohlcv_df) < 200:
-                    logger.warning(f"Veri çekilemedi veya yetersiz ({len(ohlcv_df) if ohlcv_df is not None else 0} mum). Atlanıyor.")
-                    continue
-                logger.info(f"✅ {len(ohlcv_df)} adet HAM mum verisi çekildi.")
-                training_data[symbol][timeframe] = ohlcv_df
-            except Exception as e:
-                logger.error(f"❌ Veri çekme hatası: {e}", exc_info=True)
+def main():
+    """
+    Main function to run the entire training pipeline for all enabled models.
+    """
+    logger.info("="*80)
+    logger.info("🤖 BİRLEŞİK MODEL EĞİTİM PİPELINE'I BAŞLATILIYOR 🤖")
+    logger.info("="*80)
+
+    # 1. Konfigürasyonu Yükle
+    config = load_config()
+    ml_config = config.get('ml', {})
     
-    # 1. REJİM MODELLERİ EĞİTİMİ
-    logger.info("\n" + "="*60)
-    logger.info("🧠 ADIM 1: PİYASA REJİMİ MODELLERİ EĞİTİLİYOR 🧠")
-    logger.info("="*60)
-    logger.info("🧠 REGIME MODEL TRAINING CONFIGURATION")
-    logger.info(f"   Timeframes: {REGIME_TRAINING_TIMEFRAMES}")
-    logger.info(f"   Candle limit per timeframe: {CANDLE_LIMIT}")
-    logger.info(f"   Expected total samples: {len(REGIME_TRAINING_TIMEFRAMES) * CANDLE_LIMIT}")
-    logger.info(f"   Minimum NN samples: {MIN_SAMPLES_FOR_NN}")
-    logger.info("="*60)
+    # 2. Hazırlanmış Eğitim Verisini Yükle
+    X, y = load_training_data(config)
     
-    all_regime_features = []
-    all_regime_labels = []
-
-    symbol_for_regime = SYMBOLS_TO_TRAIN[0]
-    if symbol_for_regime in training_data:
-        for tf in REGIME_TRAINING_TIMEFRAMES:
-            if tf in training_data[symbol_for_regime]:
-                logger.info(f"Rejim modeli için {tf} verisi işleniyor...")
-                regime_data_raw = training_data[symbol_for_regime][tf].copy()
-                
-                features_df = feature_engine.extract_features(regime_data_raw)
-                regime_labels = generate_regime_labels(regime_data_raw)
-                
-                X_prepared, y_prepared = feature_engine.prepare_for_training(
-                    features_df, 
-                    regime_labels
-                )
-                
-                if X_prepared.shape[0] > 0:
-                    all_regime_features.append(X_prepared)
-                    all_regime_labels.append(y_prepared)
-                    logger.info(f"✅ {tf} verisinden {X_prepared.shape[0]} örnek eklendi.")
-            else:
-                logger.warning(f"⚠️ {tf} için veri bulunamadı, atlanıyor...")
-        
-        if all_regime_features and all_regime_labels:
-            final_X = np.vstack(all_regime_features)
-            final_y = np.concatenate(all_regime_labels)
-            
-            logger.info("="*60)
-            logger.info(f"✅ Total training samples: {len(final_X)} (from {len(REGIME_TRAINING_TIMEFRAMES)} timeframes)")
-            logger.info("="*60)
-            
-            if final_X.shape[0] >= MIN_SAMPLES_FOR_RF:
-                # Pass regime_prediction config to trainer so it uses correct architecture
-                regime_training_start = datetime.now()
-                regime_trainer = RegimeModelTrainer(config=regime_pred_config)
-                results = regime_trainer.train_ensemble_models(final_X, final_y)
-                regime_training_time = (datetime.now() - regime_training_start).total_seconds()
-                
-                logger.info(f"✅ Rejim modelleri birleşik veri seti ile eğitildi ve kaydedildi.")
-                
-                # Store regime model metrics (safely handle None results)
-                if results:
-                    training_metrics['regime_models'] = {
-                        'total_samples': final_X.shape[0],
-                        'feature_count': final_X.shape[1],
-                        'metrics': results.get('metrics', {})
-                    }
-                    
-                    # Record to performance tracker
-                    try:
-                        tracker.record_training(
-                            model_type="regime",
-                            model_name=f"{symbol_for_regime.replace('/', '-')}_ensemble",
-                            metrics=results.get('metrics', {}),
-                            data_info={
-                                'total_samples': final_X.shape[0],
-                                'train_samples': final_X.shape[0],
-                                'features': final_X.shape[1],
-                                'timeframes': ','.join(REGIME_TRAINING_TIMEFRAMES),
-                                'symbol': symbol_for_regime,
-                                'timeframe_count': len(REGIME_TRAINING_TIMEFRAMES)  # EKLE: Kaç timeframe kullanıldı
-                            },
-                            training_time=regime_training_time
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to record regime training metrics: {e}")
-                else:
-                    training_metrics['regime_models'] = {
-                        'total_samples': final_X.shape[0],
-                        'feature_count': final_X.shape[1],
-                        'metrics': {}
-                    }
-
-    # 2. FİYAT TAHMİN MODELLERİ EĞİTİMİ
-    logger.info("\n" + "="*60)
-    logger.info("📈 ADIM 2: FİYAT TAHMİN MODELLERİ EĞİTİLİYOR 📈")
-    logger.info("="*60)
+    # 3. Aktif Olan Her Bir Model İçin Eğitim Döngüsünü Çalıştır
+    models_to_train = {name: conf for name, conf in ml_config.items() if isinstance(conf, dict) and conf.get('enabled', False)}
     
-    # ✔️ KESİN ÇÖZÜM: 'AdvancedPricePredictionEngine' sınıfını, ana uygulamadaki gibi
-    # doğru konfigürasyon bloğuyla başlatıyoruz. Bu sınıf, artık kendi içinde
-    # MultiTimeframePricePredictor ve diğer alt modelleri kendi inşa edecektir.
-    # Bu, hem TypeError hatasını çözer hem de yapısal senkronizasyonu sağlar.
+    if not models_to_train:
+        logger.warning("⚠️ Konfigürasyonda eğitilecek aktif bir model bulunamadı. İşlem sonlandırılıyor.")
+        return
 
-    if SYMBOLS_TO_TRAIN[0] in training_data:
-        try:
-            logger.info("AdvancedPricePredictionEngine konfigürasyona göre başlatılıyor...")
-            price_training_start = datetime.now()
-            
-            price_engine = AdvancedPricePredictionEngine(
-                market_data_pipeline=market_pipeline,  # Pass MarketDataPipeline to avoid warning
-                feature_pipeline=feature_engine,  # Önceden oluşturulan özellik motorunu ver
-                config=price_pred_config          # Sadece fiyat tahminine özel konfigürasyonu ver
-            )
-            logger.info("✅ Fiyat tahmin motoru, eğitim için başarıyla başlatıldı.")
-            
-            # Ana sınıf üzerinden eğitimi ve kaydetmeyi tetikle
-            logger.info("Model eğitimi ve kaydetme süreci başlatılıyor...")
-            price_engine.train_and_save_models(training_data)
-            price_training_time = (datetime.now() - price_training_start).total_seconds()
-            
-            logger.info("✅ Fiyat tahmin modellerinin eğitimi ve kaydı tamamlandı.")
-            
-            # Store price model metrics
-            training_metrics['price_models'] = {
-                'status': 'completed',
-                'models_trained': ['LSTM', 'Transformer', 'Ensemble']
-            }
-            
-            # Record to performance tracker (generic metrics since we don't have detailed results)
-            try:
-                tracker.record_training(
-                    model_type="price",
-                    model_name=f"{SYMBOLS_TO_TRAIN[0].replace('/', '-')}_ensemble",
-                    metrics={
-                        'status': 'completed',
-                        'training_time_seconds': price_training_time
-                    },
-                    data_info={
-                        'symbol': SYMBOLS_TO_TRAIN[0],
-                        'timeframes': ','.join(ALL_TIMEFRAMES),
-                        'models': ['LSTM', 'Transformer', 'Ensemble']
-                    },
-                    training_time=price_training_time
-                )
-            except Exception as e:
-                logger.error(f"Failed to record price training metrics: {e}")
+    logger.info(f"Eğitilecek aktif modeller: {', '.join(models_to_train.keys())}")
 
-        except Exception as e:
-            logger.error(f"❌ Fiyat tahmin modelleri eğitimi sırasında kritik hata: {e}", exc_info=True)
-            training_metrics['price_models'] = {
-                'status': 'failed',
-                'error': str(e)
-            }
+    for model_name, model_config in models_to_train.items():
+        train_model(model_name, model_config, X, y)
 
-    else:
-        logger.warning("Fiyat tahmini eğitimi için veri bulunamadı, bu adım atlanıyor.")
-
-    # 3. REINFORCEMENT LEARNING AJANI EĞİTİLİYOR
-    logger.info("\n" + "="*60)
-    logger.info("🤖 ADIM 3: REINFORCEMENT LEARNING AJANI EĞİTİLİYOR 🤖")
-    logger.info(f"   Eğitim Zaman Dilimi: {RL_TRAINING_TIMEFRAME}, Bölüm Sayısı: {RL_NUM_EPISODES}")
-    logger.info("="*60)
-
-    symbol_for_rl = SYMBOLS_TO_TRAIN[0]
-    if symbol_for_rl in training_data and RL_TRAINING_TIMEFRAME in training_data[symbol_for_rl]:
-        logger.info(f"RL ajanı için {RL_TRAINING_TIMEFRAME} verisi hazırlanıyor...")
-        
-        # ... (RL için veri hazırlama kısmı aynı kalır)
-        rl_data_raw = training_data[symbol_for_rl][RL_TRAINING_TIMEFRAME].copy()
-        rl_features_df = feature_engine.extract_features(rl_data_raw)
-        
-        common_index = rl_data_raw.index.intersection(rl_features_df.index)
-        rl_data_raw = rl_data_raw.loc[common_index]
-        rl_features_df = rl_features_df.loc[common_index]
-        rl_features_df.ffill(inplace=True)
-        rl_features_df.bfill(inplace=True)
-        rl_features_df.dropna(inplace=True)
-        
-        final_index = rl_features_df.index
-        rl_data_raw = rl_data_raw.loc[final_index]
-        
-        if rl_features_df.empty:
-            logger.error("RL eğitimi için özellik çıkarıldıktan sonra veri kalmadı.")
-        else:
-            logger.info(f"✅ RL eğitimi için {len(rl_features_df)} adet kullanılabilir veri noktası hazırlandı.")
-            
-            env = RLTradingEnv(features_df=rl_features_df, raw_df=rl_data_raw)
-            state_dim = env.state_dim
-            action_dim = env.action_dim
-            
-            logger.info(f"✅ RL Ortamı oluşturuldu. State boyutu: {state_dim}, Aksiyon boyutu: {action_dim}")
-
-            # ✔️ KESİN ÇÖZÜM: 'TradingRLAgent' sınıfı, `__init__` metodunda 'batch_size' argümanı beklemiyor.
-            # Bunun yerine, tüm 'reinforcement_learning' konfigürasyon bloğunu ('rl_config') bekliyor.
-            # 'batch_size' parametresini kaldırıp, 'config' parametresini ekliyoruz.
-            agent = TradingRLAgent(
-                state_size=state_dim, 
-                action_size=action_dim,
-                config=rl_config  # <-- `batch_size` yerine bu satırı ekliyoruz.
-            )
-
-            # Deneyim belleğini doğru buffer boyutu ile başlat
-            experience_replay = ExperienceReplay(buffer_size=RL_BUFFER_SIZE)
-            
-            # Eğiticiyi başlat
-            rl_trainer = RLModelTrainer(agent, env, experience_replay)
-            
-            try:
-                rl_training_start = datetime.now()
-                rl_trainer.train(num_episodes=RL_NUM_EPISODES)
-                rl_training_time = (datetime.now() - rl_training_start).total_seconds()
-                
-                logger.info("✅ RL Ajanı başarıyla eğitildi ve kaydedildi.")
-                
-                # Store RL model metrics
-                training_metrics['rl_models'] = {
-                    'status': 'completed',
-                    'num_episodes': RL_NUM_EPISODES,
-                    'state_dim': state_dim,
-                    'action_dim': action_dim,
-                    'training_samples': len(rl_features_df)
-                }
-                
-                # Record to performance tracker
-                try:
-                    tracker.record_training(
-                        model_type="rl",
-                        model_name=f"{symbol_for_rl.replace('/', '-')}_{RL_TRAINING_TIMEFRAME}",
-                        metrics={
-                            'num_episodes': RL_NUM_EPISODES,
-                            'state_dim': state_dim,
-                            'action_dim': action_dim
-                        },
-                        data_info={
-                            'training_samples': len(rl_features_df),
-                            'symbol': symbol_for_rl,
-                            'timeframe': RL_TRAINING_TIMEFRAME
-                        },
-                        training_time=rl_training_time
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to record RL training metrics: {e}")
-            except Exception as e:
-                logger.error(f"❌ RL eğitimi sırasında bir hata oluştu: {e}", exc_info=True)
-                training_metrics['rl_models'] = {
-                    'status': 'failed',
-                    'error': str(e)
-                }
-    else:
-        logger.error(f"RL eğitimi için gerekli olan {symbol_for_rl} sembolüne ait {RL_TRAINING_TIMEFRAME} verisi bulunamadı.")
-        training_metrics['rl_models'] = {
-            'status': 'skipped',
-            'reason': 'missing_data'
-        }
-
-    # =========================================================================
-    # 💎 ADIM 4: GEMMA MODELİ EĞİTİMİ (YENİ BLOK) 💎
-    # =========================================================================
-    if ml_config.get('gemma', {}).get('enabled', False):
-        logger.info("\n" + "="*60)
-        logger.info("💎 Starting GEMMA Model Training 💎")
-        logger.info("="*60)
-        
-        gemma_training_results = train_gemma_model(
-            training_data=training_data,
-            feature_engine=feature_engine,
-            config=ml_config,  # Pass the entire ML config block
-            tracker=tracker
-        )
-        training_metrics['gemma_models'] = gemma_training_results
-        logger.info(f"GEMMA Training Results: {gemma_training_results}")
-    else:
-        logger.info("GEMMA training is disabled in configuration. Skipping.")
-        training_metrics['gemma_models'] = {'status': 'disabled'}
-
-
-    # Save training metrics to files
-    end_time = datetime.now()
-    training_metrics['end_time'] = end_time.isoformat()
-    training_metrics['duration_seconds'] = (end_time - start_time).total_seconds()
-    
-    # Create logs directory if it doesn't exist
-    os.makedirs('logs', exist_ok=True)
-    
-    # Save metrics as JSON
-    metrics_json_path = 'logs/training_metrics.json'
-    with open(metrics_json_path, 'w', encoding='utf-8') as f:
-        json.dump(training_metrics, f, indent=2)
-    logger.info(f"✅ Saved training metrics: {metrics_json_path}")
-    
-    # Save metrics as CSV (flattened version)
-    metrics_csv_path = 'logs/training_metrics.csv'
-    csv_data = {
-        'timestamp': [training_metrics['start_time']],
-        'duration_seconds': [training_metrics['duration_seconds']],
-        'symbols': [','.join(training_metrics['symbols'])],
-        'regime_samples': [training_metrics.get('regime_models', {}).get('total_samples', 0)],
-        'price_status': [training_metrics.get('price_models', {}).get('status', 'unknown')],
-        'rl_status': [training_metrics.get('rl_models', {}).get('status', 'unknown')],
-        'rl_episodes': [training_metrics.get('rl_models', {}).get('num_episodes', 0)],
-        'gemma_status': [training_metrics.get('gemma_models', {}).get('status', 'unknown')],
-        'gemma_accuracy': [training_metrics.get('gemma_models', {}).get('final_accuracy', 0)]
-    }
-    pd.DataFrame(csv_data).to_csv(metrics_csv_path, index=False)
-    logger.info(f"✅ Saved training metrics: {metrics_csv_path}")
-    
-    logger.info("\n" + "="*60)
-    logger.info("✅ TÜM MODEL EĞİTİMLERİ TAMAMLANDI ✅")
-    logger.info("="*60)
+    logger.info("\n" + "="*80)
+    logger.info("🎉 TÜM AKTİF MODEL EĞİTİMLERİ TAMAMLANDI 🎉")
+    logger.info("="*80)
 
 if __name__ == "__main__":
-    if "ML_ENABLED" not in os.environ:
-        os.environ["ML_ENABLED"] = "true"
-        print("ML_ENABLED ortam değişkeni 'true' olarak ayarlandı.")
-    
-    asyncio.run(main())
+    main()
