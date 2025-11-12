@@ -87,7 +87,7 @@ RL_BUFFER_SIZE = 100000        # Deneyim tekrarı belleğinin kapasitesi
 
 def train_gemma_model(training_data: dict, feature_engine: FeatureEngineeringPipeline, config: dict, tracker: ModelPerformanceTracker):
     """
-    Train a GEMMA-based price movement prediction model using 82 engineered features.
+    Train a GEMMA-based price movement prediction model using 87 engineered features.
     
     Args:
         training_data: Dictionary of training data by symbol and timeframe
@@ -138,14 +138,21 @@ def train_gemma_model(training_data: dict, feature_engine: FeatureEngineeringPip
         feature_set_name = gemma_config.get('feature_set', 'gemma_v1')
         logger.info(f"Extracting GEMMA feature set: '{feature_set_name}'")
         
-        # Use extract_gemma_features to get the 82-feature set
+        # Use extract_gemma_features to get the 87-feature set
         features_df = feature_engine.extract_gemma_features(raw_data.copy())
         
         # 2. GENERATE TARGET LABELS
         # Simple price direction prediction: will price increase in next 5 periods?
         # This follows the pattern used in other price prediction models
         logger.info("Generating target labels (price direction prediction)...")
-        features_df['target'] = (features_df['close'].shift(-5) > features_df['close']).astype(int)
+        # Use raw_data for label generation since features_df doesn't have 'close'
+        # Ensure indices match between features_df and raw_data
+        # Safety check: ensure all feature indices exist in raw_data
+        if not features_df.index.isin(raw_data.index).all():
+            logger.warning("⚠️ Some feature indices not found in raw_data; filtering features_df to valid indices.")
+            features_df = features_df[features_df.index.isin(raw_data.index)]
+        aligned_close = raw_data.loc[features_df.index, 'close']
+        features_df['target'] = (aligned_close.shift(-5) > aligned_close).astype(int)
         features_df.dropna(inplace=True)
 
         if features_df.empty:
