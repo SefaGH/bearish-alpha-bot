@@ -87,7 +87,7 @@ RL_BUFFER_SIZE = 100000        # Deneyim tekrarı belleğinin kapasitesi
 
 def train_gemma_model(training_data: dict, feature_engine: FeatureEngineeringPipeline, config: dict, tracker: ModelPerformanceTracker):
     """
-    Train a GEMMA-based price movement prediction model using 82 engineered features.
+    Train a GEMMA-based price movement prediction model using 87 engineered features.
     
     Args:
         training_data: Dictionary of training data by symbol and timeframe
@@ -147,6 +147,10 @@ def train_gemma_model(training_data: dict, feature_engine: FeatureEngineeringPip
         logger.info("Generating target labels (price direction prediction)...")
         # Use raw_data for label generation since features_df doesn't have 'close'
         # Ensure indices match between features_df and raw_data
+        # Safety check: ensure all feature indices exist in raw_data
+        if not features_df.index.isin(raw_data.index).all():
+            logger.warning("⚠️ Some feature indices not found in raw_data; filtering features_df to valid indices.")
+            features_df = features_df[features_df.index.isin(raw_data.index)]
         aligned_close = raw_data.loc[features_df.index, 'close']
         features_df['target'] = (aligned_close.shift(-5) > aligned_close).astype(int)
         features_df.dropna(inplace=True)

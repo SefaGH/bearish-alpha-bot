@@ -32,17 +32,23 @@ async def main():
     logger.info("Phase 2.1 Validation: Training with local CSV data")
     logger.info("="*60)
     
-    # Load the synthetic training data we created
-    csv_path = "data/temp_training_data.csv"
+    # Allow CSV path to be specified as a command-line argument
+    csv_path = sys.argv[1] if len(sys.argv) > 1 else "data/temp_training_data.csv"
     logger.info(f"Loading training data from {csv_path}")
     
-    df = pd.read_csv(csv_path)
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    df = df.set_index('timestamp')
-    
-    logger.info(f"✅ Loaded {len(df)} rows of training data")
-    logger.info(f"Columns: {list(df.columns)}")
-    logger.info(f"Data shape: {df.shape}")
+    try:
+        df = pd.read_csv(csv_path)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df = df.set_index('timestamp')
+        logger.info(f"✅ Loaded {len(df)} rows of training data")
+        logger.info(f"Columns: {list(df.columns)}")
+        logger.info(f"Data shape: {df.shape}")
+    except FileNotFoundError:
+        logger.error(f"❌ Training data file not found: {csv_path}")
+        return
+    except Exception as e:
+        logger.error(f"❌ Failed to load training data: {e}")
+        return
     
     # Prepare training_data dictionary structure as expected by train_gemma_model
     training_data = {
@@ -76,7 +82,6 @@ async def main():
         logger.info(f"Training time: {gemma_results.get('training_time', 'N/A'):.2f}s")
         
         # Verify artifacts were created
-        import os.path
         model_path = 'data/models/gemma/final/gemma_price.pt'
         scaler_path = 'data/cache/gemma/scaler_gemma.joblib'
         

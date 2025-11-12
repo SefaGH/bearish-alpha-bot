@@ -462,7 +462,7 @@ ml:
       hidden_size: 32
       num_layers: 2
       dropout: 0.6
-      num_classes: 3
+      num_classes: 2  # Binary classification: price up (1) or down (0)
     
     feature_set: "gemma_v1"
     
