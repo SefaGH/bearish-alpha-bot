@@ -1,12 +1,12 @@
 # Feature Analysis Report
 
-**Generated:** 2025-11-08 21:46:05
+**Generated:** 2025-11-12 17:18:18
 
 **Data:** data/cache/BTC-USDT_training_data.npz
 
-**Samples:** 7,200
+**Samples:** 6,830
 
-**Features:** 42
+**Features:** 87
 
 ---
 
@@ -18,20 +18,20 @@ Feature variance measures the spread of values. Low-variance features provide li
 
 | Metric | Value |
 |--------|-------|
-| Mean | 19.771634 |
-| Median | 0.000025 |
-| Min | 0.000001 |
-| Max | 58.850653 |
-| Std Dev | 23.658193 |
+| Mean | 16482830828.655922 |
+| Median | 0.005944 |
+| Min | 0.000004 |
+| Max | 1426257270705.575684 |
+| Std Dev | 152020299787.663452 |
 
 ### Features by Variance Threshold
 
 | Threshold | Count | Percentage |
 |-----------|-------|------------|
-| < 0.001 | 22 | 52.4% |
-| < 0.010 | 22 | 52.4% |
-| < 0.100 | 22 | 52.4% |
-| < 1.000 | 22 | 52.4% |
+| < 0.001 | 29 | 33.3% |
+| < 0.010 | 44 | 50.6% |
+| < 0.100 | 53 | 60.9% |
+| < 1.000 | 64 | 73.6% |
 
 ## 2. Correlation Analysis
 
@@ -41,65 +41,65 @@ Spearman correlation measures monotonic relationship with labels. Low correlatio
 
 | Metric | Value |
 |--------|-------|
-| Mean | 0.179905 |
-| Median | 0.008096 |
-| Min | 0.000416 |
-| Max | 0.744189 |
-| Std Dev | 0.307149 |
+| Mean | 0.241787 |
+| Median | 0.188560 |
+| Min | 0.005693 |
+| Max | 0.625333 |
+| Std Dev | 0.205789 |
 
 ### Correlation Distribution
 
 | Threshold | Count | Percentage |
 |-----------|-------|------------|
-| >= 0.01 | 17 | 40.5% |
-| >= 0.05 | 10 | 23.8% |
-| >= 0.10 | 10 | 23.8% |
-| >= 0.20 | 10 | 23.8% |
+| >= 0.01 | 84 | 96.6% |
+| >= 0.05 | 67 | 77.0% |
+| >= 0.10 | 47 | 54.0% |
+| >= 0.20 | 42 | 48.3% |
 
 ### Top 15 Features by Correlation
 
 | Rank | Feature | Correlation | P-value | Status |
 |------|---------|-------------|---------|--------|
-| 1 | feature_9 | +0.7442 | 0.0000 | ✅ Selected |
-| 2 | feature_5 | +0.7421 | 0.0000 | ✅ Selected |
-| 3 | feature_6 | +0.7380 | 0.0000 | ✅ Selected |
-| 4 | feature_8 | +0.7359 | 0.0000 | ✅ Selected |
-| 5 | feature_3 | +0.7340 | 0.0000 | ✅ Selected |
-| 6 | feature_7 | +0.7281 | 0.0000 | ✅ Selected |
-| 7 | feature_4 | +0.7239 | 0.0000 | ✅ Selected |
-| 8 | feature_1 | +0.7220 | 0.0000 | ✅ Selected |
-| 9 | feature_2 | +0.7147 | 0.0000 | ✅ Selected |
-| 10 | feature_0 | +0.7084 | 0.0000 | ✅ Selected |
-| 11 | feature_40 | +0.0341 | 0.0038 | ❌ Rejected |
-| 12 | feature_36 | -0.0300 | 0.0110 | ❌ Rejected |
-| 13 | feature_26 | +0.0203 | 0.0854 | ❌ Rejected |
-| 14 | feature_16 | -0.0192 | 0.1037 | ❌ Rejected |
-| 15 | feature_10 | -0.0157 | 0.1816 | ❌ Rejected |
+| 1 | feature_48 | -0.6253 | 0.0000 | ✅ Selected |
+| 2 | feature_76 | -0.6102 | 0.0000 | ✅ Selected |
+| 3 | feature_3 | -0.6019 | 0.0000 | ✅ Selected |
+| 4 | feature_0 | -0.5478 | 0.0000 | ✅ Selected |
+| 5 | feature_4 | -0.5467 | 0.0000 | ✅ Selected |
+| 6 | feature_37 | -0.5379 | 0.0000 | ✅ Selected |
+| 7 | feature_47 | -0.5379 | 0.0000 | ✅ Selected |
+| 8 | feature_38 | -0.5379 | 0.0000 | ❌ Rejected |
+| 9 | feature_51 | -0.5356 | 0.0000 | ✅ Selected |
+| 10 | feature_74 | -0.5264 | 0.0000 | ✅ Selected |
+| 11 | feature_75 | -0.5253 | 0.0000 | ✅ Selected |
+| 12 | feature_86 | -0.5169 | 0.0000 | ✅ Selected |
+| 13 | feature_57 | -0.5151 | 0.0000 | ✅ Selected |
+| 14 | feature_73 | +0.5003 | 0.0000 | ✅ Selected |
+| 15 | feature_72 | -0.4998 | 0.0000 | ✅ Selected |
 
 ## 3. Feature Selection Results
 
 **Selection Criteria:**
-- Variance >= 0.01
-- |Correlation| >= 0.05
+- Variance >= 5e-05
+- |Correlation| >= 0.005
 
 ### Summary
 
 | Metric | Count | Percentage |
 |--------|-------|------------|
-| ✅ Selected | 10 | 23.8% |
-| ❌ Rejected | 32 | 76.2% |
+| ✅ Selected | 83 | 95.4% |
+| ❌ Rejected | 4 | 4.6% |
 
 ### Rejection Breakdown
 
 | Reason | Count |
 |--------|-------|
-| Low variance only | 0 |
-| Low correlation only | 10 |
-| Both low | 22 |
+| Low variance only | 4 |
+| Low correlation only | 0 |
+| Both low | 0 |
 
 ## 4. Recommendations
 
-1. **Feature Reduction:** Remove 32 low-quality features (76.2% reduction)
+1. **Feature Reduction:** Remove 4 low-quality features (4.6% reduction)
 2. **Expected Benefits:**
    - Reduced noise and overfitting
    - Faster training time

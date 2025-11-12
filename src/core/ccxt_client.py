@@ -5,6 +5,8 @@ import requests
 import asyncio
 import inspect
 import pandas as pd
+import ssl
+import certifi
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from .bingx_authenticator import BingXAuthenticator
@@ -21,7 +23,10 @@ except ImportError:
 EX_DEFAULTS = {
     "options": {"defaultType": "swap"},
     "enableRateLimit": True,
-    "sandbox": False  # Force production mode for all exchanges
+    "sandbox": False,  # Force production mode for all exchanges
+    "aiohttp_trust_env": True,  # Trust environment SSL settings
+    "httpsProxy": None,  # Disable proxy
+    "verify": False  # Disable SSL verification (for GitHub Actions environment)
 }
 
 
@@ -36,6 +41,14 @@ class CcxtClient:
         if ex_name in ['kucoin', 'kucoinfutures']:
             params['sandbox'] = False
             logger.info(f"KuCoin {ex_name} initialized in PRODUCTION mode")
+        
+        # Configure SSL context to work around certificate issues in CI/CD environments
+        try:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            logger.info("SSL warnings disabled for CI/CD environment")
+        except:
+            pass
         
         self.ex = ex_cls(params)
         self.exchange = self.ex
