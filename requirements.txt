@@ -3,51 +3,43 @@
 # ============================================================================
 # 
 # IMPORTANT: This project requires Python 3.11
-# Python 3.12+ is NOT supported due to aiohttp 3.8.6 compatibility issues
 # 
 # Install with: pip install -r requirements.txt
-# Verify version: python --version (should show Python 3.11.x)
 # ============================================================================
 
 # === CORE DEPENDENCIES ===
-ccxt==4.3.88              # Exchange APIs (REQUIRED)
-# ccxtpro==4.3.88         # Exchange WebSocket APIs (PAID - not available)
-pandas>=2.2.3,<3          # Data processing (REQUIRED)
-numpy<2              # Numerical operations (REQUIRED)
-python-dotenv==1.0.1      # Environment variables (REQUIRED)
-pyyaml==6.0.2             # YAML config files (REQUIRED)
-requests==2.32.3          # HTTP requests (REQUIRED)
-pandas-ta-classic==0.3.14b1
+ccxt==4.3.88
+pandas>=2.2.3,<3
+numpy<2
+python-dotenv==1.0.1
+pyyaml==6.0.2
+requests==2.32.3
 setuptools<81             # WORKAROUND for pandas_ta_classic pkg_resources deprecation
 
-
 # === TECHNICAL ANALYSIS ===
-ta>=0.10.2                # Technical indicators library (REQUIRED)
+ta>=0.10.2
+pandas-ta-classic==0.3.14b1 # ✅ Önceki hatanın çözümü
 
-# === NOTIFICATIONS ===
-python-telegram-bot==21.6 # Telegram alerts
+# === MACHINE LEARNING & ANALYSIS ===
+torch>=2.0.0
+scikit-learn>=1.0
+optuna>=3.0.0
+scipy>=1.11.0
+imbalanced-learn>=0.12.4
+shap                      # 🚨 EKLENDİ: Model açıklanabilirliği (hata analizi) için
+matplotlib                # 🚨 EKLENDİ: Görselleştirme (hata analizi) için
 
 # === ASYNC/WEBSOCKET ===
-aiohttp==3.8.6            # Async HTTP
-yarl<2.0                  # Required for aiohttp 3.8.x
-multidict<7.0             # Required for aiohttp 3.8.x
-websocket-client>=1.6.0   # WebSocket client (for direct connections)
-websockets>=10.0          # Async WebSocket library (NEW)
+aiohttp==3.8.6
+yarl<2.0
+multidict<7.0
+websockets>=10.0
 
-# === DEVELOPMENT & TESTING ===
-pytest>=7.0.0             # Testing framework
-pytest-asyncio>=0.21.0    # Async test support
-pytest-timeout>=2.1.0     # Test timeout support
-pytest-mock>=3.11.0       # Mock support for pytest
-
+# === NOTIFICATIONS & DEVELOPMENT ===
+python-telegram-bot==21.6
 sentry-sdk
-
-# === MACHINE LEARNING (Optional) ===
-optuna>=3.0.0
-torch>=2.0.0              # PyTorch for neural networks
-torchvision>=0.15.0       # Computer vision (optional)
-scikit-learn>=1.0
-
-# === DATA AUGMENTATION (FAZ 3.2 + 2.2) ===
-imbalanced-learn>=0.12.4  # SMOTE for class balancing (>=0.12.4 for sklearn 1.7+ compat)
-scipy>=1.11.0             # Required by imbalanced-learn
+pytest>=7.0.0             # Sadece test ortamları için
+pytest-asyncio>=0.21.0    # Sadece test ortamları için
+pytest-timeout>=2.1.0     # Sadece test ortamları için
+pytest-mock>=3.11.0       # Sadece test ortamları için
+websocket-client>=1.6.0   # Sadece test ortamları için
