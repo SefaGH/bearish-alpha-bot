@@ -54,6 +54,10 @@ logs/health_*.json
 test_results.txt
 diagnostics/*.json
 diagnostics/*.csv
+# Keep verification reports but exclude temp/cache files
+logs/gemma_workflow_verification_*.json
+logs/gemma_workflow_verification_*.txt
+!PHASE35_GEMMA_VERIFICATION_REPORT.md
 
 # OS
 .DS_Store
