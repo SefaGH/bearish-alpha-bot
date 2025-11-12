@@ -37,7 +37,10 @@ class ConflictResolutionStrategy(Enum):
 
 
 class StrategyCoordinator:
-    """Coordinate signals and positions across multiple strategies."""
+    """
+    Coordinate signals and positions across multiple strategies.
+    Enhanced with GEMMA AI-Gate (Phase 5).
+    """
     
     # __init__ metodundan 'indicator_manager' kaldırıldı.
     def __init__(self, portfolio_manager, risk_manager, market_data_pipeline=None, config=None, **kwargs):
@@ -82,15 +85,38 @@ class StrategyCoordinator:
             'avg_bypass_price_delta': 0.0,
             'last_bypass_time': None,
             'rejected_cooldown': 0,
-            'rejected_price_delta': 0
+            'rejected_price_delta': 0,
+            'ai_gate_rejections': 0,  # Phase 5: GEMMA AI-Gate rejections
+            'approved_signals': 0  # Phase 5: Signals approved for execution
         }
         
         # ML integration placeholders
         self.ml_integration = None
         self.feature_pipeline = None
         self.rl_agent = None
+        
+        # GEMMA Adapter initialization (Phase 5)
+        self.gemma_adapter = None
+        if self.config.get('ml', {}).get('gemma', {}).get('enabled', False):
+            self._initialize_gemma()
     
         logger.info("StrategyCoordinator initialized (market_data_pipeline=%s)", bool(self.market_data_pipeline))
+    
+    def _initialize_gemma(self):
+        """Initialize GEMMA adapter."""
+        try:
+            # Import inside function to avoid circular dependency
+            from src.ml.adapters.gemma.gemma_torchscript_adapter import GemmaTorchScriptAdapter
+            
+            gemma_config = self.config['ml']['gemma']
+            self.gemma_adapter = GemmaTorchScriptAdapter(gemma_config)
+            logger.info("✅ GEMMA adapter successfully initialized in StrategyCoordinator.")
+        except ImportError:
+            logger.error("❌ GemmaTorchScriptAdapter could not be imported. Is the file created?")
+            self.gemma_adapter = None
+        except Exception as e:
+            logger.error(f"❌ GEMMA adapter initialization failed: {e}", exc_info=True)
+            self.gemma_adapter = None
     
     def validate_duplicate(self, signal: Dict, strategy_name: str) -> Tuple[bool, str]:
         """
@@ -286,6 +312,99 @@ class StrategyCoordinator:
             },
             'last_bypass_time': self.processing_stats.get('last_bypass_time')
         }
+    
+    def _apply_ai_gate(self, signal: Dict[str, Any]) -> bool:
+        """
+        Apply AI-Gate filtering with GEMMA if available, otherwise use legacy ML.
+        Signal flow: GEMMA → AI-Gate → RL-Veto → Execution
+        """
+        gemma_prediction = None
+        # 1. GEMMA tahminini al (eğer adaptör aktifse)
+        if self.gemma_adapter:
+            try:
+                features = signal.get('features', {})
+                if not features:
+                    logger.warning("No features in signal for GEMMA. AI-Gate might be ineffective.")
+                else:
+                    gemma_prediction = self.gemma_adapter.predict(features)
+                    
+                    # Gelen sinyali GEMMA sonuçlarıyla zenginleştir
+                    signal['gemma_confidence'] = gemma_prediction.get('price_confidence')
+                    signal['gemma_prediction'] = gemma_prediction.get('prediction_label')
+                    
+                    logger.info(
+                        f"🧠 [GEMMA] {signal.get('symbol', 'N/A')} | "
+                        f"Prediction: {gemma_prediction.get('prediction_label')} | "
+                        f"Confidence: {gemma_prediction.get('price_confidence', 0):.3f}"
+                    )
+            except Exception as e:
+                logger.error(f"GEMMA prediction failed in AI-Gate: {e}", exc_info=True)
+
+        # 2. Güven skorlarını belirle (GEMMA öncelikli)
+        price_confidence = signal.get('gemma_confidence', signal.get('ml_confidence', 0.5))
+
+        # 3. Eşik değerlerini config'den al
+        price_threshold = self.config.get('ml', {}).get('price', {}).get('min_confidence', 0.66)
+
+        # 4. Karar ver
+        if price_confidence >= price_threshold:
+            logger.info(
+                f"✅ [AI-GATE] PASSED | {signal.get('symbol', 'N/A')} | "
+                f"Confidence: {price_confidence:.3f} >= Threshold: {price_threshold:.2f}"
+            )
+            return True
+        else:
+            self.processing_stats['ai_gate_rejections'] = self.processing_stats.get('ai_gate_rejections', 0) + 1
+            logger.warning(
+                f"🛡️ [AI-GATE] REJECTED | {signal.get('symbol', 'N/A')} | "
+                f"Confidence: {price_confidence:.3f} < Threshold: {price_threshold:.2f}"
+            )
+            return False
+
+    async def process_signal(self, signal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Enhanced signal processing with GEMMA integration.
+        Signal flow: GEMMA → AI-Gate → RL-Veto → Execution
+        
+        This is a simplified processing pipeline that can be used when direct signal processing is needed.
+        For full strategy signal processing, use process_strategy_signal instead.
+        """
+        try:
+            # ADIM 1: AI-Gate (GEMMA veya eski ML modeli ile filtreleme)
+            if not self._apply_ai_gate(signal):
+                return None  # Sinyal AI-Gate tarafından reddedildi.
+            
+            # ADIM 2: RL-Veto (ML enhancement içinde yapılıyor)
+            if hasattr(self, 'ml_integration') and self.ml_integration:
+                enhanced_signal = await self._enhance_signal_with_ml(signal)
+                if enhanced_signal is None:
+                    logger.warning(f"Signal for {signal.get('symbol')} rejected by ML/RL enhancement.")
+                    return None
+                signal = enhanced_signal
+            
+            # ADIM 3: Risk kontrolleri (mevcut risk_manager üzerinden)
+            risk_assessment = await self._assess_signal_risk(signal)
+            if not risk_assessment['acceptable']:
+                logger.warning(f"Signal for {signal.get('symbol')} rejected by risk assessment: {risk_assessment['reason']}")
+                return None
+            
+            # ADIM 4: Cooldown kontrolleri (validate_duplicate üzerinden)
+            strategy_name = signal.get('strategy_name', 'unknown')
+            is_valid, reason = self.validate_duplicate(signal, strategy_name)
+            if not is_valid:
+                logger.warning(f"Signal for {signal.get('symbol')} rejected by duplicate check: {reason}")
+                return None
+            
+            # Tüm kontrollerden geçen sinyal onaylandı
+            self.processing_stats['approved_signals'] = self.processing_stats.get('approved_signals', 0) + 1
+            
+            logger.info(f"Signal for {signal.get('symbol')} approved for execution.")
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Critical error in signal processing pipeline: {e}", exc_info=True)
+            return None
+
 
     # ===============================================================
     # ====================   DÜZELTİLMİŞ METOT   ====================
