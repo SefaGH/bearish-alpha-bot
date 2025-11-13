@@ -454,16 +454,16 @@ ml:
       min_samples: 1000  # Minimum number of samples required for training
     
     training:
-      batch_size: 128          # <-- Optuna'dan gelen en iyi değer
+      batch_size: 32          # <-- Optuna'dan gelen en iyi değer
       epochs: 50
-      learning_rate: 0.0013380 # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
+      learning_rate: 0.0001330 # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
       early_stopping_patience: 10
     
     architecture:
-      input_size: 81          # <-- DOĞRU: Özellik seçimi sonrası gerçek özellik sayısı
-      hidden_size: 89         # <-- Optuna'dan gelen en iyi değer
+      input_size: 82          # <-- DOĞRU: Özellik seçimi sonrası gerçek özellik sayısı
+      hidden_size: 55         # <-- Optuna'dan gelen en iyi değer
       num_layers: 3           # <-- Optuna'dan gelen en iyi değer (değişmedi)
-      dropout: 0.3031         # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
+      dropout: 0.3243         # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
       num_classes: 3          # <-- DOĞRU: Bullish (0), Neutral (1), Bearish (2)
       
     feature_set: "gemma_v1"
