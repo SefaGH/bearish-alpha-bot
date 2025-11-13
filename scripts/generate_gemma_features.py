@@ -2,7 +2,11 @@
 # scripts/generate_gemma_features.py
 """
 GEMMA Feature List Generator for Bearish Alpha Bot
-Creates feature metadata for production deployment
+Creates feature metadata for production deployment.
+
+MODIFIED FOR MLOps (Option 3):
+This script now reads the mask from analyze_features.py instead of
+using a hard-coded exclusion list.
 """
 
 import json
@@ -11,6 +15,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Tuple
 import logging
+import sys # Eklendi
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -26,6 +31,9 @@ class GemmaFeatureGenerator:
             'author': 'SefaGH',
             'version': 'GEMMA-1.0.0'
         }
+        
+        # Analist script'inin ürettiği maskenin konumu
+        self.analyst_mask_path = Path('data/cache/feature_selection_mask.npy')
 
     def generate_full_87_features(self) -> List[str]:
         """Generate complete 87-feature list matching FeatureEngineering class"""
@@ -102,23 +110,27 @@ class GemmaFeatureGenerator:
         return features
 
     def perform_feature_selection(self, features: List[str], importance_scores: np.ndarray = None) -> Tuple[List[str], np.ndarray]:
-        """Select top 82 features from 87"""
-        if importance_scores is not None:
-            # Use importance scores if provided
-            indices = np.argsort(importance_scores)[::-1][:82]
-            mask = np.zeros(87, dtype=bool)
-            mask[indices] = True
-            selected = [features[i] for i in indices]
-            logger.info("Selected features based on importance scores")
-        else:
-            # Default: exclude 5 specific features
-            excluded = ["dpo_20", "vortex_pos_14", "trix_15", "donchian_10", "donchian_20"]
-            mask = np.array([f not in excluded for f in features])
-            selected = [f for f in features if f not in excluded]
-            logger.info(f"Selected features by excluding: {excluded}")
+        """
+        MODIFIED: Selects features by loading the mask from analyze_features.py.
+        """
+        # --- MLOps Çözümü: Analist maskesini yükle ---
         
-        assert len(selected) == 82, f"Expected 82, got {len(selected)}"
-        logger.info(f"✅ Selected {len(selected)} features for production")
+        if not self.analyst_mask_path.exists():
+            logger.error(f"Kritik Hata: 'analyze_features.py' tarafından üretilen maske bulunamadı.")
+            logger.error(f"Beklenen dosya: {self.analyst_mask_path}")
+            logger.error("Lütfen önce 'Feature Analysis & Selection' adımının çalıştığından emin olun.")
+            sys.exit(1) # Hata ile çık
+
+        logger.info(f"Analist maskesi bulundu, yükleniyor: {self.analyst_mask_path}")
+        mask = np.load(self.analyst_mask_path)
+        
+        if len(mask) != len(features):
+            logger.error(f"Maske boyutu ({len(mask)}) ile özellik listesi ({len(features)}) uyumsuz!")
+            sys.exit(1) # Hata ile çık
+
+        selected = [f for f, m in zip(features, mask) if m]
+        logger.info(f"Analiz sonucuna göre {len(selected)} özellik seçildi.")
+        
         return selected, mask
 
     def save_feature_configurations(self) -> Dict[str, str]:
@@ -128,9 +140,15 @@ class GemmaFeatureGenerator:
         # Generate full feature list
         full_87 = self.generate_full_87_features()
         
-        # Perform feature selection
-        selected_82, mask = self.perform_feature_selection(full_87)
-
+        # Perform feature selection (Artık analist maskesini okuyor)
+        selected_features, mask = self.perform_feature_selection(full_87)
+        
+        # --- Dinamik olarak ayarlandı ---
+        selected_count = len(selected_features)
+        excluded_features = [f for f in full_87 if f not in selected_features]
+        excluded_count = len(excluded_features)
+        selection_method_name = "variance_correlation_analysis" # Yöntemi doğru yazalım
+        
         # Save full feature list
         full_path = self.features_dir / 'selected/gemma_full_87.json'
         full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,44 +164,44 @@ class GemmaFeatureGenerator:
         paths['full'] = str(full_path)
         logger.info(f"✅ Saved full feature list: {full_path}")
 
-        # Save selected features for price model
-        price_path = self.features_dir / 'selected/gemma_price_selected_82.json'
+        # Save selected features for price model (Dinamik isim ve içerik)
+        price_path = self.features_dir / f'selected/gemma_price_selected_{selected_count}.json'
         price_config = {
             **self.repo_info, 
             "created": datetime.now().isoformat(), 
             "type": "price_prediction", 
-            "count": 82, 
-            "selection_method": "f_classif", 
-            "features": selected_82
+            "count": selected_count, 
+            "selection_method": selection_method_name, 
+            "features": selected_features
         }
         with open(price_path, 'w') as f: 
             json.dump(price_config, f, indent=2)
         paths['price'] = str(price_path)
         logger.info(f"✅ Saved price feature list: {price_path}")
 
-        # Save selected features for regime model
-        regime_path = self.features_dir / 'selected/gemma_regime_selected_82.json'
+        # Save selected features for regime model (Dinamik isim ve içerik)
+        regime_path = self.features_dir / f'selected/gemma_regime_selected_{selected_count}.json'
         regime_config = {
             **self.repo_info, 
             "created": datetime.now().isoformat(), 
             "type": "regime_prediction", 
-            "count": 82, 
-            "selection_method": "mutual_info_classif", 
-            "features": selected_82
+            "count": selected_count, 
+            "selection_method": selection_method_name, 
+            "features": selected_features
         }
         with open(regime_path, 'w') as f: 
             json.dump(regime_config, f, indent=2)
         paths['regime'] = str(regime_path)
-        logger.info(f"✅ Saved regime feature list: {regime_path}")
+        logger.info(f"✅ Saved regime list: {regime_path}")
 
-        # Save feature mask
+        # Save feature mask (Bu, CI'ın artifact yapacağı yoldur)
         mask_path = Path('data/cache/gemma/feature_selection_mask.npy')
         mask_path.parent.mkdir(parents=True, exist_ok=True)
         np.save(mask_path, mask)
         paths['mask'] = str(mask_path)
         logger.info(f"✅ Saved feature mask: {mask_path}")
 
-        # Save metadata
+        # Save metadata (Dinamik içerik)
         metadata_path = self.features_dir / 'metadata/feature_metadata.json'
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
         metadata = {
@@ -191,9 +209,9 @@ class GemmaFeatureGenerator:
             "created": datetime.now().isoformat(), 
             "statistics": {
                 "full_count": 87, 
-                "selected_count": 82, 
-                "excluded_count": 5, 
-                "excluded_features": [f for f in full_87 if f not in selected_82]
+                "selected_count": selected_count, 
+                "excluded_count": excluded_count, 
+                "excluded_features": excluded_features
             }, 
             "paths": paths
         }
@@ -206,14 +224,14 @@ class GemmaFeatureGenerator:
 
 if __name__ == "__main__":
     logger.info("="*70)
-    logger.info("🧬 GEMMA Feature List Generator")
+    logger.info("🧬 GEMMA Feature List Generator (MLOps Mode)")
     logger.info("="*70)
     
     generator = GemmaFeatureGenerator()
     generated_paths = generator.save_feature_configurations()
     
     print("\n" + "="*70)
-    print("✅ Feature configuration complete!")
+    print("✅ Feature configuration complete! (Synched with analyst mask)")
     print("="*70)
     print(json.dumps(generated_paths, indent=2))
     print("="*70)
