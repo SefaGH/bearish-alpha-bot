@@ -1,0 +1,34 @@
+{
+  "model_type": "gemma",
+  "best_params": {
+    "hidden_size": 64,
+    "num_layers": 3,
+    "dropout": 0.32166858729585684,
+    "learning_rate": 0.0016694154792368519,
+    "weight_decay": 0.000206789049881069,
+    "batch_size": 32,
+    "input_size": 81,
+    "num_classes": 3,
+    "class_weights": [
+      1.768971768971769,
+      0.4721415733443938,
+      3.1576514100785946
+    ]
+  },
+  "cv_score": 0.7824063985687448,
+  "holdout_score": 0.7181551976573939,
+  "balanced_cv_score": 0.7824063985687448,
+  "balanced_holdout_score": 0.7816157733532046,
+  "gap": 0.0007906252155401861,
+  "n_trials": 30,
+  "cv_splits": 5,
+  "num_classes": 3,
+  "class_weights": [
+    1.768971768971769,
+    0.4721415733443938,
+    3.1576514100785946
+  ],
+  "distribution_shift": 0.0,
+  "split_strategy": "stratified_class_weights",
+  "timestamp": "2025-11-13T10:13:10.390677"
+}
