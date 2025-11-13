@@ -722,7 +722,7 @@ class RegimeModelTrainer:
             _, predicted = torch.max(outputs, 1)
             
             y_pred_np = predicted.numpy()
-            y_test_np = y_test.numpy() # y_test'i de numpy yapalım
+            y_test_np = y_test
             
             # Total Accuracy (Yanıltıcı Metrik)
             accuracy = (predicted == y_test_tensor).sum().item() / y_test_tensor.size(0)
