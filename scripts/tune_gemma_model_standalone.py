@@ -103,93 +103,6 @@ class RegimeModelTuner:
             logger.info(f"  {label_name}: {count} ({percentage:.1f}%)")
         
         return X, y
-
-    def prepare_data_splits(self, X, y, test_size=0.2, strategy='stratified'):
-        """
-        Prepare train/test splits with different strategies.
-        
-        Args:
-            X: Features array
-            y: Labels array
-            test_size: Test set proportion (default: 0.2)
-            strategy: Split strategy - 'stratified', 'time_last', or 'time_middle'
-        
-        Returns:
-            tuple: (X_cv, X_test, y_cv, y_test)
-        """
-        if strategy == 'stratified':
-            logger.info("📊 Using stratified random split (balanced distribution)")
-            X_cv, X_test, y_cv, y_test = train_test_split(
-                X, y,
-                test_size=test_size,
-                stratify=y,
-                random_state=42,
-                shuffle=False
-            )
-            
-        elif strategy == 'time_last':
-            logger.info("📊 Using time-based split (last period as test)")
-            split_idx = int(len(X) * (1 - test_size))
-            X_cv = X[:split_idx]
-            y_cv = y[:split_idx]
-            X_test = X[split_idx:]
-            y_test = y[split_idx:]
-            
-        elif strategy == 'time_middle':
-            logger.info("📊 Using time-based split (middle period as test)")
-            test_start = int(len(X) * 0.4)
-            test_end = int(len(X) * 0.6)
-            
-            X_test = X[test_start:test_end]
-            y_test = y[test_start:test_end]
-            X_cv = np.vstack([X[:test_start], X[test_end:]])
-            y_cv = np.concatenate([y[:test_start], y[test_end:]])
-        
-        else:
-            raise ValueError(f"Unknown split strategy: {strategy}")
-        
-        # Log distributions
-        from collections import Counter
-        logger.info("\n📊 Data Split Summary:")
-        logger.info(f"  Total: {len(X)} | CV: {len(X_cv)} ({len(X_cv)/len(X)*100:.1f}%) | Test: {len(X_test)} ({len(X_test)/len(X)*100:.1f}%)")
-        
-        cv_dist = Counter(y_cv)
-        test_dist = Counter(y_test)
-        label_names = {0: 'Bullish', 1: 'Neutral', 2: 'Bearish'}
-        
-        logger.info("\n  CV Distribution:")
-        for label in sorted(cv_dist.keys()):
-            name = label_names.get(label, f'Class_{label}')
-            pct = cv_dist[label] / len(y_cv) * 100
-            logger.info(f"    {name}: {cv_dist[label]:4d} ({pct:5.1f}%)")
-        
-        logger.info("\n  Test Distribution:")
-        for label in sorted(test_dist.keys()):
-            name = label_names.get(label, f'Class_{label}')
-            pct = test_dist[label] / len(y_test) * 100
-            logger.info(f"    {name}: {test_dist[label]:4d} ({pct:5.1f}%)")
-        
-        # Check shift
-        max_shift = 0
-        logger.info("\n  Distribution Shift:")
-        for label in sorted(set(list(cv_dist.keys()) + list(test_dist.keys()))):
-            cv_pct = cv_dist.get(label, 0) / len(y_cv) * 100
-            test_pct = test_dist.get(label, 0) / len(y_test) * 100
-            shift = abs(cv_pct - test_pct)
-            max_shift = max(max_shift, shift)
-            name = label_names.get(label, f'Class_{label}')
-            logger.info(f"    {name}: {shift:5.1f}%")
-        
-        if max_shift > 15:
-            logger.error(f"\n  🔴 CRITICAL: Severe shift ({max_shift:.1f}%) - Use stratified!")
-        elif max_shift > 10:
-            logger.warning(f"\n  ⚠️  WARNING: Large shift ({max_shift:.1f}%)")
-        elif max_shift > 5:
-            logger.warning(f"\n  ⚠️  CAUTION: Moderate shift ({max_shift:.1f}%)")
-        else:
-            logger.info(f"\n  ✅ Excellent balance! Shift: {max_shift:.1f}%")
-        
-        return X_cv, X_test, y_cv, y_test
     
     def create_gemma_model(self, params: dict):
         """Create sklearn-compatible MLP wrapper for GEMMA."""
@@ -307,12 +220,14 @@ class RegimeModelTuner:
         logger.info(f"Class weights (for imbalanced data): {class_weights}")
         logger.info(f"Number of classes: {num_classes}")
         
-        # 2. Stratified split (NOW USING CLEAN DATA!)
-        X_cv, X_test, y_cv, y_test = self.prepare_data_splits(
-            X_clean, y_clean,  # ✅ CHANGED: Use clean data
-            test_size=0.2, 
-            strategy='stratified'
-        )
+        # 2. Time-series split (using validation_framework.py)
+        logger.info("📊 Using time-based split (Hold-out test set)")
+        # Bu, veriyi 'shuffle=False' ile bölen doğru TimeSeriesValidator'ı kullanır
+        validator_instance = TimeSeriesValidator(n_splits=cv_splits) 
+        X_cv, y_cv, X_test, y_test = validator_instance.split_with_holdout(X_clean, y_clean)
+    
+        # Artık 'tuner' için yeni bir validator oluşturmaya gerek yok, aynısını kullan
+        tuner_validator = validator_instance
         
         # <<< BAŞLANGIÇ: YENİ ÖLÇEKLEME (SCALING) ADIMI >>>
         # ==============================================================================
@@ -358,7 +273,7 @@ class RegimeModelTuner:
         balanced_accuracy_scorer = make_scorer(balanced_accuracy_score)
         
         # 4. Create tuner
-        validator = TimeSeriesValidator(n_splits=cv_splits)
+        validator = tuner_validator
         tuner = OptunaModelTuner(
             model_type=model_type,
             n_trials=n_trials,
