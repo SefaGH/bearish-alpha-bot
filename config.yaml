@@ -423,13 +423,14 @@ ml:
     enabled: true  # Override with: GEMMA_ENABLED
     
     # Model Yolları (.pt uzantılı TorchScript modelleri olmalıdır)
-    model_path: "data/models/gemma/final/gemma_price.pt"
+    model_path: "data/models/final/gemma_price.pt"
     
     # Özellik (Feature) Konfigürasyon Dosyaları
     features_path: "features/gemma/selected/gemma_price_selected_82.json"
     
     # Yardımcı Dosyalar
-    scaler_path: "data/cache/gemma/scaler_gemma.joblib" # Faz 3'te oluşturulan scaler
+    # Updated to new production location (Plan 2) - co-located with models
+    scaler_path: "data/models/final/gemma_price_scaler.joblib"
     feature_mask_path: "data/cache/gemma/feature_selection_mask.npy"
     
     # Gölge Modu (Mevcut sistemle paralel çalışarak doğrulama yapar)
