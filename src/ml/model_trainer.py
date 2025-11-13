@@ -26,6 +26,7 @@ if ML_ENABLED:
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.preprocessing import StandardScaler
     from sklearn.model_selection import TimeSeriesSplit
+    from sklearn.metrics import balanced_accuracy_score
 else:
     # ML kapalıysa, programın çökmemesi için sahte (None) sınıflar oluştur
     RandomForestClassifier = None
@@ -688,58 +689,71 @@ class RegimeModelTrainer:
                        model_arch: str) -> Dict[str, float]:
         """
         Evaluate a trained model on test data.
-        
+        (GÜNCELLENDİ: balanced_accuracy_score eklendi)
+    
         Args:
             model: Trained PyTorch model
             X_test: Test features
             y_test: Test labels
             model_arch: Architecture type ('mlp', 'lstm', etc.)
-            
+    
         Returns:
             Dictionary with evaluation metrics
         """
         model.eval()
-        
+    
         with torch.no_grad():
             X_test_tensor = torch.from_numpy(X_test).float()
             y_test_tensor = torch.from_numpy(y_test).long()
-            
+    
             outputs = model(X_test_tensor)
             _, predicted = torch.max(outputs, 1)
-            
+    
+            y_pred_np = predicted.numpy()
+    
+            # --- YENİ EKLENEN KOD ---
+            # Total Accuracy (Yanıltıcı Metrik)
             accuracy = (predicted == y_test_tensor).sum().item() / y_test_tensor.size(0)
-            
+    
+            # Balanced Accuracy (Asıl Metrik)
+            balanced_acc = 0.0
+            if ML_ENABLED:
+                try:
+                    balanced_acc = balanced_accuracy_score(y_test, y_pred_np)
+                except Exception as e:
+                    logger.warning(f"Balanced accuracy hesaplanamadı: {e}")
+            # --- YENİ EKLENEN KOD SONU ---
+    
             # Calculate per-class metrics
             unique_classes = np.unique(y_test)
             precision_list = []
             recall_list = []
-            
-            y_pred_np = predicted.numpy()
-            
+    
             for cls in unique_classes:
                 tp = np.sum((y_pred_np == cls) & (y_test == cls))
                 fp = np.sum((y_pred_np == cls) & (y_test != cls))
                 fn = np.sum((y_pred_np != cls) & (y_test == cls))
-                
+    
                 precision = tp / (tp + fp + 1e-10)
                 recall = tp / (tp + fn + 1e-10)
-                
+    
                 precision_list.append(precision)
                 recall_list.append(recall)
-            
+    
             avg_precision = np.mean(precision_list)
             avg_recall = np.mean(recall_list)
             f1_score = 2 * avg_precision * avg_recall / (avg_precision + avg_recall + 1e-10)
-            
+    
             metrics = {
                 'accuracy': accuracy,
+                'balanced_accuracy': balanced_acc, # <-- YENİ EKLENDİ
                 'precision': avg_precision,
                 'recall': avg_recall,
                 'f1': f1_score
             }
-            
-            logger.info(f"Test Metrics - Accuracy: {accuracy:.4f}, F1: {f1_score:.4f}")
-            
+    
+            logger.info(f"Test Metrics - Accuracy: {accuracy:.4f}, Balanced Accuracy: {balanced_acc:.4f}, F1: {f1_score:.4f}")
+    
             return metrics
     
     def _save_gemma_model(self, model: Any, model_type: str, model_arch: str):
