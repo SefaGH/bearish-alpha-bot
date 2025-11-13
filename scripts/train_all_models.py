@@ -89,29 +89,43 @@ def train_gemma_model(X_data_full: np.ndarray, y_data_full: np.ndarray, config: 
         # --- ADIM 1: ÖZELLİK PLANI YÜKLENİYOR ---
         # Bu maske, Ar-Ge sonucunda belirlenmiş ve repository'ye eklenmiş sabit plandır.
         logger.info("📋 ADIM 1: Sabit özellik planı yükleniyor...")
-        mask_path = Path('data/cache/gemma/feature_selection_mask.npy')
+        mask_path = Path('data/models/cache/gemma/feature_selection_mask.npy')
         
         if not mask_path.exists():
-            logger.warning(f"⚠️ Özellik seçim maskesi bulunamadı: {mask_path}")
-            logger.warning("⚠️ Tüm özelliklerle devam ediliyor (ham veri)...")
-            X_selected = X_data_full
-            feature_mask = None
-        else:
-            try:
-                feature_mask = np.load(mask_path)
-                if len(feature_mask) != X_data_full.shape[1]:
-                    logger.error(f"❌ Özellik maskesi boyutu uyuşmuyor! Maske: {len(feature_mask)}, Veri: {X_data_full.shape[1]}")
-                    logger.warning("⚠️ Tüm özelliklerle devam ediliyor...")
-                    X_selected = X_data_full
-                    feature_mask = None
-                else:
-                    X_selected = X_data_full[:, feature_mask]
-                    logger.info(f"✅ Özellik planı uygulandı. Seçilen özellik sayısı: {X_selected.shape[1]} (toplam: {X_data_full.shape[1]})")
-            except Exception as e:
-                logger.error(f"❌ Özellik maskesi yüklenirken hata: {e}")
-                logger.warning("⚠️ Tüm özelliklerle devam ediliyor...")
-                X_selected = X_data_full
-                feature_mask = None
+            logger.error(f"❌ KRİTİK HATA: Özellik seçim planı ({mask_path}) bulunamadı. Bu dosyanın repository'de olması gerekir. Eğitim durduruluyor.")
+            # Fallback yapmak yerine süreci tamamen durdurmak, yanlış model üretmeyi engeller.
+            raise FileNotFoundError(f"Feature selection mask not found at {mask_path}")
+
+        logger.info(f"✅ Özellik seçim planı bulundu: {mask_path}")
+        feature_mask = np.load(mask_path)
+        
+        if len(feature_mask) != X_data_full.shape[1]:
+            logger.error(f"❌ KRİTİK HATA: Özellik maskesi boyutu uyuşmuyor! Maske: {len(feature_mask)}, Veri: {X_data_full.shape[1]}")
+            raise ValueError(f"Feature mask size mismatch: mask={len(feature_mask)}, data={X_data_full.shape[1]}")
+        
+        X_selected = X_data_full[:, feature_mask]
+        logger.info(f"✅ Özellik planı başarıyla uygulandı. {X_data_full.shape[1]} -> {X_selected.shape[1]} özellik.")
+        
+        # --- ADIM 1.5: ÖZELLİK PLANI DOĞRULAMASI (JSON Kontrolü) ---
+        logger.info("🔍 ADIM 1.5: Özellik planı doğrulaması yapılıyor...")
+        json_plan_name = f"gemma_{model_type}_selected_82.json"
+        json_plan_path = Path(f"features/gemma/selected/{json_plan_name}")
+        
+        if not json_plan_path.exists():
+            logger.error(f"❌ KRİTİK: Doğrulama için özellik listesi ({json_plan_path}) bulunamadı. Eğitim durduruluyor.")
+            raise FileNotFoundError(f"Feature list JSON not found at {json_plan_path}")
+        
+        with open(json_plan_path, 'r') as f:
+            feature_plan = json.load(f)
+        
+        selected_feature_count_from_json = feature_plan.get('count', 0)
+        selected_feature_count_from_mask = np.sum(feature_mask)
+        
+        if selected_feature_count_from_json != selected_feature_count_from_mask:
+            logger.error(f"❌ KRİTİK: Maske ve JSON planı arasında tutarsızlık! Maske: {selected_feature_count_from_mask}, JSON: {selected_feature_count_from_json}. Eğitim durduruluyor.")
+            raise ValueError("Feature mask and JSON plan are inconsistent.")
+        
+        logger.info(f"✅ Özellik planı doğrulandı: {json_plan_path} (Beklenen: {selected_feature_count_from_json} özellik)")
         
         # Veri boyutu kontrolü
         min_samples = gemma_config.get('thresholds', {}).get('min_samples', 1000)
@@ -270,17 +284,17 @@ async def main():
             y_raw = data['y']
             logger.info(f"✅ Ham veri yüklendi: {X_raw.shape[0]} örnek, {X_raw.shape[1]} özellik.")
             
-            # Try to load feature selection mask if it exists
-            mask_path = Path('data/cache/gemma/feature_selection_mask.npy')
-            if mask_path.exists():
-                feature_mask = np.load(mask_path)
-                logger.info(f"✅ Özellik seçim maskesi yüklendi: {feature_mask.sum()} özellik seçildi ({X_raw.shape[1]} özellikten).")
-                X_filtered = X_raw[:, feature_mask]
-                logger.info(f"✅ Filtrelenmiş veri hazır: {X_filtered.shape[0]} örnek, {X_filtered.shape[1]} özellik.")
-                return X_filtered, y_raw
-            else:
-                logger.warning(f"⚠️ Özellik seçim maskesi bulunamadı: {mask_path}. Tüm özellikler kullanılacak.")
-                return X_raw, y_raw
+            # Load feature selection mask - MUST exist in repository
+            mask_path = Path('data/models/cache/gemma/feature_selection_mask.npy')
+            if not mask_path.exists():
+                logger.error(f"❌ KRİTİK HATA: Özellik seçim maskesi ({mask_path}) bulunamadı. Eğitim durduruluyor.")
+                raise FileNotFoundError(f"Feature selection mask not found at {mask_path}")
+            
+            feature_mask = np.load(mask_path)
+            logger.info(f"✅ Özellik seçim maskesi yüklendi: {feature_mask.sum()} özellik seçildi ({X_raw.shape[1]} özellikten).")
+            X_filtered = X_raw[:, feature_mask]
+            logger.info(f"✅ Filtrelenmiş veri hazır: {X_filtered.shape[0]} örnek, {X_filtered.shape[1]} özellik.")
+            return X_filtered, y_raw
         except Exception as e:
             logger.error(f"GEMMA verisi yüklenirken hata: {e}", exc_info=True)
             return None, None
