@@ -479,11 +479,11 @@ class RegimeModelTrainer:
         # Get architecture parameters from config
         arch_config = self.config.get('architecture', {})
         
-        # Support both MLP-style (hidden_layers list) and LSTM-style (hidden_size, num_layers) configs
+        # Support both MLP-style (hidden_layers list) and GEMMA-style (hidden_size, num_layers) configs
         if 'hidden_layers' in arch_config:
             hidden_layers = arch_config.get('hidden_layers')
         elif 'hidden_size' in arch_config and 'num_layers' in arch_config:
-            # Convert LSTM-style config to MLP-style
+            # GEMMA configuration: Use hidden_size for all layers
             hidden_size = arch_config.get('hidden_size')
             num_layers = arch_config.get('num_layers')
             
@@ -492,15 +492,16 @@ class RegimeModelTrainer:
                 logger.warning(f"Invalid num_layers={num_layers}, using default layers")
                 hidden_layers = [128, 64]
             else:
-                # Create decreasing layer sizes for MLP
-                hidden_layers = [hidden_size // (i + 1) for i in range(num_layers)]
-                logger.info(f"Converted LSTM config (hidden_size={hidden_size}, num_layers={num_layers}) "
-                           f"to MLP layers: {hidden_layers}")
+                # Create layers with consistent hidden_size (GEMMA architecture)
+                hidden_layers = [hidden_size for _ in range(num_layers)]
+                logger.info(f"Using GEMMA config (hidden_size={hidden_size}, num_layers={num_layers}) "
+                           f"-> MLP layers: {hidden_layers}")
         else:
             # Default layer configuration
             hidden_layers = [128, 64]
         
         dropout = arch_config.get('dropout', 0.3)
+        num_classes = arch_config.get('num_classes', 3)
         
         # Get training parameters
         train_config = self.config.get('training', {})
@@ -509,12 +510,16 @@ class RegimeModelTrainer:
         learning_rate = train_config.get('learning_rate', LEARNING_RATE)
         patience = train_config.get('early_stopping_patience', EARLY_STOPPING_PATIENCE)
         
-        logger.info(f"MLP Configuration:")
+        logger.info("="*60)
+        logger.info("MLP Configuration from config.example.yaml:")
         logger.info(f"  Hidden Layers: {hidden_layers}")
         logger.info(f"  Dropout: {dropout}")
+        logger.info(f"  Num Classes: {num_classes}")
         logger.info(f"  Epochs: {epochs}")
         logger.info(f"  Batch Size: {batch_size}")
         logger.info(f"  Learning Rate: {learning_rate}")
+        logger.info(f"  Early Stopping Patience: {patience}")
+        logger.info("="*60)
         
         # Convert to PyTorch tensors
         X_train_tensor = torch.from_numpy(X_train).float()
