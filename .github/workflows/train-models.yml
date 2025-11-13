@@ -157,15 +157,13 @@ jobs:
 
       - name: 6. Model Performansını Doğrula (Kalite Kontrol)
         id: deploy_check
-        continue-on-error: true # DÜZELTİLDİ: Bu adım başarısız olsa bile workflow devam etsin.
+        continue-on-error: true
         run: |
           echo "======================================================================"
           echo "🔬 ADIM 6: Üretim Hazırlık Kontrolü (Kalite Güvence)"
+          echo "   (ASIL METRİK KULLANILIYOR: Balanced Accuracy)"
           echo "======================================================================"
           
-          # Bu Python bloğu, modellerin performansını değerlendirir ve
-          # başarılı olup olmadığına karar verir. Başarısız olursa,
-          # workflow'un sonraki adımları bunu bilecek.
           python3 << 'EOF'
           import json
           import yaml
@@ -177,7 +175,7 @@ jobs:
               files = sorted(log_dir.glob('final_metrics_*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
               return files[0] if files else None
 
-          def check_model(model_name: str, min_accuracy: float = 0.35):
+          def check_model(model_name: str, min_balanced_accuracy: float = 0.70):
               print(f"\n--- {model_name.upper()} MODELİ DEĞERLENDİRİLİYOR ---")
               metrics_file = get_latest_metrics_file(model_name)
               if not metrics_file:
@@ -187,32 +185,19 @@ jobs:
               with open(metrics_file) as f:
                   metrics = json.load(f)
 
-              # Check if this is a test_metrics or per_class_accuracy format
-              if 'test_metrics' in metrics:
-                  test_metrics = metrics.get('test_metrics', {})
-                  accuracy = test_metrics.get('accuracy', 0.0)
-                  print(f"   - Model Doğruluğu: {accuracy:.2%} (Eşik: >{min_accuracy:.0%})")
-                  
-                  if accuracy < min_accuracy:
-                      print(f"   - ❌ SONUÇ: {model_name} modeli üretim eşiklerini GEÇEMEDİ.")
-                      return False
-              else:
-                  # Fallback to old format
-                  per_class_acc = metrics.get('per_class_accuracy', {})
-                  bullish_acc = per_class_acc.get('Bullish', 0.0)
-                  neutral_acc = per_class_acc.get('Neutral', 0.0)
-                  bearish_acc = per_class_acc.get('Bearish', 0.0)
-                  
-                  MIN_MINORITY_ACC = 0.35  # Azınlık sınıf (Bull/Bear) için en az %35 doğruluk
-                  MIN_MAJORITY_ACC = 0.70  # Çoğunluk sınıf (Neutral) için en az %70 doğruluk
-                  
-                  print(f"   - Bullish Doğruluk: {bullish_acc:.2%} (Eşik: >{MIN_MINORITY_ACC:.0%})")
-                  print(f"   - Neutral Doğruluk: {neutral_acc:.2%} (Eşik: >{MIN_MAJORITY_ACC:.0%})")
-                  print(f"   - Bearish Doğruluk: {bearish_acc:.2%} (Eşik: >{MIN_MINORITY_ACC:.0%})")
-
-                  if bearish_acc < MIN_MINORITY_ACC or bullish_acc < MIN_MINORITY_ACC or neutral_acc < MIN_MAJORITY_ACC:
-                      print(f"   - ❌ SONUÇ: {model_name} modeli üretim eşiklerini GEÇEMEDİ.")
-                      return False
+              test_metrics = metrics.get('test_metrics', {})
+              
+              # --- KRİTİK DEĞİŞİKLİK BURADA ---
+              # Eski 'accuracy' yerine 'balanced_accuracy' metriğini ara
+              balanced_acc = test_metrics.get('balanced_accuracy', 0.0)
+              total_acc = test_metrics.get('accuracy', 0.0) # Referans için
+              
+              print(f"   - Asıl Metrik (Balanced Accuracy): {balanced_acc:.2%} (Eşik: >{min_balanced_accuracy:.0%})")
+              print(f"   - Yanıltıcı Metrik (Total Accuracy): {total_acc:.2%}")
+              
+              if balanced_acc < min_balanced_accuracy:
+                  print(f"   - ❌ SONUÇ: {model_name} modeli ASIL metrik eşiğini GEÇEMEDİ.")
+                  return False
               
               print(f"   - ✅ SONUÇ: {model_name} modeli üretim eşiklerini BAŞARIYLA GEÇTİ.")
               return True
@@ -220,16 +205,19 @@ jobs:
           # Check both GEMMA price and regime models
           all_models_passed = True
           
+          # Tuning skorunu (%76.96) temel alarak, %70'in altını kabul etme
+          MIN_PERFORMANCE_THRESHOLD = 0.70 
+          
           # Check GEMMA price model
-          if not check_model('gemma_price', min_accuracy=0.40):
+          if not check_model('gemma_price', min_balanced_accuracy=MIN_PERFORMANCE_THRESHOLD):
               all_models_passed = False
           
           # Check GEMMA regime model  
-          if not check_model('gemma_regime', min_accuracy=0.40):
+          if not check_model('gemma_regime', min_balanced_accuracy=MIN_PERFORMANCE_THRESHOLD):
               all_models_passed = False
 
           if not all_models_passed:
-              print("\n🚨 UYARI: En az bir model kalite kontrolünü geçemedi. Hata analizi adımı tetiklenecek.")
+              print("\n🚨 UYARI: En az bir model kalite kontrolünü (Balanced Accuracy) geçemedi. Hata analizi adımı tetiklenecek.")
               exit(1) # Bu, GitHub Actions'ta bu adımın başarısız olmasını sağlar
           
           print("\n🎉 Tüm aktif modeller kalite kontrolünü başarıyla geçti!")
