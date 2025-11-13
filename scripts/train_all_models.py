@@ -50,10 +50,16 @@ RL_TRAINING_TIMEFRAME = '15m'
 
 # --- YENİ VE GÜNCELLENMİŞ train_gemma_model FONKSİYONU ---
 # Bu fonksiyon artık ham veri yerine, önceden hazırlanmış .npz dosyasını kullanır.
-def train_gemma_model(X_data: np.ndarray, y_data: np.ndarray, config: dict):
+def train_gemma_model(X_data: np.ndarray, y_data: np.ndarray, config: dict, model_type: str = 'price'):
     """
-    Trains the GEMMA model using prepared, cached data and optimized hyperparameters
-    from the configuration file.
+    Trains the GEMMA model (price or regime) using prepared, cached data and optimized 
+    hyperparameters from the configuration file.
+    
+    Args:
+        X_data: Feature array
+        y_data: Label array
+        config: Configuration dictionary
+        model_type: Type of model to train ('price' or 'regime')
     """
     gemma_config = config.get('gemma', {})
     if not gemma_config.get('enabled', False):
@@ -61,7 +67,7 @@ def train_gemma_model(X_data: np.ndarray, y_data: np.ndarray, config: dict):
         return {'status': 'disabled'}
 
     logger.info("\n" + "="*70)
-    logger.info("💎 ADIM 4: YENİ NESİL GEMMA MODELİ EĞİTİLİYOR 💎")
+    logger.info(f"💎 ADIM 4: YENİ NESİL GEMMA {model_type.upper()} MODELİ EĞİTİLİYOR 💎")
     logger.info("="*70)
     
     # Gerekli kütüphaneleri burada import et
@@ -91,30 +97,30 @@ def train_gemma_model(X_data: np.ndarray, y_data: np.ndarray, config: dict):
         trainer = RegimeModelTrainer(config=gemma_config)
         
         # Modeli eğit ve değerlendir
-        results = trainer.train_and_evaluate(X_data, y_data, model_type='gemma')
+        results = trainer.train_and_evaluate(X_data, y_data, model_type=f'gemma_{model_type}')
         
         if not results or results.get('status') != 'completed':
-            logger.error("❌ GEMMA modeli eğitimi başarısız oldu veya tamamlanamadı.")
+            logger.error(f"❌ GEMMA {model_type} modeli eğitimi başarısız oldu veya tamamlanamadı.")
             return results
 
         # --- SONUÇLARI KAYDETME ---
         # Metrikleri standart formatta kaydet
-        log_dir = Path(f'logs/final_training/gemma')
+        log_dir = Path(f'logs/final_training/gemma_{model_type}')
         log_dir.mkdir(parents=True, exist_ok=True)
         metrics_file = log_dir / f"final_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         
         with open(metrics_file, 'w') as f:
             json.dump(results, f, indent=2)
-        logger.info(f"✅ GEMMA metrikleri kaydedildi: {metrics_file}")
+        logger.info(f"✅ GEMMA {model_type} metrikleri kaydedildi: {metrics_file}")
         
         logger.info("\n" + "="*70)
-        logger.info(f"✅ GEMMA eğitimi tamamlandı! Doğrulama Başarısı: {results.get('test_metrics', {}).get('accuracy', 0):.2%}")
+        logger.info(f"✅ GEMMA {model_type} eğitimi tamamlandı! Doğrulama Başarısı: {results.get('test_metrics', {}).get('accuracy', 0):.2%}")
         logger.info("="*70)
         
         return results
 
     except Exception as e:
-        logger.error(f"❌ GEMMA modeli eğitimi sırasında beklenmedik bir hata oluştu: {e}", exc_info=True)
+        logger.error(f"❌ GEMMA {model_type} modeli eğitimi sırasında beklenmedik bir hata oluştu: {e}", exc_info=True)
         return {'status': 'failed', 'error': str(e)}
 
 async def main():
@@ -221,18 +227,42 @@ async def main():
             return None, None
         try:
             data = np.load(data_path)
-            logger.info(f"✅ GEMMA için hazır veri yüklendi: {data['X'].shape[0]} örnek.")
-            return data['X'], data['y']
+            X_raw = data['X']
+            y_raw = data['y']
+            logger.info(f"✅ Ham veri yüklendi: {X_raw.shape[0]} örnek, {X_raw.shape[1]} özellik.")
+            
+            # Try to load feature selection mask if it exists
+            mask_path = Path('data/cache/gemma/feature_selection_mask.npy')
+            if mask_path.exists():
+                feature_mask = np.load(mask_path)
+                logger.info(f"✅ Özellik seçim maskesi yüklendi: {feature_mask.sum()} özellik seçildi ({X_raw.shape[1]} özellikten).")
+                X_filtered = X_raw[:, feature_mask]
+                logger.info(f"✅ Filtrelenmiş veri hazır: {X_filtered.shape[0]} örnek, {X_filtered.shape[1]} özellik.")
+                return X_filtered, y_raw
+            else:
+                logger.warning(f"⚠️ Özellik seçim maskesi bulunamadı: {mask_path}. Tüm özellikler kullanılacak.")
+                return X_raw, y_raw
         except Exception as e:
             logger.error(f"GEMMA verisi yüklenirken hata: {e}", exc_info=True)
             return None, None
             
     X_gemma, y_gemma = load_prepared_gemma_data(config)
 
-    # 4. YENİ NESİL GEMMA MODELİ EĞİTİMİ (YENİ BLOK)
+    # 4. YENİ NESİL GEMMA MODELLERİ EĞİTİMİ (İKİ MODEL: PRICE VE REGIME)
     if X_gemma is not None and y_gemma is not None and ml_config.get('gemma', {}).get('enabled', False):
-        gemma_results = train_gemma_model(X_gemma, y_gemma, ml_config)
-        training_metrics['gemma_models'] = gemma_results
+        # Train GEMMA price model
+        logger.info("\n" + "="*80)
+        logger.info("💰 GEMMA PRICE MODELİ EĞİTİLİYOR 💰")
+        logger.info("="*80)
+        gemma_price_results = train_gemma_model(X_gemma, y_gemma, ml_config, model_type='price')
+        training_metrics['gemma_models']['price'] = gemma_price_results
+        
+        # Train GEMMA regime model
+        logger.info("\n" + "="*80)
+        logger.info("🌊 GEMMA REGIME MODELİ EĞİTİLİYOR 🌊")
+        logger.info("="*80)
+        gemma_regime_results = train_gemma_model(X_gemma, y_gemma, ml_config, model_type='regime')
+        training_metrics['gemma_models']['regime'] = gemma_regime_results
     else:
         logger.info("⏩ GEMMA eğitimi atlanıyor (veri bulunamadı veya konfigürasyonda kapalı).")
         training_metrics['gemma_models'] = {'status': 'skipped'}
