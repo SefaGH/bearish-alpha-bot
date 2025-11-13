@@ -683,7 +683,7 @@ class RegimeModelTrainer:
         
         Args:
             model: Trained PyTorch model
-            model_type: Type identifier (e.g., 'gemma')
+            model_type: Type identifier (e.g., 'gemma_price', 'gemma_regime')
             model_arch: Architecture type (e.g., 'mlp')
         """
         try:
@@ -692,7 +692,8 @@ class RegimeModelTrainer:
             gemma_dir.mkdir(parents=True, exist_ok=True)
             
             # Save model state dict
-            model_path = gemma_dir / f"gemma_{model_type}.pt"
+            # model_type already includes 'gemma_' prefix, so just use it as is
+            model_path = gemma_dir / f"{model_type}.pt"
             torch.save(model.state_dict(), model_path)
             logger.info(f"✅ Saved GEMMA model to {model_path}")
             
@@ -715,7 +716,7 @@ class RegimeModelTrainer:
                 input_size = None
                 num_classes = None
             
-            config_path = gemma_dir / f"gemma_{model_type}_config.pkl"
+            config_path = gemma_dir / f"{model_type}_config.pkl"
             model_config = {
                 'architecture': model_arch,
                 'input_size': input_size,

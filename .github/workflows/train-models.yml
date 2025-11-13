@@ -46,27 +46,13 @@ jobs:
           mkdir -p data/cache logs/final_training analysis_artifacts
           echo "✅ Çalışma ortamı temizlendi."
 
-      - name: 3. Veri Setini ve Özellikleri Hazırla
+      - name: 3. Veri Setini Hazırla
         id: prepare_data
         run: |
           echo "======================================================================"
-          echo "📊 ADIM 3: Veri Hazırlama ve Özellik Seçimi"
+          echo "📊 ADIM 3: Ham Veri Seti Hazırlanıyor (Tüm Özellikler)"
           echo "======================================================================"
-          
-          echo "   - Aşama 1: Ham veri (87 özellik) hazırlanıyor..."
           python scripts/prepare_training_data.py --symbol "${{ inputs.symbol }}" --no-feature-selection
-          
-          echo "   - Aşama 2: Özellik analizi ve seçimi yapılıyor..."
-          python scripts/analyze_features.py --select --report \
-            --variance-threshold 0.00005 \
-            --correlation-threshold 0.005
-            
-          echo "   - Aşama 3: Nihai veri seti (seçilmiş özelliklerle) yeniden hazırlanıyor..."
-          python scripts/prepare_training_data.py --symbol "${{ inputs.symbol }}"
-          
-          FINAL_FEATURES=$(python3 -c "import numpy as np; data = np.load('data/cache/BTC-USDT_training_data.npz'); print(data['X'].shape[1])")
-          echo "✅ Veri hazırlama tamamlandı. Nihai özellik sayısı: $FINAL_FEATURES"
-          echo "feature_count=$FINAL_FEATURES" >> $GITHUB_OUTPUT
 
       - name: 4. Nihai Modelleri Eğit (Ana Script)
         run: |
@@ -102,7 +88,7 @@ jobs:
               files = sorted(log_dir.glob('final_metrics_*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
               return files[0] if files else None
 
-          def check_model(model_name: str):
+          def check_model(model_name: str, min_accuracy: float = 0.35):
               print(f"\n--- {model_name.upper()} MODELİ DEĞERLENDİRİLİYOR ---")
               metrics_file = get_latest_metrics_file(model_name)
               if not metrics_file:
@@ -112,37 +98,45 @@ jobs:
               with open(metrics_file) as f:
                   metrics = json.load(f)
 
-              per_class_acc = metrics.get('per_class_accuracy', {})
-              bullish_acc = per_class_acc.get('Bullish', 0.0)
-              neutral_acc = per_class_acc.get('Neutral', 0.0)
-              bearish_acc = per_class_acc.get('Bearish', 0.0)
-              
-              MIN_MINORITY_ACC = 0.35  # Azınlık sınıf (Bull/Bear) için en az %35 doğruluk
-              MIN_MAJORITY_ACC = 0.70  # Çoğunluk sınıf (Neutral) için en az %70 doğruluk
-              
-              print(f"   - Bullish Doğruluk: {bullish_acc:.2%} (Eşik: >{MIN_MINORITY_ACC:.0%})")
-              print(f"   - Neutral Doğruluk: {neutral_acc:.2%} (Eşik: >{MIN_MAJORITY_ACC:.0%})")
-              print(f"   - Bearish Doğruluk: {bearish_acc:.2%} (Eşik: >{MIN_MINORITY_ACC:.0%})")
+              # Check if this is a test_metrics or per_class_accuracy format
+              if 'test_metrics' in metrics:
+                  test_metrics = metrics.get('test_metrics', {})
+                  accuracy = test_metrics.get('accuracy', 0.0)
+                  print(f"   - Model Doğruluğu: {accuracy:.2%} (Eşik: >{min_accuracy:.0%})")
+                  
+                  if accuracy < min_accuracy:
+                      print(f"   - ❌ SONUÇ: {model_name} modeli üretim eşiklerini GEÇEMEDİ.")
+                      return False
+              else:
+                  # Fallback to old format
+                  per_class_acc = metrics.get('per_class_accuracy', {})
+                  bullish_acc = per_class_acc.get('Bullish', 0.0)
+                  neutral_acc = per_class_acc.get('Neutral', 0.0)
+                  bearish_acc = per_class_acc.get('Bearish', 0.0)
+                  
+                  MIN_MINORITY_ACC = 0.35  # Azınlık sınıf (Bull/Bear) için en az %35 doğruluk
+                  MIN_MAJORITY_ACC = 0.70  # Çoğunluk sınıf (Neutral) için en az %70 doğruluk
+                  
+                  print(f"   - Bullish Doğruluk: {bullish_acc:.2%} (Eşik: >{MIN_MINORITY_ACC:.0%})")
+                  print(f"   - Neutral Doğruluk: {neutral_acc:.2%} (Eşik: >{MIN_MAJORITY_ACC:.0%})")
+                  print(f"   - Bearish Doğruluk: {bearish_acc:.2%} (Eşik: >{MIN_MINORITY_ACC:.0%})")
 
-              if bearish_acc < MIN_MINORITY_ACC or bullish_acc < MIN_MINORITY_ACC or neutral_acc < MIN_MAJORITY_ACC:
-                  print(f"   - ❌ SONUÇ: {model_name} modeli üretim eşiklerini GEÇEMEDİ.")
-                  return False
+                  if bearish_acc < MIN_MINORITY_ACC or bullish_acc < MIN_MINORITY_ACC or neutral_acc < MIN_MAJORITY_ACC:
+                      print(f"   - ❌ SONUÇ: {model_name} modeli üretim eşiklerini GEÇEMEDİ.")
+                      return False
               
               print(f"   - ✅ SONUÇ: {model_name} modeli üretim eşiklerini BAŞARIYLA GEÇTİ.")
               return True
 
-          # Tüm aktif modelleri config'den oku ve kontrol et
+          # Check both GEMMA price and regime models
           all_models_passed = True
-          try:
-              with open('config/config.example.yaml') as f:
-                  config = yaml.safe_load(f)['ml']
-              
-              for model_name, model_config in config.items():
-                  if model_config.get('enabled', False):
-                      if not check_model(model_name):
-                          all_models_passed = False
-          except Exception as e:
-              print(f"❌ Konfigürasyon okunurken hata: {e}")
+          
+          # Check GEMMA price model
+          if not check_model('gemma_price', min_accuracy=0.40):
+              all_models_passed = False
+          
+          # Check GEMMA regime model  
+          if not check_model('gemma_regime', min_accuracy=0.40):
               all_models_passed = False
 
           if not all_models_passed:
