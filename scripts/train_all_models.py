@@ -18,6 +18,8 @@ from pathlib import Path
 import shutil
 import joblib
 
+from sklearn.metrics import balanced_accuracy_score
+
 # --- YOL AYARLAMASI ---
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
@@ -170,26 +172,41 @@ def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict,
             model_type=f'gemma_{model_type}',
             production_scaler=production_scaler
         )
-        
+    
         if not results or results.get('status') != 'completed':
             logger.error(f"❌ GEMMA {model_type} modeli eğitimi başarısız oldu veya tamamlanamadı.")
             return results
-
+    
+        # --- YENİ: DENGELİ DOĞRULUK HESAPLAMA ---
+        # Trainer'ın döndürdüğü test tahminlerini (y_pred) ve gerçeklerini (y_test) al
+        y_test_pred = results.get('test_predictions', {}).get('y_pred')
+        y_test_true = results.get('test_predictions', {}).get('y_test')
+    
+        balanced_acc = 0.0
+        if y_test_pred is not None and y_test_true is not None:
+            balanced_acc = balanced_accuracy_score(y_test_true, y_test_pred)
+            logger.info(f"   ✅ Asıl Metrik (Balanced Accuracy): {balanced_acc:.2%}")
+            # Bu yeni metriği sonuçlara ekle
+            results['test_metrics']['balanced_accuracy'] = balanced_acc
+        else:
+            logger.warning("⚠️ balanced_accuracy_score hesaplanamadı. Trainer 'test_predictions' döndürmedi.")
+    
         # --- METRİKLERİ KAYDETME ---
         logger.info(f"💾 Metrikler kaydediliyor...")
         log_dir = Path(f'logs/final_training/gemma_{model_type}')
         log_dir.mkdir(parents=True, exist_ok=True)
         metrics_file = log_dir / f"final_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        
+    
         with open(metrics_file, 'w') as f:
             json.dump(results, f, indent=2)
         logger.info(f"✅ GEMMA {model_type} metrikleri kaydedildi: {metrics_file}")
-        
+    
         logger.info("\n" + "="*70)
         logger.info(f"✅ GEMMA {model_type} EĞİTİMİ TAMAMLANDI!")
-        logger.info(f"   Doğrulama Başarısı: {results.get('test_metrics', {}).get('accuracy', 0):.2%}")
+        logger.info(f"   Asıl Doğruluk (Balanced): {balanced_acc:.2%}")
+        logger.info(f"   Referans Doğruluk (Total): {results.get('test_metrics', {}).get('accuracy', 0):.2%}")
         logger.info("="*70)
-        
+    
         return results
 
     except Exception as e:
