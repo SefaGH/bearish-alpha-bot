@@ -246,16 +246,11 @@ jobs:
           echo "======================================================================"
           echo "🚨 ADIM 8: Model Başarısız! Hata Analizi Başlatılıyor..."
           echo "======================================================================"
-          echo "   - SHAP analizi çalıştırılarak, modelin neden yanlış karar verdiği anlaşılmaya çalışılacak."
+          echo "   - SHAP analizi çalıştırılarak, gemma_price modelinin neden yanlış karar verdiği anlaşılmaya çalışılacak."
           
-          # Başarısız olan modeli analiz etmek için script'i çalıştır
+          # DÜZELTME: Gerekli argümanlar eklendi
           python scripts/analyze_model_explainability.py \
+            --model-path data/models/final/gemma_price.pt \
+            --data-path data/cache/BTC-USDT_training_data.npz \
+            --metadata-path features/gemma/metadata/feature_metadata.json \
             --output-dir ./analysis_artifacts
-            
-      - name: Hata Analizi Raporlarını Arşivle
-        if: steps.deploy_check.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: hata-analiz-raporlari-${{ github.run_number }}
-          path: ./analysis_artifacts/
-          retention-days: 30
