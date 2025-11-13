@@ -49,20 +49,15 @@ CANDLE_LIMIT = 1440
 RL_TRAINING_TIMEFRAME = '15m'
 
 # --- YENİ VE GÜNCELLENMİŞ train_gemma_model FONKSİYONU ---
-# Bu fonksiyon, sabit özellik planını kullanarak model ve scaler üretir.
-def train_gemma_model(X_data_full: np.ndarray, y_data_full: np.ndarray, config: dict, model_type: str = 'price'):
+# Bu fonksiyon, önceden filtrelenmiş veriyi alır ve sadece eğitim yapar.
+def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict, model_type: str = 'price'):
     """
-    Trains the GEMMA model (price or regime) using the fixed feature plan.
-    
-    This function implements the production training pipeline:
-    1. Loads the fixed feature selection mask from repository
-    2. Applies the mask to select features
-    3. Passes selected features to trainer which creates scaler and trains model
-    4. Both model and scaler are saved by the trainer to production location
+    Trains the GEMMA model using PREPARED and FILTERED data.
+    This function NO LONGER handles feature selection.
     
     Args:
-        X_data_full: Full feature array (all 87 features)
-        y_data_full: Label array
+        X_selected: Already filtered feature array (82 selected features)
+        y_data: Label array
         config: Configuration dictionary from ml config
         model_type: Type of model to train ('price' or 'regime')
         
@@ -77,6 +72,7 @@ def train_gemma_model(X_data_full: np.ndarray, y_data_full: np.ndarray, config: 
     logger.info("\n" + "="*70)
     logger.info(f"💎 GEMMA {model_type.upper()} MODELİ EĞİTİM SÜRECİ BAŞLIYOR 💎")
     logger.info("="*70)
+    logger.info(f"✅ Eğitime hazır veri alındı: {X_selected.shape[0]} örnek, {X_selected.shape[1]} özellik.")
     
     # Gerekli kütüphaneleri burada import et
     try:
@@ -86,59 +82,16 @@ def train_gemma_model(X_data_full: np.ndarray, y_data_full: np.ndarray, config: 
         return {'status': 'failed', 'error': f'Eksik kütüphane: {e}'}
 
     try:
-        # --- ADIM 1: ÖZELLİK PLANI YÜKLENİYOR ---
-        # Bu maske, Ar-Ge sonucunda belirlenmiş ve repository'ye eklenmiş sabit plandır.
-        logger.info("📋 ADIM 1: Sabit özellik planı yükleniyor...")
-        mask_path = Path('data/models/cache/gemma/feature_selection_mask.npy')
-        
-        if not mask_path.exists():
-            logger.error(f"❌ KRİTİK HATA: Özellik seçim planı ({mask_path}) bulunamadı. Bu dosyanın repository'de olması gerekir. Eğitim durduruluyor.")
-            # Fallback yapmak yerine süreci tamamen durdurmak, yanlış model üretmeyi engeller.
-            raise FileNotFoundError(f"Feature selection mask not found at {mask_path}")
-
-        logger.info(f"✅ Özellik seçim planı bulundu: {mask_path}")
-        feature_mask = np.load(mask_path)
-        
-        if len(feature_mask) != X_data_full.shape[1]:
-            logger.error(f"❌ KRİTİK HATA: Özellik maskesi boyutu uyuşmuyor! Maske: {len(feature_mask)}, Veri: {X_data_full.shape[1]}")
-            raise ValueError(f"Feature mask size mismatch: mask={len(feature_mask)}, data={X_data_full.shape[1]}")
-        
-        X_selected = X_data_full[:, feature_mask]
-        logger.info(f"✅ Özellik planı başarıyla uygulandı. {X_data_full.shape[1]} -> {X_selected.shape[1]} özellik.")
-        
-        # --- ADIM 1.5: ÖZELLİK PLANI DOĞRULAMASI (JSON Kontrolü) ---
-        logger.info("🔍 ADIM 1.5: Özellik planı doğrulaması yapılıyor...")
-        json_plan_name = f"gemma_{model_type}_selected_82.json"
-        json_plan_path = Path(f"features/gemma/selected/{json_plan_name}")
-        
-        if not json_plan_path.exists():
-            logger.error(f"❌ KRİTİK: Doğrulama için özellik listesi ({json_plan_path}) bulunamadı. Eğitim durduruluyor.")
-            raise FileNotFoundError(f"Feature list JSON not found at {json_plan_path}")
-        
-        with open(json_plan_path, 'r') as f:
-            feature_plan = json.load(f)
-        
-        selected_feature_count_from_json = feature_plan.get('count', 0)
-        selected_feature_count_from_mask = np.sum(feature_mask)
-        
-        if selected_feature_count_from_json != selected_feature_count_from_mask:
-            logger.error(f"❌ KRİTİK: Maske ve JSON planı arasında tutarsızlık! Maske: {selected_feature_count_from_mask}, JSON: {selected_feature_count_from_json}. Eğitim durduruluyor.")
-            raise ValueError("Feature mask and JSON plan are inconsistent.")
-        
-        logger.info(f"✅ Özellik planı doğrulandı: {json_plan_path} (Beklenen: {selected_feature_count_from_json} özellik)")
-        
         # Veri boyutu kontrolü
         min_samples = gemma_config.get('thresholds', {}).get('min_samples', 1000)
         if X_selected.shape[0] < min_samples:
             logger.warning(f"⚠️ GEMMA eğitimi için yetersiz veri. Mevcut: {X_selected.shape[0]}, Gerekli: {min_samples}.")
             return {'status': 'skipped', 'reason': 'insufficient_data'}
-        
-        logger.info(f"✅ Eğitim için hazır: {X_selected.shape[0]} örnek, {X_selected.shape[1]} özellik")
 
-        # --- ADIM 2: MODEL EĞİTİMİ (Trainer scaler'ı da oluşturacak) ---
-        logger.info(f"🚀 ADIM 2: Model eğitimi başlıyor...")
+        # --- MODEL EĞİTİMİ (Trainer scaler'ı da oluşturacak) ---
+        logger.info(f"🚀 Model eğitimi başlıyor...")
         logger.info("Merkezi model eğitici (RegimeModelTrainer) başlatılıyor...")
-        logger.info("Trainer, seçilmiş özellikler için scaler oluşturacak ve modeli eğitecek...")
+        logger.info("Trainer, özellikler için scaler oluşturacak ve modeli eğitecek...")
         
         # 'gemma' konfigürasyonunu eğiticiye ver
         trainer = RegimeModelTrainer(config=gemma_config)
@@ -149,14 +102,14 @@ def train_gemma_model(X_data_full: np.ndarray, y_data_full: np.ndarray, config: 
         # 2. Veriyi ölçeklendirir
         # 3. Modeli eğitir
         # 4. Model ve scaler'ı data/models/final/ dizinine kaydeder
-        results = trainer.train_and_evaluate(X_selected, y_data_full, model_type=f'gemma_{model_type}')
+        results = trainer.train_and_evaluate(X_selected, y_data, model_type=f'gemma_{model_type}')
         
         if not results or results.get('status') != 'completed':
             logger.error(f"❌ GEMMA {model_type} modeli eğitimi başarısız oldu veya tamamlanamadı.")
             return results
 
-        # --- ADIM 3: METRİKLERİ KAYDETME ---
-        logger.info(f"💾 ADIM 3: Metrikler kaydediliyor...")
+        # --- METRİKLERİ KAYDETME ---
+        logger.info(f"💾 Metrikler kaydediliyor...")
         log_dir = Path(f'logs/final_training/gemma_{model_type}')
         log_dir.mkdir(parents=True, exist_ok=True)
         metrics_file = log_dir / f"final_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -271,8 +224,9 @@ async def main():
     logger.info("✨ ADIM 3.5: YENİ NESİL EĞİTİM VERİSİ YÜKLENİYOR (GEMMA İÇİN) ✨")
     logger.info("="*80)
     
-    # Bu fonksiyon, `prepare_training_data.py` tarafından oluşturulan .npz dosyasını yükler.
-    def load_prepared_gemma_data(config: dict) -> tuple:
+    # This function loads the raw .npz file and applies the feature mask
+    def load_and_prepare_gemma_data(config: dict) -> tuple:
+        """Loads raw data, applies the feature mask, and returns final training data."""
         data_path_str = config.get('ml', {}).get('feature_selection', {}).get('data_path', 'data/cache/BTC-USDT_training_data.npz')
         data_path = Path(data_path_str)
         if not data_path.exists():
@@ -280,26 +234,30 @@ async def main():
             return None, None
         try:
             data = np.load(data_path)
-            X_raw = data['X']
-            y_raw = data['y']
-            logger.info(f"✅ Ham veri yüklendi: {X_raw.shape[0]} örnek, {X_raw.shape[1]} özellik.")
+            X_full = data['X']
+            y_full = data['y']
+            logger.info(f"✅ Ham veri yüklendi: {X_full.shape[0]} örnek, {X_full.shape[1]} özellik.")
             
             # Load feature selection mask - MUST exist in repository
             mask_path = Path('data/models/cache/gemma/feature_selection_mask.npy')
             if not mask_path.exists():
-                logger.error(f"❌ KRİTİK HATA: Özellik seçim maskesi ({mask_path}) bulunamadı. Eğitim durduruluyor.")
+                logger.error(f"❌ KRİTİK: Özellik seçim planı ({mask_path}) bulunamadı. Eğitim durduruluyor.")
                 raise FileNotFoundError(f"Feature selection mask not found at {mask_path}")
             
             feature_mask = np.load(mask_path)
-            logger.info(f"✅ Özellik seçim maskesi yüklendi: {feature_mask.sum()} özellik seçildi ({X_raw.shape[1]} özellikten).")
-            X_filtered = X_raw[:, feature_mask]
-            logger.info(f"✅ Filtrelenmiş veri hazır: {X_filtered.shape[0]} örnek, {X_filtered.shape[1]} özellik.")
-            return X_filtered, y_raw
+            
+            # Check that mask and data dimensions match
+            if X_full.shape[1] != len(feature_mask):
+                raise ValueError(f"Ham veri ve maske boyutu uyuşmuyor! Veri: {X_full.shape[1]}, Maske: {len(feature_mask)}")
+            
+            X_selected = X_full[:, feature_mask]
+            logger.info(f"✅ Özellik planı başarıyla uygulandı. {X_full.shape[1]} -> {X_selected.shape[1]} özellik.")
+            return X_selected, y_full
         except Exception as e:
             logger.error(f"GEMMA verisi yüklenirken hata: {e}", exc_info=True)
             return None, None
             
-    X_gemma, y_gemma = load_prepared_gemma_data(config)
+    X_gemma, y_gemma = load_and_prepare_gemma_data(config)
 
     # 4. YENİ NESİL GEMMA MODELLERİ EĞİTİMİ (İKİ MODEL: PRICE VE REGIME)
     if X_gemma is not None and y_gemma is not None and ml_config.get('gemma', {}).get('enabled', False):
