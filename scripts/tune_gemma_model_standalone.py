@@ -291,7 +291,7 @@ class RegimeModelTuner:
         # 5. Model factory WITH class weights (for imbalanced data)
         def model_factory(params):
             if model_type == 'gemma':
-                params['input_size'] = X_clean.shape[1]
+                params['input_size'] = X.shape[1]
                 params['num_classes'] = num_classes
                 params['class_weights'] = class_weights
                 return self.create_gemma_model(params)
