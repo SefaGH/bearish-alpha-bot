@@ -124,7 +124,7 @@ class RegimeModelTuner:
                 test_size=test_size,
                 stratify=y,
                 random_state=42,
-                shuffle=True
+                shuffle=False
             )
             
         elif strategy == 'time_last':
@@ -236,59 +236,29 @@ class RegimeModelTuner:
             
             def fit(self, X, y):
                 """Sklearn-style fit with validation split."""
-                val_split = int(len(X) * 0.8)
-                X_train, X_val = X[:val_split], X[val_split:]
-                y_train, y_val = y[:val_split], y[val_split:]
-                
-                train_dataset = TensorDataset(
-                    torch.FloatTensor(X_train),
-                    torch.LongTensor(y_train)
-                )
-                val_dataset = TensorDataset(
-                    torch.FloatTensor(X_val),
-                    torch.LongTensor(y_val)
-                )
-                
-                train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
-                val_loader = DataLoader(val_dataset, batch_size=self.batch_size)
-                
-                best_val_loss = float('inf')
-                patience_counter = 0
-                best_model_state = None
-                
-                for epoch in range(self.num_epochs):
-                    # Training
-                    self.model.train()
-                    for batch_X, batch_y in train_loader:
-                        self.optimizer.zero_grad()
+                    
+                # Validation
+                self.model.eval()
+                val_loss = 0
+                with torch.no_grad():
+                    for batch_X, batch_y in val_loader:
                         outputs = self.model(batch_X)
                         loss = self.criterion(outputs, batch_y)
-                        loss.backward()
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                        self.optimizer.step()
-                    
-                    # Validation
-                    self.model.eval()
-                    val_loss = 0
-                    with torch.no_grad():
-                        for batch_X, batch_y in val_loader:
-                            outputs = self.model(batch_X)
-                            loss = self.criterion(outputs, batch_y)
-                            val_loss += loss.item()
-                    
-                    val_loss /= len(val_loader)
-                    
-                    # Early stopping with min_delta
-                    if val_loss < (best_val_loss - self.min_delta):
-                        best_val_loss = val_loss
-                        patience_counter = 0
-                        best_model_state = self.model.state_dict().copy()
-                    else:
-                        patience_counter += 1
-                        if patience_counter >= self.patience:
-                            if best_model_state is not None:
-                                self.model.load_state_dict(best_model_state)
-                            break
+                        val_loss += loss.item()
+                
+                val_loss /= len(val_loader)
+                
+                # Early stopping with min_delta
+                if val_loss < (best_val_loss - self.min_delta):
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                    best_model_state = self.model.state_dict().copy()
+                else:
+                    patience_counter += 1
+                    if patience_counter >= self.patience:
+                        if best_model_state is not None:
+                            self.model.load_state_dict(best_model_state)
+                        break
                 
                 return self
             
@@ -336,40 +306,6 @@ class RegimeModelTuner:
         class_weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
         logger.info(f"Class weights (for imbalanced data): {class_weights}")
         logger.info(f"Number of classes: {num_classes}")
-        
-        # ==================== NEW BLOCK: DATA CLEANING & ALIGNMENT ==================== #
-        logger.info("\n" + "="*70)
-        logger.info("🔧 PREPARING DATA (CLEANING & ALIGNMENT)")
-        logger.info("="*70)
-        
-        # Import pipeline
-        from src.ml.feature_engineering import FeatureEngineeringPipeline
-        import pandas as pd
-        
-        # Convert numpy arrays to DataFrame/Series for prepare_for_training
-        logger.info("Converting numpy arrays to pandas format...")
-        X_df = pd.DataFrame(X)
-        y_series = pd.Series(y, name='label')
-        logger.info(f"   Input shape: X={X_df.shape}, y={y_series.shape}")
-        
-        # Create pipeline instance
-        pipeline = FeatureEngineeringPipeline()
-        
-        # Clean and align data using prepare_for_training
-        logger.info("Calling prepare_for_training (mode='auto')...")
-        X_clean, y_clean = pipeline.prepare_for_training(
-            features=X_df,
-            labels=y_series,
-            feature_selection_mode='auto'  # Uses features as-is (respects selection)
-        )
-        
-        if len(X_clean) == 0 or len(y_clean) == 0:
-            logger.error("❌ No data remains after cleaning! Cannot tune.")
-            return None
-        
-        logger.info(f"✅ Data cleaned: {len(X_clean)} samples, {X_clean.shape[1]} features")
-        logger.info("="*70)
-        # ============================================================================== #
         
         # 2. Stratified split (NOW USING CLEAN DATA!)
         X_cv, X_test, y_cv, y_test = self.prepare_data_splits(
