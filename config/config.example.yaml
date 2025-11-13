@@ -454,9 +454,9 @@ ml:
       min_samples: 1000  # Minimum number of samples required for training
     
     training:
-      batch_size: 64          # <-- Optuna'dan gelen en iyi değer
+      batch_size: 32          # <-- Optuna'dan gelen en iyi değer
       epochs: 50
-      learning_rate: 0.003322 # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
+      learning_rate: 0.001670 # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
       early_stopping_patience: 10
     
     architecture:
