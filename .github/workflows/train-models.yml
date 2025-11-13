@@ -37,41 +37,130 @@ jobs:
           pip install -r requirements.txt
           pip install shap matplotlib # Hata analizi için gerekli
 
-      - name: 2. Çalışma Ortamını Temizle (Hijyen Adımı)
+      - name: 2. Ar-Ge Artifact'lerini İndir (Tuning Sonuçları)
         run: |
-          echo "🧹 Önceki çalıştırmalardan kalan eski önbellek ve loglar temizleniyor..."
-          rm -rf data/cache/*
+          echo "======================================================================"
+          echo "📦 ADIM 2: AR-GE ARTIFACT'LERİNİ İNDİRİYOR"
+          echo "======================================================================"
+          echo "Bu adım, full-gemma-tuning.yml tarafından üretilen 'mavi kopya'"
+          echo "artifact'lerini indirecek:"
+          echo "  1. gemma-feature-plan-artifacts (özellik planı ve mask)"
+          echo "  2. gemma-tuning-results-* (hiperparametreler)"
+          echo "  3. production-scaler (ölçekleyici)"
+          echo ""
+          mkdir -p data/cache/gemma features/gemma logs/tuning_results
+          echo "✅ Hedef dizinler oluşturuldu."
+      
+      - name: 2.1. Özellik Planı Artifact'ini İndir
+        uses: dawidd6/action-download-artifact@v6
+        continue-on-error: true
+        with:
+          workflow: full-gemma-tuning.yml
+          name: gemma-feature-plan-artifacts
+          path: ./
+          search_artifacts: true
+          if_no_artifact_found: warn
+      
+      - name: 2.2. Tuning Sonuçları Artifact'ini İndir
+        uses: dawidd6/action-download-artifact@v6
+        continue-on-error: true
+        with:
+          workflow: full-gemma-tuning.yml
+          name_is_regexp: true
+          name: gemma-tuning-results-.*
+          path: ./
+          search_artifacts: true
+          if_no_artifact_found: warn
+      
+      - name: 2.3. Production Scaler Artifact'ini İndir
+        uses: dawidd6/action-download-artifact@v6
+        continue-on-error: true
+        with:
+          workflow: full-gemma-tuning.yml
+          name: production-scaler
+          path: data/cache/
+          search_artifacts: true
+          if_no_artifact_found: warn
+      
+      - name: 2.4. İndirilen Artifact'leri Doğrula
+        run: |
+          echo "======================================================================"
+          echo "🔍 İNDİRİLEN ARTIFACT'LER KONTROL EDİLİYOR"
+          echo "======================================================================"
+          
+          # Check for feature selection mask
+          if [ -f "data/cache/gemma/feature_selection_mask.npy" ]; then
+            echo "✅ Özellik seçim maskesi bulundu: data/cache/gemma/feature_selection_mask.npy"
+          else
+            echo "⚠️  UYARI: Özellik seçim maskesi bulunamadı!"
+            echo "   Eğitim varsayılan özellik setini kullanacak."
+          fi
+          
+          # Check for tuning results
+          TUNING_FILE=$(find logs/tuning_results -name "gemma_tuning_*.json" -type f | head -1)
+          if [ -n "$TUNING_FILE" ]; then
+            echo "✅ Tuning sonuçları bulundu: $TUNING_FILE"
+            echo "   En iyi hiperparametreler bu dosyadan yüklenecek."
+          else
+            echo "⚠️  UYARI: Tuning sonuçları bulunamadı!"
+            echo "   Eğitim config.yaml'daki varsayılan değerleri kullanacak."
+          fi
+          
+          # Check for production scaler
+          if [ -f "data/cache/scaler_production.joblib" ]; then
+            echo "✅ Production scaler bulundu: data/cache/scaler_production.joblib"
+          else
+            echo "⚠️  UYARI: Production scaler bulunamadı!"
+            echo "   Eğitim sırasında yeni bir scaler oluşturulacak."
+          fi
+          
+          echo ""
+          echo "======================================================================"
+          echo "📋 ARTIFACT DURUMU ÖZETİ"
+          echo "======================================================================"
+          echo "Artifact'ler continue-on-error ile indirildi. Eksik artifact'ler"
+          echo "varsa, eğitim varsayılan/yeni değerlerle devam edecektir."
+          echo "======================================================================"
+
+      - name: 3. Çalışma Ortamını Temizle (Hijyen Adımı)
+        run: |
+          echo "======================================================================"
+          echo "🧹 ADIM 3: ÇALIŞMA ORTAMINI TEMİZLE"
+          echo "======================================================================"
+          echo "Önceki çalıştırmalardan kalan eski loglar temizleniyor..."
+          echo "(Not: Artifact'lerden gelen dosyalar korunuyor)"
           rm -rf logs/final_training/*
           rm -rf analysis_artifacts/*
-          mkdir -p data/cache logs/final_training analysis_artifacts
+          mkdir -p logs/final_training analysis_artifacts
           echo "✅ Çalışma ortamı temizlendi."
 
-      - name: 3. Veri Setini Hazırla
+      - name: 4. Veri Setini Hazırla
         id: prepare_data
         run: |
           echo "======================================================================"
-          echo "📊 ADIM 3: Ham Veri Seti Hazırlanıyor (Tüm Özellikler)"
+          echo "📊 ADIM 4: Ham Veri Seti Hazırlanıyor (Tüm Özellikler)"
           echo "======================================================================"
           python scripts/prepare_training_data.py --symbol "${{ inputs.symbol }}" --no-feature-selection
 
-      - name: 4. Nihai Modelleri Eğit (Ana Script)
+      - name: 5. Nihai Modelleri Eğit (Ana Script)
         run: |
           echo "======================================================================"
-          echo "🚀 ADIM 4: Optimize Edilmiş Modellerin Eğitimi"
+          echo "🚀 ADIM 5: Optimize Edilmiş Modellerin Eğitimi"
           echo "======================================================================"
           echo "   - Ana script çalıştırılıyor: train_all_models.py"
-          echo "   - Bu script, config.yaml'daki en iyi hiperparametreleri kullanacak."
+          echo "   - Script, tuning artifact'lerinden gelen dinamik hiperparametreleri kullanacak."
+          echo "   - Artifact yoksa, config.yaml'daki varsayılan değerler kullanılacak."
           
           python scripts/train_all_models.py
         env:
           ML_ENABLED: "true"
 
-      - name: 5. Model Performansını Doğrula (Kalite Kontrol)
+      - name: 6. Model Performansını Doğrula (Kalite Kontrol)
         id: deploy_check
         continue-on-error: true # DÜZELTİLDİ: Bu adım başarısız olsa bile workflow devam etsin.
         run: |
           echo "======================================================================"
-          echo "🔬 ADIM 5: Üretim Hazırlık Kontrolü (Kalite Güvence)"
+          echo "🔬 ADIM 6: Üretim Hazırlık Kontrolü (Kalite Güvence)"
           echo "======================================================================"
           
           # Bu Python bloğu, modellerin performansını değerlendirir ve
@@ -146,11 +235,11 @@ jobs:
           print("\n🎉 Tüm aktif modeller kalite kontrolünü başarıyla geçti!")
           EOF
           
-      - name: 6. Başarı Durumuna Göre Raporlama ve Artifact Oluşturma
+      - name: 7. Başarı Durumuna Göre Raporlama ve Artifact Oluşturma
         if: steps.deploy_check.outcome == 'success'
         run: |
           echo "======================================================================"
-          echo "✅ ADIM 6: Başarılı Model Artifact'leri Arşivleniyor"
+          echo "✅ ADIM 7: Başarılı Model Artifact'leri Arşivleniyor"
           echo "======================================================================"
           
       - name: Başarılı Modelleri Arşivle
@@ -163,11 +252,11 @@ jobs:
             logs/final_training/
           retention-days: 90
 
-      - name: 7. Hata Durumunda Açıklanabilirlik Analizi Çalıştırma
+      - name: 8. Hata Durumunda Açıklanabilirlik Analizi Çalıştırma
         if: steps.deploy_check.outcome == 'failure'
         run: |
           echo "======================================================================"
-          echo "🚨 ADIM 7: Model Başarısız! Hata Analizi Başlatılıyor..."
+          echo "🚨 ADIM 8: Model Başarısız! Hata Analizi Başlatılıyor..."
           echo "======================================================================"
           echo "   - SHAP analizi çalıştırılarak, modelin neden yanlış karar verdiği anlaşılmaya çalışılacak."
           

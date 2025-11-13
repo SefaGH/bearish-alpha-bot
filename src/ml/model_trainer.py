@@ -345,7 +345,8 @@ class RegimeModelTrainer:
         self.training_history = []  # Store epoch-by-epoch metrics
         os.makedirs(self.MODEL_SAVE_DIR, exist_ok=True) # Klasörün var olduğundan emin ol
     
-    def train_and_evaluate(self, X: np.ndarray, y: np.ndarray, model_type: str = 'gemma') -> Dict[str, Any]:
+    def train_and_evaluate(self, X: np.ndarray, y: np.ndarray, model_type: str = 'gemma', 
+                          production_scaler: Optional[Any] = None) -> Dict[str, Any]:
         """
         Train and evaluate a model for GEMMA or other regime prediction tasks.
         
@@ -357,6 +358,7 @@ class RegimeModelTrainer:
             X: Feature array of shape (n_samples, n_features)
             y: Label array of shape (n_samples,)
             model_type: Type of model to train ('gemma', 'regime', etc.)
+            production_scaler: Optional pre-fitted scaler from tuning phase
             
         Returns:
             Dictionary containing training results with keys:
@@ -380,8 +382,14 @@ class RegimeModelTrainer:
                 }
             
             # Data preprocessing - scale features
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
+            if production_scaler is not None:
+                logger.info("✅ Production scaler kullanılıyor (tuning'den)")
+                scaler = production_scaler
+                X_scaled = scaler.transform(X)
+            else:
+                logger.info("ℹ️  Yeni scaler oluşturuluyor")
+                scaler = StandardScaler()
+                X_scaled = scaler.fit_transform(X)
             
             # Save scaler for later use
             scaler_key = f'{model_type}_scaler'
@@ -416,9 +424,29 @@ class RegimeModelTrainer:
             
             logger.info(f"Train samples: {X_train.shape[0]}, Test samples: {X_test.shape[0]}")
             
+            # --- DİNAMİK SINIF AĞIRLIKLARI (CLASS WEIGHTS) HESAPLAMA ---
+            # Eğitim verisi etiket dağılımına göre dinamik ağırlıklar hesapla
+            from sklearn.utils.class_weight import compute_class_weight
+            unique_classes = np.unique(y_train)
+            class_weights = compute_class_weight(
+                class_weight='balanced',
+                classes=unique_classes,
+                y=y_train
+            )
+            class_weight_dict = dict(zip(unique_classes, class_weights))
+            
+            logger.info("\n" + "="*70)
+            logger.info("⚖️  DİNAMİK SINIF AĞIRLIKLARI HESAPLANDI")
+            logger.info("="*70)
+            for cls, weight in class_weight_dict.items():
+                class_name = ['Bullish', 'Neutral', 'Bearish'][int(cls)] if cls < 3 else f'Class_{cls}'
+                count = np.sum(y_train == cls)
+                logger.info(f"   {class_name}: weight={weight:.4f}, count={count}")
+            logger.info("="*70)
+            
             # Train model based on architecture type
             if model_arch.lower() == 'mlp':
-                model, train_metrics = self._train_mlp_model(X_train, y_train, X_test, y_test)
+                model, train_metrics = self._train_mlp_model(X_train, y_train, X_test, y_test, class_weight_dict=class_weight_dict)
                 # Use original test data for MLP evaluation
                 eval_X_test, eval_y_test = X_test, y_test
             elif model_arch.lower() == 'lstm':
@@ -428,7 +456,8 @@ class RegimeModelTrainer:
                 X_test_seq, y_test_seq = self._create_sequences(X_test, y_test, seq_length)
                 model, train_metrics = self._train_lstm(
                     X_train_seq, y_train_seq, 
-                    validation_method='time_series_cv'
+                    validation_method='time_series_cv',
+                    class_weight_dict=class_weight_dict
                 )
                 # Use sequential test data for LSTM evaluation
                 eval_X_test, eval_y_test = X_test_seq, y_test_seq
@@ -474,7 +503,8 @@ class RegimeModelTrainer:
             }
     
     def _train_mlp_model(self, X_train: np.ndarray, y_train: np.ndarray, 
-                         X_test: np.ndarray, y_test: np.ndarray) -> Tuple[Any, Dict[str, float]]:
+                         X_test: np.ndarray, y_test: np.ndarray,
+                         class_weight_dict: Optional[Dict[int, float]] = None) -> Tuple[Any, Dict[str, float]]:
         """
         Train a Multi-Layer Perceptron (MLP) model for GEMMA.
         
@@ -483,6 +513,7 @@ class RegimeModelTrainer:
             y_train: Training labels
             X_test: Test features
             y_test: Test labels
+            class_weight_dict: Optional dictionary mapping class indices to weights
             
         Returns:
             Tuple of (trained_model, metrics_dict)
@@ -560,8 +591,24 @@ class RegimeModelTrainer:
         logger.info(f"MLP model created with {total_params:,} trainable parameters")
         
         # Training setup
-        criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=WEIGHT_DECAY)
+        # Add dynamic class weights to loss function
+        if class_weight_dict is not None:
+            # Convert class weight dict to tensor
+            weight_tensor = torch.tensor([
+                class_weight_dict.get(i, 1.0) for i in range(num_classes)
+            ], dtype=torch.float32)
+            criterion = nn.CrossEntropyLoss(weight=weight_tensor)
+            logger.info(f"✅ CrossEntropyLoss ile dinamik sınıf ağırlıkları kullanılıyor: {weight_tensor.tolist()}")
+        else:
+            criterion = nn.CrossEntropyLoss()
+            logger.info("ℹ️  CrossEntropyLoss varsayılan ağırlıklarla (eşit) kullanılıyor")
+        
+        # Get weight_decay from config (may come from tuning)
+        train_config = self.config.get('training', {})
+        weight_decay = train_config.get('weight_decay', WEIGHT_DECAY)
+        logger.info(f"✅ Weight decay: {weight_decay}")
+        
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode='min', factor=0.5, patience=3, min_lr=1e-6
         )

@@ -50,7 +50,8 @@ RL_TRAINING_TIMEFRAME = '15m'
 
 # --- YENİ VE GÜNCELLENMİŞ train_gemma_model FONKSİYONU ---
 # Bu fonksiyon, önceden filtrelenmiş veriyi alır ve sadece eğitim yapar.
-def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict, model_type: str = 'price'):
+def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict, 
+                      model_type: str = 'price', tuning_params: dict = None):
     """
     Trains the GEMMA model using PREPARED and FILTERED data.
     This function NO LONGER handles feature selection.
@@ -60,6 +61,7 @@ def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict, 
         y_data: Label array
         config: Configuration dictionary from ml config
         model_type: Type of model to train ('price' or 'regime')
+        tuning_params: Optional hyperparameters from tuning artifact (best_params)
         
     Returns:
         Dictionary with training results
@@ -88,6 +90,62 @@ def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict, 
             logger.warning(f"⚠️ GEMMA eğitimi için yetersiz veri. Mevcut: {X_selected.shape[0]}, Gerekli: {min_samples}.")
             return {'status': 'skipped', 'reason': 'insufficient_data'}
 
+        # --- DİNAMİK HİPERPARAMETRELERİ UYGULA ---
+        # Tuning artifact'inden gelen hiperparametreleri config'e uygula
+        if tuning_params:
+            logger.info("\n" + "="*70)
+            logger.info("🎯 DİNAMİK HİPERPARAMETRELER UYGULANMIYOR (Tuning'den)")
+            logger.info("="*70)
+            
+            # Create a copy of gemma_config to avoid modifying the original
+            gemma_config = dict(gemma_config)
+            
+            # Update architecture parameters
+            if 'architecture' not in gemma_config:
+                gemma_config['architecture'] = {}
+            
+            # Map tuning parameter names to config structure
+            param_mapping = {
+                'hidden_size': ('architecture', 'hidden_size'),
+                'num_layers': ('architecture', 'num_layers'),
+                'dropout': ('architecture', 'dropout'),
+                'learning_rate': ('training', 'learning_rate'),
+                'weight_decay': ('training', 'weight_decay'),
+                'batch_size': ('training', 'batch_size'),
+                'epochs': ('training', 'epochs'),
+                'early_stopping_patience': ('training', 'early_stopping_patience')
+            }
+            
+            for param_name, value in tuning_params.items():
+                if param_name in param_mapping:
+                    section, key = param_mapping[param_name]
+                    if section not in gemma_config:
+                        gemma_config[section] = {}
+                    gemma_config[section][key] = value
+                    logger.info(f"   ✅ {section}.{key} = {value} (tuning'den)")
+            
+            logger.info("="*70)
+        else:
+            logger.info("ℹ️  Tuning hiperparametreleri bulunamadı, config.yaml değerleri kullanılıyor.")
+
+        # --- PRODUCTION SCALER'I YÜKLE (Eğer Varsa) ---
+        production_scaler = None
+        scaler_path = Path('data/cache/scaler_production.joblib')
+        if scaler_path.exists():
+            try:
+                logger.info("\n" + "="*70)
+                logger.info("📊 PRODUCTION SCALER YÜKLENIYOR")
+                logger.info("="*70)
+                production_scaler = joblib.load(scaler_path)
+                logger.info(f"✅ Production scaler başarıyla yüklendi: {scaler_path}")
+                logger.info("   Bu scaler, tuning sırasında oluşturuldu ve veriyi ölçeklendirmek için kullanılacak.")
+                logger.info("="*70)
+            except Exception as e:
+                logger.warning(f"⚠️  Production scaler yüklenemedi: {e}")
+                logger.info("   Eğitim sırasında yeni bir scaler oluşturulacak.")
+        else:
+            logger.info(f"ℹ️  Production scaler bulunamadı ({scaler_path}), yeni scaler oluşturulacak.")
+
         # --- MODEL EĞİTİMİ (Trainer scaler'ı da oluşturacak) ---
         logger.info(f"🚀 Model eğitimi başlıyor...")
         logger.info("Merkezi model eğitici (RegimeModelTrainer) başlatılıyor...")
@@ -102,11 +160,16 @@ def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict, 
         
         # Modeli eğit ve değerlendir
         # train_and_evaluate metodu kendi içinde:
-        # 1. Scaler oluşturur (seçilmiş özellikler için)
+        # 1. Scaler oluşturur veya production_scaler kullanır (seçilmiş özellikler için)
         # 2. Veriyi ölçeklendirir
-        # 3. Modeli eğitir
-        # 4. Model ve scaler'ı data/models/final/ dizinine kaydeder
-        results = trainer.train_and_evaluate(X_selected, y_data, model_type=f'gemma_{model_type}')
+        # 3. Dinamik sınıf ağırlıklarını hesaplar
+        # 4. Modeli eğitir
+        # 5. Model ve scaler'ı data/models/final/ dizinine kaydeder
+        results = trainer.train_and_evaluate(
+            X_selected, y_data, 
+            model_type=f'gemma_{model_type}',
+            production_scaler=production_scaler
+        )
         
         if not results or results.get('status') != 'completed':
             logger.error(f"❌ GEMMA {model_type} modeli eğitimi başarısız oldu veya tamamlanamadı.")
@@ -228,6 +291,46 @@ async def main():
     logger.info("✨ ADIM 3.5: YENİ NESİL EĞİTİM VERİSİ YÜKLENİYOR (GEMMA İÇİN) ✨")
     logger.info("="*80)
     
+    # This function loads tuning hyperparameters from artifact
+    def load_tuning_hyperparameters() -> dict:
+        """Load hyperparameters from tuning results artifact."""
+        tuning_dir = Path('logs/tuning_results')
+        if not tuning_dir.exists():
+            logger.warning("⚠️  Tuning sonuçları dizini bulunamadı. Varsayılan hiperparametreler kullanılacak.")
+            return {}
+        
+        # Find the latest tuning results file
+        tuning_files = list(tuning_dir.glob('gemma_tuning_*.json'))
+        if not tuning_files:
+            logger.warning("⚠️  Tuning sonuç dosyası bulunamadı. Varsayılan hiperparametreler kullanılacak.")
+            return {}
+        
+        # Get the most recent file
+        latest_file = max(tuning_files, key=lambda p: p.stat().st_mtime)
+        logger.info(f"📊 Tuning sonuçları yükleniyor: {latest_file}")
+        
+        try:
+            with open(latest_file, 'r') as f:
+                tuning_results = json.load(f)
+            
+            # Extract best_params from tuning results
+            best_params = tuning_results.get('best_params', {})
+            if not best_params:
+                logger.warning("⚠️  Tuning sonuçlarında 'best_params' bulunamadı. Varsayılan değerler kullanılacak.")
+                return {}
+            
+            logger.info("✅ Tuning hiperparametreleri başarıyla yüklendi:")
+            for key, value in best_params.items():
+                logger.info(f"   - {key}: {value}")
+            
+            return best_params
+        except Exception as e:
+            logger.error(f"❌ Tuning sonuçları yüklenirken hata: {e}")
+            return {}
+    
+    # Load tuning hyperparameters
+    tuning_hyperparams = load_tuning_hyperparameters()
+    
     # This function loads the raw .npz file and applies the feature mask
     def load_and_prepare_gemma_data(config: dict) -> tuple:
         """Loads raw data, applies the feature mask, and returns final training data."""
@@ -242,11 +345,12 @@ async def main():
             y_full = data['y']
             logger.info(f"✅ Ham veri yüklendi: {X_full.shape[0]} örnek, {X_full.shape[1]} özellik.")
             
-            # Load feature selection mask - MUST exist in repository
-            mask_path = Path('data/models/cache/gemma/feature_selection_mask.npy')
+            # Load feature selection mask - from artifact or repository
+            mask_path = Path('data/cache/gemma/feature_selection_mask.npy')
             if not mask_path.exists():
-                logger.error(f"❌ KRİTİK: Özellik seçim planı ({mask_path}) bulunamadı. Eğitim durduruluyor.")
-                raise FileNotFoundError(f"Feature selection mask not found at {mask_path}")
+                logger.warning(f"⚠️  Özellik seçim maskesi bulunamadı: {mask_path}")
+                logger.info("   Tüm özellikleri kullanarak devam edilecek (özellik filtreleme yok).")
+                return X_full, y_full
             
             feature_mask = np.load(mask_path)
             
@@ -269,14 +373,14 @@ async def main():
         logger.info("\n" + "="*80)
         logger.info("💰 GEMMA PRICE MODELİ EĞİTİLİYOR 💰")
         logger.info("="*80)
-        gemma_price_results = train_gemma_model(X_gemma, y_gemma, ml_config, model_type='price')
+        gemma_price_results = train_gemma_model(X_gemma, y_gemma, ml_config, model_type='price', tuning_params=tuning_hyperparams)
         training_metrics['gemma_models']['price'] = gemma_price_results
         
         # Train GEMMA regime model
         logger.info("\n" + "="*80)
         logger.info("🌊 GEMMA REGIME MODELİ EĞİTİLİYOR 🌊")
         logger.info("="*80)
-        gemma_regime_results = train_gemma_model(X_gemma, y_gemma, ml_config, model_type='regime')
+        gemma_regime_results = train_gemma_model(X_gemma, y_gemma, ml_config, model_type='regime', tuning_params=tuning_hyperparams)
         training_metrics['gemma_models']['regime'] = gemma_regime_results
     else:
         logger.info("⏩ GEMMA eğitimi atlanıyor (veri bulunamadı veya konfigürasyonda kapalı).")
