@@ -95,7 +95,8 @@ class GemmaTorchScriptAdapter:
             logger.info(f"✅ Loaded TorchScript model from: {model_path}")
 
             # 2. Load Scaler
-            scaler_path = Path(self.config.get('scaler_path', 'data/cache/gemma/scaler_gemma.joblib'))
+            # Updated default path to new production location (Plan 2)
+            scaler_path = Path(self.config.get('scaler_path', 'data/models/final/gemma_price_scaler.joblib'))
             if not scaler_path.exists():
                 raise FileNotFoundError(f"Scaler not found at {scaler_path}")
             self.scaler = joblib.load(scaler_path)

@@ -8,8 +8,8 @@ import numpy as np
 
 # Example 1: Basic Configuration
 config_basic = {
-    'model_path': 'models/gemma/price_prediction.pt',
-    'scaler_path': 'data/cache/gemma/scaler_gemma.joblib',
+    'model_path': 'data/models/final/gemma_price.pt',
+    'scaler_path': 'data/models/final/gemma_price_scaler.joblib',
     'features_path': 'features/gemma/selected/gemma_price_selected_82.json',
     'cache_ttl': 30,  # Cache predictions for 30 seconds
     'shadow_mode': False  # Disable shadow logging
@@ -17,8 +17,8 @@ config_basic = {
 
 # Example 2: Production Configuration with Circuit Breaker
 config_production = {
-    'model_path': 'models/gemma/price_prediction.pt',
-    'scaler_path': 'data/cache/gemma/scaler_gemma.joblib',
+    'model_path': 'data/models/final/gemma_price.pt',
+    'scaler_path': 'data/models/final/gemma_price_scaler.joblib',
     'features_path': 'features/gemma/selected/gemma_price_selected_82.json',
     'cache_ttl': 30,
     'shadow_mode': True,  # Enable shadow logging for monitoring

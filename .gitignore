@@ -70,3 +70,8 @@ config/config.yaml
 data/cache/*.npz
 data/cache/feature_selection*
 backups/
+
+# Exclude production model artifacts from git
+data/models/final/*.joblib
+data/models/final/*.pt
+data/cache/gemma/*.npy
