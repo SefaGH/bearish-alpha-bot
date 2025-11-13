@@ -93,8 +93,12 @@ def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict, 
         logger.info("Merkezi model eğitici (RegimeModelTrainer) başlatılıyor...")
         logger.info("Trainer, özellikler için scaler oluşturacak ve modeli eğitecek...")
         
-        # 'gemma' konfigürasyonunu eğiticiye ver
+        # Restructure gemma config to match what RegimeModelTrainer expects
+        # RegimeModelTrainer expects: model_params.lstm_regime structure OR
+        # architecture, training keys at top level (which GEMMA has)
+        # So we pass gemma_config directly, it already has the right structure
         trainer = RegimeModelTrainer(config=gemma_config)
+        logger.info("Merkezi model eğitici (RegimeModelTrainer) doğru konfigürasyon ile başlatıldı.")
         
         # Modeli eğit ve değerlendir
         # train_and_evaluate metodu kendi içinde:

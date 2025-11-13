@@ -97,11 +97,12 @@ def get_lstm_params_from_config(config: Optional[Dict[str, Any]] = None) -> Dict
     
     This function implements the config-first strategy:
       1. Try to get values from ml.regime_prediction.model_params.lstm_regime
-      2. Fall back to module-level constants if config missing
-      3. Log which source was used for transparency
+      2. Try to get values from architecture (GEMMA-style config)
+      3. Fall back to module-level constants if config missing
+      4. Log which source was used for transparency
     
     Args:
-        config: Optional config dict from ml.regime_prediction section
+        config: Optional config dict from ml.regime_prediction section or gemma section
         
     Returns:
         Dict with keys: hidden_size, num_layers, dropout
@@ -112,6 +113,7 @@ def get_lstm_params_from_config(config: Optional[Dict[str, Any]] = None) -> Dict
         >>> params['hidden_size']
         64
     """
+    # First try regime_prediction style config
     if config and 'model_params' in config and 'lstm_regime' in config['model_params']:
         lstm_config = config['model_params']['lstm_regime']
         params = {
@@ -120,6 +122,17 @@ def get_lstm_params_from_config(config: Optional[Dict[str, Any]] = None) -> Dict
             'dropout': lstm_config.get('dropout', LSTM_DROPOUT)
         }
         logger.info(f"Using LSTM params from config: {params}")
+        return params
+    
+    # Then try GEMMA-style architecture config
+    if config and 'architecture' in config:
+        arch_config = config['architecture']
+        params = {
+            'hidden_size': arch_config.get('hidden_size', LSTM_HIDDEN_SIZE),
+            'num_layers': arch_config.get('num_layers', LSTM_NUM_LAYERS),
+            'dropout': arch_config.get('dropout', LSTM_DROPOUT)
+        }
+        logger.info(f"Using architecture params from GEMMA config: {params}")
         return params
     
     # Fallback to constants
