@@ -49,17 +49,25 @@ CANDLE_LIMIT = 1440
 RL_TRAINING_TIMEFRAME = '15m'
 
 # --- YENİ VE GÜNCELLENMİŞ train_gemma_model FONKSİYONU ---
-# Bu fonksiyon artık ham veri yerine, önceden hazırlanmış .npz dosyasını kullanır.
-def train_gemma_model(X_data: np.ndarray, y_data: np.ndarray, config: dict, model_type: str = 'price'):
+# Bu fonksiyon, sabit özellik planını kullanarak model ve scaler üretir.
+def train_gemma_model(X_data_full: np.ndarray, y_data_full: np.ndarray, config: dict, model_type: str = 'price'):
     """
-    Trains the GEMMA model (price or regime) using prepared, cached data and optimized 
-    hyperparameters from the configuration file.
+    Trains the GEMMA model (price or regime) using the fixed feature plan.
+    
+    This function implements the production training pipeline:
+    1. Loads the fixed feature selection mask from repository
+    2. Applies the mask to select features
+    3. Passes selected features to trainer which creates scaler and trains model
+    4. Both model and scaler are saved by the trainer to production location
     
     Args:
-        X_data: Feature array
-        y_data: Label array
-        config: Configuration dictionary
+        X_data_full: Full feature array (all 87 features)
+        y_data_full: Label array
+        config: Configuration dictionary from ml config
         model_type: Type of model to train ('price' or 'regime')
+        
+    Returns:
+        Dictionary with training results
     """
     gemma_config = config.get('gemma', {})
     if not gemma_config.get('enabled', False):
@@ -67,44 +75,74 @@ def train_gemma_model(X_data: np.ndarray, y_data: np.ndarray, config: dict, mode
         return {'status': 'disabled'}
 
     logger.info("\n" + "="*70)
-    logger.info(f"💎 ADIM 4: YENİ NESİL GEMMA {model_type.upper()} MODELİ EĞİTİLİYOR 💎")
+    logger.info(f"💎 GEMMA {model_type.upper()} MODELİ EĞİTİM SÜRECİ BAŞLIYOR 💎")
     logger.info("="*70)
     
     # Gerekli kütüphaneleri burada import et
     try:
-        from sklearn.model_selection import train_test_split
         from src.ml.model_trainer import RegimeModelTrainer
     except ImportError as e:
         logger.error(f"❌ GEMMA eğitimi için gerekli kütüphaneler eksik: {e}")
         return {'status': 'failed', 'error': f'Eksik kütüphane: {e}'}
 
     try:
-        # --- VERİ HAZIRLIĞI ---
-        # Veri zaten hazır! `prepare_training_data.py`'den gelen X_data ve y_data'yı kullan.
-        min_samples = gemma_config.get('thresholds', {}).get('min_samples', 1000)
-        if X_data.shape[0] < min_samples:
-            logger.warning(f"⚠️ GEMMA eğitimi için yetersiz veri. Mevcut: {X_data.shape[0]}, Gerekli: {min_samples}.")
-            return {'status': 'skipped', 'reason': 'insufficient_data'}
-            
-        logger.info(f"✅ Hazır eğitim verisi kullanılıyor: {X_data.shape[0]} örnek, {X_data.shape[1]} özellik.")
-
-        # --- MERKEZİ EĞİTİCİ KULLANIMI ---
-        # Artık kendi eğitim döngüsü yok. Tüm modeller gibi standart RegimeModelTrainer'ı kullanıyor.
-        # Bu trainer, 'gemma' konfigürasyonunu alarak doğru mimariyi (MLP) ve hiperparametreleri kendi kuracak.
-        logger.info("Merkezi model eğitici (RegimeModelTrainer) başlatılıyor...")
+        # --- ADIM 1: ÖZELLİK PLANI YÜKLENİYOR ---
+        # Bu maske, Ar-Ge sonucunda belirlenmiş ve repository'ye eklenmiş sabit plandır.
+        logger.info("📋 ADIM 1: Sabit özellik planı yükleniyor...")
+        mask_path = Path('data/cache/gemma/feature_selection_mask.npy')
         
-        # 'gemma' konfigürasyonunu eğiticiye ver. O, içindeki 'architecture' ve 'training' bloklarını okuyacak.
+        if not mask_path.exists():
+            logger.warning(f"⚠️ Özellik seçim maskesi bulunamadı: {mask_path}")
+            logger.warning("⚠️ Tüm özelliklerle devam ediliyor (ham veri)...")
+            X_selected = X_data_full
+            feature_mask = None
+        else:
+            try:
+                feature_mask = np.load(mask_path)
+                if len(feature_mask) != X_data_full.shape[1]:
+                    logger.error(f"❌ Özellik maskesi boyutu uyuşmuyor! Maske: {len(feature_mask)}, Veri: {X_data_full.shape[1]}")
+                    logger.warning("⚠️ Tüm özelliklerle devam ediliyor...")
+                    X_selected = X_data_full
+                    feature_mask = None
+                else:
+                    X_selected = X_data_full[:, feature_mask]
+                    logger.info(f"✅ Özellik planı uygulandı. Seçilen özellik sayısı: {X_selected.shape[1]} (toplam: {X_data_full.shape[1]})")
+            except Exception as e:
+                logger.error(f"❌ Özellik maskesi yüklenirken hata: {e}")
+                logger.warning("⚠️ Tüm özelliklerle devam ediliyor...")
+                X_selected = X_data_full
+                feature_mask = None
+        
+        # Veri boyutu kontrolü
+        min_samples = gemma_config.get('thresholds', {}).get('min_samples', 1000)
+        if X_selected.shape[0] < min_samples:
+            logger.warning(f"⚠️ GEMMA eğitimi için yetersiz veri. Mevcut: {X_selected.shape[0]}, Gerekli: {min_samples}.")
+            return {'status': 'skipped', 'reason': 'insufficient_data'}
+        
+        logger.info(f"✅ Eğitim için hazır: {X_selected.shape[0]} örnek, {X_selected.shape[1]} özellik")
+
+        # --- ADIM 2: MODEL EĞİTİMİ (Trainer scaler'ı da oluşturacak) ---
+        logger.info(f"🚀 ADIM 2: Model eğitimi başlıyor...")
+        logger.info("Merkezi model eğitici (RegimeModelTrainer) başlatılıyor...")
+        logger.info("Trainer, seçilmiş özellikler için scaler oluşturacak ve modeli eğitecek...")
+        
+        # 'gemma' konfigürasyonunu eğiticiye ver
         trainer = RegimeModelTrainer(config=gemma_config)
         
         # Modeli eğit ve değerlendir
-        results = trainer.train_and_evaluate(X_data, y_data, model_type=f'gemma_{model_type}')
+        # train_and_evaluate metodu kendi içinde:
+        # 1. Scaler oluşturur (seçilmiş özellikler için)
+        # 2. Veriyi ölçeklendirir
+        # 3. Modeli eğitir
+        # 4. Model ve scaler'ı data/models/final/ dizinine kaydeder
+        results = trainer.train_and_evaluate(X_selected, y_data_full, model_type=f'gemma_{model_type}')
         
         if not results or results.get('status') != 'completed':
             logger.error(f"❌ GEMMA {model_type} modeli eğitimi başarısız oldu veya tamamlanamadı.")
             return results
 
-        # --- SONUÇLARI KAYDETME ---
-        # Metrikleri standart formatta kaydet
+        # --- ADIM 3: METRİKLERİ KAYDETME ---
+        logger.info(f"💾 ADIM 3: Metrikler kaydediliyor...")
         log_dir = Path(f'logs/final_training/gemma_{model_type}')
         log_dir.mkdir(parents=True, exist_ok=True)
         metrics_file = log_dir / f"final_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -114,7 +152,8 @@ def train_gemma_model(X_data: np.ndarray, y_data: np.ndarray, config: dict, mode
         logger.info(f"✅ GEMMA {model_type} metrikleri kaydedildi: {metrics_file}")
         
         logger.info("\n" + "="*70)
-        logger.info(f"✅ GEMMA {model_type} eğitimi tamamlandı! Doğrulama Başarısı: {results.get('test_metrics', {}).get('accuracy', 0):.2%}")
+        logger.info(f"✅ GEMMA {model_type} EĞİTİMİ TAMAMLANDI!")
+        logger.info(f"   Doğrulama Başarısı: {results.get('test_metrics', {}).get('accuracy', 0):.2%}")
         logger.info("="*70)
         
         return results

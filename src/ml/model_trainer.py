@@ -687,13 +687,13 @@ class RegimeModelTrainer:
             model_arch: Architecture type (e.g., 'mlp')
         """
         try:
-            # Create GEMMA model directory
-            gemma_dir = Path("data/models/gemma/final")
-            gemma_dir.mkdir(parents=True, exist_ok=True)
+            # Create final models directory (production location)
+            final_dir = Path("data/models/final")
+            final_dir.mkdir(parents=True, exist_ok=True)
             
             # Save model state dict
             # model_type already includes 'gemma_' prefix, so just use it as is
-            model_path = gemma_dir / f"{model_type}.pt"
+            model_path = final_dir / f"{model_type}.pt"
             torch.save(model.state_dict(), model_path)
             logger.info(f"✅ Saved GEMMA model to {model_path}")
             
@@ -716,7 +716,7 @@ class RegimeModelTrainer:
                 input_size = None
                 num_classes = None
             
-            config_path = gemma_dir / f"{model_type}_config.pkl"
+            config_path = final_dir / f"{model_type}_config.pkl"
             model_config = {
                 'architecture': model_arch,
                 'input_size': input_size,
@@ -731,19 +731,20 @@ class RegimeModelTrainer:
     
     def _save_gemma_scaler(self, scaler: Any, model_type: str):
         """
-        Save GEMMA scaler to disk.
+        Save GEMMA scaler to disk (production location).
         
         Args:
             scaler: Fitted StandardScaler
-            model_type: Type identifier (e.g., 'gemma')
+            model_type: Type identifier (e.g., 'gemma_price', 'gemma_regime')
         """
         try:
-            # Create GEMMA cache directory
-            cache_dir = Path("data/cache/gemma")
-            cache_dir.mkdir(parents=True, exist_ok=True)
+            # Create final models directory (production location)
+            final_dir = Path("data/models/final")
+            final_dir.mkdir(parents=True, exist_ok=True)
             
-            # Save scaler
-            scaler_path = cache_dir / f"scaler_{model_type}.joblib"
+            # Save scaler to production location
+            # model_type already includes 'gemma_' prefix
+            scaler_path = final_dir / f"{model_type}_scaler.joblib"
             joblib.dump(scaler, scaler_path)
             logger.info(f"✅ Saved GEMMA scaler to {scaler_path}")
             
