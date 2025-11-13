@@ -2,24 +2,23 @@
   "repository": "github.com/SefaGH/bearish-alpha-bot",
   "author": "SefaGH",
   "version": "GEMMA-1.0.0",
-  "created": "2025-11-13T18:37:51.899884",
+  "created": "2025-11-13T20:36:50.563552",
   "statistics": {
     "full_count": 87,
-    "selected_count": 81,
-    "excluded_count": 6,
+    "selected_count": 82,
+    "excluded_count": 5,
     "excluded_features": [
       "vwap_5",
       "volume_ratio_10",
       "mfi_10",
       "volume_sma_15",
-      "bb_width_20",
-      "cci_20"
+      "bb_width_20"
     ]
   },
   "paths": {
     "full": "features/gemma/selected/gemma_full_87.json",
-    "price": "features/gemma/selected/gemma_price_selected_81.json",
-    "regime": "features/gemma/selected/gemma_regime_selected_81.json",
+    "price": "features/gemma/selected/gemma_price_selected_82.json",
+    "regime": "features/gemma/selected/gemma_regime_selected_82.json",
     "mask": "data/cache/gemma/feature_selection_mask.npy"
   }
 }
