@@ -148,30 +148,38 @@ class RegimeModelTuner:
                 self.min_delta = 0.001
             
             def fit(self, X, y):
-                """Sklearn-style fit with validation split."""
-                    
-                # Validation
-                self.model.eval()
-                val_loss = 0
-                with torch.no_grad():
-                    for batch_X, batch_y in val_loader:
+                """
+                Sklearn-style fit.
+                (DÜZELTİLDİ: Artık iç validasyon/early stopping yapmıyor.
+                Bu görev, dışarıdaki Optuna/TimeSeriesValidator'a aittir.)
+                """
+                import torch
+                from torch.utils.data import TensorDataset, DataLoader
+
+                self.model.train()
+                X_tensor = torch.FloatTensor(X)
+                y_tensor = torch.LongTensor(y)
+                
+                train_dataset = TensorDataset(X_tensor, y_tensor)
+                train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+                
+                # Optuna'nın CV'si için 'num_epochs' kadar tam eğitim yap
+                # Early stopping burada yapılmaz, CV'nin kendisi zaten modeli değerlendirir.
+                for epoch in range(self.num_epochs):
+                    epoch_loss = 0
+                    if len(train_loader) == 0:
+                        logger.warning("Data loader boş, fit adımı atlanıyor.")
+                        break # Bu 'break' artık for epoch... döngüsü içinde, YAZIM HATASI YOK.
+
+                    for batch_X, batch_y in train_loader:
+                        self.optimizer.zero_grad()
                         outputs = self.model(batch_X)
                         loss = self.criterion(outputs, batch_y)
-                        val_loss += loss.item()
-                
-                val_loss /= len(val_loader)
-                
-                # Early stopping with min_delta
-                if val_loss < (best_val_loss - self.min_delta):
-                    best_val_loss = val_loss
-                    patience_counter = 0
-                    best_model_state = self.model.state_dict().copy()
-                else:
-                    patience_counter += 1
-                    if patience_counter >= self.patience:
-                        if best_model_state is not None:
-                            self.model.load_state_dict(best_model_state)
-                        break
+                        loss.backward()
+                        self.optimizer.step()
+                        epoch_loss += loss.item()
+                    
+                    # logger.debug(f"Epoch {epoch+1}/{self.num_epochs}, Train Loss: {epoch_loss/len(train_loader):.4f}")
                 
                 return self
             
@@ -220,11 +228,10 @@ class RegimeModelTuner:
         logger.info(f"Class weights (for imbalanced data): {class_weights}")
         logger.info(f"Number of classes: {num_classes}")
         
-        # 2. Time-series split (using validation_framework.py)
         logger.info("📊 Using time-based split (Hold-out test set)")
-        # Bu, veriyi 'shuffle=False' ile bölen doğru TimeSeriesValidator'ı kullanır
         validator_instance = TimeSeriesValidator(n_splits=cv_splits) 
-        X_cv, y_cv, X_test, y_test = validator_instance.split_with_holdout(X_clean, y_clean)
+        X_cv, y_cv, X_test, y_test = validator_instance.split_with_holdout(X, y)
+        tuner_validator = validator_instance
     
         # Artık 'tuner' için yeni bir validator oluşturmaya gerek yok, aynısını kullan
         tuner_validator = validator_instance
