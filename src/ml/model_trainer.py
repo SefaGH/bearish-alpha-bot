@@ -694,8 +694,28 @@ class RegimeModelTrainer:
         }
         
         logger.info(f"✅ MLP training completed. Best accuracy: {best_accuracy:.4f}")
+
+        # --- YENİ ADIM: Modeli JIT formatına çevir ---
+        logger.info("Model TorchScript formatına çevriliyor (SHAP analizi için)...")
+        model.eval() # Modeli 'eval' moduna al
+        try:
+            scripted_model = torch.jit.script(model)
+        except Exception as e:
+            logger.error(f"❌ Modeli TorchScript'e çevirme başarısız: {e}. Standart model döndürülüyor.")
+            scripted_model = model
+        # -------------------------------------------
+
+        metrics = {
+            'accuracy': best_accuracy,
+            'final_train_loss': train_loss,
+            'final_test_loss': test_loss_value,
+            'total_params': total_params,
+            'final_epoch': final_epoch
+        }
         
-        return model, metrics
+        logger.info(f"✅ MLP training completed. Best accuracy: {best_accuracy:.4f}")
+        
+        return scripted_model, metrics
     
     def _evaluate_model(self, model: Any, X_test: np.ndarray, y_test: np.ndarray, 
                        model_arch: str) -> Dict[str, Any]: # <-- 'float' yerine 'Any' oldu
@@ -785,7 +805,7 @@ class RegimeModelTrainer:
             # Save model state dict
             # model_type already includes 'gemma_' prefix, so just use it as is
             model_path = final_dir / f"{model_type}.pt"
-            torch.save(model.state_dict(), model_path)
+            torch.jit.save(model, model_path)
             logger.info(f"✅ Saved GEMMA model to {model_path}")
             
             # Save model configuration - robust extraction of model parameters
