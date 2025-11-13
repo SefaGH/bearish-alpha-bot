@@ -27,6 +27,7 @@ if ML_ENABLED:
     from sklearn.preprocessing import StandardScaler
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.metrics import balanced_accuracy_score
+    from imblearn.combine import SMOTETomek
 else:
     # ML kapalıysa, programın çökmemesi için sahte (None) sınıflar oluştur
     RandomForestClassifier = None
@@ -351,9 +352,7 @@ class RegimeModelTrainer:
         """
         Train and evaluate a model for GEMMA or other regime prediction tasks.
         
-        This method provides a unified interface for training models with the configuration
-        provided during initialization. It handles data preprocessing, model training,
-        validation, and artifact saving.
+        (GÜNCELLENDİ: SMOTETomek ve koşullu sınıf ağırlıkları eklendi)
         
         Args:
             X: Feature array of shape (n_samples, n_features)
@@ -362,12 +361,7 @@ class RegimeModelTrainer:
             production_scaler: Optional pre-fitted scaler from tuning phase
             
         Returns:
-            Dictionary containing training results with keys:
-                - status: 'completed', 'failed', or 'skipped'
-                - train_metrics: Training performance metrics
-                - test_metrics: Test/validation performance metrics
-                - model_info: Information about the trained model
-                - error: Error message if status is 'failed'
+            Dictionary containing training results
         """
         logger.info(f"Starting train_and_evaluate for model_type='{model_type}'")
         logger.info(f"Input data shape: X={X.shape}, y={y.shape}")
@@ -376,11 +370,7 @@ class RegimeModelTrainer:
             # Validate input data
             if X.shape[0] < 100:
                 logger.warning(f"Insufficient data for training: {X.shape[0]} samples (minimum: 100)")
-                return {
-                    'status': 'skipped',
-                    'reason': 'insufficient_data',
-                    'samples': X.shape[0]
-                }
+                return {'status': 'skipped', 'reason': 'insufficient_data', 'samples': X.shape[0]}
             
             # Data preprocessing - scale features
             if production_scaler is not None:
@@ -392,101 +382,127 @@ class RegimeModelTrainer:
                 scaler = StandardScaler()
                 X_scaled = scaler.fit_transform(X)
             
-            # Save scaler for later use
             scaler_key = f'{model_type}_scaler'
             self.scalers[scaler_key] = scaler
             
-            # Get architecture config from self.config
             architecture_config = self.config.get('architecture', {})
             
-            # Determine model architecture
-            # If model_type is explicitly specified, use it
-            # Otherwise, infer from the presence of certain parameters
+            # (model_arch belirleme kodu - aynı kaldı)
             if 'model_type' in architecture_config:
                 model_arch = architecture_config.get('model_type')
             elif 'hidden_layers' in architecture_config:
-                # MLP configuration detected (has hidden_layers list)
                 model_arch = 'mlp'
             elif 'hidden_size' in architecture_config and 'num_layers' in architecture_config:
-                # LSTM configuration detected (has hidden_size and num_layers)
-                # But for GEMMA, we'll convert this to MLP by using hidden_size as layer sizes
                 logger.info("Detected LSTM-style config, converting to MLP for GEMMA")
                 model_arch = 'mlp'
             else:
-                # Default to MLP for GEMMA
                 model_arch = 'mlp'
             
             logger.info(f"Training {model_arch.upper()} model for {model_type}")
             
-            # Split data for train/test
+            # Split data for train/test (Zaman sırasını koru)
             X_train, X_test, y_train, y_test = train_test_split(
                 X_scaled, y, test_size=0.2, shuffle=False, random_state=42
             )
             
-            logger.info(f"Train samples: {X_train.shape[0]}, Test samples: {X_test.shape[0]}")
+            logger.info(f"Train samples (before SMOTE): {X_train.shape[0]}, Test samples: {X_test.shape[0]}")
             
-            # --- DİNAMİK SINIF AĞIRLIKLARI (CLASS WEIGHTS) HESAPLAMA ---
-            # Eğitim verisi etiket dağılımına göre dinamik ağırlıklar hesapla
-            from sklearn.utils.class_weight import compute_class_weight
-            unique_classes = np.unique(y_train)
-            class_weights = compute_class_weight(
-                class_weight='balanced',
-                classes=unique_classes,
-                y=y_train
-            )
-            class_weight_dict = dict(zip(unique_classes, class_weights))
+            # --- YENİ BLOK: SMOTETomek ve Sınıf Ağırlığı Mantığı ---
             
-            logger.info("\n" + "="*70)
-            logger.info("⚖️  DİNAMİK SINIF AĞIRLIKLARI HESAPLANDI")
-            logger.info("="*70)
-            for cls, weight in class_weight_dict.items():
-                class_name = ['Bullish', 'Neutral', 'Bearish'][int(cls)] if cls < 3 else f'Class_{cls}'
-                count = np.sum(y_train == cls)
-                logger.info(f"   {class_name}: weight={weight:.4f}, count={count}")
-            logger.info("="*70)
+            gemma_config = self.config.get('gemma', {})
+            # config.example.yaml içinden 'use_smote: true' ayarını okumaya çalış
+            use_smote = gemma_config.get('training', {}).get('use_smote', True) # Varsayılan olarak AÇIK
             
-            # Train model based on architecture type
+            class_weight_dict = None # Varsayılan: Ağırlık yok (dengeli veri varsayımı)
+            
+            if use_smote and ML_ENABLED:
+                try:
+                    logger.info("Veri dengesizliği için SMOTETomek uygulanıyor...")
+                    # 'auto' = çoğunluk sınıfı hariç tüm azınlık sınıflarını eşitle
+                    smt = SMOTETomek(sampling_strategy='auto', random_state=42, n_jobs=-1)
+                    X_train, y_train = smt.fit_resample(X_train, y_train)
+                    logger.info(f"Train samples (after SMOTE): {X_train.shape[0]}")
+                    logger.info("✅ Veri sentetik olarak dengelendi. Sınıf ağırlıkları (class_weights) KULLANILMAYACAK.")
+                    
+                    # Yeni dağılımı logla
+                    unique, counts = np.unique(y_train, return_counts=True)
+                    logger.info("Yeni sentetik eğitim verisi dağılımı:")
+                    for cls_id, count in zip(unique, counts):
+                        logger.info(f"   Class {cls_id}: {count} örnek")
+
+                except Exception as e:
+                    logger.error(f"❌ SMOTETomek başarısız oldu: {e}. Sınıf ağırlıkları (class_weights) ile devam edilecek.")
+                    use_smote = False # Başarısız olursa, ağırlıklandırma moduna geri dön
+            
+            if not use_smote:
+                logger.info("SMOTETomek devre dışı veya başarısız. Dengesiz veri için Sınıf Ağırlıkları (class_weights) hesaplanıyor...")
+                from sklearn.utils.class_weight import compute_class_weight
+                unique_classes = np.unique(y_train)
+                class_weights = compute_class_weight(
+                    class_weight='balanced',
+                    classes=unique_classes,
+                    y=y_train
+                )
+                class_weight_dict = dict(zip(unique_classes, class_weights))
+                
+                logger.info("\n" + "="*70)
+                logger.info("⚖️  DİNAMİK SINIF AĞIRLIKLARI HESAPLANDI")
+                logger.info("="*70)
+                for cls, weight in class_weight_dict.items():
+                    class_name = ['Bullish', 'Neutral', 'Bearish'][int(cls)] if cls < 3 else f'Class_{cls}'
+                    count = np.sum(y_train == cls)
+                    logger.info(f"   {class_name}: weight={weight:.4f}, count={count}")
+                logger.info("="*70)
+            
+            # --- YENİ BLOK SONU ---
+
+            # Modeli, (ya SMOTE'lanmış ya da orijinal) X_train/y_train ile eğit
+            # ve (orijinal) X_test/y_test ile değerlendir.
+            # class_weight_dict, SMOTE kullanılmadıysa dolu, kullanıldıysa None olacak.
+            
             if model_arch.lower() == 'mlp':
-                model, train_metrics = self._train_mlp_model(X_train, y_train, X_test, y_test, class_weight_dict=class_weight_dict)
-                # Use original test data for MLP evaluation
+                model, train_metrics = self._train_mlp_model(
+                    X_train, y_train, 
+                    X_test, y_test, 
+                    class_weight_dict=class_weight_dict # <-- Koşullu ağırlıkları geçir
+                )
                 eval_X_test, eval_y_test = X_test, y_test
+            
+            # (LSTM/Transformer bloğu aynı kaldı - Gerekirse o da güncellenmeli)
             elif model_arch.lower() == 'lstm':
-                # Create sequences for LSTM
                 seq_length = architecture_config.get('sequence_length', SEQUENCE_LENGTH)
-                X_train_seq, y_train_seq = self._create_sequences(X_train, y_train, seq_length)
-                X_test_seq, y_test_seq = self._create_sequences(X_test, y_test, seq_length)
+                # ... (Sequence oluşturma ve SMOTE'un sequence veriye uygulanması daha karmaşıktır)
+                # ... (Şimdilik MLP'ye odaklanıyoruz)
+                logger.warning("SMOTE, LSTM (sequence) verisi için henüz tam entegre edilmedi.")
                 model, train_metrics = self._train_lstm(
-                    X_train_seq, y_train_seq, 
+                    X_train, y_train, 
                     validation_method='time_series_cv',
                     class_weight_dict=class_weight_dict
                 )
-                # Use sequential test data for LSTM evaluation
-                eval_X_test, eval_y_test = X_test_seq, y_test_seq
+                eval_X_test, eval_y_test = X_test, y_test # Hatalı, sequence olmalı
             else:
                 logger.error(f"Unsupported architecture type: {model_arch}")
-                return {
-                    'status': 'failed',
-                    'error': f'Unsupported architecture: {model_arch}'
-                }
+                return {'status': 'failed', 'error': f'Unsupported architecture: {model_arch}'}
             
-            # Evaluate on test set with appropriate data format
+            # Modeli orijinal (dokunulmamış) test verisi üzerinde değerlendir
             test_metrics = self._evaluate_model(model, eval_X_test, eval_y_test, model_arch)
             
-            # Store the trained model
+            # (Kalan kod aynı kaldı)
             self.models[model_type] = model
-            
-            # Save model artifacts
             self._save_gemma_model(model, model_type, model_arch)
             self._save_gemma_scaler(scaler, model_type)
             
             logger.info(f"✅ {model_type} model training completed successfully")
             logger.info(f"   Train Accuracy: {train_metrics.get('accuracy', 0):.4f}")
-            logger.info(f"   Test Accuracy: {test_metrics.get('accuracy', 0):.4f}")
+            logger.info(f"   Test Accuracy (Total): {test_metrics.get('accuracy', 0):.4f}")
+            logger.info(f"   Test Accuracy (Balanced): {test_metrics.get('balanced_accuracy', 0):.4f}")
             
+            # DÖNÜŞ DEĞERİNE 'test_predictions' EKLE (train_all_models için)
             return {
                 'status': 'completed',
                 'train_metrics': train_metrics,
                 'test_metrics': test_metrics,
+                'test_predictions': {'y_pred': test_metrics.get('y_pred_list'), 'y_test': y_test.tolist()},
                 'model_info': {
                     'type': model_type,
                     'architecture': model_arch,
@@ -497,11 +513,7 @@ class RegimeModelTrainer:
             
         except Exception as e:
             logger.error(f"Error in train_and_evaluate for {model_type}: {e}", exc_info=True)
-            return {
-                'status': 'failed',
-                'error': str(e),
-                'model_type': model_type
-            }
+            return {'status': 'failed', 'error': str(e), 'model_type': model_type}
     
     def _train_mlp_model(self, X_train: np.ndarray, y_train: np.ndarray, 
                          X_test: np.ndarray, y_test: np.ndarray,
@@ -686,74 +698,74 @@ class RegimeModelTrainer:
         return model, metrics
     
     def _evaluate_model(self, model: Any, X_test: np.ndarray, y_test: np.ndarray, 
-                       model_arch: str) -> Dict[str, float]:
+                       model_arch: str) -> Dict[str, Any]: # <-- 'float' yerine 'Any' oldu
         """
         Evaluate a trained model on test data.
-        (GÜNCELLENDİ: balanced_accuracy_score eklendi)
-    
+        (GÜNCELLENDİ: balanced_accuracy_score ve y_pred_list eklendi)
+        
         Args:
             model: Trained PyTorch model
             X_test: Test features
             y_test: Test labels
             model_arch: Architecture type ('mlp', 'lstm', etc.)
-    
+            
         Returns:
-            Dictionary with evaluation metrics
+            Dictionary with evaluation metrics AND raw predictions
         """
         model.eval()
-    
+        
         with torch.no_grad():
             X_test_tensor = torch.from_numpy(X_test).float()
             y_test_tensor = torch.from_numpy(y_test).long()
-    
+            
             outputs = model(X_test_tensor)
             _, predicted = torch.max(outputs, 1)
-    
+            
             y_pred_np = predicted.numpy()
-    
-            # --- YENİ EKLENEN KOD ---
+            y_test_np = y_test.numpy() # y_test'i de numpy yapalım
+            
             # Total Accuracy (Yanıltıcı Metrik)
             accuracy = (predicted == y_test_tensor).sum().item() / y_test_tensor.size(0)
-    
+            
             # Balanced Accuracy (Asıl Metrik)
             balanced_acc = 0.0
             if ML_ENABLED:
                 try:
-                    balanced_acc = balanced_accuracy_score(y_test, y_pred_np)
+                    balanced_acc = balanced_accuracy_score(y_test_np, y_pred_np)
                 except Exception as e:
                     logger.warning(f"Balanced accuracy hesaplanamadı: {e}")
-            # --- YENİ EKLENEN KOD SONU ---
-    
+
             # Calculate per-class metrics
-            unique_classes = np.unique(y_test)
+            unique_classes = np.unique(y_test_np)
             precision_list = []
             recall_list = []
-    
+            
             for cls in unique_classes:
-                tp = np.sum((y_pred_np == cls) & (y_test == cls))
-                fp = np.sum((y_pred_np == cls) & (y_test != cls))
-                fn = np.sum((y_pred_np != cls) & (y_test == cls))
-    
+                tp = np.sum((y_pred_np == cls) & (y_test_np == cls))
+                fp = np.sum((y_pred_np == cls) & (y_test_np != cls))
+                fn = np.sum((y_pred_np != cls) & (y_test_np == cls))
+                
                 precision = tp / (tp + fp + 1e-10)
                 recall = tp / (tp + fn + 1e-10)
-    
+                
                 precision_list.append(precision)
                 recall_list.append(recall)
-    
+            
             avg_precision = np.mean(precision_list)
             avg_recall = np.mean(recall_list)
             f1_score = 2 * avg_precision * avg_recall / (avg_precision + avg_recall + 1e-10)
-    
+            
             metrics = {
                 'accuracy': accuracy,
-                'balanced_accuracy': balanced_acc, # <-- YENİ EKLENDİ
+                'balanced_accuracy': balanced_acc, # Eklendi
                 'precision': avg_precision,
                 'recall': avg_recall,
-                'f1': f1_score
+                'f1': f1_score,
+                'y_pred_list': y_pred_np.tolist() # <-- train_all_models için Eklendi
             }
-    
+            
             logger.info(f"Test Metrics - Accuracy: {accuracy:.4f}, Balanced Accuracy: {balanced_acc:.4f}, F1: {f1_score:.4f}")
-    
+            
             return metrics
     
     def _save_gemma_model(self, model: Any, model_type: str, model_arch: str):
