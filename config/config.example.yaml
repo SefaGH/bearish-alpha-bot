@@ -454,14 +454,14 @@ ml:
     training:
       batch_size: 64          # <-- Optuna'dan gelen en iyi değer
       epochs: 50
-      learning_rate: 0.000709 # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
+      learning_rate: 0.003322 # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
       early_stopping_patience: 10
     
     architecture:
       input_size: 83          # <-- DOĞRU: Özellik seçimi sonrası gerçek özellik sayısı
-      hidden_size: 63         # <-- Optuna'dan gelen en iyi değer
-      num_layers: 2           # <-- Optuna'dan gelen en iyi değer (değişmedi)
-      dropout: 0.2797         # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
+      hidden_size: 62         # <-- Optuna'dan gelen en iyi değer
+      num_layers: 3           # <-- Optuna'dan gelen en iyi değer (değişmedi)
+      dropout: 0.2554         # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
       num_classes: 3          # <-- DOĞRU: Bullish (0), Neutral (1), Bearish (2)
       
     feature_set: "gemma_v1"
