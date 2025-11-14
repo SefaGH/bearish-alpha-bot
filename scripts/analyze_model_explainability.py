@@ -231,6 +231,7 @@ def run_shap_analysis(model_wrapper: PyTorchWrapper, X_train_scaled: np.ndarray,
     """
     Modelin en büyük hatalarını analiz etmek için SHAP kullanır.
     (GÜNCELLENDİ: KernelExplainer -> GradientExplainer'a geçildi)
+    (PATCH v2: SHAP çıktı formatlarına ve edge-case'lere karşı tam dayanıklı hale getirildi)
     """
     import torch # Gerekli import
     print("\n" + "="*50)
@@ -243,7 +244,6 @@ def run_shap_analysis(model_wrapper: PyTorchWrapper, X_train_scaled: np.ndarray,
         print("Test Seti Karışıklık Matrisi:\n", cm)
 
         # En büyük hatayı bul (örn: Gerçekte Bullish (0) iken Neutral (1) tahmin edilmesi)
-        # (Diyagonal dışındaki en yüksek sayı)
         np.fill_diagonal(cm, 0) # Doğru tahminleri sıfırla
         error_indices = np.unravel_index(np.argmax(cm, axis=None), cm.shape)
         true_class = error_indices[0]
@@ -251,6 +251,10 @@ def run_shap_analysis(model_wrapper: PyTorchWrapper, X_train_scaled: np.ndarray,
         error_count = cm[true_class, pred_class]
         
         class_names = {0: 'Bullish', 1: 'Neutral', 2: 'Bearish'}
+        
+        # İYİLEŞTİRME (2.2): Sınıf sayısını dinamik olarak CM'den al
+        n_classes = cm.shape[0] 
+        
         print("="*50)
         print(f"HATA ANALİZİ: Karışıklık Matrisindeki En Büyük Hata:")
         print(f"  Gerçek Sınıf: {class_names.get(true_class, true_class)}")
@@ -267,41 +271,114 @@ def run_shap_analysis(model_wrapper: PyTorchWrapper, X_train_scaled: np.ndarray,
             return
 
         # Analizi 10 örnekle sınırla (CI'da hızlı çalışması için)
-        if len(X_test_errors) > 10:
-            sample_indices = np.random.choice(X_test_errors.shape[0], 10, replace=False)
+        n_samples_for_analysis = 10
+        if len(X_test_errors) > n_samples_for_analysis:
+            sample_indices = np.random.choice(X_test_errors.shape[0], n_samples_for_analysis, replace=False)
             X_test_errors = X_test_errors[sample_indices]
+        else:
+            n_samples_for_analysis = len(X_test_errors) 
 
         # --- SHAP ANALİZİ (GradientExplainer ile) ---
-        print("SHAP için arka plan (background) veri seti oluşturuluyor (100 örnek)...")
         
         # 1. Veriyi PyTorch tensörüne çevir
-        # GradientExplainer, PyTorch tensörleri bekler.
         background_tensor = torch.from_numpy(X_train_scaled).float()
         test_samples_tensor = torch.from_numpy(X_test_errors).float()
 
-        # 100 rastgele örnekle arka planı özetle
-        indices = np.random.choice(background_tensor.shape[0], 100, replace=False)
+        # İYİLEŞTİRME (2.1): Background sample sayısını güvenli hale getir
+        bg_size = min(100, background_tensor.shape[0])
+        print(f"SHAP için arka plan (background) veri seti oluşturuluyor ({bg_size} örnek)...")
+        indices = np.random.choice(background_tensor.shape[0], bg_size, replace=False)
         background_sample_tensor = background_tensor[indices]
         
         print("SHAP GradientExplainer oluşturuluyor (PyTorch için optimize)...")
-        # Wrapper'ın içindeki JIT script modele (.model) erişiyoruz
         explainer = shap.GradientExplainer(model_wrapper.model, background_sample_tensor)
         
-        print(f"SHAP değerleri {len(test_samples_tensor)} hatalı örnek için hesaplanıyor...")
-        # GradientExplainer, JIT modelleri için shap_values döndürür
+        print(f"SHAP değerleri {n_samples_for_analysis} hatalı örnek için hesaplanıyor...")
         shap_values = explainer.shap_values(test_samples_tensor)
         
-        # shap_values, (sınıf sayısı, örnek sayısı, özellik sayısı) şeklinde bir listedir.
-        # Hata "Gerçek Sınıf -> Tahmin Edilen Sınıf" idi.
-        # "Modeli neden 'Tahmin Edilen Sınıf'a iten özellikler nelerdi?" diye soruyoruz.
-        shap_values_for_error_class = shap_values[pred_class]
+        # İYİLEŞTİRME (2.3): Debug logları
+        print(f"   [Debug] SHAP raw type: {type(shap_values)}")
+        if not isinstance(shap_values, list):
+            # getattr(..., 'shape', 'N/A') -> .shape attribute'u yoksa patlamaz
+            print(f"   [Debug] SHAP raw shape: {getattr(shap_values, 'shape', 'N/A')}")
+        print(f"   [Debug] X_test_errors shape: {X_test_errors.shape}")
+        
+        # --- ROBUST SHAP DEĞERİ İŞLEME ---
+        
+        shap_values_for_error_class = None
 
-        # TASK 3: Fix SHAP .cpu() crash - handle both tensor and ndarray safely
-        # shap.summary_plot NumPy array bekler; hem tensor hem ndarray'i güvenli şekilde destekle
+        if isinstance(shap_values, list):
+            # 1. SENARYO: Klasik SHAP davranışı -> list of (n_samples, n_features)
+            if len(shap_values) == n_classes:
+                shap_values_for_error_class = shap_values[pred_class]
+            else:
+                raise ValueError(
+                    f"SHAP bir liste döndürdü ancak uzunluğu ({len(shap_values)}) "
+                    f"sınıf sayısıyla ({n_classes}) eşleşmiyor."
+                )
+        else:
+            # 2. SENARYO: Tek bir array/tensor dönmüş
+            sv = shap_values
+            
+            if not hasattr(sv, "ndim"):
+                 raise TypeError(f"SHAP ne 'list' ne de 'ndim' attribute'una sahip bir array döndürdü. Dönen tip: {type(sv)}")
+
+            if sv.ndim == 3:
+                # 3D TENSOR: (samples, features, classes) VEYA (classes, samples, features)
+                
+                # (samples, features, classes) -> (10, 82, 3)
+                if (sv.shape[0] == n_samples_for_analysis and 
+                    sv.shape[1] == X_test_errors.shape[1] and 
+                    sv.shape[2] == n_classes):
+                    
+                    print("   [Debug] SHAP formatı tespit edildi: (samples, features, classes)")
+                    shap_values_for_error_class = sv[:, :, pred_class]
+                
+                # (classes, samples, features) -> (3, 10, 82)
+                elif (sv.shape[0] == n_classes and 
+                      sv.shape[1] == n_samples_for_analysis and 
+                      sv.shape[2] == X_test_errors.shape[1]):
+                      
+                    print("   [Debug] SHAP formatı tespit edildi: (classes, samples, features)")
+                    shap_values_for_error_class = sv[pred_class, :, :]
+                
+                else:
+                    raise ValueError(
+                        f"SHAP 3D array/tensor döndürdü ancak boyutu ({sv.shape}) "
+                        f"beklenen (samples, features, classes) -> ({n_samples_for_analysis}, {X_test_errors.shape[1]}, {n_classes}) "
+                        f"veya (classes, samples, features) -> ({n_classes}, {n_samples_for_analysis}, {X_test_errors.shape[1]}) "
+                        "ile eşleşmiyor."
+                    )
+            
+            elif sv.ndim == 2:
+                print("   [Debug] SHAP formatı tespit edildi: 2D (samples, features)")
+                shap_values_for_error_class = sv
+            
+            else:
+                raise ValueError(f"SHAP 2 veya 3 boyutlu olmayan bir array/tensor döndürdü. Boyut: {sv.ndim}")
+
+        # --- GÜVENLİ DÖNÜŞTÜRME VE KONTROL ---
+        
+        if shap_values_for_error_class is None:
+            raise ValueError("SHAP değerleri işlenirken 'shap_values_for_error_class' None olarak kaldı. Mantık hatası.")
+
+        # NumPy'ye dönüştür
         if hasattr(shap_values_for_error_class, "detach") and hasattr(shap_values_for_error_class, "cpu"):
             shap_values_np = shap_values_for_error_class.detach().cpu().numpy()
         else:
             shap_values_np = np.array(shap_values_for_error_class)
+
+        # SON GÜVENLİK KONTROLÜ (ASSERT)
+        expected_shape = X_test_errors.shape # (n_samples_for_analysis, n_features)
+        
+        if shap_values_np.shape != expected_shape:
+            raise AssertionError(
+                f"SHAP analizinde son boyut uyuşmazlığı! "
+                f"Veri matrisi boyutu (X_test_errors): {expected_shape}, "
+                f"Hesaplanan SHAP matrisi boyutu (shap_values_np): {shap_values_np.shape}"
+            )
+        
+        # --- PLOTLAMA ---
         
         plot_title = f"SHAP (Hata: {class_names.get(true_class)}->{class_names.get(pred_class)}) - Sınıf {pred_class} İçin İtici Güçler"
         shap_path = output_dir / "shap_error_summary_plot.png"
@@ -309,7 +386,7 @@ def run_shap_analysis(model_wrapper: PyTorchWrapper, X_train_scaled: np.ndarray,
         print("SHAP özet grafiği oluşturuluyor...")
         shap.summary_plot(
             shap_values_np,
-            X_test_errors, 
+            X_test_errors,
             feature_names=feature_names,
             show=False,
             max_display=20
