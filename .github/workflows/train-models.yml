@@ -246,3 +246,11 @@ jobs:
             --analysis-data-path data/cache/gemma_price_analysis_test_data.npz \
             --feature-names-path features/gemma/selected/gemma_price_selected_82.json \
             --output-dir ./analysis_artifacts
+
+      - name: 9. Hata Analizi Sonuçlarını Yükle
+        if: steps.deploy_check.outputs.all_models_passed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-analysis-artifacts-${{ github.run_number }}
+          path: ./analysis_artifacts/
+          retention-days: 7
