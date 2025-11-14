@@ -654,6 +654,43 @@ class FeatureEngineeringPipeline:
     ]
     # =================================================================================
     
+    @staticmethod
+    def _parse_window_list(window_str, default='5,10,20,50'):
+        """
+        Parse window list from various string formats.
+        
+        Handles multiple input formats:
+        - Plain CSV: "5,10,20,50"
+        - With brackets: "[5,10,20,50]"
+        - With quotes: "['5','10','20','50']" or '["5","10","20","50"]'
+        - Mixed: "[5, 10, 20, 50]" (with spaces)
+        - Already a list: [5, 10, 20, 50]
+        
+        Args:
+            window_str: Input string or list to parse
+            default: Default CSV string to use if parsing fails
+            
+        Returns:
+            List of integers representing window sizes
+        """
+        # If already a list, return as-is
+        if not isinstance(window_str, str):
+            return window_str if window_str else [int(x) for x in default.split(',')]
+        
+        # Handle empty strings by using default
+        if not window_str.strip():
+            return [int(x) for x in default.split(',')]
+        
+        try:
+            # Remove all brackets, quotes, and extra spaces
+            import re
+            cleaned = re.sub(r'[\[\]"\'\s]', '', window_str)
+            # Split by comma and convert to integers, filtering empty strings
+            return [int(x) for x in cleaned.split(',') if x]
+        except ValueError as e:
+            logger.warning(f"Failed to parse window list '{window_str}': {e}. Using default: {default}")
+            return [int(x) for x in default.split(',')]
+    
     def __init__(self, config: Dict[str, Any] = None):
         """Initialize the feature engineering pipeline with config."""
         self.config = config or {}
@@ -673,20 +710,18 @@ class FeatureEngineeringPipeline:
         self.technical_indicators = TechnicalIndicatorFeatures(self.config)
         self.market_microstructure = MarketMicrostructureFeatures()
         
-        # Parse volatility windows from config
-        vol_windows_str = self.config.get('volatility_windows', '5,10,20,50')
-        if isinstance(vol_windows_str, str):
-            vol_windows = [int(w.strip()) for w in vol_windows_str.split(',')]
-        else:
-            vol_windows = vol_windows_str
+        # Parse volatility windows from config - handle multiple formats
+        vol_windows = self._parse_window_list(
+            self.config.get('volatility_windows', '5,10,20,50'),
+            default='5,10,20,50'
+        )
         self.volatility_features = VolatilityFeatures(windows=vol_windows)
         
-        # Parse momentum windows from config
-        mom_windows_str = self.config.get('momentum_windows', '5,10,20,50')
-        if isinstance(mom_windows_str, str):
-            mom_windows = [int(w.strip()) for w in mom_windows_str.split(',')]
-        else:
-            mom_windows = mom_windows_str
+        # Parse momentum windows from config - handle multiple formats
+        mom_windows = self._parse_window_list(
+            self.config.get('momentum_windows', '5,10,20,50'),
+            default='5,10,20,50'
+        )
         self.momentum_features = MomentumFeatures(windows=mom_windows)
         
         self.cross_asset_features = CrossAssetFeatures()
