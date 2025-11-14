@@ -497,6 +497,20 @@ class RegimeModelTrainer:
             logger.info(f"   Test Accuracy (Total): {test_metrics.get('accuracy', 0):.4f}")
             logger.info(f"   Test Accuracy (Balanced): {test_metrics.get('balanced_accuracy', 0):.4f}")
             
+            # --- TASK 1: Export analysis dataset for explainability (Producer) ---
+            # Save scaled train/test data for later explainability analysis
+            analysis_data_path = Path("data/cache") / f"{model_type}_analysis_test_data.npz"
+            try:
+                np.savez_compressed(
+                    analysis_data_path,
+                    X_train_scaled=X_train,  # Already scaled (after SMOTE if applied)
+                    X_test_scaled=X_test,    # Already scaled (original test set)
+                    y_test=y_test,
+                )
+                logger.info(f"✅ Saved analysis dataset for {model_type} to {analysis_data_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to save analysis dataset for {model_type}: {e}")
+            
             # DÖNÜŞ DEĞERİNE 'test_predictions' EKLE (train_all_models için)
             return {
                 'status': 'completed',

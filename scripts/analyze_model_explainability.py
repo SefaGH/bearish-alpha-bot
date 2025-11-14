@@ -1,11 +1,12 @@
 """
 Model Yorumlanabilirlik Analiz Betiği (Explainability Script)
-SÜRÜM 5 - Hata Düzeltmesi (StandardScaler eklendi)
+SÜRÜM 6 - Producer-Consumer Pattern (Phase 1 Refactor)
 
 Bu betik, eğitilmiş bir modeli alır ve neden belirli kararları verdiğini
 analiz etmek için Permutation Importance ve SHAP yöntemlerini kullanır.
 
-Tuning'de kullanılan scaler'ı yükleyip veriyi analizden önce ölçekler.
+DEĞIŞIKLIK: Artık veriyi yeniden oluşturmak yerine, trainer tarafından 
+export edilen ölçeklenmiş test verisini doğrudan kullanır (Consumer).
 """
 
 import torch
@@ -17,16 +18,10 @@ import matplotlib.pyplot as plt
 import argparse
 import sys
 import os
-import joblib
 from pathlib import Path
 from typing import Tuple, List, Dict, Any, Optional
-from sklearn.model_selection import train_test_split
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import balanced_accuracy_score, make_scorer, confusion_matrix
-from sklearn.preprocessing import StandardScaler
-
-# Scaler dosyasının yolu (Tuning'de kaydedilen) >>>
-SCALER_PATH = Path('data/cache/scaler_production.joblib')
 
 # --- PyTorch Modelini Sklearn Uyumlu Hale Getirme ---
 
@@ -65,6 +60,28 @@ class PyTorchWrapper:
         return np.argmax(probas, axis=1)
 
 # --- Analiz Fonksiyonları ---
+
+def load_feature_names(feature_names_path: str) -> List[str]:
+    """Load selected feature names from a JSON file.
+
+    Expected format:
+      {
+        "features": ["feat_a", "feat_b", ...]
+      }
+    (as in features/gemma/selected/gemma_price_selected_82.json)
+    """
+    print(f"Özellik isimleri JSON dosyasından yükleniyor: {feature_names_path}")
+    with open(feature_names_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if "features" not in data or not isinstance(data["features"], list):
+        raise KeyError(f"'features' key not found or invalid in {feature_names_path}")
+
+    names = data["features"]
+    print(f"   ... {len(names)} adet özellik ismi yüklendi.")
+    return names
+
+# --- OBSOLETE FUNCTIONS (kept for backward compatibility, not used in new consumer pattern) ---
 
 def load_data_and_features(data_path, metadata_path):
     """Veri ve özellik isimlerini yükler."""
@@ -279,8 +296,12 @@ def run_shap_analysis(model_wrapper: PyTorchWrapper, X_train_scaled: np.ndarray,
         # "Modeli neden 'Tahmin Edilen Sınıf'a iten özellikler nelerdi?" diye soruyoruz.
         shap_values_for_error_class = shap_values[pred_class]
 
-        # shap.summary_plot bir PyTorch Tensörünü kabul etmez, NumPy dizisi bekler.
-        shap_values_np = shap_values_for_error_class.cpu().numpy()
+        # TASK 3: Fix SHAP .cpu() crash - handle both tensor and ndarray safely
+        # shap.summary_plot NumPy array bekler; hem tensor hem ndarray'i güvenli şekilde destekle
+        if hasattr(shap_values_for_error_class, "detach") and hasattr(shap_values_for_error_class, "cpu"):
+            shap_values_np = shap_values_for_error_class.detach().cpu().numpy()
+        else:
+            shap_values_np = np.array(shap_values_for_error_class)
         
         plot_title = f"SHAP (Hata: {class_names.get(true_class)}->{class_names.get(pred_class)}) - Sınıf {pred_class} İçin İtici Güçler"
         shap_path = output_dir / "shap_error_summary_plot.png"
@@ -304,15 +325,26 @@ def run_shap_analysis(model_wrapper: PyTorchWrapper, X_train_scaled: np.ndarray,
         print("   Grafikler oluşturulamamış olabilir.")
 
 def main():
-    """Ana analiz fonksiyonu."""
+    """Ana analiz fonksiyonu (Consumer - Producer-Consumer Pattern)."""
     print("==================================================")
     print("🔬 MODEL YORUMLANABİLİRLİK VE HATA ANALİZİ BAŞLIYOR")
+    print("   (SÜRÜM 6: Producer-Consumer Pattern)")
     print("==================================================")
     
     parser = argparse.ArgumentParser(description="GEMMA Model Explainability Script")
     parser.add_argument('--model-path', required=True, help="Eğitilmiş modelin (.pt) yolu.")
-    parser.add_argument('--data-path', required=True, help="Eğitim verisinin (.npz) yolu.")
-    parser.add_argument('--metadata-path', required=True, help="Özellik metadata JSON dosyasının yolu.")
+    parser.add_argument(
+        '--analysis-data-path',
+        required=True,
+        help="Path to .npz file exported by the trainer (X_train_scaled, X_test_scaled, y_test). "
+             "Example: data/cache/gemma_price_analysis_test_data.npz"
+    )
+    parser.add_argument(
+        '--feature-names-path',
+        required=True,
+        help="Path to JSON containing selected feature names. "
+             "Example: features/gemma/selected/gemma_price_selected_82.json"
+    )
     parser.add_argument('--output-dir', default="./analysis_artifacts", help="Çıktı grafiklerinin kaydedileceği dizin.")
     
     args = parser.parse_args()
@@ -328,68 +360,42 @@ def main():
     print("✅ Model başarıyla yüklendi.")
 
     # ==========================================================
-    # ADIM 2: Veriyi, İsimleri ve Maskeyi Yükle
+    # ADIM 2: Export Edilmiş Analiz Verisini Yükle (Consumer)
     # ==========================================================
-    print(f"Veri yükleniyor: {args.data_path}")
-    X_full, y_full, feature_names = load_data_and_features(
-        args.data_path, 
-        args.metadata_path
-    )
-    
-    mask_path = Path('data/cache/gemma/feature_selection_mask.npy')
-    if not mask_path.exists():
-        print(f"❌ HATA: Özellik seçim maskesi bulunamadı: {mask_path}")
-        print("   Bu betik, 'full-gemma-tuning.yml' tarafından oluşturulan maskeye bağımlıdır.")
+    print(f"\nNihai analiz verisi yükleniyor: {args.analysis_data_path}")
+    try:
+        npz_data = np.load(args.analysis_data_path)
+        X_train_scaled = npz_data["X_train_scaled"]
+        X_test_scaled = npz_data["X_test_scaled"]
+        y_test = npz_data["y_test"]
+        print(f"   ... X_train_scaled shape: {X_train_scaled.shape}")
+        print(f"   ... X_test_scaled shape: {X_test_scaled.shape}")
+        print(f"   ... y_test length: {y_test.shape[0]}")
+    except Exception as e:
+        print(f"HATA: Analiz verisi (.npz) yüklenemedi: {e}")
         sys.exit(1)
-    
-    print(f"Özellik seçim maskesi yükleniyor: {mask_path}")
-    feature_mask = np.load(mask_path)
 
     # ==========================================================
-    # ADIM 3: Maskeyi Uygula
+    # ADIM 3: Özellik İsimlerini Yükle
     # ==========================================================
-    # Veri ile maskenin uyumlu olduğunu doğrula
-    if X_full.shape[1] != len(feature_mask):
-        raise ValueError(f"Ham veri ({X_full.shape[1]}) ve maske ({len(feature_mask)}) boyutu uyuşmuyor!")
-    
-    # Veriyi maskele
-    X_selected = X_full[:, feature_mask]
-    print(f"✅ Özellik maskesi veriye uygulandı. {X_full.shape[1]} -> {X_selected.shape[1]} özellik.")
+    try:
+        feature_names = load_feature_names(args.feature_names_path)
+    except Exception as e:
+        print(f"HATA: Özellik isimleri yüklenemedi: {e}")
+        sys.exit(1)
 
-    # Özellik isim listesini maskele
-    if len(feature_names) == len(feature_mask):
-        feature_names = [name for name, selected in zip(feature_names, feature_mask) if selected]
-        print(f"✅ Özellik isimleri maskelendi. Yeni isim sayısı: {len(feature_names)}")
-    else:
-         print(f"UYARI: Özellik ismi sayısı ({len(feature_names)}) maske ({len(feature_mask)}) ile eşleşmiyor.")
-         feature_names = [f"feature_{i}" for i in range(X_selected.shape[1])]
-    
-    # ==========================================================
-    # ADIM 4: Veriyi Böl (Maskelenmiş Veriyi)       
-    # ==========================================================
-    print(f"Maskelenmiş {X_selected.shape[1]} özellikli veri, train/test olarak bölünüyor (shuffle=False)...")
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_selected,  # <-- DOĞRU VERİ
-        y_full, 
-        test_size=0.20, 
-        random_state=42, 
-        shuffle=False # Zaman serisi için 'False' olmalı
-    )
-    print(f"   Train shape: {X_train.shape}, Test shape: {X_test.shape}")
-
-    # ==========================================================
-    # ADIM 5: Veriyi Ölçekle (Scaler ile)
-    # ==========================================================
-    X_train_scaled, X_test_scaled, scaler = load_and_scale_data(X_train, X_test)
-    
-    if X_train_scaled is None or X_test_scaled is None:
-        print("❌ Ölçekleme hatası nedeniyle analiz durduruluyor.")
+    # Veri ve özellik sayılarının uyumlu olduğunu doğrula
+    if X_test_scaled.shape[1] != len(feature_names):
+        print(
+            f"HATA: Veri sütun sayısı ({X_test_scaled.shape[1]}) ile "
+            f"özellik isimleri ({len(feature_names)}) uyuşmuyor!"
+        )
         sys.exit(1)
 
     print("="*50)
     
     # ==========================================================
-    # ADIM 6: Analizleri Çalıştır
+    # ADIM 4: Analizleri Çalıştır
     # ==========================================================
     
     # Genel Özellik Önemliliğini Çalıştır (ÖLÇEKLENMİŞ VERİ İLE)
