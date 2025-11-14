@@ -208,70 +208,97 @@ def find_biggest_error(y_test, y_pred):
     
     return actual_class, predicted_class, max_error_count, class_map
 
-def run_shap_analysis(model, X_train, X_test, y_test, y_pred, feature_names, output_dir):
-    """Modelin en büyük hatasına odaklanan SHAP analizini çalıştırır."""
-    
-    actual_class, predicted_class, error_count, class_map = find_biggest_error(y_test, y_pred)
-    
-    if error_count == 0:
-        print("Modelde hiç hata bulunamadı. SHAP analizi atlanıyor.")
-        return
+def run_shap_analysis(model_wrapper: PyTorchWrapper, X_train_scaled: np.ndarray, 
+                      X_test_scaled: np.ndarray, y_test: np.ndarray, y_pred: np.ndarray, 
+                      feature_names: list, output_dir: Path):
+    """
+    Modelin en büyük hatalarını analiz etmek için SHAP kullanır.
+    (GÜNCELLENDİ: KernelExplainer -> GradientExplainer'a geçildi)
+    """
+    import torch # Gerekli import
+    print("\n" + "="*50)
+    print("🔬 ADIM 8.2: SHAP Hata Analizi")
+    print("="*50)
 
-    # Hatalı örneklerin indekslerini bul
-    error_indices = np.where((y_test == actual_class) & (y_pred == predicted_class))[0]
-    
-    # Analiz için en fazla 10 hatalı örnek al (GitHub Actions'ta hızlı olması için)
-    analysis_samples_bad = X_test[error_indices[:10]] # <<< NOT: Bu veri zaten ölçeklenmiş >>>
-    
-    if len(analysis_samples_bad) == 0:
-        print("Analiz edilecek hatalı örnek bulunamadı. (Test setinde bu hata olmayabilir)")
-        return
+    try:
+        # Karışıklık Matrisi (Confusion Matrix)
+        cm = confusion_matrix(y_test, y_pred)
+        print("Test Seti Karışıklık Matrisi:\n", cm)
 
-    print("SHAP için arka plan (background) veri seti oluşturuluyor (100 örnek)...")
-    background_data = shap.sample(X_train, 100) # <<< NOT: Bu veri zaten ölçeklenmiş >>>
-    
-    print("SHAP Explainer oluşturuluyor...")
-    explainer = shap.KernelExplainer(model.predict_proba, background_data)
-    
-    print(f"SHAP değerleri hesaplanıyor ({len(analysis_samples_bad)} hatalı örnek için)...")
-    print("DİKKAT: Bu işlem ÇOK UZUN sürebilir (5-15 dakika)...")
-    shap_values = explainer.shap_values(analysis_samples_bad)
-    
-    print("Hesaplama tamamlandı. Grafikler oluşturuluyor...")
-    
-    class_names = [class_map.get(i, f"Class {i}") for i in range(len(class_map))]
-    
-    # Özellik isimlerini DataFrame'e çevir (SHAP'ın bazen ihtiyaç duyduğu format)
-    analysis_samples_df = pd.DataFrame(analysis_samples_bad, columns=feature_names)
-    
-    # Özet Grafik: Hatalı örnekler için genel özellik etkisi
-    plt.figure()
-    shap.summary_plot(
-        shap_values, 
-        analysis_samples_df, 
-        class_names=class_names,
-        show=False,
-        plot_type="bar" # Hangi özelliğin ORTALAMA etkiye sahip olduğunu göster
-    )
-    plt.title(f"Hata Analizi: En Etkili Özellikler (Ortalama Etki)")
-    output_path = os.path.join(output_dir, "shap_summary_bar.png")
-    plt.savefig(output_path, bbox_inches='tight')
-    plt.close()
-    print(f"✅ SHAP Özet (Bar) grafiği kaydedildi: {output_path}")
+        # En büyük hatayı bul (örn: Gerçekte Bullish (0) iken Neutral (1) tahmin edilmesi)
+        # (Diyagonal dışındaki en yüksek sayı)
+        np.fill_diagonal(cm, 0) # Doğru tahminleri sıfırla
+        error_indices = np.unravel_index(np.argmax(cm, axis=None), cm.shape)
+        true_class = error_indices[0]
+        pred_class = error_indices[1]
+        error_count = cm[true_class, pred_class]
+        
+        class_names = {0: 'Bullish', 1: 'Neutral', 2: 'Bearish'}
+        print("="*50)
+        print(f"HATA ANALİZİ: Karışıklık Matrisindeki En Büyük Hata:")
+        print(f"  Gerçek Sınıf: {class_names.get(true_class, true_class)}")
+        print(f"  Tahmin Edilen Sınıf: {class_names.get(pred_class, pred_class)}")
+        print(f"  Örnek Sayısı: {error_count} adet")
+        print("="*50)
 
-    # Detaylı Özet Grafik
-    plt.figure()
-    shap.summary_plot(
-        shap_values, 
-        analysis_samples_df, 
-        class_names=class_names,
-        show=False
-    )
-    plt.title(f"Hata Analizi: {class_map.get(actual_class)} -> {class_map.get(predicted_class)}")
-    output_path = os.path.join(output_dir, "shap_summary_detailed.png")
-    plt.savefig(output_path, bbox_inches='tight')
-    plt.close()
-    print(f"✅ SHAP Özet (Detaylı) grafik kaydedildi: {output_path}")
+        # Analiz için bu hatalı örnekleri seç
+        error_mask = (y_test == true_class) & (y_pred == pred_class)
+        X_test_errors = X_test_scaled[error_mask]
+        
+        if len(X_test_errors) == 0:
+            print("ℹ️ SHAP analizi için yeterli sayıda hatalı örnek bulunamadı.")
+            return
+
+        # Analizi 10 örnekle sınırla (CI'da hızlı çalışması için)
+        if len(X_test_errors) > 10:
+            sample_indices = np.random.choice(X_test_errors.shape[0], 10, replace=False)
+            X_test_errors = X_test_errors[sample_indices]
+
+        # --- SHAP ANALİZİ (GradientExplainer ile) ---
+        print("SHAP için arka plan (background) veri seti oluşturuluyor (100 örnek)...")
+        
+        # 1. Veriyi PyTorch tensörüne çevir
+        # GradientExplainer, PyTorch tensörleri bekler.
+        background_tensor = torch.from_numpy(X_train_scaled).float()
+        test_samples_tensor = torch.from_numpy(X_test_errors).float()
+
+        # 100 rastgele örnekle arka planı özetle
+        indices = np.random.choice(background_tensor.shape[0], 100, replace=False)
+        background_sample_tensor = background_tensor[indices]
+        
+        print("SHAP GradientExplainer oluşturuluyor (PyTorch için optimize)...")
+        # Wrapper'ın içindeki JIT script modele (.model) erişiyoruz
+        explainer = shap.GradientExplainer(model_wrapper.model, background_sample_tensor)
+        
+        print(f"SHAP değerleri {len(test_samples_tensor)} hatalı örnek için hesaplanıyor...")
+        # GradientExplainer, JIT modelleri için shap_values döndürür
+        shap_values = explainer.shap_values(test_samples_tensor)
+        
+        # shap_values, (sınıf sayısı, örnek sayısı, özellik sayısı) şeklinde bir listedir.
+        # Hata "Gerçek Sınıf -> Tahmin Edilen Sınıf" idi.
+        # "Modeli neden 'Tahmin Edilen Sınıf'a iten özellikler nelerdi?" diye soruyoruz.
+        shap_values_for_error_class = shap_values[pred_class]
+        
+        plot_title = f"SHAP (Hata: {class_names.get(true_class)}->{class_names.get(pred_class)}) - Sınıf {pred_class} İçin İtici Güçler"
+        shap_path = output_dir / "shap_error_summary_plot.png"
+        
+        print("SHAP özet grafiği oluşturuluyor...")
+        shap.summary_plot(
+            shap_values_for_error_class, 
+            X_test_errors, 
+            feature_names=feature_names,
+            show=False,
+            max_display=20
+        )
+        plt.title(plot_title)
+        plt.tight_layout()
+        plt.savefig(shap_path)
+        plt.clf()
+        print(f"✅ SHAP özet grafiği kaydedildi: {shap_path}")
+
+    except Exception as e:
+        print(f"❌ SHAP analizi sırasında hata oluştu: {e}")
+        print("   Grafikler oluşturulamamış olabilir.")
 
 def main():
     """Ana analiz fonksiyonu."""
