@@ -238,10 +238,11 @@ jobs:
           echo "🚨 ADIM 8: Model Başarısız! Hata Analizi Başlatılıyor..."
           echo "======================================================================"
           echo "   - SHAP analizi çalıştırılarak, gemma_price modelinin neden yanlış karar verdiği anlaşılmaya çalışılacak."
+          echo "   - GÜNCELLEME: Producer-Consumer pattern ile trainer'dan export edilen veri kullanılıyor."
           
-          # DÜZELTME: Gerekli argümanlar eklendi
+          # TASK 4: Updated to use new Producer-Consumer pattern
           python scripts/analyze_model_explainability.py \
             --model-path data/models/final/gemma_price.pt \
-            --data-path data/cache/BTC-USDT_training_data.npz \
-            --metadata-path features/gemma/metadata/feature_metadata.json \
+            --analysis-data-path data/cache/gemma_price_analysis_test_data.npz \
+            --feature-names-path features/gemma/selected/gemma_price_selected_82.json \
             --output-dir ./analysis_artifacts
