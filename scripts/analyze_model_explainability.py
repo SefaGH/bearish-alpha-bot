@@ -260,6 +260,32 @@ def main():
     # 2. Veriyi ve özellikleri yükle (HENÜZ ÖLÇEKLENMEMİŞ)
     X_full, y_full, feature_names = load_data_and_features(args.data_path, args.metadata_path)
 
+    # --- YENİ ADIM: ÖZELLİK MASKESİNİ YÜKLE VE UYGULA ---
+    mask_path = Path('data/cache/gemma/feature_selection_mask.npy')
+    if not mask_path.exists():
+        print(f"❌ HATA: Özellik seçim maskesi bulunamadı: {mask_path}")
+        print("   Analiz script'i, tuning tarafından oluşturulan maskeye bağımlıdır.")
+        sys.exit(1)
+    
+    print(f"Özellik seçim maskesi yükleniyor: {mask_path}")
+    feature_mask = np.load(mask_path)
+    
+    # Veri ile maskenin uyumlu olduğunu doğrula
+    if X_full.shape[1] != len(feature_mask):
+        raise ValueError(f"Ham veri ({X_full.shape[1]}) ve maske ({len(feature_mask)}) boyutu uyuşmuyor!")
+    
+    # 1. Veriyi maskele
+    X_selected = X_full[:, feature_mask]
+    print(f"✅ Özellik maskesi veriye uygulandı. {X_full.shape[1]} -> {X_selected.shape[1]} özellik.")
+
+    # 2. Özellik isim listesini maskele (Hata 1'i de çözer)
+    if len(feature_names) == len(feature_mask):
+        feature_names = [name for name, selected in zip(feature_names, feature_mask) if selected]
+        print(f"✅ Özellik isimleri maskelendi. Yeni isim sayısı: {len(feature_names)}")
+    else:
+         print(f"UYARI: Özellik ismi sayısı ({len(feature_names)}) maske ({len(feature_mask)}) ile eşleşmiyor. Jenerik isimler kullanılacak.")
+         feature_names = [f"feature_{i}" for i in range(X_selected.shape[1])]
+
     # 3. Veriyi loglardaki gibi 80/20 böl (HENÜZ ÖLÇEKLENMEMİŞ)
     X_train, X_test, y_train, y_test = train_test_split(
         X_full, 
