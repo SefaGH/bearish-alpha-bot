@@ -278,13 +278,16 @@ def run_shap_analysis(model_wrapper: PyTorchWrapper, X_train_scaled: np.ndarray,
         # Hata "Gerçek Sınıf -> Tahmin Edilen Sınıf" idi.
         # "Modeli neden 'Tahmin Edilen Sınıf'a iten özellikler nelerdi?" diye soruyoruz.
         shap_values_for_error_class = shap_values[pred_class]
+
+        # shap.summary_plot bir PyTorch Tensörünü kabul etmez, NumPy dizisi bekler.
+        shap_values_np = shap_values_for_error_class.cpu().numpy()
         
         plot_title = f"SHAP (Hata: {class_names.get(true_class)}->{class_names.get(pred_class)}) - Sınıf {pred_class} İçin İtici Güçler"
         shap_path = output_dir / "shap_error_summary_plot.png"
         
         print("SHAP özet grafiği oluşturuluyor...")
         shap.summary_plot(
-            shap_values_for_error_class, 
+            shap_values_np,
             X_test_errors, 
             feature_names=feature_names,
             show=False,
