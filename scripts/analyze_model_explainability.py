@@ -108,6 +108,38 @@ def load_data_and_features(data_path, metadata_path):
         
     return X_full, y_full, feature_names_list
 
+def load_and_scale_data(X_train: np.ndarray, X_test: np.ndarray) -> Tuple:
+    """
+    Tuning'den (Ar-Ge) gelen 'scaler_production.joblib' dosyasını yükler
+    ve hem eğitim hem de test verisini ölçekler.
+    """
+    print("\n" + "="*50)
+    print("⚖️ LOADING STANDARD SCALER (ÖLÇEKLEYİCİ)")
+    print("="*50)
+
+    if not SCALER_PATH.exists():
+        print(f"❌ HATA: Kayıtlı scaler (ölçekleyici) bulunamadı: {SCALER_PATH}")
+        print("   Bu betik, 'full-gemma-tuning.yml' tarafından oluşturulan scaler'a bağımlıdır.")
+        return None, None, None
+    
+    try:
+        scaler = joblib.load(SCALER_PATH)
+        print(f"✅ Scaler (Ölçekleyici) başarıyla yüklendi: {SCALER_PATH}")
+        
+        # Hem Train hem de Test verisini 'transform' et
+        print("Transforming Train and Test data...")
+        X_train_scaled = scaler.transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        print(f"   Train data shape: {X_train_scaled.shape}")
+        print(f"   Test data shape: {X_test_scaled.shape}")
+        
+        return X_train_scaled, X_test_scaled, scaler
+        
+    except Exception as e:
+        print(f"❌ HATA: Scaler yüklenirken veya veri dönüştürülürken hata oluştu: {e}")
+        return None, None, None
+
 def run_permutation_importance(model, X_test, y_test, feature_names, output_dir):
     """Genel özellik önemliliği analizini çalıştırır."""
     print("\n" + "="*50)
