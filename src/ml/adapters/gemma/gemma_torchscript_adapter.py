@@ -66,7 +66,18 @@ class GemmaTorchScriptAdapter:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.circuit_breaker = CircuitBreaker(**config.get('circuit_breaker', {}))
+        
+        # Handle circuit breaker configuration
+        circuit_config = config.get('circuit_breaker', {}).copy()
+        self.circuit_breaker_enabled = circuit_config.pop('enabled', True)
+        
+        if self.circuit_breaker_enabled:
+            self.circuit_breaker = CircuitBreaker(
+                failure_threshold=circuit_config.get('failure_threshold', 5),
+                recovery_timeout=circuit_config.get('recovery_timeout', 60)
+            )
+        else:
+            self.circuit_breaker = None
 
         self.model: Optional[torch.jit.ScriptModule] = None
         self.scaler = None
@@ -132,9 +143,12 @@ class GemmaTorchScriptAdapter:
                 return cached_result
 
         try:
-            result = self.circuit_breaker.call(self._predict_internal, features_dict)
+            if self.circuit_breaker and self.circuit_breaker_enabled:
+                result = self.circuit_breaker.call(self._predict_internal, features_dict)
+            else:
+                result = self._predict_internal(features_dict)
         except Exception as e:
-            logger.error(f"Prediction failed. Circuit state: {self.circuit_breaker.state}. Error: {e}")
+            logger.error(f"Prediction failed. Circuit state: {getattr(self.circuit_breaker, 'state', 'N/A')}. Error: {e}")
             result = self._get_fallback_prediction()
 
         inference_time = (time.time() - start_time) * 1000 # in ms
@@ -198,7 +212,8 @@ class GemmaTorchScriptAdapter:
         """Returns current performance metrics of the adapter."""
         return {
             'model_loaded': self.model is not None,
-            'circuit_state': self.circuit_breaker.state,
+            'circuit_breaker_enabled': getattr(self, 'circuit_breaker_enabled', False),
+            'circuit_state': self.circuit_breaker.state if self.circuit_breaker else 'DISABLED',
             'cache_size': len(self.prediction_cache),
             'avg_inference_time_ms': np.mean(self.inference_times) if self.inference_times else 0,
             'p95_inference_time_ms': np.percentile(self.inference_times, 95) if len(self.inference_times) > 1 else 0,
