@@ -242,34 +242,49 @@ def run_shap_analysis(model, X_train, X_test, y_test, y_pred, feature_names, out
 
 def main():
     """Ana analiz fonksiyonu."""
+    print("==================================================")
+    print("🔬 MODEL YORUMLANABİLİRLİK VE HATA ANALİZİ BAŞLIYOR")
+    print("==================================================")
     
-    # Argümanları al (Workflow'dan gelecek)
-    parser = argparse.ArgumentParser(description="Model Yorumlanabilirlik Analizi")
-    parser.add_argument("--model-path", type=str, required=True, help="Eğitilmiş .ptc modelinin yolu.")
-    parser.add_argument("--data-path", type=str, required=True, help="Eğitim verisi .npz dosyasının yolu.")
-    parser.add_argument("--metadata-path", type=str, required=True, help="Özellik isimlerini içeren .json dosyasının yolu.")
-    parser.add_argument("--output-dir", type=str, default=".", help="Analiz grafiklerinin kaydedileceği dizin.")
+    parser = argparse.ArgumentParser(description="GEMMA Model Explainability Script")
+    parser.add_argument('--model-path', required=True, help="Eğitilmiş modelin (.pt) yolu.")
+    parser.add_argument('--data-path', required=True, help="Eğitim verisinin (.npz) yolu.")
+    parser.add_argument('--metadata-path', required=True, help="Özellik metadata JSON dosyasının yolu.")
+    parser.add_argument('--output-dir', default="./analysis_artifacts", help="Çıktı grafiklerinin kaydedileceği dizin.")
+    
     args = parser.parse_args()
-
-    # Çıktı dizinini oluştur
-    os.makedirs(args.output_dir, exist_ok=True)
     
-    # 1. Modeli yükle
+    output_path = Path(args.output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # ==========================================================
+    # ADIM 1: Modeli Yükle
+    # ==========================================================
+    print(f"\nModel yükleniyor: {args.model_path}")
     model = PyTorchWrapper(args.model_path)
-    
-    # 2. Veriyi ve özellikleri yükle (HENÜZ ÖLÇEKLENMEMİŞ)
-    X_full, y_full, feature_names = load_data_and_features(args.data_path, args.metadata_path)
+    print("✅ Model başarıyla yüklendi.")
 
-    # --- YENİ ADIM: ÖZELLİK MASKESİNİ YÜKLE VE UYGULA ---
+    # ==========================================================
+    # ADIM 2: Veriyi, İsimleri ve Maskeyi Yükle
+    # ==========================================================
+    print(f"Veri yükleniyor: {args.data_path}")
+    X_full, y_full, feature_names = load_data_and_features(
+        args.data_path, 
+        args.metadata_path
+    )
+    
     mask_path = Path('data/cache/gemma/feature_selection_mask.npy')
     if not mask_path.exists():
         print(f"❌ HATA: Özellik seçim maskesi bulunamadı: {mask_path}")
-        print("   Analiz script'i, tuning tarafından oluşturulan maskeye bağımlıdır.")
+        print("   Bu betik, 'full-gemma-tuning.yml' tarafından oluşturulan maskeye bağımlıdır.")
         sys.exit(1)
     
     print(f"Özellik seçim maskesi yükleniyor: {mask_path}")
     feature_mask = np.load(mask_path)
-    
+
+    # ==========================================================
+    # ADIM 3: Maskeyi Uygula
+    # ==========================================================
     # Veri ile maskenin uyumlu olduğunu doğrula
     if X_full.shape[1] != len(feature_mask):
         raise ValueError(f"Ham veri ({X_full.shape[1]}) ve maske ({len(feature_mask)}) boyutu uyuşmuyor!")
@@ -278,63 +293,52 @@ def main():
     X_selected = X_full[:, feature_mask]
     print(f"✅ Özellik maskesi veriye uygulandı. {X_full.shape[1]} -> {X_selected.shape[1]} özellik.")
 
-    # 2. Özellik isim listesini maskele (Hata 1'i de çözer)
+    # 2. Özellik isim listesini maskele
     if len(feature_names) == len(feature_mask):
         feature_names = [name for name, selected in zip(feature_names, feature_mask) if selected]
         print(f"✅ Özellik isimleri maskelendi. Yeni isim sayısı: {len(feature_names)}")
     else:
-         print(f"UYARI: Özellik ismi sayısı ({len(feature_names)}) maske ({len(feature_mask)}) ile eşleşmiyor. Jenerik isimler kullanılacak.")
+         print(f"UYARI: Özellik ismi sayısı ({len(feature_names)}) maske ({len(feature_mask)}) ile eşleşmiyor.")
          feature_names = [f"feature_{i}" for i in range(X_selected.shape[1])]
-
-    # 3. Veriyi loglardaki gibi 80/20 böl (HENÜZ ÖLÇEKLENMEMİŞ)
+    
+    # ==========================================================
+    # ADIM 4: Veriyi Böl (Maskelenmiş Veriyi)       
+    # ==========================================================
+    print(f"Maskelenmiş {X_selected.shape[1]} özellikli veri, train/test olarak bölünüyor (shuffle=False)...")
     X_train, X_test, y_train, y_test = train_test_split(
-        X_selected, 
+        X_selected,  # <-- DOĞRU VERİ
         y_full, 
         test_size=0.20, 
         random_state=42, 
-        shuffle=False # <<< DOĞRU YÖNTEM (Zaman sırasını korur)
+        shuffle=False # Zaman serisi için 'False' olmalı
     )
-    
-    # <<< BAŞLANGIÇ: YENİ ÖLÇEKLEME (SCALING) ADIMI >>>
-    # ==============================================================================
-    print("\n" + "="*50)
-    print("⚖️ LOADING STANDARD SCALER (ÖLÇEKLEYİCİ)")
-    print("="*50)
+    print(f"   Train shape: {X_train.shape}, Test shape: {X_test.shape}")
 
-    if not SCALER_PATH.exists():
-        print(f"❌ HATA: Kayıtlı scaler (ölçekleyici) bulunamadı: {SCALER_PATH}")
-        print("   Bu betik, 'full-lstm-tuning.yml' tarafından oluşturulan scaler'a bağımlıdır.")
-        sys.exit(1)
+    # ==========================================================
+    # ADIM 5: Veriyi Ölçekle (Scaler ile)
+    # ==========================================================
+    X_train_scaled, X_test_scaled, scaler = load_and_scale_data(X_train, X_test)
     
-    try:
-        scaler = joblib.load(SCALER_PATH)
-        print(f"✅ Scaler (Ölçekleyici) başarıyla yüklendi: {SCALER_PATH}")
-        
-        # Hem Train hem de Test verisini 'transform' et
-        print("Transforming Train and Test data...")
-        X_train_scaled = scaler.transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-        
-        print(f"   Train data shape: {X_train_scaled.shape}")
-        print(f"   Test data shape: {X_test_scaled.shape}")
-        
-    except Exception as e:
-        print(f"❌ HATA: Scaler yüklenirken veya veri dönüştürülürken hata oluştu: {e}")
+    if X_train_scaled is None or X_test_scaled is None:
+        print("❌ Ölçekleme hatası nedeniyle analiz durduruluyor.")
         sys.exit(1)
 
     print("="*50)
-    # ============================================================================== #
-    # <<< SON: YENİ ÖLÇEKLEME (SCALING) ADIMI >>>
+    
+    # ==========================================================
+    # ADIM 6: Analizleri Çalıştır
+    # ==========================================================
     
     # 4. Genel Özellik Önemliliğini Çalıştır (ÖLÇEKLENMİŞ VERİ İLE)
-    run_permutation_importance(model, X_test_scaled, y_test, feature_names, args.output_dir)
+    run_permutation_importance(model, X_test_scaled, y_test, feature_names, output_path)
 
     # 5. SHAP ile Hata Analizini Çalıştır (ÖLÇEKLENMİŞ VERİ İLE)
-    print("Modelin hatalarını analiz etmek için test seti üzerinde tahmin yapılıyor...")
-    y_pred = model.predict(X_test_scaled)
-    run_shap_analysis(model, X_train_scaled, X_test_scaled, y_test, y_pred, feature_names, args.output_dir)
+    run_shap_analysis(model, X_train_scaled, X_test_scaled, y_test, feature_names, output_path)
 
-    print("\nAnaliz tamamlandı.")
+    print("\n" + "="*50)
+    print("✅ Hata analizi tamamlandı.")
+    print(f"Raporlar şuraya kaydedildi: {output_path.resolve()}")
+    print("="*50)
 
 if __name__ == "__main__":
     main()
