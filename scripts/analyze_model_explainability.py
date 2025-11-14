@@ -322,11 +322,11 @@ def main():
     if X_full.shape[1] != len(feature_mask):
         raise ValueError(f"Ham veri ({X_full.shape[1]}) ve maske ({len(feature_mask)}) boyutu uyuşmuyor!")
     
-    # 1. Veriyi maskele
+    # Veriyi maskele
     X_selected = X_full[:, feature_mask]
     print(f"✅ Özellik maskesi veriye uygulandı. {X_full.shape[1]} -> {X_selected.shape[1]} özellik.")
 
-    # 2. Özellik isim listesini maskele
+    # Özellik isim listesini maskele
     if len(feature_names) == len(feature_mask):
         feature_names = [name for name, selected in zip(feature_names, feature_mask) if selected]
         print(f"✅ Özellik isimleri maskelendi. Yeni isim sayısı: {len(feature_names)}")
@@ -362,11 +362,18 @@ def main():
     # ADIM 6: Analizleri Çalıştır
     # ==========================================================
     
-    # 4. Genel Özellik Önemliliğini Çalıştır (ÖLÇEKLENMİŞ VERİ İLE)
+    # Genel Özellik Önemliliğini Çalıştır (ÖLÇEKLENMİŞ VERİ İLE)
     run_permutation_importance(model, X_test_scaled, y_test, feature_names, output_path)
 
-    # 5. SHAP ile Hata Analizini Çalıştır (ÖLÇEKLENMİŞ VERİ İLE)
-    run_shap_analysis(model, X_train_scaled, X_test_scaled, y_test, feature_names, output_path)
+    # Test kümesi üzerinden model tahminlerini al (hata analizi için)
+    print("\n🔎 Model test tahminleri hesaplanıyor (hata analizi için)...")
+    y_pred = model.predict(X_test_scaled)
+    if len(y_pred) != len(y_test):
+        print(f"UYARI: y_pred uzunluğu ({len(y_pred)}) != y_test uzunluğu ({len(y_test)})")
+
+    # SHAP ile Hata Analizini Çalıştır (ÖLÇEKLENMİŞ VERİ İLE)
+    print("SHAP analizi başlatılıyor...")
+    run_shap_analysis(model, X_train_scaled, X_test_scaled, y_test, y_pred, feature_names, output_path)
 
     print("\n" + "="*50)
     print("✅ Hata analizi tamamlandı.")
