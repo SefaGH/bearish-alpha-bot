@@ -479,3 +479,22 @@ ml:
     # Rejim tahmini için minimum güven skoru
     min_confidence: 0.60
 
+# ==============================================================================
+# MODEL BUNDLE MANAGEMENT
+# ==============================================================================
+models:
+  # Model bundle management - dynamic feature adaptation
+  active_bundle: "artifacts/legacy"  # Path to active model bundle (can be symlink)
+  fallback_bundle: "artifacts/legacy"  # Fallback bundle for errors
+  
+  # Deployment configuration
+  deployment:
+    validation_mode: "strict"  # strict | lenient - how to handle dimension mismatches
+    allow_missing_features: false  # Allow prediction with missing features (pad with zeros)
+    canary_percentage: 0  # Percentage of traffic to route to new model (0-100)
+    
+  # GEMMA specific overrides
+  gemma:
+    use_manifest: true  # Enable manifest-driven model loading
+    shadow_mode: true  # Keep shadow mode initially (log predictions without using)
+

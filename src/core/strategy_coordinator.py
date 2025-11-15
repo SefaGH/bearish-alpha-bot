@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from collections import defaultdict
 from enum import Enum
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -103,12 +104,36 @@ class StrategyCoordinator:
         logger.info("StrategyCoordinator initialized (market_data_pipeline=%s)", bool(self.market_data_pipeline))
     
     def _initialize_gemma(self):
-        """Initialize GEMMA adapter."""
+        """Initialize GEMMA adapter with manifest configuration."""
         try:
             # Import inside function to avoid circular dependency
             from src.ml.adapters.gemma.gemma_torchscript_adapter import GemmaTorchScriptAdapter
+            from src.ml.manifest_manager import ManifestManager
             
-            gemma_config = self.config['ml']['gemma']
+            gemma_config = self.config['ml']['gemma'].copy()
+            
+            # Load manifest for GEMMA configuration
+            try:
+                manifest_mgr = ManifestManager()
+                bundle_path = self.config.get('models', {}).get('active_bundle', 'artifacts/legacy')
+                manifest = manifest_mgr.load_manifest(bundle_path)
+                
+                # Update GEMMA config with manifest
+                gemma_config['feature_count'] = manifest['feature_count']
+                gemma_config['feature_names'] = manifest['feature_names_ordered']
+                
+                # Override paths if specified in manifest
+                if 'gemma_price_model_path' in manifest:
+                    gemma_config['model_path'] = Path(bundle_path) / manifest['gemma_price_model_path']
+                if 'gemma_price_scaler_path' in manifest:
+                    gemma_config['scaler_path'] = Path(bundle_path) / manifest['gemma_price_scaler_path']
+                
+                logger.info(f"✅ GEMMA config updated with manifest: {manifest.get('version')}")
+                logger.info(f"   Feature count: {manifest['feature_count']}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to load manifest for GEMMA, using defaults: {e}")
+            
             self.gemma_adapter = GemmaTorchScriptAdapter(gemma_config)
             logger.info("✅ GEMMA adapter successfully initialized in StrategyCoordinator.")
         except ImportError:
@@ -317,8 +342,14 @@ class StrategyCoordinator:
         """
         Apply AI-Gate filtering with GEMMA if available, otherwise use legacy ML.
         Signal flow: GEMMA → AI-Gate → RL-Veto → Execution
+        
+        GEMMA operates in two modes:
+        - Active Mode: GEMMA predictions override legacy ML
+        - Shadow Mode: GEMMA predictions logged but not used (for validation)
         """
         gemma_prediction = None
+        gemma_active = False
+        
         # 1. GEMMA tahminini al (eğer adaptör aktifse)
         if self.gemma_adapter:
             try:
@@ -328,20 +359,42 @@ class StrategyCoordinator:
                 else:
                     gemma_prediction = self.gemma_adapter.predict(features)
                     
-                    # Gelen sinyali GEMMA sonuçlarıyla zenginleştir
-                    signal['gemma_confidence'] = gemma_prediction.get('price_confidence')
-                    signal['gemma_prediction'] = gemma_prediction.get('prediction_label')
-                    
-                    logger.info(
-                        f"🧠 [GEMMA] {signal.get('symbol', 'N/A')} | "
-                        f"Prediction: {gemma_prediction.get('prediction_label')} | "
-                        f"Confidence: {gemma_prediction.get('price_confidence', 0):.3f}"
-                    )
+                    # Check if GEMMA is in shadow mode
+                    if self.gemma_adapter.shadow_mode:
+                        # Shadow mode: Log but don't use
+                        logger.info(
+                            f"👻 [GEMMA-SHADOW] {signal.get('symbol', 'N/A')} | "
+                            f"Prediction: {gemma_prediction.get('prediction_label')} | "
+                            f"Confidence: {gemma_prediction.get('price_confidence', 0):.3f} | "
+                            f"Legacy: {signal.get('ml_confidence', 0):.3f}"
+                        )
+                        
+                        # Store for analysis but don't use
+                        signal['gemma_shadow'] = {
+                            'confidence': gemma_prediction.get('price_confidence'),
+                            'prediction': gemma_prediction.get('prediction_label')
+                        }
+                    else:
+                        # Active mode: Use GEMMA predictions
+                        signal['gemma_confidence'] = gemma_prediction.get('price_confidence')
+                        signal['gemma_prediction'] = gemma_prediction.get('prediction_label')
+                        gemma_active = True
+                        
+                        logger.info(
+                            f"🧬 [GEMMA-ACTIVE] {signal.get('symbol', 'N/A')} | "
+                            f"Prediction: {gemma_prediction.get('prediction_label')} | "
+                            f"Confidence: {gemma_prediction.get('price_confidence', 0):.3f}"
+                        )
             except Exception as e:
                 logger.error(f"GEMMA prediction failed in AI-Gate: {e}", exc_info=True)
 
-        # 2. Güven skorlarını belirle (GEMMA öncelikli)
-        price_confidence = signal.get('gemma_confidence', signal.get('ml_confidence', 0.5))
+        # 2. Güven skorlarını belirle (GEMMA öncelikli sadece active mode'da)
+        if gemma_active:
+            price_confidence = signal.get('gemma_confidence', 0.5)
+            confidence_source = "GEMMA"
+        else:
+            price_confidence = signal.get('ml_confidence', 0.5)
+            confidence_source = "Legacy ML"
 
         # 3. Eşik değerlerini config'den al
         price_threshold = self.config.get('ml', {}).get('price', {}).get('min_confidence', 0.66)
@@ -350,6 +403,7 @@ class StrategyCoordinator:
         if price_confidence >= price_threshold:
             logger.info(
                 f"✅ [AI-GATE] PASSED | {signal.get('symbol', 'N/A')} | "
+                f"Source: {confidence_source} | "
                 f"Confidence: {price_confidence:.3f} >= Threshold: {price_threshold:.2f}"
             )
             return True
@@ -357,6 +411,7 @@ class StrategyCoordinator:
             self.processing_stats['ai_gate_rejections'] = self.processing_stats.get('ai_gate_rejections', 0) + 1
             logger.warning(
                 f"🛡️ [AI-GATE] REJECTED | {signal.get('symbol', 'N/A')} | "
+                f"Source: {confidence_source} | "
                 f"Confidence: {price_confidence:.3f} < Threshold: {price_threshold:.2f}"
             )
             return False
@@ -672,7 +727,8 @@ class StrategyCoordinator:
 
             # 3. FeatureEngineeringPipeline kullanarak standart özellikleri çıkar
             # NOT: Bu metot zaten içinde 'add_indicators' çağırıyor, bu yüzden ek indikatör eklemeye gerek yok.
-            features_df = self.feature_pipeline.extract_features(df)
+            # RL state için price feature set kullanılır
+            features_df = self.feature_pipeline.extract_features(df, mode='price')
             
             if features_df.empty:
                 logger.warning(f"[RL-STATE] Feature extraction failed for {symbol}.")

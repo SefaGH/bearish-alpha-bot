@@ -975,8 +975,8 @@ class ProductionCoordinator:
     
     async def _initialize_ml_components(self, price_engine: Optional[Any] = None, regime_predictor: Optional[Any] = None) -> Dict[str, Any]:
         """
-        Initialize and connect ALL ML components from src/ml/.
-        (YENİ YAPIYA UYGUN HALE GETİRİLDİ)
+        Initialize and connect ALL ML components with manifest-driven configuration.
+        (YENİ YAPIYA UYGUN HALE GETİRİLDİ + Manifest entegrasyonu)
         """
         logger.info("🧠 [ML-INIT] Initializing ML system...")
         ml_components = []
@@ -988,6 +988,7 @@ class ProductionCoordinator:
             from ml.regime_predictor import MLRegimePredictor
             from ml.reinforcement_learning import TradingRLAgent
             from ml.strategy_integration import MLStrategyIntegrationManager
+            from ml.manifest_manager import ManifestManager
             logger.info("🧠 [ML-INIT] All ML modules imported successfully.")
         except ImportError as e:
             logger.error(f"🧠 [ML-INIT] Critical ML modules not found: {e}", exc_info=True)
@@ -995,11 +996,33 @@ class ProductionCoordinator:
 
         # Ana konfigürasyondan 'ml' bloğunu al
         ml_config = self.config.get('ml', {})
+        
+        # Initialize manifest manager first
+        try:
+            manifest_mgr = ManifestManager()
+            bundle_path = self.config.get('models', {}).get('active_bundle', 'artifacts/legacy')
+            manifest = manifest_mgr.load_manifest(bundle_path)
+            
+            logger.info(f"🧠 [ML-INIT] Using manifest version: {manifest.get('version')}")
+            logger.info(f"🧠 [ML-INIT] Feature count: {manifest['feature_count']}")
+            logger.info(f"🧠 [ML-INIT] Mode: {manifest.get('mode', 'unknown')}")
+            
+            # Pass manifest info to config for other components
+            ml_config['active_bundle'] = bundle_path
+            ml_config['manifest_version'] = manifest.get('version')
+            
+        except Exception as e:
+            logger.warning(f"Failed to load manifest, using defaults: {e}")
+            manifest = {'feature_count': 42, 'mode': 'legacy'}
 
         # 1. Özellik Mühendisliği Pijaması (Feature Engineering Pipeline)
         try:
-            # Bu bileşen, 'features' alt bloğunu kullanır
-            self.feature_pipeline = FeatureEngineeringPipeline(config=ml_config.get('features', {}))
+            # Pass full config including models section for manifest access
+            feature_config = ml_config.get('features', {})
+            feature_config['models'] = self.config.get('models', {})
+            feature_config['ml'] = ml_config  # For GEMMA enabled check
+            
+            self.feature_pipeline = FeatureEngineeringPipeline(config=feature_config)
             ml_components.append('feature_pipeline')
             logger.info("✅ Feature engineering pipeline initialized.")
         except Exception as e:
@@ -1026,13 +1049,14 @@ class ProductionCoordinator:
             logger.info("ℹ️ Price prediction is disabled in config.")
 
         # 3. Rejim Tahmincisi (Regime Predictor)
-        # ✔️ DÜZELTME: Bu bileşene artık sadece 'regime_prediction' alt bloğu verilir.
+        # ✔️ DÜZELTME: Bu bileşene artık sadece 'regime_prediction' alt bloğu verilir + bundle path
         regime_pred_config = ml_config.get('regime_prediction', {})
+        regime_pred_config['active_bundle'] = bundle_path  # Pass bundle path
         if regime_pred_config.get('enabled', True):
             try:
                 self.regime_predictor = MLRegimePredictor(
                     feature_pipeline=self.feature_pipeline,
-                    config=regime_pred_config  # <-- DEĞİŞİKLİK BURADA
+                    config=regime_pred_config
                 )
                 ml_components.append('regime_predictor')
                 logger.info("✅ Regime predictor initialized.")
@@ -1044,15 +1068,19 @@ class ProductionCoordinator:
             logger.info("ℹ️ Regime prediction is disabled in config.")
 
         # 4. Pekiştirmeli Öğrenme Ajanı (Reinforcement Learning Agent)
-        # ✔️ DÜZELTME: Bu bileşene artık sadece 'reinforcement_learning' alt bloğu verilir.
+        # ✔️ DÜZELTME: Bu bileşene artık sadece 'reinforcement_learning' alt bloğu verilir + dynamic state_size
         rl_config = ml_config.get('reinforcement_learning', {})
+        rl_config['active_bundle'] = bundle_path  # Pass bundle path
         if rl_config.get('enabled', True):
             try:
-                state_size = ml_config.get('features', {}).get('feature_size', 42) # Ortak özellik boyutu
+                # Use manifest feature count for state size (manifest loaded above)
+                state_size = manifest.get('rl_state_size', manifest.get('feature_count', 42))
+                logger.info(f"🧠 [ML-INIT] Initializing RL agent with state_size={state_size}")
+                
                 self.rl_agent = TradingRLAgent(
                     state_size=state_size,
                     action_size=3,
-                    config=rl_config  # <-- DEĞİŞİKLİK BURADA
+                    config=rl_config
                 )
                 model_path = self.config.get('model_path', 'data/models')
                 self.rl_agent.load_model(os.path.join(model_path, "rl_agent_final.pth"))

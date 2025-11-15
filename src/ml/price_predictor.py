@@ -372,8 +372,8 @@ class MultiTimeframePricePredictor:
                 logger.warning(f"No model for timeframe {timeframe}, skipping")
                 continue
                 
-            # Extract features
-            features = self.feature_pipeline.extract_features(data)
+            # Extract features for price prediction
+            features = self.feature_pipeline.extract_features(data, mode='price')
             
             if features.empty:
                 logger.warning(f"No features extracted for timeframe {timeframe}")
