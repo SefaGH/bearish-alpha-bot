@@ -60,12 +60,16 @@ class CircuitBreaker:
 class GemmaTorchScriptAdapter:
     """
     GEMMA model adapter for Bearish Alpha Bot.
-    Handles .pt models with 82-feature alignment.
+    Handles .pt models with manifest-driven feature alignment.
     """
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Get feature configuration from config (passed from manifest)
+        self.expected_feature_count = config.get('feature_count', 82)
+        self.feature_names = config.get('feature_names', [])
         
         # Handle circuit breaker configuration
         circuit_config = config.get('circuit_breaker', {}).copy()
@@ -92,7 +96,12 @@ class GemmaTorchScriptAdapter:
         self.shadow_predictions = deque(maxlen=5000)
 
         self._load_model_and_components()
-        logger.info(f"✅ GEMMA Adapter initialized | Device: {self.device} | Shadow Mode: {self.shadow_mode}")
+        logger.info(
+            f"✅ GEMMA Adapter initialized | "
+            f"Features: {self.expected_feature_count} | "
+            f"Device: {self.device} | "
+            f"Shadow Mode: {self.shadow_mode}"
+        )
 
     def _load_model_and_components(self):
         """Load TorchScript model and all auxiliary components."""
