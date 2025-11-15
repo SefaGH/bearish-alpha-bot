@@ -76,3 +76,4 @@ backups/
 data/models/final/*.joblib
 data/models/final/*.pt
 data/cache/gemma/*.npy
+test_reports/
