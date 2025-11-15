@@ -1,163 +1,35 @@
 # GitHub Copilot Instructions for Bearish Alpha Bot
 
-## 🚨 CRITICAL PYTHON VERSION REQUIREMENT 🚨
+## Runtime Guardrails
+- Python 3.11.x is the only supported runtime; keep `.python-version`, `pyproject.toml` (`>=3.11,<3.12`), `runtime.txt`, Dockerfiles, and docs aligned.
+- GitHub Actions must call `actions/setup-python@v5` with `python-version: "3.11"` (or `python-version-file: ".python-version"`); never introduce `3.x` shorthands or version matrices.
+- Core deps (`aiohttp==3.8.6`, `ccxt.pro`, `torch`) crash on 3.12; verify upgrades against `PYTHON_311_TEST_RESULTS.md` before touching them.
+- Local shells can source `setup_python311_env.sh`; Windows runners rely on `pytest.cmd` to prepend `src/` to `PYTHONPATH`.
 
-**⚠️ MANDATORY: This repository REQUIRES Python 3.11**
+## Architecture Map
+- `scripts/live_trading_launcher.py` is the production entrypoint: it shells into `core/production_coordinator.py`, which wires phases (multi-exchange → market intelligence → risk/portfolio → execution → ML).
+- `core/production_coordinator.py` manages lifecycle objects (`MarketDataPipeline`, `WebSocketManager`, `RiskManager`, `PortfolioManager`, `StrategyCoordinator`, `LiveTradingEngine`) and enforces phased health checks.
+- `src/main.py` offers a lighter “scan + optional execute” loop for Actions workflows; it still leans on `core.multi_exchange`, `core.exec_engine`, and adaptive strategies.
+- Real-time data flows through `core/market_data_pipeline.py` and `core/websocket_manager.py`; strategy gating and duplicate prevention live in `core/strategy_coordinator.py` (config-driven via `signals.duplicate_prevention`).
+- Execution & accounting are isolated in `core/live_trading_engine.py`, `core/order_manager.py`, `core/position_manager.py`, and `core/portfolio_manager.py`; ML augmentation sits under `src/ml/` with GEMMA manifests in `artifacts/`.
 
-- ✅ **ONLY** Python 3.11.x is SUPPORTED
-- ❌ **NEVER USE** Python 3.12, 3.10, or any other version
-- ❌ **DO NOT CHANGE** any Python version specifications to anything other than 3.11
+## Config & Environment
+- `config/live_trading_config.py` parses `config/config.example.yaml`, honoring `# Override with:` annotations to map env vars → nested keys; keep comments intact when editing YAML.
+- Required env surface: `EXCHANGES` (comma list), exchange credentials (`{EXCHANGE}_KEY/SECRET[/PASSWORD]`), `EXECUTION_EXCHANGE`, optional `MODE=live|paper`, Telegram IDs, and `LOG_LEVEL`.
+- By default the universe is fixed (`config.universe.fixed_symbols`); enabling auto-select loads markets via `src/universe.py` and applies USDT-only filters.
+- Adaptive strategy toggles, duplicate prevention thresholds, and TP/SL multipliers live under `config.signals.*`; ML switches reside under `config.ml` and must match trained artifacts.
+- Runtime artifacts land in `data/` (signal CSVs, state, quarantine) and `logs/` (queue-based logging from `core/logger.py`, with `live_trading_latest.log` symlinked).
 
-## Why Python 3.11 Only?
+## Developer Workflow
+- On Windows, run tests with `.\pytest.cmd` (sets `PYTHONPATH`): e.g. `.\pytest.cmd tests/test_live_trading_launcher.py -v` or `.\pytest.cmd tests/test_phase3_low_priority.py -k WebSocket`.
+- Full suites: `.\pytest.cmd tests -m "not slow"` (markers documented in `tests/README.md`); integration smoke lives in `tests/test_integration_smoke.py` and `tests/test_live_trading_workflow.py`.
+- Production dry run: `python scripts/live_trading_launcher.py --dry-run` performs pre-flight checks; paper tests: `python scripts/live_trading_launcher.py --paper --duration 900`.
+- Minimal scanner flow for Actions: set `EXCHANGES=bingx`, credentials, then `MODE=paper python src/main.py` (writes `data/RUN_SUMMARY.txt` and signal CSVs).
+- For ML pipelines ensure `artifacts/` manifests are synced, then run `python scripts/train_all_models.py --config config/config.example.yaml` followed by targeted verifiers (`.\pytest.cmd tests/test_gemma_integration.py`).
 
-This project requires `aiohttp==3.8.6` for ccxt.pro WebSocket functionality. 
-The aiohttp 3.8.6 package does not compile on Python 3.12+ due to internal API changes 
-(specifically, the `PyLongObject.ob_digit` structure was changed).
-
-**ANY attempt to use Python 3.12+ will result in build failures and broken dependencies.**
-
-## 📋 Required Setup in ALL GitHub Actions Workflows
-
-### ✅ MANDATORY: Use This Exact Configuration
-
-When creating or modifying ANY GitHub Actions workflow file, you **MUST** use:
-
-```yaml
-- name: Setup Python 3.11
-  uses: actions/setup-python@v5
-  with:
-    python-version: "3.11"  # ⚠️ MANDATORY - DO NOT CHANGE TO 3.12 OR ANY OTHER VERSION
-    python-version-file: ".python-version"  # Optional: reads from .python-version file
-```
-
-### ❌ FORBIDDEN: Do NOT Use
-
-```yaml
-# ❌ WRONG - DO NOT USE Python 3.12
-- uses: actions/setup-python@v5
-  with:
-    python-version: "3.12"
-
-# ❌ WRONG - DO NOT USE Python 3.10
-- uses: actions/setup-python@v5
-  with:
-    python-version: "3.10"
-
-# ❌ WRONG - DO NOT USE matrix with multiple Python versions
-strategy:
-  matrix:
-    python-version: ["3.11", "3.12"]  # Only 3.11 is allowed
-```
-
-## 🔍 Before Creating/Modifying Workflows
-
-1. **ALWAYS** check `.python-version` file (should contain `3.11`)
-2. **ALWAYS** check `pyproject.toml` (should have `requires-python = ">=3.11,<3.12"`)
-3. **ALWAYS** verify that `setup-python` action uses `python-version: "3.11"`
-4. **NEVER** assume the runner's default Python version is correct
-
-## 📝 Testing and CI/CD Guidelines
-
-When running tests or creating GitHub Actions workflows:
-
-1. **ALWAYS** explicitly set `python-version: "3.11"` in `setup-python` action
-2. **NEVER** rely on runner's default Python version
-3. **ALWAYS** verify Python version at the start of the job:
-   ```yaml
-   - name: Verify Python version
-     run: |
-       python --version  # Should output: Python 3.11.x
-       python -c "import sys; assert sys.version_info[:2] == (3, 11), f'Wrong Python version: {sys.version}'"
-   ```
-4. **NEVER** use Python 3.12 or higher
-
-## 🐳 Docker Configuration
-
-The project Docker image uses `python:3.11-slim` as the base image.
-
-**DO NOT change this to:**
-- ❌ `python:3.12-slim`
-- ❌ `python:3-slim` (uses latest Python 3.x)
-- ❌ `python:latest` (uses latest Python version)
-
-## 📦 Development Setup
-
-To set up the development environment:
-
-```bash
-# 1. Verify Python 3.11 is installed
-python --version  # MUST show Python 3.11.x
-
-# 2. If Python 3.12 is active, switch to 3.11:
-# Using pyenv:
-pyenv install 3.11
-pyenv local 3.11
-
-# Using conda:
-conda create -n bearish-bot python=3.11
-conda activate bearish-bot
-
-# 3. Install dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-## 🔑 Key Dependencies Requiring Python 3.11
-
-- `aiohttp==3.8.6` - WebSocket support for ccxt.pro (BREAKS on Python 3.12+)
-- `yarl<2.0` - Required for aiohttp 3.8.x
-- `multidict<7.0` - Required for aiohttp 3.8.x
-
-## 📄 Configuration File References
-
-This repository contains multiple files that enforce Python 3.11:
-
-1. **`.python-version`** - Contains `3.11` (for pyenv/asdf)
-2. **`runtime.txt`** - Contains `python-3.11` (for deployment platforms)
-3. **`pyproject.toml`** - Has `requires-python = ">=3.11,<3.12"`
-4. **`requirements.txt`** - Contains detailed Python 3.11 requirement explanation
-5. **`Dockerfile`** - Uses `python:3.11-slim`
-6. **`.github/copilot-config.yml`** - Copilot configuration for Python 3.11
-
-## ✅ Validation Workflow
-
-A validation workflow (`.github/workflows/python-version-check.yml`) automatically checks:
-- All workflow files use Python 3.11
-- Configuration files are correct
-- No Python 3.12+ references exist
-
-## 🎯 Summary: What You MUST Remember
-
-1. **Python 3.11 ONLY** - No exceptions
-2. **ALWAYS** use `python-version: "3.11"` in workflows
-3. **NEVER** use Python 3.12+
-4. **CHECK** `.python-version` before creating workflows
-5. **VERIFY** Python version in every CI/CD job
-
-## 🚫 Common Mistakes to Avoid
-
-- ❌ Using runner's default Python (might be 3.12)
-- ❌ Using `python-version: "3.x"` (gets latest Python 3.x)
-- ❌ Using `python-version: "3"` (gets latest Python 3.x)
-- ❌ Assuming Python 3.12 is compatible
-- ❌ Not explicitly setting python-version in setup-python
-
-## ✅ Correct Examples
-
-```yaml
-# Example 1: Explicit Python 3.11
-- uses: actions/setup-python@v5
-  with:
-    python-version: "3.11"
-
-# Example 2: Using .python-version file
-- uses: actions/setup-python@v5
-  with:
-    python-version-file: ".python-version"
-
-# Example 3: With version verification
-- uses: actions/setup-python@v5
-  with:
-    python-version: "3.11"
-- run: python --version  # Verify it's 3.11.x
-```
+## Patterns & Gotchas
+- Logging uses a queue listener (`core/logger.py`); call `setup_logger` once and respect the queue to avoid duplicate logs—direct `logging.basicConfig` calls will be ignored.
+- Duplicate signal handling depends on `StrategyCoordinator.validate_duplicate`; keep `signals.duplicate_prevention.min_price_change_pct` expressed as decimals (0.0005 = 0.05%).
+- WebSocket collectors normalize symbols to `BTC/USDT:USDT`; when adding pairs ensure both REST and WS symbols align via `_normalize_symbol_for_ws`.
+- Config loader caches results; tests that mutate env should clear `config.live_trading_config._config_instance` before reloading to avoid shared state bleed.
+- GEMMA adapters expect manifest-driven paths (`artifacts/<bundle>/manifest.json`); adding models without updating manifests breaks `StrategyCoordinator` AI-gate initialization.
