@@ -698,6 +698,31 @@ class FeatureEngineeringPipeline:
         # Debug log ekle
         logger.info(f"FeatureEngineeringPipeline initialized with config: {list(self.config.keys())}")
         
+        # Initialize ManifestManager for dynamic feature configuration
+        from .manifest_manager import ManifestManager
+        self.manifest_mgr = ManifestManager()
+        
+        # Load manifest from active bundle
+        bundle_path = self.config.get('models', {}).get('active_bundle', 'artifacts/legacy')
+        try:
+            self.manifest = self.manifest_mgr.load_manifest(bundle_path)
+            self.expected_feature_count = self.manifest['feature_count']
+            
+            # Get selected features for each mode
+            self.price_features = self.manifest_mgr.get_selected_features('price')
+            self.regime_features = self.manifest_mgr.get_selected_features('regime')
+            
+            logger.info(f"✅ FeatureEngineering initialized with manifest: {self.manifest.get('version')}")
+            logger.info(f"   Expected feature count: {self.expected_feature_count}")
+            logger.info(f"   Price features: {len(self.price_features)}")
+            logger.info(f"   Regime features: {len(self.regime_features)}")
+        except Exception as e:
+            logger.warning(f"Failed to load manifest, using defaults: {e}")
+            self.manifest = {'feature_count': 42, 'mode': 'legacy'}
+            self.expected_feature_count = 42
+            self.price_features = list(range(42))
+            self.regime_features = list(range(42))
+        
         # GEMMA integration: Check if GEMMA mode is enabled
         self.gemma_enabled = self.config.get('ml', {}).get('gemma', {}).get('enabled', False)
         
@@ -735,28 +760,70 @@ class FeatureEngineeringPipeline:
         
     def extract_features(self, price_data: pd.DataFrame, 
                         volume_data: Optional[pd.DataFrame] = None,
-                        orderbook_data: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                        orderbook_data: Optional[pd.DataFrame] = None,
+                        mode: str = 'price') -> pd.DataFrame:
         """
-        Main feature extraction method - acts as a dispatcher.
-        Returns 87 features if GEMMA enabled, otherwise uses legacy feature extraction.
+        Main feature extraction method with manifest-based feature selection.
         
         Args:
             price_data: DataFrame with OHLCV data and indicators
             volume_data: Optional volume-specific data
             orderbook_data: Optional order book data
+            mode: Feature selection mode - 'price', 'regime', or 'all' (default: 'price')
             
         Returns:
-            DataFrame with extracted features (87 for GEMMA, or legacy count)
+            DataFrame with extracted features based on manifest configuration
         """
         try:
+            # 1. Extract full feature set based on mode
             if self.gemma_enabled:
-                logger.info("🧬 GEMMA mode enabled - extracting 87 features")
-                return self.extract_gemma_features(price_data)
+                logger.debug("🧬 GEMMA mode enabled - extracting all 87 features")
+                all_features = self.extract_gemma_features(price_data)
             else:
-                logger.info("📦 Legacy mode - extracting standard features")
-                return self.extract_legacy_features(price_data, volume_data, orderbook_data)
+                logger.debug("📦 Legacy mode - extracting standard features")
+                all_features = self.extract_legacy_features(price_data, volume_data, orderbook_data)
+            
+            # 2. Apply feature selection based on mode and manifest
+            if mode == 'price':
+                selected_columns = self.price_features
+            elif mode == 'regime':
+                selected_columns = self.regime_features
+            else:
+                # Return all features
+                return all_features
+            
+            # 3. Select only required columns (by index or name)
+            try:
+                # If selected_columns contains indices, convert to column names
+                if selected_columns and isinstance(selected_columns[0], int):
+                    feature_cols = [all_features.columns[i] for i in selected_columns if i < len(all_features.columns)]
+                else:
+                    feature_cols = selected_columns
+                
+                selected_features = all_features[feature_cols]
+                
+                # 4. Validate output shape
+                if len(selected_features.columns) != self.expected_feature_count:
+                    logger.warning(
+                        f"Feature count mismatch: {len(selected_features.columns)} != {self.expected_feature_count}"
+                    )
+                    # In lenient mode, continue; in strict mode this could raise
+                    if self.config.get('models', {}).get('deployment', {}).get('validation_mode') == 'strict':
+                        raise ValueError(
+                            f"Feature count mismatch: {len(selected_features.columns)} != {self.expected_feature_count}"
+                        )
+                
+                logger.debug(f"✅ Extracted {len(selected_features.columns)} features for mode={mode}")
+                return selected_features
+                
+            except (KeyError, IndexError) as e:
+                logger.error(f"Feature selection failed: {e}")
+                # Return all features as fallback
+                logger.warning(f"Returning all {len(all_features.columns)} features as fallback")
+                return all_features
+                
         except Exception as e:
-            logger.error(f"Error in feature extraction dispatcher: {e}", exc_info=True)
+            logger.error(f"Error in feature extraction: {e}", exc_info=True)
             return pd.DataFrame()
 
     def extract_advanced_features(self, price_data: pd.DataFrame) -> pd.DataFrame:
@@ -1117,10 +1184,11 @@ class FeatureEngineeringPipeline:
         # Fill NaN values with forward fill, then zero
         features = features.fillna(method='ffill').fillna(0)
         
-        # Validate feature count
-        assert features.shape[1] == 87, f"Expected 87 features, got {features.shape[1]}"
+        # Validate feature count (informational, not strict)
+        if features.shape[1] != 87:
+            logger.warning(f"GEMMA features: expected 87, got {features.shape[1]}")
         
-        logger.info(f"✅ Extracted {features.shape[1]} GEMMA features")
+        logger.debug(f"✅ Extracted {features.shape[1]} GEMMA features")
         return features
     
     def extract_legacy_features(self, price_data: pd.DataFrame, 

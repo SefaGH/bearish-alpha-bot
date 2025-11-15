@@ -140,20 +140,32 @@ if TORCH_AVAILABLE:
                 'risk_penalty_strength': 100.0,
             }
         
-        def __init__(self, state_size: int, action_size: int, config: Dict[str, Any]):
+        def __init__(self, state_size: int = None, action_size: int = 3, config: Dict[str, Any] = None):
             """
-            Initialize Trading RL Agent using a configuration dictionary.
+            Initialize Trading RL Agent with manifest-driven state size.
 
             Args:
-                state_size (int): Dimension of state space (market features).
-                action_size (int): Number of possible actions.
-                config (Dict[str, Any]): Configuration dictionary, typically from the
-                                         'reinforcement_learning' section of the YAML config.
+                state_size (int, optional): Dimension of state space. If None, loads from manifest.
+                action_size (int): Number of possible actions (default: 3).
+                config (Dict[str, Any]): Configuration dictionary from YAML config.
             """
             # Merge provided config with defaults for robustness
             default_config = self._get_default_config()
-            self.config = {**default_config, **config}
+            self.config = {**default_config, **(config or {})}
 
+            # Load state size from manifest if not provided
+            if state_size is None:
+                from .manifest_manager import ManifestManager
+                manifest_mgr = ManifestManager()
+                bundle_path = self.config.get('active_bundle', 'artifacts/legacy')
+                try:
+                    manifest = manifest_mgr.load_manifest(bundle_path)
+                    state_size = manifest.get('rl_state_size', manifest.get('feature_count', 42))
+                    logger.info(f"✅ RL Agent using state_size={state_size} from manifest")
+                except Exception as e:
+                    logger.warning(f"Failed to load manifest for RL agent: {e}")
+                    state_size = 42  # Fallback
+            
             self.state_size = state_size
             self.action_size = action_size
             
@@ -427,23 +439,41 @@ if TORCH_AVAILABLE:
         
         def load_model(self, path: str):
             """
-            Load model weights from a checkpoint file.
-            Includes error handling for missing files.
+            Load model weights from a checkpoint file with dimension compatibility checking.
+            Includes error handling for missing files and dimension mismatches.
             """
             try:
-                checkpoint = torch.load(path)
+                checkpoint = torch.load(path, map_location='cpu')
+                
+                # Check dimension compatibility before loading
+                if 'q_network' in checkpoint:
+                    # Try to extract first layer dimensions
+                    try:
+                        first_layer_key = next(k for k in checkpoint['q_network'].keys() if 'network.0.weight' in k)
+                        weight_shape = checkpoint['q_network'][first_layer_key].shape
+                        model_input_size = weight_shape[1]
+                        
+                        if model_input_size != self.state_size:
+                            logger.warning(
+                                f"⚠️ RL model dimension mismatch: model expects {model_input_size}, "
+                                f"but agent has state_size={self.state_size}"
+                            )
+                            logger.warning("Skipping model load - dimension mismatch. Agent will use untrained weights.")
+                            return
+                    except (StopIteration, KeyError):
+                        # Can't determine dimensions, proceed with caution
+                        logger.warning("Cannot determine model dimensions, attempting load anyway...")
+                
+                # Load model
                 self.q_network.load_state_dict(checkpoint['q_network'])
                 self.target_network.load_state_dict(checkpoint['target_network'])
                 self.optimizer.load_state_dict(checkpoint['optimizer'])
                 self.epsilon = checkpoint.get('epsilon', self.epsilon)
                 self.training_history = checkpoint.get('training_history', self.training_history)
-                # Başarı durumunda net bir log mesajı ekle
-                logger.info(f"✅ RL Agent model loaded successfully from {path}")
+                logger.info(f"✅ RL Agent model loaded successfully from {path} (state_size={self.state_size})")
             except FileNotFoundError:
-                # Dosya bulunamazsa hata logu yazdır
                 logger.error(f"❌ RL Agent model file not found at {path}. Agent will use untrained weights.")
             except Exception as e:
-                # Diğer olası hatalar için detaylı log yazdır
                 logger.error(f"❌ Failed to load RL Agent model from {path}: {e}", exc_info=True)
         
         def get_training_summary(self) -> Dict[str, Any]:

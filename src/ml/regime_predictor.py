@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import logging
 import os
 from datetime import timedelta
+from pathlib import Path
 
 # ML_ENABLED ortam değişkenini oku
 ML_ENABLED = os.getenv("ML_ENABLED", "false").lower() in ("1", "true", "yes")
@@ -140,13 +141,13 @@ class EnsembleRegimePredictor:
 class MLRegimePredictor:
     """
     Machine learning-based market regime prediction system.
-    (GÜNCELLENDİ: Artık kendi konfigürasyon bloğunu doğru okuyor)
+    (GÜNCELLENDİ: Artık kendi konfigürasyon bloğunu doğru okuyor + Manifest entegrasyonu)
     """
     MODEL_DIR = "data/models/regime"
     
     def __init__(self, feature_pipeline, config: Dict[str, Any]):
         """
-        Initialize the ML regime predictor.
+        Initialize the ML regime predictor with manifest support.
 
         Args:
             feature_pipeline: Instance of FeatureEngineeringPipeline.
@@ -157,6 +158,22 @@ class MLRegimePredictor:
 
         self.feature_pipeline = feature_pipeline
         self.config = config
+        
+        # Initialize ManifestManager for dynamic model loading
+        from .manifest_manager import ManifestManager
+        self.manifest_mgr = ManifestManager()
+        
+        # Load manifest from active bundle (try to get from config or use default)
+        bundle_path = config.get('active_bundle', 'artifacts/legacy')
+        try:
+            self.manifest = self.manifest_mgr.load_manifest(bundle_path)
+            self.expected_features = self.manifest['feature_count']
+            logger.info(f"✅ MLRegimePredictor initialized with manifest: {self.manifest.get('version')}")
+            logger.info(f"   Expected features: {self.expected_features}")
+        except Exception as e:
+            logger.warning(f"Failed to load manifest for regime predictor: {e}")
+            self.manifest = {'feature_count': 42, 'mode': 'legacy'}
+            self.expected_features = 42
         
         self.scaler = None
         self.models = {
@@ -170,62 +187,90 @@ class MLRegimePredictor:
         self.is_trained = self.load_models()
 
     def load_models(self) -> bool:
-        """Loads trained regime models and the scaler from disk using its own config."""
-        # ✔️ DÜZELTME 1: 'model_path' anahtarı `ml.regime_prediction` bloğunda yok.
-        # Bu nedenle, varsayılan bir yol kullanmak daha güvenli.
-        model_dir_base = self.config.get('model_base_path', 'data/models') 
-        regime_model_dir = os.path.join(model_dir_base, 'regime')
+        """Loads trained regime models and the scaler from disk using manifest paths."""
+        # Determine paths based on manifest
+        if hasattr(self, 'manifest') and self.manifest.get('mode') == 'legacy':
+            # Legacy paths
+            model_dir_base = self.config.get('model_base_path', 'data/models') 
+            regime_model_dir = os.path.join(model_dir_base, 'regime')
+            scaler_path = os.path.join(regime_model_dir, "scaler.pkl")
+            rf_path = os.path.join(regime_model_dir, "random_forest.pkl")
+            lstm_path = os.path.join(regime_model_dir, "lstm_regime.pth")
+        else:
+            # Manifest-based paths
+            bundle_path = Path(self.config.get('active_bundle', 'artifacts/legacy'))
+            scaler_path = bundle_path / self.manifest.get('regime_scaler_path', 'scaler.pkl')
+            rf_path = bundle_path / self.manifest.get('regime_rf_path', 'random_forest.pkl')
+            lstm_path = bundle_path / self.manifest.get('regime_model_path', 'lstm_regime.pth')
 
-        if not os.path.exists(regime_model_dir):
-            logger.warning(f"Regime model directory not found: {regime_model_dir}. Models not loaded.")
+        if not Path(scaler_path).parent.exists():
+            logger.warning(f"Regime model directory not found. Models not loaded.")
             return False
 
         models_loaded = 0
         try:
-            scaler_path = os.path.join(regime_model_dir, "scaler.pkl")
+            # Load and validate scaler
             if os.path.exists(scaler_path):
                 self.scaler = joblib.load(scaler_path)
-                logger.info(f"✅ Regime feature scaler loaded from: {scaler_path}")
+                
+                # Validate scaler dimensions
+                if hasattr(self.scaler, 'n_features_in_'):
+                    if self.scaler.n_features_in_ != self.expected_features:
+                        logger.warning(
+                            f"⚠️ Scaler dimension mismatch: {self.scaler.n_features_in_} != {self.expected_features}"
+                        )
+                        # In strict mode, this could be an error
+                        if self.config.get('validation_mode') == 'strict':
+                            logger.error("Strict mode: scaler dimension mismatch not allowed")
+                            return False
+                    else:
+                        logger.info(f"✅ Regime feature scaler loaded: {self.scaler.n_features_in_} features")
+                else:
+                    logger.info(f"✅ Regime feature scaler loaded from: {scaler_path}")
             
-            rf_path = os.path.join(regime_model_dir, "random_forest.pkl")
+            # Load Random Forest
             if os.path.exists(rf_path) and RandomForestClassifier is not None:
                 self.models['random_forest'] = joblib.load(rf_path)
                 models_loaded += 1
                 logger.info(f"✅ Random Forest regime model loaded from: {rf_path}")
             
-            # ✔️ DÜZELTME 2: Gerekli parametreleri doğrudan kendisine verilen `self.config`'ten okur.
-            # 'models' veya 'features' gibi üst seviye anahtarları aramaz.
+            # Load LSTM model with dynamic input size
             model_params = self.config.get('model_params', {})
-            # `input_size` gibi bir parametre `regime_prediction` bloğunda tanımlı değil.
-            # Bu, `feature_pipeline`'dan veya sabit bir değerden alınmalı. Şimdilik sabit varsayalım.
-            input_size = 42
-
-            # LSTM modelini yükle
-            lstm_path = os.path.join(regime_model_dir, "lstm_regime.pth")
-            # `lstm_regime` anahtarının `model_params` içinde olup olmadığını kontrol et
+            input_size = self.expected_features  # Use manifest feature count
+            
             if os.path.exists(lstm_path) and 'lstm_regime' in model_params:
                 try:
                     import torch
                     
-                    lstm_config = model_params['lstm_regime'] # Anahtar adını düzelttik
+                    lstm_config = model_params['lstm_regime']
                     lstm_model = LSTMRegimePredictor(
                         input_size=input_size,
-                        hidden_size=lstm_config.get('hidden_size', 64), # Varsayılan değerler ekledik
+                        hidden_size=lstm_config.get('hidden_size', 64),
                         num_layers=lstm_config.get('num_layers', 2),
                         num_classes=3
                     )
-                    lstm_model.load_state_dict(torch.load(lstm_path, map_location='cpu'))
-                    lstm_model.eval()
-                    self.models['lstm_regime'] = lstm_model # Anahtar adını düzelttik
-                    models_loaded += 1
-                    logger.info(f"✅ LSTM regime model loaded from: {lstm_path}")
+                    
+                    # Load state dict with dimension checking
+                    checkpoint = torch.load(lstm_path, map_location='cpu')
+                    
+                    # Check if model dimensions match
+                    try:
+                        lstm_model.load_state_dict(checkpoint)
+                        lstm_model.eval()
+                        self.models['lstm_regime'] = lstm_model
+                        models_loaded += 1
+                        logger.info(f"✅ LSTM regime model loaded: input_size={input_size}")
+                    except RuntimeError as e:
+                        logger.error(f"❌ LSTM model dimension mismatch: {e}")
+                        if self.config.get('validation_mode') != 'strict':
+                            logger.warning("Continuing without LSTM model")
+                        
                 except Exception as e:
                     logger.error(f"❌ Failed to load LSTM model from {lstm_path}: {e}", exc_info=True)
             
             if models_loaded > 0:
                 base_models = {name: model for name, model in self.models.items() if model and name != 'ensemble'}
                 if base_models:
-                    # ✔️ DÜZELTME 3: Ensemble ağırlıklarını `self.config`'ten okur.
                     ensemble_weights = self.config.get('ensemble_weights')
                     self.models['ensemble'] = EnsembleRegimePredictor(base_models, weights=ensemble_weights)
                     logger.info(f"✅ {len(base_models)} regime models loaded and ensemble created.")
