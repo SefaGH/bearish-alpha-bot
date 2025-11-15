@@ -301,8 +301,8 @@ class MLRegimePredictor:
             logger.info(f"Predicting regime transition for {symbol} with {horizon} horizon")
             logger.debug(f"🧠 [ML-REGIME] Starting regime prediction for {symbol}")
             
-            # Feature extraction from multi-timeframe data
-            features = self.feature_pipeline.extract_features(price_data)
+            # Feature extraction from multi-timeframe data (use regime feature set)
+            features = self.feature_pipeline.extract_features(price_data, mode='regime')
             
             if features.empty:
                 logger.warning("No features extracted, returning default prediction")
@@ -388,8 +388,8 @@ class MLRegimePredictor:
         try:
             logger.info("Training regime prediction models...")
             
-            # Feature engineering and preprocessing
-            features = self.feature_pipeline.extract_features(historical_data)
+            # Feature engineering and preprocessing (use regime feature set)
+            features = self.feature_pipeline.extract_features(historical_data, mode='regime')
             
             # Prepare data for training
             X, y = self.feature_pipeline.prepare_for_training(features, regime_labels)

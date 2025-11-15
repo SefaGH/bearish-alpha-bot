@@ -727,7 +727,8 @@ class StrategyCoordinator:
 
             # 3. FeatureEngineeringPipeline kullanarak standart özellikleri çıkar
             # NOT: Bu metot zaten içinde 'add_indicators' çağırıyor, bu yüzden ek indikatör eklemeye gerek yok.
-            features_df = self.feature_pipeline.extract_features(df)
+            # RL state için price feature set kullanılır
+            features_df = self.feature_pipeline.extract_features(df, mode='price')
             
             if features_df.empty:
                 logger.warning(f"[RL-STATE] Feature extraction failed for {symbol}.")
