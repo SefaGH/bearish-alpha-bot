@@ -158,7 +158,10 @@ class GemmaTorchScriptAdapter:
                 self.features = self.features[:scaler_feature_count]
 
             # 4. Load Feature Mask (optional, but recommended)
-            mask_path = Path(self.config.get('feature_mask_path', 'data/cache/gemma/feature_selection_mask.npy'))
+            mask_source = self.config.get('feature_mask_path')
+            if not mask_source:
+                mask_source = 'data/cache/gemma/feature_selection_mask.npy'
+            mask_path = Path(mask_source)
             if mask_path.exists():
                 self.feature_mask = np.load(mask_path)
                 logger.info(f"✅ Loaded feature selection mask from: {mask_path}")

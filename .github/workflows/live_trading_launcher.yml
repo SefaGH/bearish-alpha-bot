@@ -222,9 +222,56 @@ jobs:
           python -m pip install -e .
           echo "✅ Repository package installed."
 
+      - name: Export GEMMA environment
+        if: github.event.inputs.enable_ml == 'true'
+        run: |
+          echo "GEMMA_ENABLED=true" >> $GITHUB_ENV
+          echo "ML_ACTIVE_BUNDLE=artifacts/gemma/final" >> $GITHUB_ENV
+          echo "✅ GEMMA environment variables exported"
+
+      - name: Prepare GEMMA artifacts
+        shell: bash
+        run: |
+          set -e
+          bash scripts/setup_gemma_artifacts.sh
+          bash scripts/setup_ml_model_links.sh
+
+      - name: Validate GEMMA manifest and RL agent
+        shell: bash
+        run: |
+          set -e
+          if [ -f data/models/final/rl_agent_final.pth ] && [ ! -f data/models/rl_agent_final.pth ]; then
+            cp data/models/final/rl_agent_final.pth data/models/rl_agent_final.pth
+            echo "RL agent checkpoint restored from final bundle"
+          fi
+
+          if [ ! -f data/models/rl_agent_final.pth ]; then
+            echo "❌ RL agent checkpoint missing"
+            exit 1
+          fi
+
+          if [ ! -f artifacts/gemma/final/manifest.json ]; then
+            echo "❌ GEMMA manifest not found"
+            exit 1
+          fi
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = Path('artifacts/gemma/final/manifest.json')
+          data = json.loads(manifest.read_text(encoding='utf-8'))
+          feature_count = data.get('feature_count')
+          if feature_count != 82:
+              raise SystemExit(f"Expected GEMMA feature_count=82, got {feature_count}")
+          print("✅ GEMMA manifest feature count verified (82 features)")
+          PY
+
       - name: Run Dry-Run Pre-Flight Checks
         env:
           ML_ENABLED: ${{ github.event.inputs.enable_ml }}
+          GEMMA_ENABLED: "true"
+          ML_ACTIVE_BUNDLE: "artifacts/gemma/final"
           DEBUG_STRATEGY_LOGGING: ${{ github.event.inputs.debug_mode }}
           
           # --- DÜZELTME: Threshold varsayılan değeri doğru ondalık orana (0.0005) getirildi. ---
@@ -315,6 +362,51 @@ jobs:
           python -m pip install -e .
         shell: bash
 
+      - name: Export GEMMA environment
+        if: github.event.inputs.enable_ml == 'true'
+        run: |
+          echo "GEMMA_ENABLED=true" >> $GITHUB_ENV
+          echo "ML_ACTIVE_BUNDLE=artifacts/gemma/final" >> $GITHUB_ENV
+          echo "✅ GEMMA environment variables exported"
+
+      - name: Prepare GEMMA artifacts
+        shell: bash
+        run: |
+          set -e
+          bash scripts/setup_gemma_artifacts.sh
+          bash scripts/setup_ml_model_links.sh
+
+      - name: Validate GEMMA manifest and RL agent
+        shell: bash
+        run: |
+          set -e
+          if [ -f data/models/final/rl_agent_final.pth ] && [ ! -f data/models/rl_agent_final.pth ]; then
+            cp data/models/final/rl_agent_final.pth data/models/rl_agent_final.pth
+            echo "RL agent checkpoint restored from final bundle"
+          fi
+
+          if [ ! -f data/models/rl_agent_final.pth ]; then
+            echo "❌ RL agent checkpoint missing"
+            exit 1
+          fi
+
+          if [ ! -f artifacts/gemma/final/manifest.json ]; then
+            echo "❌ GEMMA manifest not found"
+            exit 1
+          fi
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = Path('artifacts/gemma/final/manifest.json')
+          data = json.loads(manifest.read_text(encoding='utf-8'))
+          feature_count = data.get('feature_count')
+          if feature_count != 82:
+              raise SystemExit(f"Expected GEMMA feature_count=82, got {feature_count}")
+          print("✅ GEMMA manifest feature count verified (82 features)")
+          PY
+
       - name: Set Dynamic Environment Variables
         id: set-env
         run: |
@@ -362,6 +454,8 @@ jobs:
           # Sadece statik, gizli veya input'tan gelenler burada listelenir.
           # Dinamik olanlar bir önceki adımda ortama otomatik olarak eklendi.
           ML_ENABLED: ${{ github.event.inputs.enable_ml }}
+          GEMMA_ENABLED: "true"
+          ML_ACTIVE_BUNDLE: "artifacts/gemma/final"
           BINGX_KEY: ${{ secrets.BINGX_KEY }}
           BINGX_SECRET: ${{ secrets.BINGX_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

@@ -289,31 +289,45 @@ class MLRegimePredictor:
                         num_classes=3
                     )
                     
-                    # TorchScript archives require weights_only=False to load the full program.
-                    checkpoint = torch.load(lstm_path, map_location='cpu', weights_only=False)
-
-                    if isinstance(checkpoint, dict):
-                        # Check if model dimensions match
-                        try:
-                            lstm_model.load_state_dict(checkpoint)
-                            lstm_model.eval()
-                            self.models['lstm_regime'] = lstm_model
-                            models_loaded += 1
-                            logger.info(f"LSTM regime model loaded: input_size={input_size}")
-                        except RuntimeError as e:
-                            logger.error(f"LSTM model dimension mismatch: {e}")
-                            if self.config.get('validation_mode') != 'strict':
-                                logger.warning("Continuing without LSTM model")
-                    elif hasattr(checkpoint, 'forward'):
-                        # Loaded a TorchScript module; use it directly.
-                        checkpoint.eval()
-                        self.models['lstm_regime'] = checkpoint
+                    checkpoint = None
+                    torchscript_loaded = False
+                    try:
+                        script_module = torch.jit.load(lstm_path, map_location='cpu')
+                        script_module.eval()
+                        self.models['lstm_regime'] = script_module
                         models_loaded += 1
+                        torchscript_loaded = True
                         logger.info("TorchScript LSTM regime model loaded successfully")
-                    else:
-                        logger.error(f"Unsupported LSTM checkpoint type: {type(checkpoint)}")
-                        if self.config.get('validation_mode') == 'strict':
-                            return False
+                    except Exception as jit_error:  # pylint: disable=broad-except
+                        logger.debug(
+                            "TorchScript load failed for %s, falling back to state dict: %s",
+                            lstm_path,
+                            jit_error,
+                        )
+                        checkpoint = torch.load(lstm_path, map_location='cpu', weights_only=False)
+
+                    if not torchscript_loaded and checkpoint is not None:
+                        if isinstance(checkpoint, dict):
+                            # Check if model dimensions match
+                            try:
+                                lstm_model.load_state_dict(checkpoint)
+                                lstm_model.eval()
+                                self.models['lstm_regime'] = lstm_model
+                                models_loaded += 1
+                                logger.info(f"LSTM regime model loaded: input_size={input_size}")
+                            except RuntimeError as e:
+                                logger.error(f"LSTM model dimension mismatch: {e}")
+                                if self.config.get('validation_mode') != 'strict':
+                                    logger.warning("Continuing without LSTM model")
+                        elif hasattr(checkpoint, 'forward'):
+                            checkpoint.eval()
+                            self.models['lstm_regime'] = checkpoint
+                            models_loaded += 1
+                            logger.info("Torch-based LSTM regime model loaded successfully")
+                        else:
+                            logger.error(f"Unsupported LSTM checkpoint type: {type(checkpoint)}")
+                            if self.config.get('validation_mode') == 'strict':
+                                return False
                         
                 except Exception as e:
                     logger.error(f"Failed to load LSTM model from {lstm_path}: {e}", exc_info=True)

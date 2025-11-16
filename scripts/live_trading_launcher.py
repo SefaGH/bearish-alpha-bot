@@ -31,6 +31,9 @@ import json
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
+# Ensure ML stack stays enabled when launch scripts forget to export the flag.
+os.environ.setdefault('ML_ENABLED', 'true')
+
 from core.logger import setup_logger
 
 # ====================================================================
@@ -48,13 +51,7 @@ from config.risk_config import RiskConfiguration
 from config.optimization_config import OptimizationConfiguration
 from ml.regime_predictor import MLRegimePredictor
 # --- GÜNCELLENDİ: Gerçek model sınıflarını da import et ---
-from ml.price_predictor import (
-    AdvancedPricePredictionEngine, 
-    MultiTimeframePricePredictor,
-    EnsemblePricePredictor,
-    LSTMPricePredictor,
-    TransformerPricePredictor
-)
+from ml.price_predictor import AdvancedPricePredictionEngine
 from ml.strategy_integration import AIEnhancedStrategyAdapter
 from ml.strategy_optimizer import StrategyOptimizer
 from strategies.adaptive_ob import AdaptiveOversoldBounce

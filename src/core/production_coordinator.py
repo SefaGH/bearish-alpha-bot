@@ -10,6 +10,7 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
 import time
 import os
+from pathlib import Path
 import yaml
 import pandas as pd
 import numpy as np  # For ML health checks
@@ -993,22 +994,58 @@ class ProductionCoordinator:
         ml_config = self.config.get('ml', {})
         
         # Initialize manifest manager first
+        models_config = dict(self.config.get('models', {}))
+        bundle_path = models_config.get('active_bundle', 'artifacts/legacy')
+        fallback_bundle = models_config.get('fallback_bundle')
+
+        manifest_path = Path(bundle_path) / "manifest.json"
+        if not manifest_path.exists():
+            if fallback_bundle:
+                fallback_manifest_path = Path(fallback_bundle) / "manifest.json"
+                if fallback_manifest_path.exists():
+                    logger.warning(
+                        "🧠 [ML-INIT] Active bundle manifest missing at %s; using fallback bundle %s",
+                        manifest_path,
+                        fallback_bundle,
+                    )
+                    bundle_path = fallback_bundle
+                    models_config['active_bundle'] = bundle_path
+                    manifest_path = fallback_manifest_path
+                else:
+                    logger.warning(
+                        "🧠 [ML-INIT] Active bundle manifest missing at %s and fallback manifest not found at %s",
+                        manifest_path,
+                        fallback_manifest_path,
+                    )
+            else:
+                logger.warning(
+                    "🧠 [ML-INIT] Active bundle manifest missing at %s and no fallback bundle configured",
+                    manifest_path,
+                )
+
+        # Persist any updates so downstream components receive the resolved path
+        if models_config:
+            self.config['models'] = models_config
+        else:
+            self.config['models'] = {'active_bundle': bundle_path}
+
+        logger.info("🧠 [ML-INIT] Resolved model bundle path: %s", bundle_path)
+
         try:
             manifest_mgr = ManifestManager()
-            bundle_path = self.config.get('models', {}).get('active_bundle', 'artifacts/legacy')
             manifest = manifest_mgr.load_manifest(bundle_path)
-            
+
             logger.info(f"🧠 [ML-INIT] Using manifest version: {manifest.get('version')}")
             logger.info(f"🧠 [ML-INIT] Feature count: {manifest['feature_count']}")
             logger.info(f"🧠 [ML-INIT] Mode: {manifest.get('mode', 'unknown')}")
-            
-            # Pass manifest info to config for other components
-            ml_config['active_bundle'] = bundle_path
-            ml_config['manifest_version'] = manifest.get('version')
-            
+
         except Exception as e:
             logger.warning(f"Failed to load manifest, using defaults: {e}")
-            manifest = {'feature_count': 42, 'mode': 'legacy'}
+            manifest = {'feature_count': 42, 'mode': 'legacy', 'version': '0.0-default'}
+
+        # Pass manifest info to config for other components regardless of manifest status
+        ml_config['active_bundle'] = bundle_path
+        ml_config['manifest_version'] = manifest.get('version') if isinstance(manifest, dict) else None
 
         # 1. Özellik Mühendisliği Pijaması (Feature Engineering Pipeline)
         try:

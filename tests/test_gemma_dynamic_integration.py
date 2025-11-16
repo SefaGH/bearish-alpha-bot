@@ -24,6 +24,100 @@ sys.path.insert(0, project_root)
 
 from src.ml.manifest_manager import ManifestManager
 from src.ml.feature_engineering import FeatureEngineeringPipeline
+from src.ml.price_predictor import AdvancedPricePredictionEngine
+
+
+class DummyFeaturePipeline:
+    """Minimal feature pipeline that mirrors manifest-driven expectations."""
+
+    def __init__(self, bundle_path: str, feature_names):
+        self.models_config = {'active_bundle': bundle_path}
+        self._feature_names = feature_names
+
+    def extract_features(self, price_data, mode: str = 'price'):
+        latest_close = float(price_data['close'].iloc[-1]) if price_data is not None else 0.0
+        row = {feature: latest_close for feature in self._feature_names}
+        return pd.DataFrame([row])
+
+
+class DummyMarketDataPipeline:
+    """Returns a fixed OHLCV frame to drive the prediction engine."""
+
+    def __init__(self, price_frame: pd.DataFrame):
+        self._frame = price_frame
+
+    async def get_latest_ohlcv(self, symbol: str, timeframe: str, exchange=None):  # noqa: D401
+        return self._frame.copy()
+
+
+@pytest.fixture
+def sample_price_frame():
+    """Create deterministic OHLCV data for price engine tests."""
+    dates = pd.date_range('2024-01-01', periods=120, freq='15min')
+    base = np.linspace(100, 105, len(dates))
+    noise = np.random.randn(len(dates)) * 0.05
+    close = base + noise
+    frame = pd.DataFrame({
+        'open': close - 0.1,
+        'high': close + 0.2,
+        'low': close - 0.2,
+        'close': close,
+        'volume': np.random.randint(1_000, 2_000, len(dates))
+    }, index=dates)
+    return frame
+
+
+@pytest.fixture
+def gemma_test_bundle(tmp_path):
+    """Create a temporary GEMMA bundle with manifest and stub files."""
+    bundle = tmp_path / 'gemma_bundle'
+    bundle.mkdir()
+
+    feature_names = [f'feature_{i}' for i in range(8)]
+    manifest = {
+        'version': 'test-2.0.0',
+        'mode': 'gemma',
+        'feature_count': len(feature_names),
+        'feature_names_ordered': feature_names,
+        'selected_features_price': list(range(len(feature_names))),
+        'selected_features_regime': list(range(len(feature_names))),
+        'price_model_path': 'gemma_price_model.pt',
+        'price_scaler_path': 'gemma_price_scaler.joblib',
+        'active_features_path': 'price_features.json',
+        'rl_state_size': len(feature_names)
+    }
+
+    (bundle / 'manifest.json').write_text(json.dumps(manifest))
+    (bundle / 'gemma_price_model.pt').write_text('stub-model')
+    (bundle / 'gemma_price_scaler.joblib').write_text('stub-scaler')
+    (bundle / 'price_features.json').write_text(json.dumps({'features': feature_names}))
+
+    return {
+        'path': str(bundle),
+        'manifest': manifest,
+        'feature_names': feature_names
+    }
+
+
+@pytest.fixture
+def patched_gemma_adapter(monkeypatch):
+    """Patch GemmaTorchScriptAdapter with a lightweight test double."""
+
+    class _DummyAdapter:
+        def __init__(self, config):
+            self.config = config
+            self.model = object()
+
+        def predict(self, feature_snapshot):
+            return {
+                'probabilities': [0.25, 0.25, 0.5],
+                'price_confidence': 0.83,
+                'prediction': 2,
+                'prediction_label': 'bullish'
+            }
+
+    monkeypatch.setattr('src.ml.price_predictor.GemmaTorchScriptAdapter', _DummyAdapter)
+    return _DummyAdapter
 
 
 class TestManifestManager:
@@ -285,6 +379,76 @@ class TestErrorHandling:
         
         # Should initialize with defaults
         assert pipeline.expected_feature_count == 42
+
+
+class TestAdvancedPricePredictionEngineIntegration:
+    """Validate manifest-driven price engine behavior."""
+
+    def test_engine_initializes_with_manifest_bundle(
+        self,
+        gemma_test_bundle,
+        sample_price_frame,
+        patched_gemma_adapter,
+    ):
+        """Engine should load manifest metadata and activate GEMMA adapter."""
+
+        feature_pipeline = DummyFeaturePipeline(gemma_test_bundle['path'], gemma_test_bundle['feature_names'])
+        market_pipeline = DummyMarketDataPipeline(sample_price_frame)
+
+        engine = AdvancedPricePredictionEngine(
+            market_data_pipeline=market_pipeline,
+            feature_pipeline=feature_pipeline,
+            config={'active_bundle': gemma_test_bundle['path'], 'timeframes': ['15m']},
+        )
+
+        assert engine.is_trained is True
+        assert engine.manifest['version'] == gemma_test_bundle['manifest']['version']
+        assert engine.bundle_path == Path(gemma_test_bundle['path'])
+        assert 'ML Mode' in engine.get_status_summary()
+
+    @pytest.mark.asyncio
+    async def test_engine_generates_manifest_prediction(
+        self,
+        gemma_test_bundle,
+        sample_price_frame,
+        patched_gemma_adapter,
+    ):
+        """Engine should produce GEMMA-mode predictions using manifest features."""
+
+        feature_pipeline = DummyFeaturePipeline(gemma_test_bundle['path'], gemma_test_bundle['feature_names'])
+        market_pipeline = DummyMarketDataPipeline(sample_price_frame)
+
+        engine = AdvancedPricePredictionEngine(
+            market_data_pipeline=market_pipeline,
+            feature_pipeline=feature_pipeline,
+            config={
+                'active_bundle': gemma_test_bundle['path'],
+                'timeframes': ['15m'],
+                'classification_to_pct_scale': 2.0,
+            },
+        )
+
+        forecast = await engine._make_prediction_for_symbol('BTC/USDT')
+
+        assert forecast is not None
+        assert forecast['mode'] == 'gemma'
+        assert 'aggregated' in forecast
+        assert forecast['aggregated']['forecast'].shape[0] == 1
+
+    def test_engine_enters_fallback_when_bundle_missing(self, tmp_path):
+        """Missing bundles should keep the engine in fallback mode."""
+
+        missing_bundle = tmp_path / 'missing_bundle'
+        feature_pipeline = DummyFeaturePipeline(str(missing_bundle), ['feature_0'])
+
+        engine = AdvancedPricePredictionEngine(
+            market_data_pipeline=None,
+            feature_pipeline=feature_pipeline,
+            config={'active_bundle': str(missing_bundle)},
+        )
+
+        assert engine.is_trained is False
+        assert 'FALLBACK Mode' in engine.get_status_summary()
 
 
 if __name__ == "__main__":

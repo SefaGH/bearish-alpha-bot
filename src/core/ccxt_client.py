@@ -2,6 +2,7 @@ import ccxt
 import time
 import logging
 import requests
+from requests.adapters import HTTPAdapter
 import asyncio
 import inspect
 import pandas as pd
@@ -54,6 +55,17 @@ class CcxtClient:
         self.exchange = self.ex
         self.name = ex_name
         
+        # Increase connection pool size to avoid urllib3 pool saturation warnings
+        try:
+            session = requests.Session()
+            adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+            self.ex.session = session
+            logger.debug("Configured custom requests session with pool size 32")
+        except Exception as pool_exc:
+            logger.warning(f"Failed to extend requests pool: {pool_exc}")
+
         self._symbol_cache = {}
         self._last_symbol_update = 0
         self._server_time_offset = 0

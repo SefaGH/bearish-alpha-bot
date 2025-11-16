@@ -1240,7 +1240,7 @@ class FeatureEngineeringPipeline:
         features['market_phase'] = self.calculate_market_phase(df)
 
         # Fill NaN values with forward fill, then zero
-        features = features.fillna(method='ffill').fillna(0)
+        features = features.ffill().fillna(0)
         
         # Validate feature count (informational, not strict)
         if features.shape[1] != 87:

@@ -211,6 +211,192 @@ def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict,
         logger.error(f"GEMMA {model_type} modeli eğitimi sırasında beklenmedik bir hata oluştu: {e}", exc_info=True)
         return {'status': 'failed', 'error': str(e)}
 
+
+def _load_feature_name_candidates(target_count: int) -> list:
+    """Load ordered feature names from selection artifacts if available."""
+    feature_list_path = Path('features/gemma/selected/gemma_price_selected_82.json')
+    if feature_list_path.exists():
+        try:
+            data = json.loads(feature_list_path.read_text(encoding='utf-8'))
+            names = data.get('features') or data.get('selected_features') or []
+            names = [str(name) for name in names if isinstance(name, str)]
+            if names:
+                return names[:target_count]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("⚠️ Feature list could not be parsed (%s). Falling back to mask.", exc)
+    return []
+
+
+def _select_rl_feature_columns(features_df: pd.DataFrame, target_count: int) -> list:
+    """Determine which feature columns to feed into the RL agent."""
+    if features_df.empty:
+        return []
+
+    selected = []
+
+    # 1) Prefer explicit feature names artifact
+    name_candidates = _load_feature_name_candidates(target_count)
+    if name_candidates:
+        selected = [name for name in name_candidates if name in features_df.columns]
+        missing = [name for name in name_candidates if name not in features_df.columns]
+        if missing:
+            logger.warning("⚠️ RL feature list missing %d columns in current frame: %s", len(missing), missing[:5])
+
+    # 2) Fallback to feature mask (bool array) if names not usable
+    if not selected:
+        mask_path = Path('data/cache/gemma/feature_selection_mask.npy')
+        if mask_path.exists():
+            try:
+                mask = np.load(mask_path)
+                if mask.dtype != bool:
+                    mask = mask.astype(bool)
+                if len(mask) < len(features_df.columns):
+                    logger.warning(
+                        "⚠️ Feature mask (%d) shorter than feature columns (%d). Truncating to match.",
+                        len(mask),
+                        len(features_df.columns),
+                    )
+                    mask = np.pad(mask, (0, len(features_df.columns) - len(mask)), constant_values=False)
+                elif len(mask) > len(features_df.columns):
+                    mask = mask[: len(features_df.columns)]
+                selected = [col for col, keep in zip(features_df.columns, mask) if keep]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("⚠️ Failed to load feature selection mask (%s).", exc)
+
+    # 3) Absolute fallback – take the first N columns
+    if not selected:
+        logger.warning("⚠️ No RL feature metadata found. Defaulting to first %d columns.", target_count)
+        selected = list(features_df.columns[:target_count])
+
+    # Ensure deterministic ordering and cap/pad to requested count
+    selected = [col for col in selected if col in features_df.columns]
+    if len(selected) > target_count:
+        selected = selected[:target_count]
+
+    if len(selected) < target_count:
+        additional = [col for col in features_df.columns if col not in selected]
+        needed = min(target_count - len(selected), len(additional))
+        selected.extend(additional[:needed])
+
+    return selected
+
+
+def train_reinforcement_learning_agent(
+    symbol: str,
+    rl_config: dict,
+    feature_engine: FeatureEngineeringPipeline,
+    training_data_raw: dict,
+    target_feature_count: int = 82,
+) -> dict:
+    """Train the RL agent using the prepared market data and feature set."""
+
+    result_summary = {'status': 'skipped'}
+
+    if not rl_config.get('enabled', True):
+        result_summary['reason'] = 'disabled'
+        return result_summary
+
+    timeframe = rl_config.get('training_timeframe', RL_TRAINING_TIMEFRAME)
+    raw_df = training_data_raw.get(symbol, {}).get(timeframe)
+    if raw_df is None or raw_df.empty:
+        logger.error("❌ RL training skipped: No cached OHLCV data for %s [%s]", symbol, timeframe)
+        return {'status': 'failed', 'reason': 'missing_data'}
+
+    logger.info("\n" + "=" * 80)
+    logger.info("ADIM 3: REINFORCEMENT LEARNING AJANI EĞİTİLİYOR")
+    logger.info("=" * 80)
+    logger.info("RL Training symbol=%s timeframe=%s rows=%d", symbol, timeframe, len(raw_df))
+
+    features_df = feature_engine.extract_features(raw_df.copy())
+    if features_df.empty:
+        logger.error("❌ RL training skipped: Feature frame empty for %s [%s]", symbol, timeframe)
+        return {'status': 'failed', 'reason': 'empty_features'}
+
+    selected_columns = _select_rl_feature_columns(features_df, target_feature_count)
+    if not selected_columns:
+        logger.error("❌ RL training skipped: Unable to determine feature subset.")
+        return {'status': 'failed', 'reason': 'no_selected_features'}
+
+    features_df = features_df[selected_columns]
+    features_df = features_df.replace([np.inf, -np.inf], np.nan)
+    features_df = features_df.fillna(method='ffill').fillna(method='bfill').dropna()
+
+    if features_df.empty:
+        logger.error("❌ RL training skipped: Feature frame collapsed after cleaning.")
+        return {'status': 'failed', 'reason': 'cleaning_removed_features'}
+
+    # Align raw prices with the cleaned feature frame
+    aligned_index = features_df.index.intersection(raw_df.index)
+    if aligned_index.empty:
+        logger.error("❌ RL training skipped: No overlapping timestamps between price and feature data.")
+        return {'status': 'failed', 'reason': 'no_overlap'}
+
+    features_df = features_df.loc[aligned_index]
+    price_df = raw_df.loc[aligned_index].copy()
+
+    features_df = features_df.reset_index(drop=True)
+    price_df = price_df.reset_index(drop=True)
+
+    state_size = features_df.shape[1]
+    if state_size != target_feature_count:
+        logger.warning(
+            "⚠️ RL state size (%d) differs from target feature count (%d). Updating target to actual columns.",
+            state_size,
+            target_feature_count,
+        )
+        target_feature_count = state_size
+
+    if len(features_df) < 600:
+        logger.warning("⚠️ RL training dataset is small (%d rows). Training stability may be limited.", len(features_df))
+
+    # Build environment and agent
+    env = RLTradingEnv(features_df, price_df)
+
+    agent_config = dict(rl_config)
+    agent_config['training_mode'] = True  # Force exploration during training
+    agent_config.setdefault('active_bundle', 'artifacts/gemma/final')
+
+    agent = TradingRLAgent(state_size=state_size, action_size=3, config=agent_config)
+    replay = ExperienceReplay(agent_config.get('buffer_size', 100000))
+
+    trainer = RLModelTrainer(
+        agent=agent,
+        env=env,
+        experience_replay=replay,
+        model_save_path='data/models',
+        model_name='rl_agent.pth',
+    )
+
+    training_cfg = agent_config.get('training', {}) or {}
+    episodes = int(training_cfg.get('episodes', 250))
+    save_every = int(training_cfg.get('save_every', max(5, episodes // 10)))
+    checkpoint_path = training_cfg.get('resume_from')
+
+    trainer.train(
+        num_episodes=episodes,
+        save_every=save_every,
+        checkpoint_path=checkpoint_path,
+    )
+
+    final_src = Path('data/models/rl_agent_final.pth')
+    final_dst = Path('data/models/final/rl_agent_final.pth')
+    if final_src.exists():
+        final_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(final_src, final_dst)
+        logger.info("📦 RL final checkpoint copied to %s", final_dst)
+
+    summary = agent.get_training_summary()
+    summary.update(
+        {
+            'status': 'completed',
+            'state_size': state_size,
+            'episodes': episodes,
+            'rows': len(features_df),
+        }
+    )
+    logger.info("✅ RL training completed: state_size=%d episodes=%d", state_size, episodes)
+    return summary
+
 async def main():
     logger.info("="*60)
     logger.info("BİRLEŞİK ML MODEL EĞİTİM BETİĞİ BAŞLIYOR")
@@ -297,7 +483,17 @@ async def main():
     logger.info("\n" + "="*60)
     logger.info("ADIM 3: REINFORCEMENT LEARNING AJANI EĞİTİLİYOR")
     logger.info("="*60)
-    # ... (Mevcut RL ajanı eğitim kodunuz burada çalışmaya devam edecek) ...
+    # Yeni RL eğitim sürecini tetikle (82 özellikli durum uzayı hedefleniyor)
+    rl_feature_target = ml_config.get('gemma', {}).get('feature_count', 82)
+    for symbol in SYMBOLS_TO_TRAIN:
+        rl_summary = train_reinforcement_learning_agent(
+            symbol=symbol,
+            rl_config=rl_config,
+            feature_engine=feature_engine,
+            training_data_raw=training_data_raw,
+            target_feature_count=rl_feature_target,
+        )
+        training_metrics['rl_models'][symbol] = rl_summary
 
     # --- YENİ VE TEMİZ VERİ PİPELINE'INI KULLANMA ---
     # GEMMA modelini eğitmeden hemen önce, bizim yeni ve standartlaşmış

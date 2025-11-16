@@ -1136,7 +1136,7 @@ class StrategyCoordinator:
         # 1. ML Metrics
         try:
             if hasattr(self, 'ml_integration') and self.ml_integration:
-                ml_context = self.ml_integration.get_ml_context(symbol)
+                ml_context = await self.ml_integration.get_ml_context(symbol)
                 if ml_context:
                     # Use actual ML values
                     signal['ml_confidence'] = float(ml_context.get('consensus_score', 0.5))
