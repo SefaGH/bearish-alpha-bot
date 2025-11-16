@@ -26,7 +26,7 @@ class TestGemmaConfiguration:
         config_path = Path(project_root) / 'config' / 'config.example.yaml'
         assert config_path.exists(), "config.example.yaml not found"
         
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         ml_config = config.get('ml', {})
@@ -36,7 +36,7 @@ class TestGemmaConfiguration:
         """GEMMA configuration should have required keys"""
         config_path = Path(project_root) / 'config' / 'config.example.yaml'
         
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         gemma_config = config['ml']['gemma']
@@ -52,7 +52,7 @@ class TestGemmaConfiguration:
         """GEMMA architecture should have correct parameters"""
         config_path = Path(project_root) / 'config' / 'config.example.yaml'
         
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         arch = config['ml']['gemma']['architecture']
@@ -68,7 +68,7 @@ class TestGemmaConfiguration:
         """GEMMA training parameters should be valid"""
         config_path = Path(project_root) / 'config' / 'config.example.yaml'
         
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         training = config['ml']['gemma']['training']
@@ -82,7 +82,7 @@ class TestGemmaConfiguration:
         """GEMMA thresholds should be valid"""
         config_path = Path(project_root) / 'config' / 'config.example.yaml'
         
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         thresholds = config['ml']['gemma']['thresholds']
@@ -100,7 +100,7 @@ class TestGemmaTrainingFunction:
         # Read the source file directly to avoid import issues
         train_all_models_path = Path(project_root) / 'scripts' / 'train_all_models.py'
         
-        with open(train_all_models_path, 'r') as f:
+        with open(train_all_models_path, 'r', encoding='utf-8') as f:
             source = f.read()
         
         # Check function definition exists
@@ -111,7 +111,7 @@ class TestGemmaTrainingFunction:
         """train_gemma_model should have correct signature"""
         train_all_models_path = Path(project_root) / 'scripts' / 'train_all_models.py'
         
-        with open(train_all_models_path, 'r') as f:
+        with open(train_all_models_path, 'r', encoding='utf-8') as f:
             source = f.read()
         
         # Find function definition
@@ -134,16 +134,18 @@ class TestGemmaTrainingFunction:
         func_signature = source[func_def_start:func_def_end]
         
         # Check required parameters are in signature
-        assert 'training_data' in func_signature, "training_data parameter missing"
-        assert 'feature_engine' in func_signature, "feature_engine parameter missing"
+        assert 'X_selected' in func_signature, "X_selected parameter missing"
+        assert 'y_data' in func_signature, "y_data parameter missing"
         assert 'config' in func_signature, "config parameter missing"
-        assert 'tracker' in func_signature, "tracker parameter missing"
+        # Optional parameters for model type and tuning
+        assert 'model_type' in func_signature, "model_type parameter missing"
+        assert 'tuning_params' in func_signature, "tuning_params parameter missing"
     
     def test_train_gemma_model_has_pytorch_import(self):
         """train_gemma_model should import PyTorch when needed"""
         train_all_models_path = Path(project_root) / 'scripts' / 'train_all_models.py'
         
-        with open(train_all_models_path, 'r') as f:
+        with open(train_all_models_path, 'r', encoding='utf-8') as f:
             source = f.read()
         
         # Check for PyTorch import inside the function (lazy loading)
@@ -151,10 +153,9 @@ class TestGemmaTrainingFunction:
         next_func_start = source.find('\nasync def main(', func_start)
         func_body = source[func_start:next_func_start]
         
-        assert 'import torch' in func_body, \
-            "PyTorch should be imported in train_gemma_model"
-        assert 'torch.nn' in func_body, \
-            "torch.nn should be used in train_gemma_model"
+        # Function should lazily import the centralized trainer dependency
+        assert 'from src.ml.model_trainer import RegimeModelTrainer' in func_body, \
+            "RegimeModelTrainer lazy import missing from train_gemma_model"
 
 
 class TestGemmaIntegration:
@@ -165,7 +166,7 @@ class TestGemmaIntegration:
         # Read source file to verify integration
         train_all_models_path = Path(project_root) / 'scripts' / 'train_all_models.py'
         
-        with open(train_all_models_path, 'r') as f:
+        with open(train_all_models_path, 'r', encoding='utf-8') as f:
             source = f.read()
         
         # Verify GEMMA training is called

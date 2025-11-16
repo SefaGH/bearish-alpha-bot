@@ -578,6 +578,9 @@ class RegimeModelTrainer:
         train_config = self.config.get('training', {})
         epochs = train_config.get('epochs', NUM_EPOCHS)
         batch_size = train_config.get('batch_size', 64)
+        if batch_size < 2:
+            logger.warning("Batch size < 2 detected; raising to 2 to keep BatchNorm stable")
+            batch_size = 2
         learning_rate = train_config.get('learning_rate', LEARNING_RATE)
         patience = train_config.get('early_stopping_patience', EARLY_STOPPING_PATIENCE)
         
@@ -600,7 +603,29 @@ class RegimeModelTrainer:
         
         # Create data loaders
         train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+
+        if len(train_dataset) < 2:
+            logger.warning("Training skipped: not enough samples to form a stable batch (requires >=2)")
+            return None, {}
+
+        if len(train_dataset) < batch_size:
+            logger.info(
+                "Adjusting batch size from %d to %d to match available samples",
+                batch_size,
+                len(train_dataset)
+            )
+            batch_size = len(train_dataset)
+
+        drop_last = len(train_dataset) % batch_size == 1 and len(train_dataset) > batch_size
+        if drop_last:
+            logger.info("Dropping final training batch to avoid single-sample BatchNorm edge cases")
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            drop_last=drop_last
+        )
         
         # Initialize model
         input_size = X_train.shape[1]
@@ -714,9 +739,18 @@ class RegimeModelTrainer:
         model.eval() # Modeli 'eval' moduna al
         try:
             scripted_model = torch.jit.script(model)
+            logger.info("✅ TorchScript scripting başarılı")
         except Exception as e:
-            logger.error(f"❌ Modeli TorchScript'e çevirme başarısız: {e}. Standart model döndürülüyor.")
-            scripted_model = model
+            logger.error(f"❌ Modeli TorchScript'e çevirme başarısız: {e}. Trace fallback denenecek.")
+            try:
+                example_input = X_train_tensor[:1]
+                if example_input.nelement() == 0:
+                    example_input = torch.zeros(1, X_train_tensor.shape[1])
+                scripted_model = torch.jit.trace(model, example_input, strict=False)
+                logger.info("✅ TorchScript trace fallback başarılı")
+            except Exception as trace_error:
+                logger.error(f"❌ TorchScript trace fallback da başarısız: {trace_error}. Standart model döndürülüyor.")
+                scripted_model = model
         # -------------------------------------------
 
         metrics = {
@@ -1205,7 +1239,22 @@ class RegimeModelTrainer:
         logger.info(f"Train shape: {X_train.shape}, Val shape: {X_val.shape}")
 
         train_dataset = TensorDataset(X_train, y_train)
-        train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+
+        if len(train_dataset) < 2:
+            logger.warning("LSTM training skipped: insufficient samples to form a stable batch (requires >=2)")
+            return None, {}
+
+        lstm_batch_size = min(64, len(train_dataset))
+        drop_last = len(train_dataset) % lstm_batch_size == 1 and len(train_dataset) > lstm_batch_size
+        if drop_last:
+            logger.info("Dropping final LSTM training batch to avoid single-sample BatchNorm edge cases")
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=lstm_batch_size,
+            shuffle=True,
+            drop_last=drop_last
+        )
         
         # === YENİ KORUMA: BOŞ DATALOADER KONTROLÜ ===
         if len(train_loader) == 0:
@@ -1372,7 +1421,22 @@ class RegimeModelTrainer:
         logger.info(f"Train shape: {X_train.shape}, Val shape: {X_val.shape}")
 
         train_dataset = TensorDataset(X_train, y_train)
-        train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+
+        if len(train_dataset) < 2:
+            logger.warning("Transformer training skipped: insufficient samples to form a stable batch (requires >=2)")
+            return None, {}
+
+        transformer_batch_size = min(64, len(train_dataset))
+        drop_last = len(train_dataset) % transformer_batch_size == 1 and len(train_dataset) > transformer_batch_size
+        if drop_last:
+            logger.info("Dropping final Transformer training batch to avoid single-sample BatchNorm edge cases")
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=transformer_batch_size,
+            shuffle=True,
+            drop_last=drop_last
+        )
         
         # === YENİ KORUMA: BOŞ DATALOADER KONTROLÜ ===
         if len(train_loader) == 0:

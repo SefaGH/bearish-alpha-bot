@@ -5,6 +5,39 @@ printf '========================================\n'
 printf '🚀 GEMMA ACTIVATION SCRIPT\n'
 printf '========================================\n\n'
 
+declare -a PYTHON_CMD=()
+
+find_python() {
+    if [ -n "${PYTHON_BIN:-}" ]; then
+        if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+            PYTHON_CMD=("$PYTHON_BIN")
+            return
+        fi
+        if [ -x "$PYTHON_BIN" ]; then
+            PYTHON_CMD=("$PYTHON_BIN")
+            return
+        fi
+    fi
+
+    for candidate in python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            PYTHON_CMD=($candidate)
+            return
+        fi
+    done
+
+    if command -v py >/dev/null 2>&1; then
+        PYTHON_CMD=(py -3)
+        return
+    fi
+
+    printf '[ERROR] No suitable Python interpreter found on PATH.\n' >&2
+    exit 1
+}
+
+find_python
+printf 'Using Python interpreter: %s\n\n' "${PYTHON_CMD[*]}"
+
 cat <<'ENVFILE' > .env.gemma
 # GEMMA ACTIVATION
 GEMMA_ENABLED=true
@@ -49,10 +82,8 @@ ENVFILE
 
 printf '✅ GEMMA environment created\n\n'
 
-PYTHON_CMD="${PYTHON_BIN:-python}"
-
-"$PYTHON_CMD" - <<'PY'
-from datetime import datetime
+"${PYTHON_CMD[@]}" - <<'PY'
+from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 
@@ -61,13 +92,13 @@ if not config_path.exists():
     raise SystemExit('Configuration file missing at config/config.example.yaml')
 
 backup_dir = config_path.parent
-timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
 backup_path = backup_dir / f'config.backup.{timestamp}.yaml'
 shutil.copy2(config_path, backup_path)
 print(f'✅ Config backed up to {backup_path}')
 PY
 
-"$PYTHON_CMD" - <<'PY'
+"${PYTHON_CMD[@]}" - <<'PY'
 from pathlib import Path
 
 config_path = Path('config/config.example.yaml')

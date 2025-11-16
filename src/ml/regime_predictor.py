@@ -102,18 +102,57 @@ class EnsembleRegimePredictor:
                 # Handle PyTorch models (LSTM, Transformer)
                 elif hasattr(model, 'forward') and hasattr(model, 'eval'):
                     import torch
-                    
-                    # Convert 2D data to 3D sequence using helper method
-                    X_seq = self._create_sequence_for_prediction(X, seq_length)
-                    
-                    # Convert to tensor
-                    X_tensor = torch.from_numpy(X_seq).float()
-                    
-                    # Get predictions
+                    import torch.nn.functional as F
+
                     model.eval()
-                    with torch.no_grad():
-                        logits, probs_tensor = model(X_tensor, return_probs=True)
-                        probs = probs_tensor.numpy()
+                    module_name = model.__class__.__name__
+                    is_script_module = 'ScriptModule' in module_name or 'RecursiveScriptModule' in module_name
+
+                    tensors_to_try = []
+                    if X.ndim == 2:
+                        tensors_to_try.append(torch.from_numpy(X).float())
+
+                    seq_array = self._create_sequence_for_prediction(X, seq_length)
+                    tensors_to_try.append(torch.from_numpy(seq_array).float())
+
+                    prediction_success = False
+                    last_exception = None
+
+                    for tensor in tensors_to_try:
+                        try:
+                            with torch.no_grad():
+                                if is_script_module:
+                                    outputs = model(tensor)
+                                    if isinstance(outputs, tuple) and len(outputs) == 2:
+                                        logits, probs_tensor = outputs
+                                    else:
+                                        logits = outputs
+                                        probs_tensor = F.softmax(logits, dim=-1)
+                                else:
+                                    try:
+                                        logits, probs_tensor = model(tensor, return_probs=True)
+                                    except (TypeError, RuntimeError):
+                                        outputs = model(tensor)
+                                        if isinstance(outputs, tuple) and len(outputs) == 2:
+                                            logits, probs_tensor = outputs
+                                        else:
+                                            logits = outputs
+                                            probs_tensor = F.softmax(logits, dim=-1)
+
+                            if probs_tensor.dim() == 3:
+                                probs_tensor = probs_tensor[:, -1, :]
+                            elif probs_tensor.dim() == 1:
+                                probs_tensor = probs_tensor.unsqueeze(0)
+
+                            probs = probs_tensor.cpu().numpy()
+                            prediction_success = True
+                            break
+                        except Exception as exc:  # pylint: disable=broad-except
+                            last_exception = exc
+                            continue
+
+                    if not prediction_success:
+                        raise last_exception if last_exception else RuntimeError("Prediction failed for torch model")
                         
                 elif hasattr(model, 'predict'):
                     pred, probs = model.predict(X)
@@ -250,23 +289,34 @@ class MLRegimePredictor:
                         num_classes=3
                     )
                     
-                    # Load state dict with dimension checking
-                    checkpoint = torch.load(lstm_path, map_location='cpu')
-                    
-                    # Check if model dimensions match
-                    try:
-                        lstm_model.load_state_dict(checkpoint)
-                        lstm_model.eval()
-                        self.models['lstm_regime'] = lstm_model
+                    # TorchScript archives require weights_only=False to load the full program.
+                    checkpoint = torch.load(lstm_path, map_location='cpu', weights_only=False)
+
+                    if isinstance(checkpoint, dict):
+                        # Check if model dimensions match
+                        try:
+                            lstm_model.load_state_dict(checkpoint)
+                            lstm_model.eval()
+                            self.models['lstm_regime'] = lstm_model
+                            models_loaded += 1
+                            logger.info(f"LSTM regime model loaded: input_size={input_size}")
+                        except RuntimeError as e:
+                            logger.error(f"LSTM model dimension mismatch: {e}")
+                            if self.config.get('validation_mode') != 'strict':
+                                logger.warning("Continuing without LSTM model")
+                    elif hasattr(checkpoint, 'forward'):
+                        # Loaded a TorchScript module; use it directly.
+                        checkpoint.eval()
+                        self.models['lstm_regime'] = checkpoint
                         models_loaded += 1
-                        logger.info(f"✅ LSTM regime model loaded: input_size={input_size}")
-                    except RuntimeError as e:
-                        logger.error(f"❌ LSTM model dimension mismatch: {e}")
-                        if self.config.get('validation_mode') != 'strict':
-                            logger.warning("Continuing without LSTM model")
+                        logger.info("TorchScript LSTM regime model loaded successfully")
+                    else:
+                        logger.error(f"Unsupported LSTM checkpoint type: {type(checkpoint)}")
+                        if self.config.get('validation_mode') == 'strict':
+                            return False
                         
                 except Exception as e:
-                    logger.error(f"❌ Failed to load LSTM model from {lstm_path}: {e}", exc_info=True)
+                    logger.error(f"Failed to load LSTM model from {lstm_path}: {e}", exc_info=True)
             
             if models_loaded > 0:
                 base_models = {name: model for name, model in self.models.items() if model and name != 'ensemble'}

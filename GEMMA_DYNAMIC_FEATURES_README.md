@@ -131,7 +131,7 @@ To switch from legacy (42 features) to GEMMA (87 features):
 
 ```yaml
 models:
-  active_bundle: "artifacts/gemma"  # ← Just change this!
+  active_bundle: "artifacts/gemma/final"  # ← Just change this!
   gemma:
     shadow_mode: false              # ← Activate when ready
 ```
@@ -183,7 +183,7 @@ regime_features = feature_pipeline.extract_features(df, mode='regime')
 python scripts/gemma_manifest_health_check_standalone.py --bundle artifacts/legacy
 
 # Check GEMMA bundle
-python scripts/gemma_manifest_health_check_standalone.py --bundle artifacts/gemma
+python scripts/gemma_manifest_health_check_standalone.py --bundle artifacts/gemma/final
 
 # Output as JSON
 python scripts/gemma_manifest_health_check_standalone.py --json
@@ -215,7 +215,7 @@ Status: ✅ PASSED
 ### Phase 2: GEMMA Validation
 ```yaml
 models:
-  active_bundle: "artifacts/gemma"  # Switch to GEMMA bundle
+  active_bundle: "artifacts/gemma/final"  # Switch to GEMMA bundle
   gemma:
     shadow_mode: true                # Validate predictions
 ```
@@ -229,7 +229,7 @@ models:
 ### Phase 3: Canary Deployment
 ```yaml
 models:
-  active_bundle: "artifacts/gemma"
+  active_bundle: "artifacts/gemma/final"
   gemma:
     shadow_mode: false
     canary_percentage: 10            # Start with 10%
@@ -243,7 +243,7 @@ models:
 ### Phase 4: Full GEMMA
 ```yaml
 models:
-  active_bundle: "artifacts/gemma"
+  active_bundle: "artifacts/gemma/final"
   gemma:
     shadow_mode: false
     canary_percentage: 100           # Full deployment

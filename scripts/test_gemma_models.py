@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import traceback
 from pathlib import Path
 
 import joblib
@@ -33,7 +34,17 @@ def test_model(model_name: str, model_path: str, scaler_path: str | None = None)
             else:
                 print(f"   [WARN] Scaler not found: {scaler_path}")
 
-        dummy_input = np.random.randn(5, 82).astype(np.float32)
+        feature_dim = 82
+        if scaler is not None:
+            for attr in ("n_features_in_", "mean_", "scale_"):
+                value = getattr(scaler, attr, None)
+                if value is not None:
+                    arr = np.asarray(value)
+                    feature_dim = int(arr.item() if arr.ndim == 0 else arr.shape[0])
+                    break
+
+        dummy_input = np.random.randn(5, feature_dim).astype(np.float32)
+
         if scaler is not None:
             try:
                 dummy_input = scaler.transform(dummy_input)
@@ -64,6 +75,7 @@ def test_model(model_name: str, model_path: str, scaler_path: str | None = None)
 
     except Exception as exc:  # pylint: disable=broad-except
         print(f"   [ERROR] Test failed: {exc}")
+        traceback.print_exc()
         return False
 
 

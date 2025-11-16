@@ -345,22 +345,17 @@ class ProductionCoordinator:
         return True
     
     def _get_stream_limit(self, exchange_name: str) -> int:
-        """
-        Get stream limit for a specific exchange.
-        
-        Args:
-            exchange_name: Name of the exchange
-            
-        Returns:
-            Maximum number of streams allowed for this exchange
-        """
+        """Get stream limit for a specific exchange."""
+
         # Per-exchange stream limits
         stream_limits = {
-            'bingx': 10,
-            'binance': 20,
-            'kucoinfutures': 15,
+            'binance': 50,
+            'binanceusdm': 50,
+            'bingx': 30,
+            'bitget': 30,
+            'okx': 40,
         }
-        
+
         # Try to get from config first
         ws_config = self.config.get('websocket', {})
         max_streams_config = ws_config.get('max_streams_per_exchange', {})
@@ -1670,9 +1665,9 @@ class ProductionCoordinator:
     
     async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
                                   continuous: bool = False):
-        # ✅ EMERGENCY DEBUG with print()
+        # Emergency debug prints using ASCII to avoid encoding issues on Windows consoles.
         print(f"\n{'='*70}")
-        print(f"🚨 EMERGENCY: run_production_loop() CALLED")
+        print("EMERGENCY: run_production_loop() CALLED")
         print(f"   Time: {datetime.now(timezone.utc)}")
         print(f"   Mode: {mode}")
         print(f"   Duration: {duration}")
@@ -1685,9 +1680,9 @@ class ProductionCoordinator:
         import sys                              
         sys.stdout.flush()
         
-        # Now try logger
-        logger.warning("🔥 [WARNING-LEVEL] run_production_loop() ENTERED")  # Use WARNING to ensure visibility
-        logger.info("🔍 [INFO-LEVEL] run_production_loop() method ENTERED")
+        # Now try logger (keep ASCII for compatibility)
+        logger.warning("[WARNING] run_production_loop() ENTERED")  # Use WARNING to ensure visibility
+        logger.info("[INFO] run_production_loop() method ENTERED")
             
         try:
             logger.info("🔍 [DEBUG] Inside try block")
@@ -1701,28 +1696,28 @@ class ProductionCoordinator:
             logger.info("STARTING PRODUCTION TRADING LOOP")
             logger.info("="*70)
             
-            # ✅ YENİ: Engine'in çalıştığını kontrol et (ikinci kez başlatma!)
-            logger.info("🔍 [DEBUG] Checking trading engine...")
+            # Ensure the trading engine is running (avoid double starts)
+            logger.info("[DEBUG] Checking trading engine...")
             if not self.trading_engine:
-                logger.error("🔍 [DEBUG] trading_engine is None!")
+                logger.error("[DEBUG] trading_engine is None!")
                 raise RuntimeError("Trading engine not initialized!")
             
-            logger.info(f"🔍 [DEBUG] trading_engine exists, state={self.trading_engine.state.value}")
+            logger.info(f"[DEBUG] trading_engine exists, state={self.trading_engine.state.value}")
 
             if self.trading_engine.state.value != 'running':
                 logger.warning(
-                    "⚠️ Trading engine reported state '%s' while entering production loop; "
+                    "Trading engine reported state '%s' while entering production loop; "
                     "awaiting synchronization...",
                     self.trading_engine.state.value
                 )
                 # Give the event loop more time to schedule engine startup tasks
                 # Extended from 0s to 1.0s to ensure proper task scheduling
-                logger.info("⏱️ Waiting 1.0s for engine tasks to initialize...")
+                logger.info("Waiting 1.0s for engine tasks to initialize...")
                 await asyncio.sleep(1.0)
 
                 if self.trading_engine.state.value != 'running':
                     logger.error(
-                        "❌ Engine state still '%s' after 1s synchronization delay; aborting production loop.",
+                        "Engine state still '%s' after 1s synchronization delay; aborting production loop.",
                         self.trading_engine.state.value
                     )
                     raise RuntimeError(
@@ -1730,21 +1725,21 @@ class ProductionCoordinator:
                         f"(state={self.trading_engine.state.value})"
                     )
                 else:
-                    logger.info("✅ Trading engine reached running state after synchronization delay")
+                    logger.info("Trading engine reached running state after synchronization delay")
             else:
-                logger.info(f"✅ Trading engine already running (state={self.trading_engine.state.value})")
+                logger.info(f"Trading engine already running (state={self.trading_engine.state.value})")
 
             # Ensure is_running is True
-            logger.info(f"🔍 [DEBUG] Current is_running = {self.is_running}")
+            logger.info(f"[DEBUG] Current is_running = {self.is_running}")
             if not self.is_running:
-                logger.warning("⚠️ is_running was False, setting to True")
+                logger.warning("is_running was False, setting to True")
                 self.is_running = True
             
-            logger.info(f"🔍 [DEBUG] is_running now = {self.is_running}")
+            logger.info(f"[DEBUG] is_running now = {self.is_running}")
 
             # KONTROL: Price Prediction Engine varsa ve çalışmıyorsa, onu başlat.
             if hasattr(self, 'price_engine') and self.price_engine and not self.price_engine.is_running:
-                logger.info("🚀 Activating Price Prediction Engine background loop...")
+                logger.info("Activating Price Prediction Engine background loop...")
                 # Zaman dilimlerini (timeframes) ML yapılandırmasından al
                 ml_config = self.config.get('ml', {})
                 prediction_timeframes = ml_config.get('prediction', {}).get('timeframes', ['5m', '15m', '1h'])
@@ -1754,48 +1749,48 @@ class ProductionCoordinator:
                     symbols=self.active_symbols,
                     timeframes=prediction_timeframes
                 ))
-                logger.info("✅ Price Prediction Engine loop started.")
+                logger.info("Price Prediction Engine loop started.")
             elif hasattr(self, 'price_engine') and self.price_engine and self.price_engine.is_running:
-                logger.info("ℹ️ Price Prediction Engine is already running.")
+                logger.info("Price Prediction Engine is already running.")
             
             # Start queue monitoring task
-            logger.info("🔍 [DEBUG] Creating queue monitoring task...")
+            logger.info("[DEBUG] Creating queue monitoring task...")
             self._monitoring_task = asyncio.create_task(self._monitor_signal_queues())
-            logger.info("🔍 [DEBUG] Queue monitoring task created")
+            logger.info("[DEBUG] Queue monitoring task created")
             
             # Start watchdog task to detect if main loop stalls
-            logger.info("🔍 [DEBUG] Creating watchdog task...")
+            logger.info("[DEBUG] Creating watchdog task...")
             self._watchdog_task = asyncio.create_task(self._watchdog_loop())
-            logger.info("🔍 [DEBUG] Watchdog task created")
+            logger.info("[DEBUG] Watchdog task created")
             
-            logger.info("🔍 [DEBUG] About to print production loop info...")
-            logger.info("\n🚀 Production trading loop active")
+            logger.info("[DEBUG] About to print production loop info...")
+            logger.info("\nProduction trading loop active")
             logger.info(f"   Mode: {mode}")
             logger.info(f"   Duration: {'Indefinite' if duration is None else f'{duration}s'}")
             logger.info(f"   Continuous Mode: {'ENABLED (Never stops, auto-recovers)' if continuous else 'DISABLED'}")
             logger.info(f"   Active Symbols: {len(self.active_symbols)}")
-            
-            # ✅ EKLE: active_symbols kontrolü
-            logger.info(f"🔍 [DEBUG] Checking active_symbols: {self.active_symbols}")
+
+            # Active symbol health check
+            logger.info(f"[DEBUG] Checking active_symbols: {self.active_symbols}")
             if not self.active_symbols:
-                logger.error("❌ No active symbols configured!")
+                logger.error("No active symbols configured!")
                 raise RuntimeError("active_symbols is empty! Cannot process any symbols.")
-            
-            logger.info("🔍 [DEBUG] active_symbols check passed")
-            
-            # Main loop
-            logger.info("🔍 [DEBUG] Initializing loop variables...")
+
+            logger.info("[DEBUG] active_symbols check passed")
+
+            # Main loop setup
+            logger.info("[DEBUG] Initializing loop variables...")
             start_time = datetime.now(timezone.utc)
             last_recommendation_time = start_time
             recommendation_interval = 300  # Her 5 dakikada bir recommendations
             loop_iteration = 0
-            
-            logger.info(f"🔍 [DEBUG] Loop variables initialized: start_time={start_time}, loop_iteration={loop_iteration}")
-            
-            # ✅ EKLE: Trading loop başlangıç logu
+
+            logger.info(f"[DEBUG] Loop variables initialized: start_time={start_time}, loop_iteration={loop_iteration}")
+
+            # Trading loop start log
             logger.info("")
             logger.info("="*70)
-            logger.info("🔄 STARTING TRADING LOOP ITERATIONS")
+            logger.info("STARTING TRADING LOOP ITERATIONS")
             logger.info("="*70)
             logger.info(f"   Loop interval: {self.loop_interval}s")
             logger.info(f"   Symbols to process: {len(self.active_symbols)}")
@@ -1809,15 +1804,15 @@ class ProductionCoordinator:
             # ✅ FORCE FLUSH before loop entry
             import sys
             sys.stdout.flush()
-            print(f"🚨 [BEFORE-WHILE] About to enter while loop, is_running={self.is_running}")
+            print(f"[DEBUG] About to enter while loop, is_running={self.is_running}")
             sys.stderr.flush()
             
-            logger.info(f"🔍 [DEBUG] About to enter while loop. is_running={self.is_running}")
+            logger.info(f"[DEBUG] About to enter while loop. is_running={self.is_running}")
             
             # ✅ CRITICAL CHECK: Verify is_running is True before loop
             if not self.is_running:
-                logger.critical("❌ [CRITICAL] is_running is FALSE before loop entry!")
-                logger.critical(f"   This should never happen - is_running was just set to True at line 791")
+                logger.critical("[CRITICAL] is_running is FALSE before loop entry!")
+                logger.critical("   This should never happen - is_running was just set to True earlier")
                 raise RuntimeError("is_running unexpectedly False before loop entry")
 
             # =============================================================
@@ -1833,18 +1828,18 @@ class ProductionCoordinator:
             while self.is_running:
                 # ✅ ENHANCED: Always log loop entry at INFO level for visibility
                 if loop_iteration == 0:
-                    logger.info("🔄 [LOOP-START] Main trading loop entered successfully")
-                
-                print(f"🚨 [IN-WHILE] Loop iteration {loop_iteration + 1} Processing symbols...")
+                    logger.info("[LOOP-START] Main trading loop entered successfully")
+
+                print(f"[DEBUG] Loop iteration {loop_iteration + 1} processing symbols...")
                 
                 # Watchdog: Log heartbeat every 5 iterations
                 if loop_iteration > 0 and loop_iteration % 5 == 0:
-                    logger.info(f"💓 [WATCHDOG] Loop heartbeat - {loop_iteration} iterations completed")
+                    logger.info(f"[WATCHDOG] Loop heartbeat - {loop_iteration} iterations completed")
                 
                 try:
                     loop_iteration += 1
                     # ✅ DEĞİŞTİR: logger.debug → logger.info
-                    logger.info(f"🔁 [ITERATION {loop_iteration}] Processing {len(self.active_symbols)} symbols...")
+                    logger.info(f"[ITERATION {loop_iteration}] Processing {len(self.active_symbols)} symbols...")
                     
                     # Check emergency conditions
                     if self.emergency_stop_triggered:
@@ -1858,7 +1853,7 @@ class ProductionCoordinator:
                             timeout=5.0
                         )
                     except asyncio.TimeoutError:
-                        logger.warning("⏱️ Circuit breaker check timeout - continuing")
+                        logger.warning("Circuit breaker check timeout - continuing")
                         breaker_status = {'tripped': False}
                     
                     if breaker_status.get('tripped'):
@@ -1877,17 +1872,17 @@ class ProductionCoordinator:
                     # Check duration
                     if duration and not continuous:
                         elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-                        logger.info(f"🔍 [DEBUG] Duration check: elapsed={elapsed:.1f}s, duration={duration}s")
+                        logger.info(f"[DEBUG] Duration check: elapsed={elapsed:.1f}s, duration={duration}s")
                         if elapsed >= duration:
-                            logger.info(f"⏱️ Duration {duration}s reached - stopping (elapsed: {elapsed:.1f}s)")
+                            logger.info(f"Duration {duration}s reached - stopping (elapsed: {elapsed:.1f}s)")
                             break
                         else:
-                            logger.info(f"🔍 [DEBUG] Duration check passed - continuing loop")
+                            logger.info(f"[DEBUG] Duration check passed - continuing loop")
                     
                     # Process trading loop with WebSocket data
-                    logger.info("🔍 [DEBUG] About to call _process_trading_loop()...")
+                    logger.info("[DEBUG] About to call _process_trading_loop()...")
                     await self._process_trading_loop()
-                    logger.info("🔍 [DEBUG] _process_trading_loop() completed")
+                    logger.info("[DEBUG] _process_trading_loop() completed")
                     
                     # YENİ: Periyodik indikatör sağlık kontrolü
                     current_time = time.monotonic()
@@ -1896,14 +1891,14 @@ class ProductionCoordinator:
                         last_health_check_time = current_time
 
                     # Sleep between iterations, but check duration first
-                    logger.debug(f"🔁 Trading loop iteration {loop_iteration} completed, sleeping {self.loop_interval}s")
+                    logger.debug(f"Trading loop iteration {loop_iteration} completed, sleeping {self.loop_interval}s")
                     
                     # If duration is set, calculate remaining time and don't sleep longer than needed
                     if duration and not continuous:
                         elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
                         remaining = duration - elapsed
                         if remaining <= 0:
-                            logger.info(f"⏱️ Duration {duration}s reached after processing - stopping")
+                            logger.info(f"Duration {duration}s reached after processing - stopping")
                             break
                         # Sleep for minimum of loop_interval or remaining time
                         sleep_time = min(self.loop_interval, remaining)
@@ -1929,7 +1924,7 @@ class ProductionCoordinator:
                                 logger.info("Attempting to restart trading engine...")
                                 restart_result = await self.trading_engine.start_live_trading(mode=mode)
                                 if restart_result['success']:
-                                    logger.info("✓ Trading engine restarted successfully")
+                                    logger.info("Trading engine restarted successfully")
                                 else:
                                     logger.error(f"Failed to restart trading engine: {restart_result.get('reason')}")
                         except Exception as restart_error:
@@ -1951,7 +1946,7 @@ class ProductionCoordinator:
             await self.trading_engine.stop_live_trading()
             self.is_running = False
             
-            logger.info("✓ Production trading loop stopped")
+            logger.info("Production trading loop stopped")
             
         except Exception as e:
             logger.error(f"Critical error in production loop: {e}", exc_info=True)

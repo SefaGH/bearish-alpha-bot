@@ -68,7 +68,7 @@ class GemmaTorchScriptAdapter:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Get feature configuration from config (passed from manifest)
-        self.expected_feature_count = config.get('feature_count', 82)
+        self.expected_feature_count = config.get('feature_count')
         self.feature_names = config.get('feature_names', [])
         
         # Handle circuit breaker configuration
@@ -96,6 +96,23 @@ class GemmaTorchScriptAdapter:
         self.shadow_predictions = deque(maxlen=5000)
 
         self._load_model_and_components()
+
+        if self.expected_feature_count is None:
+            if self.features:
+                self.expected_feature_count = len(self.features)
+            elif getattr(self.scaler, 'n_features_in_', None):
+                self.expected_feature_count = self.scaler.n_features_in_
+            else:
+                self.expected_feature_count = 82
+
+        if self.features and len(self.features) != self.expected_feature_count:
+            logger.warning(
+                "Adjusting GEMMA feature list from %s to %s entries to match expected feature count.",
+                len(self.features),
+                self.expected_feature_count
+            )
+            self.features = self.features[:self.expected_feature_count]
+
         logger.info(
             f"✅ GEMMA Adapter initialized | "
             f"Features: {self.expected_feature_count} | "
@@ -129,6 +146,16 @@ class GemmaTorchScriptAdapter:
             with open(features_path) as f:
                 self.features = json.load(f)['features']
             logger.info(f"✅ Loaded {len(self.features)} features from: {features_path}")
+
+            scaler_feature_count = getattr(self.scaler, 'n_features_in_', None)
+            if scaler_feature_count and len(self.features) != scaler_feature_count:
+                logger.warning(
+                    "Scaler expects %s features but feature list contains %s entries. "
+                    "Truncating feature list to match scaler input.",
+                    scaler_feature_count,
+                    len(self.features)
+                )
+                self.features = self.features[:scaler_feature_count]
 
             # 4. Load Feature Mask (optional, but recommended)
             mask_path = Path(self.config.get('feature_mask_path', 'data/cache/gemma/feature_selection_mask.npy'))

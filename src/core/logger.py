@@ -1,8 +1,9 @@
+import io
 import logging
 import logging.handlers
-import sys
 import os
 import queue
+import sys
 from datetime import datetime
 
 # Global değişkenler, listener'ın sadece bir kez başlatılmasını sağlar.
@@ -52,13 +53,16 @@ def setup_logger(name: str = "bearish_alpha_bot",
         logging.getLogger("urllib3").setLevel(logging.WARNING)
 
         formatter = logging.Formatter(
-            f'%(asctime)s - {"🔍 " if log_level == logging.DEBUG else ""}[%(name)s] - %(levelname)s - %(message)s',
+            f'%(asctime)s - {"DEBUG " if log_level == logging.DEBUG else ""}[%(name)s] - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
 
         handlers_to_listen = []
         
-        console_handler = logging.StreamHandler(sys.stdout)
+        stream = sys.stdout
+        if hasattr(stream, "buffer"):
+            stream = io.TextIOWrapper(stream.buffer, encoding="utf-8", errors="replace")
+        console_handler = logging.StreamHandler(stream)
         console_handler.setFormatter(formatter)
         handlers_to_listen.append(console_handler)
 
@@ -68,12 +72,12 @@ def setup_logger(name: str = "bearish_alpha_bot",
             
             if log_filename:
                 log_file_path = os.path.join(log_dir, log_filename)
-                file_handler = logging.FileHandler(log_file_path, mode='a')
+                file_handler = logging.FileHandler(log_file_path, mode='a', encoding='utf-8')
             else:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
                 basename = os.getenv('LOG_FILE_BASENAME', 'live_trading')
                 log_file_path = os.path.join(log_dir, f'{basename}_{timestamp}.log')
-                file_handler = logging.FileHandler(log_file_path, mode='w')
+                file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
                 _create_symlinks(log_dir, log_file_path)
 
             file_handler.setFormatter(formatter)
@@ -88,7 +92,7 @@ def setup_logger(name: str = "bearish_alpha_bot",
         root_logger.addHandler(queue_handler)
 
         if log_level == logging.DEBUG:
-            root_logger.info("🔍 DEBUG MODE: Enhanced logging enabled.")
+            root_logger.info("DEBUG MODE: Enhanced logging enabled.")
 
     return logging.getLogger(name)
 

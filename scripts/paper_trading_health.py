@@ -42,10 +42,10 @@ def analyze_paper_trading_log(log_file, duration_seconds):
     
     log_path = Path(log_file)
     if not log_path.exists():
-        print(f"❌ Log file not found: {log_file}")
+        print(f"[ERROR] Log file not found: {log_file}")
         return False
-    
-    with open(log_file, 'r') as f:
+
+    with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
         for line in f:
             health_metrics['total_lines'] += 1
             
@@ -116,38 +116,39 @@ def analyze_paper_trading_log(log_file, duration_seconds):
     print(f"Duration: {duration_seconds} seconds")
     print(f"Status: {health_status}")
     
-    print("\n📊 Operation Metrics:")
+    print("\n[Operation Metrics]")
     print(f"  Total Log Lines: {health_metrics['total_lines']}")
     print(f"  Feature Extractions: {health_metrics['feature_extraction_count']}")
     print(f"  ML Predictions: {health_metrics['ml_prediction_count']}")
     print(f"  Signals Generated: {health_metrics['signal_count']}")
     print(f"  Trades Executed: {health_metrics['trade_count']}")
     
-    print("\n⚠️ Issue Metrics:")
+    print("\n[Issue Metrics]")
     print(f"  Total Errors: {health_metrics['error_count']}")
     print(f"  Total Warnings: {health_metrics['warning_count']}")
     print(f"  Dimension Errors: {health_metrics['dimension_errors']}")
     print(f"  Performance Issues: {health_metrics['performance_issues']}")
     
-    print("\n📈 Rates:")
+    print("\n[Rates]")
     if duration_seconds > 0:
         print(f"  Errors per Hour: {health_metrics['errors_per_hour']:.2f}")
         print(f"  Predictions per Minute: {health_metrics['predictions_per_minute']:.2f}")
         print(f"  Signals per Minute: {health_metrics['signals_per_minute']:.2f}")
     
-    print("\n🔧 Feature Analysis:")
+    print("\n[Feature Analysis]")
     print(f"  Feature Counts Seen: {feature_counts_list}")
-    print(f"  Consistent Features (42): {'✅ Yes' if health_metrics['consistent_features'] else '❌ No'}")
+    consistency = "Yes" if health_metrics['consistent_features'] else "No"
+    print(f"  Consistent Features (42): {consistency}")
     
     if health_metrics['dimension_errors'] > 0:
-        print("\n❌ CRITICAL: Dimension mismatch errors detected!")
+        print("\n[CRITICAL] Dimension mismatch errors detected!")
         print("   This must be fixed before production deployment.")
     
     # Save detailed report
     report_path = Path(f"paper_health_{datetime.now():%Y%m%d_%H%M%S}.json")
-    with open(report_path, 'w') as f:
+    with open(report_path, 'w', encoding='utf-8') as f:
         json.dump(health_metrics, f, indent=2)
-    print(f"\n📄 Detailed report saved: {report_path}")
+    print(f"\nDetailed report saved: {report_path}")
     
     return health_status == 'HEALTHY'
 

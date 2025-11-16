@@ -24,6 +24,10 @@ from sklearn.metrics import balanced_accuracy_score
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
+# Ensure mandatory ML environment flags are present before importing project modules
+os.environ.setdefault('ML_ENABLED', 'true')
+os.environ.setdefault('GEMMA_ENABLED', 'true')
+
 # --- Merkezi Modül Import'ları ---
 from src.config.live_trading_config import LiveTradingConfiguration
 from src.core.ccxt_client import CcxtClient
@@ -70,33 +74,33 @@ def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict,
     """
     gemma_config = config.get('gemma', {})
     if not gemma_config.get('enabled', False):
-        logger.info("⏩ GEMMA modeli konfigürasyonda devre dışı bırakılmış, atlanıyor.")
+        logger.info("GEMMA modeli konfigürasyonda devre dışı bırakılmış, adım atlanıyor.")
         return {'status': 'disabled'}
 
     logger.info("\n" + "="*70)
-    logger.info(f"💎 GEMMA {model_type.upper()} MODELİ EĞİTİM SÜRECİ BAŞLIYOR 💎")
+    logger.info(f"GEMMA {model_type.upper()} modeli eğitim süreci başlıyor")
     logger.info("="*70)
-    logger.info(f"✅ Eğitime hazır veri alındı: {X_selected.shape[0]} örnek, {X_selected.shape[1]} özellik.")
+    logger.info(f"Eğitime hazır veri alındı: {X_selected.shape[0]} örnek, {X_selected.shape[1]} özellik.")
     
     # Gerekli kütüphaneleri burada import et
     try:
         from src.ml.model_trainer import RegimeModelTrainer
     except ImportError as e:
-        logger.error(f"❌ GEMMA eğitimi için gerekli kütüphaneler eksik: {e}")
+        logger.error(f"GEMMA eğitimi için gerekli kütüphaneler eksik: {e}")
         return {'status': 'failed', 'error': f'Eksik kütüphane: {e}'}
 
     try:
         # Veri boyutu kontrolü
         min_samples = gemma_config.get('thresholds', {}).get('min_samples', 1000)
         if X_selected.shape[0] < min_samples:
-            logger.warning(f"⚠️ GEMMA eğitimi için yetersiz veri. Mevcut: {X_selected.shape[0]}, Gerekli: {min_samples}.")
+            logger.warning(f"GEMMA eğitimi için yeterli veri yok. Mevcut: {X_selected.shape[0]}, gerekli: {min_samples}.")
             return {'status': 'skipped', 'reason': 'insufficient_data'}
 
         # --- DİNAMİK HİPERPARAMETRELERİ UYGULA ---
         # Tuning artifact'inden gelen hiperparametreleri config'e uygula
         if tuning_params:
             logger.info("\n" + "="*70)
-            logger.info("🎯 DİNAMİK HİPERPARAMETRELER UYGULANMIYOR (Tuning'den)")
+            logger.info("Tuning çıktısından dinamik hiperparametreler uygulanıyor")
             logger.info("="*70)
             
             # Create a copy of gemma_config to avoid modifying the original
@@ -124,11 +128,11 @@ def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict,
                     if section not in gemma_config:
                         gemma_config[section] = {}
                     gemma_config[section][key] = value
-                    logger.info(f"   ✅ {section}.{key} = {value} (tuning'den)")
+                    logger.info(f"   {section}.{key} = {value} (tuning'den)")
             
             logger.info("="*70)
         else:
-            logger.info("ℹ️  Tuning hiperparametreleri bulunamadı, config.yaml değerleri kullanılıyor.")
+            logger.info("Tuning hiperparametreleri bulunamadı, config.yaml değerleri kullanılacak.")
 
         # --- PRODUCTION SCALER'I YÜKLE (Eğer Varsa) ---
         production_scaler = None
@@ -136,22 +140,22 @@ def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict,
         if scaler_path.exists():
             try:
                 logger.info("\n" + "="*70)
-                logger.info("📊 PRODUCTION SCALER YÜKLENIYOR")
+                logger.info("Production scaler yükleniyor")
                 logger.info("="*70)
                 production_scaler = joblib.load(scaler_path)
-                logger.info(f"✅ Production scaler başarıyla yüklendi: {scaler_path}")
-                logger.info("   Bu scaler, tuning sırasında oluşturuldu ve veriyi ölçeklendirmek için kullanılacak.")
+                logger.info(f"Production scaler başarıyla yüklendi: {scaler_path}")
+                logger.info("   Bu scaler tuning sırasında oluşturuldu ve veriyi ölçeklendirmek için kullanılacak.")
                 logger.info("="*70)
             except Exception as e:
-                logger.warning(f"⚠️  Production scaler yüklenemedi: {e}")
+                logger.warning(f"Production scaler yüklenemedi: {e}")
                 logger.info("   Eğitim sırasında yeni bir scaler oluşturulacak.")
         else:
-            logger.info(f"ℹ️  Production scaler bulunamadı ({scaler_path}), yeni scaler oluşturulacak.")
+            logger.info(f"Production scaler bulunamadı ({scaler_path}), yeni scaler oluşturulacak.")
 
         # --- MODEL EĞİTİMİ (Trainer scaler'ı da oluşturacak) ---
-        logger.info(f"🚀 Model eğitimi başlıyor...")
+        logger.info("Model eğitimi başlıyor...")
         logger.info("Merkezi model eğitici (RegimeModelTrainer) başlatılıyor...")
-        logger.info("Trainer, özellikler için scaler oluşturacak ve modeli eğitecek...")
+        logger.info("Trainer seçilen özellikler için scaler oluşturacak ve modeli eğitecek...")
         
         # Restructure gemma config to match what RegimeModelTrainer expects
         # RegimeModelTrainer expects: model_params.lstm_regime structure OR
@@ -174,7 +178,7 @@ def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict,
         )
         
         if not results or results.get('status') != 'completed':
-            logger.error(f"❌ GEMMA {model_type} modeli eğitimi başarısız oldu veya tamamlanamadı.")
+            logger.error(f"GEMMA {model_type} modeli eğitimi başarısız oldu veya tamamlanamadı.")
             return results
 
         # Artık metrikler doğrudan 'results' içinden geliyor
@@ -183,51 +187,33 @@ def train_gemma_model(X_selected: np.ndarray, y_data: np.ndarray, config: dict,
         total_acc = test_metrics.get('accuracy', 0.0)
         
         if balanced_acc == 0.0:
-            logger.warning(f"⚠️  model_trainer.py 'balanced_accuracy' metriğini 0.0 olarak döndürdü. Kontrol ediniz.")
+            logger.warning("model_trainer.py 'balanced_accuracy' metriğini 0.0 olarak döndürdü. Kontrol edilmesi önerilir.")
         
         # --- METRİKLERİ KAYDETME ---
-        logger.info(f"💾 Metrikler kaydediliyor...")
+        logger.info("Metrikler kaydediliyor...")
         log_dir = Path(f'logs/final_training/gemma_{model_type}')
         log_dir.mkdir(parents=True, exist_ok=True)
         metrics_file = log_dir / f"final_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         
         with open(metrics_file, 'w') as f:
             json.dump(results, f, indent=2)
-        logger.info(f"✅ GEMMA {model_type} metrikleri kaydedildi: {metrics_file}")
+        logger.info(f"GEMMA {model_type} metrikleri kaydedildi: {metrics_file}")
         
         logger.info("\n" + "="*70)
-        logger.info(f"✅ GEMMA {model_type} EĞİTİMİ TAMAMLANDI!")
-        logger.info(f"   Asıl Doğruluk (Balanced): {balanced_acc:.2%}")
-        logger.info(f"   Referans Doğruluk (Total): {total_acc:.2%}")
+        logger.info(f"GEMMA {model_type} eğitimi tamamlandı")
+        logger.info(f"   Dengelenmiş doğruluk: {balanced_acc:.2%}")
+        logger.info(f"   Genel doğruluk: {total_acc:.2%}")
         logger.info("="*70)
         
-        return results
-    
-        # --- METRİKLERİ KAYDETME ---
-        logger.info(f"💾 Metrikler kaydediliyor...")
-        log_dir = Path(f'logs/final_training/gemma_{model_type}')
-        log_dir.mkdir(parents=True, exist_ok=True)
-        metrics_file = log_dir / f"final_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    
-        with open(metrics_file, 'w') as f:
-            json.dump(results, f, indent=2)
-        logger.info(f"✅ GEMMA {model_type} metrikleri kaydedildi: {metrics_file}")
-    
-        logger.info("\n" + "="*70)
-        logger.info(f"✅ GEMMA {model_type} EĞİTİMİ TAMAMLANDI!")
-        logger.info(f"   Asıl Doğruluk (Balanced): {balanced_acc:.2%}")
-        logger.info(f"   Referans Doğruluk (Total): {results.get('test_metrics', {}).get('accuracy', 0):.2%}")
-        logger.info("="*70)
-    
         return results
 
     except Exception as e:
-        logger.error(f"❌ GEMMA {model_type} modeli eğitimi sırasında beklenmedik bir hata oluştu: {e}", exc_info=True)
+        logger.error(f"GEMMA {model_type} modeli eğitimi sırasında beklenmedik bir hata oluştu: {e}", exc_info=True)
         return {'status': 'failed', 'error': str(e)}
 
 async def main():
     logger.info("="*60)
-    logger.info("🤖 BAŞLIYOR: BİRLEŞİK ML MODEL EĞİTİM BETİĞİ 🤖")
+    logger.info("BİRLEŞİK ML MODEL EĞİTİM BETİĞİ BAŞLIYOR")
     logger.info("="*60)
     
     # --- Diğer modeller için gerekli kurulumlar (DOKUNULMADI) ---
@@ -251,27 +237,27 @@ async def main():
         regime_pred_config = ml_config.get('regime_prediction', {})
         price_pred_config = ml_config.get('price_prediction', {})
         rl_config = ml_config.get('reinforcement_learning', {})
-        logger.info("✅ Konfigürasyon başarıyla yüklendi.")
+        logger.info("Konfigürasyon başarıyla yüklendi.")
     except Exception as e:
-        logger.error(f"❌ Konfigürasyon yüklenirken kritik hata: {e}", exc_info=True)
+        logger.error(f"Konfigürasyon yüklenirken kritik hata: {e}", exc_info=True)
         raise
         
     # --- Pre-training Validation (DOKUNULMADI) ---
     logger.info("\n" + "="*60)
-    logger.info("🔍 EĞİTİM ÖNCESİ KONFİGÜRASYON DOĞRULAMASI")
+    logger.info("EĞİTİM ÖNCESİ KONFİGÜRASYON DOĞRULAMASI")
     logger.info("="*60)
     is_valid, issues = TrainingConfigValidator.validate(config)
     TrainingConfigValidator.log_validation_results(is_valid, issues)
     if not is_valid:
-        logger.error("❌ Kritik doğrulama hataları bulundu. Eğitim iptal ediliyor.")
+        logger.error("Kritik doğrulama hataları bulundu. Eğitim iptal ediliyor.")
         raise ValueError("Training validation failed.")
-    logger.info("✅ Doğrulama tamamlandı.")
+    logger.info("Doğrulama tamamlandı.")
 
     # --- HAM VERİ ÇEKME (DOKUNULMADI) ---
     # Not: Bu veri, Rejim, Fiyat ve RL modellerinin eski mantığı için çekiliyor.
     # GEMMA bu veriyi KULLANMAYACAK.
     logger.info("\n" + "="*60)
-    logger.info("📊 ADIM 0: HAM PİYASA VERİSİ ÇEKİLİYOR (Eski Modeller İçin)")
+    logger.info("ADIM 0: HAM PİYASA VERİSİ ÇEKİLİYOR (Eski Modeller İçin)")
     logger.info("="*60)
     exchange_client = CcxtClient('bingx')
     feature_engine = FeatureEngineeringPipeline(config=ml_config)
@@ -288,7 +274,7 @@ async def main():
                     continue
                 training_data_raw[symbol][timeframe] = ohlcv_df
             except Exception as e:
-                logger.error(f"❌ Veri çekme hatası: {e}", exc_info=True)
+                logger.error(f"Veri çekme hatası: {e}", exc_info=True)
 
     # --- ESKİ MODELLERİN EĞİTİMİ (DOKUNULMADI) ---
     # Bu bloklar, projenin eski ama çalışan kısımlarını temsil eder.
@@ -296,20 +282,20 @@ async def main():
 
     # 1. REJİM MODELLERİ EĞİTİMİ (DOKUNULMADI)
     logger.info("\n" + "="*60)
-    logger.info("🧠 ADIM 1: PİYASA REJİMİ MODELLERİ EĞİTİLİYOR 🧠")
+    logger.info("ADIM 1: PİYASA REJİMİ MODELLERİ EĞİTİLİYOR")
     logger.info("="*60)
     # ... (Mevcut rejim modeli eğitim kodunuz burada çalışmaya devam edecek) ...
     # Bu bölümün mantığına dokunmadık.
 
     # 2. FİYAT TAHMİN MODELLERİ EĞİTİMİ (DOKUNULMADI)
     logger.info("\n" + "="*60)
-    logger.info("📈 ADIM 2: FİYAT TAHMİN MODELLERİ EĞİTİLİYOR 📈")
+    logger.info("ADIM 2: FİYAT TAHMİN MODELLERİ EĞİTİLİYOR")
     logger.info("="*60)
     # ... (Mevcut fiyat tahmin modeli eğitim kodunuz burada çalışmaya devam edecek) ...
     
     # 3. REINFORCEMENT LEARNING AJANI EĞİTİLİYOR (DOKUNULMADI)
     logger.info("\n" + "="*60)
-    logger.info("🤖 ADIM 3: REINFORCEMENT LEARNING AJANI EĞİTİLİYOR 🤖")
+    logger.info("ADIM 3: REINFORCEMENT LEARNING AJANI EĞİTİLİYOR")
     logger.info("="*60)
     # ... (Mevcut RL ajanı eğitim kodunuz burada çalışmaya devam edecek) ...
 
@@ -317,7 +303,7 @@ async def main():
     # GEMMA modelini eğitmeden hemen önce, bizim yeni ve standartlaşmış
     # veri hazırlama pipeline'ımızın çıktısını yüklüyoruz.
     logger.info("\n" + "="*80)
-    logger.info("✨ ADIM 3.5: YENİ NESİL EĞİTİM VERİSİ YÜKLENİYOR (GEMMA İÇİN) ✨")
+    logger.info("ADIM 3.5: YENİ NESİL EĞİTİM VERİSİ YÜKLENİYOR (GEMMA İÇİN)")
     logger.info("="*80)
     
     # This function loads tuning hyperparameters from artifact
@@ -325,18 +311,18 @@ async def main():
         """Load hyperparameters from tuning results artifact."""
         tuning_dir = Path('logs/tuning_results')
         if not tuning_dir.exists():
-            logger.warning("⚠️  Tuning sonuçları dizini bulunamadı. Varsayılan hiperparametreler kullanılacak.")
+            logger.warning("Tuning sonuçları dizini bulunamadı. Varsayılan hiperparametreler kullanılacak.")
             return {}
         
         # Find the latest tuning results file
         tuning_files = list(tuning_dir.glob('gemma_tuning_*.json'))
         if not tuning_files:
-            logger.warning("⚠️  Tuning sonuç dosyası bulunamadı. Varsayılan hiperparametreler kullanılacak.")
+            logger.warning("Tuning sonuç dosyası bulunamadı. Varsayılan hiperparametreler kullanılacak.")
             return {}
         
         # Get the most recent file
         latest_file = max(tuning_files, key=lambda p: p.stat().st_mtime)
-        logger.info(f"📊 Tuning sonuçları yükleniyor: {latest_file}")
+        logger.info(f"Tuning sonuçları yükleniyor: {latest_file}")
         
         try:
             with open(latest_file, 'r') as f:
@@ -345,16 +331,16 @@ async def main():
             # Extract best_params from tuning results
             best_params = tuning_results.get('best_params', {})
             if not best_params:
-                logger.warning("⚠️  Tuning sonuçlarında 'best_params' bulunamadı. Varsayılan değerler kullanılacak.")
+                logger.warning("Tuning sonuçlarında 'best_params' bulunamadı. Varsayılan değerler kullanılacak.")
                 return {}
             
-            logger.info("✅ Tuning hiperparametreleri başarıyla yüklendi:")
+            logger.info("Tuning hiperparametreleri başarıyla yüklendi:")
             for key, value in best_params.items():
                 logger.info(f"   - {key}: {value}")
             
             return best_params
         except Exception as e:
-            logger.error(f"❌ Tuning sonuçları yüklenirken hata: {e}")
+            logger.error(f"Tuning sonuçları yüklenirken hata: {e}")
             return {}
     
     # Load tuning hyperparameters
@@ -366,18 +352,18 @@ async def main():
         data_path_str = config.get('ml', {}).get('feature_selection', {}).get('data_path', 'data/cache/BTC-USDT_training_data.npz')
         data_path = Path(data_path_str)
         if not data_path.exists():
-            logger.error(f"❌ GEMMA için hazırlanmış eğitim verisi bulunamadı: {data_path}")
+            logger.error(f"GEMMA için hazırlanmış eğitim verisi bulunamadı: {data_path}")
             return None, None
         try:
             data = np.load(data_path)
             X_full = data['X']
             y_full = data['y']
-            logger.info(f"✅ Ham veri yüklendi: {X_full.shape[0]} örnek, {X_full.shape[1]} özellik.")
+            logger.info(f"Ham veri yüklendi: {X_full.shape[0]} örnek, {X_full.shape[1]} özellik.")
             
             # Load feature selection mask - from artifact or repository
             mask_path = Path('data/cache/gemma/feature_selection_mask.npy')
             if not mask_path.exists():
-                logger.warning(f"⚠️  Özellik seçim maskesi bulunamadı: {mask_path}")
+                logger.warning(f"Özellik seçim maskesi bulunamadı: {mask_path}")
                 logger.info("   Tüm özellikleri kullanarak devam edilecek (özellik filtreleme yok).")
                 return X_full, y_full
             
@@ -388,7 +374,7 @@ async def main():
                 raise ValueError(f"Ham veri ve maske boyutu uyuşmuyor! Veri: {X_full.shape[1]}, Maske: {len(feature_mask)}")
             
             X_selected = X_full[:, feature_mask]
-            logger.info(f"✅ Özellik planı başarıyla uygulandı. {X_full.shape[1]} -> {X_selected.shape[1]} özellik.")
+            logger.info(f"Özellik planı başarıyla uygulandı. {X_full.shape[1]} -> {X_selected.shape[1]} özellik.")
             return X_selected, y_full
         except Exception as e:
             logger.error(f"GEMMA verisi yüklenirken hata: {e}", exc_info=True)
@@ -400,19 +386,19 @@ async def main():
     if X_gemma is not None and y_gemma is not None and ml_config.get('gemma', {}).get('enabled', False):
         # Train GEMMA price model
         logger.info("\n" + "="*80)
-        logger.info("💰 GEMMA PRICE MODELİ EĞİTİLİYOR 💰")
+        logger.info("GEMMA price modeli eğitiliyor")
         logger.info("="*80)
         gemma_price_results = train_gemma_model(X_gemma, y_gemma, ml_config, model_type='price', tuning_params=tuning_hyperparams)
         training_metrics['gemma_models']['price'] = gemma_price_results
         
         # Train GEMMA regime model
         logger.info("\n" + "="*80)
-        logger.info("🌊 GEMMA REGIME MODELİ EĞİTİLİYOR 🌊")
+        logger.info("GEMMA regime modeli eğitiliyor")
         logger.info("="*80)
         gemma_regime_results = train_gemma_model(X_gemma, y_gemma, ml_config, model_type='regime', tuning_params=tuning_hyperparams)
         training_metrics['gemma_models']['regime'] = gemma_regime_results
     else:
-        logger.info("⏩ GEMMA eğitimi atlanıyor (veri bulunamadı veya konfigürasyonda kapalı).")
+        logger.info("GEMMA eğitimi atlanıyor (veri bulunamadı veya konfigürasyonda kapalı).")
         training_metrics['gemma_models'] = {'status': 'skipped'}
 
     # --- SONUÇLARI KAYDETME (DOKUNULMADI) ---
@@ -422,10 +408,10 @@ async def main():
     os.makedirs('logs', exist_ok=True)
     with open('logs/training_metrics.json', 'w') as f:
         json.dump(training_metrics, f, indent=2)
-    logger.info("✅ Tüm eğitim metrikleri 'logs/training_metrics.json' dosyasına kaydedildi.")
+    logger.info("Tüm eğitim metrikleri 'logs/training_metrics.json' dosyasına kaydedildi.")
     
     logger.info("\n" + "="*60)
-    logger.info("✅ TÜM MODEL EĞİTİMLERİ TAMAMLANDI ✅")
+    logger.info("TÜM MODEL EĞİTİMLERİ TAMAMLANDI")
     logger.info("="*60)
 
 if __name__ == "__main__":

@@ -428,6 +428,7 @@ ml:
     
     # Özellik (Feature) Konfigürasyon Dosyaları
     features_path: "features/gemma/selected/gemma_price_selected_82.json"
+    feature_count: 82                 # Active feature count aligned with GEMMA manifest
     
     # Yardımcı Dosyalar
     # Updated to new production location (Plan 2) - co-located with models
@@ -435,7 +436,7 @@ ml:
     feature_mask_path: "data/cache/gemma/feature_selection_mask.npy"
     
     # Gölge Modu (Mevcut sistemle paralel çalışarak doğrulama yapar)
-    shadow_mode: true
+    shadow_mode: false
     shadow_duration_hours: 48
     
     # Performans Ayarları
@@ -451,16 +452,17 @@ ml:
     
     # Training Configuration
     thresholds:
-      min_samples: 1000  # Minimum number of samples required for training
+      deployment_accuracy: 0.72  # Minimum balanced accuracy required for deployment
+      min_samples: 1000          # Minimum number of samples required for training
     
     training:
-      batch_size: 32          # <-- Optuna'dan gelen en iyi değer
+      batch_size: 64          # <-- BatchNorm stability safeguard (was 32)
       epochs: 50
       learning_rate: 0.0001330 # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
       early_stopping_patience: 10
     
     architecture:
-      input_size: 82          # <-- DOĞRU: Özellik seçimi sonrası gerçek özellik sayısı
+      input_size: 82          # <-- GEMMA feature count (manifest tabanlı)
       hidden_size: 55         # <-- Optuna'dan gelen en iyi değer
       num_layers: 3           # <-- Optuna'dan gelen en iyi değer (değişmedi)
       dropout: 0.3243         # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
@@ -484,7 +486,7 @@ ml:
 # ==============================================================================
 models:
   # Model bundle management - dynamic feature adaptation
-  active_bundle: "artifacts/legacy"  # Path to active model bundle (can be symlink)
+  active_bundle: "artifacts/gemma/final"  # Path to active model bundle (can be symlink)
   fallback_bundle: "artifacts/legacy"  # Fallback bundle for errors
   
   # Deployment configuration
@@ -496,5 +498,5 @@ models:
   # GEMMA specific overrides
   gemma:
     use_manifest: true  # Enable manifest-driven model loading
-    shadow_mode: true  # Keep shadow mode initially (log predictions without using)
+    shadow_mode: false  # GEMMA predictions now control AI-Gate decisions
 

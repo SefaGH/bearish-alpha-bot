@@ -693,38 +693,96 @@ class FeatureEngineeringPipeline:
     
     def __init__(self, config: Dict[str, Any] = None):
         """Initialize the feature engineering pipeline with config."""
-        self.config = config or {}
+        # Keep a reference to the raw config that was supplied by the caller.
+        self.raw_config = config or {}
 
-        # Debug log ekle
-        logger.info(f"FeatureEngineeringPipeline initialized with config: {list(self.config.keys())}")
+        # Normalize configuration so that `self.config` always points at the ML block.
+        if isinstance(self.raw_config.get('ml'), dict):
+            self.config = self.raw_config.get('ml') or {}
+        else:
+            self.config = self.raw_config
+
+        # Feature-specific overrides live under ml.features; fall back to empty dict.
+        self.features_config = self.config.get('features', {}) or {}
+
+        # Model bundle configuration may be provided alongside ml or may require a reload.
+        models_cfg = None
+        if isinstance(self.raw_config.get('models'), dict):
+            models_cfg = self.raw_config.get('models')
+        elif isinstance(self.config.get('models'), dict):
+            models_cfg = self.config.get('models')
+
+        if not isinstance(models_cfg, dict) or not models_cfg:
+            try:
+                try:
+                    from src.config.live_trading_config import LiveTradingConfiguration
+                except ModuleNotFoundError:
+                    from config.live_trading_config import LiveTradingConfiguration
+
+                global_config = LiveTradingConfiguration.load(log_summary=False)
+                models_cfg = global_config.get('models', {}) or {}
+            except Exception as exc:
+                logger.warning(
+                    "Model bundle configuration not supplied; defaulting to legacy manifest (%s)",
+                    exc
+                )
+                models_cfg = {}
+
+        self.models_config = models_cfg
+
+        logger.info(
+            "FeatureEngineeringPipeline initialized with config keys: %s",
+            list(self.config.keys())
+        )
         
         # Initialize ManifestManager for dynamic feature configuration
         from .manifest_manager import ManifestManager
         self.manifest_mgr = ManifestManager()
         
         # Load manifest from active bundle
-        bundle_path = self.config.get('models', {}).get('active_bundle', 'artifacts/legacy')
+        bundle_path = self.models_config.get('active_bundle', 'artifacts/legacy')
         try:
             self.manifest = self.manifest_mgr.load_manifest(bundle_path)
             self.expected_feature_count = self.manifest['feature_count']
+            self.manifest_mode = self.manifest.get('mode', 'legacy')
             
             # Get selected features for each mode
             self.price_features = self.manifest_mgr.get_selected_features('price')
             self.regime_features = self.manifest_mgr.get_selected_features('regime')
             
             logger.info(f"✅ FeatureEngineering initialized with manifest: {self.manifest.get('version')}")
+            logger.info(f"   Manifest mode: {self.manifest_mode}")
             logger.info(f"   Expected feature count: {self.expected_feature_count}")
             logger.info(f"   Price features: {len(self.price_features)}")
             logger.info(f"   Regime features: {len(self.regime_features)}")
         except Exception as e:
             logger.warning(f"Failed to load manifest, using defaults: {e}")
             self.manifest = {'feature_count': 42, 'mode': 'legacy'}
+            self.manifest_mode = 'legacy'
             self.expected_feature_count = 42
             self.price_features = list(range(42))
             self.regime_features = list(range(42))
         
-        # GEMMA integration: Check if GEMMA mode is enabled
-        self.gemma_enabled = self.config.get('ml', {}).get('gemma', {}).get('enabled', False)
+        # GEMMA integration: auto-enable when GEMMA manifest is active unless explicitly disabled
+        gemma_config = self.config.get('gemma', {})
+        gemma_model_overrides = self.models_config.get('gemma', {})
+        gemma_requested = gemma_config.get('enabled', gemma_model_overrides.get('use_manifest'))
+
+        if self.manifest_mode != 'legacy':
+            if gemma_requested is False:
+                logger.info(
+                    "GEMMA manifest detected but disabled via config; running legacy extractor despite GEMMA bundle."
+                )
+                self.gemma_enabled = False
+            else:
+                self.gemma_enabled = True
+        else:
+            if gemma_requested:
+                logger.warning(
+                    "GEMMA feature extraction requested but active manifest is 'legacy'. "
+                    "Falling back to legacy 42-feature pipeline until GEMMA bundle is activated."
+                )
+            self.gemma_enabled = False
         
         # Determine if we should use advanced features (default: True for new training)
         self.use_advanced_features = self.config.get('use_advanced_features', True)
@@ -732,19 +790,19 @@ class FeatureEngineeringPipeline:
         self.use_legacy_alignment = self.config.get('use_legacy_alignment', False)
         
         # Pass config to sub-components
-        self.technical_indicators = TechnicalIndicatorFeatures(self.config)
+        self.technical_indicators = TechnicalIndicatorFeatures(self.features_config)
         self.market_microstructure = MarketMicrostructureFeatures()
         
         # Parse volatility windows from config - handle multiple formats
         vol_windows = self._parse_window_list(
-            self.config.get('volatility_windows', '5,10,20,50'),
+            self.features_config.get('volatility_windows', '5,10,20,50'),
             default='5,10,20,50'
         )
         self.volatility_features = VolatilityFeatures(windows=vol_windows)
         
         # Parse momentum windows from config - handle multiple formats
         mom_windows = self._parse_window_list(
-            self.config.get('momentum_windows', '5,10,20,50'),
+            self.features_config.get('momentum_windows', '5,10,20,50'),
             default='5,10,20,50'
         )
         self.momentum_features = MomentumFeatures(windows=mom_windows)
@@ -754,8 +812,8 @@ class FeatureEngineeringPipeline:
         # Initialize advanced feature extractors
         self.advanced_momentum = AdvancedMomentumFeatures()
         self.advanced_volume = AdvancedVolumeFeatures()
-        self.advanced_volatility = AdvancedVolatilityFeatures(self.config)
-        self.advanced_trend = AdvancedTrendFeatures(self.config)
+        self.advanced_volatility = AdvancedVolatilityFeatures(self.features_config)
+        self.advanced_trend = AdvancedTrendFeatures(self.features_config)
         self.support_resistance = SupportResistanceFeatures()
         
     def extract_features(self, price_data: pd.DataFrame, 
@@ -808,7 +866,7 @@ class FeatureEngineeringPipeline:
                         f"Feature count mismatch: {len(selected_features.columns)} != {self.expected_feature_count}"
                     )
                     # In lenient mode, continue; in strict mode this could raise
-                    if self.config.get('models', {}).get('deployment', {}).get('validation_mode') == 'strict':
+                    if self.models_config.get('deployment', {}).get('validation_mode') == 'strict':
                         raise ValueError(
                             f"Feature count mismatch: {len(selected_features.columns)} != {self.expected_feature_count}"
                         )

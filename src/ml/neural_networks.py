@@ -21,6 +21,27 @@ except ImportError:
 
 
 if TORCH_AVAILABLE:
+    class SafeBatchNorm1d(nn.Module):
+        """BatchNorm wrapper that tolerates tiny batches during training."""
+
+        def __init__(self, num_features: int, eps: float = 1e-5, momentum: float = 0.1):
+            super().__init__()
+            self.bn = nn.BatchNorm1d(num_features, eps=eps, momentum=momentum)
+
+        def forward(self, input: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
+            if self.training and input.size(0) <= 1:
+                return input
+            return self.bn(input)
+
+        def train(self, mode: bool = True):  # type: ignore[override]
+            super().train(mode)
+            self.bn.train(mode)
+            return self
+
+        def eval(self):  # type: ignore[override]
+            return self.train(False)
+
+
     class MLPRegimePredictor(nn.Module):
         """
         Multi-Layer Perceptron (MLP) for regime prediction.
@@ -52,7 +73,7 @@ if TORCH_AVAILABLE:
             
             for i, hidden_size in enumerate(hidden_layers):
                 layers.append(nn.Linear(prev_size, hidden_size))
-                layers.append(nn.BatchNorm1d(hidden_size))
+                layers.append(SafeBatchNorm1d(hidden_size))
                 layers.append(nn.ReLU())
                 layers.append(nn.Dropout(dropout))
                 prev_size = hidden_size
@@ -63,15 +84,7 @@ if TORCH_AVAILABLE:
             self.layers = nn.Sequential(*layers)
             
         def forward(self, x):
-            """
-            Forward pass through MLP.
-            
-            Args:
-                x: Input tensor of shape (batch_size, input_size)
-                
-            Returns:
-                Output logits of shape (batch_size, num_classes)
-            """
+            """Forward pass through MLP producing class logits."""
             return self.layers(x)
     
     
@@ -140,7 +153,7 @@ if TORCH_AVAILABLE:
             # Enhanced classifier with batch normalization
             self.classifier = nn.Sequential(
                 nn.Linear(hidden_size, hidden_size // 2),
-                nn.BatchNorm1d(hidden_size // 2),
+                SafeBatchNorm1d(hidden_size // 2),
                 nn.ReLU(),
                 nn.Dropout(dropout),
                 nn.Linear(hidden_size // 2, num_classes)
@@ -166,7 +179,6 @@ if TORCH_AVAILABLE:
             # Use last time step for classification
             last_hidden = attn_out[:, -1, :]
             
-            # Classification output
             logits = self.classifier(last_hidden)
             
             if return_probs:
@@ -246,7 +258,7 @@ if TORCH_AVAILABLE:
             # Enhanced classifier with batch normalization
             self.classifier = nn.Sequential(
                 nn.Linear(d_model, d_model // 2),
-                nn.BatchNorm1d(d_model // 2),
+                SafeBatchNorm1d(d_model // 2),
                 nn.ReLU(),
                 nn.Dropout(dropout),
                 nn.Linear(d_model // 2, num_classes)

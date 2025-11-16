@@ -33,7 +33,7 @@ def load_config():
     """Loads the main YAML configuration file."""
     config_path = Path(__file__).resolve().parent.parent / 'config' / 'config.example.yaml'
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
     except FileNotFoundError:
         logger.error(f"❌ Kritik Hata: Konfigürasyon dosyası bulunamadı: {config_path}")
@@ -69,7 +69,7 @@ async def fetch_and_process_data(symbol='BTC/USDT',
     
     # --- DÜZELTİLDİ: FeatureEngineeringPipeline artık konfigürasyon ile çağrılıyor ---
     logger.info("Initializing feature engineering pipeline with config...")
-    feature_engine = FeatureEngineeringPipeline(config=ml_config)
+    feature_engine = FeatureEngineeringPipeline(config=config)
     
     all_features, all_labels = [], []
     
