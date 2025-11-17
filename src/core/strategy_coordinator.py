@@ -11,6 +11,8 @@ from collections import defaultdict
 from enum import Enum
 from pathlib import Path
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 # Constants for signal enrichment
@@ -104,7 +106,9 @@ class StrategyCoordinator:
                 'neutral': 0,
                 'volatile': 0
             },
-            'q_value_variance': []
+            'q_std_values': [],
+            'q_range_values': [],
+            'bypass_count': 0
         }
         
         # ML integration placeholders
@@ -613,9 +617,14 @@ class StrategyCoordinator:
         self._last_ml_rejection_reason = None
         return reason
 
-    def _record_rl_telemetry(self, rl_meta: Dict[str, Any], rl_action: str) -> None:
+    def _record_rl_telemetry(
+        self,
+        rl_meta: Dict[str, Any],
+        rl_action: str,
+        q_std: Optional[float] = None,
+        q_range: Optional[float] = None
+    ) -> None:
         """Track RL decision telemetry for observability dashboards."""
-        import numpy as np
 
         telemetry = self.rl_telemetry
         telemetry['total_decisions'] += 1
@@ -625,9 +634,13 @@ class StrategyCoordinator:
         else:
             telemetry['bias_skipped_count'] += 1
 
-        raw_q = rl_meta.get('raw_q_values') or []
-        if raw_q:
-            telemetry['q_value_variance'].append(float(np.std(raw_q)))
+        if q_std is not None:
+            telemetry['q_std_values'].append(float(q_std))
+        if q_range is not None:
+            telemetry['q_range_values'].append(float(q_range))
+
+        if rl_meta.get('bypassed'):
+            telemetry['bypass_count'] += 1
 
         if rl_action == 'hold':
             telemetry['veto_count'] += 1
@@ -635,23 +648,41 @@ class StrategyCoordinator:
             telemetry['veto_by_regime'].setdefault(regime_key, 0)
             telemetry['veto_by_regime'][regime_key] += 1
 
+    def _determine_rl_fallback(self, signal: Dict[str, Any], rl_meta: Dict[str, Any]) -> str:
+        """Decide which action to take when RL confidence is unusably low."""
+        regime_confidence = signal.get('regime_confidence')
+        if regime_confidence is None:
+            regime_confidence = rl_meta.get('regime_confidence')
+
+        side = (signal.get('side') or '').lower()
+        if regime_confidence is not None and regime_confidence >= 0.5:
+            if side in ('buy', 'long'):
+                return 'buy'
+            if side in ('sell', 'short'):
+                return 'sell'
+        return 'hold'
+
     def get_rl_telemetry_stats(self) -> Dict[str, Any]:
         """Summarize RL telemetry insights for diagnostics."""
-        import numpy as np
-
         telemetry = self.rl_telemetry
         total = telemetry['total_decisions']
-        variance_mean = (
-            float(np.mean(telemetry['q_value_variance']))
-            if telemetry['q_value_variance']
-            else 0.0
-        )
+        q_std_values = telemetry.get('q_std_values', [])
+        q_range_values = telemetry.get('q_range_values', [])
+
+        std_mean = float(np.mean(q_std_values)) if q_std_values else 0.0
+        std_median = float(np.median(q_std_values)) if q_std_values else 0.0
+        range_mean = float(np.mean(q_range_values)) if q_range_values else 0.0
+        range_median = float(np.median(q_range_values)) if q_range_values else 0.0
 
         return {
             'rl_veto_rate': (telemetry['veto_count'] / total) if total else 0.0,
             'bias_applied_rate': (telemetry['bias_applied_count'] / total) if total else 0.0,
             'bias_skipped_rate': (telemetry['bias_skipped_count'] / total) if total else 0.0,
-            'q_value_variance_mean': variance_mean,
+            'q_std_mean': std_mean,
+            'q_std_median': std_median,
+            'q_range_mean': range_mean,
+            'q_range_median': range_median,
+            'bypass_rate': (telemetry['bypass_count'] / total) if total else 0.0,
             'veto_by_regime': telemetry['veto_by_regime'],
             'samples': total
         }
@@ -716,6 +747,7 @@ class StrategyCoordinator:
 
             # --- 2. RL AGENT'IN AYRI OLARAK ÇAĞRILMASI VE KONTROLÜ ---
             rl_advice = None
+            rl_meta: Optional[Dict[str, Any]] = None
             if hasattr(self, 'rl_agent') and self.rl_agent:
                 try:
                     if hasattr(self.rl_agent, 'set_inference_mode') and not getattr(self.rl_agent, '_inference_locked', False):
@@ -766,14 +798,55 @@ class StrategyCoordinator:
                             rl_meta = {}
 
                         rl_advice_str = ['buy', 'hold', 'sell'][rl_action_index]
-                        signal['rl_recommendation'] = rl_advice_str
-                        signal['rl_decision_meta'] = rl_meta
                         rl_advice = rl_advice_str.lower()
-                        self._record_rl_telemetry(rl_meta or {}, rl_advice)
+
+                        raw_q_values = rl_meta.get('raw_q_values') or []
+                        q_std = None
+                        q_range = None
+                        if raw_q_values:
+                            q_array = np.array(raw_q_values, dtype=float)
+                            q_std = float(np.std(q_array))
+                            q_range = float(np.max(q_array) - np.min(q_array))
+
+                        q_std_threshold = (
+                            self.config
+                            .get('ml', {})
+                            .get('reinforcement_learning', {})
+                            .get('q_std_bypass_threshold', 1e-4)
+                        )
+
+                        if q_std is not None and q_std < q_std_threshold:
+                            fallback_advice = self._determine_rl_fallback(signal, rl_meta)
+                            if fallback_advice != rl_advice:
+                                logger.warning(
+                                    "🤖 [RL-BYPASS] Low Q-std (%.6f < %.6f) forcing fallback %s → %s | symbol=%s",
+                                    q_std,
+                                    q_std_threshold,
+                                    rl_advice,
+                                    fallback_advice,
+                                    symbol
+                                )
+                            rl_meta['bypassed'] = True
+                            rl_meta['bypass_reason'] = f"low_q_std:{q_std:.6f}"
+                            rl_advice = fallback_advice
+                            rl_advice_str = rl_advice.upper()
+                            signal['rl_bypassed'] = True
+                            signal['rl_bypass_reason'] = rl_meta['bypass_reason']
+                        else:
+                            rl_meta['bypassed'] = False
+                            signal['rl_bypassed'] = False
+                            signal['rl_bypass_reason'] = None
+
+                        rl_meta['q_std'] = q_std
+                        rl_meta['q_range'] = q_range
+
+                        signal['rl_recommendation'] = rl_advice
+                        signal['rl_decision_meta'] = rl_meta
+                        self._record_rl_telemetry(rl_meta or {}, rl_advice, q_std=q_std, q_range=q_range)
                         
                         # CRITICAL: Store RL decision for enrichment
                         self._last_rl_decision = {
-                            'action': rl_advice_str,
+                            'action': rl_advice.upper(),
                             'confidence': rl_meta.get('best_probability', DEFAULT_RL_CONFIDENCE) if rl_meta else DEFAULT_RL_CONFIDENCE,
                             'timestamp': datetime.utcnow().isoformat()
                         }

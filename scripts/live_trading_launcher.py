@@ -40,7 +40,7 @@ from core.logger import setup_logger
 # ===             YENİ VE MERKEZİ YAPIYI KULLANMA                  ===
 # ====================================================================
 # Artık yapılandırmayı almak için tek bir standart yolumuz var.
-from config.live_trading_config import get_config
+from config.live_trading_config import LiveTradingConfiguration
 # ====================================================================
 
 from core.production_coordinator import ProductionCoordinator
@@ -932,6 +932,21 @@ class LiveTradingLauncher:
     """
     Comprehensive live trading launcher integrating all system components.
     """
+
+    def _load_config(
+        self,
+        *,
+        force_reload: bool = False,
+        log_summary: bool = True
+    ) -> Dict[str, Any]:
+        """Load the centralized configuration via the unified loader."""
+        needs_refresh = force_reload or getattr(self, 'config', None) is None
+        if needs_refresh:
+            self.config = LiveTradingConfiguration.load(
+                log_summary=log_summary,
+                force_reload=force_reload
+            )
+        return self.config
     
     # Default risk parameters - used across normalization and fallbacks
     DEFAULT_RISK_PARAMS = {
@@ -955,10 +970,10 @@ class LiveTradingLauncher:
         self.debug_mode = debug_mode
 
         # 2. YAPILANDIRMAYI MERKEZDEN VE TEK SEFERDE AL (TEK DOĞRU KAYNAK)
-        self.config = get_config()
+        self.config = self._load_config(log_summary=True)
         
         # 3. Gerekli tüm parametreleri DOĞRUDAN bu tek, güvenilir kaynaktan al.
-        #    get_config() metodu, sembollerin her zaman bir LİSTE olmasını garanti eder.
+        #    _load_config() metodu, sembollerin her zaman bir LİSTE olmasını garanti eder.
         self.CAPITAL_USDT = self.config.get('risk', {}).get('equity_usd', 100.0)
         self.TRADING_PAIRS = self.config.get('universe', {}).get('fixed_symbols', [])
 
@@ -974,7 +989,6 @@ class LiveTradingLauncher:
             )
             if isinstance(self.TRADING_PAIRS, str):
                 # Use config module's parsing logic
-                from config.live_trading_config import LiveTradingConfiguration
                 if LiveTradingConfiguration._is_trading_symbol(self.TRADING_PAIRS):
                     self.TRADING_PAIRS = LiveTradingConfiguration._parse_trading_symbols(self.TRADING_PAIRS)
                 else:

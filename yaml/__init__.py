@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, List, Tuple
 
-__all__ = ["safe_load", "load"]
+__all__ = ["safe_load", "load", "dump", "safe_dump"]
 
 
 @dataclass
@@ -116,6 +116,48 @@ def _parse_scalar(token: str) -> Any:
         return token
 
 
+def _format_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    return str(value)
+
+
+def _dump_internal(value: Any, indent: int = 0) -> str:
+    pad = " " * indent
+    if isinstance(value, dict):
+        if not value:
+            return pad + "{}\n"
+        lines = []
+        for key, val in value.items():
+            if isinstance(val, (dict, list)):
+                lines.append(f"{pad}{key}:")
+                lines.append(_dump_internal(val, indent + 2))
+            else:
+                lines.append(f"{pad}{key}: {_format_scalar(val)}")
+        return "\n".join(lines) + "\n"
+    if isinstance(value, list):
+        if not value:
+            return pad + "[]\n"
+        lines = [f"{pad}- {_format_scalar(item)}" if not isinstance(item, (dict, list))
+                 else f"{pad}-\n{_dump_internal(item, indent + 2)}" for item in value]
+        return "\n".join(lines) + "\n"
+    return pad + _format_scalar(value) + "\n"
+
+
+def dump(data: Any, stream: Any = None) -> str:
+    """Minimal YAML dumper (dict/list/scalars)."""
+    text = _dump_internal(data)
+    if stream is not None:
+        stream.write(text)
+    return text
+
+
+def safe_dump(data: Any, stream: Any = None) -> str:
+    return dump(data, stream)
+
+
 def safe_load(stream: Any) -> Any:
     if hasattr(stream, "read"):
         text = stream.read()
@@ -123,6 +165,14 @@ def safe_load(stream: Any) -> Any:
         text = stream
     if isinstance(text, bytes):
         text = text.decode("utf-8")
+
+    stripped_text = text.strip()
+    if not stripped_text:
+        return None
+    if stripped_text == "{}":
+        return {}
+    if stripped_text == "[]":
+        return []
 
     prepared = _prepare_lines(text)
     if not prepared:

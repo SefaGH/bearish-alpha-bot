@@ -89,9 +89,10 @@ class LiveTradingEngine:
     """Production-ready live trading execution engine with enhanced debugging."""
     
     def __init__(self, mode='paper', portfolio_manager=None, risk_manager=None,
-                 order_manager=None, position_manager=None, # <<< YENİ PARAMETRELER
+                 order_manager=None, position_manager=None,
                  exchange_clients=None, strategy_coordinator: Optional['StrategyCoordinator'] = None,
-                 market_data_pipeline: Optional[Any] = None):
+                 market_data_pipeline: Optional[Any] = None,
+                 websocket_manager: Optional[Any] = None, **kwargs):
         """
         Initialize live trading engine with pre-configured managers.
         
@@ -114,6 +115,10 @@ class LiveTradingEngine:
     
         self.strategy_coordinator = strategy_coordinator
         self.market_data_pipeline = market_data_pipeline
+        self.websocket_manager = websocket_manager
+
+        if kwargs:
+            logger.debug("LiveTradingEngine received unused kwargs: %s", list(kwargs.keys()))
         
         # --- DEĞİŞTİRİLEN KISIM ---
         # Artık kendi yöneticilerimizi oluşturmuyoruz, dışarıdan hazır alıyoruz.

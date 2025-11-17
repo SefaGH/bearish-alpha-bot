@@ -18,72 +18,125 @@ Date: 2025-11-03
 Ref: Issue #277
 """
 
+
+import logging
 import os
 import re
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import yaml
-import logging
-from typing import Dict, Any, Optional, Tuple, List, Union
+
 
 logger = logging.getLogger(__name__)
 
-# Singleton instance storage to ensure config is loaded only once.
 _config_instance: Optional[Dict[str, Any]] = None
+_config_signature: Optional[Tuple[str, Tuple[Tuple[str, Optional[str]]]]] = None
+_config_env_keys: Tuple[str, ...] = ()
+_config_path_cache: Optional[str] = None
 
-# Regex pattern for validating trading symbols (compiled once at module load)
-# Matches format: BASE/QUOTE or BASE/QUOTE:SETTLE
-# Examples: BTC/USDT, ETH/USDT:USDT
-_TRADING_SYMBOL_PATTERN = re.compile(r'^[A-Z0-9]{2,10}/[A-Z0-9]{2,10}(:[A-Z0-9]{2,10})?$')
+_TRADING_SYMBOL_PATTERN = re.compile(
+    r'^[A-Z0-9]{2,10}/[A-Z0-9]{2,10}(:[A-Z0-9]{2,10})?$',
+    re.IGNORECASE
+)
+_DERIVATIVE_SYMBOL_PATTERN = re.compile(r'^[A-Z0-9]{2,10}-[A-Z0-9]{2,10}$', re.IGNORECASE)
+DEFAULT_SYMBOLS = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+
 
 class LiveTradingConfiguration:
-    """
-    A dynamic, singleton configuration loader.
+    """Centralized configuration loader with ENV > YAML priority."""
 
-    It reads `config.example.yaml`, parses special `# Override with: ENV_VAR`
-    comments, and intelligently merges environment variables with automatic
-    type casting. The result is cached and served on all subsequent calls.
-    """
     CONFIG_FILE_PATH = 'config/config.example.yaml'
     ENV_OVERRIDE_PATTERN = re.compile(r'#\s*Override with:\s*(\w+)')
+    _env_keys_snapshot: Tuple[str, ...] = ()
 
     @classmethod
-    def load(cls, log_summary: bool = True) -> Dict[str, Any]:
+    def load(
+        cls,
+        log_summary: bool = True,
+        *,
+        config_path: Optional[str] = None,
+        force_reload: bool = False
+    ) -> Dict[str, Any]:
         """
         Main entry point. Loads, merges, and returns the configuration.
-        Uses a singleton pattern to load only once.
-        
-        Args:
-            log_summary: Whether to log configuration summary (for backward compatibility).
-                        Default is True. Set to False to suppress logging.
+        Uses a signature-aware cache to ensure ENV > YAML > defaults priority.
         """
-        global _config_instance
-        if _config_instance is not None:
-            logger.debug("Returning cached configuration instance.")
-            return _config_instance
+        global _config_instance, _config_signature, _config_env_keys, _config_path_cache
+
+        resolved_path = cls._resolve_config_path(config_path)
+
+        if force_reload:
+            cls.reset_cache()
+
+        if (
+            not force_reload
+            and _config_instance is not None
+            and _config_signature is not None
+            and _config_path_cache == resolved_path
+        ):
+            current_signature = cls._build_signature_from_keys(resolved_path, _config_env_keys)
+            if current_signature == _config_signature:
+                logger.debug("Returning cached configuration instance (env unchanged).")
+                if log_summary:
+                    # Maintain backward compatibility by logging summary once per caller request.
+                    cls(resolved_path)._log_config_summary(_config_instance)
+                return _config_instance
 
         logger.info("=" * 70)
-        logger.info("🔧 DYNAMIC CONFIGURATION LOADER (v2.0 - Singleton)")
+        logger.info("🔧 DYNAMIC CONFIGURATION LOADER (v2.1 - Signature cache)")
         logger.info("=" * 70)
-        
-        instance = cls()
+
+        instance = cls(resolved_path)
         try:
             config = instance._load_and_merge_configs()
             _config_instance = config
-            
-            # Only log summary if requested (backward compatibility)
+            _config_env_keys = instance._env_keys_snapshot
+            _config_path_cache = resolved_path
+            _config_signature = cls._build_signature_from_keys(resolved_path, _config_env_keys)
+
             if log_summary:
                 instance._log_config_summary(config)
-                
-            return _config_instance
+
+            return config
         except Exception as e:
-            logger.critical(f"❌ A critical error occurred during configuration loading: {e}", exc_info=True)
+            cls.reset_cache()
+            logger.critical(
+                f"❌ A critical error occurred during configuration loading: {e}",
+                exc_info=True
+            )
             raise RuntimeError("Failed to load configuration. Bot cannot start.") from e
+
+    def __init__(self, config_path: Optional[str] = None) -> None:
+        self.config_path = self._resolve_config_path(config_path)
+        self._env_keys_snapshot = ()
+
+    @staticmethod
+    def _resolve_config_path(config_path: Optional[str]) -> str:
+        candidate = config_path or os.getenv('CONFIG_PATH') or LiveTradingConfiguration.CONFIG_FILE_PATH
+        return candidate
+
+    @classmethod
+    def reset_cache(cls) -> None:
+        global _config_instance, _config_signature, _config_env_keys, _config_path_cache
+        _config_instance = None
+        _config_signature = None
+        _config_env_keys = ()
+        _config_path_cache = None
+
+    @staticmethod
+    def _build_signature_from_keys(
+        config_path: str,
+        env_keys: Tuple[str, ...]
+    ) -> Tuple[str, Tuple[Tuple[str, Optional[str]]]]:
+        snapshot = tuple(sorted((key, os.getenv(key)) for key in env_keys))
+        return (config_path, snapshot)
 
     def _load_and_merge_configs(self) -> Dict[str, Any]:
         """Orchestrates the loading and merging process."""
         # 1. Load the base YAML config and parse env var mappings from its comments
         yaml_config, env_map = self._load_yaml_and_map_env_vars()
-        if not yaml_config:
-            raise ValueError("Base configuration from YAML is empty or could not be loaded.")
+        yaml_config = yaml_config or {}
+        self._env_keys_snapshot = tuple(sorted(env_map.keys()))
 
         # 2. Normalize YAML values (e.g., convert trading symbol strings to lists)
         yaml_config = self._normalize_yaml_values(yaml_config)
@@ -93,6 +146,7 @@ class LiveTradingConfiguration:
 
         # 4. Deep merge YAML config with environment overrides
         merged = self._deep_merge(yaml_config, env_overrides)
+        self._apply_universe_defaults(merged)
         self._normalize_risk_config(merged)
         return merged
 
@@ -106,10 +160,10 @@ class LiveTradingConfiguration:
         """
         env_map: Dict[str, List[str]] = {}
         
-        if not os.path.exists(self.CONFIG_FILE_PATH):
-            raise FileNotFoundError(f"Configuration file not found at: {self.CONFIG_FILE_PATH}")
+        if not os.path.exists(self.config_path):
+            raise FileNotFoundError(f"Configuration file not found at: {self.config_path}")
     
-        with open(self.CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
+        with open(self.config_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
             
         path_stack: List[Tuple[int, str]] = []
@@ -148,7 +202,7 @@ class LiveTradingConfiguration:
                 if 'RSI_THRESHOLD' in env_var or 'ML_' in env_var:
                     logger.debug(f"Mapped ENV '{env_var}' to config path: {'.'.join(current_path)}")
     
-        with open(self.CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
+        with open(self.config_path, 'r', encoding='utf-8') as f:
             yaml_config = yaml.safe_load(f)
     
         logger.info(f"✅ YAML config loaded. Found {len(env_map)} environment variable mappings.")
@@ -290,21 +344,28 @@ class LiveTradingConfiguration:
         Trading symbols have the format: "BASE/QUOTE" or "BASE/QUOTE:SETTLE"
         Examples: "BTC/USDT", "ETH/USDT:USDT", "BTC/USDT,ETH/USDT"
         
+        import os
+        import re
+        import yaml
+        import logging
+        from typing import Dict, Any, Optional, Tuple, List, Union
+
+        logger = logging.getLogger(__name__)
+
         Returns:
             True if the string contains trading symbol(s), False otherwise.
         """
         if not isinstance(value, str) or not value.strip():
             return False
-        
-        # Check if string contains '/' which is the key indicator of trading pairs
-        if '/' not in value:
+
+        parts = [p.strip().upper() for p in value.split(',') if p.strip()]
+        if not parts:
             return False
-        
-        # Split by comma to handle multiple symbols
-        parts = [p.strip() for p in value.split(',') if p.strip()]
-        
-        # At least one part should match the trading symbol pattern
-        return any(_TRADING_SYMBOL_PATTERN.match(part) for part in parts)
+
+        for part in parts:
+            if _TRADING_SYMBOL_PATTERN.match(part) or _DERIVATIVE_SYMBOL_PATTERN.match(part):
+                return True
+        return False
     
     @staticmethod
     def _parse_trading_symbols(value_str: str) -> list:
@@ -376,11 +437,54 @@ class LiveTradingConfiguration:
                 result[key] = value
         return result
 
+    @classmethod
+    def deep_merge(cls, base: Dict, override: Dict) -> Dict:
+        """Public helper exposed for tests (wraps _deep_merge)."""
+        return cls._deep_merge(base, override)
+
+    def _apply_universe_defaults(self, config: Dict[str, Any]) -> None:
+        universe = config.setdefault('universe', {})
+        symbols = universe.get('fixed_symbols')
+        cleaned = self._filter_valid_symbols(symbols)
+        if not cleaned:
+            cleaned = DEFAULT_SYMBOLS.copy()
+        universe['fixed_symbols'] = cleaned
+
+    def _filter_valid_symbols(self, symbols: Union[str, List[str], None]) -> List[str]:
+        if symbols is None:
+            return []
+        if isinstance(symbols, str):
+            candidates = [s.strip() for s in symbols.split(',') if s.strip()]
+        elif isinstance(symbols, list):
+            candidates = []
+            for item in symbols:
+                if isinstance(item, str):
+                    if ',' in item:
+                        candidates.extend([s.strip() for s in item.split(',') if s.strip()])
+                    else:
+                        candidates.append(item.strip())
+        else:
+            return []
+
+        normalized: List[str] = []
+        for candidate in candidates:
+            canonical = self._normalize_symbol(candidate)
+            if canonical and (_TRADING_SYMBOL_PATTERN.match(canonical) or _DERIVATIVE_SYMBOL_PATTERN.match(canonical)):
+                if canonical not in normalized:
+                    normalized.append(canonical)
+        return normalized
+
+    @staticmethod
+    def _normalize_symbol(symbol: str) -> str:
+        cleaned = symbol.strip()
+        return cleaned.upper() if cleaned else ''
+
     def _normalize_risk_config(self, config: Dict[str, Any]) -> None:
         """Ensure risk percentages stay in fractional form and derive USD helpers."""
         risk_section = config.get('risk')
         if not isinstance(risk_section, dict):
-            return
+            risk_section = {}
+            config['risk'] = risk_section
 
         percent_keys = [
             'daily_loss_limit_pct',
