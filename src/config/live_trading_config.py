@@ -383,12 +383,34 @@ class LiveTradingConfiguration:
             return
 
         percent_keys = [
-            'per_trade_risk_pct',
             'daily_loss_limit_pct',
             'max_position_size_pct',
             'max_notional_pct_per_trade',
             'max_margin_pct_per_trade'
         ]
+
+        # --- Critical: normalize per-trade risk with env + defaults ---
+        per_trade_raw = risk_section.get('per_trade_risk_pct')
+        if per_trade_raw is None:
+            env_fallback = os.getenv('PER_TRADE_RISK_PCT')
+            if env_fallback is not None:
+                try:
+                    per_trade_raw = float(env_fallback)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        f"⚠️ PER_TRADE_RISK_PCT env value '{env_fallback}' is invalid; ignoring fallback."
+                    )
+        if per_trade_raw is None:
+            logger.warning("PER_TRADE_RISK_PCT not set, defaulting to 1% (0.01)")
+            per_trade_raw = 0.01
+
+        normalized_per_trade = self._normalize_percent_value(per_trade_raw, 'risk.per_trade_risk_pct')
+        if not normalized_per_trade or normalized_per_trade <= 0 or normalized_per_trade > 1:
+            logger.error(
+                f"❌ per_trade_risk_pct out of bounds after normalization: {normalized_per_trade}. Resetting to 0.01 (1%)."
+            )
+            normalized_per_trade = 0.01
+        risk_section['per_trade_risk_pct'] = normalized_per_trade
 
         for key in percent_keys:
             if key not in risk_section or risk_section[key] is None:
@@ -402,9 +424,13 @@ class LiveTradingConfiguration:
         except (TypeError, ValueError):
             equity = 0
 
-        per_trade = risk_section.get('per_trade_risk_pct')
-        if isinstance(per_trade, (int, float)) and equity > 0:
-            risk_section['computed_max_risk_usd'] = equity * per_trade
+        computed_risk_usd = equity * normalized_per_trade if equity > 0 else 0.0
+        risk_section['computed_max_risk_usd'] = computed_risk_usd
+        logger.info(
+            "✅ Risk normalization: per_trade_risk_pct=%.4f (fraction), computed_max_risk_usd=%.2f USD",
+            normalized_per_trade,
+            computed_risk_usd,
+        )
 
         max_notional_pct = risk_section.get('max_notional_pct_per_trade')
         if isinstance(max_notional_pct, (int, float)) and equity > 0:
@@ -430,7 +456,7 @@ class LiveTradingConfiguration:
             logger.warning(f"⚠️ {field_name}={numeric} is non-positive. Check configuration values.")
             return numeric
 
-        if numeric > 1.0:
+        if numeric >= 1.0:
             if numeric <= 100.0:
                 logger.warning(
                     f"⚠️ {field_name} appears to be expressed as percent ({numeric}). Converting to fractional form."

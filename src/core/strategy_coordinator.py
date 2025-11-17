@@ -662,6 +662,12 @@ class StrategyCoordinator:
             rl_advice = None
             if hasattr(self, 'rl_agent') and self.rl_agent:
                 try:
+                    if hasattr(self.rl_agent, 'set_inference_mode') and not getattr(self.rl_agent, '_inference_locked', False):
+                        try:
+                            self.rl_agent.set_inference_mode()
+                            logger.debug("🤖 [RL] Inference mode re-asserted before decision flow.")
+                        except Exception as lock_err:
+                            logger.warning(f"⚠️ [RL] Unable to force inference mode before signal: {lock_err}")
                     # ✅ DÜZELTME: 'await' eklendi.
                     state_features = await self._extract_rl_state(symbol, current_price)
                     
@@ -724,15 +730,23 @@ class StrategyCoordinator:
 
                         # 💡 YENİ LOGLAMA: Ajanın kararını logla
                         logger.info(f"🤖 [RL-DECISION] For {symbol}, Agent decided: {rl_advice.upper()}")
-                        if meta_preview.get('probabilities'):
-                            logger.info(
-                                "🤖 [RL-META] %s | eps=%.3f | probs=%s | raw_q=%s | adj_q=%s",
-                                symbol,
-                                (meta_preview.get('epsilon') or 0.0),
-                                meta_preview['probabilities'],
-                                meta_preview.get('raw_q_values'),
-                                meta_preview.get('adjusted_q_values')
-                            )
+                        probabilities_preview = meta_preview.get('probabilities', []) or None
+                        epsilon_preview = meta_preview.get('epsilon') if meta_preview else None
+                        confidence_preview = meta_preview.get('best_probability') if meta_preview else None
+                        q_values_preview = (
+                            meta_preview.get('adjusted_q_values')
+                            or meta_preview.get('raw_q_values')
+                            or 'N/A'
+                        )
+                        logger.info(
+                            "🤖 [RL-META] %s | decision=%s | epsilon=%s | confidence=%s | q_values=%s | probs=%s",
+                            symbol,
+                            rl_advice_str.lower(),
+                            f"{epsilon_preview:.3f}" if isinstance(epsilon_preview, (int, float)) else 'N/A',
+                            f"{confidence_preview:.3f}" if isinstance(confidence_preview, (int, float)) else 'N/A',
+                            q_values_preview,
+                            probabilities_preview or 'N/A'
+                        )
 
                 except Exception as e:
                     logger.warning(f"RL recommendation failed: {e}", exc_info=True)
@@ -743,6 +757,8 @@ class StrategyCoordinator:
                 signal['ml_blocked'] = True
                 signal['ml_rejection_reason'] = 'RL VETO (HOLD)'
                 self.processing_stats['rl_veto_count'] += 1
+                if rl_meta:
+                    logger.warning(f"🤖 [RL-VETO-META] {symbol} meta={rl_meta}")
                 self._remember_ml_rejection('RL Agent veto (HOLD recommendation)')
                 return None
 

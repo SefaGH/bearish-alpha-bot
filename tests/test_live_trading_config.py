@@ -21,3 +21,20 @@ def test_format_risk_summary_falls_back_to_env(monkeypatch):
     assert "2.00%" in summary
     assert "20.00 USDT" in summary
     monkeypatch.delenv('PER_TRADE_RISK_PCT', raising=False)
+
+
+def test_normalize_risk_config_converts_percent_value(monkeypatch):
+    monkeypatch.delenv('PER_TRADE_RISK_PCT', raising=False)
+    cfg = {'risk': {'per_trade_risk_pct': 1.0, 'equity_usd': 100.0}}
+    LiveTradingConfiguration()._normalize_risk_config(cfg)
+    assert cfg['risk']['per_trade_risk_pct'] == pytest.approx(0.01, rel=1e-4)
+    assert cfg['risk']['computed_max_risk_usd'] == pytest.approx(1.0, rel=1e-4)
+
+
+def test_normalize_risk_config_uses_env_default(monkeypatch):
+    monkeypatch.setenv('PER_TRADE_RISK_PCT', '2')
+    cfg = {'risk': {'equity_usd': 50.0}}
+    LiveTradingConfiguration()._normalize_risk_config(cfg)
+    assert cfg['risk']['per_trade_risk_pct'] == pytest.approx(0.02, rel=1e-4)
+    assert cfg['risk']['computed_max_risk_usd'] == pytest.approx(1.0, rel=1e-4)
+    monkeypatch.delenv('PER_TRADE_RISK_PCT', raising=False)

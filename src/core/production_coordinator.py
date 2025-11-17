@@ -1117,11 +1117,22 @@ class ProductionCoordinator:
                 model_path = self.config.get('model_path', 'data/models')
                 self.rl_agent.load_model(os.path.join(model_path, "rl_agent_final.pth"))
                 if hasattr(self.rl_agent, 'set_inference_mode') and not rl_config.get('training_mode', False):
-                    try:
-                        self.rl_agent.set_inference_mode(epsilon=rl_config.get('epsilon_inference', 0.0))
-                        logger.info("   - RL Agent forced into inference mode (epsilon locked).")
-                    except Exception as lock_err:
-                        logger.warning(f"⚠️ Failed to enforce RL inference mode: {lock_err}")
+                    self.rl_agent.set_inference_mode(epsilon=rl_config.get('epsilon_inference', 0.0))
+                    actual_training = getattr(self.rl_agent, 'training_mode', None)
+                    actual_epsilon = getattr(self.rl_agent, 'epsilon', None)
+                    logger.info("✅ RL Agent forced to inference mode at coordinator init")
+                    logger.info(f"   - training_mode: {actual_training}")
+                    logger.info(f"   - epsilon: {actual_epsilon}")
+                    if actual_epsilon not in (0, 0.0):
+                        raise ValueError(
+                            f"RL inference mode enforcement failed: epsilon is {actual_epsilon}, expected 0.0"
+                        )
+                    if actual_training:
+                        raise ValueError("RL inference mode enforcement failed: training_mode remained True")
+                else:
+                    logger.warning(
+                        "⚠️ RL Agent lacks set_inference_mode support or training mode requested; ensure epsilon is safe."
+                    )
                 ml_components.append('rl_agent')
                 logger.info("✅ Reinforcement learning agent initialized.")
                 logger.info(f"   - RL Agent using hold_confidence_threshold: {self.rl_agent.hold_confidence_threshold}")
