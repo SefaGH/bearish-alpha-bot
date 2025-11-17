@@ -679,10 +679,13 @@ class StrategyCoordinator:
                         logger.info(f"🤖 [RL-DEBUG] Market Regime: {signal.get('predicted_regime', 'neutral')}")
 
                         rl_meta = {}
+                        rl_training_flag = getattr(self.rl_agent, 'training_mode', False)
+                        if getattr(self.rl_agent, '_inference_locked', False):
+                            rl_training_flag = False
                         rl_kwargs = {
                             'market_regime': signal.get('predicted_regime', 'neutral'),
                             'risk_constraints': signal.get('risk_constraints'),
-                            'training': getattr(self.rl_agent, 'training_mode', False)
+                            'training': rl_training_flag
                         }
                         if hasattr(self.rl_agent, 'get_action_with_meta'):
                             rl_action_index, rl_meta = self.rl_agent.get_action_with_meta(state_features, **rl_kwargs)
@@ -707,7 +710,10 @@ class StrategyCoordinator:
                             meta_preview = {
                                 'probabilities': [round(p, 4) for p in rl_meta.get('probabilities', [])[:3]],
                                 'best_probability': rl_meta.get('best_probability'),
-                                'exploration': rl_meta.get('exploration')
+                                'exploration': rl_meta.get('exploration'),
+                                'epsilon': rl_meta.get('epsilon'),
+                                'raw_q_values': [round(v, 4) for v in rl_meta.get('raw_q_values', [])[:3]] if rl_meta.get('raw_q_values') else None,
+                                'adjusted_q_values': [round(v, 4) for v in rl_meta.get('adjusted_q_values', [])[:3]] if rl_meta.get('adjusted_q_values') else None
                             }
                         logger.debug(
                             "DEBUG_ML_RL | symbol=%s | rl_decision=%s | meta=%s",
@@ -718,6 +724,15 @@ class StrategyCoordinator:
 
                         # 💡 YENİ LOGLAMA: Ajanın kararını logla
                         logger.info(f"🤖 [RL-DECISION] For {symbol}, Agent decided: {rl_advice.upper()}")
+                        if meta_preview.get('probabilities'):
+                            logger.info(
+                                "🤖 [RL-META] %s | eps=%.3f | probs=%s | raw_q=%s | adj_q=%s",
+                                symbol,
+                                (meta_preview.get('epsilon') or 0.0),
+                                meta_preview['probabilities'],
+                                meta_preview.get('raw_q_values'),
+                                meta_preview.get('adjusted_q_values')
+                            )
 
                 except Exception as e:
                     logger.warning(f"RL recommendation failed: {e}", exc_info=True)

@@ -1116,6 +1116,12 @@ class ProductionCoordinator:
                 )
                 model_path = self.config.get('model_path', 'data/models')
                 self.rl_agent.load_model(os.path.join(model_path, "rl_agent_final.pth"))
+                if hasattr(self.rl_agent, 'set_inference_mode') and not rl_config.get('training_mode', False):
+                    try:
+                        self.rl_agent.set_inference_mode(epsilon=rl_config.get('epsilon_inference', 0.0))
+                        logger.info("   - RL Agent forced into inference mode (epsilon locked).")
+                    except Exception as lock_err:
+                        logger.warning(f"⚠️ Failed to enforce RL inference mode: {lock_err}")
                 ml_components.append('rl_agent')
                 logger.info("✅ Reinforcement learning agent initialized.")
                 logger.info(f"   - RL Agent using hold_confidence_threshold: {self.rl_agent.hold_confidence_threshold}")

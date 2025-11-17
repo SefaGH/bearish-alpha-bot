@@ -176,6 +176,7 @@ if TORCH_AVAILABLE:
             
             # Behavior and Mode Parameters from config
             self.training_mode = self.config.get('training_mode', False)
+            self._inference_locked = False
             self.hold_confidence_threshold = self.config.get('hold_confidence_threshold', 0.60)
             
             # Epsilon values from config
@@ -229,6 +230,17 @@ if TORCH_AVAILABLE:
             logger.info(f"Initialized TradingRLAgent with state_size={state_size}, action_size={action_size}")
             logger.info(f"RL Agent Config: training_mode={self.training_mode}, hold_threshold={self.hold_confidence_threshold}, regime_bias={self.regime_bias_strength}")
         
+        def set_inference_mode(self, epsilon: float = 0.0) -> None:
+            """Force deterministic inference behavior (used in live trading)."""
+            epsilon = max(0.0, float(epsilon))
+            self.training_mode = False
+            self.config['training_mode'] = False
+            self.epsilon = epsilon
+            self.epsilon_decay = 0.0
+            self.epsilon_min = 0.0
+            self._inference_locked = True
+            logger.info("🔒 RL Agent locked to inference mode (epsilon=%.4f)", self.epsilon)
+        
         def set_memory(self, memory):
             """Set experience replay buffer."""
             self.memory = memory
@@ -247,8 +259,10 @@ if TORCH_AVAILABLE:
         def get_action_with_meta(self, state: np.ndarray, market_regime: str = None,
                                   risk_constraints: Dict = None, training: bool = False) -> Tuple[int, Dict[str, Any]]:
             """Select an action and expose diagnostics for downstream logging."""
+            inference_locked = getattr(self, '_inference_locked', False)
+            effective_training = bool(training and not inference_locked)
             meta: Dict[str, Any] = {
-                'training_mode': training,
+                'training_mode': effective_training,
                 'epsilon': self.epsilon,
                 'market_regime': market_regime,
                 'risk_constraints_applied': bool(risk_constraints)
@@ -259,7 +273,7 @@ if TORCH_AVAILABLE:
                 meta['reason'] = 'missing_state'
                 return 1, meta
 
-            if training and random.random() < self.epsilon:
+            if effective_training and random.random() < self.epsilon:
                 action = random.randrange(self.action_size)
                 meta['exploration'] = True
                 meta['probabilities'] = None
@@ -305,7 +319,7 @@ if TORCH_AVAILABLE:
                     best_action = second_best_action
 
                 # Eğitim devam ediyorsa modeli tekrar train moduna al
-                if training:
+                if effective_training:
                     self.q_network.train()
 
                 return best_action, meta
@@ -532,11 +546,19 @@ else:
         def __init__(self, state_size: int, action_size: int, **kwargs):
             self.state_size = state_size
             self.action_size = action_size
-            self.epsilon = 1.0
+            self.epsilon = kwargs.get('epsilon_start', 1.0)
+            self.training_mode = kwargs.get('training_mode', False)
+            self._inference_locked = False
             self.memory = None
             self.training_history = {'losses': [], 'q_values': [], 'rewards': []}
             logger.info("Initialized mock TradingRLAgent (PyTorch not available)")
         
+        def set_inference_mode(self, epsilon: float = 0.0) -> None:
+            self.training_mode = False
+            self.epsilon = max(0.0, float(epsilon))
+            self._inference_locked = True
+            logger.info("🔒 Mock RL Agent locked to inference mode (epsilon=%.4f)", self.epsilon)
+
         def set_memory(self, memory):
             """Set experience replay buffer."""
             self.memory = memory
@@ -549,8 +571,10 @@ else:
 
         def get_action_with_meta(self, state: np.ndarray, market_regime: str = None,
                                   risk_constraints: Dict = None, training: bool = True) -> Tuple[int, Dict[str, Any]]:
+            inference_locked = getattr(self, '_inference_locked', False)
+            effective_training = bool(training and not inference_locked)
             meta = {
-                'training_mode': training,
+                'training_mode': effective_training,
                 'market_regime': market_regime,
                 'epsilon': self.epsilon,
                 'mock_mode': True
@@ -559,7 +583,7 @@ else:
                 meta['reason'] = 'missing_state'
                 return 1, meta
             action = random.randrange(self.action_size)
-            meta['exploration'] = True
+            meta['exploration'] = effective_training and self.epsilon > 0
             return action, meta
         
         def learn_from_experience(self, state: np.ndarray, action: int, 

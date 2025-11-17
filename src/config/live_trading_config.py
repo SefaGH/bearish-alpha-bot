@@ -471,20 +471,56 @@ class LiveTradingConfiguration:
         capital_val = float(get_nested(config, ['risk', 'equity_usd'], 0) or 0)
         logger.info(f"   Capital: ${capital_val:.2f} USDT")
 
-        risk_per_trade = get_nested(config, ['risk', 'per_trade_risk_pct'], None)
-        computed_risk_usd = get_nested(config, ['risk', 'computed_max_risk_usd'], 0.0)
-        if isinstance(risk_per_trade, (int, float)):
-            fallback_risk_usd = computed_risk_usd or (capital_val * risk_per_trade)
-            logger.info(
-                f"   Risk Per Trade: {risk_per_trade * 100:.2f}% ({fallback_risk_usd:.2f} USDT max risk)"
-            )
+        risk_section = get_nested(config, ['risk'], {})
+        if not isinstance(risk_section, dict):
+            risk_section = {}
+        logger.info(LiveTradingConfiguration._format_risk_summary(risk_section, capital_val))
 
         max_notional_usd = get_nested(config, ['risk', 'max_notional_per_trade'], 0.0)
-        if not max_notional_usd and isinstance(get_nested(config, ['risk', 'computed_max_notional_usd'], None), (int, float)):
+        if (not isinstance(max_notional_usd, (int, float)) or max_notional_usd == 0.0) and isinstance(
+            get_nested(config, ['risk', 'computed_max_notional_usd'], None), (int, float)
+        ):
             max_notional_usd = get_nested(config, ['risk', 'computed_max_notional_usd'], 0.0)
         logger.info(f"   Max Notional Per Trade: {max_notional_usd:.2f} USDT")
         
         logger.info("="*70)
+
+    @staticmethod
+    def _format_risk_summary(risk_cfg: Dict[str, Any], capital_val: float) -> str:
+        """Format risk summary line ensuring normalized percentages."""
+        if not isinstance(risk_cfg, dict):
+            risk_cfg = {}
+
+        pct_value = risk_cfg.get('per_trade_risk_pct')
+        usd_value = risk_cfg.get('computed_max_risk_usd')
+        normalized_fraction: Optional[float] = None
+
+        if isinstance(usd_value, (int, float)) and usd_value > 0 and capital_val > 0:
+            normalized_fraction = max(usd_value / capital_val, 0.0)
+
+        if normalized_fraction is None and isinstance(pct_value, (int, float)):
+            normalized_fraction = pct_value if pct_value <= 1 else pct_value / 100.0
+            if not isinstance(usd_value, (int, float)) or usd_value <= 0:
+                usd_value = capital_val * normalized_fraction
+
+        if normalized_fraction is not None and normalized_fraction > 0:
+            display_pct = normalized_fraction * 100.0
+            usd_value = usd_value if isinstance(usd_value, (int, float)) else capital_val * normalized_fraction
+            return f"   Risk Per Trade: {display_pct:.2f}% ({usd_value:.2f} USDT max risk)"
+
+        raw_env = os.getenv('PER_TRADE_RISK_PCT')
+        if raw_env is not None:
+            try:
+                raw_numeric = float(raw_env)
+                normalized = raw_numeric if raw_numeric <= 1 else raw_numeric / 100.0
+                if normalized > 0:
+                    usd_value = capital_val * normalized
+                    return f"   Risk Per Trade: {normalized * 100:.2f}% ({usd_value:.2f} USDT max risk)"
+                return f"   Risk Per Trade: {raw_numeric:.2f}% (raw env)"
+            except (TypeError, ValueError):
+                return f"   Risk Per Trade: {raw_env} (raw env)"
+
+        return "   Risk Per Trade: N/A"
 
 # Global accessor function for easy, consistent access from anywhere in the codebase.
 def get_config() -> Dict[str, Any]:
