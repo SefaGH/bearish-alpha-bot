@@ -389,7 +389,9 @@ ml:
                                       # Formula: (target_final/initial)^(1/episodes) = (0.08/1.0)^(1/250)
     epsilon_min: 0.01                 # ✅ ADDED: Override: ML_RL_EPSILON_MIN (training: minimum exploration floor)
     
-    regime_bias_strength: 5.0         # Override: ML_RL_REGIME_BIAS
+    regime_bias_strength: 2.0         # Override: ML_RL_REGIME_BIAS
+    max_regime_bias: 3.0              # Override: ML_RL_MAX_REGIME_BIAS
+    min_regime_confidence_for_bias: 0.6  # Override: ML_RL_MIN_REGIME_CONF
     risk_penalty_strength: 100.0      # Override: ML_RL_RISK_PENALTY
 
     # Temel Algoritma Parametreleri (Uzman kullanıcılar için)

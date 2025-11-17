@@ -93,6 +93,19 @@ class StrategyCoordinator:
             'rl_skipped_signals': 0,
             'bypass_approvals': 0
         }
+        self.rl_telemetry = {
+            'total_decisions': 0,
+            'veto_count': 0,
+            'bias_applied_count': 0,
+            'bias_skipped_count': 0,
+            'veto_by_regime': {
+                'bullish': 0,
+                'bearish': 0,
+                'neutral': 0,
+                'volatile': 0
+            },
+            'q_value_variance': []
+        }
         
         # ML integration placeholders
         self.ml_integration = None
@@ -599,6 +612,49 @@ class StrategyCoordinator:
         reason = self._last_ml_rejection_reason
         self._last_ml_rejection_reason = None
         return reason
+
+    def _record_rl_telemetry(self, rl_meta: Dict[str, Any], rl_action: str) -> None:
+        """Track RL decision telemetry for observability dashboards."""
+        import numpy as np
+
+        telemetry = self.rl_telemetry
+        telemetry['total_decisions'] += 1
+
+        if rl_meta.get('bias_applied'):
+            telemetry['bias_applied_count'] += 1
+        else:
+            telemetry['bias_skipped_count'] += 1
+
+        raw_q = rl_meta.get('raw_q_values') or []
+        if raw_q:
+            telemetry['q_value_variance'].append(float(np.std(raw_q)))
+
+        if rl_action == 'hold':
+            telemetry['veto_count'] += 1
+            regime_key = rl_meta.get('regime_label') or rl_meta.get('market_regime') or 'neutral'
+            telemetry['veto_by_regime'].setdefault(regime_key, 0)
+            telemetry['veto_by_regime'][regime_key] += 1
+
+    def get_rl_telemetry_stats(self) -> Dict[str, Any]:
+        """Summarize RL telemetry insights for diagnostics."""
+        import numpy as np
+
+        telemetry = self.rl_telemetry
+        total = telemetry['total_decisions']
+        variance_mean = (
+            float(np.mean(telemetry['q_value_variance']))
+            if telemetry['q_value_variance']
+            else 0.0
+        )
+
+        return {
+            'rl_veto_rate': (telemetry['veto_count'] / total) if total else 0.0,
+            'bias_applied_rate': (telemetry['bias_applied_count'] / total) if total else 0.0,
+            'bias_skipped_rate': (telemetry['bias_skipped_count'] / total) if total else 0.0,
+            'q_value_variance_mean': variance_mean,
+            'veto_by_regime': telemetry['veto_by_regime'],
+            'samples': total
+        }
     
     async def _enhance_signal_with_ml(self, signal: Dict) -> Optional[Dict]:
         """
@@ -688,8 +744,18 @@ class StrategyCoordinator:
                         rl_training_flag = getattr(self.rl_agent, 'training_mode', False)
                         if getattr(self.rl_agent, '_inference_locked', False):
                             rl_training_flag = False
+                        regime_context = signal.get('predicted_regime', 'neutral')
+                        regime_confidence = signal.get('regime_confidence')
+                        if isinstance(regime_confidence, (int, float)):
+                            market_regime_payload: Any = {
+                                'predicted_regime': regime_context,
+                                'confidence': float(regime_confidence)
+                            }
+                        else:
+                            market_regime_payload = regime_context
+
                         rl_kwargs = {
-                            'market_regime': signal.get('predicted_regime', 'neutral'),
+                            'market_regime': market_regime_payload,
                             'risk_constraints': signal.get('risk_constraints'),
                             'training': rl_training_flag
                         }
@@ -703,6 +769,7 @@ class StrategyCoordinator:
                         signal['rl_recommendation'] = rl_advice_str
                         signal['rl_decision_meta'] = rl_meta
                         rl_advice = rl_advice_str.lower()
+                        self._record_rl_telemetry(rl_meta or {}, rl_advice)
                         
                         # CRITICAL: Store RL decision for enrichment
                         self._last_rl_decision = {
@@ -719,7 +786,10 @@ class StrategyCoordinator:
                                 'exploration': rl_meta.get('exploration'),
                                 'epsilon': rl_meta.get('epsilon'),
                                 'raw_q_values': [round(v, 4) for v in rl_meta.get('raw_q_values', [])[:3]] if rl_meta.get('raw_q_values') else None,
-                                'adjusted_q_values': [round(v, 4) for v in rl_meta.get('adjusted_q_values', [])[:3]] if rl_meta.get('adjusted_q_values') else None
+                                'adjusted_q_values': [round(v, 4) for v in rl_meta.get('adjusted_q_values', [])[:3]] if rl_meta.get('adjusted_q_values') else None,
+                                'bias_applied': rl_meta.get('bias_applied'),
+                                'effective_bias': rl_meta.get('effective_bias'),
+                                'regime_confidence': rl_meta.get('regime_confidence')
                             }
                         logger.debug(
                             "DEBUG_ML_RL | symbol=%s | rl_decision=%s | meta=%s",
@@ -739,11 +809,16 @@ class StrategyCoordinator:
                             or 'N/A'
                         )
                         logger.info(
-                            "🤖 [RL-META] %s | decision=%s | epsilon=%s | confidence=%s | q_values=%s | probs=%s",
+                            "🤖 [RL-META] %s | decision=%s | epsilon=%s | confidence=%s | bias=%s | q_values=%s | probs=%s",
                             symbol,
                             rl_advice_str.lower(),
                             f"{epsilon_preview:.3f}" if isinstance(epsilon_preview, (int, float)) else 'N/A',
                             f"{confidence_preview:.3f}" if isinstance(confidence_preview, (int, float)) else 'N/A',
+                            {
+                                'applied': rl_meta.get('bias_applied'),
+                                'effective_bias': rl_meta.get('effective_bias'),
+                                'threshold': rl_meta.get('regime_confidence_threshold')
+                            },
                             q_values_preview,
                             probabilities_preview or 'N/A'
                         )

@@ -136,7 +136,9 @@ if TORCH_AVAILABLE:
                 'epsilon_start': 1.0,
                 'epsilon_decay': 0.995,
                 'epsilon_min': 0.01,
-                'regime_bias_strength': 5.0,
+                'regime_bias_strength': 2.0,
+                'max_regime_bias': 3.0,
+                'min_regime_confidence_for_bias': 0.6,
                 'risk_penalty_strength': 100.0,
             }
         
@@ -203,7 +205,12 @@ if TORCH_AVAILABLE:
                 logger.error("="*70)
             
             # Bias strengths from config
-            self.regime_bias_strength = self.config.get('regime_bias_strength', 5.0)
+            self.regime_bias_strength = self.config.get(
+                'regime_bias_strength',
+                self.config.get('regime_bias', 2.0)
+            )
+            self.max_regime_bias = self.config.get('max_regime_bias', 3.0)
+            self.min_regime_confidence_for_bias = self.config.get('min_regime_confidence_for_bias', 0.6)
             self.risk_penalty_strength = self.config.get('risk_penalty_strength', 100.0)
 
             self.update_counter = 0
@@ -256,15 +263,23 @@ if TORCH_AVAILABLE:
             )
             return action
 
-        def get_action_with_meta(self, state: np.ndarray, market_regime: str = None,
+        def get_action_with_meta(self, state: np.ndarray, market_regime: Any = None,
                                   risk_constraints: Dict = None, training: bool = False) -> Tuple[int, Dict[str, Any]]:
             """Select an action and expose diagnostics for downstream logging."""
             inference_locked = getattr(self, '_inference_locked', False)
             effective_training = bool(training and not inference_locked)
+            regime_label = market_regime
+            if isinstance(market_regime, dict):
+                regime_label = (
+                    market_regime.get('predicted_regime')
+                    or market_regime.get('regime')
+                    or market_regime.get('label')
+                    or 'neutral'
+                )
             meta: Dict[str, Any] = {
                 'training_mode': effective_training,
                 'epsilon': self.epsilon,
-                'market_regime': market_regime,
+                'market_regime': regime_label,
                 'risk_constraints_applied': bool(risk_constraints)
             }
 
@@ -288,8 +303,7 @@ if TORCH_AVAILABLE:
                 adjusted_q_values = raw_q_values.clone()
                 if risk_constraints:
                     adjusted_q_values = self._apply_risk_constraints(adjusted_q_values, risk_constraints)
-                if market_regime:
-                    adjusted_q_values = self._apply_regime_bias(adjusted_q_values, market_regime)
+                adjusted_q_values, bias_meta = self._apply_regime_bias(adjusted_q_values, market_regime)
 
                 probabilities = torch.softmax(adjusted_q_values, dim=1).squeeze().cpu().numpy()
                 best_action = int(np.argmax(probabilities))
@@ -300,7 +314,12 @@ if TORCH_AVAILABLE:
                     'probabilities': probabilities.tolist(),
                     'raw_q_values': raw_q_values.squeeze().cpu().tolist(),
                     'adjusted_q_values': adjusted_q_values.squeeze().cpu().tolist(),
-                    'best_probability': best_prob
+                    'best_probability': best_prob,
+                    'regime_confidence': bias_meta.get('regime_confidence', 0.0),
+                    'bias_applied': bias_meta.get('bias_applied', False),
+                    'effective_bias': bias_meta.get('effective_bias', 0.0),
+                    'regime_confidence_threshold': bias_meta.get('confidence_threshold'),
+                    'regime_label': bias_meta.get('regime_label'),
                 })
                 
                 # "Uncertain HOLD" kontrolü - Sadece canlı modda (training=False) çalışmalı
@@ -338,20 +357,74 @@ if TORCH_AVAILABLE:
             
             return q_adjusted
         
-        def _apply_regime_bias(self, q_values: torch.Tensor, 
-                              market_regime: str) -> torch.Tensor:
-            """Apply market regime bias to Q-values using configurable strength."""
+        def _apply_regime_bias(
+            self,
+            q_values: torch.Tensor,
+            market_regime: Any,
+        ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+            """Apply adaptive regime bias scaled by regime confidence."""
             q_adjusted = q_values.clone()
-            bias = self.regime_bias_strength
+            bias_meta: Dict[str, Any] = {
+                'bias_applied': False,
+                'effective_bias': 0.0,
+                'regime_confidence': 0.0,
+                'regime_label': 'neutral',
+                'confidence_threshold': self.min_regime_confidence_for_bias,
+            }
 
-            if market_regime == 'bullish':
-                q_adjusted[0, 0] += bias      # Boost BUY
-            elif market_regime == 'bearish':
-                q_adjusted[0, 2] += bias      # Boost SELL
-            elif market_regime == 'neutral':
-                q_adjusted[0, 1] += bias / 2  # Slightly boost HOLD
-            
-            return q_adjusted
+            if market_regime is None:
+                return q_adjusted, bias_meta
+
+            if isinstance(market_regime, dict):
+                regime_label = (
+                    market_regime.get('predicted_regime')
+                    or market_regime.get('regime')
+                    or market_regime.get('label')
+                    or 'neutral'
+                )
+                confidence_raw = market_regime.get('confidence', 0.0)
+                try:
+                    regime_confidence = float(confidence_raw)
+                except (TypeError, ValueError):
+                    regime_confidence = 0.0
+            else:
+                regime_label = str(market_regime)
+                regime_confidence = 0.0
+
+            bias_meta['regime_label'] = regime_label
+            bias_meta['regime_confidence'] = regime_confidence
+
+            if regime_confidence < self.min_regime_confidence_for_bias:
+                logger.debug(
+                    "🔒 [RL-BIAS] Skipping regime bias - confidence %.3f below threshold %.3f",
+                    regime_confidence,
+                    self.min_regime_confidence_for_bias,
+                )
+                return q_adjusted, bias_meta
+
+            effective_bias = min(self.regime_bias_strength * regime_confidence, self.max_regime_bias)
+            bias_meta['bias_applied'] = True
+            bias_meta['effective_bias'] = effective_bias
+
+            if regime_label == 'bullish':
+                q_adjusted[0, 0] += effective_bias      # Boost BUY
+            elif regime_label == 'bearish':
+                q_adjusted[0, 2] += effective_bias      # Boost SELL
+            elif regime_label == 'neutral':
+                q_adjusted[0, 1] += effective_bias * 0.5  # Slightly boost HOLD
+            elif regime_label == 'volatile':
+                q_adjusted[0, 1] -= effective_bias * 0.3  # Reduce HOLD in volatile markets
+            else:
+                q_adjusted[0, 1] += effective_bias * 0.25  # Conservative bias for unknown regimes
+
+            logger.debug(
+                "🎯 [RL-BIAS] Applied adaptive bias | regime=%s | confidence=%.2f | effective_bias=%.2f",
+                regime_label,
+                regime_confidence,
+                effective_bias,
+            )
+
+            return q_adjusted, bias_meta
         
         def learn_from_experience(self, state: np.ndarray, action: int, 
                                  reward: float, next_state: np.ndarray, 
