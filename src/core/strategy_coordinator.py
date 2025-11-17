@@ -88,7 +88,10 @@ class StrategyCoordinator:
             'rejected_cooldown': 0,
             'rejected_price_delta': 0,
             'ai_gate_rejections': 0,  # Phase 5: GEMMA AI-Gate rejections
-            'approved_signals': 0  # Phase 5: Signals approved for execution
+            'approved_signals': 0,  # Phase 5: Signals approved for execution
+            'rl_veto_count': 0,
+            'rl_skipped_signals': 0,
+            'bypass_approvals': 0
         }
         
         # ML integration placeholders
@@ -96,6 +99,9 @@ class StrategyCoordinator:
         self.feature_pipeline = None
         self.rl_agent = None
         
+        # Track ML/RL rejection context for better telemetry
+        self._last_ml_rejection_reason: Optional[str] = None
+
         # GEMMA Adapter initialization (Phase 5)
         self.gemma_adapter = None
         if self.config.get('ml', {}).get('gemma', {}).get('enabled', False):
@@ -358,6 +364,15 @@ class StrategyCoordinator:
                     logger.warning("No features in signal for GEMMA. AI-Gate might be ineffective.")
                 else:
                     gemma_prediction = self.gemma_adapter.predict(features)
+                    gemma_probabilities = gemma_prediction.get('probabilities', [])
+                    signal['gemma_probabilities'] = gemma_probabilities
+                    logger.debug(
+                        "DEBUG_ML_RL | symbol=%s | gemma_conf=%.3f | gemma_pred=%s | gemma_probs=%s",
+                        signal.get('symbol'),
+                        gemma_prediction.get('price_confidence', 0.0),
+                        gemma_prediction.get('prediction_label', 'neutral'),
+                        [round(p, 4) for p in gemma_probabilities[:3]]
+                    )
                     
                     # Check if GEMMA is in shadow mode
                     if self.gemma_adapter.shadow_mode:
@@ -503,7 +518,8 @@ class StrategyCoordinator:
                 if enriched_signal is None:
                     self.processing_stats['rejected_signals'] += 1
                     self.processing_stats['ml_blocked_signals'] = self.processing_stats.get('ml_blocked_signals', 0) + 1
-                    return {'status': 'rejected', 'reason': 'ML/RL enhancement blocked signal', 'stage': 'ml_enhancement'}
+                    rejection_reason = self._consume_ml_rejection_reason() or 'ML/RL enhancement blocked signal'
+                    return {'status': 'rejected', 'reason': rejection_reason, 'stage': 'ml_enhancement'}
             
             # Adım 5: Çatışma Kontrolü
             conflict_check = await self._check_signal_conflicts(enriched_signal)
@@ -573,6 +589,16 @@ class StrategyCoordinator:
             logger.error(f"💥 Error processing signal from {strategy_name}: {e}", exc_info=True)
             self.processing_stats['rejected_signals'] += 1
             return {'status': 'error', 'reason': str(e), 'stage': 'processing'}
+
+    def _remember_ml_rejection(self, reason: str) -> None:
+        """Store ML/RL rejection context so the caller can surface a precise reason."""
+        self._last_ml_rejection_reason = reason
+
+    def _consume_ml_rejection_reason(self) -> Optional[str]:
+        """Pop the last ML/RL rejection reason, if any."""
+        reason = self._last_ml_rejection_reason
+        self._last_ml_rejection_reason = None
+        return reason
     
     async def _enhance_signal_with_ml(self, signal: Dict) -> Optional[Dict]:
         """
@@ -604,9 +630,23 @@ class StrategyCoordinator:
                     signal, rsi_value, symbol, original_side
                 )
                 if bypass_triggered:
+                    logger.warning(
+                        "🔥 [EXTREME-BYPASS] Signal APPROVED without ML/RL checks | symbol=%s | side=%s | rsi=%.2f",
+                        symbol,
+                        original_side.upper(),
+                        rsi_value
+                    )
                     # Bypass confirmed - skip RL veto and return signal with minimal ML enhancement
                     signal['bypass_triggered'] = True
                     signal['bypass_rsi'] = rsi_value
+                    signal.setdefault('ml_confidence', 0.8)
+                    signal['ml_strength'] = signal.get('ml_strength', signal.get('strength'))
+                    self.processing_stats['bypass_approvals'] += 1
+                    total_signals = self.processing_stats.get('total_signals', 0)
+                    if total_signals > 0:
+                        self.processing_stats['bypass_success_rate'] = (
+                            self.processing_stats['bypass_approvals'] / total_signals
+                        ) * 100
                     return signal
 
             # --- 1. ML ZENGİNLEŞTİRMESİ (MEVCUT YAPI KORUNUYOR) ---
@@ -626,30 +666,58 @@ class StrategyCoordinator:
                     state_features = await self._extract_rl_state(symbol, current_price)
                     
                     # 💡 YENİ LOGLAMA: Ajanın "gördüğü" durumu logla
-                    if state_features is not None:
+                    if state_features is None:
+                        logger.warning(
+                            f"⚠️ [RL-SKIP] No state features available for {symbol}. Skipping RL agent (signal continues with ML only)."
+                        )
+                        signal['rl_recommendation'] = 'n/a'
+                        signal['rl_skipped'] = True
+                        self.processing_stats['rl_skipped_signals'] += 1
+                    else:
                         logger.info(f"🤖 [RL-DEBUG] State vector for {symbol} (first 5 features): {np.round(state_features[:5], 4)}")
                         logger.info(f"🤖 [RL-DEBUG] Original Signal: {original_side.upper()}, Strategy: {signal.get('strategy_name')}")
                         logger.info(f"🤖 [RL-DEBUG] Market Regime: {signal.get('predicted_regime', 'neutral')}")
-                    else:
-                        logger.warning(f"🤖 [RL-DEBUG] State features are None for {symbol}. RL Agent cannot make a decision.")
 
-                    rl_action_index = self.rl_agent.act(
-                        state_features,
-                        market_regime=signal.get('predicted_regime', 'neutral')
-                    )
-                    rl_advice_str = ['buy', 'hold', 'sell'][rl_action_index]
-                    signal['rl_recommendation'] = rl_advice_str
-                    rl_advice = rl_advice_str.lower()
-                    
-                    # CRITICAL: Store RL decision for enrichment
-                    self._last_rl_decision = {
-                        'action': rl_advice_str,
-                        'confidence': DEFAULT_RL_CONFIDENCE,  # Default confidence, can be enhanced if RL agent provides it
-                        'timestamp': datetime.utcnow().isoformat()
-                    }
-                    
-                    # 💡 YENİ LOGLAMA: Ajanın kararını logla
-                    logger.info(f"🤖 [RL-DECISION] For {symbol}, Agent decided: {rl_advice.upper()}")
+                        rl_meta = {}
+                        rl_kwargs = {
+                            'market_regime': signal.get('predicted_regime', 'neutral'),
+                            'risk_constraints': signal.get('risk_constraints'),
+                            'training': getattr(self.rl_agent, 'training_mode', False)
+                        }
+                        if hasattr(self.rl_agent, 'get_action_with_meta'):
+                            rl_action_index, rl_meta = self.rl_agent.get_action_with_meta(state_features, **rl_kwargs)
+                        else:
+                            rl_action_index = self.rl_agent.act(state_features, **rl_kwargs)
+                            rl_meta = {}
+
+                        rl_advice_str = ['buy', 'hold', 'sell'][rl_action_index]
+                        signal['rl_recommendation'] = rl_advice_str
+                        signal['rl_decision_meta'] = rl_meta
+                        rl_advice = rl_advice_str.lower()
+                        
+                        # CRITICAL: Store RL decision for enrichment
+                        self._last_rl_decision = {
+                            'action': rl_advice_str,
+                            'confidence': rl_meta.get('best_probability', DEFAULT_RL_CONFIDENCE) if rl_meta else DEFAULT_RL_CONFIDENCE,
+                            'timestamp': datetime.utcnow().isoformat()
+                        }
+
+                        meta_preview = {}
+                        if rl_meta:
+                            meta_preview = {
+                                'probabilities': [round(p, 4) for p in rl_meta.get('probabilities', [])[:3]],
+                                'best_probability': rl_meta.get('best_probability'),
+                                'exploration': rl_meta.get('exploration')
+                            }
+                        logger.debug(
+                            "DEBUG_ML_RL | symbol=%s | rl_decision=%s | meta=%s",
+                            symbol,
+                            rl_advice_str.upper(),
+                            meta_preview
+                        )
+
+                        # 💡 YENİ LOGLAMA: Ajanın kararını logla
+                        logger.info(f"🤖 [RL-DECISION] For {symbol}, Agent decided: {rl_advice.upper()}")
 
                 except Exception as e:
                     logger.warning(f"RL recommendation failed: {e}", exc_info=True)
@@ -659,6 +727,8 @@ class StrategyCoordinator:
                 logger.warning(f"🤖 [RL-VETO] Signal for {symbol} rejected. Reason: RL Agent advised 'hold'.")
                 signal['ml_blocked'] = True
                 signal['ml_rejection_reason'] = 'RL VETO (HOLD)'
+                self.processing_stats['rl_veto_count'] += 1
+                self._remember_ml_rejection('RL Agent veto (HOLD recommendation)')
                 return None
 
             is_opposite = (

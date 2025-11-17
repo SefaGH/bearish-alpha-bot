@@ -92,7 +92,9 @@ class LiveTradingConfiguration:
         env_overrides = self._get_env_overrides(env_map, yaml_config)
 
         # 4. Deep merge YAML config with environment overrides
-        return self._deep_merge(yaml_config, env_overrides)
+        merged = self._deep_merge(yaml_config, env_overrides)
+        self._normalize_risk_config(merged)
+        return merged
 
     def _load_yaml_and_map_env_vars(self) -> Tuple[Dict[str, Any], Dict[str, List[str]]]:
         """
@@ -374,6 +376,70 @@ class LiveTradingConfiguration:
                 result[key] = value
         return result
 
+    def _normalize_risk_config(self, config: Dict[str, Any]) -> None:
+        """Ensure risk percentages stay in fractional form and derive USD helpers."""
+        risk_section = config.get('risk')
+        if not isinstance(risk_section, dict):
+            return
+
+        percent_keys = [
+            'per_trade_risk_pct',
+            'daily_loss_limit_pct',
+            'max_position_size_pct',
+            'max_notional_pct_per_trade',
+            'max_margin_pct_per_trade'
+        ]
+
+        for key in percent_keys:
+            if key not in risk_section or risk_section[key] is None:
+                continue
+            normalized = self._normalize_percent_value(risk_section[key], f"risk.{key}")
+            if normalized is not None:
+                risk_section[key] = normalized
+
+        try:
+            equity = float(risk_section.get('equity_usd', 0) or 0)
+        except (TypeError, ValueError):
+            equity = 0
+
+        per_trade = risk_section.get('per_trade_risk_pct')
+        if isinstance(per_trade, (int, float)) and equity > 0:
+            risk_section['computed_max_risk_usd'] = equity * per_trade
+
+        max_notional_pct = risk_section.get('max_notional_pct_per_trade')
+        if isinstance(max_notional_pct, (int, float)) and equity > 0:
+            derived_notional = equity * max_notional_pct
+            risk_section['computed_max_notional_usd'] = derived_notional
+            # Preserve backwards compatibility if legacy field missing or zero
+            legacy_value = risk_section.get('max_notional_per_trade')
+            if not legacy_value:
+                risk_section['max_notional_per_trade'] = derived_notional
+
+        config['risk'] = risk_section
+
+    @staticmethod
+    def _normalize_percent_value(value: Any, field_name: str) -> Optional[float]:
+        """Convert percent inputs to safe fractional form (0-1)."""
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            logger.warning(f"⚠️ Unable to parse {field_name}={value} as float; keeping original value.")
+            return None
+
+        if numeric <= 0:
+            logger.warning(f"⚠️ {field_name}={numeric} is non-positive. Check configuration values.")
+            return numeric
+
+        if numeric > 1.0:
+            if numeric <= 100.0:
+                logger.warning(
+                    f"⚠️ {field_name} appears to be expressed as percent ({numeric}). Converting to fractional form."
+                )
+                numeric = numeric / 100.0
+            else:
+                logger.error(f"❌ {field_name}={numeric} exceeds 100%. Please provide a fractional value (0-1].")
+        return numeric
+
     @staticmethod
     def _log_config_summary(config: Dict[str, Any]) -> None:
         """Logs a summary of the final, effective configuration."""
@@ -402,8 +468,21 @@ class LiveTradingConfiguration:
         
         # Risk Management
         logger.info("💰 Risk Management:")
-        logger.info(f"   Capital: ${get_nested(config, ['risk', 'equity_usd'], 0):.2f} USDT")
-        logger.info(f"   Max Notional Per Trade: {get_nested(config, ['risk', 'max_notional_per_trade'], 0):.2f} USDT")
+        capital_val = float(get_nested(config, ['risk', 'equity_usd'], 0) or 0)
+        logger.info(f"   Capital: ${capital_val:.2f} USDT")
+
+        risk_per_trade = get_nested(config, ['risk', 'per_trade_risk_pct'], None)
+        computed_risk_usd = get_nested(config, ['risk', 'computed_max_risk_usd'], 0.0)
+        if isinstance(risk_per_trade, (int, float)):
+            fallback_risk_usd = computed_risk_usd or (capital_val * risk_per_trade)
+            logger.info(
+                f"   Risk Per Trade: {risk_per_trade * 100:.2f}% ({fallback_risk_usd:.2f} USDT max risk)"
+            )
+
+        max_notional_usd = get_nested(config, ['risk', 'max_notional_per_trade'], 0.0)
+        if not max_notional_usd and isinstance(get_nested(config, ['risk', 'computed_max_notional_usd'], None), (int, float)):
+            max_notional_usd = get_nested(config, ['risk', 'computed_max_notional_usd'], 0.0)
+        logger.info(f"   Max Notional Per Trade: {max_notional_usd:.2f} USDT")
         
         logger.info("="*70)
 

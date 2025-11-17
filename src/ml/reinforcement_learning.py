@@ -235,24 +235,36 @@ if TORCH_AVAILABLE:
         
         def act(self, state: np.ndarray, market_regime: str = None, 
                 risk_constraints: Dict = None, training: bool = False) -> int:
-            """
-            Select action based on current state using epsilon-greedy policy.
-    
-            Args:
-                state (np.ndarray): The current state from the environment.
-                market_regime (str, optional): The current market regime to apply bias.
-                risk_constraints (Dict, optional): Any risk constraints to apply.
-                training (bool, optional): If True, enables exploration (epsilon-greedy). 
-                                           If False, uses exploitation-only mode. Defaults to False.
-            """
+            """Compatibility wrapper that returns only the action."""
+            action, _ = self.get_action_with_meta(
+                state,
+                market_regime=market_regime,
+                risk_constraints=risk_constraints,
+                training=training
+            )
+            return action
+
+        def get_action_with_meta(self, state: np.ndarray, market_regime: str = None,
+                                  risk_constraints: Dict = None, training: bool = False) -> Tuple[int, Dict[str, Any]]:
+            """Select an action and expose diagnostics for downstream logging."""
+            meta: Dict[str, Any] = {
+                'training_mode': training,
+                'epsilon': self.epsilon,
+                'market_regime': market_regime,
+                'risk_constraints_applied': bool(risk_constraints)
+            }
+
             if state is None:
                 logger.warning("RL Agent received None state, defaulting to HOLD (1).")
-                return 1
+                meta['reason'] = 'missing_state'
+                return 1, meta
 
             if training and random.random() < self.epsilon:
                 action = random.randrange(self.action_size)
+                meta['exploration'] = True
+                meta['probabilities'] = None
                 logger.debug(f"🤖 [RL-ACT] Exploration: Selected random action -> {['BUY', 'HOLD', 'SELL'][action]}")
-                return action
+                return action, meta
             
             with torch.no_grad():
                 self.q_network.eval()
@@ -264,26 +276,39 @@ if TORCH_AVAILABLE:
                     adjusted_q_values = self._apply_risk_constraints(adjusted_q_values, risk_constraints)
                 if market_regime:
                     adjusted_q_values = self._apply_regime_bias(adjusted_q_values, market_regime)
-    
+
                 probabilities = torch.softmax(adjusted_q_values, dim=1).squeeze().cpu().numpy()
                 best_action = int(np.argmax(probabilities))
-                best_prob = probabilities[best_action]
+                best_prob = float(probabilities[best_action])
+
+                meta.update({
+                    'exploration': False,
+                    'probabilities': probabilities.tolist(),
+                    'raw_q_values': raw_q_values.squeeze().cpu().tolist(),
+                    'adjusted_q_values': adjusted_q_values.squeeze().cpu().tolist(),
+                    'best_probability': best_prob
+                })
                 
                 # "Uncertain HOLD" kontrolü - Sadece canlı modda (training=False) çalışmalı
                 if not training and best_action == 1 and best_prob < self.hold_confidence_threshold:
                     sorted_indices = np.argsort(probabilities)[::-1]
                     second_best_action = int(sorted_indices[1])
+                    meta['override'] = {
+                        'reason': 'low_hold_confidence',
+                        'original_probability': best_prob,
+                        'threshold': self.hold_confidence_threshold
+                    }
                     logger.warning(
                         f"🤖 [RL-OVERRIDE] Agent uncertain on HOLD (prob: {best_prob:.2f} < {self.hold_confidence_threshold}). "
                         f"Overriding with 2nd choice: {['BUY', 'HOLD', 'SELL'][second_best_action]}"
                     )
-                    return second_best_action
-    
+                    best_action = second_best_action
+
                 # Eğitim devam ediyorsa modeli tekrar train moduna al
                 if training:
                     self.q_network.train()
-    
-                return best_action
+
+                return best_action, meta
         
         def _apply_risk_constraints(self, q_values: torch.Tensor, 
                                    risk_constraints: Dict) -> torch.Tensor:
@@ -519,7 +544,23 @@ else:
         def act(self, state: np.ndarray, market_regime: str = None, 
                 risk_constraints: Dict = None, training: bool = True) -> int:
             """Mock action selection - returns random action."""
-            return random.randrange(self.action_size)
+            action, _ = self.get_action_with_meta(state, market_regime, risk_constraints, training)
+            return action
+
+        def get_action_with_meta(self, state: np.ndarray, market_regime: str = None,
+                                  risk_constraints: Dict = None, training: bool = True) -> Tuple[int, Dict[str, Any]]:
+            meta = {
+                'training_mode': training,
+                'market_regime': market_regime,
+                'epsilon': self.epsilon,
+                'mock_mode': True
+            }
+            if state is None:
+                meta['reason'] = 'missing_state'
+                return 1, meta
+            action = random.randrange(self.action_size)
+            meta['exploration'] = True
+            return action, meta
         
         def learn_from_experience(self, state: np.ndarray, action: int, 
                                  reward: float, next_state: np.ndarray, 
