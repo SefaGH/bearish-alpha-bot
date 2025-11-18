@@ -277,6 +277,16 @@ class RiskManager:
             
             # Risk metriklerini hesapla
             risk_metrics = self._calculate_risk_metrics(signal, portfolio_manager)
+
+            # Enrich signal for rule compatibility when tests supply dict portfolio managers
+            if isinstance(signal, dict) and isinstance(risk_metrics, dict):
+                signal.setdefault('portfolio_value', risk_metrics.get('portfolio_value', self.portfolio_value))
+                signal.setdefault('current_exposure', risk_metrics.get('current_exposure', 0))
+                signal.setdefault('current_drawdown', risk_metrics.get('current_drawdown', self.current_drawdown))
+                new_position_value = risk_metrics.get('new_position_value')
+                if new_position_value is not None:
+                    signal.setdefault('notional', new_position_value)
+                signal.setdefault('risk_amount', risk_metrics.get('risk_amount', 0))
             
             # PHASE 3: Tüm kuralları çalıştır
             for rule in self.rules:
@@ -321,7 +331,11 @@ class RiskManager:
             if isinstance(portfolio_manager, dict):
                 logger.warning(f"[RISK-ENGINE] Received dict instead of PortfolioManager. "
                              f"Using fallback dict access.")
-                return float(portfolio_manager.get('equity_usd', self.portfolio_value))
+                if 'equity_usd' in portfolio_manager:
+                    return float(portfolio_manager.get('equity_usd', self.portfolio_value))
+                if 'portfolio_value' in portfolio_manager:
+                    return float(portfolio_manager.get('portfolio_value', self.portfolio_value))
+                return float(self.portfolio_value)
             
             # Fallback: Use internal value
             logger.warning(f"[RISK-ENGINE] Invalid portfolio_manager type: {type(portfolio_manager)}. "
@@ -359,13 +373,26 @@ class RiskManager:
             # Safe access for other portfolio methods
             if hasattr(portfolio_manager, 'get_total_exposure'):
                 current_exposure = portfolio_manager.get_total_exposure()
+            elif isinstance(portfolio_manager, dict):
+                current_exposure = portfolio_manager.get('total_exposure', portfolio_manager.get('current_exposure', 0))
             else:
-                current_exposure = portfolio_manager.get('total_exposure', 0) if isinstance(portfolio_manager, dict) else 0
+                current_exposure = 0
             
             if hasattr(portfolio_manager, 'get_open_positions'):
                 active_positions = portfolio_manager.get_open_positions()
+            elif isinstance(portfolio_manager, dict):
+                active_positions = portfolio_manager.get('open_positions', portfolio_manager.get('active_positions', {}))
+                if not isinstance(active_positions, dict):
+                    active_positions = {}
             else:
-                active_positions = portfolio_manager.get('open_positions', {}) if isinstance(portfolio_manager, dict) else {}
+                active_positions = {}
+
+            if hasattr(portfolio_manager, 'get_current_drawdown'):
+                current_drawdown = portfolio_manager.get_current_drawdown()
+            elif isinstance(portfolio_manager, dict):
+                current_drawdown = portfolio_manager.get('current_drawdown', self.current_drawdown)
+            else:
+                current_drawdown = self.current_drawdown
             
             # Basic metrics
             new_position_value = position_size * entry_price
@@ -382,7 +409,7 @@ class RiskManager:
             risk_reward_ratio = reward_distance / risk_distance if risk_distance > 0 else 0
             
             # Portfolio heat
-            total_risk = sum(pos.get('risk_amount', 0) for pos in active_positions.values())
+            total_risk = sum(pos.get('risk_amount', 0) for pos in active_positions.values()) if isinstance(active_positions, dict) else 0
             portfolio_heat = (total_risk + risk_amount) / portfolio_value if portfolio_value > 0 else 0
             
             return {
@@ -398,7 +425,7 @@ class RiskManager:
                 'risk_pct': risk_pct,
                 'risk_reward_ratio': risk_reward_ratio,
                 'portfolio_heat': portfolio_heat,
-                'current_drawdown': portfolio_manager.get_current_drawdown(),
+                'current_drawdown': current_drawdown,
                 'max_drawdown': self.risk_limits['max_drawdown'],
                 'active_positions_count': len(active_positions)
             }

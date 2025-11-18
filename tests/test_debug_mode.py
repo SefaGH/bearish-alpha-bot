@@ -8,7 +8,10 @@ Validates that debug mode properly enables enhanced logging across all component
 import sys
 import os
 import logging
+import subprocess
+import json
 from io import StringIO
+from pathlib import Path
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -177,6 +180,41 @@ def test_circuit_breaker_debug_logging_format():
         print(f"  ✓ Format check passed: {msg[:50]}...")
     
     print("✓ Circuit breaker debug logging format test passed")
+
+
+def test_setup_logger_respects_log_to_file_flag_via_queue_listener():
+    """Verify queue listener does not register FileHandler when log_to_file=False."""
+    repo_root = Path(__file__).resolve().parents[1]
+    src_path = repo_root / 'src'
+    script = f"""
+import json
+import sys
+sys.path.insert(0, {repr(str(src_path))})
+from core.logger import setup_logger
+from core import logger as core_logger
+
+setup_logger(name="queue_listener_probe", log_to_file=False)
+
+handlers = []
+if getattr(core_logger, "_listener", None) is not None:
+    handlers = [type(handler).__name__ for handler in core_logger._listener.handlers]
+
+print(json.dumps({{"handler_types": handlers}}))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    payload = json.loads(result.stdout.strip())
+    handler_types = payload.get("handler_types", [])
+    assert all(ht != "FileHandler" for ht in handler_types), (
+        "FileHandler unexpectedly registered when log_to_file=False: "
+        f"{handler_types}"
+    )
 
 
 def main():

@@ -11,6 +11,8 @@ import pytest
 import asyncio
 from unittest.mock import Mock, patch, MagicMock, AsyncMock
 
+from _launcher_factory import create_launcher
+
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
@@ -18,22 +20,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 # Set env var to skip Python version check for testing
 os.environ['SKIP_PYTHON_VERSION_CHECK'] = '1'
 
-from live_trading_launcher import LiveTradingLauncher
-
-
-def create_launcher(**overrides):
-    """Factory for LiveTradingLauncher with standard test defaults."""
-    params = {
-        'mode': 'paper',
-        'dry_run': True,
-        'infinite': False,
-        'auto_restart': False,
-        'max_restarts': 0,
-        'restart_delay': 0,
-        'debug_mode': False,
-    }
-    params.update(overrides)
-    return LiveTradingLauncher(**params)
 
 
 class TestLiveTradingLauncher:

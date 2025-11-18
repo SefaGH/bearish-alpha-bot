@@ -343,15 +343,6 @@ class LiveTradingConfiguration:
         
         Trading symbols have the format: "BASE/QUOTE" or "BASE/QUOTE:SETTLE"
         Examples: "BTC/USDT", "ETH/USDT:USDT", "BTC/USDT,ETH/USDT"
-        
-        import os
-        import re
-        import yaml
-        import logging
-        from typing import Dict, Any, Optional, Tuple, List, Union
-
-        logger = logging.getLogger(__name__)
-
         Returns:
             True if the string contains trading symbol(s), False otherwise.
         """

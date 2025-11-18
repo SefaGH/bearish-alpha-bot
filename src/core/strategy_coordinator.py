@@ -1502,7 +1502,7 @@ class StrategyCoordinator:
                 logger.debug(f"📊 Signal R/R: {signal['rr_ratio']:.2f}")
             
             # Calculate position size using the new module
-            sized_signal = await self.position_sizing.calculate_optimal_size(signal)
+            sized_signal = await self.position_sizing.calculate_optimal_size(signal, return_signal=True)
             
             # Check if sizing was successful
             if sized_signal.get('amount', 0) <= 0:

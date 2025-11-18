@@ -21,6 +21,31 @@ def _json_default(obj: Any) -> Any:
     return obj
 
 
+def _infer_checkpoint_state_size(path: Path) -> int | None:
+    """Best-effort inference of checkpoint input dimension for validation."""
+    try:
+        import torch
+    except Exception:  # pragma: no cover - torch may be unavailable in some envs
+        logging.debug("PyTorch not available; skipping checkpoint dimension inference for %s", path)
+        return None
+
+    try:
+        checkpoint = torch.load(path, map_location="cpu")
+    except Exception as exc:  # pragma: no cover - diagnostic path
+        logging.warning("Unable to inspect checkpoint %s for dimension check: %s", path, exc)
+        return None
+
+    state_dict = checkpoint.get("q_network")
+    if not isinstance(state_dict, dict):
+        return None
+
+    for key, tensor in state_dict.items():
+        if key.endswith("network.0.weight") and hasattr(tensor, "shape") and len(tensor.shape) == 2:
+            return int(tensor.shape[1])
+
+    return None
+
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -71,6 +96,17 @@ def build_agent(config: Dict[str, Any], state_size: int, checkpoint: Path | None
         logging.info("Loading checkpoint %s", checkpoint)
         if not checkpoint.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+        inferred_state = _infer_checkpoint_state_size(checkpoint)
+        if inferred_state is not None and inferred_state != state_size:
+            logging.error(
+                "Checkpoint %s expects state size %d, but dataset provides %d features.",
+                checkpoint,
+                inferred_state,
+                state_size,
+            )
+            raise ValueError(
+                f"Checkpoint expects state size {inferred_state}, but dataset provides {state_size} features."
+            )
         try:
             agent.load_model(str(checkpoint))
         except Exception as exc:  # noqa: BLE001 - surface detailed context for diagnostics
