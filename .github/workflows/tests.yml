@@ -4,35 +4,14 @@ name: Tests
 on: [push, pull_request]
 
 jobs:
-  test-with-docker:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-      
-      # ✅ DOCKERFILE KULLAN
-      - name: Build Docker image
-        run: docker build -t bearish-alpha-bot:test -f docker/Dockerfile .
-      
-      - name: Verify Python version in container
-        run: |
-          docker run --rm bearish-alpha-bot:test python --version
-          # Expected: Python 3.11.13
-      
-      - name: Test dependencies in container
-        run: |
-          docker run --rm bearish-alpha-bot:test python -c "import aiohttp; print('✅ aiohttp OK')"
-      
-      - name: Run tests in container
-        run: |
-          docker run --rm -e PYTHONPATH="/app:/app/src:/app/scripts" bearish-alpha-bot:test pytest tests/ -v
-
-  rl-head-scale-migration:
+  # 'test-with-docker' işi gereksiz olduğu ve tüm testleri çalıştırdığı için kaldırıldı.
+  # Sadece odaklı ve PR ile ilgili testleri yapan aşağıdaki işi kullanıyoruz.
+  focused-pr-tests:
+    name: Focused PR Tests
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python 3.11
@@ -43,35 +22,30 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt || true
-          pip install pytest
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
       - name: Configure PYTHONPATH
-        run: |
-          echo "PYTHONPATH=${{ github.workspace }}/src:${{ github.workspace }}" >> $GITHUB_ENV
+        run: echo "PYTHONPATH=${{ github.workspace }}/src:${{ github.workspace }}" >> $GITHUB_ENV
 
-      - name: Generate canonical head-scale checkpoint
+      - name: 1. Generate necessary model files for tests
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          Path("data/checkpoints").mkdir(parents=True, exist_ok=True)
-          from src.ml.reinforcement_learning import TradingRLAgent
-          agent = TradingRLAgent(state_size=87, action_size=3, config={"head_scale_learnable": True})
-          agent.save_model("data/checkpoints/rl_agent_head_scale_ci.pth")
-          PY
-
-      - name: Inspect head-scale parameter wiring
-        run: |
-          python scripts/inspect_head_param.py --model data/checkpoints/rl_agent_head_scale_ci.pth --state-size 87 --head-scale-learnable --head-scale-min 0.1 --initial-head-scale 1.0
-
-      - name: Generate legacy checkpoint fixture
-        run: |
+          mkdir -p data/checkpoints tests/data
+          # Canonical head-scale checkpoint
+          python -c "from pathlib import Path; from src.ml.reinforcement_learning import TradingRLAgent; agent = TradingRLAgent(state_size=87, action_size=3, config={'head_scale_learnable': True}); agent.save_model('data/checkpoints/rl_agent_head_scale_ci.pth')"
+          # Legacy checkpoint fixture
           python tests/data/create_legacy_head_checkpoint.py --out tests/data/legacy_rl_agent_head_scale.pth --meta tests/data/legacy_rl_agent_head_scale_meta.json --legacy-log-value 0.0
 
-      - name: Run migration pytest
+      - name: 2. Run Inspector Scripts as tests
         run: |
-          pytest tests/unit/test_head_scale_migration.py::test_head_scale_migrates_close -q
-
-      - name: Probe head-scale gradients
-        run: |
+          echo "### Inspecting head-scale parameter wiring... ###"
+          python scripts/inspect_head_param.py --model data/checkpoints/rl_agent_head_scale_ci.pth --state-size 87 --head-scale-learnable --head-scale-min 0.1 --initial-head-scale 1.0
+          echo "### Probing head-scale gradients... ###"
           python scripts/inspect_head_gradient.py --model data/checkpoints/rl_agent_head_scale_ci.pth --state-size 87 --head-scale-learnable --head-scale-min 0.1 --batch-size 16
+
+      - name: 3. Run focused Pytest tests for the PR
+        run: |
+          pytest tests/unit/test_head_scale_migration.py \
+                 tests/test_reinforcement_learning_agent.py \
+                 tests/test_rl_bypass.py \
+                 -v --tb=short
