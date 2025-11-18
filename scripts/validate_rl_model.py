@@ -1,5 +1,43 @@
 #!/usr/bin/env python3
-"""Offline evaluator for trained RL checkpoints."""
+"""
+Offline evaluator for trained RL checkpoints.
+
+Validation Report JSON Schema:
+    {
+        "dataset": str,              # Path to validation dataset
+        "checkpoint": str | None,    # Path to checkpoint or None
+        "symbol": str,               # Trading symbol (e.g., "BTC/USDT:USDT")
+        "timeframe": str,            # Timeframe (e.g., "1h")
+        "generated_at": str,         # ISO timestamp with 'Z' suffix
+        "metrics": {
+            "steps": int,            # Number of steps executed
+            "total_reward": float,   # Cumulative reward over episode
+            "final_pnl": float,      # Final profit/loss
+            "action_counts": {       # Raw action counts by index
+                "0": int,            # HOLD count
+                "1": int,            # BUY count
+                "2": int             # SELL count
+            },
+            "action_distribution": { # Normalized action frequencies
+                "0": float,          # HOLD rate (0.0-1.0)
+                "1": float,          # BUY rate
+                "2": float           # SELL rate
+            },
+            "q_values": {            # Q-value statistics (per action)
+                "mean": [float, float, float],
+                "std": [float, float, float],
+                "min": [float, float, float],
+                "max": [float, float, float]
+            },
+            "probabilities": {       # Probability statistics (per action)
+                "mean": [float, float, float],
+                "std": [float, float, float],
+                "min": [float, float, float],
+                "max": [float, float, float]
+            }
+        }
+    }
+"""
 
 from __future__ import annotations
 
@@ -146,16 +184,85 @@ def evaluate_agent(agent: TradingRLAgent, env: RLTradingEnv, max_steps: int | No
     pnl = last_info.get("pnl", 0.0)
     q_stats = summarize_vector_history(q_history)
     prob_stats = summarize_vector_history(prob_history)
+    
+    action_distribution = {k: v / max(step, 1) for k, v in action_counts.items()}
+    
+    # === DIAGNOSTICS: Detect degenerate policies ===
+    _diagnose_policy_health(action_distribution, total_reward, pnl, q_stats)
 
     return {
         "steps": step,
         "total_reward": total_reward,
         "final_pnl": pnl,
         "action_counts": action_counts,
-        "action_distribution": {k: v / max(step, 1) for k, v in action_counts.items()},
+        "action_distribution": action_distribution,
         "q_values": q_stats,
         "probabilities": prob_stats,
     }
+
+
+def _diagnose_policy_health(
+    action_distribution: Dict[int, float],
+    total_reward: float,
+    pnl: float,
+    q_stats: Dict[str, Any]
+) -> None:
+    """
+    Emit warnings if the RL policy appears degenerate or frozen.
+    
+    Checks for:
+    - Extreme HOLD dominance (>95% HOLD actions)
+    - Zero or near-zero reward/PnL with high HOLD rate
+    - Very low Q-value standard deviation (frozen model)
+    """
+    hold_rate = action_distribution.get(0, 0.0)
+    buy_rate = action_distribution.get(1, 0.0)
+    sell_rate = action_distribution.get(2, 0.0)
+    
+    warnings_logged = False
+    
+    # Check for extreme HOLD dominance
+    if hold_rate > 0.95:
+        logging.warning("=" * 70)
+        logging.warning("⚠️  POLICY HEALTH WARNING: Extreme HOLD dominance detected")
+        logging.warning("=" * 70)
+        logging.warning(f"   HOLD rate:  {hold_rate:.2%}")
+        logging.warning(f"   BUY rate:   {buy_rate:.2%}")
+        logging.warning(f"   SELL rate:  {sell_rate:.2%}")
+        warnings_logged = True
+    
+    # Check for zero/near-zero reward and PnL
+    if abs(total_reward) < 1e-6 and abs(pnl) < 1e-6 and hold_rate > 0.99:
+        if not warnings_logged:
+            logging.warning("=" * 70)
+        logging.warning("⚠️  POLICY HEALTH WARNING: No-trade / Always-HOLD policy")
+        logging.warning(f"   Total Reward: {total_reward:.6f}")
+        logging.warning(f"   Final PnL:    {pnl:.6f}")
+        logging.warning(f"   HOLD rate:    {hold_rate:.2%}")
+        logging.warning("   → Policy appears to be degenerate (no trades, ~0 reward/PnL)")
+        warnings_logged = True
+    
+    # Check Q-value variance (frozen model detection)
+    if q_stats.get("std") is not None:
+        q_std_array = q_stats["std"]
+        if isinstance(q_std_array, list) and len(q_std_array) >= 3:
+            avg_q_std = sum(q_std_array) / len(q_std_array)
+            if avg_q_std < 1e-5:
+                if not warnings_logged:
+                    logging.warning("=" * 70)
+                logging.warning("⚠️  POLICY HEALTH WARNING: Frozen Q-values detected")
+                logging.warning(f"   Average Q-std: {avg_q_std:.2e}")
+                logging.warning(f"   Q-std per action: {q_std_array}")
+                logging.warning("   → Q-values show almost no variance across states")
+                warnings_logged = True
+    
+    if warnings_logged:
+        logging.warning("=" * 70)
+        logging.warning("💡 Consider:")
+        logging.warning("   - Inspecting training logs for reward scale and Q-value evolution")
+        logging.warning("   - Reviewing hyperparameters (learning_rate, reward_scale, epsilon)")
+        logging.warning("   - Checking if training converged to a local minimum")
+        logging.warning("=" * 70)
 
 
 def summarize_vector_history(history: List[List[float]]) -> Dict[str, Any]:

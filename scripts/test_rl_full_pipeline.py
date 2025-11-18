@@ -8,7 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.ml.reinforcement_learning import TradingRLAgent
+from src.ml.reinforcement_learning import TradingRLAgent, ACTION_LABELS
 
 
 def test_full_pipeline(seed: int = 42) -> bool:
@@ -47,7 +47,7 @@ def test_full_pipeline(seed: int = 42) -> bool:
         print(f"State {idx}:")
         print(f"  Raw Q: {raw_q}")
         print(f"  Adj Q: {adj_q}")
-        print(f"  Action: {['BUY', 'HOLD', 'SELL'][action]}")
+        print(f"  Action: {ACTION_LABELS[action]}")
         print("-" * 40)
 
     q_array = np.array(q_values)

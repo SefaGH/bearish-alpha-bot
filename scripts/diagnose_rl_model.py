@@ -25,7 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 MODEL_PATH = REPO_ROOT / "data/models/rl_agent_final.pth"
 SCALER_PATH = REPO_ROOT / "artifacts/gemma/final/gemma_price_scaler.joblib"
 
-from src.ml.reinforcement_learning import TradingRLAgent  # noqa: E402
+from src.ml.reinforcement_learning import TradingRLAgent, ACTION_LABELS  # noqa: E402
 
 
 def _infer_checkpoint_state_size(path: Path) -> int | None:
@@ -195,7 +195,7 @@ def main() -> None:
         print(f"  Q-values:         {pretty(q_values, 6)}")
         print(f"  Q-std:            {q_std:.8f}")
         print(f"  Q-range:          {q_range:.8f}")
-        print(f"  Decision:         {['BUY', 'HOLD', 'SELL'][int(np.argmax(q_values))]}")
+        print(f"  Decision:         {ACTION_LABELS[int(np.argmax(q_values))]}")
 
     # ------------------------------------------------------------------
     # 4. Pairwise comparison of log samples

@@ -5,13 +5,24 @@ This module defines the trading environment for the RL agent, following a
 gym-like interface (step, reset). It simulates trading on historical data,
 calculates rewards, and provides the state for the agent.
 
+Action Mapping Convention:
+    0 -> HOLD: No trade action
+    1 -> BUY:  Open or increase long position  
+    2 -> SELL: Close position or open short
+
 Author: SefaGH
 Date: 2025-11-02
 """
 
+import logging
 import numpy as np
 import pandas as pd
 from typing import Tuple, Dict, Any
+
+logger = logging.getLogger(__name__)
+
+# Canonical action mapping - must match reinforcement_learning.py
+ACTION_LABELS = ['HOLD', 'BUY', 'SELL']
 
 class RLTradingEnv:
     """
@@ -43,6 +54,8 @@ class RLTradingEnv:
         # State dimensions: ONLY features. Portfolio state is removed.
         self.state_dim = len(features_df.columns) 
         self.action_dim = 3  # 0: Hold, 1: Buy, 2: Sell
+        
+        logger.info(f"✅ RLTradingEnv initialized with action mapping: {dict(enumerate(ACTION_LABELS))}")
 
         self.reset()
 
