@@ -295,8 +295,9 @@ jobs:
             print(f"Q-Value Stats: {q_stats}")
             print("--- END REPORT ---\n")
             PY
-          else:
+          else
             echo "Validation report not found at ${REPORT}"
+          fi
         env:
           REPORT: ${{ steps.validate_rl.outputs.validation_report }}
 
