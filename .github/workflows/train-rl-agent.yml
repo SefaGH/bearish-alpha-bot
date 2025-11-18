@@ -1,0 +1,296 @@
+name: 🧠 Train & Validate RL Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      log_level:
+        description: "Python log level"
+        required: true
+        default: "INFO"
+        type: choice
+        options:
+          - DEBUG
+          - INFO
+          - WARNING
+          - ERROR
+      exchange:
+        description: "Exchange id (ccxt)"
+        required: true
+        default: "bingx"
+        type: string
+      symbol:
+        description: "Trading symbol (CCXT format)"
+        required: true
+        default: "BTC/USDT:USDT"
+        type: string
+      timeframe:
+        description: "Candle timeframe"
+        required: true
+        default: "1h"
+        type: string
+      candles:
+        description: "Number of candles to fetch for RL dataset"
+        required: true
+        default: "6000"
+        type: string
+      episodes:
+        description: "RL training episodes (override config ml.reinforcement_learning.training.episodes)"
+        required: false
+        default: "250"
+        type: string
+      save_every:
+        description: "Checkpoint frequency in episodes"
+        required: false
+        default: "25"
+        type: string
+      run_headscale_diagnostics:
+        description: "Run head-scale inspectors & migration pytest (Section 4)"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  train-and-validate-rl:
+    runs-on: ubuntu-latest
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      RL_CONFIG_PATH: config/config.example.yaml
+      RL_OUTPUT_DIR: data/training
+      RL_MODEL_DIR: data/checkpoints
+
+    steps:
+      # 1) Checkout & Python setup
+      - name: 1. Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 2. Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 3. Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+
+      # 2) Prepare RL datasets (docs/rl_training_workflow.md - Section 1)
+      - name: 4. Prepare RL training/val/test datasets
+        id: prepare_rl
+        run: |
+          echo "======================================================================"
+          echo "📊 STEP 4: Preparing RL dataset with engineered features"
+          echo "======================================================================"
+
+          python scripts/prepare_rl_training_data.py \
+            --exchange "${{ inputs.exchange }}" \
+            --symbol "${{ inputs.symbol }}" \
+            --timeframe "${{ inputs.timeframe }}" \
+            --candles ${{ inputs.candles }} \
+            --output-dir "${RL_OUTPUT_DIR}" \
+            --config "${RL_CONFIG_PATH}" \
+            --train-ratio 0.7 \
+            --val-ratio 0.15 \
+            --log-level "${{ inputs.log_level }}"
+
+          # Compute base name (e.g., BTC_USDT_USDT_1h)
+          python - << 'PY'
+          import os
+          from scripts.prepare_rl_training_data import sanitize_symbol
+
+          symbol = os.environ.get("SYMBOL", "BTC/USDT:USDT")
+          timeframe = os.environ.get("TIMEFRAME", "1h")
+          base = f"{sanitize_symbol(symbol)}_{timeframe}"
+          print(f"BASE_NAME={base}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"base_name={base}\n")
+          PY
+        env:
+          SYMBOL: ${{ inputs.symbol }}
+          TIMEFRAME: ${{ inputs.timeframe }}
+
+      # 3) Train RL Agent (docs/rl_training_workflow.md - Section 2)
+      - name: 5. Train RL agent on train split
+        id: train_rl
+        run: |
+          echo "======================================================================"
+          echo "🚀 STEP 5: Training RL Agent"
+          echo "======================================================================"
+
+          BASE_NAME="${{ steps.prepare_rl.outputs.base_name }}"
+          TRAIN_DATASET="${RL_OUTPUT_DIR}/${BASE_NAME}_train.npz"
+
+          EPISODES=${{ inputs.episodes }}
+          SAVE_EVERY=${{ inputs.save_every }}
+
+          echo "Using dataset: ${TRAIN_DATASET}"
+          echo "Episodes: ${EPISODES}, Save every: ${SAVE_EVERY}"
+
+          python scripts/train_rl_agent.py \
+            --dataset "${TRAIN_DATASET}" \
+            --config "${RL_CONFIG_PATH}" \
+            --episodes "${EPISODES}" \
+            --save-every "${SAVE_EVERY}" \
+            --model-dir "${RL_MODEL_DIR}" \
+            --model-name "rl_agent_train.pth" \
+            --summary-file "${RL_OUTPUT_DIR}/rl_training_summary.json" \
+            --log-level "${{ inputs.log_level }}"
+
+          # train_rl_agent.py always exports final checkpoint as rl_agent_final.pth in model-dir
+          echo "final_checkpoint=${RL_MODEL_DIR}/rl_agent_final.pth" >> "$GITHUB_OUTPUT"
+
+      # 4) Validate RL checkpoint (docs/rl_training_workflow.md - Section 3)
+      - name: 6. Validate RL checkpoint on validation split
+        id: validate_rl
+        run: |
+          echo "======================================================================"
+          echo "🔬 STEP 6: Validating RL checkpoint on validation split"
+          echo "======================================================================"
+
+          BASE_NAME="${{ steps.prepare_rl.outputs.base_name }}"
+          VAL_DATASET="${RL_OUTPUT_DIR}/${BASE_NAME}_val.npz"
+          CHECKPOINT="${{ steps.train_rl.outputs.final_checkpoint }}"
+          REPORT_PATH="${RL_OUTPUT_DIR}/rl_validation_report.json"
+
+          echo "Validation dataset: ${VAL_DATASET}"
+          echo "Checkpoint: ${CHECKPOINT}"
+
+          python scripts/validate_rl_model.py \
+            --dataset "${VAL_DATASET}" \
+            --checkpoint "${CHECKPOINT}" \
+            --config "${RL_CONFIG_PATH}" \
+            --report-file "${REPORT_PATH}" \
+            --log-level "${{ inputs.log_level }}"
+
+          echo "validation_report=${REPORT_PATH}" >> "$GITHUB_OUTPUT"
+
+      # 4b) Optional: RL replay/TD inspection (from docs "Tips" section)
+      - name: 7. Inspect replay buffer & TD normalization (optional)
+        if: always()
+        run: |
+          echo "======================================================================"
+          echo "🧩 STEP 7: Optional Replay / TD inspection (if script present)"
+          echo "======================================================================"
+
+          if [ -f "scripts/inspect_replay_and_td.py" ]; then
+            BASE_NAME="${{ steps.prepare_rl.outputs.base_name }}"
+            TRAIN_DATASET="${RL_OUTPUT_DIR}/${BASE_NAME}_train.npz"
+            CHECKPOINT="${{ steps.train_rl.outputs.final_checkpoint }}"
+
+            echo "Running inspect_replay_and_td on: ${TRAIN_DATASET} with checkpoint: ${CHECKPOINT}"
+
+            # Example call; adjust flags as needed
+            python scripts/inspect_replay_and_td.py \
+              --dataset "${TRAIN_DATASET}" \
+              --checkpoint "${CHECKPOINT}" \
+              --reward-clip 10 \
+              --reward-scale 0.01 \
+              --log-level "${{ inputs.log_level }}"
+          else
+            echo "scripts/inspect_replay_and_td.py not found; skipping this diagnostic step."
+          fi
+
+      # 5) Head-scale & migration diagnostics (docs/rl_training_workflow.md - Section 4)
+      - name: 8. Run head-scale inspectors and migration test
+        if: inputs.run_headscale_diagnostics == 'true'
+        run: |
+          echo "======================================================================"
+          echo "🧪 STEP 8: Head-scale diagnostics & migration test"
+          echo "======================================================================"
+
+          export PYTHONPATH="src:."
+          MODEL_PATH="${{ steps.train_rl.outputs.final_checkpoint }}"
+
+          echo "Inspecting model: ${MODEL_PATH}"
+
+          # 8.1 Inspect parameter registration
+          python scripts/inspect_head_param.py \
+            --model "${MODEL_PATH}" \
+            --state-size 82 \
+            --head-scale-learnable \
+            --initial-head-scale 1.0 \
+            --head-scale-min 0.1
+
+          # 8.2 Probe gradient flow
+          python scripts/inspect_head_gradient.py \
+            --model "${MODEL_PATH}" \
+            --state-size 82 \
+            --head-scale-learnable \
+            --initial-head-scale 1.0 \
+            --head-scale-min 0.1 \
+            --batch-size 32
+
+          # 8.3 Validate migration with pytest (skips if legacy fixture missing)
+          pytest tests/unit/test_head_scale_migration.py -q
+
+      # 6) Summarize metrics for CI logs (simple quality summary)
+      - name: 9. Summarize RL validation metrics
+        run: |
+          echo "======================================================================"
+          echo "📋 STEP 9: RL Validation Summary"
+          echo "======================================================================"
+          REPORT="${{ steps.validate_rl.outputs.validation_report }}"
+          if [ -f "${REPORT}" ]; then
+            python - << 'PY'
+            import json, os
+            report_path = os.environ["REPORT"]
+            with open(report_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            print("\n--- RL VALIDATION REPORT ---")
+            # Defensive fallback structure; adapt keys as per validate_rl_model.py output
+            total_reward = data.get("total_reward") or data.get("reward_total") or "N/A"
+            pnl_total = data.get("pnl_total", "N/A")
+            action_dist = data.get("action_distribution", {})
+            q_stats = data.get("q_stats", {})
+
+            print(f"Total Reward: {total_reward}")
+            print(f"Total PnL:    {pnl_total}")
+            print(f"Action Distribution: {action_dist}")
+            print(f"Q-Value Stats: {q_stats}")
+            print("--- END REPORT ---\n")
+            PY
+          else:
+            echo "Validation report not found at ${REPORT}"
+        env:
+          REPORT: ${{ steps.validate_rl.outputs.validation_report }}
+
+      # 7) Collect & upload artifacts (detailed reporting)
+      - name: 10. Collect RL training artifacts
+        run: |
+          echo "======================================================================"
+          echo "📦 STEP 10: Collecting RL artifacts for upload"
+          echo "======================================================================"
+
+          mkdir -p artifacts/rl
+
+          # Metadata & reports
+          cp -v "${RL_OUTPUT_DIR}/"*_metadata.json artifacts/rl/ 2>/dev/null || true
+          cp -v "${RL_OUTPUT_DIR}/rl_training_summary.json" artifacts/rl/ 2>/dev/null || true
+          cp -v "${RL_OUTPUT_DIR}/rl_validation_report.json" artifacts/rl/ 2>/dev/null || true
+
+          # Final checkpoint
+          cp -v "${RL_MODEL_DIR}/rl_agent_final.pth" artifacts/rl/ 2>/dev/null || true
+
+          # Intermediate checkpoints
+          if [ -d "${RL_MODEL_DIR}" ]; then
+            mkdir -p artifacts/rl/checkpoints
+            cp -v "${RL_MODEL_DIR}/"*.pth artifacts/rl/checkpoints/ 2>/dev/null || true
+          fi
+
+          # Logs (if any exist under logs/)
+          if [ -d "logs" ]; then
+            mkdir -p artifacts/rl/logs
+            cp -rv logs artifacts/rl/logs/ 2>/dev/null || true
+          fi
+
+      - name: 11. Upload RL artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rl-agent-training-${{ github.run_number }}
+          path: artifacts/rl
+          retention-days: 30
