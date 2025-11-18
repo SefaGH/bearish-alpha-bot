@@ -228,18 +228,19 @@ jobs:
           echo "======================================================================"
           echo "🧩 STEP 9: Optional Replay / TD inspection (if script present)"
           echo "======================================================================"
-
+      
           if [ -f "scripts/inspect_replay_and_td.py" ]; then
             BASE_NAME="${{ steps.prepare_rl.outputs.base_name }}"
             TRAIN_DATASET="${RL_OUTPUT_DIR}/${BASE_NAME}_train.npz"
-            CHECKPOINT="${{ steps.train_rl.outputs.final_checkpoint }}"
-
+            MODEL="${{ steps.train_rl.outputs.final_checkpoint }}"
+      
+            echo "Running inspect_replay_and_td on: ${TRAIN_DATASET} with model: ${MODEL}"
+      
             python scripts/inspect_replay_and_td.py \
+              --model "${MODEL}" \
               --dataset "${TRAIN_DATASET}" \
-              --checkpoint "${CHECKPOINT}" \
               --reward-clip 10 \
-              --reward-scale 0.01 \
-              --log-level "${{ inputs.log_level }}"
+              --reward-scale 0.01
           else
             echo "scripts/inspect_replay_and_td.py not found; skipping this diagnostic step."
           fi
