@@ -26,9 +26,7 @@ jobs:
       
       - name: Run tests in container
         run: |
-          docker run --rm bearish-alpha-bot:test pytest tests/ -v
-        env:
-          PYTHONPATH: /app/src:/app/scripts
+          docker run --rm -e PYTHONPATH="/app:/app/src:/app/scripts" bearish-alpha-bot:test pytest tests/ -v
 
   rl-head-scale-migration:
     runs-on: ubuntu-latest

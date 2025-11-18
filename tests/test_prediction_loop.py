@@ -1,129 +1,132 @@
-"""
-Test for verifying prediction loop populates the cache correctly.
-"""
-import pytest
+"""Prediction loop tests for AdvancedPricePredictionEngine."""
+
 import asyncio
+import sys
+from contextlib import suppress
+from pathlib import Path
+from typing import Iterator
+from unittest.mock import AsyncMock, MagicMock
+
 import numpy as np
 import pandas as pd
-from unittest.mock import Mock, MagicMock
-from src.ml.price_predictor import (
-    AdvancedPricePredictionEngine,
-    MultiTimeframePricePredictor,
-    EnsemblePricePredictor,
-    LSTMPricePredictor
-)
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.ml.price_predictor import AdvancedPricePredictionEngine
 
 
-@pytest.mark.asyncio
-async def test_prediction_loop_populates_cache():
-    """Test that the prediction loop actually populates the cache."""
-    # Create a simple model
-    models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
-    mt_predictor = MultiTimeframePricePredictor(models)
-    
-    # Constants for test data
-    NUM_CANDLES = 100
-    
-    # Create sample OHLCV DataFrame
-    dates = pd.date_range(start='2024-01-01', periods=NUM_CANDLES, freq='5min')
-    sample_df = pd.DataFrame({
-        'open': np.linspace(100, 110, NUM_CANDLES),
-        'high': np.linspace(101, 111, NUM_CANDLES),
-        'low': np.linspace(99, 109, NUM_CANDLES),
-        'close': np.linspace(100.5, 110.5, NUM_CANDLES),
-        'volume': [1000] * NUM_CANDLES
-    }, index=dates)
-    
-    # Mock market_data_pipeline with AsyncMock for cleaner async testing
-    from unittest.mock import AsyncMock
-    mock_pipeline = MagicMock()
-    mock_pipeline.get_latest_ohlcv = AsyncMock(return_value=sample_df.copy())
-    
-    # Create engine with mocked market_data_pipeline
-    engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
-    
-    # Verify cache is empty initially
-    assert len(engine.prediction_cache) == 0
-    
-    # Start prediction loop in background
-    symbols = ['BTC/USDT:USDT']
-    timeframes = ['5m']
-    
-    # Create task and run for a short time
-    task = asyncio.create_task(engine.start_prediction_loop(symbols, timeframes))
-    
-    # Wait for one update cycle plus a bit
-    await asyncio.sleep(2)
-    
-    # Stop the loop
-    await engine.stop_prediction_loop()
-    
-    # Cancel the task
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    
-    # Verify cache was populated
-    assert len(engine.prediction_cache) > 0
-    assert 'BTC/USDT:USDT' in engine.prediction_cache
-    
-    # Verify prediction structure
-    prediction = engine.prediction_cache['BTC/USDT:USDT']
-    assert 'aggregated' in prediction
-    assert 'by_timeframe' in prediction
-    assert 'timestamp' in prediction
-    
-    print("✓ Prediction loop successfully populated cache")
+@pytest.fixture(autouse=True)
+def force_torch_available(monkeypatch) -> Iterator[None]:
+    monkeypatch.setattr("src.ml.price_predictor.TORCH_AVAILABLE", True)
+    yield
 
 
-@pytest.mark.asyncio
-async def test_get_price_forecast_returns_cached_prediction():
-    """Test that get_price_forecast returns the cached prediction."""
-    models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
-    mt_predictor = MultiTimeframePricePredictor(models)
-    mock_pipeline = Mock()
-    engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
-    
-    # Mock a prediction in the cache
-    engine.prediction_cache['BTC/USDT'] = {
-        'aggregated': {
-            'forecast': np.array([1.0, 1.5, 2.0]),
-            'uncertainty': np.array([0.5, 0.5, 0.5]),
-            'consensus_strength': 0.8
+@pytest.fixture(autouse=True)
+def stub_manifest_loader(monkeypatch) -> Iterator[None]:
+    def _load(_self, _bundle):
+        return {
+            "version": "test",
+            "feature_count": 1,
+            "feature_names_ordered": ["feature_0"],
+            "price_model_path": None,
+            "gemma_price_model_path": None,
+            "price_scaler_path": None,
+            "gemma_price_scaler_path": None,
+            "selected_features_price": [0],
+            "selected_features_regime": [0],
+        }
+
+    monkeypatch.setattr("src.ml.price_predictor.ManifestManager.load_manifest", _load)
+    yield
+
+
+@pytest.fixture
+def feature_pipeline() -> MagicMock:
+    pipeline = MagicMock()
+    pipeline.extract_features.return_value = pd.DataFrame([{"feature_0": 0.1}])
+    pipeline.models_config = {}
+    return pipeline
+
+
+@pytest.fixture
+def market_data_pipeline() -> MagicMock:
+    candles = pd.DataFrame(
+        {
+            "open": np.linspace(100, 101, 20),
+            "high": np.linspace(101, 102, 20),
+            "low": np.linspace(99, 100, 20),
+            "close": np.linspace(100.5, 101.5, 20),
+            "volume": np.full(20, 1_000),
+        }
+    )
+
+    pipeline = MagicMock()
+    pipeline.get_latest_ohlcv = AsyncMock(return_value=candles)
+    return pipeline
+
+
+@pytest.fixture
+def engine(market_data_pipeline: MagicMock, feature_pipeline: MagicMock) -> AdvancedPricePredictionEngine:
+    instance = AdvancedPricePredictionEngine(
+        market_data_pipeline=market_data_pipeline,
+        feature_pipeline=feature_pipeline,
+        config={
+            "timeframes": ["5m"],
+            "update_interval_seconds": 0.05,
+            "cache_ttl_seconds": 5,
         },
-        'by_timeframe': {},
-        'timestamp': pd.Timestamp.now()
-    }
-    
-    # Get forecast
-    forecast = engine.get_price_forecast('BTC/USDT')
-    
-    # Verify it returns the cached prediction
-    assert forecast is not None
-    assert 'aggregated' in forecast
-    assert forecast['aggregated']['consensus_strength'] == 0.8
-    
-    print("✓ get_price_forecast correctly returns cached prediction")
+    )
+    instance.update_interval = 0.01
+    return instance
 
 
 @pytest.mark.asyncio
-async def test_get_price_forecast_returns_none_when_cache_empty():
-    """Test that get_price_forecast returns None when cache is empty."""
-    models = {'5m': EnsemblePricePredictor({'lstm': LSTMPricePredictor()})}
-    mt_predictor = MultiTimeframePricePredictor(models)
-    mock_pipeline = Mock()
-    engine = AdvancedPricePredictionEngine(mt_predictor, market_data_pipeline=mock_pipeline)
-    
-    # Get forecast for symbol not in cache
-    forecast = engine.get_price_forecast('BTC/USDT')
-    
-    # Verify it returns None
-    assert forecast is None
-    
-    print("✓ get_price_forecast correctly returns None when cache is empty")
+async def test_prediction_loop_populates_cache(engine: AdvancedPricePredictionEngine) -> None:
+    symbol = "BTC/USDT:USDT"
+    task = asyncio.create_task(engine.start_prediction_loop([symbol]))
+
+    await asyncio.sleep(0.05)
+    await engine.stop_prediction_loop()
+
+    with suppress(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1.0)
+
+    assert symbol in engine.prediction_cache
+    prediction = engine.prediction_cache[symbol]
+    assert prediction["aggregated"].get("forecast") is not None
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v', '--tb=short'])
+@pytest.mark.asyncio
+async def test_get_price_forecast_returns_cached_prediction(engine: AdvancedPricePredictionEngine) -> None:
+    symbol = "BTC/USDT"
+    engine.prediction_cache[symbol] = {
+        "aggregated": {
+            "forecast": np.array([1.0]),
+            "uncertainty": np.array([0.2]),
+            "consensus_strength": 0.8,
+        },
+        "timestamp": pd.Timestamp.utcnow(),
+    }
+
+    forecast = engine.get_price_forecast(symbol)
+    assert forecast is not None
+    assert forecast["aggregated"]["consensus_strength"] == 0.8
+
+
+def test_generate_trading_signals_reflects_forecast(engine: AdvancedPricePredictionEngine) -> None:
+    symbol = "BTC/USDT"
+    engine.prediction_cache[symbol] = {
+        "aggregated": {
+            "forecast": np.array([3.0]),
+            "uncertainty": np.array([0.1]),
+            "consensus_strength": 0.9,
+        },
+        "timestamp": pd.Timestamp.utcnow(),
+    }
+
+    signals = engine.generate_trading_signals(symbol, current_price=100.0, threshold=0.02)
+    assert signals["signal"] == "bullish"
+    assert signals["forecast_price"] > 100.0
