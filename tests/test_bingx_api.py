@@ -19,6 +19,7 @@ as env vars.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from typing import Any
@@ -30,6 +31,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from core.bingx_authenticator import BingXAuthenticator
 
 BASE_URL = "https://open-api.bingx.com"
+
+logger = logging.getLogger(__name__)
+REQUEST_TIMEOUT = 10
 
 
 def _load_bingx_secrets_from_file(path: str) -> bool:
@@ -64,7 +68,8 @@ def _load_bingx_secrets_from_file(path: str) -> bool:
         if secret:
             os.environ.setdefault("BINGX_SECRET", secret)
         return bool(os.getenv("BINGX_KEY"))
-    except Exception:
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
+        logger.debug("Failed to load BingX secrets from %s: %s", path, exc)
         return False
 
 
@@ -111,6 +116,7 @@ def test_public_price() -> None:
     response = requests.get(
         f"{BASE_URL}/openApi/swap/v2/quote/price",
         params={"symbol": "BTC-USDT"},
+        timeout=REQUEST_TIMEOUT,
     )
     assert response.status_code == 200
     data = response.json()
@@ -122,6 +128,7 @@ def test_public_depth() -> None:
     response = requests.get(
         f"{BASE_URL}/openApi/swap/v2/quote/depth",
         params={"symbol": "BTC-USDT", "limit": 10},
+        timeout=REQUEST_TIMEOUT,
     )
     assert response.status_code == 200
     data = response.json()
@@ -136,6 +143,7 @@ def test_private_balance(auth: BingXAuthenticator) -> None:
         f"{BASE_URL}/openApi/swap/v2/user/balance",
         params=request_data["params"],
         headers=request_data["headers"],
+        timeout=REQUEST_TIMEOUT,
     )
 
     assert response.status_code == 200
@@ -149,6 +157,7 @@ def test_private_positions(auth: BingXAuthenticator) -> None:
         f"{BASE_URL}/openApi/swap/v2/user/positions",
         params=request_data["params"],
         headers=request_data["headers"],
+        timeout=REQUEST_TIMEOUT,
     )
 
     assert response.status_code == 200
