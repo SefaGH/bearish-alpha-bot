@@ -28,7 +28,11 @@ def load_agent(model_path, state_size):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", required=True)
-    p.add_argument("--replay", required=False)
+    p.add_argument(
+        "--replay",
+        required=False,
+        help="Optional replay pickle (trusted project artifact only)",
+    )
     p.add_argument("--dataset", help="Optional dataset to infer state_size and replay if needed")
     p.add_argument("--state-size", type=int, help="Force state size when initializing the agent")
     args = p.parse_args()

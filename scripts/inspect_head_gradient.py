@@ -10,6 +10,21 @@ import torch
 import torch.nn.functional as F
 
 
+def _extract_checkpoint_state_size(model_path: Path) -> int | None:
+    try:
+        checkpoint = torch.load(model_path, map_location="cpu")
+    except Exception:  # pragma: no cover - handled by caller
+        return None
+
+    state_dict = checkpoint.get("q_network")
+    if not isinstance(state_dict, dict):
+        return None
+    for key, tensor in state_dict.items():
+        if key.endswith("network.0.weight") and hasattr(tensor, "shape") and len(tensor.shape) == 2:
+            return int(tensor.shape[1])
+    return None
+
+
 def load_agent(
     model_path: Path,
     *,
@@ -22,6 +37,13 @@ def load_agent(
         from src.ml.reinforcement_learning import TradingRLAgent
     except Exception:  # pragma: no cover
         from ml.reinforcement_learning import TradingRLAgent  # type: ignore[import-not-found]
+
+    checkpoint_state = _extract_checkpoint_state_size(model_path)
+    if checkpoint_state is not None and checkpoint_state != state_size:
+        raise ValueError(
+            f"Checkpoint expects state size {checkpoint_state}, but --state-size={state_size}. "
+            "Re-run with --state-size set to the checkpoint's dimension."
+        )
 
     agent = TradingRLAgent(
         state_size=state_size,
@@ -108,7 +130,7 @@ def run_probe(agent, *, batch_size: int) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--state-size", type=int, default=87)
+    parser.add_argument("--state-size", type=int, default=82)
     parser.add_argument("--head-scale-learnable", action="store_true")
     parser.add_argument("--initial-head-scale", type=float, default=1.0)
     parser.add_argument("--head-scale-min", type=float, default=0.1)

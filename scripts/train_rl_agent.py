@@ -48,7 +48,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reward-clip-max", type=float, help="Explicit maximum reward clamp")
     parser.add_argument("--reward-scale", type=float, help="Scale factor applied to rewards before TD computation")
     parser.add_argument("--reinit-head", action="store_true", help="Reinitialize the output head before training")
-    parser.add_argument("--head-scale", type=float, help="Scale factor applied to the head weights/bias after reinit")
+    parser.add_argument(
+        "--head-scale",
+        type=float,
+        help="Scale factor applied to the head weights/bias after reinit and seeds initial_head_scale",
+    )
     parser.add_argument("--head-scale-min", type=float, help="Lower bound for learnable head scale (min + softplus(raw))")
     parser.add_argument("--output-scale", type=float, help="Multiply q-value outputs by this factor")
     parser.add_argument("--head-only", action="store_true", help="Only train the output head (freezes other layers).")

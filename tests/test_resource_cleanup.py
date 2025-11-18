@@ -22,6 +22,21 @@ os.environ['SKIP_PYTHON_VERSION_CHECK'] = '1'
 from live_trading_launcher import LiveTradingLauncher, OptimizedWebSocketManager
 
 
+def create_launcher(**overrides):
+    """Factory to build a launcher with defaults that satisfy new signature."""
+    params = {
+        'mode': 'paper',
+        'dry_run': True,
+        'infinite': False,
+        'auto_restart': False,
+        'max_restarts': 0,
+        'restart_delay': 0,
+        'debug_mode': False,
+    }
+    params.update(overrides)
+    return LiveTradingLauncher(**params)
+
+
 class TestCcxtClientCleanup:
     """Test CcxtClient close method."""
     
@@ -111,7 +126,7 @@ class TestLiveTradingLauncherCleanup:
     
     def test_cleanup_tracking_variables_initialized(self):
         """Test that cleanup tracking variables are initialized."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         
         # Check cleanup tracking variables exist
         assert hasattr(launcher, '_cleanup_done')
@@ -124,7 +139,7 @@ class TestLiveTradingLauncherCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_method_exists(self):
         """Test that cleanup method exists and is async."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         
         # Check method exists
         assert hasattr(launcher, 'cleanup')
@@ -136,7 +151,7 @@ class TestLiveTradingLauncherCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_is_idempotent(self):
         """Test that cleanup can be called multiple times safely."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         
         # Call cleanup multiple times
         await launcher.cleanup()
@@ -153,7 +168,7 @@ class TestLiveTradingLauncherCleanup:
     })
     async def test_cleanup_stops_websocket(self):
         """Test that cleanup stops WebSocket streams."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         
         # Mock ws_optimizer with stop_streaming
         mock_ws_optimizer = MagicMock()
@@ -173,7 +188,7 @@ class TestLiveTradingLauncherCleanup:
     })
     async def test_cleanup_closes_exchange_clients(self):
         """Test that cleanup closes exchange clients."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         
         # Mock exchange client with close method
         mock_client = MagicMock()
@@ -193,7 +208,7 @@ class TestLiveTradingLauncherCleanup:
     })
     async def test_cleanup_stops_production_system(self):
         """Test that cleanup stops production coordinator."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         
         # Mock coordinator with stop_system
         mock_coordinator = MagicMock()
@@ -209,7 +224,7 @@ class TestLiveTradingLauncherCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_handles_errors_gracefully(self):
         """Test that cleanup continues even if some steps fail."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         
         # Mock ws_optimizer that raises error
         mock_ws_optimizer = MagicMock()
@@ -233,7 +248,7 @@ class TestLiveTradingLauncherCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_cancels_pending_tasks(self):
         """Test that cleanup cancels pending async tasks."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         
         # Create a dummy pending task
         async def dummy_task():
@@ -267,7 +282,7 @@ class TestExitCodes:
             'BINGX_KEY': 'test_key',
             'BINGX_SECRET': 'test_secret'
         }):
-            launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+            launcher = create_launcher()
             
             # Mock all initialization steps
             launcher._load_environment = lambda: True
@@ -292,7 +307,7 @@ class TestExitCodes:
             'BINGX_KEY': 'test_key',
             'BINGX_SECRET': 'test_secret'
         }):
-            launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+            launcher = create_launcher()
             
             # Mock to raise KeyboardInterrupt
             async def raise_interrupt():
@@ -316,7 +331,7 @@ class TestCleanupIntegration:
             'BINGX_KEY': 'test_key',
             'BINGX_SECRET': 'test_secret'
         }):
-            launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+            launcher = create_launcher()
             
             # Track if cleanup was called
             cleanup_called = False

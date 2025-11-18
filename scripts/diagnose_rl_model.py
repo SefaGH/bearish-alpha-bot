@@ -28,6 +28,24 @@ SCALER_PATH = REPO_ROOT / "artifacts/gemma/final/gemma_price_scaler.joblib"
 from src.ml.reinforcement_learning import TradingRLAgent  # noqa: E402
 
 
+def _infer_checkpoint_state_size(path: Path) -> int | None:
+    try:
+        checkpoint = torch.load(path, map_location="cpu")
+    except FileNotFoundError:
+        raise
+    except Exception:  # pragma: no cover - handled by caller for diagnostics
+        return None
+
+    state_dict = checkpoint.get("q_network")
+    if not isinstance(state_dict, dict):
+        return None
+
+    for key, tensor in state_dict.items():
+        if key.endswith("network.0.weight") and hasattr(tensor, "shape") and len(tensor.shape) == 2:
+            return int(tensor.shape[1])
+    return None
+
+
 def _get_underlying_model(agent: TradingRLAgent):
     """Return the underlying torch module regardless of attribute name."""
 
@@ -38,11 +56,24 @@ def load_components() -> Tuple[TradingRLAgent, Any]:
     """Load RL agent and scaler from disk."""
 
     print("Loading RL Agent...")
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError(f"Model not found at {MODEL_PATH}")
+
+    checkpoint_state = _infer_checkpoint_state_size(MODEL_PATH)
+    expected_state = 82
+    if checkpoint_state is not None and checkpoint_state != expected_state:
+        raise ValueError(
+            "Checkpoint state dimension mismatch: "
+            f"checkpoint={checkpoint_state}, expected={expected_state}. "
+            "Re-export the model or pass a matching checkpoint."
+        )
+
     agent = TradingRLAgent(state_size=82, action_size=3)
     agent.load_model(str(MODEL_PATH))
     model = _get_underlying_model(agent)
-    if model is not None:
-        model.eval()
+    if model is None:
+        raise RuntimeError("TradingRLAgent has no underlying model after load_model().")
+    model.eval()
     print(f"[OK] Model loaded: {MODEL_PATH}")
 
     print("\nLoading Scaler...")

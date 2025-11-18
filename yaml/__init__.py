@@ -133,15 +133,21 @@ def _dump_internal(value: Any, indent: int = 0) -> str:
         for key, val in value.items():
             if isinstance(val, (dict, list)):
                 lines.append(f"{pad}{key}:")
-                lines.append(_dump_internal(val, indent + 2))
+                nested = _dump_internal(val, indent + 2).rstrip("\n")
+                lines.append(nested)
             else:
                 lines.append(f"{pad}{key}: {_format_scalar(val)}")
         return "\n".join(lines) + "\n"
     if isinstance(value, list):
         if not value:
             return pad + "[]\n"
-        lines = [f"{pad}- {_format_scalar(item)}" if not isinstance(item, (dict, list))
-                 else f"{pad}-\n{_dump_internal(item, indent + 2)}" for item in value]
+        lines = []
+        for item in value:
+            if isinstance(item, (dict, list)):
+                nested = _dump_internal(item, indent + 2).rstrip("\n")
+                lines.append(f"{pad}-\n{nested}")
+            else:
+                lines.append(f"{pad}- {_format_scalar(item)}")
         return "\n".join(lines) + "\n"
     return pad + _format_scalar(value) + "\n"
 

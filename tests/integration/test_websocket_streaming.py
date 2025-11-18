@@ -13,7 +13,7 @@ import pytest
 import asyncio
 import os
 import sys
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, MagicMock, AsyncMock, patch
 from datetime import datetime
 
 # Add paths
@@ -67,13 +67,23 @@ async def test_websocket_streams_deliver_data(integration_env, cleanup_tasks):
             
             # Setup mock exchange
             mock_exchange = MagicMock()
+            mock_exchange.close = AsyncMock()
+            mock_exchange.aclose = AsyncMock()
             mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
             mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
             mock_exchange.ticker.return_value = {'last': 50000.0}
             mock_ccxt.return_value = mock_exchange
             
             print("\n[Step 1] Creating launcher...")
-            launcher = LiveTradingLauncher(mode='paper')
+            launcher = LiveTradingLauncher(
+                mode='paper',
+                dry_run=True,
+                infinite=False,
+                auto_restart=False,
+                max_restarts=0,
+                restart_delay=0,
+                debug_mode=False,
+            )
             
             print("\n[Step 2] Running launcher with synthetic streams...")
 
@@ -130,12 +140,22 @@ async def test_websocket_real_data_flow(integration_env, cleanup_tasks):
         from live_trading_launcher import LiveTradingLauncher
 
         mock_exchange = MagicMock()
+        mock_exchange.close = AsyncMock()
+        mock_exchange.aclose = AsyncMock()
         mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
         mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
         mock_exchange.ticker.return_value = {'last': 50000.0}
         mock_ccxt.return_value = mock_exchange
 
-        launcher = LiveTradingLauncher(mode='paper')
+        launcher = LiveTradingLauncher(
+            mode='paper',
+            dry_run=True,
+            infinite=False,
+            auto_restart=False,
+            max_restarts=0,
+            restart_delay=0,
+            debug_mode=False,
+        )
 
         await asyncio.wait_for(
             asyncio.shield(launcher.run(duration=8)),
@@ -202,6 +222,8 @@ async def test_websocket_connection_state_tracking(integration_env, cleanup_task
             
             # Setup mock exchange
             mock_exchange = MagicMock()
+            mock_exchange.close = AsyncMock()
+            mock_exchange.aclose = AsyncMock()
             mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
             mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
             mock_exchange.ticker.return_value = {'last': 50000.0}
@@ -211,7 +233,15 @@ async def test_websocket_connection_state_tracking(integration_env, cleanup_task
             mock_ccxt.return_value = mock_exchange
             
             print("\n[Step 1] Creating launcher...")
-            launcher = LiveTradingLauncher(mode='paper')
+            launcher = LiveTradingLauncher(
+                mode='paper',
+                dry_run=True,
+                infinite=False,
+                auto_restart=False,
+                max_restarts=0,
+                restart_delay=0,
+                debug_mode=False,
+            )
             
             # Check initial state
             print("\n[Step 2] Checking initial WebSocket state...")
@@ -309,13 +339,23 @@ async def test_websocket_error_handling(integration_env, cleanup_tasks):
             
             # Setup mock exchange that simulates connection issues
             mock_exchange = MagicMock()
+            mock_exchange.close = AsyncMock()
+            mock_exchange.aclose = AsyncMock()
             mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
             mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
             mock_exchange.ticker.return_value = {'last': 50000.0}
             mock_ccxt.return_value = mock_exchange
             
             print("\n[Step 1] Creating launcher with simulated errors...")
-            launcher = LiveTradingLauncher(mode='paper')
+            launcher = LiveTradingLauncher(
+                mode='paper',
+                dry_run=True,
+                infinite=False,
+                auto_restart=False,
+                max_restarts=0,
+                restart_delay=0,
+                debug_mode=False,
+            )
             
             print("\n[Step 2] Running launcher (10s) - should handle errors gracefully...")
             

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Inspect replay buffer statistics and q-value distributions for RL agents."""
+"""Inspect replay buffer statistics and q-value distributions for RL agents.
+
+Important: This tool expects replay files created by this project. Never load
+untrusted pickle inputs - they can execute arbitrary code on deserialization.
+"""
 
 from __future__ import annotations
 
@@ -99,6 +103,12 @@ def compute_td_stats(
     td_errors: List[float] = []
     q_stds: List[float] = []
 
+    if not replay:
+        raise ValueError("Replay buffer is empty; cannot compute TD statistics")
+
+    gamma = getattr(agent, "gamma", 0.99)
+    scale_fn = getattr(agent, "_scale_q", None)
+
     for _ in range(samples):
         batch = random.sample(replay, min(batch_size, len(replay)))
         states = torch.FloatTensor(np.stack([exp[0] for exp in batch]))
@@ -114,11 +124,15 @@ def compute_td_stats(
         next_states = torch.FloatTensor(np.stack([exp[3] for exp in batch]))
 
         q_values = agent.q_network(states)
+        if callable(scale_fn):
+            q_values = scale_fn(q_values)
         q_selected = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
         with torch.no_grad():
             q_next = agent.q_network(next_states)
+            if callable(scale_fn):
+                q_next = scale_fn(q_next)
             q_next_max = q_next.max(dim=1)[0]
-        td = rewards + 0.99 * q_next_max - q_selected
+        td = rewards + gamma * q_next_max - q_selected
         td_errors.append(float(td.abs().mean().item()))
         q_stds.append(float(q_values.std().item()))
 
@@ -202,6 +216,9 @@ def inspect_checkpoint(
     else:
         raise ValueError("Need either dataset_path or replay_path to evaluate checkpoint")
 
+    if not replay:
+        raise ValueError("Replay buffer is empty; cannot compute TD statistics")
+
     td_metrics = compute_td_stats(
         agent,
         replay,
@@ -266,7 +283,11 @@ def main() -> None:
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--dataset", type=Path, help="Path to *.npz dataset for synthesizing replay and histogram sampling")
     parser.add_argument("--state-size", type=int, help="Force state size when instantiating agent")
-    parser.add_argument("--replay", type=Path, help="Optional pickle file containing replay transitions")
+    parser.add_argument(
+        "--replay",
+        type=Path,
+        help="Optional replay pickle (trusted project artifact only)",
+    )
     clip_group = parser.add_mutually_exclusive_group()
     clip_group.add_argument("--reward-clip", type=float, help="Symmetric reward clipping (±value)")
     clip_group.add_argument("--reward-clip-range", nargs=2, type=float, metavar=("MIN", "MAX"))

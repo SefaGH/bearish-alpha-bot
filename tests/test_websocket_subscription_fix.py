@@ -187,7 +187,15 @@ class TestWebSocketHealthCheck:
         from scripts.live_trading_launcher import LiveTradingLauncher
         
         # Create launcher in dry-run mode
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True, debug_mode=True)
+        launcher = LiveTradingLauncher(
+            mode='paper',
+            dry_run=True,
+            infinite=False,
+            auto_restart=False,
+            max_restarts=0,
+            restart_delay=0,
+            debug_mode=True,
+        )
         
         # Mock required components
         launcher.config = {

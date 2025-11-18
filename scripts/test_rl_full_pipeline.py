@@ -37,8 +37,11 @@ def test_full_pipeline(seed: int = 42) -> bool:
             state,
             market_regime=cast(Any, {'predicted_regime': 'neutral', 'confidence': 0.5}),
         )
-        raw_q = meta.get('raw_q_values', [])
+        raw_q = meta.get('raw_q_values')
         adj_q = meta.get('adjusted_q_values', [])
+        if raw_q is None:
+            print("❌ FAIL: Agent metadata is missing 'raw_q_values'; cannot evaluate Q variance")
+            return False
         q_values.append(raw_q)
 
         print(f"State {idx}:")

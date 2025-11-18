@@ -69,7 +69,12 @@ def build_agent(config: Dict[str, Any], state_size: int, checkpoint: Path | None
     agent.set_inference_mode(epsilon=rl_cfg.get("epsilon_inference", 0.01))
     if checkpoint:
         logging.info("Loading checkpoint %s", checkpoint)
-        agent.load_model(str(checkpoint))
+        if not checkpoint.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+        try:
+            agent.load_model(str(checkpoint))
+        except Exception as exc:  # noqa: BLE001 - surface detailed context for diagnostics
+            raise RuntimeError(f"Failed to load checkpoint {checkpoint}: {exc}") from exc
     return agent
 
 

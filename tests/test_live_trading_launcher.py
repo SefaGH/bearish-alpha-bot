@@ -21,12 +21,27 @@ os.environ['SKIP_PYTHON_VERSION_CHECK'] = '1'
 from live_trading_launcher import LiveTradingLauncher
 
 
+def create_launcher(**overrides):
+    """Factory for LiveTradingLauncher with standard test defaults."""
+    params = {
+        'mode': 'paper',
+        'dry_run': True,
+        'infinite': False,
+        'auto_restart': False,
+        'max_restarts': 0,
+        'restart_delay': 0,
+        'debug_mode': False,
+    }
+    params.update(overrides)
+    return LiveTradingLauncher(**params)
+
+
 class TestLiveTradingLauncher:
     """Test suite for LiveTradingLauncher."""
     
     def test_launcher_initialization(self):
         """Test launcher can be initialized."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         
         assert launcher.mode == 'paper'
         assert launcher.dry_run == True
@@ -40,7 +55,7 @@ class TestLiveTradingLauncher:
         
     def test_trading_pairs_configuration(self):
         """Test trading pairs are correctly configured."""
-        launcher = LiveTradingLauncher(mode='paper')
+        launcher = create_launcher(dry_run=False)
         
         assert launcher.TRADING_PAIRS[:3] == [
             'BTC/USDT:USDT',
@@ -51,7 +66,7 @@ class TestLiveTradingLauncher:
     
     def test_risk_parameters(self):
         """Test risk parameters are correctly configured."""
-        launcher = LiveTradingLauncher(mode='paper')
+        launcher = create_launcher(dry_run=False)
         
         assert launcher.RISK_PARAMS['max_position_size'] == 0.20  # 20%
         assert launcher.RISK_PARAMS['stop_loss_pct'] == 0.02  # 2%
@@ -65,7 +80,7 @@ class TestLiveTradingLauncher:
     })
     def test_environment_loading_with_creds(self):
         """Test environment loading with credentials."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         
         result = launcher._load_environment()
         
@@ -77,7 +92,7 @@ class TestLiveTradingLauncher:
         for key in ['BINGX_KEY', 'BINGX_SECRET']:
             os.environ.pop(key, None)
 
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
 
         result = launcher._load_environment()
 
@@ -92,7 +107,7 @@ class TestLiveTradingLauncher:
     })
     def test_telegram_initialization(self):
         """Test Telegram is initialized when credentials present."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         
         launcher._load_environment()
         
@@ -100,7 +115,7 @@ class TestLiveTradingLauncher:
     
     def test_capital_configuration(self):
         """Test capital is configured to 100 USDT."""
-        launcher = LiveTradingLauncher(mode='paper')
+        launcher = create_launcher(dry_run=False)
         
         assert launcher.CAPITAL_USDT == 100.0
 
@@ -128,7 +143,7 @@ class TestLauncherIntegration:
         # Set the mock client as return value for CcxtClient constructor
         mock_ccxt.return_value = mock_client
         
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         
         # Should complete environment and exchange initialization
         assert launcher._load_environment() == True
@@ -146,7 +161,7 @@ class TestLauncherIntegration:
         mock_client.fetch_ticker.return_value = {'last': 50000.0}
         mock_ccxt.return_value = mock_client
 
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
 
         assert launcher._load_environment() is True
         assert launcher._has_bingx_credentials is False
@@ -156,7 +171,7 @@ class TestLauncherIntegration:
     @pytest.mark.asyncio
     async def test_auto_restart_guard_clause(self):
         """Test that _run_with_auto_restart handles None restart_manager gracefully."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True, auto_restart=False)
+        launcher = create_launcher(auto_restart=False)
         
         # Ensure restart_manager is None (auto_restart=False)
         assert launcher.restart_manager is None
@@ -184,7 +199,7 @@ class TestWebSocketConnectionLogic:
     })
     async def test_wait_for_connection_success(self):
         """Test _wait_for_websocket_connection returns True when connected."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         launcher._load_environment()
         
         # Mock ws_optimizer with connection status
@@ -206,7 +221,7 @@ class TestWebSocketConnectionLogic:
     })
     async def test_wait_for_connection_timeout(self):
         """Test _wait_for_websocket_connection returns False on timeout."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         launcher._load_environment()
         
         # Mock ws_optimizer with never-connecting status
@@ -228,7 +243,7 @@ class TestWebSocketConnectionLogic:
     })
     async def test_wait_for_connection_with_error(self):
         """Test _wait_for_websocket_connection returns False on error."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         launcher._load_environment()
         
         # Mock ws_optimizer with error status
@@ -250,7 +265,7 @@ class TestWebSocketConnectionLogic:
     })
     async def test_establish_connection_success_first_attempt(self):
         """Test _establish_websocket_connection succeeds on first attempt."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         launcher._load_environment()
         
         # Mock ws_optimizer
@@ -277,7 +292,7 @@ class TestWebSocketConnectionLogic:
     })
     async def test_establish_connection_retry_logic(self):
         """Test _establish_websocket_connection retries with exponential backoff."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         launcher._load_environment()
         
         # Mock ws_optimizer
@@ -320,7 +335,7 @@ class TestWebSocketConnectionLogic:
     })
     async def test_establish_connection_all_retries_fail(self):
         """Test _establish_websocket_connection returns False after all retries fail."""
-        launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+        launcher = create_launcher()
         launcher._load_environment()
         
         # Mock ws_optimizer

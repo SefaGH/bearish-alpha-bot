@@ -567,7 +567,10 @@ class LiveTradingConfiguration:
                 )
                 numeric = numeric / 100.0
             else:
-                logger.error(f"❌ {field_name}={numeric} exceeds 100%. Please provide a fractional value (0-1].")
+                logger.error(
+                    f"❌ {field_name}={numeric} exceeds 100%. Clamping to 100% (1.0) to keep values in range."
+                )
+                numeric = 1.0
         return numeric
 
     @staticmethod

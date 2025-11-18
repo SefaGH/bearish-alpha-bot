@@ -27,13 +27,28 @@ from live_trading_launcher import LiveTradingLauncher, OptimizedWebSocketManager
 from core.ccxt_client import CcxtClient
 
 
+def create_launcher(**overrides):
+    """Manual-test helper to instantiate launcher with safe defaults."""
+    params = {
+        'mode': 'paper',
+        'dry_run': True,
+        'infinite': False,
+        'auto_restart': False,
+        'max_restarts': 0,
+        'restart_delay': 0,
+        'debug_mode': False,
+    }
+    params.update(overrides)
+    return LiveTradingLauncher(**params)
+
+
 async def test_cleanup_idempotent():
     """Test that cleanup can be called multiple times."""
     print("=" * 70)
     print("TEST 1: Cleanup Idempotency")
     print("=" * 70)
     
-    launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+    launcher = create_launcher()
     
     # Call cleanup 3 times
     print("Calling cleanup (1/3)...")
@@ -106,7 +121,7 @@ async def test_cleanup_components():
     print("TEST 4: Cleanup Components")
     print("=" * 70)
     
-    launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+    launcher = create_launcher()
     
     # Mock components
     mock_ws_optimizer = MagicMock()
@@ -144,7 +159,7 @@ async def test_cleanup_handles_errors():
     print("TEST 5: Cleanup Error Handling")
     print("=" * 70)
     
-    launcher = LiveTradingLauncher(mode='paper', dry_run=True)
+    launcher = create_launcher()
     
     # Mock ws_optimizer that raises error
     mock_ws_optimizer = MagicMock()
