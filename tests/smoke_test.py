@@ -234,7 +234,15 @@ def test_live_trading_launcher_components(monkeypatch):
     sys.modules[spec.name] = launcher_mod
     spec.loader.exec_module(launcher_mod)
 
-    launcher = launcher_mod.LiveTradingLauncher(mode="paper", dry_run=True)
+    launcher = launcher_mod.LiveTradingLauncher(
+        mode="paper",
+        dry_run=True,
+        infinite=False,
+        auto_restart=False,
+        max_restarts=0,
+        restart_delay=0,
+        debug_mode=False,
+    )
     assert launcher.mode == "paper"
 
     health = launcher_mod.HealthMonitor()

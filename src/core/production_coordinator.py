@@ -141,6 +141,9 @@ class ProductionCoordinator:
         
         # Signal lifecycle tracking
         self.signal_lifecycle = {}  # signal_id -> {stage, timestamp, details}
+        self._monitoring_task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._rl_telemetry_task: Optional[asyncio.Task] = None
         
         # --- DEĞİŞİKLİK 2: Kendi config'ini yüklemek yerine dışarıdan gelen config'i kullan ---
         # Eğer dışarıdan bir config gelmezse, eski davranışa geri dön (güvenlik için)
@@ -1116,6 +1119,23 @@ class ProductionCoordinator:
                 )
                 model_path = self.config.get('model_path', 'data/models')
                 self.rl_agent.load_model(os.path.join(model_path, "rl_agent_final.pth"))
+                if hasattr(self.rl_agent, 'set_inference_mode') and not rl_config.get('training_mode', False):
+                    self.rl_agent.set_inference_mode(epsilon=rl_config.get('epsilon_inference', 0.0))
+                    actual_training = getattr(self.rl_agent, 'training_mode', None)
+                    actual_epsilon = getattr(self.rl_agent, 'epsilon', None)
+                    logger.info("✅ RL Agent forced to inference mode at coordinator init")
+                    logger.info(f"   - training_mode: {actual_training}")
+                    logger.info(f"   - epsilon: {actual_epsilon}")
+                    if actual_epsilon not in (0, 0.0):
+                        raise ValueError(
+                            f"RL inference mode enforcement failed: epsilon is {actual_epsilon}, expected 0.0"
+                        )
+                    if actual_training:
+                        raise ValueError("RL inference mode enforcement failed: training_mode remained True")
+                else:
+                    logger.warning(
+                        "⚠️ RL Agent lacks set_inference_mode support or training mode requested; ensure epsilon is safe."
+                    )
                 ml_components.append('rl_agent')
                 logger.info("✅ Reinforcement learning agent initialized.")
                 logger.info(f"   - RL Agent using hold_confidence_threshold: {self.rl_agent.hold_confidence_threshold}")
@@ -1799,6 +1819,14 @@ class ProductionCoordinator:
             logger.info("[DEBUG] Creating watchdog task...")
             self._watchdog_task = asyncio.create_task(self._watchdog_loop())
             logger.info("[DEBUG] Watchdog task created")
+
+            # Start RL telemetry monitor if coordinator is ready
+            if self.strategy_coordinator:
+                logger.info("[DEBUG] Creating RL telemetry monitoring task...")
+                self._rl_telemetry_task = asyncio.create_task(self._monitor_rl_telemetry())
+                logger.info("[DEBUG] RL telemetry monitoring task created")
+            else:
+                logger.warning("[DEBUG] StrategyCoordinator missing; RL telemetry monitor not started.")
             
             logger.info("[DEBUG] About to print production loop info...")
             logger.info("\nProduction trading loop active")
@@ -2438,6 +2466,70 @@ class ProductionCoordinator:
         except Exception as e:
             logger.error(f"Fatal error in queue monitoring: {e}", exc_info=True)
 
+    async def _monitor_rl_telemetry(self):
+        """Periodically log RL telemetry stats for diagnostics."""
+        logger.info("RL telemetry monitor task started")
+        interval = self.config.get('monitoring', {}).get('rl_telemetry_interval_seconds', 300)
+        interval = max(interval, 60)
+        threshold = (
+            self.config
+            .get('ml', {})
+            .get('reinforcement_learning', {})
+            .get('q_std_bypass_threshold', 1e-4)
+        )
+
+        try:
+            while self.is_running:
+                await asyncio.sleep(interval)
+
+                if not self.strategy_coordinator:
+                    logger.debug("[RL-TELEMETRY] StrategyCoordinator not ready; skipping cycle")
+                    continue
+
+                try:
+                    stats = self.strategy_coordinator.get_rl_telemetry_stats()
+                except Exception as exc:
+                    logger.error(f"[RL-TELEMETRY] Failed to collect stats: {exc}")
+                    continue
+
+                samples = stats.get('samples', 0)
+                if not samples:
+                    logger.info("📈 [RL-TELEMETRY] No RL decisions recorded yet")
+                    continue
+
+                q_std_values = stats.get('q_std_values', [])
+                sample_count = len(q_std_values) or samples
+                q_std_med = stats.get('q_std_median', 0.0)
+                q_range_med = stats.get('q_range_median', 0.0)
+                veto_rate = stats.get('rl_veto_rate', 0.0) * 100
+                bypass_rate = stats.get('rl_bypass_rate', stats.get('bypass_rate', 0.0)) * 100
+
+                logger.info(
+                    "📈 [RL-TELEMETRY] samples=%s | q_std_med=%.6f | q_range_med=%.6f | veto_rate=%.2f%% | bypass_rate=%.2f%%",
+                    sample_count,
+                    q_std_med,
+                    q_range_med,
+                    veto_rate,
+                    bypass_rate
+                )
+
+                if q_std_med < threshold:
+                    logger.warning(
+                        "📉 [RL-TELEMETRY] Median Q-std %.6f below threshold %.6f — RL model likely frozen",
+                        q_std_med,
+                        threshold
+                    )
+
+                if bypass_rate > 20.0:
+                    logger.warning(
+                        "⚠️ [RL-ALERT] High bypass rate (%.2f%%) - model may be frozen",
+                        bypass_rate
+                    )
+        except asyncio.CancelledError:
+            logger.info("RL telemetry monitor task cancelled")
+        except Exception as exc:
+            logger.error(f"RL telemetry monitor crashed: {exc}", exc_info=True)
+
     async def stop(self):
         """
         Graceful shutdown trigger for the coordinator.
@@ -2477,6 +2569,14 @@ class ProductionCoordinator:
             self._watchdog_task.cancel()
             try:
                 await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel RL telemetry task
+        if hasattr(self, '_rl_telemetry_task') and self._rl_telemetry_task:
+            self._rl_telemetry_task.cancel()
+            try:
+                await self._rl_telemetry_task
             except asyncio.CancelledError:
                 pass
         

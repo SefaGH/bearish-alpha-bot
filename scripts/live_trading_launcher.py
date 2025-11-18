@@ -40,7 +40,7 @@ from core.logger import setup_logger
 # ===             YENİ VE MERKEZİ YAPIYI KULLANMA                  ===
 # ====================================================================
 # Artık yapılandırmayı almak için tek bir standart yolumuz var.
-from config.live_trading_config import get_config
+from config.live_trading_config import LiveTradingConfiguration
 # ====================================================================
 
 from core.production_coordinator import ProductionCoordinator
@@ -932,14 +932,30 @@ class LiveTradingLauncher:
     """
     Comprehensive live trading launcher integrating all system components.
     """
+
+    def _load_config(
+        self,
+        *,
+        force_reload: bool = False,
+        log_summary: bool = True
+    ) -> Dict[str, Any]:
+        """Load the centralized configuration via the unified loader."""
+        needs_refresh = force_reload or getattr(self, 'config', None) is None
+        if needs_refresh:
+            self.config = LiveTradingConfiguration.load(
+                log_summary=log_summary,
+                force_reload=force_reload
+            )
+        return self.config
     
     # Default risk parameters - used across normalization and fallbacks
     DEFAULT_RISK_PARAMS = {
-        'max_position_size': 0.2,
-        'stop_loss_pct': None,      # Sentinel value - will be calculated dynamically
-        'take_profit_pct': None,    # Sentinel value - will be calculated dynamically
+        'max_position_size': 0.20,
+        'stop_loss_pct': 0.02,
+        'take_profit_pct': 0.015,
         'risk_per_trade': 0.05,
-        'max_drawdown': 0.05
+        'max_drawdown': 0.10,
+        'max_portfolio_risk': 0.05,
     }
     
     def __init__(self, mode: str, dry_run: bool, infinite: bool, auto_restart: bool,
@@ -955,10 +971,10 @@ class LiveTradingLauncher:
         self.debug_mode = debug_mode
 
         # 2. YAPILANDIRMAYI MERKEZDEN VE TEK SEFERDE AL (TEK DOĞRU KAYNAK)
-        self.config = get_config()
+        self.config = self._load_config(log_summary=True)
         
         # 3. Gerekli tüm parametreleri DOĞRUDAN bu tek, güvenilir kaynaktan al.
-        #    get_config() metodu, sembollerin her zaman bir LİSTE olmasını garanti eder.
+        #    _load_config() metodu, sembollerin her zaman bir LİSTE olmasını garanti eder.
         self.CAPITAL_USDT = self.config.get('risk', {}).get('equity_usd', 100.0)
         self.TRADING_PAIRS = self.config.get('universe', {}).get('fixed_symbols', [])
 
@@ -974,7 +990,6 @@ class LiveTradingLauncher:
             )
             if isinstance(self.TRADING_PAIRS, str):
                 # Use config module's parsing logic
-                from config.live_trading_config import LiveTradingConfiguration
                 if LiveTradingConfiguration._is_trading_symbol(self.TRADING_PAIRS):
                     self.TRADING_PAIRS = LiveTradingConfiguration._parse_trading_symbols(self.TRADING_PAIRS)
                 else:
@@ -983,6 +998,10 @@ class LiveTradingLauncher:
                 self.TRADING_PAIRS = ['BTC/USDT']  # Safe fallback
         
         self.RISK_PARAMS = self.config.get('risk', {})
+
+        # Normalize risk parameters upfront so callers (and tests) can rely on
+        # standard keys like 'max_position_size'.
+        self._normalize_risk_params()
 
         # 4. Diğer tüm başlangıç değişkenlerini boş olarak başlat
         self.coordinator = None
@@ -1032,15 +1051,14 @@ class LiveTradingLauncher:
         logger.debug(f"Current RISK_PARAMS keys: {list(self.RISK_PARAMS.keys())}")
         
         # Map all possible variations to standard keys
-        # CRITICAL FIX: Remove max_notional_per_trade from max_position_size mapping
         key_mappings = {
-            'max_position_size': ['max_position_size_pct'],  # FIXED: Removed 'max_notional_per_trade'
-            'stop_loss_pct': ['stop_loss', 'stop_loss_multiplier'],  # Separated from min_stop_pct 
-            'take_profit_pct': ['take_profit', 'take_profit_ratio'],  # Separated from min_tp_pct
-            'min_stop_pct': ['min_stop_pct'],  # Now a separate parameter (not merged with stop_loss_pct)
+            'max_position_size': ['max_position_size_pct'],
+            'stop_loss_pct': ['stop_loss_pct', 'stop_loss', 'stop_loss_multiplier'],
+            'take_profit_pct': ['take_profit_pct', 'take_profit', 'take_profit_ratio'],
             'risk_per_trade': ['per_trade_risk_pct'],
-            'max_drawdown': ['daily_loss_limit_pct', 'max_daily_loss'],
-            # NEW mappings for dynamic sizing
+            'max_portfolio_risk': ['max_portfolio_risk'],
+            'max_drawdown': ['max_drawdown', 'max_drawdown_pct'],
+            'min_stop_pct': ['min_stop_pct'],
             'max_notional_pct': ['max_notional_pct_per_trade'],
             'max_margin_pct': ['max_margin_pct_per_trade'],
         }
@@ -1055,10 +1073,6 @@ class LiveTradingLauncher:
             # Preserve existing standard key if already set
             if standard_key in self.RISK_PARAMS:
                 continue
-            
-            # ===== SENTINEL VALUE SUPPORT =====
-            # For take_profit_pct and stop_loss_pct, allow None as a valid value
-            is_dynamic_param = standard_key in ['take_profit_pct', 'stop_loss_pct']
             
             # Check RISK_PARAMS first
             for variant in variations:
@@ -1092,16 +1106,9 @@ class LiveTradingLauncher:
                         except ValueError:
                             logger.warning(f"Invalid value for environment variable '{env_name}': '{env_val}' (expected float)")
             
-            # ===== KEY CHANGE: Handle missing params differently =====
-            if not found:
-                if is_dynamic_param:
-                    # For dynamic params, use None (sentinel value)
-                    self.RISK_PARAMS[standard_key] = None
-                    logger.info(f"✓ Risk param '{standard_key}' will be calculated dynamically by strategies")
-                else:
-                    # For other params, use defaults
-                    self.RISK_PARAMS[standard_key] = self.DEFAULT_RISK_PARAMS[standard_key]
-                    logger.warning(f"Risk param '{standard_key}' not found, using default: {self.DEFAULT_RISK_PARAMS[standard_key]}")
+            if not found and standard_key in self.DEFAULT_RISK_PARAMS:
+                self.RISK_PARAMS[standard_key] = self.DEFAULT_RISK_PARAMS[standard_key]
+                logger.info(f"Risk param '{standard_key}' not found, using default: {self.DEFAULT_RISK_PARAMS[standard_key]}")
         
         # CRITICAL: Add safety check for max_position_size
         if 'max_position_size' in self.RISK_PARAMS and self.RISK_PARAMS['max_position_size'] is not None:
@@ -1334,6 +1341,54 @@ class LiveTradingLauncher:
         logger.info("✓ WebSocket Optimizer initialized")
         
         return True
+
+    def _initialize_exchange_connection(self) -> bool:
+        """Set up the BingX exchange client with optional credential support."""
+
+        logger.info("\n[2/8] Initializing BingX Exchange Connection...")
+
+        try:
+            creds = None
+            if self._has_bingx_credentials and not self.dry_run:
+                creds = {
+                    'apiKey': os.getenv('BINGX_KEY'),
+                    'secret': os.getenv('BINGX_SECRET'),
+                }
+
+            client = CcxtClient('bingx', creds=creds)
+
+            if hasattr(client, 'set_required_symbols'):
+                client.set_required_symbols(self.TRADING_PAIRS)
+
+            if hasattr(client, 'load_markets'):
+                client.load_markets()
+
+            probe_symbol = None
+            if self.TRADING_PAIRS:
+                probe_symbol = self.TRADING_PAIRS[0]
+            elif hasattr(client, 'DEFAULT_SYMBOL'):
+                probe_symbol = getattr(client, 'DEFAULT_SYMBOL')
+            else:
+                probe_symbol = 'BTC/USDT'
+
+            if hasattr(client, 'fetch_ticker'):
+                try:
+                    client.fetch_ticker(probe_symbol.replace(':USDT', ''))
+                except TypeError:
+                    client.fetch_ticker(probe_symbol)
+            elif hasattr(client, 'ticker'):
+                client.ticker(probe_symbol)
+
+            if creds and hasattr(client, 'get_bingx_balance'):
+                client.get_bingx_balance()
+
+            self.exchange_clients['bingx'] = client
+            logger.info("✓ BingX client initialized")
+            return True
+
+        except Exception as exc:  # pragma: no cover - defensive logging path
+            logger.error(f"❌ Failed to initialize exchange connection: {exc}", exc_info=True)
+            return False
     
     def _initialize_risk_management(self) -> bool:
         """
@@ -1348,17 +1403,21 @@ class LiveTradingLauncher:
             # Create risk configuration with custom limits
             risk_config = RiskConfiguration(custom_limits=self.RISK_PARAMS)
             logger.info("✓ Risk configuration loaded")
-            
-            # Safe extraction with fallbacks
+
+            def _fmt_pct(value: float | None) -> str:
+                if value is None:
+                    return "<dynamic>"
+                return f"{value:.1%}"
+
             max_pos = self.RISK_PARAMS.get('max_position_size', self.DEFAULT_RISK_PARAMS['max_position_size'])
             stop_loss = self.RISK_PARAMS.get('stop_loss_pct', self.DEFAULT_RISK_PARAMS['stop_loss_pct'])
             take_profit = self.RISK_PARAMS.get('take_profit_pct', self.DEFAULT_RISK_PARAMS['take_profit_pct'])
             max_dd = self.RISK_PARAMS.get('max_drawdown', self.DEFAULT_RISK_PARAMS['max_drawdown'])
-            
-            logger.info(f"  - Max position size: {max_pos:.1%}")
-            logger.info(f"  - Stop loss: {stop_loss:.1%}")
-            logger.info(f"  - Take profit: {take_profit:.1%}")
-            logger.info(f"  - Max drawdown: {max_dd:.1%}")
+
+            logger.info(f"  - Max position size: {_fmt_pct(max_pos)}")
+            logger.info(f"  - Stop loss: {_fmt_pct(stop_loss)}")
+            logger.info(f"  - Take profit: {_fmt_pct(take_profit)}")
+            logger.info(f"  - Max drawdown: {_fmt_pct(max_dd)}")
             
             return True
             

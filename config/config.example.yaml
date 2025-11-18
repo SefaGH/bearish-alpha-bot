@@ -376,7 +376,7 @@ ml:
     #   - Agent uses pre-trained weights without learning
     #   - Use for: Live trading
     # ============================================================================
-    training_mode: true               # ✅ CHANGED: Override: ML_RL_TRAINING_MODE (false → true for training)
+    training_mode: true               # Override: ML_RL_TRAINING_MODE (false → true for training)
 
     # Davranış Ayarları
     hold_confidence_threshold: 0.60   # Override: ML_RL_HOLD_CONFIDENCE_THRESHOLD
@@ -389,12 +389,20 @@ ml:
                                       # Formula: (target_final/initial)^(1/episodes) = (0.08/1.0)^(1/250)
     epsilon_min: 0.01                 # ✅ ADDED: Override: ML_RL_EPSILON_MIN (training: minimum exploration floor)
     
-    regime_bias_strength: 5.0         # Override: ML_RL_REGIME_BIAS
+    regime_bias_strength: 2.0         # Override: ML_RL_REGIME_BIAS
+    max_regime_bias: 3.0              # Override: ML_RL_MAX_REGIME_BIAS
+    min_regime_confidence_for_bias: 0.6  # Override: ML_RL_MIN_REGIME_CONF
+    q_std_bypass_threshold: 0.0001    # Override: ML_RL_Q_STD_BYPASS (below this, fallback logic triggers)
     risk_penalty_strength: 100.0      # Override: ML_RL_RISK_PENALTY
 
     # Temel Algoritma Parametreleri (Uzman kullanıcılar için)
     learning_rate: 0.00001            # Override: ML_RL_LEARNING_RATE
     gamma: 0.99                       # Override: ML_RL_GAMMA
+    gradient_clip_norm: 1.0           # Override: ML_RL_GRADIENT_CLIP
+    reward_clip_enabled: false        # Override: ML_RL_REWARD_CLIP_ENABLED
+    reward_clip_min: -10.0            # Override: RL_REWARD_CLIP_MIN
+    reward_clip_max: 10.0             # Override: RL_REWARD_CLIP_MAX
+    reward_scale: 1.0                 # Override: RL_REWARD_SCALE
     target_update_freq: 50            # Override: ML_RL_TARGET_UPDATE_FREQ
     batch_size: 32                    # Override: ML_RL_BATCH_SIZE
     buffer_size: 100000               # Override: ML_RL_BUFFER_SIZE

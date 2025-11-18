@@ -9,6 +9,7 @@ import numpy as np
 from collections import deque
 import random
 import logging
+import math
 from typing import Dict, List, Tuple, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,16 @@ if TORCH_AVAILABLE:
     class DQNNetwork(nn.Module):
         """Deep Q-Network for trading action value estimation."""
         
-        def __init__(self, state_size: int, action_size: int, hidden_sizes: List[int] = None):
+        def __init__(
+            self,
+            state_size: int,
+            action_size: int,
+            hidden_sizes: List[int] = None,
+            *,
+            learnable_head_scale: bool = False,
+            initial_head_scale: float = 1.0,
+            head_scale_lower: float = 0.1,
+        ):
             """
             Initialize DQN network.
             
@@ -105,7 +115,23 @@ if TORCH_AVAILABLE:
             layers.append(nn.Linear(prev_size, action_size))
             
             self.network = nn.Sequential(*layers)
-            
+
+            scale_value = float(initial_head_scale)
+            self.head_scale_min = float(max(head_scale_lower, 1e-6))
+
+            if learnable_head_scale:
+                delta = max(scale_value - self.head_scale_min, 1e-6)
+                softplus_inverse = float(math.log(math.expm1(delta)))
+                self.head_scale_raw = nn.Parameter(
+                    torch.tensor([softplus_inverse], dtype=torch.float32)
+                )
+            else:
+                frozen_scale = max(scale_value, self.head_scale_min)
+                self.register_buffer(
+                    "head_scale_buffer",
+                    torch.tensor([frozen_scale], dtype=torch.float32),
+                )
+
         def forward(self, state):
             """
             Forward pass through network.
@@ -116,7 +142,19 @@ if TORCH_AVAILABLE:
             Returns:
                 Q-values for each action
             """
-            return self.network(state)
+            q_values = self.network(state)
+            if (
+                hasattr(self, "head_scale_raw")
+                or hasattr(self, "head_scale_buffer")
+            ):
+                q_values = q_values * self.head_scale
+            return q_values
+
+        @property
+        def head_scale(self) -> torch.Tensor:
+            if hasattr(self, "head_scale_raw"):
+                return self.head_scale_min + F.softplus(self.head_scale_raw)
+            return getattr(self, "head_scale_buffer")
 
 
     class TradingRLAgent:
@@ -136,8 +174,19 @@ if TORCH_AVAILABLE:
                 'epsilon_start': 1.0,
                 'epsilon_decay': 0.995,
                 'epsilon_min': 0.01,
-                'regime_bias_strength': 5.0,
+                'regime_bias_strength': 2.0,
+                'max_regime_bias': 3.0,
+                'min_regime_confidence_for_bias': 0.6,
                 'risk_penalty_strength': 100.0,
+                'reward_clip_enabled': False,
+                'reward_clip_min': -10.0,
+                'reward_clip_max': 10.0,
+                'reward_scale': 1.0,
+                'gradient_clip_norm': 1.0,
+                'output_scale': 1.0,
+                'head_scale_learnable': False,
+                'initial_head_scale': 1.0,
+                'head_scale_min_multiplier': 0.1,
             }
         
         def __init__(self, state_size: int = None, action_size: int = 3, config: Dict[str, Any] = None):
@@ -173,9 +222,23 @@ if TORCH_AVAILABLE:
             self.gamma = self.config['gamma']
             self.batch_size = self.config['batch_size']
             self.target_update_freq = self.config['target_update_freq']
+            self.reward_clip_enabled = bool(self.config.get('reward_clip_enabled', False))
+            self.reward_clip_min = float(self.config.get('reward_clip_min', -10.0))
+            self.reward_clip_max = float(self.config.get('reward_clip_max', 10.0))
+            self.reward_scale = float(self.config.get('reward_scale', 1.0))
+            self.gradient_clip_norm = self.config.get('gradient_clip_norm', None)
+            self.output_scale = float(self.config.get('output_scale', 1.0))
+            self.head_scale_learnable = bool(self.config.get('head_scale_learnable', False))
+            self.initial_head_scale = float(self.config.get('initial_head_scale', 1.0))
+            self.head_scale_min_multiplier = float(
+                self.config.get('head_scale_min_multiplier', 0.1)
+            )
+            if self.head_scale_min_multiplier <= 0:
+                self.head_scale_min_multiplier = 1e-6
             
             # Behavior and Mode Parameters from config
             self.training_mode = self.config.get('training_mode', False)
+            self._inference_locked = False
             self.hold_confidence_threshold = self.config.get('hold_confidence_threshold', 0.60)
             
             # Epsilon values from config
@@ -202,19 +265,35 @@ if TORCH_AVAILABLE:
                 logger.error("="*70)
             
             # Bias strengths from config
-            self.regime_bias_strength = self.config.get('regime_bias_strength', 5.0)
+            self.regime_bias_strength = self.config.get(
+                'regime_bias_strength',
+                self.config.get('regime_bias', 2.0)
+            )
+            self.max_regime_bias = self.config.get('max_regime_bias', 3.0)
+            self.min_regime_confidence_for_bias = self.config.get('min_regime_confidence_for_bias', 0.6)
             self.risk_penalty_strength = self.config.get('risk_penalty_strength', 100.0)
 
             self.update_counter = 0
 
             # Initialize Q-networks
-            self.q_network = DQNNetwork(state_size, action_size)
-            self.target_network = DQNNetwork(state_size, action_size)
+            network_kwargs = {
+                'learnable_head_scale': self.head_scale_learnable,
+                'initial_head_scale': self.initial_head_scale,
+                'head_scale_lower': self.head_scale_min_multiplier,
+            }
+            self.q_network = DQNNetwork(state_size, action_size, **network_kwargs)
+            self.target_network = DQNNetwork(state_size, action_size, **network_kwargs)
             self.target_network.load_state_dict(self.q_network.state_dict())
+            if (
+                self.head_scale_learnable
+                and hasattr(self.target_network, 'head_scale_raw')
+                and isinstance(self.target_network.head_scale_raw, nn.Parameter)
+            ):
+                self.target_network.head_scale_raw.requires_grad_(False)
             self.target_network.eval()
             
-            # Optimizer
-            self.optimizer = torch.optim.Adam(self.q_network.parameters(), lr=self.config['learning_rate'])
+            # Optimizer (includes learnable head scale if configured)
+            self._reset_optimizer(self._collect_optimizer_parameters(), self.config['learning_rate'])
             
             # Experience replay
             self.memory = ExperienceReplay(self.config['buffer_size'])
@@ -225,9 +304,21 @@ if TORCH_AVAILABLE:
                 'q_values': [],
                 'rewards': []
             }
+            self.head_only_mode = False
             
             logger.info(f"Initialized TradingRLAgent with state_size={state_size}, action_size={action_size}")
             logger.info(f"RL Agent Config: training_mode={self.training_mode}, hold_threshold={self.hold_confidence_threshold}, regime_bias={self.regime_bias_strength}")
+        
+        def set_inference_mode(self, epsilon: float = 0.0) -> None:
+            """Force deterministic inference behavior (used in live trading)."""
+            epsilon = max(0.0, float(epsilon))
+            self.training_mode = False
+            self.config['training_mode'] = False
+            self.epsilon = epsilon
+            self.epsilon_decay = 0.0
+            self.epsilon_min = 0.0
+            self._inference_locked = True
+            logger.info("🔒 RL Agent locked to inference mode (epsilon=%.4f)", self.epsilon)
         
         def set_memory(self, memory):
             """Set experience replay buffer."""
@@ -235,55 +326,94 @@ if TORCH_AVAILABLE:
         
         def act(self, state: np.ndarray, market_regime: str = None, 
                 risk_constraints: Dict = None, training: bool = False) -> int:
-            """
-            Select action based on current state using epsilon-greedy policy.
-    
-            Args:
-                state (np.ndarray): The current state from the environment.
-                market_regime (str, optional): The current market regime to apply bias.
-                risk_constraints (Dict, optional): Any risk constraints to apply.
-                training (bool, optional): If True, enables exploration (epsilon-greedy). 
-                                           If False, uses exploitation-only mode. Defaults to False.
-            """
+            """Compatibility wrapper that returns only the action."""
+            action, _ = self.get_action_with_meta(
+                state,
+                market_regime=market_regime,
+                risk_constraints=risk_constraints,
+                training=training
+            )
+            return action
+
+        def get_action_with_meta(self, state: np.ndarray, market_regime: Any = None,
+                                  risk_constraints: Dict = None, training: bool = False) -> Tuple[int, Dict[str, Any]]:
+            """Select an action and expose diagnostics for downstream logging."""
+            inference_locked = getattr(self, '_inference_locked', False)
+            effective_training = bool(training and not inference_locked)
+            regime_label = market_regime
+            if isinstance(market_regime, dict):
+                regime_label = (
+                    market_regime.get('predicted_regime')
+                    or market_regime.get('regime')
+                    or market_regime.get('label')
+                    or 'neutral'
+                )
+            meta: Dict[str, Any] = {
+                'training_mode': effective_training,
+                'epsilon': self.epsilon,
+                'market_regime': regime_label,
+                'risk_constraints_applied': bool(risk_constraints)
+            }
+
             if state is None:
                 logger.warning("RL Agent received None state, defaulting to HOLD (1).")
-                return 1
+                meta['reason'] = 'missing_state'
+                return 1, meta
 
-            if training and random.random() < self.epsilon:
+            if effective_training and random.random() < self.epsilon:
                 action = random.randrange(self.action_size)
+                meta['exploration'] = True
+                meta['probabilities'] = None
                 logger.debug(f"🤖 [RL-ACT] Exploration: Selected random action -> {['BUY', 'HOLD', 'SELL'][action]}")
-                return action
+                return action, meta
             
             with torch.no_grad():
                 self.q_network.eval()
                 state_tensor = torch.FloatTensor(state).unsqueeze(0)
-                raw_q_values = self.q_network(state_tensor)
+                raw_q_values = self._scale_q(self.q_network(state_tensor))
                 
                 adjusted_q_values = raw_q_values.clone()
                 if risk_constraints:
                     adjusted_q_values = self._apply_risk_constraints(adjusted_q_values, risk_constraints)
-                if market_regime:
-                    adjusted_q_values = self._apply_regime_bias(adjusted_q_values, market_regime)
-    
+                adjusted_q_values, bias_meta = self._apply_regime_bias(adjusted_q_values, market_regime)
+
                 probabilities = torch.softmax(adjusted_q_values, dim=1).squeeze().cpu().numpy()
                 best_action = int(np.argmax(probabilities))
-                best_prob = probabilities[best_action]
+                best_prob = float(probabilities[best_action])
+
+                meta.update({
+                    'exploration': False,
+                    'probabilities': probabilities.tolist(),
+                    'raw_q_values': raw_q_values.squeeze().cpu().tolist(),
+                    'adjusted_q_values': adjusted_q_values.squeeze().cpu().tolist(),
+                    'best_probability': best_prob,
+                    'regime_confidence': bias_meta.get('regime_confidence', 0.0),
+                    'bias_applied': bias_meta.get('bias_applied', False),
+                    'effective_bias': bias_meta.get('effective_bias', 0.0),
+                    'regime_confidence_threshold': bias_meta.get('confidence_threshold'),
+                    'regime_label': bias_meta.get('regime_label'),
+                })
                 
                 # "Uncertain HOLD" kontrolü - Sadece canlı modda (training=False) çalışmalı
                 if not training and best_action == 1 and best_prob < self.hold_confidence_threshold:
                     sorted_indices = np.argsort(probabilities)[::-1]
                     second_best_action = int(sorted_indices[1])
+                    meta['override'] = {
+                        'reason': 'low_hold_confidence',
+                        'original_probability': best_prob,
+                        'threshold': self.hold_confidence_threshold
+                    }
                     logger.warning(
                         f"🤖 [RL-OVERRIDE] Agent uncertain on HOLD (prob: {best_prob:.2f} < {self.hold_confidence_threshold}). "
                         f"Overriding with 2nd choice: {['BUY', 'HOLD', 'SELL'][second_best_action]}"
                     )
-                    return second_best_action
-    
+                    best_action = second_best_action
+
                 # Eğitim devam ediyorsa modeli tekrar train moduna al
-                if training:
+                if effective_training:
                     self.q_network.train()
-    
-                return best_action
+
+                return best_action, meta
         
         def _apply_risk_constraints(self, q_values: torch.Tensor, 
                                    risk_constraints: Dict) -> torch.Tensor:
@@ -299,20 +429,74 @@ if TORCH_AVAILABLE:
             
             return q_adjusted
         
-        def _apply_regime_bias(self, q_values: torch.Tensor, 
-                              market_regime: str) -> torch.Tensor:
-            """Apply market regime bias to Q-values using configurable strength."""
+        def _apply_regime_bias(
+            self,
+            q_values: torch.Tensor,
+            market_regime: Any,
+        ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+            """Apply adaptive regime bias scaled by regime confidence."""
             q_adjusted = q_values.clone()
-            bias = self.regime_bias_strength
+            bias_meta: Dict[str, Any] = {
+                'bias_applied': False,
+                'effective_bias': 0.0,
+                'regime_confidence': 0.0,
+                'regime_label': 'neutral',
+                'confidence_threshold': self.min_regime_confidence_for_bias,
+            }
 
-            if market_regime == 'bullish':
-                q_adjusted[0, 0] += bias      # Boost BUY
-            elif market_regime == 'bearish':
-                q_adjusted[0, 2] += bias      # Boost SELL
-            elif market_regime == 'neutral':
-                q_adjusted[0, 1] += bias / 2  # Slightly boost HOLD
-            
-            return q_adjusted
+            if market_regime is None:
+                return q_adjusted, bias_meta
+
+            if isinstance(market_regime, dict):
+                regime_label = (
+                    market_regime.get('predicted_regime')
+                    or market_regime.get('regime')
+                    or market_regime.get('label')
+                    or 'neutral'
+                )
+                confidence_raw = market_regime.get('confidence', 0.0)
+                try:
+                    regime_confidence = float(confidence_raw)
+                except (TypeError, ValueError):
+                    regime_confidence = 0.0
+            else:
+                regime_label = str(market_regime)
+                regime_confidence = 0.0
+
+            bias_meta['regime_label'] = regime_label
+            bias_meta['regime_confidence'] = regime_confidence
+
+            if regime_confidence < self.min_regime_confidence_for_bias:
+                logger.debug(
+                    "🔒 [RL-BIAS] Skipping regime bias - confidence %.3f below threshold %.3f",
+                    regime_confidence,
+                    self.min_regime_confidence_for_bias,
+                )
+                return q_adjusted, bias_meta
+
+            effective_bias = min(self.regime_bias_strength * regime_confidence, self.max_regime_bias)
+            bias_meta['bias_applied'] = True
+            bias_meta['effective_bias'] = effective_bias
+
+            if regime_label == 'bullish':
+                q_adjusted[0, 0] += effective_bias      # Boost BUY
+            elif regime_label == 'bearish':
+                q_adjusted[0, 2] += effective_bias      # Boost SELL
+            elif regime_label == 'neutral':
+                q_adjusted[0, 1] += effective_bias * 0.5  # Slightly boost HOLD
+            elif regime_label == 'volatile':
+                q_adjusted[0, 1] -= effective_bias * 0.3  # Reduce HOLD in volatile markets
+            else:
+                q_adjusted[0, 1] += effective_bias * 0.25  # Conservative bias for unknown regimes
+
+            logger.debug(
+                "🎯 [RL-BIAS] Applied adaptive bias | regime=%s | confidence=%.2f | effective_bias=%.2f",
+                regime_label,
+                regime_confidence,
+                effective_bias,
+            )
+
+            return q_adjusted, bias_meta
         
         def learn_from_experience(self, state: np.ndarray, action: int, 
                                  reward: float, next_state: np.ndarray, 
@@ -364,16 +548,18 @@ if TORCH_AVAILABLE:
             rewards = torch.FloatTensor([exp[2] for exp in batch])
             next_states = torch.FloatTensor(np.array([exp[3] for exp in batch]))
             dones = torch.FloatTensor([exp[4] for exp in batch])
+            rewards = self._transform_rewards(rewards)
             
             # Current Q-values
-            current_q_values = self.q_network(states).gather(1, actions.unsqueeze(1))
+            scaled_current_q = self._scale_q(self.q_network(states))
+            current_q_values = scaled_current_q.gather(1, actions.unsqueeze(1))
             
             # Target Q-values using target network (Double DQN)
             with torch.no_grad():
                 # Select best actions using main network
-                next_actions = self.q_network(next_states).argmax(1, keepdim=True)
+                next_actions = self._scale_q(self.q_network(next_states)).argmax(1, keepdim=True)
                 # Evaluate using target network
-                next_q_values = self.target_network(next_states).gather(1, next_actions)
+                next_q_values = self._scale_q(self.target_network(next_states)).gather(1, next_actions)
                 target_q_values = rewards.unsqueeze(1) + (1 - dones.unsqueeze(1)) * self.gamma * next_q_values
             
             # Compute loss
@@ -382,7 +568,8 @@ if TORCH_AVAILABLE:
             # Optimize
             self.optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
+            if self.gradient_clip_norm:
+                torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=self.gradient_clip_norm)
             self.optimizer.step()
             
             # Update target network periodically
@@ -403,17 +590,113 @@ if TORCH_AVAILABLE:
                 logger.info(f"📊 Learning update #{self._epsilon_decay_count}: Loss = {loss.item():.4f}")
             
             # Track metrics
+            td_error = target_q_values - current_q_values
             metrics = {
                 'loss': loss.item(),
-                'q_value': current_q_values.mean().item(),
-                'epsilon': self.epsilon
+                'q_value': scaled_current_q.mean().item(),
+                'epsilon': self.epsilon,
+                'td_error': float(td_error.abs().mean().item())
             }
             
             self.training_history['losses'].append(metrics['loss'])
             self.training_history['q_values'].append(metrics['q_value'])
             self.training_history['rewards'].append(rewards.mean().item())
+            self.training_history.setdefault('td_errors', []).append(metrics.get('td_error', 0.0))
             
             return metrics
+
+        def _scale_q(self, q: torch.Tensor) -> torch.Tensor:
+            scaled_q = q
+            if self.output_scale != 1.0:
+                scaled_q = scaled_q * self.output_scale
+            return scaled_q
+
+        def reinit_last_layer(self) -> bool:
+            linear = self._find_last_linear()
+            if linear is None:
+                return False
+            nn.init.kaiming_normal_(linear.weight, a=0, mode='fan_in')
+            if linear.bias is not None:
+                nn.init.zeros_(linear.bias)
+            return True
+
+        def scale_last_layer(self, factor: float) -> bool:
+            linear = self._find_last_linear()
+            if linear is None:
+                return False
+            linear.weight.data.mul_(factor)
+            if linear.bias is not None:
+                linear.bias.data.mul_(factor)
+            return True
+
+        def get_last_layer_stats(self) -> Dict[str, float]:
+            linear = self._find_last_linear()
+            if linear is None:
+                return {'std': 0.0, 'mean': 0.0}
+            weight = linear.weight.detach().cpu()
+            bias = linear.bias.detach().cpu() if linear.bias is not None else None
+            stats = {
+                'weight_std': float(weight.std()),
+                'weight_mean': float(weight.mean()),
+            }
+            if bias is not None:
+                stats['bias_std'] = float(bias.std())
+                stats['bias_mean'] = float(bias.mean())
+            return stats
+
+        def get_head_scale_value(self) -> float:
+            head_scale_attr = getattr(self.q_network, 'head_scale', None)
+            if isinstance(head_scale_attr, torch.Tensor):
+                return float(head_scale_attr.detach().cpu().item())
+            return float(self.initial_head_scale)
+
+        def _find_last_linear(self):
+            for module in reversed(list(self.q_network.network)):
+                if isinstance(module, nn.Linear):
+                    return module
+            return None
+
+        def _reset_optimizer(self, parameters, lr: float, extra_params: Optional[List[nn.Parameter]] = None):
+            params = list(parameters)
+            if extra_params:
+                params.extend(extra_params)
+            if not params:
+                logger.warning("No parameters provided to optimizer reset.")
+                return
+            self.optimizer = torch.optim.Adam(params, lr=lr)
+
+        def _collect_optimizer_parameters(self) -> List[nn.Parameter]:
+            return [p for p in self.q_network.parameters() if p.requires_grad]
+
+        def reset_optimizer(self, lr: Optional[float] = None) -> None:
+            target_lr = lr or self.config.get('learning_rate', 1e-4)
+            parameters = self._collect_optimizer_parameters()
+            self._reset_optimizer(parameters, target_lr)
+
+        def enable_head_only_training(self, head_lr: float) -> bool:
+            linear = self._find_last_linear()
+            if linear is None:
+                return False
+            for param in self.q_network.parameters():
+                param.requires_grad = False
+            for param in linear.parameters():
+                param.requires_grad = True
+            if (
+                self.head_scale_learnable
+                and hasattr(self.q_network, 'head_scale_raw')
+                and isinstance(self.q_network.head_scale_raw, nn.Parameter)
+            ):
+                self.q_network.head_scale_raw.requires_grad = True
+            self._reset_optimizer(self._collect_optimizer_parameters(), head_lr)
+            self.head_only_mode = True
+            return True
+
+        def _transform_rewards(self, rewards: torch.Tensor) -> torch.Tensor:
+            if self.reward_clip_enabled:
+                rewards = rewards.clamp(self.reward_clip_min, self.reward_clip_max)
+            if self.reward_scale != 1.0:
+                rewards = rewards * self.reward_scale
+            return rewards
         
         def decay_epsilon(self):
             """
@@ -437,6 +720,36 @@ if TORCH_AVAILABLE:
             }, path)
             logger.info(f"Model saved to {path}")
         
+        def _migrate_head_scale_checkpoint(self, module_state: Dict[str, torch.Tensor]) -> None:
+            if not module_state:
+                return
+            keys = [k for k in list(module_state.keys()) if 'head_scale_' in k]
+            eps_value = 1e-6
+            for key in keys:
+                tensor = module_state[key]
+                target_key = None
+                scale_tensor = None
+
+                if 'head_scale_log' in key:
+                    target_key = key.replace('head_scale_log', 'head_scale_raw')
+                    tensor_data = torch.as_tensor(tensor).detach()
+                    scale_tensor = torch.exp(tensor_data)
+                elif 'head_scale_alpha' in key and 'head_scale_raw' not in module_state:
+                    target_key = key.replace('head_scale_alpha', 'head_scale_raw')
+                    tensor_data = torch.as_tensor(tensor).detach()
+                    scale_tensor = torch.clamp(1.0 + tensor_data, min=self.head_scale_min_multiplier)
+
+                if target_key is None or scale_tensor is None:
+                    continue
+
+                module_state.pop(key, None)
+                scale_tensor = scale_tensor.to(dtype=torch.float32)
+                min_offset = scale_tensor.new_tensor(self.head_scale_min_multiplier)
+                min_delta = scale_tensor.new_tensor(eps_value)
+                delta = torch.clamp(scale_tensor - min_offset, min=min_delta)
+                raw_tensor = torch.log(torch.expm1(delta))
+                module_state[target_key] = raw_tensor
+
         def load_model(self, path: str):
             """
             Load model weights from a checkpoint file with dimension compatibility checking.
@@ -464,10 +777,35 @@ if TORCH_AVAILABLE:
                         # Can't determine dimensions, proceed with caution
                         logger.warning("Cannot determine model dimensions, attempting load anyway...")
                 
+                # Ensure compatibility with legacy head scale checkpoints
+                self._migrate_head_scale_checkpoint(checkpoint.get('q_network', {}))
+                self._migrate_head_scale_checkpoint(checkpoint.get('target_network', {}))
+
                 # Load model
-                self.q_network.load_state_dict(checkpoint['q_network'])
-                self.target_network.load_state_dict(checkpoint['target_network'])
-                self.optimizer.load_state_dict(checkpoint['optimizer'])
+                missing, unexpected = self.q_network.load_state_dict(checkpoint['q_network'], strict=False)
+                if missing:
+                    logger.warning("Missing keys while loading q_network: %s", missing)
+                if unexpected:
+                    logger.warning("Unexpected keys while loading q_network: %s", unexpected)
+
+                tgt_missing, tgt_unexpected = self.target_network.load_state_dict(checkpoint['target_network'], strict=False)
+                if tgt_missing:
+                    logger.warning("Missing keys while loading target_network: %s", tgt_missing)
+                if tgt_unexpected:
+                    logger.warning("Unexpected keys while loading target_network: %s", tgt_unexpected)
+
+                optimizer_state = checkpoint.get('optimizer')
+                if optimizer_state:
+                    try:
+                        self.optimizer.load_state_dict(optimizer_state)
+                    except ValueError as opt_err:
+                        logger.warning(
+                            "Optimizer state incompatible with current parameters; resetting optimizer. Details: %s",
+                            opt_err,
+                        )
+                        self.reset_optimizer()
+                else:
+                    logger.warning("Checkpoint missing optimizer state; using freshly initialized optimizer.")
                 self.epsilon = checkpoint.get('epsilon', self.epsilon)
                 self.training_history = checkpoint.get('training_history', self.training_history)
                 logger.info(f"✅ RL Agent model loaded successfully from {path} (state_size={self.state_size})")
@@ -495,7 +833,7 @@ else:
     class DQNNetwork:
         """Mock DQN network (PyTorch not available)."""
         
-        def __init__(self, state_size: int, action_size: int, hidden_sizes: List[int] = None):
+        def __init__(self, state_size: int, action_size: int, hidden_sizes: List[int] = None, **kwargs):
             self.state_size = state_size
             self.action_size = action_size
             logger.info("Initialized mock DQNNetwork (PyTorch not available)")
@@ -507,11 +845,19 @@ else:
         def __init__(self, state_size: int, action_size: int, **kwargs):
             self.state_size = state_size
             self.action_size = action_size
-            self.epsilon = 1.0
+            self.epsilon = kwargs.get('epsilon_start', 1.0)
+            self.training_mode = kwargs.get('training_mode', False)
+            self._inference_locked = False
             self.memory = None
             self.training_history = {'losses': [], 'q_values': [], 'rewards': []}
             logger.info("Initialized mock TradingRLAgent (PyTorch not available)")
         
+        def set_inference_mode(self, epsilon: float = 0.0) -> None:
+            self.training_mode = False
+            self.epsilon = max(0.0, float(epsilon))
+            self._inference_locked = True
+            logger.info("🔒 Mock RL Agent locked to inference mode (epsilon=%.4f)", self.epsilon)
+
         def set_memory(self, memory):
             """Set experience replay buffer."""
             self.memory = memory
@@ -519,7 +865,25 @@ else:
         def act(self, state: np.ndarray, market_regime: str = None, 
                 risk_constraints: Dict = None, training: bool = True) -> int:
             """Mock action selection - returns random action."""
-            return random.randrange(self.action_size)
+            action, _ = self.get_action_with_meta(state, market_regime, risk_constraints, training)
+            return action
+
+        def get_action_with_meta(self, state: np.ndarray, market_regime: str = None,
+                                  risk_constraints: Dict = None, training: bool = True) -> Tuple[int, Dict[str, Any]]:
+            inference_locked = getattr(self, '_inference_locked', False)
+            effective_training = bool(training and not inference_locked)
+            meta = {
+                'training_mode': effective_training,
+                'market_regime': market_regime,
+                'epsilon': self.epsilon,
+                'mock_mode': True
+            }
+            if state is None:
+                meta['reason'] = 'missing_state'
+                return 1, meta
+            action = random.randrange(self.action_size)
+            meta['exploration'] = effective_training and self.epsilon > 0
+            return action, meta
         
         def learn_from_experience(self, state: np.ndarray, action: int, 
                                  reward: float, next_state: np.ndarray, 
@@ -538,3 +902,6 @@ else:
         def get_training_summary(self) -> Dict[str, Any]:
             """Mock training summary."""
             return {'status': 'mock_mode', 'pytorch_available': False}
+
+        def reset_optimizer(self, lr: Optional[float] = None) -> None:
+            logger.info("Mock reset optimizer (lr=%s)", lr)

@@ -84,6 +84,9 @@ data/cache/gemma/*.npy
 test_reports/
 artifacts/gemma/
 artifacts/active/
+!tests/data/
+tests/data/*.pth
+tests/data/*.json
 
 # Paper trading test artifacts
 paper_trading_*.log

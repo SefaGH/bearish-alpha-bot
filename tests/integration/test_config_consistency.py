@@ -13,7 +13,7 @@ import pytest
 import asyncio
 import os
 import sys
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, MagicMock, AsyncMock, patch
 
 # Add paths
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
@@ -80,13 +80,23 @@ async def test_config_consistency_across_all_modules(integration_env, cleanup_ta
                 
                 # Setup mock exchange
                 mock_exchange = MagicMock()
+                mock_exchange.close = AsyncMock()
+                mock_exchange.aclose = AsyncMock()
                 mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
                 mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
                 mock_exchange.ticker.return_value = {'last': 50000.0}
                 mock_ccxt.return_value = mock_exchange
                 
                 print("\n[Step 3] Creating launcher and loading config...")
-                launcher = LiveTradingLauncher(mode='paper')
+                launcher = LiveTradingLauncher(
+                    mode='paper',
+                    dry_run=True,
+                    infinite=False,
+                    auto_restart=False,
+                    max_restarts=0,
+                    restart_delay=0,
+                    debug_mode=False,
+                )
                 launcher_config = launcher._load_config()
                 
                 print("\n[Step 4] Verifying launcher uses same config...")
@@ -220,7 +230,6 @@ async def test_launcher_capital_source_priority(integration_env, cleanup_tasks):
     assert test_task is not None
 
     with patch.object(LiveTradingConfiguration, 'load', return_value={'universe': {'fixed_symbols': []}}), \
-         patch.object(LiveTradingConfiguration, 'load_from_yaml', return_value={}), \
          ignore_test_task_cancellation(test_task), \
          patch.dict('sys.modules', module_stubs), \
          patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
@@ -231,12 +240,22 @@ async def test_launcher_capital_source_priority(integration_env, cleanup_tasks):
         from live_trading_launcher import LiveTradingLauncher
 
         mock_exchange = MagicMock()
+        mock_exchange.close = AsyncMock()
+        mock_exchange.aclose = AsyncMock()
         mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
         mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
         mock_exchange.ticker.return_value = {'last': 50000.0}
         mock_ccxt.return_value = mock_exchange
 
-        launcher = LiveTradingLauncher(mode='paper')
+        launcher = LiveTradingLauncher(
+            mode='paper',
+            dry_run=True,
+            infinite=False,
+            auto_restart=False,
+            max_restarts=0,
+            restart_delay=0,
+            debug_mode=False,
+        )
 
         assert launcher.CAPITAL_USDT == 100.0
         assert launcher.capital_source == 'default'
@@ -244,7 +263,6 @@ async def test_launcher_capital_source_priority(integration_env, cleanup_tasks):
     os.environ.pop('CAPITAL_USDT', None)
 
     with patch.object(LiveTradingConfiguration, 'load', return_value={'risk': {'equity_usd': 750}, 'universe': {'fixed_symbols': []}}), \
-         patch.object(LiveTradingConfiguration, 'load_from_yaml', return_value={'risk': {'equity_usd': 750}}), \
          ignore_test_task_cancellation(test_task), \
          patch.dict('sys.modules', module_stubs), \
          patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
@@ -255,12 +273,22 @@ async def test_launcher_capital_source_priority(integration_env, cleanup_tasks):
         from live_trading_launcher import LiveTradingLauncher
 
         mock_exchange = MagicMock()
+        mock_exchange.close = AsyncMock()
+        mock_exchange.aclose = AsyncMock()
         mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
         mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
         mock_exchange.ticker.return_value = {'last': 50000.0}
         mock_ccxt.return_value = mock_exchange
 
-        launcher = LiveTradingLauncher(mode='paper')
+        launcher = LiveTradingLauncher(
+            mode='paper',
+            dry_run=True,
+            infinite=False,
+            auto_restart=False,
+            max_restarts=0,
+            restart_delay=0,
+            debug_mode=False,
+        )
 
         assert launcher.CAPITAL_USDT == 750.0
         assert launcher.capital_source == 'config'
@@ -268,7 +296,6 @@ async def test_launcher_capital_source_priority(integration_env, cleanup_tasks):
     os.environ['CAPITAL_USDT'] = '1200'
 
     with patch.object(LiveTradingConfiguration, 'load', return_value={'risk': {'equity_usd': 750}, 'universe': {'fixed_symbols': []}}), \
-         patch.object(LiveTradingConfiguration, 'load_from_yaml', return_value={'risk': {'equity_usd': 750}}), \
          ignore_test_task_cancellation(test_task), \
          patch.dict('sys.modules', module_stubs), \
          patch('core.ccxt_client.CcxtClient') as mock_ccxt, \
@@ -279,12 +306,22 @@ async def test_launcher_capital_source_priority(integration_env, cleanup_tasks):
         from live_trading_launcher import LiveTradingLauncher
 
         mock_exchange = MagicMock()
+        mock_exchange.close = AsyncMock()
+        mock_exchange.aclose = AsyncMock()
         mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
         mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
         mock_exchange.ticker.return_value = {'last': 50000.0}
         mock_ccxt.return_value = mock_exchange
 
-        launcher = LiveTradingLauncher(mode='paper')
+        launcher = LiveTradingLauncher(
+            mode='paper',
+            dry_run=True,
+            infinite=False,
+            auto_restart=False,
+            max_restarts=0,
+            restart_delay=0,
+            debug_mode=False,
+        )
 
         assert launcher.CAPITAL_USDT == 1200.0
         assert launcher.capital_source == 'env'
@@ -392,13 +429,23 @@ async def test_runtime_config_consistency(integration_env, cleanup_tasks):
                 
                 # Setup mock exchange
                 mock_exchange = MagicMock()
+                mock_exchange.close = AsyncMock()
+                mock_exchange.aclose = AsyncMock()
                 mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
                 mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
                 mock_exchange.ticker.return_value = {'last': 50000.0}
                 mock_ccxt.return_value = mock_exchange
                 
                 print("\n[Step 2] Creating launcher and verifying consistency...")
-                launcher = LiveTradingLauncher(mode='paper')
+                launcher = LiveTradingLauncher(
+                    mode='paper',
+                    dry_run=True,
+                    infinite=False,
+                    auto_restart=False,
+                    max_restarts=0,
+                    restart_delay=0,
+                    debug_mode=False,
+                )
                 launcher_config = launcher._load_config()
                 launcher_symbols = launcher_config['universe']['fixed_symbols']
                 

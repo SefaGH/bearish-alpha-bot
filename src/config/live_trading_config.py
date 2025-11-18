@@ -18,72 +18,125 @@ Date: 2025-11-03
 Ref: Issue #277
 """
 
+
+import logging
 import os
 import re
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import yaml
-import logging
-from typing import Dict, Any, Optional, Tuple, List, Union
+
 
 logger = logging.getLogger(__name__)
 
-# Singleton instance storage to ensure config is loaded only once.
 _config_instance: Optional[Dict[str, Any]] = None
+_config_signature: Optional[Tuple[str, Tuple[Tuple[str, Optional[str]]]]] = None
+_config_env_keys: Tuple[str, ...] = ()
+_config_path_cache: Optional[str] = None
 
-# Regex pattern for validating trading symbols (compiled once at module load)
-# Matches format: BASE/QUOTE or BASE/QUOTE:SETTLE
-# Examples: BTC/USDT, ETH/USDT:USDT
-_TRADING_SYMBOL_PATTERN = re.compile(r'^[A-Z0-9]{2,10}/[A-Z0-9]{2,10}(:[A-Z0-9]{2,10})?$')
+_TRADING_SYMBOL_PATTERN = re.compile(
+    r'^[A-Z0-9]{2,10}/[A-Z0-9]{2,10}(:[A-Z0-9]{2,10})?$',
+    re.IGNORECASE
+)
+_DERIVATIVE_SYMBOL_PATTERN = re.compile(r'^[A-Z0-9]{2,10}-[A-Z0-9]{2,10}$', re.IGNORECASE)
+DEFAULT_SYMBOLS = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
+
 
 class LiveTradingConfiguration:
-    """
-    A dynamic, singleton configuration loader.
+    """Centralized configuration loader with ENV > YAML priority."""
 
-    It reads `config.example.yaml`, parses special `# Override with: ENV_VAR`
-    comments, and intelligently merges environment variables with automatic
-    type casting. The result is cached and served on all subsequent calls.
-    """
     CONFIG_FILE_PATH = 'config/config.example.yaml'
     ENV_OVERRIDE_PATTERN = re.compile(r'#\s*Override with:\s*(\w+)')
+    _env_keys_snapshot: Tuple[str, ...] = ()
 
     @classmethod
-    def load(cls, log_summary: bool = True) -> Dict[str, Any]:
+    def load(
+        cls,
+        log_summary: bool = True,
+        *,
+        config_path: Optional[str] = None,
+        force_reload: bool = False
+    ) -> Dict[str, Any]:
         """
         Main entry point. Loads, merges, and returns the configuration.
-        Uses a singleton pattern to load only once.
-        
-        Args:
-            log_summary: Whether to log configuration summary (for backward compatibility).
-                        Default is True. Set to False to suppress logging.
+        Uses a signature-aware cache to ensure ENV > YAML > defaults priority.
         """
-        global _config_instance
-        if _config_instance is not None:
-            logger.debug("Returning cached configuration instance.")
-            return _config_instance
+        global _config_instance, _config_signature, _config_env_keys, _config_path_cache
+
+        resolved_path = cls._resolve_config_path(config_path)
+
+        if force_reload:
+            cls.reset_cache()
+
+        if (
+            not force_reload
+            and _config_instance is not None
+            and _config_signature is not None
+            and _config_path_cache == resolved_path
+        ):
+            current_signature = cls._build_signature_from_keys(resolved_path, _config_env_keys)
+            if current_signature == _config_signature:
+                logger.debug("Returning cached configuration instance (env unchanged).")
+                if log_summary:
+                    # Maintain backward compatibility by logging summary once per caller request.
+                    cls(resolved_path)._log_config_summary(_config_instance)
+                return _config_instance
 
         logger.info("=" * 70)
-        logger.info("🔧 DYNAMIC CONFIGURATION LOADER (v2.0 - Singleton)")
+        logger.info("🔧 DYNAMIC CONFIGURATION LOADER (v2.1 - Signature cache)")
         logger.info("=" * 70)
-        
-        instance = cls()
+
+        instance = cls(resolved_path)
         try:
             config = instance._load_and_merge_configs()
             _config_instance = config
-            
-            # Only log summary if requested (backward compatibility)
+            _config_env_keys = instance._env_keys_snapshot
+            _config_path_cache = resolved_path
+            _config_signature = cls._build_signature_from_keys(resolved_path, _config_env_keys)
+
             if log_summary:
                 instance._log_config_summary(config)
-                
-            return _config_instance
+
+            return config
         except Exception as e:
-            logger.critical(f"❌ A critical error occurred during configuration loading: {e}", exc_info=True)
+            cls.reset_cache()
+            logger.critical(
+                f"❌ A critical error occurred during configuration loading: {e}",
+                exc_info=True
+            )
             raise RuntimeError("Failed to load configuration. Bot cannot start.") from e
+
+    def __init__(self, config_path: Optional[str] = None) -> None:
+        self.config_path = self._resolve_config_path(config_path)
+        self._env_keys_snapshot = ()
+
+    @staticmethod
+    def _resolve_config_path(config_path: Optional[str]) -> str:
+        candidate = config_path or os.getenv('CONFIG_PATH') or LiveTradingConfiguration.CONFIG_FILE_PATH
+        return candidate
+
+    @classmethod
+    def reset_cache(cls) -> None:
+        global _config_instance, _config_signature, _config_env_keys, _config_path_cache
+        _config_instance = None
+        _config_signature = None
+        _config_env_keys = ()
+        _config_path_cache = None
+
+    @staticmethod
+    def _build_signature_from_keys(
+        config_path: str,
+        env_keys: Tuple[str, ...]
+    ) -> Tuple[str, Tuple[Tuple[str, Optional[str]]]]:
+        snapshot = tuple(sorted((key, os.getenv(key)) for key in env_keys))
+        return (config_path, snapshot)
 
     def _load_and_merge_configs(self) -> Dict[str, Any]:
         """Orchestrates the loading and merging process."""
         # 1. Load the base YAML config and parse env var mappings from its comments
         yaml_config, env_map = self._load_yaml_and_map_env_vars()
-        if not yaml_config:
-            raise ValueError("Base configuration from YAML is empty or could not be loaded.")
+        yaml_config = yaml_config or {}
+        self._env_keys_snapshot = tuple(sorted(env_map.keys()))
 
         # 2. Normalize YAML values (e.g., convert trading symbol strings to lists)
         yaml_config = self._normalize_yaml_values(yaml_config)
@@ -92,7 +145,10 @@ class LiveTradingConfiguration:
         env_overrides = self._get_env_overrides(env_map, yaml_config)
 
         # 4. Deep merge YAML config with environment overrides
-        return self._deep_merge(yaml_config, env_overrides)
+        merged = self._deep_merge(yaml_config, env_overrides)
+        self._apply_universe_defaults(merged)
+        self._normalize_risk_config(merged)
+        return merged
 
     def _load_yaml_and_map_env_vars(self) -> Tuple[Dict[str, Any], Dict[str, List[str]]]:
         """
@@ -104,10 +160,10 @@ class LiveTradingConfiguration:
         """
         env_map: Dict[str, List[str]] = {}
         
-        if not os.path.exists(self.CONFIG_FILE_PATH):
-            raise FileNotFoundError(f"Configuration file not found at: {self.CONFIG_FILE_PATH}")
+        if not os.path.exists(self.config_path):
+            raise FileNotFoundError(f"Configuration file not found at: {self.config_path}")
     
-        with open(self.CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
+        with open(self.config_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
             
         path_stack: List[Tuple[int, str]] = []
@@ -146,7 +202,7 @@ class LiveTradingConfiguration:
                 if 'RSI_THRESHOLD' in env_var or 'ML_' in env_var:
                     logger.debug(f"Mapped ENV '{env_var}' to config path: {'.'.join(current_path)}")
     
-        with open(self.CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
+        with open(self.config_path, 'r', encoding='utf-8') as f:
             yaml_config = yaml.safe_load(f)
     
         logger.info(f"✅ YAML config loaded. Found {len(env_map)} environment variable mappings.")
@@ -287,22 +343,20 @@ class LiveTradingConfiguration:
         
         Trading symbols have the format: "BASE/QUOTE" or "BASE/QUOTE:SETTLE"
         Examples: "BTC/USDT", "ETH/USDT:USDT", "BTC/USDT,ETH/USDT"
-        
         Returns:
             True if the string contains trading symbol(s), False otherwise.
         """
         if not isinstance(value, str) or not value.strip():
             return False
-        
-        # Check if string contains '/' which is the key indicator of trading pairs
-        if '/' not in value:
+
+        parts = [p.strip().upper() for p in value.split(',') if p.strip()]
+        if not parts:
             return False
-        
-        # Split by comma to handle multiple symbols
-        parts = [p.strip() for p in value.split(',') if p.strip()]
-        
-        # At least one part should match the trading symbol pattern
-        return any(_TRADING_SYMBOL_PATTERN.match(part) for part in parts)
+
+        for part in parts:
+            if _TRADING_SYMBOL_PATTERN.match(part) or _DERIVATIVE_SYMBOL_PATTERN.match(part):
+                return True
+        return False
     
     @staticmethod
     def _parse_trading_symbols(value_str: str) -> list:
@@ -374,6 +428,142 @@ class LiveTradingConfiguration:
                 result[key] = value
         return result
 
+    @classmethod
+    def deep_merge(cls, base: Dict, override: Dict) -> Dict:
+        """Public helper exposed for tests (wraps _deep_merge)."""
+        return cls._deep_merge(base, override)
+
+    def _apply_universe_defaults(self, config: Dict[str, Any]) -> None:
+        universe = config.setdefault('universe', {})
+        symbols = universe.get('fixed_symbols')
+        cleaned = self._filter_valid_symbols(symbols)
+        if not cleaned:
+            cleaned = DEFAULT_SYMBOLS.copy()
+        universe['fixed_symbols'] = cleaned
+
+    def _filter_valid_symbols(self, symbols: Union[str, List[str], None]) -> List[str]:
+        if symbols is None:
+            return []
+        if isinstance(symbols, str):
+            candidates = [s.strip() for s in symbols.split(',') if s.strip()]
+        elif isinstance(symbols, list):
+            candidates = []
+            for item in symbols:
+                if isinstance(item, str):
+                    if ',' in item:
+                        candidates.extend([s.strip() for s in item.split(',') if s.strip()])
+                    else:
+                        candidates.append(item.strip())
+        else:
+            return []
+
+        normalized: List[str] = []
+        for candidate in candidates:
+            canonical = self._normalize_symbol(candidate)
+            if canonical and (_TRADING_SYMBOL_PATTERN.match(canonical) or _DERIVATIVE_SYMBOL_PATTERN.match(canonical)):
+                if canonical not in normalized:
+                    normalized.append(canonical)
+        return normalized
+
+    @staticmethod
+    def _normalize_symbol(symbol: str) -> str:
+        cleaned = symbol.strip()
+        return cleaned.upper() if cleaned else ''
+
+    def _normalize_risk_config(self, config: Dict[str, Any]) -> None:
+        """Ensure risk percentages stay in fractional form and derive USD helpers."""
+        risk_section = config.get('risk')
+        if not isinstance(risk_section, dict):
+            risk_section = {}
+            config['risk'] = risk_section
+
+        percent_keys = [
+            'daily_loss_limit_pct',
+            'max_position_size_pct',
+            'max_notional_pct_per_trade',
+            'max_margin_pct_per_trade'
+        ]
+
+        # --- Critical: normalize per-trade risk with env + defaults ---
+        per_trade_raw = risk_section.get('per_trade_risk_pct')
+        if per_trade_raw is None:
+            env_fallback = os.getenv('PER_TRADE_RISK_PCT')
+            if env_fallback is not None:
+                try:
+                    per_trade_raw = float(env_fallback)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        f"⚠️ PER_TRADE_RISK_PCT env value '{env_fallback}' is invalid; ignoring fallback."
+                    )
+        if per_trade_raw is None:
+            logger.warning("PER_TRADE_RISK_PCT not set, defaulting to 1% (0.01)")
+            per_trade_raw = 0.01
+
+        normalized_per_trade = self._normalize_percent_value(per_trade_raw, 'risk.per_trade_risk_pct')
+        if not normalized_per_trade or normalized_per_trade <= 0 or normalized_per_trade > 1:
+            logger.error(
+                f"❌ per_trade_risk_pct out of bounds after normalization: {normalized_per_trade}. Resetting to 0.01 (1%)."
+            )
+            normalized_per_trade = 0.01
+        risk_section['per_trade_risk_pct'] = normalized_per_trade
+
+        for key in percent_keys:
+            if key not in risk_section or risk_section[key] is None:
+                continue
+            normalized = self._normalize_percent_value(risk_section[key], f"risk.{key}")
+            if normalized is not None:
+                risk_section[key] = normalized
+
+        try:
+            equity = float(risk_section.get('equity_usd', 0) or 0)
+        except (TypeError, ValueError):
+            equity = 0
+
+        computed_risk_usd = equity * normalized_per_trade if equity > 0 else 0.0
+        risk_section['computed_max_risk_usd'] = computed_risk_usd
+        logger.info(
+            "✅ Risk normalization: per_trade_risk_pct=%.4f (fraction), computed_max_risk_usd=%.2f USD",
+            normalized_per_trade,
+            computed_risk_usd,
+        )
+
+        max_notional_pct = risk_section.get('max_notional_pct_per_trade')
+        if isinstance(max_notional_pct, (int, float)) and equity > 0:
+            derived_notional = equity * max_notional_pct
+            risk_section['computed_max_notional_usd'] = derived_notional
+            # Preserve backwards compatibility if legacy field missing or zero
+            legacy_value = risk_section.get('max_notional_per_trade')
+            if not legacy_value:
+                risk_section['max_notional_per_trade'] = derived_notional
+
+        config['risk'] = risk_section
+
+    @staticmethod
+    def _normalize_percent_value(value: Any, field_name: str) -> Optional[float]:
+        """Convert percent inputs to safe fractional form (0-1)."""
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            logger.warning(f"⚠️ Unable to parse {field_name}={value} as float; keeping original value.")
+            return None
+
+        if numeric <= 0:
+            logger.warning(f"⚠️ {field_name}={numeric} is non-positive. Check configuration values.")
+            return numeric
+
+        if numeric >= 1.0:
+            if numeric <= 100.0:
+                logger.warning(
+                    f"⚠️ {field_name} appears to be expressed as percent ({numeric}). Converting to fractional form."
+                )
+                numeric = numeric / 100.0
+            else:
+                logger.error(
+                    f"❌ {field_name}={numeric} exceeds 100%. Clamping to 100% (1.0) to keep values in range."
+                )
+                numeric = 1.0
+        return numeric
+
     @staticmethod
     def _log_config_summary(config: Dict[str, Any]) -> None:
         """Logs a summary of the final, effective configuration."""
@@ -402,10 +592,59 @@ class LiveTradingConfiguration:
         
         # Risk Management
         logger.info("💰 Risk Management:")
-        logger.info(f"   Capital: ${get_nested(config, ['risk', 'equity_usd'], 0):.2f} USDT")
-        logger.info(f"   Max Notional Per Trade: {get_nested(config, ['risk', 'max_notional_per_trade'], 0):.2f} USDT")
+        capital_val = float(get_nested(config, ['risk', 'equity_usd'], 0) or 0)
+        logger.info(f"   Capital: ${capital_val:.2f} USDT")
+
+        risk_section = get_nested(config, ['risk'], {})
+        if not isinstance(risk_section, dict):
+            risk_section = {}
+        logger.info(LiveTradingConfiguration._format_risk_summary(risk_section, capital_val))
+
+        max_notional_usd = get_nested(config, ['risk', 'max_notional_per_trade'], 0.0)
+        if (not isinstance(max_notional_usd, (int, float)) or max_notional_usd == 0.0) and isinstance(
+            get_nested(config, ['risk', 'computed_max_notional_usd'], None), (int, float)
+        ):
+            max_notional_usd = get_nested(config, ['risk', 'computed_max_notional_usd'], 0.0)
+        logger.info(f"   Max Notional Per Trade: {max_notional_usd:.2f} USDT")
         
         logger.info("="*70)
+
+    @staticmethod
+    def _format_risk_summary(risk_cfg: Dict[str, Any], capital_val: float) -> str:
+        """Format risk summary line ensuring normalized percentages."""
+        if not isinstance(risk_cfg, dict):
+            risk_cfg = {}
+
+        pct_value = risk_cfg.get('per_trade_risk_pct')
+        usd_value = risk_cfg.get('computed_max_risk_usd')
+        normalized_fraction: Optional[float] = None
+
+        if isinstance(usd_value, (int, float)) and usd_value > 0 and capital_val > 0:
+            normalized_fraction = max(usd_value / capital_val, 0.0)
+
+        if normalized_fraction is None and isinstance(pct_value, (int, float)):
+            normalized_fraction = pct_value if pct_value <= 1 else pct_value / 100.0
+            if not isinstance(usd_value, (int, float)) or usd_value <= 0:
+                usd_value = capital_val * normalized_fraction
+
+        if normalized_fraction is not None and normalized_fraction > 0:
+            display_pct = normalized_fraction * 100.0
+            usd_value = usd_value if isinstance(usd_value, (int, float)) else capital_val * normalized_fraction
+            return f"   Risk Per Trade: {display_pct:.2f}% ({usd_value:.2f} USDT max risk)"
+
+        raw_env = os.getenv('PER_TRADE_RISK_PCT')
+        if raw_env is not None:
+            try:
+                raw_numeric = float(raw_env)
+                normalized = raw_numeric if raw_numeric <= 1 else raw_numeric / 100.0
+                if normalized > 0:
+                    usd_value = capital_val * normalized
+                    return f"   Risk Per Trade: {normalized * 100:.2f}% ({usd_value:.2f} USDT max risk)"
+                return f"   Risk Per Trade: {raw_numeric:.2f}% (raw env)"
+            except (TypeError, ValueError):
+                return f"   Risk Per Trade: {raw_env} (raw env)"
+
+        return "   Risk Per Trade: N/A"
 
 # Global accessor function for easy, consistent access from anywhere in the codebase.
 def get_config() -> Dict[str, Any]:

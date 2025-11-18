@@ -5,7 +5,7 @@ Implements Kelly Criterion, volatility-adjusted, and regime-based position sizin
 
 import logging
 import numpy as np
-from typing import Dict, Optional, Callable
+from typing import Dict, Union
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +233,7 @@ class AdvancedPositionSizing:
             logger.error(f"Error in regime-based sizing: {e}")
             return 0.0
     
-    async def calculate_optimal_size(self, signal: Dict, method: str = 'fixed_risk_capped') -> Dict:
+    async def calculate_optimal_size(self, signal: Dict, method: str = 'fixed_risk_capped', return_signal: bool = False, **kwargs) -> Union[Dict, float]:
         """
         Calculate position size with two-stage safety:
         1. Risk-based calculation
@@ -247,11 +247,19 @@ class AdvancedPositionSizing:
         Args:
             signal: Trading signal with entry, stop, target, etc.
             method: Sizing method (default: 'fixed_risk_capped')
+            return_signal: When True, return the enriched signal dict; otherwise
+                return just the calculated position amount for backward compatibility
+            **kwargs: Optional overrides such as risk_per_trade to enforce a
+                fixed USD risk amount
             
         Returns:
-            Enriched signal dictionary with position size and metadata
+            Enriched signal dictionary (when return_signal=True) or the numeric
+            position amount (default)
         """
         try:
+            # Allow explicit risk overrides for backward compatibility
+            risk_per_trade_override = kwargs.pop('risk_per_trade', None)
+
             # Get required parameters
             symbol = signal.get('symbol', 'UNKNOWN')
             entry_price = signal.get('entry', 0) or signal.get('entry_price', 0)
@@ -291,7 +299,7 @@ class AdvancedPositionSizing:
             leverage = float(signal.get('leverage', config.get('leverage_default', 5)))
             
             # STAGE 1: Risk-based calculation
-            base_risk_usd = capital * risk_pct
+            base_risk_usd = risk_per_trade_override if risk_per_trade_override is not None else capital * risk_pct
             if risk_cap:
                 base_risk_usd = min(base_risk_usd, float(risk_cap))
             
@@ -342,8 +350,8 @@ class AdvancedPositionSizing:
             signal['leverage'] = leverage
             signal['sizing_meta'] = sizing_meta
             
-            return signal
+            return signal if return_signal else amount
             
         except Exception as e:
             logger.error(f"[SIZING] Error calculating size for {signal.get('symbol')}: {e}", exc_info=True)
-            return signal
+            return signal if return_signal else 0.0

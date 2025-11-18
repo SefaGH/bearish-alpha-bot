@@ -16,7 +16,7 @@ import time
 import os
 import sys
 from datetime import datetime
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, MagicMock, AsyncMock, patch
 
 from .fakes import (
     FakeOptimizedWebSocketManager,
@@ -85,13 +85,23 @@ async def test_launcher_runs_without_freeze(integration_env, cleanup_tasks):
             
             # Setup mock exchange client
             mock_exchange = MagicMock()
+            mock_exchange.close = AsyncMock()
+            mock_exchange.aclose = AsyncMock()
             mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
             mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
             mock_exchange.ticker.return_value = {'last': 50000.0}
             mock_ccxt.return_value = mock_exchange
             
             # Create launcher
-            launcher = LiveTradingLauncher(mode='paper')
+            launcher = LiveTradingLauncher(
+                mode='paper',
+                dry_run=True,
+                infinite=False,
+                auto_restart=False,
+                max_restarts=0,
+                restart_delay=0,
+                debug_mode=False,
+            )
             print("  ✓ Launcher instance created")
             
             print("\n[Step 2] Running launcher for 30 seconds...")
@@ -217,13 +227,23 @@ async def test_async_tasks_properly_scheduled(integration_env, cleanup_tasks):
             
             # Setup mock exchange
             mock_exchange = MagicMock()
+            mock_exchange.close = AsyncMock()
+            mock_exchange.aclose = AsyncMock()
             mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
             mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
             mock_exchange.ticker.return_value = {'last': 50000.0}
             mock_ccxt.return_value = mock_exchange
             
             print("\n[Step 1] Creating launcher...")
-            launcher = LiveTradingLauncher(mode='paper')
+            launcher = LiveTradingLauncher(
+                mode='paper',
+                dry_run=True,
+                infinite=False,
+                auto_restart=False,
+                max_restarts=0,
+                restart_delay=0,
+                debug_mode=False,
+            )
             
             # Track active tasks before starting
             initial_tasks = len(asyncio.all_tasks())
@@ -315,6 +335,8 @@ async def test_launcher_initialization_phases(integration_env, cleanup_tasks):
             
             # Setup mock exchange
             mock_exchange = MagicMock()
+            mock_exchange.close = AsyncMock()
+            mock_exchange.aclose = AsyncMock()
             mock_exchange.fetch_ticker.return_value = {'last': 50000.0}
             mock_exchange.get_bingx_balance.return_value = {'USDT': {'free': 1000.0}}
             mock_exchange.ticker.return_value = {'last': 50000.0}
@@ -323,7 +345,15 @@ async def test_launcher_initialization_phases(integration_env, cleanup_tasks):
             print("\n[Step 1] Creating launcher and initializing...")
             start_time = time.time()
             
-            launcher = LiveTradingLauncher(mode='paper')
+            launcher = LiveTradingLauncher(
+                mode='paper',
+                dry_run=True,
+                infinite=False,
+                auto_restart=False,
+                max_restarts=0,
+                restart_delay=0,
+                debug_mode=False,
+            )
             
             # The constructor already runs some initialization
             # Now test that we can run a short loop

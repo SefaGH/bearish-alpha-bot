@@ -5,14 +5,10 @@ Verifies that logs are written to disk and not just console.
 
 import sys
 import os
-import tempfile
-import shutil
 import glob
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-import pytest
 import logging
-from pathlib import Path
 
 
 def test_logger_creates_file():

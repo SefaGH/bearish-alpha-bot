@@ -14,6 +14,7 @@ import pandas as pd
 import torch
 import os
 import logging
+import random
 from collections import deque
 from typing import Optional
 
@@ -242,13 +243,20 @@ class RLModelTrainer:
             avg_score = np.mean(scores)
 
             # === GÜNCELLEME: Loglamaya 'Loss' eklendi ===
+            head_stats = self.agent.get_last_layer_stats()
+            head_scale = getattr(self.agent, 'get_head_scale_value', lambda: 1.0)()
+            q_std = self._estimate_q_std(sample_size=128)
             logger.info(
                 f"Episode {e}/{num_episodes} | "
                 f"Total Reward: {total_reward:.4f} | "
                 f"Avg Reward (last 100): {avg_score:.4f} | "
                 f"PnL: {info.get('pnl', 0):.2f} | "
                 f"Epsilon: {self.agent.epsilon:.4f} | "
-                f"Loss: {latest_metrics.get('loss', 0):.4f}"
+                f"Loss: {latest_metrics.get('loss', 0):.4f} | "
+                f"TD Error: {latest_metrics.get('td_error', 0):.6f} | "
+                f"Q Std: {q_std if q_std is not None else 0.0:.6f} | "
+                f"Head Std: {head_stats.get('weight_std', 0.0):.6f} | "
+                f"Head Scale: {head_scale:.6f}"
             )
             
             # Store episode metrics
@@ -258,7 +266,12 @@ class RLModelTrainer:
                 'avg_reward': avg_score,
                 'pnl': info.get('pnl', 0),
                 'epsilon': self.agent.epsilon,
-                'loss': latest_metrics.get('loss', 0)
+                'loss': latest_metrics.get('loss', 0),
+                'td_error': latest_metrics.get('td_error', 0),
+                'q_std': q_std if q_std is not None else 0.0,
+                'head_weight_std': head_stats.get('weight_std', 0.0),
+                'head_bias_std': head_stats.get('bias_std', 0.0),
+                'head_scale': head_scale,
             })
 
             # === GÜNCELLEME: Doğru metod adı 'save_model' ===
@@ -275,6 +288,20 @@ class RLModelTrainer:
         
         # Save training metrics
         self._save_training_metrics()
+
+    def _estimate_q_std(self, sample_size: int = 128) -> Optional[float]:
+        if not hasattr(self.experience_replay, 'buffer'):
+            return None
+        buffer = self.experience_replay.buffer
+        available = len(buffer)
+        if available == 0:
+            return None
+
+        sample = random.sample(buffer, min(sample_size, available))
+        states = torch.FloatTensor(np.array([exp[0] for exp in sample]))
+        with torch.no_grad():
+            q_values = self.agent._scale_q(self.agent.q_network(states))
+        return float(q_values.std().item())
     
     def _save_training_metrics(self):
         """Save RL training history to CSV file."""
@@ -296,8 +323,13 @@ class RLModelTrainer:
                     'avg_reward': entry.get('avg_reward', 0.0),
                     'pnl': entry.get('pnl', 0.0),
                     'epsilon': entry.get('epsilon', 0.0),
-                    'loss': entry.get('loss', 0.0)
+                    'loss': entry.get('loss', 0.0),
+                    'td_error': entry.get('td_error', 0.0),
+                    'q_std': entry.get('q_std', 0.0),
+                    'head_weight_std': entry.get('head_weight_std', 0.0),
+                    'head_bias_std': entry.get('head_bias_std', 0.0)
                 }
+                normalized_entry['head_scale'] = entry.get('head_scale', 1.0)
                 normalized_history.append(normalized_entry)
             
             # Save as CSV
