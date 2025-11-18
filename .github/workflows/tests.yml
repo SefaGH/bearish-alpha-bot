@@ -29,3 +29,51 @@ jobs:
           docker run --rm bearish-alpha-bot:test pytest tests/ -v
         env:
           PYTHONPATH: /app/src:/app/scripts
+
+  rl-head-scale-migration:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt || true
+          pip install pytest
+
+      - name: Configure PYTHONPATH
+        run: |
+          echo "PYTHONPATH=${{ github.workspace }}/src:${{ github.workspace }}" >> $GITHUB_ENV
+
+      - name: Generate canonical head-scale checkpoint
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          Path("data/checkpoints").mkdir(parents=True, exist_ok=True)
+          from src.ml.reinforcement_learning import TradingRLAgent
+          agent = TradingRLAgent(state_size=87, action_size=3, config={"head_scale_learnable": True})
+          agent.save_model("data/checkpoints/rl_agent_head_scale_ci.pth")
+          PY
+
+      - name: Inspect head-scale parameter wiring
+        run: |
+          python scripts/inspect_head_param.py --model data/checkpoints/rl_agent_head_scale_ci.pth --state-size 87 --head-scale-learnable --head-scale-min 0.1 --initial-head-scale 1.0
+
+      - name: Generate legacy checkpoint fixture
+        run: |
+          python tests/data/create_legacy_head_checkpoint.py --out tests/data/legacy_rl_agent_head_scale.pth --meta tests/data/legacy_rl_agent_head_scale_meta.json --legacy-log-value 0.0
+
+      - name: Run migration pytest
+        run: |
+          pytest tests/unit/test_head_scale_migration.py::test_head_scale_migrates_close -q
+
+      - name: Probe head-scale gradients
+        run: |
+          python scripts/inspect_head_gradient.py --model data/checkpoints/rl_agent_head_scale_ci.pth --state-size 87 --head-scale-learnable --head-scale-min 0.1 --batch-size 16

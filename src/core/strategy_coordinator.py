@@ -648,18 +648,15 @@ class StrategyCoordinator:
             telemetry['veto_by_regime'].setdefault(regime_key, 0)
             telemetry['veto_by_regime'][regime_key] += 1
 
-    def _determine_rl_fallback(self, signal: Dict[str, Any], rl_meta: Dict[str, Any]) -> str:
-        """Decide which action to take when RL confidence is unusably low."""
-        regime_confidence = signal.get('regime_confidence')
-        if regime_confidence is None:
-            regime_confidence = rl_meta.get('regime_confidence')
+    @staticmethod
+    def _map_signal_side_to_rl_action(side: str) -> str:
+        """Map original strategy side to RL action semantics."""
 
-        side = (signal.get('side') or '').lower()
-        if regime_confidence is not None and regime_confidence >= 0.5:
-            if side in ('buy', 'long'):
-                return 'buy'
-            if side in ('sell', 'short'):
-                return 'sell'
+        normalized = (side or '').lower()
+        if normalized in ('buy', 'long'):
+            return 'buy'
+        if normalized in ('sell', 'short'):
+            return 'sell'
         return 'hold'
 
     def get_rl_telemetry_stats(self) -> Dict[str, Any]:
@@ -674,6 +671,8 @@ class StrategyCoordinator:
         range_mean = float(np.mean(q_range_values)) if q_range_values else 0.0
         range_median = float(np.median(q_range_values)) if q_range_values else 0.0
 
+        rl_bypass_rate = (telemetry['bypass_count'] / total) if total else 0.0
+
         return {
             'rl_veto_rate': (telemetry['veto_count'] / total) if total else 0.0,
             'bias_applied_rate': (telemetry['bias_applied_count'] / total) if total else 0.0,
@@ -682,9 +681,12 @@ class StrategyCoordinator:
             'q_std_median': std_median,
             'q_range_mean': range_mean,
             'q_range_median': range_median,
-            'bypass_rate': (telemetry['bypass_count'] / total) if total else 0.0,
+            'bypass_rate': rl_bypass_rate,
+            'rl_bypass_rate': rl_bypass_rate,
             'veto_by_regime': telemetry['veto_by_regime'],
-            'samples': total
+            'samples': total,
+            'q_std_values': list(q_std_values),
+            'q_range_values': list(q_range_values)
         }
     
     async def _enhance_signal_with_ml(self, signal: Dict) -> Optional[Dict]:
@@ -708,7 +710,7 @@ class StrategyCoordinator:
             import pandas as pd
             current_price = signal.get('entry', 0)
             symbol = signal.get('symbol')
-            original_side = signal.get('side').lower()
+            original_side = (signal.get('side') or '').lower()
 
             # --- EXTREME CONDITION BYPASS CHECK (BEFORE ANY ML/RL PROCESSING) ---
             rsi_value = await self._extract_rsi_from_market_data(symbol)
@@ -814,24 +816,34 @@ class StrategyCoordinator:
                             .get('reinforcement_learning', {})
                             .get('q_std_bypass_threshold', 1e-4)
                         )
+                        q_range_threshold = (
+                            self.config
+                            .get('ml', {})
+                            .get('reinforcement_learning', {})
+                            .get('q_range_bypass_threshold', 1e-3)
+                        )
 
+                        bypass_reason = None
                         if q_std is not None and q_std < q_std_threshold:
-                            fallback_advice = self._determine_rl_fallback(signal, rl_meta)
-                            if fallback_advice != rl_advice:
-                                logger.warning(
-                                    "🤖 [RL-BYPASS] Low Q-std (%.6f < %.6f) forcing fallback %s → %s | symbol=%s",
-                                    q_std,
-                                    q_std_threshold,
-                                    rl_advice,
-                                    fallback_advice,
-                                    symbol
-                                )
+                            bypass_reason = f"low_q_std:{q_std:.6f}"
+                        elif q_range is not None and q_range < q_range_threshold:
+                            bypass_reason = f"low_q_range:{q_range:.6f}"
+
+                        if bypass_reason:
+                            fallback_advice = self._map_signal_side_to_rl_action(original_side)
+                            logger.warning(
+                                "⚠️ [RL-BYPASS] Model frozen detected for %s (q_std=%.6f, q_range=%.6f) -> fallback=%s",
+                                symbol,
+                                q_std if q_std is not None else float('nan'),
+                                q_range if q_range is not None else float('nan'),
+                                fallback_advice.upper()
+                            )
                             rl_meta['bypassed'] = True
-                            rl_meta['bypass_reason'] = f"low_q_std:{q_std:.6f}"
+                            rl_meta['bypass_reason'] = 'frozen_model'
                             rl_advice = fallback_advice
                             rl_advice_str = rl_advice.upper()
                             signal['rl_bypassed'] = True
-                            signal['rl_bypass_reason'] = rl_meta['bypass_reason']
+                            signal['rl_bypass_reason'] = 'frozen_model'
                         else:
                             rl_meta['bypassed'] = False
                             signal['rl_bypassed'] = False

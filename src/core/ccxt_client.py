@@ -401,7 +401,7 @@ class CcxtClient:
         Args:
             symbol: ccxt symbol (e.g., 'BTC/USDT:USDT')
             timeframe: Timeframe string (e.g., '30m', '1h')
-            target_limit: Desired candles (up to 2000)
+            target_limit: Desired candles (500 per batch, unlimited total)
         
         Returns:
             Chronologically sorted OHLCV data
@@ -417,13 +417,13 @@ class CcxtClient:
         
         interval_ms = self._get_timeframe_ms(timeframe)
         
+        total_batches = max(1, (target_limit + 499) // 500)
         all_candles = []
-        batches_needed = min(4, (target_limit + 499) // 500)
         
-        logger.info(f"Bulk fetch ({self.name}): {target_limit} candles in {batches_needed} batches "
-                   f"(server time: {server_time_ms})")
-        
-        for batch_idx in range(batches_needed):
+        logger.info(f"Bulk fetch ({self.name}): {target_limit} candles in up to {total_batches} batches "
+               f"(server time: {server_time_ms})")
+
+        for batch_idx in range(total_batches):
             # Calculate time range using server time
             end_time = server_time_ms - (batch_idx * 500 * interval_ms)
             start_time = end_time - (500 * interval_ms)
@@ -443,7 +443,7 @@ class CcxtClient:
                     break
                     
                 all_candles.extend(batch_data)
-                logger.info(f"Batch {batch_idx + 1}/{batches_needed}: {len(batch_data)} candles "
+                logger.info(f"Batch {batch_idx + 1}/{total_batches}: {len(batch_data)} candles "
                            f"({datetime.fromtimestamp(start_time/1000)} to {datetime.fromtimestamp(end_time/1000)})")
                 
                 if len(all_candles) >= target_limit:

@@ -1,17 +1,22 @@
+#!/usr/bin/env python3
 """RL Model Diagnostic Tool.
 
-Evaluates scaler outputs, model forward variance, and Q-value differentiation.
+Tests scaler, model forward pass, and Q-value variance.
+
+Usage:
+    python scripts/diagnose_rl_model.py
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import joblib
 import numpy as np
 import torch
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -23,145 +28,250 @@ SCALER_PATH = REPO_ROOT / "artifacts/gemma/final/gemma_price_scaler.joblib"
 from src.ml.reinforcement_learning import TradingRLAgent  # noqa: E402
 
 
-def load_scaler(path: Path):
-    try:
-        scaler = joblib.load(path)
-        print(f"✅ Scaler loaded from {path}")
-        return scaler
-    except FileNotFoundError:
-        print(f"⚠️ No scaler found at {path} (continuing with raw features)")
-        return None
-    except Exception as exc:  # pragma: no cover - diagnostic output only
-        print(f"❌ Failed to load scaler {path}: {exc}")
-        return None
+def _get_underlying_model(agent: TradingRLAgent):
+    """Return the underlying torch module regardless of attribute name."""
+
+    return getattr(agent, 'q_network', getattr(agent, 'model', None))
 
 
-def load_agent() -> TradingRLAgent:
+def load_components() -> Tuple[TradingRLAgent, Any]:
+    """Load RL agent and scaler from disk."""
+
+    print("Loading RL Agent...")
     agent = TradingRLAgent(state_size=82, action_size=3)
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(f"Model file not found at {MODEL_PATH}")
     agent.load_model(str(MODEL_PATH))
-    model = getattr(agent, "q_network", getattr(agent, "model", None))
-    if model is None:
-        raise RuntimeError("RL agent has no underlying model instance (q_network/model missing)")
-    model.eval()
-    return agent
+    model = _get_underlying_model(agent)
+    if model is not None:
+        model.eval()
+    print(f"[OK] Model loaded: {MODEL_PATH}")
+
+    print("\nLoading Scaler...")
+    try:
+        scaler = joblib.load(str(SCALER_PATH))
+        print(f"[OK] Scaler loaded: {SCALER_PATH}")
+    except FileNotFoundError:
+        print(f"[WARN] Scaler not found at {SCALER_PATH}")
+        scaler = None
+    except Exception as exc:  # pragma: no cover - diagnostic output only
+        print(f"[FAIL] Failed to load scaler: {exc}")
+        scaler = None
+
+    return agent, scaler
 
 
 def run_inference(agent: TradingRLAgent, state_vec: np.ndarray) -> np.ndarray:
-    model = getattr(agent, "q_network", getattr(agent, "model", None))
+    """Run model inference with proper eval mode."""
+
+    model = _get_underlying_model(agent)
     if model is None:
-        raise RuntimeError("RL agent lacks a model for inference")
+        raise RuntimeError("TradingRLAgent has no model/q_network attribute for inference")
+    model.eval()
     with torch.no_grad():
         tensor = torch.FloatTensor(state_vec).unsqueeze(0)
-        return model(tensor).cpu().numpy()[0]
+        q_values = model(tensor).cpu().numpy()[0]
+    return q_values
 
 
-def pretty(values: np.ndarray) -> List[float]:
-    return np.round(values, 6).tolist()
+def pretty(values: np.ndarray, decimals: int = 6) -> List[float]:
+    """Convert numpy array to rounded list for printing."""
+
+    return np.round(values, decimals).tolist()
 
 
-def build_test_cases(rng_seed: int = 42) -> List[Tuple[str, np.ndarray]]:
-    log_state1 = np.array(
-        [9.45666000e04, 9.45625392e04, 2.37795000e01, 4.95402000e01, 5.01690000e01]
-        + [0.0] * 77
-    )
-    log_state2 = np.array(
-        [9.42614600e04, 9.42559169e04, 0.0, 7.12776000e01, 7.40257000e01]
-        + [0.0] * 77
-    )
-    cases: List[Tuple[str, np.ndarray]] = [
-        ("log_15_12_57", log_state1),
-        ("log_14_21_45", log_state2),
+def build_test_cases() -> List[Tuple[str, np.ndarray]]:
+    """Prepare deterministic log states plus random samples."""
+
+    state_log1 = np.array([
+        93155.0, 93152.0, 26.53, 5.39, 5.76
+    ] + [0.0] * 77)
+
+    state_log2 = np.array([
+        93034.0, 93039.0, 98.18, 3.43, 1.96
+    ] + [0.0] * 77)
+
+    rng = np.random.RandomState(42)
+    random_states = [rng.randn(82) * 10000 + 93000 for _ in range(5)]
+
+    cases = [
+        ("log_16:15:19", state_log1),
+        ("log_16:20:20", state_log2),
     ]
-    rng = np.random.default_rng(rng_seed)
-    for idx in range(5):
-        cases.append((f"random_{idx+1}", rng.standard_normal(82)))
+
+    for idx, rs in enumerate(random_states, start=1):
+        cases.append((f"random_{idx}", rs))
+
     return cases
 
 
 def main() -> None:
-    print("=" * 60)
-    print("RL MODEL DIAGNOSTIC")
-    print("=" * 60)
+    """Run diagnostic pipeline end-to-end."""
 
-    print("\n[STEP 1] Loading RL agent and scaler ...")
-    agent = load_agent()
-    scaler = load_scaler(SCALER_PATH)
-    print(f"✅ Model loaded from {MODEL_PATH}")
-    print(f"   training_mode={agent.training_mode}")
-    print(f"   epsilon={agent.epsilon}")
+    print("=" * 80)
+    print("[DIAG] RL MODEL DIAGNOSTIC")
+    print("=" * 80)
 
-    print("\n[STEP 2] Preparing test cases ...")
+    # ------------------------------------------------------------------
+    # 1. Load components
+    # ------------------------------------------------------------------
+    print("\n[STEP 1/5] Loading components...")
+    agent, scaler = load_components()
+
+    print("\nModel Info:")
+    print(f"  Training mode: {agent.training_mode}")
+    print(f"  Epsilon: {agent.epsilon}")
+
+    # ------------------------------------------------------------------
+    # 2. Prepare test cases
+    # ------------------------------------------------------------------
+    print("\n[STEP 2/5] Preparing test cases...")
     cases = build_test_cases()
-    print(f"✅ Prepared {len(cases)} cases")
+    print(f"[OK] Prepared {len(cases)} test cases")
 
-    print("\n[STEP 3] Running inference tests ...")
-    print("=" * 60)
+    # ------------------------------------------------------------------
+    # 3. Run inference tests
+    # ------------------------------------------------------------------
+    print("\n[STEP 3/5] Running inference tests...")
+    print("=" * 80)
 
-    diagnostics: List[Dict[str, float]] = []
+    results: List[Dict[str, Any]] = []
+
     for name, raw_state in cases:
-        scaled_state = raw_state
         if scaler is not None:
             try:
                 scaled_state = scaler.transform(raw_state.reshape(1, -1))[0]
             except Exception as exc:
-                print(f"⚠️ [{name}] Scaler transform failed: {exc}")
+                print(f"[WARN] [{name}] Scaler failed: {exc}")
+                scaled_state = raw_state
+        else:
+            scaled_state = raw_state
+
         q_values = run_inference(agent, scaled_state)
         q_std = float(np.std(q_values))
         q_range = float(np.max(q_values) - np.min(q_values))
-        diagnostics.append({
+
+        results.append({
             'name': name,
+            'raw': raw_state,
+            'scaled': scaled_state,
+            'q_values': q_values,
             'q_std': q_std,
             'q_range': q_range,
         })
+
         print(f"\n[{name}]")
-        print(f"  Raw (first 5):    {pretty(raw_state[:5])}")
-        print(f"  Scaled (first 5): {pretty(scaled_state[:5])}")
-        print(f"  Q-values:         {pretty(q_values)}")
-        print(f"  Q std:            {q_std:.8f}")
-        print(f"  Q range:          {q_range:.8f}")
-        print(f"  Decision:         {['BUY','HOLD','SELL'][int(np.argmax(q_values))]}")
+        print(f"  Raw (first 5):    {pretty(raw_state[:5], 2)}")
+        print(f"  Scaled (first 5): {pretty(scaled_state[:5], 4)}")
+        print(f"  Q-values:         {pretty(q_values, 6)}")
+        print(f"  Q-std:            {q_std:.8f}")
+        print(f"  Q-range:          {q_range:.8f}")
+        print(f"  Decision:         {['BUY', 'HOLD', 'SELL'][int(np.argmax(q_values))]}")
 
-    print("\n" + "=" * 60)
-    print("[STEP 4] Pairwise comparison of log samples")
-    print("=" * 60)
-    log_a = diagnostics[0]
-    log_b = diagnostics[1]
-    diff = abs(log_a['q_std'] - log_b['q_std'])
-    print(f"Log sample stds: {log_a['q_std']:.8f} vs {log_b['q_std']:.8f} (diff={diff:.8f})")
+    # ------------------------------------------------------------------
+    # 4. Pairwise comparison of log samples
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("[STEP 4/5] Pairwise Comparison")
+    print("=" * 80)
 
-    print("\n" + "=" * 60)
-    print("[STEP 5] Statistical summary")
-    print("=" * 60)
-    q_stds = np.array([d['q_std'] for d in diagnostics])
-    q_ranges = np.array([d['q_range'] for d in diagnostics])
-    print(f"Q-std min/median/max: {q_stds.min():.8f} / {np.median(q_stds):.8f} / {q_stds.max():.8f}")
-    print(f"Q-range min/median/max: {q_ranges.min():.8f} / {np.median(q_ranges):.8f} / {q_ranges.max():.8f}")
+    log1_q = results[0]['q_values']
+    log2_q = results[1]['q_values']
+    q_diff = np.abs(log1_q - log2_q)
+    max_diff = float(np.max(q_diff))
 
-    print("\n" + "=" * 60)
-    print("[STEP 6] Diagnosis")
-    print("=" * 60)
-    median_std = float(np.median(q_stds))
-    if median_std < 1e-4:
-        print("❌ MODEL FROZEN: Q-values have negligible variance")
-        print("   → Re-export or retrain the RL model")
-    elif median_std < 1e-3:
-        print("⚠️ LOW VARIANCE: Model sensitivity is weak")
-        print("   → Investigate scaler / feature pipeline")
+    print(f"\nLog 16:15:19 Q-values: {pretty(log1_q)}")
+    print(f"Log 16:20:20 Q-values: {pretty(log2_q)}")
+    print(f"Absolute difference:   {pretty(q_diff)}")
+    print(f"Max difference:        {max_diff:.8f}")
+
+    # ------------------------------------------------------------------
+    # 5. Statistical analysis & diagnosis
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("[STEP 5/5] Statistical Analysis")
+    print("=" * 80)
+
+    all_q_stds = np.array([r['q_std'] for r in results])
+    all_q_ranges = np.array([r['q_range'] for r in results])
+
+    print(f"\nQ-value standard deviations:")
+    print(f"  Min:    {all_q_stds.min():.8f}")
+    print(f"  Max:    {all_q_stds.max():.8f}")
+    print(f"  Mean:   {all_q_stds.mean():.8f}")
+    print(f"  Median: {np.median(all_q_stds):.8f}")
+
+    print(f"\nQ-value ranges:")
+    print(f"  Min:    {all_q_ranges.min():.8f}")
+    print(f"  Max:    {all_q_ranges.max():.8f}")
+    print(f"  Mean:   {all_q_ranges.mean():.8f}")
+    print(f"  Median: {np.median(all_q_ranges):.8f}")
+
+    print("\n" + "=" * 80)
+    print("[REPORT] DIAGNOSIS")
+    print("=" * 80)
+
+    median_std = float(np.median(all_q_stds))
+    median_range = float(np.median(all_q_ranges))
+
+    print("\n[CHECK] Diagnostic Results:")
+
+    if median_std < 0.0001:
+        print("[FAIL] MODEL FROZEN: Q-values have no variance")
+        print("   -> Recommendation: Re-export model or check training")
+        diagnosis = "FROZEN"
+    elif median_std < 0.001:
+        print("[WARN] LOW VARIANCE: Q-values are very similar")
+        print("   -> Recommendation: Implement fallback logic + check features")
+        diagnosis = "LOW_VARIANCE"
     else:
-        print("✅ VARIANCE OK: Model reacts to inputs")
+        print("[OK] VARIANCE OK: Model produces varied outputs")
+        diagnosis = "OK"
 
-    max_diff = float(np.max(np.abs(q_stds[:, None] - q_stds)))
-    if max_diff < 1e-4:
-        print("❌ STATES NOT DIFFERENTIATED: Distinct inputs produce identical Q-values")
-    elif max_diff < 1e-3:
-        print("⚠️ WEAK DIFFERENTIATION: Differences are minimal")
+    print(f"\nQ-range median: {median_range:.8f}")
+
+    max_diff_std = float(np.max(np.abs(all_q_stds[:, None] - all_q_stds))) if len(all_q_stds) else 0.0
+
+    if max_diff < 0.0001:
+        print("[FAIL] STATES NOT DIFFERENTIATED: Different inputs -> Same Q-values")
+        print("   Possible causes: scaler identical outputs or NaN handling")
+    elif max_diff < 0.001:
+        print("[WARN] WEAK DIFFERENTIATION: Differences are minimal")
     else:
-        print("✅ DIFFERENTIATION OK: Inputs produce distinct Q-values")
+        print("[OK] DIFFERENTIATION OK: Different inputs -> Different Q-values")
 
-    if scaler is None:
-        print("\n(Scaler unavailable – skipping scaler diagnostics)")
+    if scaler is not None:
+        scaled_diff = np.max(np.abs(
+            results[0]['scaled'][:5] - results[1]['scaled'][:5]
+        ))
+        print(f"\n[CHECK] Scaler Check:")
+        print(f"  Scaled state difference (first 5): {scaled_diff:.6f}")
+        if scaled_diff < 0.001:
+            print("[FAIL] SCALER ISSUE: Producing similar scaled states")
+        else:
+            print("[OK] SCALER OK: Producing different scaled states")
+    else:
+        print("\n(Scaler unavailable - raw features used)")
+
+    print("\n" + "=" * 80)
+    print("[VERDICT] FINAL SUMMARY")
+    print("=" * 80)
+
+    if diagnosis == "FROZEN":
+        print("\n[ALERT] ACTION REQUIRED: Model re-export needed")
+        print("   1. Check best checkpoint under data/checkpoints/")
+        print("   2. Re-export via scripts/re_export_rl_model.py")
+        print("   3. Implement fallback logic immediately")
+    elif diagnosis == "LOW_VARIANCE":
+        print("\n[WARN] ACTION RECOMMENDED: Implement fallback logic")
+        print("   1. Bypass when q_std < 0.001")
+        print("   2. Use strategy signal as fallback")
+        print("   3. Log bypass events in telemetry")
+    else:
+        print("\n[OK] NO CRITICAL ACTION NEEDED: Model is healthy")
+        print("   Continue monitoring Q-std telemetry")
+
+    print("\n" + "=" * 80)
+    print("[OK] Diagnostic Complete")
+    print("=" * 80)
 
 
 if __name__ == "__main__":

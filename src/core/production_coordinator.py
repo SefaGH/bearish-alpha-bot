@@ -2497,14 +2497,16 @@ class ProductionCoordinator:
                     logger.info("📈 [RL-TELEMETRY] No RL decisions recorded yet")
                     continue
 
+                q_std_values = stats.get('q_std_values', [])
+                sample_count = len(q_std_values) or samples
                 q_std_med = stats.get('q_std_median', 0.0)
                 q_range_med = stats.get('q_range_median', 0.0)
                 veto_rate = stats.get('rl_veto_rate', 0.0) * 100
-                bypass_rate = stats.get('bypass_rate', 0.0) * 100
+                bypass_rate = stats.get('rl_bypass_rate', stats.get('bypass_rate', 0.0)) * 100
 
                 logger.info(
                     "📈 [RL-TELEMETRY] samples=%s | q_std_med=%.6f | q_range_med=%.6f | veto_rate=%.2f%% | bypass_rate=%.2f%%",
-                    samples,
+                    sample_count,
                     q_std_med,
                     q_range_med,
                     veto_rate,
@@ -2516,6 +2518,12 @@ class ProductionCoordinator:
                         "📉 [RL-TELEMETRY] Median Q-std %.6f below threshold %.6f — RL model likely frozen",
                         q_std_med,
                         threshold
+                    )
+
+                if bypass_rate > 20.0:
+                    logger.warning(
+                        "⚠️ [RL-ALERT] High bypass rate (%.2f%%) - model may be frozen",
+                        bypass_rate
                     )
         except asyncio.CancelledError:
             logger.info("RL telemetry monitor task cancelled")
