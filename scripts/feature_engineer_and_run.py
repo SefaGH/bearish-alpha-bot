@@ -191,7 +191,7 @@ else:
         
         # Determine state_size from scaled features
         state_size = Xs.shape[1]
-        action_size = 3  # BUY, HOLD, SELL
+        action_size = 3  # 0: HOLD, 1: BUY, 2: SELL
         
         # Create model instance
         if isinstance(checkpoint, dict):

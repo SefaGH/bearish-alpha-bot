@@ -3,6 +3,11 @@ Reinforcement Learning Engine for Trading Strategy Optimization.
 
 Implements Deep Q-Network (DQN) agent for continuous strategy improvement
 through interaction with the trading environment.
+
+Action Mapping Convention:
+    0 -> HOLD: No trade action
+    1 -> BUY:  Open or increase long position
+    2 -> SELL: Close position or open short
 """
 
 import numpy as np
@@ -13,6 +18,9 @@ import math
 from typing import Dict, List, Tuple, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+# Canonical action mapping used throughout the RL stack
+ACTION_LABELS = ['HOLD', 'BUY', 'SELL']
 
 # Check if PyTorch is available
 try:
@@ -364,7 +372,7 @@ if TORCH_AVAILABLE:
                 action = random.randrange(self.action_size)
                 meta['exploration'] = True
                 meta['probabilities'] = None
-                logger.debug(f"🤖 [RL-ACT] Exploration: Selected random action -> {['BUY', 'HOLD', 'SELL'][action]}")
+                logger.debug(f"🤖 [RL-ACT] Exploration: Selected random action -> {ACTION_LABELS[action]}")
                 return action, meta
             
             with torch.no_grad():
@@ -405,7 +413,7 @@ if TORCH_AVAILABLE:
                     }
                     logger.warning(
                         f"🤖 [RL-OVERRIDE] Agent uncertain on HOLD (prob: {best_prob:.2f} < {self.hold_confidence_threshold}). "
-                        f"Overriding with 2nd choice: {['BUY', 'HOLD', 'SELL'][second_best_action]}"
+                        f"Overriding with 2nd choice: {ACTION_LABELS[second_best_action]}"
                     )
                     best_action = second_best_action
 
