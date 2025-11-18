@@ -279,28 +279,13 @@ jobs:
           echo "======================================================================"
           REPORT="${{ steps.validate_rl.outputs.validation_report }}"
           if [ -f "${REPORT}" ]; then
-            python - << 'PY'
-            import json, os
-            report_path = os.environ["REPORT"]
-            with open(report_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            print("\n--- RL VALIDATION REPORT ---")
-            total_reward = data.get("total_reward") or data.get("reward_total") or "N/A"
-            pnl_total = data.get("pnl_total", "N/A")
-            action_dist = data.get("action_distribution", {})
-            q_stats = data.get("q_stats", {})
-            print(f"Total Reward: {total_reward}")
-            print(f"Total PnL:    {pnl_total}")
-            print(f"Action Distribution: {action_dist}")
-            print(f"Q-Value Stats: {q_stats}")
-            print("--- END REPORT ---\n")
-            PY
+            python scripts/summarize_rl_validation.py "${REPORT}"
           else
             echo "Validation report not found at ${REPORT}"
           fi
         env:
           REPORT: ${{ steps.validate_rl.outputs.validation_report }}
-
+          
       - name: 12. Collect RL training artifacts
         run: |
           echo "======================================================================"
