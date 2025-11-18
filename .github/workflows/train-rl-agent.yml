@@ -94,7 +94,7 @@ jobs:
           else
             echo "⚠️  GEMMA manifest not found at ${MANIFEST_PATH}"
             echo "   Attempting to generate GEMMA bundle via scripts/setup_gemma_artifacts.sh"
-            if [ -x "scripts/setup_gemma_artifacts.sh" ]; then
+            if [ -f "scripts/setup_gemma_artifacts.sh" ]; then
               bash scripts/setup_gemma_artifacts.sh
             else
               echo "❌ scripts/setup_gemma_artifacts.sh is missing or not executable."
