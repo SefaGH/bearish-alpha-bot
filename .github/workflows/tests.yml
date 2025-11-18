@@ -26,6 +26,8 @@ jobs:
       
       - name: Run tests in container
         run: |
-          docker run --rm bearish-alpha-bot:test pytest tests/unit/test_head_scale_migration.py tests/test_reinforcement_learning_agent.py tests/test_rl_bypass.py -v --tb=short
+          # --entrypoint kullanarak Dockerfile'daki CMD'yi ve olası pytest konfigürasyon dosyası etkileşimlerini ezip geçiyoruz.
+          # Bu, SADECE komut satırında belirtilen testlerin çalıştırılmasını garanti altına alır.
+          docker run --rm --entrypoint pytest bearish-alpha-bot:test tests/unit/test_head_scale_migration.py tests/test_reinforcement_learning_agent.py tests/test_rl_bypass.py -v --tb=short
         env:
           PYTHONPATH: /app/src:/app/scripts
