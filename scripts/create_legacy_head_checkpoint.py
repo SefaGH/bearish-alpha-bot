@@ -3,7 +3,7 @@
 Create a legacy-format RL checkpoint and optional meta JSON for the migration pytest.
 
 Usage:
-  python tests/data/create_legacy_head_checkpoint.py \
+  python scripts/create_legacy_head_checkpoint.py \
     --out tests/data/legacy_rl_agent_head_scale.pth \
     --meta tests/data/legacy_rl_agent_head_scale_meta.json \
     --legacy-log-value 0.0

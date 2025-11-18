@@ -87,7 +87,6 @@ artifacts/active/
 !tests/data/
 tests/data/*.pth
 tests/data/*.json
-!tests/data/create_legacy_head_checkpoint.py
 
 # Paper trading test artifacts
 paper_trading_*.log

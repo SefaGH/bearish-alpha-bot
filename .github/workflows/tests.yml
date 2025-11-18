@@ -34,7 +34,7 @@ jobs:
           # Canonical head-scale checkpoint
           python -c "from pathlib import Path; from src.ml.reinforcement_learning import TradingRLAgent; agent = TradingRLAgent(state_size=87, action_size=3, config={'head_scale_learnable': True}); agent.save_model('data/checkpoints/rl_agent_head_scale_ci.pth')"
           # Legacy checkpoint fixture
-          python tests/data/create_legacy_head_checkpoint.py --out tests/data/legacy_rl_agent_head_scale.pth --meta tests/data/legacy_rl_agent_head_scale_meta.json --legacy-log-value 0.0
+          python scripts/create_legacy_head_checkpoint.py --out tests/data/legacy_rl_agent_head_scale.pth --meta tests/data/legacy_rl_agent_head_scale_meta.json --legacy-log-value 0.0
 
       - name: 2. Run Inspector Scripts as tests
         run: |
