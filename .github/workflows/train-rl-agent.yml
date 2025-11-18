@@ -63,10 +63,10 @@ jobs:
       RL_MODEL_DIR: data/checkpoints
 
     steps:
-      # 1) Checkout & Python setup
       - name: 1. Checkout repository
         uses: actions/checkout@v4
 
+        # GEMMA manifest/bundle hazırlığı
       - name: 2. Setup Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -78,12 +78,71 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt
 
-      # 2) Prepare RL datasets (docs/rl_training_workflow.md - Section 1)
-      - name: 4. Prepare RL training/val/test datasets
+      - name: 4. Ensure GEMMA bundle & manifest exist
+        run: |
+          echo "======================================================================"
+          echo "🧩 STEP 4: Ensuring GEMMA bundle and manifest for RL (artifacts/gemma/final)"
+          echo "======================================================================"
+
+          BUNDLE_DIR="artifacts/gemma/final"
+          MANIFEST_PATH="${BUNDLE_DIR}/manifest.json"
+
+          mkdir -p "${BUNDLE_DIR}"
+
+          if [ -f "${MANIFEST_PATH}" ]; then
+            echo "✅ Existing GEMMA manifest found at ${MANIFEST_PATH}"
+          else
+            echo "⚠️  GEMMA manifest not found at ${MANIFEST_PATH}"
+            echo "   Attempting to generate GEMMA bundle via scripts/setup_gemma_artifacts.sh"
+            if [ -x "scripts/setup_gemma_artifacts.sh" ]; then
+              bash scripts/setup_gemma_artifacts.sh
+            else
+              echo "❌ scripts/setup_gemma_artifacts.sh is missing or not executable."
+              echo "   RL training requires a valid GEMMA manifest.json under artifacts/gemma/final."
+              exit 1
+            fi
+
+            if [ -f "${MANIFEST_PATH}" ]; then
+              echo "✅ GEMMA manifest successfully generated at ${MANIFEST_PATH}"
+            else
+              echo "❌ Failed to generate GEMMA manifest. Aborting RL training workflow."
+              echo "   Please run train-models.yml (Gemma training) and setup_gemma_artifacts.sh first."
+              exit 1
+            fi
+          fi
+
+          echo ""
+          echo "ℹ️  RL training will use GEMMA manifest-driven feature extraction (82 features)."
+
+      # 5) RL config sanity: training_mode MUST be true
+      - name: 5. Sanity-check RL config (training_mode must be true)
+        run: |
+          echo "======================================================================"
+          echo "🧠 STEP 5: Checking RL config.training_mode for training workflow"
+          echo "======================================================================"
+          python - << 'PY'
+          import os
+          from src.config.live_trading_config import LiveTradingConfiguration
+
+          cfg_path = os.environ.get("RL_CONFIG_PATH", "config/config.example.yaml")
+          cfg = LiveTradingConfiguration.load(config_path=cfg_path, log_summary=False)
+          rl_cfg = (cfg.get("ml") or {}).get("reinforcement_learning", {})
+          training_mode = rl_cfg.get("training_mode", False)
+          if not training_mode:
+              raise SystemExit(
+                  "❌ ml.reinforcement_learning.training_mode is FALSE in config.\n"
+                  "   RL TRAINING requires training_mode=true. "
+                  "Set ML_RL_TRAINING_MODE=true as a GitHub Variable / env override or update config."
+              )
+          print(f"✅ RL training_mode is TRUE in {cfg_path}. Proceeding with RL training.")
+          PY
+
+      # 6) Prepare RL datasets
+      - name: 6. Prepare RL training/val/test datasets
         id: prepare_rl
         run: |
           echo "======================================================================"
-          echo "📊 STEP 4: Preparing RL dataset with engineered features"
+          echo "📊 STEP 6: Preparing RL dataset with engineered features"
           echo "======================================================================"
 
           python scripts/prepare_rl_training_data.py \
@@ -97,11 +156,9 @@ jobs:
             --val-ratio 0.15 \
             --log-level "${{ inputs.log_level }}"
 
-          # Compute base name (e.g., BTC_USDT_USDT_1h)
           python - << 'PY'
           import os
           from scripts.prepare_rl_training_data import sanitize_symbol
-
           symbol = os.environ.get("SYMBOL", "BTC/USDT:USDT")
           timeframe = os.environ.get("TIMEFRAME", "1h")
           base = f"{sanitize_symbol(symbol)}_{timeframe}"
@@ -113,12 +170,11 @@ jobs:
           SYMBOL: ${{ inputs.symbol }}
           TIMEFRAME: ${{ inputs.timeframe }}
 
-      # 3) Train RL Agent (docs/rl_training_workflow.md - Section 2)
-      - name: 5. Train RL agent on train split
+      - name: 7. Train RL agent on train split
         id: train_rl
         run: |
           echo "======================================================================"
-          echo "🚀 STEP 5: Training RL Agent"
+          echo "🚀 STEP 7: Training RL Agent"
           echo "======================================================================"
 
           BASE_NAME="${{ steps.prepare_rl.outputs.base_name }}"
@@ -140,15 +196,13 @@ jobs:
             --summary-file "${RL_OUTPUT_DIR}/rl_training_summary.json" \
             --log-level "${{ inputs.log_level }}"
 
-          # train_rl_agent.py always exports final checkpoint as rl_agent_final.pth in model-dir
           echo "final_checkpoint=${RL_MODEL_DIR}/rl_agent_final.pth" >> "$GITHUB_OUTPUT"
 
-      # 4) Validate RL checkpoint (docs/rl_training_workflow.md - Section 3)
-      - name: 6. Validate RL checkpoint on validation split
+      - name: 8. Validate RL checkpoint on validation split
         id: validate_rl
         run: |
           echo "======================================================================"
-          echo "🔬 STEP 6: Validating RL checkpoint on validation split"
+          echo "🔬 STEP 8: Validating RL checkpoint on validation split"
           echo "======================================================================"
 
           BASE_NAME="${{ steps.prepare_rl.outputs.base_name }}"
@@ -168,12 +222,11 @@ jobs:
 
           echo "validation_report=${REPORT_PATH}" >> "$GITHUB_OUTPUT"
 
-      # 4b) Optional: RL replay/TD inspection (from docs "Tips" section)
-      - name: 7. Inspect replay buffer & TD normalization (optional)
+      - name: 9. Inspect replay buffer & TD normalization (optional)
         if: always()
         run: |
           echo "======================================================================"
-          echo "🧩 STEP 7: Optional Replay / TD inspection (if script present)"
+          echo "🧩 STEP 9: Optional Replay / TD inspection (if script present)"
           echo "======================================================================"
 
           if [ -f "scripts/inspect_replay_and_td.py" ]; then
@@ -181,9 +234,6 @@ jobs:
             TRAIN_DATASET="${RL_OUTPUT_DIR}/${BASE_NAME}_train.npz"
             CHECKPOINT="${{ steps.train_rl.outputs.final_checkpoint }}"
 
-            echo "Running inspect_replay_and_td on: ${TRAIN_DATASET} with checkpoint: ${CHECKPOINT}"
-
-            # Example call; adjust flags as needed
             python scripts/inspect_replay_and_td.py \
               --dataset "${TRAIN_DATASET}" \
               --checkpoint "${CHECKPOINT}" \
@@ -194,20 +244,16 @@ jobs:
             echo "scripts/inspect_replay_and_td.py not found; skipping this diagnostic step."
           fi
 
-      # 5) Head-scale & migration diagnostics (docs/rl_training_workflow.md - Section 4)
-      - name: 8. Run head-scale inspectors and migration test
+      - name: 10. Run head-scale inspectors and migration test
         if: inputs.run_headscale_diagnostics == 'true'
         run: |
           echo "======================================================================"
-          echo "🧪 STEP 8: Head-scale diagnostics & migration test"
+          echo "🧪 STEP 10: Head-scale diagnostics & migration test"
           echo "======================================================================"
 
           export PYTHONPATH="src:."
           MODEL_PATH="${{ steps.train_rl.outputs.final_checkpoint }}"
 
-          echo "Inspecting model: ${MODEL_PATH}"
-
-          # 8.1 Inspect parameter registration
           python scripts/inspect_head_param.py \
             --model "${MODEL_PATH}" \
             --state-size 82 \
@@ -215,7 +261,6 @@ jobs:
             --initial-head-scale 1.0 \
             --head-scale-min 0.1
 
-          # 8.2 Probe gradient flow
           python scripts/inspect_head_gradient.py \
             --model "${MODEL_PATH}" \
             --state-size 82 \
@@ -224,14 +269,12 @@ jobs:
             --head-scale-min 0.1 \
             --batch-size 32
 
-          # 8.3 Validate migration with pytest (skips if legacy fixture missing)
           pytest tests/unit/test_head_scale_migration.py -q
 
-      # 6) Summarize metrics for CI logs (simple quality summary)
-      - name: 9. Summarize RL validation metrics
+      - name: 11. Summarize RL validation metrics
         run: |
           echo "======================================================================"
-          echo "📋 STEP 9: RL Validation Summary"
+          echo "📋 STEP 11: RL Validation Summary"
           echo "======================================================================"
           REPORT="${{ steps.validate_rl.outputs.validation_report }}"
           if [ -f "${REPORT}" ]; then
@@ -240,14 +283,11 @@ jobs:
             report_path = os.environ["REPORT"]
             with open(report_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-
             print("\n--- RL VALIDATION REPORT ---")
-            # Defensive fallback structure; adapt keys as per validate_rl_model.py output
             total_reward = data.get("total_reward") or data.get("reward_total") or "N/A"
             pnl_total = data.get("pnl_total", "N/A")
             action_dist = data.get("action_distribution", {})
             q_stats = data.get("q_stats", {})
-
             print(f"Total Reward: {total_reward}")
             print(f"Total PnL:    {pnl_total}")
             print(f"Action Distribution: {action_dist}")
@@ -259,36 +299,31 @@ jobs:
         env:
           REPORT: ${{ steps.validate_rl.outputs.validation_report }}
 
-      # 7) Collect & upload artifacts (detailed reporting)
-      - name: 10. Collect RL training artifacts
+      - name: 12. Collect RL training artifacts
         run: |
           echo "======================================================================"
-          echo "📦 STEP 10: Collecting RL artifacts for upload"
+          echo "📦 STEP 12: Collecting RL artifacts for upload"
           echo "======================================================================"
 
           mkdir -p artifacts/rl
 
-          # Metadata & reports
           cp -v "${RL_OUTPUT_DIR}/"*_metadata.json artifacts/rl/ 2>/dev/null || true
           cp -v "${RL_OUTPUT_DIR}/rl_training_summary.json" artifacts/rl/ 2>/dev/null || true
           cp -v "${RL_OUTPUT_DIR}/rl_validation_report.json" artifacts/rl/ 2>/dev/null || true
 
-          # Final checkpoint
           cp -v "${RL_MODEL_DIR}/rl_agent_final.pth" artifacts/rl/ 2>/dev/null || true
 
-          # Intermediate checkpoints
           if [ -d "${RL_MODEL_DIR}" ]; then
             mkdir -p artifacts/rl/checkpoints
             cp -v "${RL_MODEL_DIR}/"*.pth artifacts/rl/checkpoints/ 2>/dev/null || true
           fi
 
-          # Logs (if any exist under logs/)
           if [ -d "logs" ]; then
             mkdir -p artifacts/rl/logs
             cp -rv logs artifacts/rl/logs/ 2>/dev/null || true
           fi
 
-      - name: 11. Upload RL artifacts
+      - name: 13. Upload RL artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rl-agent-training-${{ github.run_number }}
