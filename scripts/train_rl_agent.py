@@ -70,7 +70,6 @@ def configure_logging(level: str) -> None:
     )
 
 
-
 def resolve_training_params(config: Dict[str, Any], args: argparse.Namespace) -> Tuple[Dict[str, Any], int, int, int]:
     ml_cfg = (config.get("ml") or {}).get("reinforcement_learning", {})
     training_cfg = ml_cfg.get("training", {})
@@ -80,7 +79,9 @@ def resolve_training_params(config: Dict[str, Any], args: argparse.Namespace) ->
     batch_size = args.batch_size or int(ml_cfg.get("batch_size", 64))
 
     agent_cfg = dict(ml_cfg)
+    # Enforce training_mode=True for this CLI (RL training only)
     agent_cfg["training_mode"] = True
+
     models_cfg = config.get("models", {})
     agent_cfg.setdefault("active_bundle", models_cfg.get("active_bundle", "artifacts/gemma/final"))
 
@@ -144,6 +145,19 @@ def main() -> None:
         )
 
     config = LiveTradingConfiguration.load(config_path=args.config, log_summary=False)
+
+    # Extra safety: abort if config says training_mode is false
+    rl_cfg = (config.get("ml") or {}).get("reinforcement_learning", {})
+    cfg_training_mode = rl_cfg.get("training_mode", False)
+    if not cfg_training_mode:
+        logging.error(
+            "❌ Config ml.reinforcement_learning.training_mode is FALSE. "
+            "RL TRAINING CLI expects training_mode=true. "
+            "Set ML_RL_TRAINING_MODE=true (env/variables) or update %s.",
+            args.config,
+        )
+        raise SystemExit(1)
+
     agent_cfg, episodes, save_every, batch_size = resolve_training_params(config, args)
 
     logging.info("Building RL environment (rows=%d, state_size=%d)", len(features_df), state_size)
