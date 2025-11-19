@@ -18,7 +18,14 @@ class RLTradingEnv:
     3. State Augmentation: State vektörü, piyasa verilerine ek olarak portföy durumunu (pozisyon oranı + bakiye durumu) içerir.
     """
     
-    def __init__(self, features_df: pd.DataFrame, raw_df: pd.DataFrame, config: Optional[Dict] = None, initial_balance: float = 10000.0):
+    def __init__(
+        self,
+        features_df: pd.DataFrame,
+        raw_df: pd.DataFrame,
+        config: Optional[Dict] = None,
+        initial_balance: float = 10000.0,
+        idle_cost: float = 0.0,   # <-- BURASI EKLENDİ
+    ):
         """
         Environment başlatıcı.
         """
@@ -52,9 +59,17 @@ class RLTradingEnv:
         self.reward_scale = config.get('reward_scale', 1.0)
         self.trade_penalty_alpha = config.get('trade_penalty_alpha', 0.001)
 
-        self.idle_cost = float(idle_cost)
+        # idle_cost: config'ten override edilebilir, yoksa ctor parametresinden gelir
+        cfg_idle = config.get('idle_cost', None)
+        if cfg_idle is not None:
+            self.idle_cost = float(cfg_idle)
+        else:
+            self.idle_cost = float(idle_cost)
         
-        logger.info(f"✅ RLTradingEnv Initialized. Mode: Target Position + Augmented State. Dim: {self.state_dim}")
+        logger.info(
+            f"✅ RLTradingEnv Initialized. Mode: Target Position + Augmented State. "
+            f"Dim: {self.state_dim}, idle_cost={self.idle_cost}"
+        )
         self.reset()
 
     def reset(self) -> np.ndarray:
