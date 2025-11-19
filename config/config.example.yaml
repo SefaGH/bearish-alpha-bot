@@ -400,8 +400,8 @@ ml:
 
     # Reward normalizasyonu ve stabilite ayarları
     reward_clip_enabled: true         # Override: ML_RL_REWARD_CLIP_ENABLED
-    reward_clip_min: -1.0             # Override: RL_REWARD_CLIP_MIN
-    reward_clip_max: 1.0              # Override: RL_REWARD_CLIP_MAX
+    reward_clip_min: -2.0             # Override: RL_REWARD_CLIP_MIN
+    reward_clip_max: 2.0              # Override: RL_REWARD_CLIP_MAX
     reward_scale: 1.0                 # Override: RL_REWARD_SCALE
 
     # Trade penaltisi: her adımda portföyün ne kadarlık kısmını çevirdiğine (0–1)
