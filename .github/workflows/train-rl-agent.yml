@@ -150,6 +150,7 @@ jobs:
             --summary-file "${RL_OUTPUT_DIR}/rl_training_summary.json" \
             --episodes "${{ github.event.inputs.episodes }}" \
             --save-every "${{ github.event.inputs.save_every }}" \
+            --learning-rate 5e-5 \
             --log-level "${{ github.event.inputs.log_level }}"
 
       - name: 9. Optional Replay / TD inspection (if script present)
