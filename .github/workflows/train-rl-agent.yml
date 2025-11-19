@@ -61,6 +61,11 @@ jobs:
       RL_CONFIG_PATH: config/config.example.yaml
       RL_OUTPUT_DIR: data/training
       RL_MODEL_DIR: data/checkpoints
+    
+      # RL config overrides from GitHub Actions Variables (if defined)
+      ML_RL_LEARNING_RATE: ${{ vars.ML_RL_LEARNING_RATE }}
+      ML_RL_EPSILON_DECAY: ${{ vars.ML_RL_EPSILON_DECAY }}
+      ML_RL_HOLD_CONFIDENCE_THRESHOLD: ${{ vars.ML_RL_HOLD_CONFIDENCE_THRESHOLD }}
 
     steps:
       - name: 1. Checkout repository
