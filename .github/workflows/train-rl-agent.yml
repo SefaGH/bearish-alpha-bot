@@ -108,12 +108,14 @@ jobs:
           SYMBOL_SANITIZED=$(echo "${{ github.event.inputs.symbol }}" | sed 's/\//_/g' | sed 's/:/_/g')
           TIMEFRAME="${{ github.event.inputs.timeframe }}"
           
+          # DÜZELTME: train-ratio 0.8 -> 0.7 yapıldı.
+          # Böylece %15 Val, %15 Test kalır (~1300 satır) ve 512 limitine takılmaz.
           python scripts/prepare_rl_training_data.py \
             --input-file "data/market_data/${SYMBOL_SANITIZED}_${TIMEFRAME}.csv" \
             --output-dir "data/training" \
             --symbol "${{ github.event.inputs.symbol }}" \
             --timeframe "${TIMEFRAME}" \
-            --train-ratio 0.8 \
+            --train-ratio 0.7 \
             --log-level "${{ github.event.inputs.log_level }}"
             
           # Export variables for next steps
