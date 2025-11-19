@@ -407,11 +407,11 @@ ml:
     # Trade penaltisi: her adımda portföyün ne kadarlık kısmını çevirdiğine (0–1)
     # bağlı küçük bir ceza uygular. Örn: 0.001 → portföyün %100'ünü tek adımda
     # çevirmek reward'dan 0.001 düşer.
-    trade_penalty_alpha: 0.001        # Override: ML_RL_TRADE_PENALTY_ALPHA
+    trade_penalty_alpha: 0.0          # Override: ML_RL_TRADE_PENALTY_ALPHA
 
     # HOLD / idle cost: Ajan hiçbir trade yapmayıp sürekli HOLD ederse,
     # her adımda küçük bir ceza alır ve uzun vadede negatif reward birikir.
-    idle_cost: 0.0001                 # Override: ML_RL_IDLE_COST
+    idle_cost: 0.0                    # Override: ML_RL_IDLE_COST
 
     target_update_freq: 50            # Override: ML_RL_TARGET_UPDATE_FREQ
     batch_size: 32                    # Override: ML_RL_BATCH_SIZE
