@@ -109,11 +109,11 @@ jobs:
           TIMEFRAME="${{ github.event.inputs.timeframe }}"
           
           python scripts/prepare_rl_training_data.py \
-            --input "data/market_data/${SYMBOL_SANITIZED}_${TIMEFRAME}.csv" \
+            --input-file "data/market_data/${SYMBOL_SANITIZED}_${TIMEFRAME}.csv" \
             --output-dir "data/training" \
             --symbol "${{ github.event.inputs.symbol }}" \
             --timeframe "${TIMEFRAME}" \
-            --train-split 0.8 \
+            --train-ratio 0.8 \
             --log-level "${{ github.event.inputs.log_level }}"
             
           # Export variables for next steps
