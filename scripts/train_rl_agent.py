@@ -160,8 +160,18 @@ def main() -> None:
 
     agent_cfg, episodes, save_every, batch_size = resolve_training_params(config, args)
 
-    logging.info("Building RL environment (rows=%d, state_size=%d)", len(features_df), state_size)
+    # Env'i önce oluştur, sonra env.state_dim'i state_size olarak kullan
+    logging.info("Building RL environment (rows=%d)", len(features_df))
     env = RLTradingEnv(features_df=features_df, raw_df=price_df)
+    env_state_size = getattr(env, "state_dim", features_df.shape[1])
+    state_size = args.state_size or env_state_size
+    if args.state_size and args.state_size != env_state_size:
+        logging.warning(
+            "--state-size override (%d) does not match env state_dim (%d); "
+            "agent will expect the provided dimension",
+            args.state_size,
+            env_state_size,
+        )
 
     agent = TradingRLAgent(state_size=state_size, action_size=3, config=agent_cfg)
     replay = ExperienceReplay(agent_cfg.get("buffer_size", 100000))
