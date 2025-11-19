@@ -387,11 +387,11 @@ ml:
     epsilon_decay: 0.97               # Override: ML_RL_EPSILON_DECAY (training: decay rate per episode)
     epsilon_min: 0.01                 # Override: ML_RL_EPSILON_MIN (training: minimum exploration floor)
     
-    regime_bias_strength: 2.0         # Override: ML_RL_REGIME_BIAS
+    regime_bias_strength: 0.0         # Override: ML_RL_REGIME_BIAS
     max_regime_bias: 3.0              # Override: ML_RL_MAX_REGIME_BIAS
     min_regime_confidence_for_bias: 0.6  # Override: ML_RL_MIN_REGIME_CONF
     q_std_bypass_threshold: 0.0001    # Override: ML_RL_Q_STD_BYPASS
-    risk_penalty_strength: 100.0      # Override: ML_RL_RISK_PENALTY
+    risk_penalty_strength: 10.0       # Override: ML_RL_RISK_PENALTY
 
     # Temel Algoritma Parametreleri (Uzman kullanıcılar için)
     learning_rate: 0.00003            # Override: ML_RL_LEARNING_RATE
