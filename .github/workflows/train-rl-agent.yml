@@ -137,6 +137,46 @@ jobs:
           print(f"✅ RL training_mode is TRUE in {cfg_path}. Proceeding with RL training.")
           PY
 
+      - name: 5b. Debug RL config & env overrides
+        run: |
+          echo "======================================================================"
+          echo "🔍 STEP 5b: RL config & environment override snapshot"
+          echo "======================================================================"
+          python - << 'PY'
+          import os
+          from src.config.live_trading_config import LiveTradingConfiguration
+
+          cfg_path = os.environ.get("RL_CONFIG_PATH", "config/config.example.yaml")
+          cfg = LiveTradingConfiguration.load(config_path=cfg_path, log_summary=False)
+          rl_cfg = (cfg.get("ml") or {}).get("reinforcement_learning", {}) or {}
+
+          print("\n--- RL CONFIG (effective after env overrides) ---")
+          print(f"training_mode:            {rl_cfg.get('training_mode')}")
+          print(f"learning_rate:            {rl_cfg.get('learning_rate')}")
+          print(f"epsilon_start:            {rl_cfg.get('epsilon_start')}")
+          print(f"epsilon_decay:            {rl_cfg.get('epsilon_decay')}")
+          print(f"epsilon_min:              {rl_cfg.get('epsilon_min')}")
+          print(f"epsilon_inference:        {rl_cfg.get('epsilon_inference')}")
+          print(f"hold_confidence_threshold:{rl_cfg.get('hold_confidence_threshold')}")
+          print("------------------------------------------------")
+
+          # Show relevant environment variables that might override these
+          keys = [
+              "ML_RL_TRAINING_MODE",
+              "ML_RL_LEARNING_RATE",
+              "ML_RL_EPSILON_START",
+              "ML_RL_EPSILON_DECAY",
+              "ML_RL_EPSILON_MIN",
+              "ML_RL_EPSILON_INFERENCE",
+              "ML_RL_HOLD_CONFIDENCE_THRESHOLD",
+          ]
+          print("\n--- RL-RELATED ENV VARIABLES (if set) ---")
+          for k in keys:
+              v = os.environ.get(k)
+              print(f"{k} = {v!r}")
+          print("------------------------------------------------\n")
+          PY
+
       # 6) Prepare RL datasets
       - name: 6. Prepare RL training/val/test datasets
         id: prepare_rl
