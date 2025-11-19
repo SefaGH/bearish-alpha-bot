@@ -106,6 +106,14 @@ def main() -> None:
         env=vec_env,
         verbose=1,
         tensorboard_log=str(args.model_dir / "ppo_tb"),
+        learning_rate=3e-4,      # FinRL benzeri default
+        n_steps=2048,            # rollout uzunluğu
+        batch_size=64,           # minibatch (2048'in böleni)
+        gamma=0.99,              # iskonto
+        gae_lambda=0.95,         # GAE param
+        ent_coef=0.001,          # keşfi teşvik için küçük entropi katsayısı
+        vf_coef=0.5,             # value loss katsayısı
+        max_grad_norm=0.5,       # gradient clipping
     )
 
     logging.info("Training PPO for %d timesteps...", args.timesteps)
