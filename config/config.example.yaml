@@ -395,7 +395,7 @@ ml:
 
     # Temel Algoritma Parametreleri (Uzman kullanıcılar için)
     learning_rate: 0.00003            # Override: ML_RL_LEARNING_RATE
-    gamma: 0.99                       # Override: ML_RL_GAMMA
+    gamma: 0.95                       # Override: ML_RL_GAMMA
     gradient_clip_norm: 1.0           # Override: ML_RL_GRADIENT_CLIP
 
     # Reward normalizasyonu ve stabilite ayarları
