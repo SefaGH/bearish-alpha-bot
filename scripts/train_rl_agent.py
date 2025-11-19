@@ -162,7 +162,13 @@ def main() -> None:
 
     logging.info("Building RL environment (rows=%d)...", len(features_df))
     # 1. Env’i önce oluştur
-    env = RLTradingEnv(features_df=features_df, raw_df=price_df)
+    idle_cost = agent_cfg.get("idle_cost", 0.0)
+
+    env = RLTradingEnv(
+        features_df=features_df,
+        raw_df=price_df,
+        idle_cost=idle_cost,
+    )
     
     # 2. Env’den gerçek state boyutunu al
     env_state_size = getattr(env, "state_dim", features_df.shape[1])
