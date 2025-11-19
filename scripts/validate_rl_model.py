@@ -299,7 +299,10 @@ def main() -> None:
 
     # 1. Önce Environment'ı oluştur (ki state_dim'i öğrenebilelim)
     logging.info("Building RL environment...")
-    env = RLTradingEnv(features_df=features_df, raw_df=price_df)
+    rl_cfg = (config.get("ml") or {}).get("reinforcement_learning", {})
+    idle_cost = rl_cfg.get("idle_cost", 0.0)
+    
+    env = RLTradingEnv(features_df=features_df, raw_df=price_df, idle_cost=idle_cost)
     
     # 2. Gerçek state boyutunu Environment'tan al
     # (Eğer env.state_dim yoksa fallback olarak feature sayısını kullan)
