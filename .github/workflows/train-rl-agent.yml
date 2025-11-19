@@ -85,13 +85,13 @@ jobs:
           echo "📥 STEP 5: Fetching Historical Data for RL"
           echo "======================================================================"
           
-          # Sanitize symbol for filenames
           SYMBOL_SANITIZED=$(echo "${{ github.event.inputs.symbol }}" | sed 's/\//_/g' | sed 's/:/_/g')
           TIMEFRAME="${{ github.event.inputs.timeframe }}"
           
           echo "Fetching ${TIMEFRAME} data for ${SYMBOL_SANITIZED}..."
           
-          python scripts/prepare_training_data.py \
+          # GÜNCELLEME: prepare_training_data.py yerine yeni scripti kullanıyoruz
+          python scripts/fetch_historical_data.py \
             --exchange "${{ github.event.inputs.exchange }}" \
             --symbol "${{ github.event.inputs.symbol }}" \
             --timeframe "${TIMEFRAME}" \
