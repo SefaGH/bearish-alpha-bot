@@ -210,7 +210,7 @@ jobs:
             --report-file "${RL_OUTPUT_DIR}/rl_validation_report.json" \
             --log-level "${{ github.event.inputs.log_level }}"
 
-      - name: 13 Summarize Validation
+      - name: 13. Summarize Validation
         run: |
           if [ -f "scripts/summarize_rl_validation.py" ]; then
             python scripts/summarize_rl_validation.py "${REPORT}"
@@ -223,15 +223,21 @@ jobs:
       - name: 14. Collect RL training artifacts
         run: |
           echo "======================================================================"
-          echo "📦 STEP 12: Collecting RL artifacts for upload"
+          echo "📦 STEP 14: Collecting RL artifacts for upload"
           echo "======================================================================"
 
           mkdir -p artifacts/rl
 
+          # Dataset metadata & training summaries
           cp -v "${RL_OUTPUT_DIR}/"*_metadata.json artifacts/rl/ 2>/dev/null || true
           cp -v "${RL_OUTPUT_DIR}/rl_training_summary.json" artifacts/rl/ 2>/dev/null || true
           cp -v "${RL_OUTPUT_DIR}/rl_validation_report.json" artifacts/rl/ 2>/dev/null || true
 
+          # NEW: RL evaluation artifacts (TEST backtest)
+          cp -v "${RL_OUTPUT_DIR}/rl_eval_summary.json" artifacts/rl/ 2>/dev/null || true
+          cp -v "${RL_OUTPUT_DIR}/rl_eval_equity_curve.csv" artifacts/rl/ 2>/dev/null || true
+
+          # Model files
           cp -v "${RL_MODEL_DIR}/rl_agent_final.pth" artifacts/rl/ 2>/dev/null || true
 
           if [ -d "${RL_MODEL_DIR}" ]; then
