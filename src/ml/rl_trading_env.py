@@ -51,6 +51,8 @@ class RLTradingEnv:
         self.reward_clip_max = config.get('reward_clip_max', 1.0)
         self.reward_scale = config.get('reward_scale', 1.0)
         self.trade_penalty_alpha = config.get('trade_penalty_alpha', 0.001)
+
+        self.idle_cost = float(idle_cost)
         
         logger.info(f"✅ RLTradingEnv Initialized. Mode: Target Position + Augmented State. Dim: {self.state_dim}")
         self.reset()
@@ -158,6 +160,10 @@ class RLTradingEnv:
         # Sık işlem yapmayı cezalandır (Churn Penalty)
         trade_penalty = self.trade_penalty_alpha * trade_fraction
         reward = base_reward - trade_penalty
+
+        # HOLD / idle cezası:
+        if trade_fraction < 1e-6 and self.idle_cost > 0.0:
+            reward -= self.idle_cost
 
         # c. Batış Cezası (Stop-out)
         if new_portfolio_value < self.initial_balance * 0.5:
