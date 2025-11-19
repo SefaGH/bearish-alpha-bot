@@ -184,10 +184,23 @@ jobs:
           echo "Running unit tests for migration logic..."
           pytest tests/unit/test_head_scale_migration.py
 
-      - name: 11. Validate RL Agent (Out-of-sample)
+      - name: 11. Evaluate RL Agent (Out-of-sample Test)
         run: |
           echo "======================================================================"
-          echo "🔍 STEP 11: Validating RL Agent"
+          echo "📊 STEP 11: Evaluating RL Agent on TEST set (deterministic backtest)"
+          echo "======================================================================"
+
+          python scripts/evaluate_rl_agent.py \
+            --model "${RL_MODEL_DIR}/rl_agent_final.pth" \
+            --dataset "data/training/${SYMBOL_SANITIZED}_${TIMEFRAME}_test.npz" \
+            --output-summary "${RL_OUTPUT_DIR}/rl_eval_summary.json" \
+            --output-equity-curve "${RL_OUTPUT_DIR}/rl_eval_equity_curve.csv" \
+            --log-level "${{ github.event.inputs.log_level }}"
+
+      - name: 12. Validate RL Agent (Out-of-sample)
+        run: |
+          echo "======================================================================"
+          echo "🔍 STEP 12: Validating RL Agent"
           echo "======================================================================"
           
           python scripts/validate_rl_model.py \
@@ -197,7 +210,7 @@ jobs:
             --report-file "${RL_OUTPUT_DIR}/rl_validation_report.json" \
             --log-level "${{ github.event.inputs.log_level }}"
 
-      - name: 11.5 Summarize Validation
+      - name: 13 Summarize Validation
         run: |
           if [ -f "scripts/summarize_rl_validation.py" ]; then
             python scripts/summarize_rl_validation.py "${REPORT}"
@@ -207,7 +220,7 @@ jobs:
         env:
           REPORT: ${{ steps.validate_rl.outputs.validation_report }}
           
-      - name: 12. Collect RL training artifacts
+      - name: 14. Collect RL training artifacts
         run: |
           echo "======================================================================"
           echo "📦 STEP 12: Collecting RL artifacts for upload"
@@ -231,7 +244,7 @@ jobs:
             cp -rv logs artifacts/rl/logs/ 2>/dev/null || true
           fi
 
-      - name: 13. Upload RL artifacts
+      - name: 15. Upload RL artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rl-training-results
