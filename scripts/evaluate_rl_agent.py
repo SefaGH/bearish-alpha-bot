@@ -16,14 +16,22 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 import numpy as np
+import sys
 
-# Project imports
-from scripts.rl_dataset_utils import load_npz_dataset
-from src.ml.rl_trading_env import RLTradingEnv
-from src.ml.reinforcement_learning import TradingRLAgent
+# ---------------------------------------------------------------------
+# Ensure project root is on sys.path so `scripts` and `src` are importable
+# ---------------------------------------------------------------------
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+# Now these imports should work both locally and in GitHub Actions
+from scripts.rl_dataset_utils import load_npz_dataset  # type: ignore
+from src.ml.rl_trading_env import RLTradingEnv  # type: ignore
+from src.ml.reinforcement_learning import TradingRLAgent  # type: ignore
 
 
 def configure_logging(level: str) -> None:
@@ -83,12 +91,12 @@ def run_evaluation_episode(
         # otherwise temporarily force epsilon=0.
         if hasattr(agent, "act"):
             try:
-                action = agent.act(state, greedy=True)
+                action = agent.act(state, greedy=True)  # type: ignore[arg-type]
             except TypeError:
                 # Fallback: try without greedy arg, but force epsilon=0
                 old_eps = getattr(agent, "epsilon", 0.0)
                 setattr(agent, "epsilon", 0.0)
-                action = agent.act(state)
+                action = agent.act(state)  # type: ignore[arg-type]
                 setattr(agent, "epsilon", old_eps)
         else:
             raise RuntimeError("TradingRLAgent must implement an 'act' method.")
@@ -232,7 +240,7 @@ def main() -> None:
     )
 
     state_size = env.state_dim
-    action_size = 3  # TARGET_0.0, TARGET_0.5, TARGET_1.0
+    action_size = 3  # TARGET_0.0, TARGET_0.5, 1.0
 
     logging.info(
         "Initializing TradingRLAgent with state_size=%d, action_size=%d",
