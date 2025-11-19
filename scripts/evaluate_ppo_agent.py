@@ -127,6 +127,8 @@ def main() -> None:
     max_dd = compute_max_drawdown(equity_np) if equity_np.size > 0 else 0.0
     trade_stats = compute_trade_stats(actions)
 
+    unique_actions = sorted(set(actions)) if actions else []
+
     summary = {
         "steps": len(equity_curve),
         "initial_balance": initial_balance,
@@ -138,6 +140,7 @@ def main() -> None:
         "std_reward": float(np.std(rewards)) if rewards else 0.0,
         "num_trades": trade_stats["num_trades"],
         "position_changes": trade_stats["position_changes"],
+        "unique_actions": unique_actions,
     }
 
     args.output_summary.parent.mkdir(parents=True, exist_ok=True)
