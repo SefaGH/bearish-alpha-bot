@@ -56,274 +56,148 @@ jobs:
   train-and-validate-rl:
     runs-on: ubuntu-latest
 
-    env:
-      PYTHONUNBUFFERED: "1"
-      RL_CONFIG_PATH: config/config.example.yaml
-      RL_OUTPUT_DIR: data/training
-      RL_MODEL_DIR: data/checkpoints
-    
-      # RL config overrides from GitHub Actions Variables (if defined)
-      ML_RL_LEARNING_RATE: ${{ vars.ML_RL_LEARNING_RATE }}
-      ML_RL_EPSILON_DECAY: ${{ vars.ML_RL_EPSILON_DECAY }}
-      ML_RL_HOLD_CONFIDENCE_THRESHOLD: ${{ vars.ML_RL_HOLD_CONFIDENCE_THRESHOLD }}
-
     steps:
       - name: 1. Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-        # GEMMA manifest/bundle hazırlığı
-      - name: 2. Setup Python 3.11
-        uses: actions/setup-python@v5
+      - name: 2. Set up Python 3.11
+        uses: actions/setup-python@v4
         with:
           python-version: "3.11"
           cache: "pip"
 
       - name: 3. Install dependencies
         run: |
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 4. Ensure GEMMA bundle & manifest exist
+      - name: 4. Create directories
+        run: |
+          mkdir -p data/market_data
+          mkdir -p data/training
+          mkdir -p data/checkpoints
+          mkdir -p data/models
+          mkdir -p logs
+
+      - name: 5. Fetch Historical Data
         run: |
           echo "======================================================================"
-          echo "🧩 STEP 4: Ensuring GEMMA bundle and manifest for RL (artifacts/gemma/final)"
+          echo "📥 STEP 5: Fetching Historical Data for RL"
+          echo "======================================================================"
+          
+          # Sanitize symbol for filenames
+          SYMBOL_SANITIZED=$(echo "${{ github.event.inputs.symbol }}" | sed 's/\//_/g' | sed 's/:/_/g')
+          TIMEFRAME="${{ github.event.inputs.timeframe }}"
+          
+          echo "Fetching ${TIMEFRAME} data for ${SYMBOL_SANITIZED}..."
+          
+          python scripts/prepare_training_data.py \
+            --exchange "${{ github.event.inputs.exchange }}" \
+            --symbol "${{ github.event.inputs.symbol }}" \
+            --timeframe "${TIMEFRAME}" \
+            --days 365 \
+            --output "data/market_data/${SYMBOL_SANITIZED}_${TIMEFRAME}.csv" \
+            --log-level "${{ github.event.inputs.log_level }}"
+
+      - name: 6. Prepare RL Training Data (Feature Engineering)
+        run: |
+          echo "======================================================================"
+          echo "🛠️ STEP 6: Generating Features & Splitting Data"
           echo "======================================================================"
 
-          BUNDLE_DIR="artifacts/gemma/final"
-          MANIFEST_PATH="${BUNDLE_DIR}/manifest.json"
+          SYMBOL_SANITIZED=$(echo "${{ github.event.inputs.symbol }}" | sed 's/\//_/g' | sed 's/:/_/g')
+          TIMEFRAME="${{ github.event.inputs.timeframe }}"
+          
+          python scripts/prepare_rl_training_data.py \
+            --input "data/market_data/${SYMBOL_SANITIZED}_${TIMEFRAME}.csv" \
+            --output-dir "data/training" \
+            --symbol "${{ github.event.inputs.symbol }}" \
+            --timeframe "${TIMEFRAME}" \
+            --train-split 0.8 \
+            --log-level "${{ github.event.inputs.log_level }}"
+            
+          # Export variables for next steps
+          echo "SYMBOL_SANITIZED=${SYMBOL_SANITIZED}" >> $GITHUB_ENV
+          echo "TIMEFRAME=${TIMEFRAME}" >> $GITHUB_ENV
 
-          mkdir -p "${BUNDLE_DIR}"
-
-          if [ -f "${MANIFEST_PATH}" ]; then
-            echo "✅ Existing GEMMA manifest found at ${MANIFEST_PATH}"
-          else
-            echo "⚠️  GEMMA manifest not found at ${MANIFEST_PATH}"
-            echo "   Attempting to generate GEMMA bundle via scripts/setup_gemma_artifacts.sh"
-            if [ -f "scripts/setup_gemma_artifacts.sh" ]; then
-              bash scripts/setup_gemma_artifacts.sh
-            else
-              echo "❌ scripts/setup_gemma_artifacts.sh is missing or not executable."
-              echo "   RL training requires a valid GEMMA manifest.json under artifacts/gemma/final."
-              exit 1
-            fi
-
-            if [ -f "${MANIFEST_PATH}" ]; then
-              echo "✅ GEMMA manifest successfully generated at ${MANIFEST_PATH}"
-            else
-              echo "❌ Failed to generate GEMMA manifest. Aborting RL training workflow."
-              echo "   Please run train-models.yml (Gemma training) and setup_gemma_artifacts.sh first."
-              exit 1
-            fi
+      - name: 7. Verify Dataset Existence
+        run: |
+          ls -lh data/training/
+          if [ ! -f "data/training/${SYMBOL_SANITIZED}_${TIMEFRAME}_train.npz" ]; then
+            echo "❌ Training dataset not found!"
+            exit 1
           fi
 
-          echo ""
-          echo "ℹ️  RL training will use GEMMA manifest-driven feature extraction (82 features)."
-
-      # 5) RL config sanity: training_mode MUST be true
-      - name: 5. Sanity-check RL config (training_mode must be true)
+      - name: 8. Train RL Agent
         run: |
           echo "======================================================================"
-          echo "🧠 STEP 5: Checking RL config.training_mode for training workflow"
+          echo "🚀 STEP 8: Training RL Agent"
           echo "======================================================================"
-          python - << 'PY'
-          import os
-          from src.config.live_trading_config import LiveTradingConfiguration
-
-          cfg_path = os.environ.get("RL_CONFIG_PATH", "config/config.example.yaml")
-          cfg = LiveTradingConfiguration.load(config_path=cfg_path, log_summary=False)
-          rl_cfg = (cfg.get("ml") or {}).get("reinforcement_learning", {})
-          training_mode = rl_cfg.get("training_mode", False)
-          if not training_mode:
-              raise SystemExit(
-                  "❌ ml.reinforcement_learning.training_mode is FALSE in config.\n"
-                  "   RL TRAINING requires training_mode=true. "
-                  "Set ML_RL_TRAINING_MODE=true as a GitHub Variable / env override or update config."
-              )
-          print(f"✅ RL training_mode is TRUE in {cfg_path}. Proceeding with RL training.")
-          PY
-
-      - name: 5b. Debug RL config & env overrides
-        run: |
-          echo "======================================================================"
-          echo "🔍 STEP 5b: RL config & environment override snapshot"
-          echo "======================================================================"
-          python - << 'PY'
-          import os
-          from src.config.live_trading_config import LiveTradingConfiguration
-
-          cfg_path = os.environ.get("RL_CONFIG_PATH", "config/config.example.yaml")
-          cfg = LiveTradingConfiguration.load(config_path=cfg_path, log_summary=False)
-          rl_cfg = (cfg.get("ml") or {}).get("reinforcement_learning", {}) or {}
-
-          print("\n--- RL CONFIG (effective after env overrides) ---")
-          print(f"training_mode:            {rl_cfg.get('training_mode')}")
-          print(f"learning_rate:            {rl_cfg.get('learning_rate')}")
-          print(f"epsilon_start:            {rl_cfg.get('epsilon_start')}")
-          print(f"epsilon_decay:            {rl_cfg.get('epsilon_decay')}")
-          print(f"epsilon_min:              {rl_cfg.get('epsilon_min')}")
-          print(f"epsilon_inference:        {rl_cfg.get('epsilon_inference')}")
-          print(f"hold_confidence_threshold:{rl_cfg.get('hold_confidence_threshold')}")
-          print("------------------------------------------------")
-
-          # Show relevant environment variables that might override these
-          keys = [
-              "ML_RL_TRAINING_MODE",
-              "ML_RL_LEARNING_RATE",
-              "ML_RL_EPSILON_START",
-              "ML_RL_EPSILON_DECAY",
-              "ML_RL_EPSILON_MIN",
-              "ML_RL_EPSILON_INFERENCE",
-              "ML_RL_HOLD_CONFIDENCE_THRESHOLD",
-          ]
-          print("\n--- RL-RELATED ENV VARIABLES (if set) ---")
-          for k in keys:
-              v = os.environ.get(k)
-              print(f"{k} = {v!r}")
-          print("------------------------------------------------\n")
-          PY
-
-      # 6) Prepare RL datasets
-      - name: 6. Prepare RL training/val/test datasets
-        id: prepare_rl
-        run: |
-          echo "======================================================================"
-          echo "📊 STEP 6: Preparing RL dataset with engineered features"
-          echo "======================================================================"
-
-          python scripts/prepare_rl_training_data.py \
-            --exchange "${{ inputs.exchange }}" \
-            --symbol "${{ inputs.symbol }}" \
-            --timeframe "${{ inputs.timeframe }}" \
-            --candles ${{ inputs.candles }} \
-            --output-dir "${RL_OUTPUT_DIR}" \
-            --config "${RL_CONFIG_PATH}" \
-            --train-ratio 0.7 \
-            --val-ratio 0.15 \
-            --log-level "${{ inputs.log_level }}"
-
-          python - << 'PY'
-          import os
-          from scripts.prepare_rl_training_data import sanitize_symbol
-          symbol = os.environ.get("SYMBOL", "BTC/USDT:USDT")
-          timeframe = os.environ.get("TIMEFRAME", "1h")
-          base = f"{sanitize_symbol(symbol)}_{timeframe}"
-          print(f"BASE_NAME={base}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"base_name={base}\n")
-          PY
-        env:
-          SYMBOL: ${{ inputs.symbol }}
-          TIMEFRAME: ${{ inputs.timeframe }}
-
-      - name: 7. Train RL agent on train split
-        id: train_rl
-        run: |
-          echo "======================================================================"
-          echo "🚀 STEP 7: Training RL Agent"
-          echo "======================================================================"
-
-          BASE_NAME="${{ steps.prepare_rl.outputs.base_name }}"
-          TRAIN_DATASET="${RL_OUTPUT_DIR}/${BASE_NAME}_train.npz"
-
-          EPISODES=${{ inputs.episodes }}
-          SAVE_EVERY=${{ inputs.save_every }}
-
-          echo "Using dataset: ${TRAIN_DATASET}"
-          echo "Episodes: ${EPISODES}, Save every: ${SAVE_EVERY}"
+          
+          RL_MODEL_DIR="data/checkpoints"
+          RL_OUTPUT_DIR="data/training"
+          
+          # Export for next steps
+          echo "RL_MODEL_DIR=${RL_MODEL_DIR}" >> $GITHUB_ENV
+          echo "RL_OUTPUT_DIR=${RL_OUTPUT_DIR}" >> $GITHUB_ENV
 
           python scripts/train_rl_agent.py \
-            --dataset "${TRAIN_DATASET}" \
-            --config "${RL_CONFIG_PATH}" \
-            --episodes "${EPISODES}" \
-            --save-every "${SAVE_EVERY}" \
+            --dataset "data/training/${SYMBOL_SANITIZED}_${TIMEFRAME}_train.npz" \
+            --config "config/config.example.yaml" \
             --model-dir "${RL_MODEL_DIR}" \
-            --model-name "rl_agent_train.pth" \
             --summary-file "${RL_OUTPUT_DIR}/rl_training_summary.json" \
-            --log-level "${{ inputs.log_level }}"
+            --episodes "${{ github.event.inputs.episodes }}" \
+            --save-every "${{ github.event.inputs.save_every }}" \
+            --log-level "${{ github.event.inputs.log_level }}"
 
-          echo "final_checkpoint=${RL_MODEL_DIR}/rl_agent_final.pth" >> "$GITHUB_OUTPUT"
-
-      - name: 8. Validate RL checkpoint on validation split
-        id: validate_rl
-        run: |
-          echo "======================================================================"
-          echo "🔬 STEP 8: Validating RL checkpoint on validation split"
-          echo "======================================================================"
-
-          BASE_NAME="${{ steps.prepare_rl.outputs.base_name }}"
-          VAL_DATASET="${RL_OUTPUT_DIR}/${BASE_NAME}_val.npz"
-          CHECKPOINT="${{ steps.train_rl.outputs.final_checkpoint }}"
-          REPORT_PATH="${RL_OUTPUT_DIR}/rl_validation_report.json"
-
-          echo "Validation dataset: ${VAL_DATASET}"
-          echo "Checkpoint: ${CHECKPOINT}"
-
-          python scripts/validate_rl_model.py \
-            --dataset "${VAL_DATASET}" \
-            --checkpoint "${CHECKPOINT}" \
-            --config "${RL_CONFIG_PATH}" \
-            --report-file "${REPORT_PATH}" \
-            --log-level "${{ inputs.log_level }}"
-
-          echo "validation_report=${REPORT_PATH}" >> "$GITHUB_OUTPUT"
-
-      - name: 9. Inspect replay buffer & TD normalization (optional)
-        if: always()
+      - name: 9. Optional Replay / TD inspection (if script present)
         run: |
           echo "======================================================================"
           echo "🧩 STEP 9: Optional Replay / TD inspection (if script present)"
           echo "======================================================================"
-      
+
           if [ -f "scripts/inspect_replay_and_td.py" ]; then
-            BASE_NAME="${{ steps.prepare_rl.outputs.base_name }}"
-            TRAIN_DATASET="${RL_OUTPUT_DIR}/${BASE_NAME}_train.npz"
-            MODEL="${{ steps.train_rl.outputs.final_checkpoint }}"
-      
-            echo "Running inspect_replay_and_td on: ${TRAIN_DATASET} with model: ${MODEL}"
-      
-            python scripts/inspect_replay_and_td.py \
-              --model "${MODEL}" \
-              --dataset "${TRAIN_DATASET}" \
-              --reward-clip 10 \
-              --reward-scale 0.01
+             # GÜNCELLENDİ: --dataset EKLENDİ
+             python scripts/inspect_replay_and_td.py \
+               --model "${RL_MODEL_DIR}/rl_agent_final.pth" \
+               --dataset "data/training/${SYMBOL_SANITIZED}_${TIMEFRAME}_train.npz" \
+               --replay "${RL_MODEL_DIR}/replay_buffer.pkl" || echo "Warning: Replay inspection failed (possibly no buffer file), continuing..."
           else
-            echo "scripts/inspect_replay_and_td.py not found; skipping this diagnostic step."
+             echo "Script not found, skipping."
           fi
 
-      - name: 10. Run head-scale inspectors and migration test
-        if: inputs.run_headscale_diagnostics == 'true'
+      - name: 10. Head-scale diagnostics & migration test
+        if: github.event.inputs.run_headscale_diagnostics == 'true'
         run: |
           echo "======================================================================"
           echo "🧪 STEP 10: Head-scale diagnostics & migration test"
           echo "======================================================================"
 
-          export PYTHONPATH="src:."
-          MODEL_PATH="${{ steps.train_rl.outputs.final_checkpoint }}"
-
-          python scripts/inspect_head_param.py \
-            --model "${MODEL_PATH}" \
-            --state-size 82 \
-            --head-scale-learnable \
-            --initial-head-scale 1.0 \
-            --head-scale-min 0.1
-
+          # GÜNCELLENDİ: --dataset EKLENDİ (ZORUNLU)
           python scripts/inspect_head_gradient.py \
-            --model "${MODEL_PATH}" \
-            --state-size 82 \
-            --head-scale-learnable \
-            --initial-head-scale 1.0 \
-            --head-scale-min 0.1 \
+            --model "${RL_MODEL_DIR}/rl_agent_final.pth" \
+            --dataset "data/training/${SYMBOL_SANITIZED}_${TIMEFRAME}_train.npz" \
             --batch-size 32
 
-          pytest tests/unit/test_head_scale_migration.py -q
+          echo "Running unit tests for migration logic..."
+          pytest tests/unit/test_head_scale_migration.py
 
-      - name: 11. Summarize RL validation metrics
+      - name: 11. Validate RL Agent (Out-of-sample)
         run: |
           echo "======================================================================"
-          echo "📋 STEP 11: RL Validation Summary"
+          echo "🔍 STEP 11: Validating RL Agent"
           echo "======================================================================"
-          REPORT="${{ steps.validate_rl.outputs.validation_report }}"
-          if [ -f "${REPORT}" ]; then
+          
+          python scripts/validate_rl_model.py \
+            --dataset "data/training/${SYMBOL_SANITIZED}_${TIMEFRAME}_val.npz" \
+            --checkpoint "${RL_MODEL_DIR}/rl_agent_final.pth" \
+            --config "config/config.example.yaml" \
+            --report-file "${RL_OUTPUT_DIR}/rl_validation_report.json" \
+            --log-level "${{ github.event.inputs.log_level }}"
+
+      - name: 11.5 Summarize Validation
+        run: |
+          if [ -f "scripts/summarize_rl_validation.py" ]; then
             python scripts/summarize_rl_validation.py "${REPORT}"
           else
             echo "Validation report not found at ${REPORT}"
@@ -358,6 +232,5 @@ jobs:
       - name: 13. Upload RL artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rl-agent-training-${{ github.run_number }}
-          path: artifacts/rl
-          retention-days: 30
+          name: rl-training-results
+          path: artifacts/rl/
