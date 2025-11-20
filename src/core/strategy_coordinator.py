@@ -999,37 +999,46 @@ class StrategyCoordinator:
         side = (signal.get('side') or '').lower()
         if side not in ('buy', 'long'):
             return
-        symbol = signal.get('symbol')
-        if not symbol:
+        requested_symbol = signal.get('symbol')
+        if not requested_symbol:
             return
 
-        if not getattr(self, 'ppo_adapter', None):
-            signal['ppo_long_score'] = self.ppo_fallback_score
-            return
+        normalized_symbol = self._normalize_symbol_for_ppo(requested_symbol)
+        tail_overrides = self._build_ppo_state_overrides(normalized_symbol)
+        adapter = getattr(self, 'ppo_adapter', None)
 
-        tail_overrides = self._build_ppo_state_overrides(symbol)
-
-        try:
-            score, metadata = await self.ppo_adapter.get_long_score(
-                symbol,
-                position_fraction=tail_overrides.get('position_fraction'),
-                normalized_pv=tail_overrides.get('normalized_pv'),
-            )
-        except Exception as exc:  # pragma: no cover - extra safety
-            logger.warning(f"⚠️ [PPO-LONG] Adapter error for {symbol}: {exc}")
+        score: float
+        metadata: Dict[str, Any]
+        if adapter:
+            try:
+                score, metadata = await adapter.get_long_score(
+                    normalized_symbol,
+                    position_fraction=tail_overrides.get('position_fraction'),
+                    normalized_pv=tail_overrides.get('normalized_pv'),
+                )
+            except Exception as exc:  # pragma: no cover - extra safety
+                logger.warning(f"⚠️ [PPO-LONG] Adapter error for {requested_symbol}: {exc}")
+                score = self.ppo_fallback_score
+                metadata = {'reason': 'exception', 'error': str(exc)}
+        else:
             score = self.ppo_fallback_score
-            metadata = {'reason': 'exception', 'error': str(exc)}
+            metadata = {'reason': 'adapter_unavailable'}
 
         score = float(score)
-        signal['ppo_long_score'] = score
+        metadata = dict(metadata or {})
         if tail_overrides:
-            metadata = {**metadata, 'state_tail': tail_overrides}
+            metadata['state_tail'] = tail_overrides
+        metadata.setdefault('symbol', normalized_symbol)
+        metadata.setdefault('normalized_symbol', normalized_symbol)
+        metadata.setdefault('requested_symbol', requested_symbol)
+
+        signal['ppo_long_score'] = score
         signal['ppo_meta'] = metadata
 
         action_label = 'BUY' if score >= 0.5 else 'HOLD'
         logger.info(
             "🤖 [PPO-LONG] %s | action=%s | score=%.2f | meta=%s",
-            symbol,
+            requested_symbol,
             action_label,
             score,
             metadata,
@@ -1048,9 +1057,19 @@ class StrategyCoordinator:
             'source': 'ppo'
         }
 
+    @staticmethod
+    def _normalize_symbol_for_ppo(symbol: Optional[str]) -> str:
+        if not symbol:
+            return ""
+        normalized = symbol.strip().upper().replace('-', '/')
+        if ':' in normalized:
+            normalized = normalized.split(':', 1)[0]
+        return normalized
+
     def _build_ppo_state_overrides(self, symbol: str) -> Dict[str, float]:
         overrides: Dict[str, float] = {}
-        pos_fraction = self._compute_symbol_position_fraction(symbol)
+        normalized_symbol = self._normalize_symbol_for_ppo(symbol)
+        pos_fraction = self._compute_symbol_position_fraction(normalized_symbol)
         if pos_fraction is not None:
             overrides['position_fraction'] = pos_fraction
         normalized_pv = self._compute_normalized_equity()
@@ -1071,10 +1090,10 @@ class StrategyCoordinator:
         if total_equity <= 0:
             return None
 
-        symbol_upper = (symbol or '').upper()
+        symbol_norm = self._normalize_symbol_for_ppo(symbol)
         symbol_notional = 0.0
         for pos in positions.values():
-            if (pos.get('symbol') or '').upper() != symbol_upper:
+            if self._normalize_symbol_for_ppo(pos.get('symbol')) != symbol_norm:
                 continue
             side = (pos.get('side') or pos.get('direction') or '').lower()
             if side and side not in ('buy', 'long'):

@@ -2522,8 +2522,23 @@ class ProductionCoordinator:
                     continue
 
                 samples = stats.get('samples', 0)
-                if not samples:
+                ppo_samples = stats.get('ppo_samples', 0)
+                ppo_long_votes = stats.get('ppo_long_votes', 0)
+                ppo_flat_votes = stats.get('ppo_flat_votes', 0)
+                ppo_avg_score = stats.get('ppo_avg_score', 0.0)
+
+                if not samples and not ppo_samples:
                     logger.info("📈 [RL-TELEMETRY] No RL decisions recorded yet")
+                    continue
+
+                if not samples and ppo_samples:
+                    logger.info(
+                        "📈 [RL-TELEMETRY] RL inactive | PPO samples=%s | avg_score=%.3f | long=%s | flat=%s",
+                        ppo_samples,
+                        ppo_avg_score,
+                        ppo_long_votes,
+                        ppo_flat_votes,
+                    )
                     continue
 
                 q_std_values = stats.get('q_std_values', [])
@@ -2534,12 +2549,16 @@ class ProductionCoordinator:
                 bypass_rate = stats.get('rl_bypass_rate', stats.get('bypass_rate', 0.0)) * 100
 
                 logger.info(
-                    "📈 [RL-TELEMETRY] samples=%s | q_std_med=%.6f | q_range_med=%.6f | veto_rate=%.2f%% | bypass_rate=%.2f%%",
+                    "📈 [RL-TELEMETRY] samples=%s | q_std_med=%.6f | q_range_med=%.6f | veto_rate=%.2f%% | bypass_rate=%.2f%% | PPO samples=%s | PPO avg=%.3f | PPO long=%s | PPO flat=%s",
                     sample_count,
                     q_std_med,
                     q_range_med,
                     veto_rate,
-                    bypass_rate
+                    bypass_rate,
+                    ppo_samples,
+                    ppo_avg_score,
+                    ppo_long_votes,
+                    ppo_flat_votes,
                 )
 
                 if q_std_med < threshold:

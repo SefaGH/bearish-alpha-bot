@@ -36,7 +36,7 @@ class PPOAdapterConfig:
     enabled: bool = False
     symbols: Tuple[str, ...] = ("BTC/USDT:USDT",)
     timeframe: str = "1h"
-    model_path: Path = Path("artifacts/ppo/btcusdt_1h.zip")
+    model_path: Path = Path("artifacts/ppo/ppo_trading_agent.zip")
     fallback_score: float = 0.5
     rr_up_mult: float = 1.3
     rr_down_mult: float = 0.9
@@ -56,7 +56,7 @@ class PPOAdapterConfig:
             enabled=bool(rl_cfg.get("ppo_enabled", False)),
             symbols=symbols or ("BTC/USDT:USDT",),
             timeframe=str(rl_cfg.get("ppo_timeframe", "1h")),
-            model_path=Path(rl_cfg.get("ppo_model_path", "artifacts/ppo/btcusdt_1h.zip")),
+            model_path=Path(rl_cfg.get("ppo_model_path", "artifacts/ppo/ppo_trading_agent.zip")),
             fallback_score=float(rl_cfg.get("ppo_fallback_score", 0.5)),
             rr_up_mult=float(rl_cfg.get("ppo_rr_up_mult", 1.3)),
             rr_down_mult=float(rl_cfg.get("ppo_rr_down_mult", 0.9)),
@@ -84,6 +84,14 @@ class PPOTradingAdapter:
         self._model_lock = asyncio.Lock()
         self._load_error: Optional[str] = None
         self._tail_defaults = np.array([0.0, 1.0], dtype=np.float32)
+        self._symbol_alias_map: Dict[str, str] = {}
+        for raw_symbol in self.cfg.symbols:
+            normalized = self._normalize_symbol(raw_symbol)
+            if not normalized:
+                continue
+            canonical = str(raw_symbol).strip().upper()
+            self._symbol_alias_map.setdefault(normalized, canonical)
+        self._normalized_symbols = set(self._symbol_alias_map.keys())
 
         if self.cfg.timeframe.lower() != self.STATE_TIMEFRAME:
             logger.warning(
@@ -108,11 +116,16 @@ class PPOTradingAdapter:
 
     @staticmethod
     def _normalize_symbol(symbol: Optional[str]) -> str:
-        return (symbol or "").upper()
+        if not symbol:
+            return ""
+        normalized = str(symbol).strip().upper().replace('-', '/')
+        if ':' in normalized:
+            normalized = normalized.split(':', 1)[0]
+        return normalized
 
     def _is_symbol_supported(self, symbol: str) -> bool:
         sym = self._normalize_symbol(symbol)
-        return sym in {self._normalize_symbol(s) for s in self.cfg.symbols}
+        return sym in self._normalized_symbols
 
     async def get_long_score(
         self,
@@ -188,9 +201,14 @@ class PPOTradingAdapter:
             return None
 
         try:
+            query_symbol = self._symbol_alias_map.get(symbol, symbol)
             df = await self.market_data_pipeline.get_latest_ohlcv(
-                symbol, self.STATE_TIMEFRAME
+                query_symbol, self.STATE_TIMEFRAME
             )
+            if (df is None or df.empty) and query_symbol != symbol:
+                df = await self.market_data_pipeline.get_latest_ohlcv(
+                    symbol, self.STATE_TIMEFRAME
+                )
             if df is None or df.empty:
                 logger.debug("PPO adapter received empty dataframe for %s", symbol)
                 return None

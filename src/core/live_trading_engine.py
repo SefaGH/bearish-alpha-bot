@@ -366,6 +366,24 @@ class LiveTradingEngine:
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
             signal_id = signal.get('signal_id')
+
+            sizing_meta = signal.get('sizing_meta') or {}
+            risk_assessment_payload = signal.get('risk_assessment')
+            if not sizing_meta and isinstance(risk_assessment_payload, dict):
+                metrics = risk_assessment_payload.get('metrics') or {}
+                sizing_meta = metrics.get('sizing_meta') or {}
+            raw_ppo_mult = sizing_meta.get('ppo_position_multiplier')
+            if raw_ppo_mult is None:
+                raw_ppo_mult = signal.get('ppo_position_multiplier', 1.0)
+            try:
+                ppo_multiplier = float(raw_ppo_mult or 1.0)
+            except (TypeError, ValueError):
+                ppo_multiplier = 1.0
+            try:
+                engine_multiplier = float(signal.get('position_multiplier', 1.0) or 1.0)
+            except (TypeError, ValueError):
+                engine_multiplier = 1.0
+            combined_multiplier = ppo_multiplier * engine_multiplier
             
             # [EXECUTION START] Log signal execution start
             logger.info(f"[EXECUTION-START] Processing signal for {symbol}")
@@ -375,8 +393,6 @@ class LiveTradingEngine:
                 logger.info(f"🎯 Executing ADAPTIVE signal for {symbol}")
                 if signal.get('adaptive_threshold'):
                     logger.info(f"  Adaptive RSI threshold: {signal['adaptive_threshold']:.1f}")
-                if signal.get('position_multiplier'):
-                    logger.info(f"  Position size multiplier: {signal['position_multiplier']:.2f}")
             else:
                 logger.info(f"📊 Executing signal for {symbol}")
             
@@ -385,6 +401,14 @@ class LiveTradingEngine:
             logger.info(f"  Side: {signal.get('side', 'unknown').upper()}")
             logger.info(f"  Entry: ${signal.get('entry', 0):.2f}")
             logger.info(f"  Reason: {signal.get('reason', 'N/A')}")
+
+            if any(abs(val - 1.0) > 1e-6 for val in (combined_multiplier, ppo_multiplier, engine_multiplier)):
+                logger.info(
+                    "  Position size multiplier: %.2f (PPO=%.2f, engine=%.2f)",
+                    combined_multiplier,
+                    ppo_multiplier,
+                    engine_multiplier,
+                )
             
             # Step 1: Risk validation (Phase 3.2)
             # FIX: Pass PortfolioManager object, not dict
@@ -416,10 +440,15 @@ class LiveTradingEngine:
                 # Calculate position size based on risk
                 position_size = await self.risk_manager.calculate_position_size(signal)
                 
-                # Apply adaptive position sizing if available
-                if signal.get('position_multiplier'):
-                    position_size *= signal['position_multiplier']
-                    logger.info(f"  Applied position multiplier: {signal['position_multiplier']:.2f}")
+                # Apply adaptive/engine position multiplier if configured
+                if abs(engine_multiplier - 1.0) > 1e-6:
+                    position_size *= engine_multiplier
+                    logger.info(
+                        "  Applied engine multiplier: %.2f (PPO=%.2f, total=%.2f)",
+                        engine_multiplier,
+                        ppo_multiplier,
+                        combined_multiplier,
+                    )
             else:
                 position_size = allocation_size
             
