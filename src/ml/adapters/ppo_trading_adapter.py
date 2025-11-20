@@ -100,6 +100,9 @@ class PPOTradingAdapter:
         self._load_error: Optional[str] = None
         self._tail_defaults = np.array([0.0, 1.0], dtype=np.float32)
         self._symbol_alias_map: Dict[str, str] = {}
+        self._normalized_symbols = set()
+        self._expected_obs_dim: Optional[int] = None  # modelin beklediği observation dim
+
         for raw_symbol in self.cfg.symbols:
             normalized = self._normalize_symbol(raw_symbol)
             if not normalized:
@@ -215,7 +218,27 @@ class PPOTradingAdapter:
                 if not model_path.exists():
                     raise FileNotFoundError(model_path)
                 self._model = PPO.load(str(model_path))
-                logger.info("✅ PPO adapter loaded model from %s", model_path)
+
+                # Modelin observation_space boyutunu çıkar
+                try:
+                    obs_space = getattr(self._model, "observation_space", None)
+                    if obs_space is not None and getattr(obs_space, "shape", None):
+                        self._expected_obs_dim = int(obs_space.shape[0])
+                        logger.info(
+                            "✅ PPO adapter loaded model from %s (expected_obs_dim=%d)",
+                            model_path,
+                            self._expected_obs_dim,
+                        )
+                    else:
+                        logger.warning(
+                            "PPO model loaded but observation_space.shape missing; "
+                            "state alignment will be disabled."
+                        )
+                        self._expected_obs_dim = None
+                except Exception as exc:  # pragma: no cover - inspection safety
+                    logger.warning("Failed to inspect PPO observation_space: %s", exc)
+                    self._expected_obs_dim = None
+
             except Exception as exc:  # pragma: no cover - IO errors
                 self._load_error = str(exc)
                 logger.error("❌ Failed to load PPO model: %s", exc, exc_info=True)
@@ -258,14 +281,58 @@ class PPOTradingAdapter:
             if np.isnan(latest).any():
                 logger.debug("PPO adapter found NaN in feature vector for %s", symbol)
                 return None
+
             tail = self._compose_tail_state(position_fraction, normalized_pv)
-            return np.concatenate([latest, tail])
+
+            # Ham state: feature vektörü + tail
+            raw_state = np.concatenate([latest, tail]).astype(np.float32)
+
+            # Modelin beklediği dim'e hizala (pad / trim)
+            state = self._align_state_dim(raw_state)
+            return state
         except Exception as exc:
             logger.error("PPO adapter failed to build state for %s: %s", symbol, exc)
             return None
 
     def supported_symbols(self) -> Iterable[str]:
         return self.cfg.symbols
+
+    def _align_state_dim(self, state: np.ndarray) -> np.ndarray:
+        """
+        Align the state vector to the PPO model's expected observation dimension.
+
+        - Eğer modelden observation dim alınamadıysa, state aynen döner.
+        - Eğer state daha kısa ise: sonuna 0.0 ile pad edilir.
+        - Eğer state daha uzun ise: sonundan truncate edilir (safety).
+        """
+        if self._expected_obs_dim is None:
+            return state.astype(np.float32)
+
+        current_dim = int(state.shape[0])
+        expected_dim = int(self._expected_obs_dim)
+
+        if current_dim == expected_dim:
+            return state.astype(np.float32)
+
+        if current_dim > expected_dim:
+            logger.warning(
+                "PPO state dim (%d) > expected_obs_dim (%d). Truncating extra features.",
+                current_dim,
+                expected_dim,
+            )
+            return state[:expected_dim].astype(np.float32)
+
+        # current_dim < expected_dim → pad gerekiyor
+        missing = expected_dim - current_dim
+        logger.warning(
+            "PPO state dim (%d) < expected_obs_dim (%d). Padding %d dummy features.",
+            current_dim,
+            expected_dim,
+            missing,
+        )
+        pad_values = np.zeros(missing, dtype=np.float32)
+        padded = np.concatenate([state, pad_values])
+        return padded.astype(np.float32)
 
     def _compose_tail_state(
         self,
