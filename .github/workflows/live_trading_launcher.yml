@@ -236,29 +236,21 @@ jobs:
           bash scripts/setup_gemma_artifacts.sh
           bash scripts/setup_ml_model_links.sh
 
-      - name: Validate GEMMA manifest and RL agent
+      - name: Validate GEMMA manifest and PPO agent
         shell: bash
         run: |
           set -e
-          if [ -f data/models/final/rl_agent_final.pth ] && [ ! -f data/models/rl_agent_final.pth ]; then
-            cp data/models/final/rl_agent_final.pth data/models/rl_agent_final.pth
-            echo "RL agent checkpoint restored from final bundle"
-          fi
-
-          if [ ! -f data/models/rl_agent_final.pth ]; then
-            echo "❌ RL agent checkpoint missing"
-            exit 1
-          fi
-
+      
+          # 1) GEMMA manifest kontrolü
           if [ ! -f artifacts/gemma/final/manifest.json ]; then
             echo "❌ GEMMA manifest not found"
             exit 1
           fi
-
+      
           python - <<'PY'
           import json
           from pathlib import Path
-
+      
           manifest = Path('artifacts/gemma/final/manifest.json')
           data = json.loads(manifest.read_text(encoding='utf-8'))
           feature_count = data.get('feature_count')
@@ -266,6 +258,14 @@ jobs:
               raise SystemExit(f"Expected GEMMA feature_count=82, got {feature_count}")
           print("✅ GEMMA manifest feature count verified (82 features)")
           PY
+      
+          # 2) PPO model path kontrolü (config ile uyumlu)
+          PPO_PATH="artifacts/ppo/btcusdt_1h.zip"
+          if [ ! -f "$PPO_PATH" ]; then
+            echo "❌ PPO model not found at $PPO_PATH"
+            exit 1
+          fi
+          echo "✅ PPO model found at $PPO_PATH"
 
       - name: Run Dry-Run Pre-Flight Checks
         env:
@@ -376,29 +376,21 @@ jobs:
           bash scripts/setup_gemma_artifacts.sh
           bash scripts/setup_ml_model_links.sh
 
-      - name: Validate GEMMA manifest and RL agent
+      - name: Validate GEMMA manifest and PPO agent
         shell: bash
         run: |
           set -e
-          if [ -f data/models/final/rl_agent_final.pth ] && [ ! -f data/models/rl_agent_final.pth ]; then
-            cp data/models/final/rl_agent_final.pth data/models/rl_agent_final.pth
-            echo "RL agent checkpoint restored from final bundle"
-          fi
-
-          if [ ! -f data/models/rl_agent_final.pth ]; then
-            echo "❌ RL agent checkpoint missing"
-            exit 1
-          fi
-
+      
+          # 1) GEMMA manifest kontrolü
           if [ ! -f artifacts/gemma/final/manifest.json ]; then
             echo "❌ GEMMA manifest not found"
             exit 1
           fi
-
+      
           python - <<'PY'
           import json
           from pathlib import Path
-
+      
           manifest = Path('artifacts/gemma/final/manifest.json')
           data = json.loads(manifest.read_text(encoding='utf-8'))
           feature_count = data.get('feature_count')
@@ -406,6 +398,14 @@ jobs:
               raise SystemExit(f"Expected GEMMA feature_count=82, got {feature_count}")
           print("✅ GEMMA manifest feature count verified (82 features)")
           PY
+      
+          # 2) PPO model path kontrolü (config ile uyumlu)
+          PPO_PATH="artifacts/ppo/btcusdt_1h.zip"
+          if [ ! -f "$PPO_PATH" ]; then
+            echo "❌ PPO model not found at $PPO_PATH"
+            exit 1
+          fi
+          echo "✅ PPO model found at $PPO_PATH"
 
       - name: Set Dynamic Environment Variables
         id: set-env
