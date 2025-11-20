@@ -260,7 +260,7 @@ jobs:
           PY
       
           # 2) PPO model path kontrolü (config ile uyumlu)
-          PPO_PATH="artifacts/ppo/btcusdt_1h.zip"
+          PPO_PATH="artifacts/ppo/ppo_trading_agent.zip"
           if [ ! -f "$PPO_PATH" ]; then
             echo "❌ PPO model not found at $PPO_PATH"
             exit 1
@@ -400,7 +400,7 @@ jobs:
           PY
       
           # 2) PPO model path kontrolü (config ile uyumlu)
-          PPO_PATH="artifacts/ppo/btcusdt_1h.zip"
+          PPO_PATH="artifacts/ppo/ppo_trading_agent.zip"
           if [ ! -f "$PPO_PATH" ]; then
             echo "❌ PPO model not found at $PPO_PATH"
             exit 1
