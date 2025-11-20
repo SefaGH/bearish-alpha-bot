@@ -61,6 +61,7 @@ class StrategyCoordinator:
         self.risk_manager = risk_manager
         self.market_data_pipeline = market_data_pipeline
         self.config = config or {}
+        self._initial_equity = self._derive_initial_equity()
     
         # Signal management
         self.active_signals = {}  # signal_id -> signal_data
@@ -108,13 +109,29 @@ class StrategyCoordinator:
             },
             'q_std_values': [],
             'q_range_values': [],
-            'bypass_count': 0
+            'bypass_count': 0,
+            'ppo': {
+                'samples': 0,
+                'long_votes': 0,
+                'flat_votes': 0,
+                'score_sum': 0.0
+            }
         }
         
         # ML integration placeholders
         self.ml_integration = None
         self.feature_pipeline = None
         self.rl_agent = None
+        rl_cfg = (self.config.get('ml', {}) or {}).get('reinforcement_learning', {})
+        self.legacy_rl_enabled = bool(rl_cfg.get('legacy_dqn_enabled', False))
+        self.ppo_multipliers = {
+            'rr_up_mult': float(rl_cfg.get('ppo_rr_up_mult', 1.3)),
+            'rr_down_mult': float(rl_cfg.get('ppo_rr_down_mult', 0.9)),
+            'position_base': float(rl_cfg.get('ppo_position_base', 0.5)),
+            'position_bonus': float(rl_cfg.get('ppo_position_bonus', 0.5)),
+        }
+        self.ppo_fallback_score = float(rl_cfg.get('ppo_fallback_score', 0.5))
+        self.ppo_adapter = None
         
         # Track ML/RL rejection context for better telemetry
         self._last_ml_rejection_reason: Optional[str] = None
@@ -648,6 +665,21 @@ class StrategyCoordinator:
             telemetry['veto_by_regime'].setdefault(regime_key, 0)
             telemetry['veto_by_regime'][regime_key] += 1
 
+    def _record_ppo_telemetry(self, score: float) -> None:
+        """Track PPO adapter activity for debugging dashboards."""
+        metrics = self.rl_telemetry.setdefault('ppo', {
+            'samples': 0,
+            'long_votes': 0,
+            'flat_votes': 0,
+            'score_sum': 0.0
+        })
+        metrics['samples'] += 1
+        metrics['score_sum'] += float(score)
+        if score >= 0.5:
+            metrics['long_votes'] += 1
+        else:
+            metrics['flat_votes'] += 1
+
     @staticmethod
     def _map_signal_side_to_rl_action(side: str) -> str:
         """Map original strategy side to RL action semantics."""
@@ -673,6 +705,12 @@ class StrategyCoordinator:
 
         rl_bypass_rate = (telemetry['bypass_count'] / total) if total else 0.0
 
+        ppo_metrics = telemetry.get('ppo', {})
+        ppo_samples = ppo_metrics.get('samples', 0)
+        ppo_avg_score = (
+            ppo_metrics.get('score_sum', 0.0) / ppo_samples if ppo_samples else 0.0
+        )
+
         return {
             'rl_veto_rate': (telemetry['veto_count'] / total) if total else 0.0,
             'bias_applied_rate': (telemetry['bias_applied_count'] / total) if total else 0.0,
@@ -686,7 +724,11 @@ class StrategyCoordinator:
             'veto_by_regime': telemetry['veto_by_regime'],
             'samples': total,
             'q_std_values': list(q_std_values),
-            'q_range_values': list(q_range_values)
+            'q_range_values': list(q_range_values),
+            'ppo_samples': ppo_samples,
+            'ppo_long_votes': ppo_metrics.get('long_votes', 0),
+            'ppo_flat_votes': ppo_metrics.get('flat_votes', 0),
+            'ppo_avg_score': ppo_avg_score
         }
     
     async def _enhance_signal_with_ml(self, signal: Dict) -> Optional[Dict]:
@@ -750,7 +792,7 @@ class StrategyCoordinator:
             # --- 2. RL AGENT'IN AYRI OLARAK ÇAĞRILMASI VE KONTROLÜ ---
             rl_advice = None
             rl_meta: Optional[Dict[str, Any]] = None
-            if hasattr(self, 'rl_agent') and self.rl_agent:
+            if self.legacy_rl_enabled and hasattr(self, 'rl_agent') and self.rl_agent:
                 try:
                     if hasattr(self.rl_agent, 'set_inference_mode') and not getattr(self.rl_agent, '_inference_locked', False):
                         try:
@@ -911,31 +953,30 @@ class StrategyCoordinator:
                 except Exception as e:
                     logger.warning(f"RL recommendation failed: {e}", exc_info=True)
 
-            # --- 3. RL VETO VE ANLAŞMAZLIK KONTROLLERİ ---
-            if rl_advice == 'hold':
-                logger.warning(f"🤖 [RL-VETO] Signal for {symbol} rejected. Reason: RL Agent advised 'hold'.")
-                signal['ml_blocked'] = True
-                signal['ml_rejection_reason'] = 'RL VETO (HOLD)'
-                self.processing_stats['rl_veto_count'] += 1
-                if rl_meta:
-                    logger.warning(f"🤖 [RL-VETO-META] {symbol} meta={rl_meta}")
-                self._remember_ml_rejection('RL Agent veto (HOLD recommendation)')
-                return None
+            # --- 3. Legacy RL disagreements now apply soft penalties only ---
+            if self.legacy_rl_enabled and rl_advice == 'hold':
+                logger.warning(f"🤖 [RL-HOLD] Agent advised HOLD for {symbol}; applying soft strength penalty.")
+                current_strength = signal.get('ml_strength', signal.get('strength', 0.5) or 0.5)
+                signal['ml_strength'] = max(0.05, current_strength * 0.7)
+                signal['rl_hold_recommendation'] = True
 
-            is_opposite = (
-                (original_side in ['buy', 'long'] and rl_advice in ['sell', 'short']) or
-                (original_side in ['sell', 'short'] and rl_advice in ['buy', 'long'])
-            )
-            if rl_advice and is_opposite:
-                logger.warning(f"⚠️ [RL-DISAGREE] RL Agent disagrees with signal for {symbol}.")
-                logger.warning(f"    Signal Side: {original_side.upper()}, RL Advice: {rl_advice.upper()}")
-                
-                current_strength = signal.get('ml_strength', signal.get('strength', 0.5))
-                new_strength = current_strength * 0.5
-                signal['ml_strength'] = new_strength
-                logger.warning(f"    Signal strength reduced from {current_strength:.2f} to {new_strength:.2f} due to disagreement.")
+            if self.legacy_rl_enabled:
+                is_opposite = (
+                    (original_side in ['buy', 'long'] and rl_advice in ['sell', 'short']) or
+                    (original_side in ['sell', 'short'] and rl_advice in ['buy', 'long'])
+                )
+                if rl_advice and is_opposite:
+                    logger.warning(f"⚠️ [RL-DISAGREE] RL Agent disagrees with signal for {symbol}.")
+                    logger.warning(f"    Signal Side: {original_side.upper()}, RL Advice: {rl_advice.upper()}")
+                    current_strength = signal.get('ml_strength', signal.get('strength', 0.5))
+                    new_strength = current_strength * 0.5
+                    signal['ml_strength'] = new_strength
+                    logger.warning(f"    Signal strength reduced from {current_strength:.2f} to {new_strength:.2f} due to disagreement.")
 
-            # --- 4. SON LOGLAMA VE SİNYALİ DÖNDÜRME ---
+            # --- 4. PPO tabanlı soft filtre uygulanır (yalnızca long sinyaller) ---
+            await self._apply_ppo_long_filter(signal)
+
+            # --- 5. SON LOGLAMA VE SİNYALİ DÖNDÜRME ---
             if 'position_size' in signal and signal.get('ml_confidence'):
                 signal['position_size'] *= signal['ml_confidence']
 
@@ -952,6 +993,162 @@ class StrategyCoordinator:
         except Exception as e:
             logger.error(f"ML enhancement failed critically: {e}", exc_info=True)
             return signal
+
+    async def _apply_ppo_long_filter(self, signal: Dict[str, Any]) -> None:
+        """Apply PPO-based soft gating for BTC/USDT long signals."""
+        side = (signal.get('side') or '').lower()
+        if side not in ('buy', 'long'):
+            return
+        symbol = signal.get('symbol')
+        if not symbol:
+            return
+
+        if not getattr(self, 'ppo_adapter', None):
+            signal['ppo_long_score'] = self.ppo_fallback_score
+            return
+
+        tail_overrides = self._build_ppo_state_overrides(symbol)
+
+        try:
+            score, metadata = await self.ppo_adapter.get_long_score(
+                symbol,
+                position_fraction=tail_overrides.get('position_fraction'),
+                normalized_pv=tail_overrides.get('normalized_pv'),
+            )
+        except Exception as exc:  # pragma: no cover - extra safety
+            logger.warning(f"⚠️ [PPO-LONG] Adapter error for {symbol}: {exc}")
+            score = self.ppo_fallback_score
+            metadata = {'reason': 'exception', 'error': str(exc)}
+
+        score = float(score)
+        signal['ppo_long_score'] = score
+        if tail_overrides:
+            metadata = {**metadata, 'state_tail': tail_overrides}
+        signal['ppo_meta'] = metadata
+
+        action_label = 'BUY' if score >= 0.5 else 'HOLD'
+        logger.info(
+            "🤖 [PPO-LONG] %s | action=%s | score=%.2f | meta=%s",
+            symbol,
+            action_label,
+            score,
+            metadata,
+        )
+
+        self._record_ppo_telemetry(score)
+        signal['rl_recommendation'] = action_label.lower()
+        base_meta = signal.get('rl_decision_meta')
+        if not isinstance(base_meta, dict):
+            base_meta = {}
+        signal['rl_decision_meta'] = {**base_meta, 'ppo': metadata}
+        self._last_rl_decision = {
+            'action': action_label,
+            'confidence': score,
+            'timestamp': datetime.utcnow().isoformat(),
+            'source': 'ppo'
+        }
+
+    def _build_ppo_state_overrides(self, symbol: str) -> Dict[str, float]:
+        overrides: Dict[str, float] = {}
+        pos_fraction = self._compute_symbol_position_fraction(symbol)
+        if pos_fraction is not None:
+            overrides['position_fraction'] = pos_fraction
+        normalized_pv = self._compute_normalized_equity()
+        if normalized_pv is not None:
+            overrides['normalized_pv'] = normalized_pv
+        return overrides
+
+    def _compute_symbol_position_fraction(self, symbol: str) -> Optional[float]:
+        if not self.portfolio_manager or not hasattr(self.portfolio_manager, 'get_open_positions'):
+            return None
+        try:
+            positions = self.portfolio_manager.get_open_positions()
+        except Exception as exc:
+            logger.debug("Failed to fetch open positions for PPO tail: %s", exc)
+            return None
+
+        total_equity = self._safe_float(getattr(self.portfolio_manager, 'get_current_equity', lambda: 0.0)())
+        if total_equity <= 0:
+            return None
+
+        symbol_upper = (symbol or '').upper()
+        symbol_notional = 0.0
+        for pos in positions.values():
+            if (pos.get('symbol') or '').upper() != symbol_upper:
+                continue
+            side = (pos.get('side') or pos.get('direction') or '').lower()
+            if side and side not in ('buy', 'long'):
+                continue
+            notional = self._extract_notional(pos)
+            symbol_notional += notional
+
+        if symbol_notional <= 0:
+            return 0.0
+        return min(1.0, symbol_notional / total_equity)
+
+    def _compute_normalized_equity(self) -> Optional[float]:
+        if not hasattr(self.portfolio_manager, 'get_current_equity'):
+            return None
+        try:
+            current_equity = self._safe_float(self.portfolio_manager.get_current_equity())
+        except Exception as exc:
+            logger.debug("Failed to fetch equity for PPO tail: %s", exc)
+            return None
+        base = self._initial_equity or 1.0
+        if base <= 0:
+            base = 1.0
+        ratio = current_equity / base if current_equity > 0 else 0.0
+        return max(0.1, min(5.0, ratio))
+
+    def _derive_initial_equity(self) -> float:
+        try:
+            if self.portfolio_manager and hasattr(self.portfolio_manager, 'get_current_equity'):
+                equity = self._safe_float(self.portfolio_manager.get_current_equity())
+                if equity > 0:
+                    return equity
+        except Exception:
+            pass
+        risk_cfg = (self.config.get('risk') or {}) if isinstance(self.config, dict) else {}
+        fallback_equity = self._safe_float(risk_cfg.get('equity_usd'))
+        if fallback_equity and fallback_equity > 0:
+            return fallback_equity
+        return 1.0
+
+    @staticmethod
+    def _safe_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _extract_notional(position: Dict[str, Any]) -> float:
+        if not position:
+            return 0.0
+        notional = position.get('notional') or position.get('position_notional')
+        if notional:
+            try:
+                return float(notional)
+            except (TypeError, ValueError):
+                notional = None
+        size = position.get('size') or position.get('amount') or position.get('position_size')
+        price = position.get('entry_price') or position.get('entry') or position.get('avg_entry_price')
+        if size and price:
+            try:
+                return float(size) * float(price)
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
+
+    def _compute_ppo_position_multiplier(self, signal: Dict[str, Any]) -> float:
+        side = (signal.get('side') or '').lower()
+        if side not in ('buy', 'long'):
+            return 1.0
+        score = float(signal.get('ppo_long_score', self.ppo_fallback_score))
+        base = self.ppo_multipliers['position_base']
+        bonus = self.ppo_multipliers['position_bonus']
+        multiplier = base + (bonus * score)
+        return max(0.1, min(multiplier, 1.0))
     
     async def _extract_rl_state(self, symbol: str, current_price: float) -> Optional['np.ndarray']:
         """
@@ -1418,18 +1615,20 @@ class StrategyCoordinator:
             logger.debug(f"ML enrichment error: {e}")
             signal.update({'ml_confidence': 0.5, 'regime_name': 'neutral', 'regime_confidence': 0.3})
         
-        # 2. RL Metrics
+        # 2. RL/PPO Metrics
         try:
-            # Check if we stored the RL decision
-            if hasattr(self, '_last_rl_decision') and self._last_rl_decision:
+            side = (signal.get('side') or '').lower()
+            if side in ('buy', 'long') and 'ppo_long_score' in signal:
+                score = float(signal.get('ppo_long_score', self.ppo_fallback_score))
+                signal['rl_is_agree'] = score >= 0.5
+                signal['rl_action_prob'] = score
+                logger.debug(f"✅ PPO metrics: long_score={score:.2f}")
+            elif self.legacy_rl_enabled and hasattr(self, '_last_rl_decision') and self._last_rl_decision:
                 rl_action = self._last_rl_decision.get('action', 'hold')
                 rl_confidence = float(self._last_rl_decision.get('confidence', 0.5))
                 signal_side = signal.get('side', '').lower()
-                
-                # Normalize action strings for comparison
                 rl_action_normalized = rl_action.lower().replace('long', 'buy').replace('short', 'sell')
                 signal_side_normalized = signal_side.replace('long', 'buy').replace('short', 'sell')
-                
                 signal['rl_is_agree'] = (rl_action_normalized == signal_side_normalized)
                 signal['rl_action_prob'] = rl_confidence
                 logger.debug(f"✅ RL metrics: agree={signal['rl_is_agree']}, prob={rl_confidence:.2f}")
@@ -1464,15 +1663,23 @@ class StrategyCoordinator:
         except Exception as e:
             logger.debug(f"Market metrics error: {e}")
             signal.update({'volume_strength': 0.5, 'momentum_strength': 0.5})
-        
-        # Log enriched signal
-        logger.info(f"📊 [Signal Enriched] {symbol}: "
-                    f"ML={signal.get('ml_confidence', 0):.2f}, "
-                    f"RL_agree={signal.get('rl_is_agree', False)}, "
-                    f"Regime={signal.get('regime_name', 'N/A')} "
-                    f"({signal.get('regime_confidence', 0):.2f}), "
-                    f"Vol={signal.get('volume_strength', 0):.2f}, "
-                    f"Mom={signal.get('momentum_strength', 0):.2f}")
+
+        # 4. PPO Multipliers for downstream risk modules
+        side = (signal.get('side') or '').lower()
+        ppo_rr_multiplier = 1.0
+        if side in ('buy', 'long') and 'ppo_long_score' in signal:
+            score = float(signal['ppo_long_score'])
+            ppo_rr_multiplier = (
+                self.ppo_multipliers['rr_up_mult'] if score < 0.5 else self.ppo_multipliers['rr_down_mult']
+            )
+        signal['ppo_rr_multiplier'] = ppo_rr_multiplier
+
+        logger.info(
+            f"📊 [Signal Enriched] {symbol}: ML={signal.get('ml_confidence', 0):.2f}, "
+            f"RL_agree={signal.get('rl_is_agree', False)}, Regime={signal.get('regime_name', 'N/A')} "
+            f"({signal.get('regime_confidence', 0):.2f}), Vol={signal.get('volume_strength', 0):.2f}, "
+            f"Mom={signal.get('momentum_strength', 0):.2f}, PPO_RR={ppo_rr_multiplier:.2f}"
+        )
         
         return signal
     
@@ -1490,6 +1697,8 @@ class StrategyCoordinator:
             
             # CRITICAL: Enrich signal BEFORE risk validation
             signal = await self._enrich_signal_for_dynamic_rr(signal)
+            position_multiplier = self._compute_ppo_position_multiplier(signal)
+            signal['ppo_position_multiplier'] = position_multiplier
             
             # 3. Calculate R/R ratio if not already present
             if 'rr_ratio' not in signal and signal.get('entry') and signal.get('stop') and signal.get('target'):
@@ -1503,6 +1712,14 @@ class StrategyCoordinator:
             
             # Calculate position size using the new module
             sized_signal = await self.position_sizing.calculate_optimal_size(signal, return_signal=True)
+
+            if position_multiplier != 1.0:
+                sized_signal.setdefault('sizing_meta', {})
+                sized_signal['sizing_meta']['ppo_position_multiplier'] = position_multiplier
+                if 'amount' in sized_signal:
+                    sized_signal['amount'] *= position_multiplier
+                if 'notional' in sized_signal:
+                    sized_signal['notional'] *= position_multiplier
             
             # Check if sizing was successful
             if sized_signal.get('amount', 0) <= 0:
@@ -1527,6 +1744,7 @@ class StrategyCoordinator:
             
             # Add sizing metadata to risk metrics
             risk_metrics['sizing_meta'] = sized_signal.get('sizing_meta', {})
+            risk_metrics['sizing_meta']['ppo_position_multiplier'] = position_multiplier
             
             return {
                 'acceptable': True,

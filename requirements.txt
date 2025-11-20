@@ -23,7 +23,8 @@ scipy>=1.11.0
 imbalanced-learn>=0.12.4
 shap
 matplotlib
-stable-baselines3[extra]   # 🚀 PPO / SB3 RL algoritmaları için eklendi
+stable-baselines3[extra]
+shimmy>=2.0
 
 # === ASYNC/WEBSOCKET ===
 aiohttp==3.8.6

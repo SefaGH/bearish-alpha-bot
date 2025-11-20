@@ -95,6 +95,11 @@ try:
 except ImportError:
     ML_AVAILABLE = False
 
+try:
+    from ml.adapters.ppo_trading_adapter import PPOTradingAdapter
+except ImportError:  # pragma: no cover - adapter optional in some envs
+    PPOTradingAdapter = None
+
 logger = logging.getLogger(__name__)
 # ✅ EKLE: Logger seviyesini zorla INFO yap
 logger.setLevel(logging.INFO)
@@ -126,6 +131,7 @@ class ProductionCoordinator:
         
         # ML integration (Phase 4)
         self.ml_integration = None          # Prevents AttributeError during ML initialization
+        self.ppo_adapter = None
         
         # Registered strategies
         self.strategies = {}  # strategy_name -> strategy_instance
@@ -1106,7 +1112,9 @@ class ProductionCoordinator:
         # ✔️ DÜZELTME: Bu bileşene artık sadece 'reinforcement_learning' alt bloğu verilir + dynamic state_size
         rl_config = ml_config.get('reinforcement_learning', {})
         rl_config['active_bundle'] = bundle_path  # Pass bundle path
-        if rl_config.get('enabled', True):
+        legacy_rl_enabled = rl_config.get('enabled', True) and rl_config.get('legacy_dqn_enabled', False)
+        self.rl_agent = None
+        if legacy_rl_enabled:
             try:
                 # Use manifest feature count for state size (manifest loaded above)
                 state_size = manifest.get('rl_state_size', manifest.get('feature_count', 42))
@@ -1143,10 +1151,29 @@ class ProductionCoordinator:
                 logger.error(f"❌ Failed to initialize Reinforcement Learning Agent: {e}", exc_info=True)
                 self.rl_agent = None
         else:
-            self.rl_agent = None
-            logger.info("ℹ️ Reinforcement Learning is disabled in config.")
+            logger.info("ℹ️ Legacy DQN reinforcement learning is disabled.")
 
-        # 5. ML Strateji Entegrasyon Yöneticisi
+        # 5. PPO Adapter (optional soft RL guardrail)
+        self.ppo_adapter = None
+        if rl_config.get('ppo_enabled', False):
+            if PPOTradingAdapter is None:
+                logger.warning("⚠️ PPO adapter requested but module is unavailable (missing dependency).")
+            else:
+                try:
+                    self.ppo_adapter = PPOTradingAdapter(
+                        rl_config,
+                        market_data_pipeline=self.market_data_pipeline,
+                        feature_pipeline=self.feature_pipeline,
+                    )
+                    ml_components.append('ppo_adapter')
+                    logger.info("✅ PPO adapter initialized.")
+                except Exception as e:
+                    logger.error(f"❌ Failed to initialize PPO adapter: {e}", exc_info=True)
+                    self.ppo_adapter = None
+        else:
+            logger.info("ℹ️ PPO adapter disabled in config.")
+
+        # 6. ML Strateji Entegrasyon Yöneticisi
         try:
             # ✔️ DÜZELTME: Bu yöneticiye de tam 'ml_config' verilir.
             self.ml_integration = MLStrategyIntegrationManager(
@@ -1161,11 +1188,13 @@ class ProductionCoordinator:
             logger.error(f"❌ Failed to initialize ML Strategy Integration Manager: {e}", exc_info=True)
             self.ml_integration = None
         
-        # 6. Bileşenleri sistemin diğer parçalarına bağla
+        # 7. Bileşenleri sistemin diğer parçalarına bağla
         if self.strategy_coordinator:
             self.strategy_coordinator.ml_integration = self.ml_integration
             self.strategy_coordinator.feature_pipeline = self.feature_pipeline
             self.strategy_coordinator.rl_agent = self.rl_agent
+            if hasattr(self.strategy_coordinator, 'ppo_adapter'):
+                self.strategy_coordinator.ppo_adapter = self.ppo_adapter
             logger.info("🔗 ML components connected to StrategyCoordinator.")
         if self.trading_engine:
             self.trading_engine.ml_integration = self.ml_integration

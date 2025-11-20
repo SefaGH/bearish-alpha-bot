@@ -191,6 +191,56 @@ class TestDynamicRRCalculation:
         # - Final = max(0.8, min(1.836, 2.0)) = 1.836
         # - Actual R/R = 1.2 < 1.836, should FAIL
         assert is_valid is False
+
+    def test_ppo_rr_multiplier_increases_requirement(self):
+        """PPO RR multiplier should tighten the required R/R threshold."""
+        config = RiskConfiguration({
+            'rr_dynamic': {
+                'enabled': True,
+                'base_target_rr': 1.0,
+                'lower_bound_rr': 0.5,
+                'upper_bound_rr': 2.0,
+                'weights': {
+                    'ml_confidence': 0.0,
+                    'rl_agreement': 0.0,
+                    'regime_clarity': 0.0,
+                    'volume_strength': 0.0,
+                    'momentum_strength': 0.0
+                },
+                'fallback': {
+                    'missing_ml_default': 0.5,
+                    'missing_rl_default': 0.5,
+                    'missing_regime_default': 0.3
+                },
+                'regime_multipliers': {
+                    'bullish': 0.9,
+                    'bearish': 0.9,
+                    'neutral': 1.0,
+                    'volatile': 1.2
+                }
+            }
+        })
+
+        rule = RiskRewardRatioRule(config=config)
+        portfolio = MockPortfolioManager()
+
+        signal = {
+            'symbol': 'BTC/USDT',
+            'entry': 100,
+            'stop': 99,
+            'target': 101,
+            'ml_confidence': 0.5,
+            'rl_is_agree': True,
+            'rl_action_prob': 0.5,
+            'regime_confidence': 0.6,
+            'regime_name': 'neutral',
+            'strategy_min_rr': 0.5,
+            'ppo_rr_multiplier': 1.3
+        }
+
+        is_valid, reason = rule.validate(signal, portfolio)
+        assert is_valid is False
+        assert "1.30" in reason
     
     def test_respects_bounds(self):
         """Dynamic target should stay within configured bounds."""
