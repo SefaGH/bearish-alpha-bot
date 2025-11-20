@@ -48,9 +48,24 @@ class PPOAdapterConfig:
         rl_cfg = cfg or {}
         symbols_cfg = rl_cfg.get("ppo_symbols", ["BTC/USDT:USDT"])
         if isinstance(symbols_cfg, str):
-            symbols = tuple(s.strip() for s in symbols_cfg.split(",") if s.strip())
-        else:
-            symbols = tuple(str(s).strip() for s in symbols_cfg if s)
+            s = symbols_cfg.strip()
+            if s.startswith("[") and s.endswith("]"):
+                import json
+
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, list):
+                        symbols_cfg = parsed
+                    else:
+                        symbols_cfg = [str(parsed)]
+                except Exception:
+                    inner = s[1:-1]
+                    parts = [p.strip().strip('"').strip("'") for p in inner.split(",") if p.strip()]
+                    symbols_cfg = parts or ["BTC/USDT:USDT"]
+            else:
+                symbols_cfg = [s]
+
+        symbols = tuple(str(s).strip() for s in symbols_cfg if s)
 
         return cls(
             enabled=bool(rl_cfg.get("ppo_enabled", False)),
