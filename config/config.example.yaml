@@ -363,7 +363,7 @@ ml:
     ppo_enabled: true                 # Override with: ML_RL_PPO_ENABLED
     ppo_symbols: ["BTC/USDT:USDT"]   # Override with: ML_RL_PPO_SYMBOLS
     ppo_timeframe: "1h"             # Override with: ML_RL_PPO_TIMEFRAME
-    ppo_model_path: "artifacts/ppo/btcusdt_1h.zip" # Override with: ML_RL_PPO_MODEL
+    ppo_model_path: "artifacts/ppo/ppo_trading_agent.zip" # Override with: ML_RL_PPO_MODEL
     ppo_fallback_score: 0.5           # Override with: ML_RL_PPO_FALLBACK
     ppo_rr_down_mult: 0.9             # Override with: ML_RL_PPO_RR_DOWN
     ppo_rr_up_mult: 1.3               # Override with: ML_RL_PPO_RR_UP
