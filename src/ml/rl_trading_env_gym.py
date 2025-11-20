@@ -46,7 +46,7 @@ class RLTradingEnvGym(gym.Env):
         )
 
         self.state_dim = self._base_env.state_dim
-        self.n_actions = self._base_env.action_dim
+        self.n_actions = self._base_env.action_dim  # şu an 2 (0: flat, 1: full long)
 
         # Gym spaces
         self.observation_space = spaces.Box(
@@ -88,15 +88,13 @@ class RLTradingEnvGym(gym.Env):
     ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """
         Gym step:
-        - action: int (0, 1, 2)
+        - action: int (0 veya 1)
         - dönen: (obs, reward, terminated, truncated, info)
         """
-        # Mevcut RLTradingEnv.step: (next_state, reward, done, info)
         next_state, reward, done, info = self._base_env.step(int(action))
 
-        # Gym API: terminated vs truncated ayrımı
         terminated = bool(done)
-        truncated = False  # Şimdilik ayrıca max-steps truncation yok; istersen ekleyebiliriz
+        truncated = False  # Şimdilik ayrıca max-steps truncation yok
 
         self._last_info = dict(info)
 
@@ -114,6 +112,4 @@ class RLTradingEnvGym(gym.Env):
         pv = info.get("portfolio_value", 0.0)
         pos_frac = info.get("position_fraction", 0.0)
         pnl = info.get("pnl", 0.0)
-        print(
-            f"t={step} | PV={pv:.2f} | PosFrac={pos_frac:.2f} | PnL={pnl:.2f}"
-        )
+        print(f"t={step} | PV={pv:.2f} | PosFrac={pos_frac:.2f} | PnL={pnl:.2f}")
