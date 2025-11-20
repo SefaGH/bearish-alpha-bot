@@ -3,7 +3,8 @@
 
 Steps performed:
 1. Fetch OHLCV candles (or load a supplied CSV/Parquet file).
-2. Run the FeatureEngineeringPipeline to generate the 82-feature matrix expected by RL agents.
+2. Run the FeatureEngineeringPipeline to generate the GEMMA-aligned feature matrix
+   expected by RL agents (using tuning artifacts: selected feature names or mask).
 3. Clean/align price + feature frames, then emit train/val/test splits under ``data/training``.
 4. Produce a metadata JSON file describing the export.
 """
@@ -17,7 +18,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 
 import numpy as np
 import pandas as pd
@@ -47,12 +48,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeframe", default="1h", help="Candle timeframe, e.g. 1h, 4h")
     parser.add_argument("--candles", type=int, default=6000, help="Number of candles to fetch (unlimited batches)")
     parser.add_argument("--output-dir", default="data/training", help="Directory for generated npz files")
-    parser.add_argument("--config", default="config/config.example.yaml", help="Config file used for manifests & hyperparams")
+    parser.add_argument(
+        "--config",
+        default="config/config.example.yaml",
+        help="Config file used for manifests & hyperparams (must match GEMMA production config)",
+    )
     parser.add_argument("--train-ratio", type=float, default=0.7, help="Fraction of samples for training split")
     parser.add_argument("--val-ratio", type=float, default=0.15, help="Fraction of samples for validation split")
     parser.add_argument("--min-rows", type=int, default=4000, help="Minimum rows required after cleaning")
     parser.add_argument("--min-split", type=int, default=512, help="Minimum rows required per split")
-    parser.add_argument("--input-file", help="Optional CSV/Parquet with OHLCV columns (timestamp,open,high,low,close,volume)")
+    parser.add_argument(
+        "--input-file",
+        help="Optional CSV/Parquet with OHLCV columns (timestamp,open,high,low,close,volume)",
+    )
     parser.add_argument("--start-date", type=str, help="Optional start date (e.g. 2020-01-01) to filter OHLCV by timestamp")
     parser.add_argument("--end-date", type=str, help="Optional end date (e.g. 2024-01-01) to filter OHLCV by timestamp")
     parser.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING,...)")
@@ -136,6 +144,14 @@ def fetch_from_exchange(args: argparse.Namespace) -> pd.DataFrame:
 
 
 def build_feature_frame(price_df: pd.DataFrame, config_path: str) -> Tuple[pd.DataFrame, Dict[str, any]]:
+    """
+    Run GEMMA feature engineering and align with price_df.
+
+    IMPORTANT:
+    - This returns the FULL engineered feature frame (e.g. 87 columns).
+    - RL-specific feature selection (using GEMMA tuning artifacts) is applied later,
+      in main(), to keep this function generic.
+    """
     config = LiveTradingConfiguration.load(config_path=config_path, log_summary=False)
     feature_engine = FeatureEngineeringPipeline(config=config)
     features = feature_engine.extract_features(price_df.copy(), mode="price")
@@ -164,6 +180,137 @@ def build_feature_frame(price_df: pd.DataFrame, config_path: str) -> Tuple[pd.Da
     }
 
 
+# ---------------------------------------------------------------------------
+# RL Feature Selection – align RL features with GEMMA tuning artifacts
+# ---------------------------------------------------------------------------
+
+def _load_gemma_price_feature_names() -> List[str]:
+    """
+    Load ordered GEMMA price feature names from selection artifact if available.
+
+    Prefer JSON manifest:
+      - features/gemma/selected/gemma_price_selected_*.json
+
+    Returns:
+        List of feature names in preferred order, or empty list if not found.
+    """
+    # Gelecekte versiyonlanmış dosya isimleri için basit bir pattern de desteklenebilir.
+    candidates = [
+        Path("features/gemma/selected/gemma_price_selected_82.json"),
+        Path("features/gemma/selected/gemma_price_selected.json"),
+    ]
+
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            names = data.get("features") or data.get("selected_features") or []
+            names = [str(name) for name in names if isinstance(name, str)]
+            if names:
+                logging.info("Loaded GEMMA price feature list from %s (count=%d)", path, len(names))
+                return names
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Failed to parse GEMMA price feature list from %s: %s", path, exc)
+    return []
+
+
+def _load_gemma_feature_mask(num_columns: int) -> Optional[np.ndarray]:
+    """
+    Load GEMMA feature selection mask (bool npy) if available.
+
+    - Path: data/cache/gemma/feature_selection_mask.npy
+    - Mask is aligned to the FULL engineered feature space (e.g. 87 columns).
+    """
+    mask_path = Path("data/cache/gemma/feature_selection_mask.npy")
+    if not mask_path.exists():
+        return None
+    try:
+        mask = np.load(mask_path)
+        if mask.dtype != bool:
+            mask = mask.astype(bool)
+        if len(mask) != num_columns:
+            logging.warning(
+                "GEMMA feature mask length (%d) != feature columns (%d).",
+                len(mask),
+                num_columns,
+            )
+            # Shape uyuşmuyorsa, güvenli tarafta kalmak için mask'i kullanma:
+            return None
+        logging.info("Loaded GEMMA feature mask from %s (True count=%d)", mask_path, int(mask.sum()))
+        return mask
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Failed to load GEMMA feature mask from %s: %s", mask_path, exc)
+        return None
+
+
+def apply_gemma_selection_to_features(feature_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply GEMMA tuning selection (names or mask) to the engineered feature_df.
+
+    Seçim sırası:
+      1) İsim listesi (gemma_price_selected_*.json) → feature_df kolonları ile kesişim.
+      2) Maske (feature_selection_mask.npy) → bool array ile sütun filtresi.
+      3) Hiçbiri yoksa → feature_df aynen bırakılır (tam 87 kolon).
+
+    Böylece:
+      - RL dataset, GEMMA'nın production subset'i ile aynı feature uzayını kullanır.
+      - Seçilen feature sayısı tuning'e göre N; PPO env state_dim = N + 2 olur.
+    """
+    if feature_df.empty:
+        return feature_df
+
+    original_cols = list(feature_df.columns)
+    n_original = len(original_cols)
+
+    # 1) İsim listesi
+    name_list = _load_gemma_price_feature_names()
+    selected_cols: List[str] = []
+
+    if name_list:
+        # JSON'daki sıralama korunarak, mevcut kolonlarla kesişim alınır.
+        selected_cols = [name for name in name_list if name in feature_df.columns]
+        missing = [name for name in name_list if name not in feature_df.columns]
+        if missing:
+            logging.warning(
+                "GEMMA price feature list missing %d columns in current frame (showing up to 5): %s",
+                len(missing),
+                missing[:5],
+            )
+
+    # 2) Maske fallback
+    if not selected_cols:
+        mask = _load_gemma_feature_mask(n_original)
+        if mask is not None:
+            selected_cols = [col for col, keep in zip(original_cols, mask) if keep]
+
+    # 3) Hiçbiri yoksa veya maske / isim listesi boşsa → tüm kolonlar
+    if not selected_cols:
+        logging.warning(
+            "No GEMMA feature selection artifacts usable. RL dataset will use ALL %d engineered features.",
+            n_original,
+        )
+        return feature_df
+
+    # Son güvenlik: sadece mevcut kolonlar
+    selected_cols = [c for c in selected_cols if c in feature_df.columns]
+    n_selected = len(selected_cols)
+
+    if n_selected == 0:
+        logging.warning(
+            "GEMMA selection produced 0 overlapping columns. RL dataset will fall back to ALL %d features.",
+            n_original,
+        )
+        return feature_df
+
+    logging.info(
+        "Applying GEMMA feature selection to RL dataset: %d → %d columns",
+        n_original,
+        n_selected,
+    )
+    return feature_df[selected_cols]
+
+
 def ensure_ratios(train_ratio: float, val_ratio: float) -> None:
     total = train_ratio + val_ratio
     if total >= 1.0:
@@ -186,7 +333,17 @@ def compute_splits(n_rows: int, train_ratio: float, val_ratio: float, min_split:
     return DatasetSplits(slice(0, train_end), slice(train_end, val_end), slice(val_end, n_rows))
 
 
-def save_npz(path: Path, features: np.ndarray, prices: np.ndarray, feature_columns, price_columns, timestamps, symbol, timeframe, overwrite: bool) -> None:
+def save_npz(
+    path: Path,
+    features: np.ndarray,
+    prices: np.ndarray,
+    feature_columns,
+    price_columns,
+    timestamps,
+    symbol,
+    timeframe,
+    overwrite: bool,
+) -> None:
     if path.exists() and not overwrite:
         raise FileExistsError(f"Refusing to overwrite existing file: {path}")
 
@@ -225,6 +382,19 @@ def main() -> None:
     timestamps = extras["timestamps"]
     price_frame = extras["price_frame"]
 
+    # === YENİ: GEMMA TUNING SEÇİMİNİ RL FEATURE FRAME'İNE UYGULA ===
+    original_dim = feature_df.shape[1]
+    feature_df = apply_gemma_selection_to_features(feature_df)
+    selected_dim = feature_df.shape[1]
+    logging.info(
+        "RL feature frame dimension after GEMMA selection: %d → %d",
+        original_dim,
+        selected_dim,
+    )
+
+    if selected_dim <= 0:
+        raise RuntimeError("No features remaining after GEMMA selection; cannot build RL dataset.")
+
     n_rows = len(feature_df)
     if n_rows < args.min_rows:
         raise RuntimeError(f"Only {n_rows} usable rows after cleaning; fetch more data or loosen min_rows")
@@ -250,6 +420,8 @@ def main() -> None:
         "splits": {},
         "start_date": args.start_date,
         "end_date": args.end_date,
+        "feature_dim_full": int(original_dim),
+        "feature_dim_selected": int(selected_dim),
     }
 
     for name, slc in split_map.items():
@@ -277,7 +449,12 @@ def main() -> None:
 
     metadata_path = output_dir / f"{base}_metadata.json"
     write_metadata(metadata_path, summary)
-    logging.info("Dataset preparation complete. Train/Val/Test rows: %s", {k: v["rows"] for k, v in summary["splits"].items()})
+    logging.info(
+        "Dataset preparation complete. Train/Val/Test rows: %s | feature_dim: %d (full) → %d (selected)",
+        {k: v["rows"] for k, v in summary["splits"].items()},
+        original_dim,
+        selected_dim,
+    )
 
 
 if __name__ == "__main__":
