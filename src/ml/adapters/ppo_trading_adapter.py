@@ -93,6 +93,13 @@ class PPOTradingAdapter:
             self._symbol_alias_map.setdefault(normalized, canonical)
         self._normalized_symbols = set(self._symbol_alias_map.keys())
 
+        logger.info(
+            "✅ [PPO-INIT] enabled=%s | cfg.symbols=%s | normalized=%s",
+            self.cfg.enabled,
+            list(self.cfg.symbols),
+            list(self._normalized_symbols),
+        )
+
         if self.cfg.timeframe.lower() != self.STATE_TIMEFRAME:
             logger.warning(
                 "PPO adapter forcing timeframe to %s (config requested %s)",
@@ -137,9 +144,19 @@ class PPOTradingAdapter:
         """Return PPO score for long/flat decision (+ metadata)."""
         symbol_norm = self._normalize_symbol(symbol)
         if not self.cfg.enabled:
-            return self.cfg.fallback_score, {"reason": "disabled"}
+            return self.cfg.fallback_score, {
+                "reason": "disabled",
+                "symbol": symbol,
+                "normalized_symbol": symbol_norm,
+            }
         if not self._is_symbol_supported(symbol_norm):
-            return self.cfg.fallback_score, {"reason": "unsupported_symbol"}
+            return self.cfg.fallback_score, {
+                "reason": "unsupported_symbol",
+                "symbol": symbol,
+                "normalized_symbol": symbol_norm,
+                "supported_normalized": sorted(self._normalized_symbols),
+                "raw_cfg_symbols": list(self.cfg.symbols),
+            }
 
         await self._ensure_model_loaded()
         if not self._model:
@@ -206,9 +223,14 @@ class PPOTradingAdapter:
                 query_symbol, self.STATE_TIMEFRAME
             )
             if (df is None or df.empty) and query_symbol != symbol:
+                canonical_symbol = self._symbol_alias_map.get(symbol, symbol)
                 df = await self.market_data_pipeline.get_latest_ohlcv(
-                    symbol, self.STATE_TIMEFRAME
+                    canonical_symbol, self.STATE_TIMEFRAME
                 )
+                if (df is None or df.empty) and canonical_symbol != symbol:
+                    df = await self.market_data_pipeline.get_latest_ohlcv(
+                        symbol, self.STATE_TIMEFRAME
+                    )
             if df is None or df.empty:
                 logger.debug("PPO adapter received empty dataframe for %s", symbol)
                 return None

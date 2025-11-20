@@ -160,6 +160,13 @@ class ProductionCoordinator:
             self.config = LiveTradingConfiguration.load()
             logger.warning("ProductionCoordinator initialized by loading its own configuration. (Legacy mode)")
 
+        rl_cfg_dbg = (self.config.get('ml', {}) or {}).get('reinforcement_learning', {})
+        logger.info(
+            "🧪 [PPO-CONFIG] enabled=%s | symbols=%s",
+            rl_cfg_dbg.get('ppo_enabled'),
+            rl_cfg_dbg.get('ppo_symbols'),
+        )
+
         # Debug ayarını config'den oku
         self.debug_logging = self.config.get('debug', {}).get('strategy_logging', False)
         
