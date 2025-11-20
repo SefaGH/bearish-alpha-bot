@@ -6,19 +6,15 @@ from typing import Tuple, Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 # Aksiyon Etiketleri: Hedef Pozisyon Oranları
-# Eski: ['TARGET_0.0', 'TARGET_0.5', 'TARGET_1.0']
-# Yeni: Sadece FLAT (0.0) ve FULL LONG (1.0)
 ACTION_LABELS = ['TARGET_0.0', 'TARGET_1.0']
 
 
 class RLTradingEnv:
     """
-    Gelişmiş RL Ticaret Ortamı (Final Version - State Augmented).
+    Gelişmiş RL Ticaret Ortamı (Benchmark Karşılaştırmalı Reward ile).
 
-    Özellikler:
-    1. Target Position Logic: Aksiyonlar hedef pozisyon oranını belirler (0.0, 1.0).
-    2. Reward Shaping: Minimal – temel olarak portföy log-getirisi kullanılır.
-    3. State Augmentation: State vektörü, piyasa verilerine ek olarak portföy durumunu (pozisyon oranı + normalize PV) içerir.
+    - Aksiyonlar: 0 → FLAT (0.0), 1 → FULL LONG (1.0)
+    - Reward: Bot portföyü log-getirisi - Buy&Hold benchmark log-getirisi
     """
 
     def __init__(
@@ -29,9 +25,6 @@ class RLTradingEnv:
         initial_balance: float = 10000.0,
         idle_cost: float = 0.0,
     ):
-        """
-        Environment başlatıcı.
-        """
         if features_df.empty or raw_df.empty:
             raise ValueError("DataFrames cannot be empty.")
 
@@ -44,37 +37,28 @@ class RLTradingEnv:
         self.raw_df = raw_df
         self.initial_balance = initial_balance
 
-        # Config ve Parametreler
         config = config or {}
         self.fee = config.get("fee_pct", 0.0006)
 
-        # --- STATE DIMENSION ---
-        # Feature Sayısı + 2 Ekstra Bilgi (Pozisyon Oranı + Normalize Portföy Değeri)
+        # State: features + [position_fraction, normalized_pv]
         self.state_dim = len(features_df.columns) + 2
+        self.action_dim = 2  # 0: flat, 1: full long
 
-        # Action space: 2 discrete aksiyon (0: flat, 1: full long)
-        self.action_dim = 2
-
-        # Durum Değişkenleri
         self.position_fraction: float = 0.0
 
-        # Reward Parametreleri
+        # Reward clip/scale
         self.reward_clip_enabled = config.get("reward_clip_enabled", True)
         self.reward_clip_min = config.get("reward_clip_min", -1.0)
         self.reward_clip_max = config.get("reward_clip_max", 1.0)
         self.reward_scale = config.get("reward_scale", 1.0)
 
-        # Trade penalty ve idle cost'u şimdilik kapatıyoruz (FinRL benzeri sade reward için)
+        # Trade penalty / idle cost = 0 (benchmark-based reward ile gereksiz)
         self.trade_penalty_alpha = 0.0
-
         cfg_idle = config.get("idle_cost", None)
-        if cfg_idle is not None:
-            self.idle_cost = float(cfg_idle)
-        else:
-            self.idle_cost = float(idle_cost)
+        self.idle_cost = float(cfg_idle) if cfg_idle is not None else float(idle_cost)
 
         logger.info(
-            "✅ RLTradingEnv Initialized. Mode: Target Position (0.0/1.0) + Augmented State. "
+            "✅ RLTradingEnv Initialized (Benchmark-aware). "
             "state_dim=%d, action_dim=%d, idle_cost=%s",
             self.state_dim,
             self.action_dim,
@@ -90,17 +74,21 @@ class RLTradingEnv:
         self.total_pnl = 0.0
         self.done = False
         self.position_fraction = 0.0
+
+        # --- Benchmark: Buy & Hold BTC ---
+        # Başlangıçta tüm sermaye ile BTC alıp episode boyunca hiç satmayan portföy.
+        first_price = float(self.raw_df["close"].iloc[0])
+        # Fee'yi de hesaba katarak alınabilecek BTC adedi
+        self.bench_position = (self.initial_balance / (first_price * (1.0 + self.fee)))
+        self.bench_pv = self.bench_position * first_price
+        self.bench_prev_pv = self.bench_pv
+
         return self._get_state()
 
     def _get_portfolio_value(self, price: float) -> float:
-        """Yardımcı Fonksiyon: Güncel portföy değerini hesaplar (Nakit + Varlık)."""
         return self.balance + (self.position * price)
 
     def _get_state(self) -> np.ndarray:
-        """
-        State vektörünü oluşturur.
-        İçerik: [Market Features (N)] + [Position Fraction (1)] + [Normalized PV (1)]
-        """
         market_state = self.features_df.iloc[self._current_step].values.astype(
             np.float32
         )
@@ -121,89 +109,92 @@ class RLTradingEnv:
         return np.concatenate([market_state, portfolio_state])
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
-        """Bir zaman adımı ilerletir."""
         if self.done:
             raise ValueError("step() called after episode is done.")
 
-        # 1. Hedef Pozisyonu Belirle (Discrete 0/1 → 0.0 / 1.0)
+        # 1) Hedef pozisyon oranı (0: 0.0, 1: 1.0)
         TARGETS = {0: 0.0, 1: 1.0}
         target_fraction = TARGETS.get(int(action), 0.0)
 
-        # 2. Adım İlerlet ve Fiyat Al
+        # 2) Zamanı ilerlet, fiyatı al
         self._current_step += 1
         if self._current_step >= len(self.features_df) - 1:
             self.done = True
 
         current_price = float(self.raw_df["close"].iloc[self._current_step])
 
-        # 3. İşlem Öncesi Değerler
-        portfolio_value_before = self._get_portfolio_value(current_price)
+        # 3) İşlem öncesi PV'ler
+        prev_bot_pv = self._get_portfolio_value(current_price)
+        prev_bench_pv = self.bench_pv
 
-        # Ne kadar değişim gerekiyor?
+        # 4) Bot portföyü için trade uygula
         delta_fraction = target_fraction - self.position_fraction
         trade_fraction = abs(delta_fraction)
 
-        # 4. İşlemi Uygula (delta fraction üzerinden al/sat)
-        if trade_fraction > 1e-6 and portfolio_value_before > 0:
-            if delta_fraction > 0:  # ALIM: pozisyonu artır
-                notional_to_buy = portfolio_value_before * delta_fraction
-                notional_to_buy = min(
-                    notional_to_buy, self.balance
-                )  # Bakiye kontrolü
-
+        if trade_fraction > 1e-6 and prev_bot_pv > 0:
+            if delta_fraction > 0:  # ALIM
+                notional_to_buy = prev_bot_pv * delta_fraction
+                notional_to_buy = min(notional_to_buy, self.balance)
                 if notional_to_buy > 0:
-                    # Fee'yi fiyat tarafında uygula
                     amount_to_buy = (notional_to_buy / (1.0 + self.fee)) / current_price
                     self.position += amount_to_buy
                     self.balance -= notional_to_buy
-
-            elif delta_fraction < 0:  # SATIŞ: pozisyonu azalt
-                notional_to_sell = portfolio_value_before * trade_fraction
+            elif delta_fraction < 0:  # SATIŞ
+                notional_to_sell = prev_bot_pv * trade_fraction
                 max_sell_notional = self.position * current_price
                 notional_to_sell = min(notional_to_sell, max_sell_notional)
-
                 if notional_to_sell > 0:
                     amount_to_sell = notional_to_sell / current_price
                     revenue = notional_to_sell * (1.0 - self.fee)
-
                     self.position -= amount_to_sell
                     self.balance += revenue
 
-        # Güncel hedef pozisyon oranını yaz
         self.position_fraction = target_fraction
 
-        # 5. Reward Hesapla (log-return)
-        new_portfolio_value = self._get_portfolio_value(current_price)
-        previous_portfolio_value = self.initial_balance + self.total_pnl
+        # 5) Bot & benchmark portföylerini güncelle
+        new_bot_pv = self._get_portfolio_value(current_price)
 
-        if previous_portfolio_value > 0 and new_portfolio_value > 0:
-            base_reward = float(
-                np.log(new_portfolio_value / previous_portfolio_value)
-            )
+        # Benchmark PV (buy & hold)
+        self.bench_pv = self.bench_position * current_price
+        new_bench_pv = self.bench_pv
+
+        # 6) Reward = bot log-return - benchmark log-return
+        if prev_bot_pv > 0 and new_bot_pv > 0:
+            bot_log_ret = float(np.log(new_bot_pv / prev_bot_pv))
         else:
-            base_reward = 0.0
+            bot_log_ret = 0.0
 
-        self.total_pnl = new_portfolio_value - self.initial_balance
+        if prev_bench_pv > 0 and new_bench_pv > 0:
+            bench_log_ret = float(np.log(new_bench_pv / prev_bench_pv))
+        else:
+            bench_log_ret = 0.0
+
+        base_reward = bot_log_ret - bench_log_ret
+
+        self.total_pnl = new_bot_pv - self.initial_balance
         reward = base_reward
 
-        # Batış Cezası (Stop-out)
-        if new_portfolio_value < self.initial_balance * 0.5:
+        # Stop-out: bot PV çok düşerse epizodu bitir
+        if new_bot_pv < self.initial_balance * 0.5:
             self.done = True
             reward = -1.0
 
-        # Clip & Scale
         if self.reward_clip_enabled:
             reward = max(self.reward_clip_min, min(self.reward_clip_max, reward))
         reward *= self.reward_scale
+
+        # Benchmark previous PV'yi güncelle
+        self.bench_prev_pv = new_bench_pv
 
         next_state = self._get_state()
 
         info = {
             "step": self._current_step,
             "pnl": self.total_pnl,
-            "portfolio_value": new_portfolio_value,
+            "portfolio_value": new_bot_pv,
+            "benchmark_value": new_bench_pv,
             "position_fraction": self.position_fraction,
-            "reward": reward,
+            "reward": float(reward),
             "action": int(action),
         }
 
