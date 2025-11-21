@@ -152,7 +152,7 @@ class RiskManager:
             RiskRewardRatioRule(config=self.risk_config),
             # Optional: Check strategy performance
             StrategyPerformanceRule(
-                min_win_rate=0.35,
+                min_win_rate=0.40,
                 performance_monitor=self.performance_monitor
             )
         ]

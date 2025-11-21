@@ -11,20 +11,35 @@ import argparse
 import pickle
 import random
 import sys
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 
+# Proje kök dizinini yola ekle
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+# Gerekli Importlar
+from src.ml.rl_trading_env import RLTradingEnv
+from scripts.rl_dataset_utils import load_npz_dataset
+from src.ml.reinforcement_learning import TradingRLAgent
 
 
 # -----------------------------------------------------------------------------
 # Dataset & model helpers
 # -----------------------------------------------------------------------------
+
+def configure_logging(level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="2023-%m-%d %H:%M:%S",
+    )
+
 
 def apply_reward_transform(
     rewards: np.ndarray,
@@ -43,25 +58,72 @@ def apply_reward_transform(
     return rewards
 
 
-def load_agent(model_path: Path, state_size: int) -> Any:
-    from src.ml.reinforcement_learning import TradingRLAgent  # noqa: E402
+def _extract_checkpoint_state_size(model_path: Path) -> int | None:
+    """Checkpoint'ten state boyutunu tahmin etmeye çalışır."""
+    try:
+        checkpoint = torch.load(model_path, map_location="cpu")
+    except Exception:
+        return None
 
-    agent = TradingRLAgent(state_size=state_size, action_size=3)
-    agent.load_model(str(model_path))
+    state_dict = checkpoint.get("q_network")
+    if not isinstance(state_dict, dict):
+        return None
+
+    # İlk katmanın ağırlık matrisini bul (input_features x hidden_size)
+    for key, tensor in state_dict.items():
+        if (
+            key.endswith("network.0.weight")
+            and hasattr(tensor, "shape")
+            and len(tensor.shape) == 2
+        ):
+            # shape[1] input size'dır
+            return int(tensor.shape[1])
+    return None
+
+
+def load_agent(model_path: Path, state_size: int) -> Any:
+    # Checkpoint'teki boyutu kontrol et
+    ckpt_size = _extract_checkpoint_state_size(model_path)
+
+    final_size = state_size
+    if ckpt_size is not None and ckpt_size != state_size:
+        logging.warning(
+            "⚠️ Dimension Mismatch! Env says %s, Checkpoint says %s.",
+            state_size,
+            ckpt_size,
+        )
+        logging.warning("➡️ Using Checkpoint size (%s) to prevent crash.", ckpt_size)
+        final_size = ckpt_size
+
+    logging.info("🤖 Loading Agent with state_size=%s", final_size)
+    agent = TradingRLAgent(state_size=final_size, action_size=3)
+
+    try:
+        agent.load_model(str(model_path))
+    except Exception as e:
+        logging.error("Failed to load model: %s", e)
+        raise
+
     return agent
 
 
-def load_dataset(dataset_path: Path) -> Tuple[Any, np.ndarray]:
-    from scripts.rl_dataset_utils import load_npz_dataset  # noqa: E402
+def build_replay_from_dataset(
+    dataset_features: Any,
+    close_prices: np.ndarray,
+) -> List[Tuple]:
+    """
+    Sentetik bir replay buffer oluşturur.
 
-    dataset_features, price_df, _ = load_npz_dataset(dataset_path)
-    close_prices = price_df["close"].to_numpy(dtype=float)
-    return dataset_features, close_prices
-
-
-def build_replay_from_dataset(dataset_features: Any, close_prices: np.ndarray) -> List[Tuple]:
+    DİKKAT: Bu fonksiyon sadece feature'ları state olarak kullanır.
+    Eğer model 'Augmented State' (Feature + Pozisyon) bekliyorsa bu replay uyumsuz olabilir.
+    Bu durumda state vektörünü sıfırlarla (padding) tamamlamamız gerekebilir.
+    """
     replay: List[Tuple] = []
     max_idx = len(dataset_features) - 1
+
+    # Not: Sentetik replay oluştururken modelin beklediği ekstra state bilgilerini (pozisyon vb.)
+    # tam olarak simüle edemeyebiliriz. Bu fonksiyon genelde basit debug içindir.
+
     for i in range(max_idx):
         state = dataset_features.iloc[i].to_numpy(dtype=float)
         next_state = dataset_features.iloc[i + 1].to_numpy(dtype=float)
@@ -80,7 +142,14 @@ def load_replay(replay_path: Path) -> List[Tuple]:
 def compute_reward_stats(replay: List[Tuple]) -> Dict[str, float]:
     rewards = np.array([exp[2] for exp in replay])
     if rewards.size == 0:
-        return {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "1%": 0.0, "99%": 0.0}
+        return {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "1%": 0.0,
+            "99%": 0.0,
+        }
     return {
         "mean": float(rewards.mean()),
         "std": float(rewards.std()),
@@ -109,9 +178,28 @@ def compute_td_stats(
     gamma = getattr(agent, "gamma", 0.99)
     scale_fn = getattr(agent, "_scale_q", None)
 
+    # Modelin beklediği input boyutu
+    expected_dim = agent.state_size
+
     for _ in range(samples):
         batch = random.sample(replay, min(batch_size, len(replay)))
-        states = torch.FloatTensor(np.stack([exp[0] for exp in batch]))
+
+        # State boyutlarını kontrol et ve gerekirse padle
+        raw_states = [exp[0] for exp in batch]
+        raw_next_states = [exp[3] for exp in batch]
+
+        # Padding mantığı: Eğer replay'deki veri (örn 82) modelden (örn 84) küçükse
+        # eksik kısımları 0 ile doldur. (Genelde sentetik replay durumunda olur)
+        if raw_states[0].shape[0] < expected_dim:
+            diff = expected_dim - raw_states[0].shape[0]
+            raw_states = [np.pad(s, (0, diff), "constant") for s in raw_states]
+            raw_next_states = [
+                np.pad(s, (0, diff), "constant") for s in raw_next_states
+            ]
+
+        states = torch.FloatTensor(np.stack(raw_states))
+        next_states = torch.FloatTensor(np.stack(raw_next_states))
+
         actions = torch.LongTensor([exp[1] for exp in batch])
         reward_array = np.stack([exp[2] for exp in batch])
         reward_array = apply_reward_transform(
@@ -121,7 +209,6 @@ def compute_td_stats(
             scale=reward_scale,
         )
         rewards = torch.FloatTensor(reward_array)
-        next_states = torch.FloatTensor(np.stack([exp[3] for exp in batch]))
 
         q_values = agent.q_network(states)
         if callable(scale_fn):
@@ -146,12 +233,44 @@ def compute_td_stats(
     }
 
 
-def sample_q_values(agent: Any, dataset_features: Any, sample_size: int) -> np.ndarray:
+def sample_q_values(
+    agent: Any,
+    dataset_features: Any,
+    sample_size: int,
+    price_df: Any = None,
+) -> np.ndarray:
+    """
+    Dataset üzerinden rastgele örnekler seçerek Q-değerlerini hesaplar.
+    Environment kullanılarak gerçek 'Augmented State' oluşturulur.
+    """
     total = len(dataset_features)
     if total == 0:
         return np.zeros((0, agent.q_network.network[-1].out_features))
+
     indices = np.random.choice(total, min(sample_size, total), replace=False)
-    states = torch.FloatTensor(dataset_features.iloc[indices].to_numpy(dtype=float))
+
+    # Eğer price_df varsa Env kullanarak gerçek state üret (Tercih edilen)
+    if price_df is not None:
+        # Geçici Env oluştur
+        env = RLTradingEnv(features_df=dataset_features, raw_df=price_df)
+        states_list = []
+        for idx in indices:
+            # Env'in iç durumunu o indekse ayarla (Hackish ama etkili)
+            env._current_step = idx
+            # Rastgele bir pozisyon durumu ata ki çeşitlilik olsun
+            env.position_fraction = random.choice([0.0, 0.5, 1.0])
+            states_list.append(env._get_state())
+
+        states = torch.FloatTensor(np.stack(states_list))
+
+    else:
+        # Fallback: Sadece feature'ları kullan (Padleme gerekebilir)
+        raw_states = dataset_features.iloc[indices].to_numpy(dtype=float)
+        if raw_states.shape[1] < agent.state_size:
+            diff = agent.state_size - raw_states.shape[1]
+            raw_states = np.pad(raw_states, ((0, 0), (0, diff)), "constant")
+        states = torch.FloatTensor(raw_states)
+
     with torch.no_grad():
         q_values = agent.q_network(states)
         if hasattr(agent, "_scale_q"):
@@ -198,17 +317,33 @@ def inspect_checkpoint(
 ) -> Dict[str, Any]:
     dataset_features = None
     close_prices = None
+    price_df = None
+    env_state_size = None
 
+    # 1. Dataset varsa yükle ve Env boyutunu öğren
     if dataset_path:
-        dataset_features, close_prices = load_dataset(dataset_path)
-        if state_size is None:
-            state_size = dataset_features.shape[1]
+        logging.info("Loading dataset %s...", dataset_path)
+        dataset_features, price_df, _ = load_npz_dataset(dataset_path)
+        close_prices = price_df["close"].to_numpy(dtype=float)
 
+        # Env üzerinden state boyutunu öğren
+        dummy_env = RLTradingEnv(features_df=dataset_features, raw_df=price_df)
+        env_state_size = getattr(dummy_env, "state_dim", dataset_features.shape[1])
+        logging.info("Detected Env State Size: %s", env_state_size)
+
+    # 2. State Size Belirle (Öncelik: CLI -> Env -> Dataset -> Varsayılan)
     if state_size is None:
-        state_size = 82
+        if env_state_size is not None:
+            state_size = env_state_size
+        elif dataset_features is not None:
+            state_size = dataset_features.shape[1]
+        else:
+            state_size = 82  # En kötü durum fallback
 
+    # 3. Ajanı Yükle
     agent = load_agent(model_path, state_size)
 
+    # 4. Replay Buffer Hazırla
     if replay_path:
         replay = load_replay(replay_path)
     elif dataset_features is not None and close_prices is not None:
@@ -219,6 +354,7 @@ def inspect_checkpoint(
     if not replay:
         raise ValueError("Replay buffer is empty; cannot compute TD statistics")
 
+    # 5. İstatistikleri Hesapla
     td_metrics = compute_td_stats(
         agent,
         replay,
@@ -233,7 +369,13 @@ def inspect_checkpoint(
     histograms = None
     q_values_sample = None
     if q_histogram and dataset_features is not None:
-        q_values_sample = sample_q_values(agent, dataset_features, histogram_sample)
+        # Fiyat verisini de göndererek gerçekçi state (pozisyonlu) üretimi sağla
+        q_values_sample = sample_q_values(
+            agent,
+            dataset_features,
+            histogram_sample,
+            price_df,
+        )
         histograms = compute_q_histograms(q_values_sample, bins=histogram_bins)
 
     return {
@@ -279,25 +421,47 @@ def print_inspection(summary: Dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Inspect RL checkpoints and replay statistics.")
+    parser = argparse.ArgumentParser(
+        description="Inspect RL checkpoints and replay statistics.",
+    )
     parser.add_argument("--model", required=True, type=Path)
-    parser.add_argument("--dataset", type=Path, help="Path to *.npz dataset for synthesizing replay and histogram sampling")
-    parser.add_argument("--state-size", type=int, help="Force state size when instantiating agent")
+    parser.add_argument(
+        "--dataset",
+        type=Path,
+        help="Path to *.npz dataset for synthesizing replay and histogram sampling",
+    )
+    parser.add_argument(
+        "--state-size",
+        type=int,
+        help="Force state size when instantiating agent",
+    )
     parser.add_argument(
         "--replay",
         type=Path,
         help="Optional replay pickle (trusted project artifact only)",
     )
     clip_group = parser.add_mutually_exclusive_group()
-    clip_group.add_argument("--reward-clip", type=float, help="Symmetric reward clipping (±value)")
-    clip_group.add_argument("--reward-clip-range", nargs=2, type=float, metavar=("MIN", "MAX"))
+    clip_group.add_argument(
+        "--reward-clip",
+        type=float,
+        help="Symmetric reward clipping (±value)",
+    )
+    clip_group.add_argument(
+        "--reward-clip-range",
+        nargs=2,
+        type=float,
+        metavar=("MIN", "MAX"),
+    )
     parser.add_argument("--reward-scale", type=float, default=1.0)
     parser.add_argument("--samples", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--q-histogram", action="store_true")
     parser.add_argument("--histogram-bins", type=int, default=20)
     parser.add_argument("--histogram-sample", type=int, default=1024)
+    parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
+
+    configure_logging(args.log_level)
 
     clip_range = tuple(args.reward_clip_range) if args.reward_clip_range else None
 

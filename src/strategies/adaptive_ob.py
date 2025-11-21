@@ -81,48 +81,27 @@ class AdaptiveOversoldBounce(OversoldBounce):
         return True, "All required data is present."
         
     def get_adaptive_rsi_threshold(self, market_regime: Dict) -> float:
-        """
-        Dynamic RSI thresholds based on market conditions.
-        Now respects config values and uses gentler adjustments.
-        
-        Args:
-            market_regime: Dictionary with 'trend', 'momentum', 'volatility'
-            
-        Returns:
-            Adaptive RSI threshold for oversold detection
-        """
-        # Get config values with proper fallbacks
-        base_rsi = float(self.base_cfg.get('adaptive_rsi_base', 
-                         self.base_cfg.get('rsi_max', 45)))
-        
-        # Get adjustment range from config (default ±10)
-        adapt_range = float(self.base_cfg.get('adaptive_rsi_range', 10))
-        
+        """Sniper-mode RSI floors force patience for deep oversold prints."""
+        base_rsi = float(self.base_cfg.get('adaptive_rsi_base', 32.0))
+        adapt_range = float(self.base_cfg.get('adaptive_rsi_range', 8.0))
+
         trend = market_regime.get('trend', 'neutral')
         momentum = market_regime.get('momentum', 'sideways')
-        
-        # Start with base value
         threshold = base_rsi
-        
-        # Gentler adjustments based on regime
+
         if trend == 'bullish':
-            # In uptrends, be slightly more selective
             if momentum == 'strong':
-                threshold = base_rsi - min(self.MAX_THRESHOLD_ADJUSTMENT, adapt_range/2)
+                threshold = base_rsi + 2.0
             else:
-                threshold = base_rsi - min(self.MAX_THRESHOLD_ADJUSTMENT * 0.6, adapt_range/3)
-        
+                threshold = base_rsi
         elif trend == 'bearish':
-            # In downtrends, be slightly more aggressive
             if momentum == 'strong':
-                threshold = base_rsi + min(self.MAX_THRESHOLD_ADJUSTMENT, adapt_range/2)
+                threshold = base_rsi - 5.0  # Target ~27
             else:
-                threshold = base_rsi + min(self.MAX_THRESHOLD_ADJUSTMENT * 0.6, adapt_range/3)
-        
-        # Clamp to reasonable range (never below 30 or above 50)
-        min_threshold = max(30, base_rsi - adapt_range)
-        max_threshold = min(50, base_rsi + adapt_range)
-        
+                threshold = base_rsi - 2.0  # Target ~30
+
+        min_threshold = max(20, base_rsi - adapt_range)
+        max_threshold = min(40, base_rsi + adapt_range)
         return max(min_threshold, min(max_threshold, threshold))
     
     def calculate_dynamic_position_size(self, volatility_regime: str, 
@@ -139,7 +118,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
         """
         # High volatility: Reduce position size for risk management
         if volatility_regime == 'high':
-            return base_multiplier * 0.75
+            return base_multiplier * 0.50
         
         # Low volatility: Can increase position size slightly
         elif volatility_regime == 'low':

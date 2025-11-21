@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -53,6 +53,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-rows", type=int, default=4000, help="Minimum rows required after cleaning")
     parser.add_argument("--min-split", type=int, default=512, help="Minimum rows required per split")
     parser.add_argument("--input-file", help="Optional CSV/Parquet with OHLCV columns (timestamp,open,high,low,close,volume)")
+    parser.add_argument("--start-date", type=str, help="Optional start date (e.g. 2020-01-01) to filter OHLCV by timestamp")
+    parser.add_argument("--end-date", type=str, help="Optional end date (e.g. 2024-01-01) to filter OHLCV by timestamp")
     parser.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING,...)")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing artifacts")
     return parser.parse_args()
@@ -68,6 +70,17 @@ def configure_logging(level: str) -> None:
 
 def sanitize_symbol(symbol: str) -> str:
     return symbol.replace("/", "_").replace(":", "_").replace("-", "-")
+
+
+def _apply_date_filter(df: pd.DataFrame, start_date: Optional[str], end_date: Optional[str]) -> pd.DataFrame:
+    """Filter DataFrame by start/end date if provided."""
+    if start_date:
+        start_ts = pd.to_datetime(start_date)
+        df = df.loc[df.index >= start_ts]
+    if end_date:
+        end_ts = pd.to_datetime(end_date)
+        df = df.loc[df.index <= end_ts]
+    return df
 
 
 def load_price_data(args: argparse.Namespace) -> pd.DataFrame:
@@ -91,6 +104,18 @@ def load_price_data(args: argparse.Namespace) -> pd.DataFrame:
     timestamp = pd.to_datetime(df["timestamp"], unit="ms", errors="ignore")
     df = df.assign(timestamp=timestamp)
     df = df.sort_values("timestamp").set_index("timestamp")
+
+    # Yeni: tarih filtresi uygula
+    original_len = len(df)
+    df = _apply_date_filter(df, args.start_date, args.end_date)
+    if len(df) != original_len:
+        logging.info(
+            "Applied date filter: start_date=%s, end_date=%s → rows %d → %d",
+            args.start_date,
+            args.end_date,
+            original_len,
+            len(df),
+        )
 
     missing = [col for col in PRICE_COLUMNS if col not in df.columns]
     if missing:
@@ -223,6 +248,8 @@ def main() -> None:
         "rows": n_rows,
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "splits": {},
+        "start_date": args.start_date,
+        "end_date": args.end_date,
     }
 
     for name, slc in split_map.items():

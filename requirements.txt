@@ -1,11 +1,6 @@
 # ============================================================================
 # Bearish Alpha Bot Requirements
 # ============================================================================
-# 
-# IMPORTANT: This project requires Python 3.11
-# 
-# Install with: pip install -r requirements.txt
-# ============================================================================
 
 # === CORE DEPENDENCIES ===
 ccxt==4.3.88
@@ -14,11 +9,11 @@ numpy<2
 python-dotenv==1.0.1
 pyyaml==6.0.2
 requests==2.32.3
-setuptools<81             # WORKAROUND for pandas_ta_classic pkg_resources deprecation
+setuptools<81
 
 # === TECHNICAL ANALYSIS ===
 ta>=0.10.2
-pandas-ta-classic==0.3.14b1 # ✅ Önceki hatanın çözümü
+pandas-ta-classic==0.3.14b1
 
 # === MACHINE LEARNING & ANALYSIS ===
 torch>=2.0.0
@@ -26,8 +21,10 @@ scikit-learn>=1.0
 optuna>=3.0.0
 scipy>=1.11.0
 imbalanced-learn>=0.12.4
-shap                      # 🚨 EKLENDİ: Model açıklanabilirliği (hata analizi) için
-matplotlib                # 🚨 EKLENDİ: Görselleştirme (hata analizi) için
+shap
+matplotlib
+stable-baselines3[extra]
+shimmy>=2.0
 
 # === ASYNC/WEBSOCKET ===
 aiohttp==3.8.6
@@ -40,8 +37,8 @@ psutil>=5.9.0
 # === NOTIFICATIONS & DEVELOPMENT ===
 python-telegram-bot==21.6
 sentry-sdk
-pytest>=7.0.0             # Sadece test ortamları için
-pytest-asyncio>=0.21.0    # Sadece test ortamları için
-pytest-timeout>=2.1.0     # Sadece test ortamları için
-pytest-mock>=3.11.0       # Sadece test ortamları için
-websocket-client>=1.6.0   # Sadece test ortamları için
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-timeout>=2.1.0
+pytest-mock>=3.11.0
+websocket-client>=1.6.0

@@ -296,8 +296,26 @@ def main() -> None:
     features_df, price_df, meta = load_npz_dataset(dataset_path)
 
     config = LiveTradingConfiguration.load(config_path=args.config, log_summary=False)
-    agent = build_agent(config, state_size=features_df.shape[1], checkpoint=checkpoint)
-    env = RLTradingEnv(features_df=features_df, raw_df=price_df)
+
+    # 1. Önce Environment'ı oluştur (ki state_dim'i öğrenebilelim)
+    logging.info("Building RL environment...")
+    rl_cfg = (config.get("ml") or {}).get("reinforcement_learning", {})
+    idle_cost = rl_cfg.get("idle_cost", 0.0)
+    
+    env = RLTradingEnv(features_df=features_df, raw_df=price_df, idle_cost=idle_cost)
+    
+    # 2. Gerçek state boyutunu Environment'tan al
+    # (Eğer env.state_dim yoksa fallback olarak feature sayısını kullan)
+    env_state_size = getattr(env, "state_dim", features_df.shape[1])
+    
+    if env_state_size != features_df.shape[1]:
+        logging.info(
+            "🧠 Validation State Size Adjusted: Dataset(%d) -> Agent(%d) (from Env)", 
+            features_df.shape[1], env_state_size
+        )
+
+    # 3. Ajanı doğru boyutla oluştur
+    agent = build_agent(config, state_size=env_state_size, checkpoint=checkpoint)
 
     metrics = evaluate_agent(agent, env, args.max_steps)
     payload = {
