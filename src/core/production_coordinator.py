@@ -502,6 +502,11 @@ class ProductionCoordinator:
                         signal['metadata'] = metadata
                         signal['symbol'] = symbol
                         signal['timestamp'] = datetime.now(timezone.utc)
+                        entry_indicators = {}
+                        if hasattr(df_30m, 'columns') and 'rsi' in df_30m.columns:
+                            entry_indicators['rsi'] = float(df_30m['rsi'].iloc[-1])
+                        if entry_indicators:
+                            signal['entry_indicators'] = entry_indicators
                         
                         # Add ML metadata if available
                         if ml_context and ml_context.is_healthy:

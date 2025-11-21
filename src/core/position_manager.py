@@ -3,11 +3,15 @@ Advanced Position Management System.
 Comprehensive position lifecycle management.
 """
 
-import logging
 import asyncio
-from typing import Dict, List, Optional, Any
+import json
+import logging
+import time
+import uuid
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 # Triple-fallback import strategy for maximum compatibility:
 # 1. Direct utils import (when src/ is on sys.path)
@@ -85,12 +89,78 @@ class AdvancedPositionManager:
         self.positions = {}  # position_id -> position_data
         self.pnl_tracker = {}  # position_id -> pnl_history
         self.closed_positions = []
+
+        # Trade history logging
+        self.repo_root = Path.cwd()
+        self.trade_history_dir = self.repo_root / 'logs'
+        self.trade_history_path = self.trade_history_dir / 'trade_history.jsonl'
+        self._ensure_trade_history_path()
         
         # Monitoring state
         self.monitoring_active = False
         self.monitoring_task = None
         
         logger.info("AdvancedPositionManager initialized")
+
+    def _ensure_trade_history_path(self):
+        try:
+            self.trade_history_dir.mkdir(parents=True, exist_ok=True)
+            self.trade_history_path.touch(exist_ok=True)
+        except Exception as exc:
+            logger.warning("Failed to prepare trade history file: %s", exc)
+
+    def _generate_trade_id(self) -> str:
+        return uuid.uuid4().hex[:8]
+
+    @staticmethod
+    def _safe_float(value: Any, fallback: Optional[float] = None) -> Optional[float]:
+        try:
+            return float(value) if value is not None else fallback
+        except (TypeError, ValueError):
+            return fallback
+
+    def _extract_entry_metadata(self, signal: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = signal.get('metadata') if isinstance(signal, dict) else {}
+        regime_info = metadata.get('regime') if isinstance(metadata, dict) else None
+        regime_label = None
+        if isinstance(regime_info, dict):
+            regime_label = regime_info.get('trend') or regime_info.get('momentum') or regime_info.get('volatility')
+        elif regime_info:
+            regime_label = str(regime_info)
+
+        ml_metadata = signal.get('ml_metadata') if signal else {}
+        if not isinstance(ml_metadata, dict):
+            ml_metadata = {}
+
+        entry_indicators = signal.get('entry_indicators') if signal else {}
+        if not isinstance(entry_indicators, dict):
+            entry_indicators = {}
+
+        return {
+            'rsi_at_entry': self._safe_float(entry_indicators.get('rsi'))
+                             or self._safe_float(signal.get('rsi'))
+                             or self._safe_float(signal.get('entry_rsi')),
+            'regime_at_entry': regime_label or signal.get('regime'),
+            'regime_confidence': self._safe_float(ml_metadata.get('regime_confidence')),
+            'ml_price_score': self._safe_float(ml_metadata.get('consensus')),
+            'ml_price_direction': ml_metadata.get('price_direction'),
+            'ml_regime': ml_metadata.get('regime'),
+            'ml_price_confidence': self._safe_float(ml_metadata.get('price_confidence')),
+            'ppo_action': signal.get('ppo_action'),
+            'ml_position_modifier': self._safe_float(signal.get('ml_position_modifier')),
+            'regime_data': regime_info if isinstance(regime_info, dict) else None,
+            'entry_indicators': entry_indicators,
+            'ml_metadata': ml_metadata
+        }
+
+    def _append_trade_history(self, payload: Dict[str, Any]) -> None:
+        try:
+            logger.debug("Appending trade payload to %s", self.trade_history_path)
+            with self.trade_history_path.open('a', encoding='utf-8') as stream:
+                stream.write(json.dumps(payload, ensure_ascii=False))
+                stream.write('\n')
+        except Exception as exc:
+            logger.warning("Failed to append trade history log: %s", exc)
 
     # *** UPDATED: Tüm açık pozisyonları kapatmak için (exchange_clients dependency injection ile) ***
     async def close_all_positions(self, exchange_clients: Optional[Dict] = None, reason: str = ExitReason.SHUTDOWN.value) -> Dict[str, Any]:
@@ -218,8 +288,14 @@ class AdvancedPositionManager:
                     exchange = 'unknown'
             
             # Create position record
+            entry_meta = self._extract_entry_metadata(signal)
+            strategy_name = signal.get('strategy_name') or signal.get('strategy') or 'unknown'
+            risk_per_unit = abs(entry_price - stop_loss)
+            risk_usd = risk_per_unit * amount if amount and amount > 0 else 0.0
+            opened_at = datetime.now(timezone.utc)
             position = {
                 'position_id': position_id,
+                'trade_id': self._generate_trade_id(),
                 'symbol': symbol,
                 'side': side,
                 'entry_price': entry_price,
@@ -229,17 +305,33 @@ class AdvancedPositionManager:
                 'stop_loss': stop_loss,
                 'take_profit': take_profit,
                 'status': PositionStatus.OPEN.value,
-                'opened_at': datetime.now(timezone.utc),
-                'strategy': signal.get('strategy', 'unknown'),
-                'exchange': exchange,  # Now guaranteed to be valid or logged as warning
+                'opened_at': opened_at,
+                'entry_time_iso': opened_at.isoformat(),
+                'open_timestamp': time.time(),
+                'strategy': strategy_name,
+                'strategy_name': strategy_name,
+                'exchange': exchange,
                 'unrealized_pnl': 0.0,
                 'realized_pnl': 0.0,
                 'trailing_stop_enabled': False,
-                'trailing_stop_distance': 0.02,  # 2% trailing distance
+                'trailing_stop_distance': 0.02,
                 'highest_price': entry_price if side == 'long' else entry_price,
                 'lowest_price': entry_price if side == 'short' else entry_price,
                 'max_adverse_excursion': 0.0,
                 'max_favorable_excursion': 0.0,
+                'max_adverse_excursion_pct': 0.0,
+                'max_favorable_excursion_pct': 0.0,
+                'entry_metadata': entry_meta,
+                'risk_usd': risk_usd,
+                'position_notional': entry_price * amount if amount else 0.0,
+                'rsi_at_entry': entry_meta.get('rsi_at_entry'),
+                'regime_at_entry': entry_meta.get('regime_at_entry'),
+                'regime_confidence': entry_meta.get('regime_confidence'),
+                'ml_price_score': entry_meta.get('ml_price_score'),
+                'ml_price_direction': entry_meta.get('ml_price_direction'),
+                'ml_regime': entry_meta.get('ml_regime'),
+                'ppo_action': entry_meta.get('ppo_action'),
+                'ml_position_modifier': entry_meta.get('ml_position_modifier'),
                 'exit_reason': None,
             }
             
@@ -316,8 +408,12 @@ class AdvancedPositionManager:
             # Update max adverse/favorable excursion
             if unrealized_pnl < 0 and abs(unrealized_pnl) > abs(position['max_adverse_excursion']):
                 position['max_adverse_excursion'] = unrealized_pnl
+                if abs(pnl_pct) > abs(position.get('max_adverse_excursion_pct', 0.0)):
+                    position['max_adverse_excursion_pct'] = pnl_pct
             elif unrealized_pnl > 0 and unrealized_pnl > position['max_favorable_excursion']:
                 position['max_favorable_excursion'] = unrealized_pnl
+                if pnl_pct > position.get('max_favorable_excursion_pct', 0.0):
+                    position['max_favorable_excursion_pct'] = pnl_pct
             
             # Update highest/lowest price for trailing stop
             if side in ['long', 'buy']:
@@ -495,7 +591,58 @@ class AdvancedPositionManager:
                 f"   P&L: ${realized_pnl:.2f} ({return_pct:+.2f}%)\n"
                 f"   Reason: {exit_reason.upper().replace('_', '-')}"
             )
-            
+            exit_time = position.get('closed_at')
+            open_time = position.get('opened_at')
+            duration_seconds = ((exit_time - open_time).total_seconds()
+                                 if exit_time and open_time else 0.0)
+            duration_min = round(duration_seconds / 60, 1)
+            risk_usd = position.get('risk_usd', 0.0)
+            rr_achieved = round(realized_pnl / risk_usd, 2) if risk_usd else None
+            mfe_pct = position.get('max_favorable_excursion_pct', 0.0)
+            mae_pct = position.get('max_adverse_excursion_pct', 0.0)
+            entry_meta = position.get('entry_metadata', {}) or {}
+            regime_data = entry_meta.get('regime_data') or {}
+            if not isinstance(regime_data, dict):
+                regime_data = {}
+            payload = {
+                'event': 'TRADE_CLOSED',
+                'trade_id': position.get('trade_id'),
+                'position_id': position_id,
+                'symbol': position.get('symbol'),
+                'side': position.get('side', '').upper(),
+                'strategy': position.get('strategy_name') or position.get('strategy'),
+                'entry_price': round(position.get('entry_price', 0.0), 4),
+                'entry_time': open_time.isoformat() if open_time else None,
+                'exit_price': round(exit_price, 4),
+                'exit_time': exit_time.isoformat() if exit_time else None,
+                'exit_reason': exit_reason,
+                'pnl_usd': round(realized_pnl, 4),
+                'pnl_pct': round(return_pct, 3),
+                'rr_achieved': rr_achieved,
+                'duration_min': duration_min,
+                'rsi_at_entry': position.get('rsi_at_entry'),
+                'regime_at_entry': position.get('regime_at_entry'),
+                'regime_conf': position.get('regime_confidence'),
+                'ml_price_score': position.get('ml_price_score'),
+                'ml_price_direction': position.get('ml_price_direction'),
+                'ml_regime': position.get('ml_regime'),
+                'ppo_action': position.get('ppo_action'),
+                'ml_position_modifier': position.get('ml_position_modifier'),
+                'mfe_pct': round(mfe_pct, 3),
+                'mae_pct': round(mae_pct, 3),
+                'entry_metadata': {
+                    'entry_indicators': entry_meta.get('entry_indicators'),
+                    'ml_metadata': entry_meta.get('ml_metadata'),
+                    'regime_data': {
+                        k: (str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v)
+                        for k, v in regime_data.items()
+                    }
+                }
+            }
+            logger.debug("TRADE_CLOSED payload prepared for position %s", position_id)
+            logger.info("TRADE_CLOSED %s", json.dumps(payload))
+            self._append_trade_history(payload)
+
             return {
                 'success': True,
                 'position_id': position_id,
@@ -964,6 +1111,55 @@ class AdvancedPositionManager:
         logger.info(f"  Avg Win:      ${stats.get('avg_win', 0.0):+.2f}")
         logger.info(f"  Avg Loss:     ${stats.get('avg_loss', 0.0):+.2f}")
         logger.info("="*70 + "\n")
+        self.log_individual_trade_history()
+
+    def log_individual_trade_history(self, limit: int = 20):
+        trades = self.closed_positions[-limit:]
+        if not trades:
+            logger.info("No closed trades available for individual history table.")
+            return
+
+        header = "=" * 120
+        logger.info(header)
+        logger.info(f" INDIVIDUAL TRADE HISTORY (Last {len(trades)})")
+        logger.info(header)
+        logger.info(
+            "ID       STRATEGY         SIDE   ENTRY       EXIT        P&L USD     P&L %   R:R   REASON         DUR(min) REGIME    CONF"
+        )
+        logger.info("-" * 120)
+
+        stats = self.get_exit_statistics()
+
+        for trade in trades:
+            trade_id = trade.get('trade_id') or trade.get('position_id', 'n/a')
+            strategy = trade.get('strategy_name') or trade.get('strategy', 'unknown')
+            side = (trade.get('side') or 'unknown').upper()[:6]
+            entry_price = trade.get('entry_price', 0.0)
+            exit_price = trade.get('exit_price', 0.0)
+            pnl = trade.get('realized_pnl', 0.0)
+            pnl_pct = trade.get('return_pct') if trade.get('return_pct') is not None else 0.0
+            risk_usd = trade.get('risk_usd', 0.0)
+            rr = round(pnl / risk_usd, 2) if risk_usd else None
+            rr_display = f"{rr:.2f}" if rr is not None else "N/A"
+            exit_reason = (trade.get('exit_reason') or 'unknown').upper()
+            opened = trade.get('opened_at')
+            closed = trade.get('closed_at')
+            duration = ((closed - opened).total_seconds() / 60) if opened and closed else 0.0
+            regime = trade.get('regime_at_entry') or 'neutral'
+            regime_conf = trade.get('regime_confidence') if trade.get('regime_confidence') is not None else 0.0
+
+            logger.info(
+                f"{trade_id:<10} {strategy:<16} {side:<6} {entry_price:>10.2f} {exit_price:>10.2f} "
+                f"{pnl:>10.4f} {pnl_pct:>+7.2f}% {rr_display:>5} {exit_reason:<14} {duration:>9.1f} {regime:<8} "
+                f"{(regime_conf if regime_conf is not None else 0.0):>5.2f}"
+            )
+
+        logger.info("-" * 120)
+        logger.info(
+            f"TOTAL P&L: {stats.get('total_pnl', 0.0):+.2f} USDT  |  Win Rate: {stats.get('win_rate', 0.0):.1f}%  |  "
+            f"Avg Win: {stats.get('avg_win', 0.0):+.2f}  |  Avg Loss: {stats.get('avg_loss', 0.0):+.2f}"
+        )
+        logger.info(header)
     
     async def start_exit_monitoring(self):
         """
