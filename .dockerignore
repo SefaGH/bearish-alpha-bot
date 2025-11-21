@@ -1,0 +1,43 @@
+# Git
+.git
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+.venv
+venv
+env
+
+# Logs (keep structure but exclude content)
+logs/*.log
+
+# Data (keep for state files)
+data/*.csv
+data/quarantine/
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests
+.pytest_cache
+
+# Heavy files
+*.tar.gz
+*.zip
+*.7z
+.dockerignore

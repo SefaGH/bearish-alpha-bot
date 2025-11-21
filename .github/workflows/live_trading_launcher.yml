@@ -191,15 +191,6 @@ jobs:
           touch data/state.json data/day_stats.json
           : > logs/.placeholder || true
 
-      - name: Install TA-Lib from source
-        run: |
-          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-          tar -xzvf ta-lib-0.4.0-src.tar.gz
-          cd ta-lib/
-          ./configure --prefix=/usr
-          make
-          sudo make install
-
       - name: Install Dependencies
         shell: bash
         run: |
@@ -296,7 +287,8 @@ jobs:
 
       - name: Upload Pre-Flight Logs
         uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && env.CI == 'true'
+        continue-on-error: true
         with:
           name: pre-flight-logs
           path: |
@@ -553,7 +545,7 @@ jobs:
 
       - name: Upload Trading Logs
         uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && env.CI == 'true'
         with:
           name: trading-logs-${{ github.run_number }}
           path: |
@@ -563,7 +555,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload trading state
-        if: always()
+        if: always() && env.CI == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: live-trading-state
@@ -575,7 +567,7 @@ jobs:
 
       - name: Upload Trading Data
         uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && env.CI == 'true'
         with:
           name: trading-data-${{ github.run_number }}
           path: |
@@ -587,7 +579,7 @@ jobs:
 
       - name: Upload Health Reports
         uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && env.CI == 'true'
         with:
           name: health-reports-${{ github.run_number }}
           path: |
@@ -598,7 +590,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Send Telegram Notification (Success)
-        if: success()
+        if: success() && env.CI == 'true'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -633,7 +625,7 @@ jobs:
           fi
 
       - name: Send Telegram Notification (Failure)
-        if: failure()
+        if: failure() && env.CI == 'true'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

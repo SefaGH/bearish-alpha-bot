@@ -1,0 +1,5 @@
+# Act configuration file
+--use-gitignore=true
+--container-architecture linux/amd64
+-P ubuntu-latest=bearish-alpha-bot:act-cached
+--pull=false

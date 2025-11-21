@@ -1,0 +1,55 @@
+# Docker image for bearish-alpha-bot with pre-installed dependencies
+FROM catthehacker/ubuntu:full-latest
+
+USER root
+
+# Install system dependencies (use default Python 3)
+RUN apt-get update && apt-get install -y \
+    wget \
+    build-essential \
+    python3 \
+    python3-dev \
+    python3-pip \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install TA-Lib from source
+RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
+    tar -xzf ta-lib-0.4.0-src.tar.gz && \
+    cd ta-lib && \
+    ./configure --prefix=/usr && \
+    make && \
+    make install && \
+    cd .. && \
+    rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
+
+# Upgrade pip and install Python dependencies (ignore system packages)
+RUN python3 -m pip install --upgrade --ignore-installed pip wheel && \
+    python3 -m pip install --ignore-installed "setuptools<81"
+
+# Pre-install core dependencies (from requirements.txt)
+RUN python3 -m pip install --no-cache-dir \
+    'aiohttp>=3.9.0' \
+    'yarl<2.0' \
+    'multidict<7.0' \
+    'TA-Lib' \
+    'websocket-client>=1.6.0' \
+    'websockets>=10.0' \
+    'ccxt' \
+    'pandas' \
+    'numpy' \
+    'scikit-learn' \
+    'pyyaml' \
+    'python-dotenv'
+
+# Pre-install ML dependencies (optional, comment out if not using ML)
+RUN python3 -m pip install --no-cache-dir \
+    'torch' \
+    'transformers' \
+    'stable-baselines3'
+
+# Set working directory
+WORKDIR /workspace
+
+# Keep container running
+CMD ["bash"]

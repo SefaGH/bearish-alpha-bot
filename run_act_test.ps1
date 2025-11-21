@@ -19,13 +19,16 @@ act workflow_dispatch `
   -j live-trading `
   --env-file .env `
   --var-file .vars `
+  --env CI=false `
   --container-architecture linux/amd64 `
-  -P ubuntu-latest=catthehacker/ubuntu:act-latest `
-  --input mode=paper `
-  --input duration=$Duration `
-  --input enable_ml=true `
-  --input dry_run=false `
-  --input skip_preflight=false `
-  --input infinite=false `
-  --input auto_restart=false `
-  --input debug_mode=true
+  -P ubuntu-latest=bearish-alpha-bot:act-cached `
+  -r `
+  --rm=false `
+    --input mode=paper `
+    --input duration=$Duration `
+    --input enable_ml=true `
+    --input dry_run=false `
+    --input skip_preflight=true `
+    --input infinite=false `
+    --input auto_restart=false `
+    --input debug_mode=true

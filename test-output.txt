@@ -1,0 +1,57 @@
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration] Ô¡É Run Set up job
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration] ­şÜÇ  Start image=bearish-alpha-bot:act-cached
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ­şÉ│  docker pull image=bearish-alpha-bot:act-cached platform=linux/amd64 username= forcePull=false
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ­şÉ│  docker create image=bearish-alpha-bot:act-cached platform=linux/amd64 entrypoint=["tail" "-f" "/dev/null"] cmd=[] network="host"
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ­şÉ│  docker run image=bearish-alpha-bot:act-cached platform=linux/amd64 entrypoint=["tail" "-f" "/dev/null"] cmd=[] network="host"
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ­şÉ│  docker exec cmd=[node --no-warnings -e console.log(process.execPath)] user= workdir=
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   Ô£à  Success - Set up job
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   Ôİü  git clone 'https://github.com/actions/setup-python' # ref=v5
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration] Non-terminating error while running 'git clone': some refs were not updated
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration] Ô¡É Run Main Checkout Repository
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ­şÉ│  docker cp src=C:\Users\sefaa\bearish-alpha-bot\. dst=/mnt/c/Users/sefaa/bearish-alpha-bot
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   Ô£à  Success - Main Checkout Repository [9.003831s]
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration] Ô¡É Run Main Setup Python
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ­şÉ│  docker cp src=C:\Users\sefaa\.cache\act/actions-setup-python@v5/ dst=/var/run/act/actions/actions-setup-python@v5/
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ­şÉ│  docker exec cmd=[/usr/local/bin/node /var/run/act/actions/actions-setup-python@v5/dist/setup/index.js] user= workdir=
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔØô  ::group::Installed versions
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   | Successfully set up CPython (3.11.13)
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔØô  ::endgroup::
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔØô add-matcher /run/act/actions/actions-setup-python@v5/.github/python.json
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   Ô£à  Success - Main Setup Python [3.5735047s]
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔÜÖ  ::set-env:: pythonLocation=/opt/hostedtoolcache/Python/3.11.13/x64
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔÜÖ  ::set-env:: PKG_CONFIG_PATH=/opt/hostedtoolcache/Python/3.11.13/x64/lib/pkgconfig
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔÜÖ  ::set-env:: Python_ROOT_DIR=/opt/hostedtoolcache/Python/3.11.13/x64
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔÜÖ  ::set-env:: Python2_ROOT_DIR=/opt/hostedtoolcache/Python/3.11.13/x64
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔÜÖ  ::set-env:: Python3_ROOT_DIR=/opt/hostedtoolcache/Python/3.11.13/x64
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔÜÖ  ::set-env:: LD_LIBRARY_PATH=/opt/hostedtoolcache/Python/3.11.13/x64/lib
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔÜÖ  ::set-output:: python-version=3.11.13
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔÜÖ  ::set-output:: python-path=/opt/hostedtoolcache/Python/3.11.13/x64/bin/python
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔÜÖ  ::add-path:: /opt/hostedtoolcache/Python/3.11.13/x64
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔÜÖ  ::add-path:: /opt/hostedtoolcache/Python/3.11.13/x64/bin
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration] Ô¡É Run Main Ensure project packages importable
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ­şÉ│  docker exec cmd=[bash -e /var/run/act/workflow/2] user= workdir=
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   | Setting PYTHONPATH for module imports...
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   Ô£à  Success - Main Ensure project packages importable [228.2065ms]
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔÜÖ  ::set-env:: PYTHONPATH=/mnt/c/Users/sefaa/bearish-alpha-bot:/mnt/c/Users/sefaa/bearish-alpha-bot/src
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration] Ô¡É Run Main Verify Python Version
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ­şÉ│  docker exec cmd=[bash -e /var/run/act/workflow/3] user= workdir=
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   | Python 3.11.13
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   Ô£à  Success - Main Verify Python Version [256.8369ms]
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration] Ô¡É Run Main Install PyYAML for validation
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ­şÉ│  docker exec cmd=[bash -e /var/run/act/workflow/4] user= workdir=
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   | Requirement already satisfied: pyyaml in /opt/hostedtoolcache/Python/3.11.13/x64/lib/python3.11/site-packages (6.0.2)
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   | WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   Ô£à  Success - Main Install PyYAML for validation [779.3609ms]
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration] Ô¡É Run Main Validate Live Trading Confirmation
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ­şÉ│  docker exec cmd=[bash -e /var/run/act/workflow/validate] user= workdir=
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   | Mode: paper
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   | Confirmation: 
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   | Skip Pre-flight: true
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   | Ô£à Validation passed
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   Ô£à  Success - Main Validate Live Trading Confirmation [270.2979ms]
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔÜÖ  ::set-output:: should_proceed=true
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ÔÜÖ  ::set-output:: skip_preflight=true
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration] Ô¡É Run Main Install repository for validation script
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   ­şÉ│  docker exec cmd=[bash -e /var/run/act/workflow/6] user= workdir=
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration]   | Requirement already satisfied: pip in /opt/hostedtoolcache/Python/3.11.13/x64/lib/python3.11/site-packages (25.3)
+[Live Trading Launcher (Ultimate Continuous Mode)/Validate Configuration] Reevaluate condition  due to cancellation
