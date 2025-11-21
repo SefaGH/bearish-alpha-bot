@@ -95,6 +95,11 @@ try:
 except ImportError:
     ML_AVAILABLE = False
 
+try:
+    from ml.adapters.ppo_trading_adapter import PPOTradingAdapter
+except ImportError:  # pragma: no cover - adapter optional in some envs
+    PPOTradingAdapter = None
+
 logger = logging.getLogger(__name__)
 # ✅ EKLE: Logger seviyesini zorla INFO yap
 logger.setLevel(logging.INFO)
@@ -126,6 +131,7 @@ class ProductionCoordinator:
         
         # ML integration (Phase 4)
         self.ml_integration = None          # Prevents AttributeError during ML initialization
+        self.ppo_adapter = None
         
         # Registered strategies
         self.strategies = {}  # strategy_name -> strategy_instance
@@ -153,6 +159,13 @@ class ProductionCoordinator:
         else:
             self.config = LiveTradingConfiguration.load()
             logger.warning("ProductionCoordinator initialized by loading its own configuration. (Legacy mode)")
+
+        rl_cfg_dbg = (self.config.get('ml', {}) or {}).get('reinforcement_learning', {})
+        logger.info(
+            "🧪 [PPO-CONFIG] enabled=%s | symbols=%s",
+            rl_cfg_dbg.get('ppo_enabled'),
+            rl_cfg_dbg.get('ppo_symbols'),
+        )
 
         # Debug ayarını config'den oku
         self.debug_logging = self.config.get('debug', {}).get('strategy_logging', False)
@@ -1106,7 +1119,9 @@ class ProductionCoordinator:
         # ✔️ DÜZELTME: Bu bileşene artık sadece 'reinforcement_learning' alt bloğu verilir + dynamic state_size
         rl_config = ml_config.get('reinforcement_learning', {})
         rl_config['active_bundle'] = bundle_path  # Pass bundle path
-        if rl_config.get('enabled', True):
+        legacy_rl_enabled = rl_config.get('enabled', True) and rl_config.get('legacy_dqn_enabled', False)
+        self.rl_agent = None
+        if legacy_rl_enabled:
             try:
                 # Use manifest feature count for state size (manifest loaded above)
                 state_size = manifest.get('rl_state_size', manifest.get('feature_count', 42))
@@ -1143,10 +1158,29 @@ class ProductionCoordinator:
                 logger.error(f"❌ Failed to initialize Reinforcement Learning Agent: {e}", exc_info=True)
                 self.rl_agent = None
         else:
-            self.rl_agent = None
-            logger.info("ℹ️ Reinforcement Learning is disabled in config.")
+            logger.info("ℹ️ Legacy DQN reinforcement learning is disabled.")
 
-        # 5. ML Strateji Entegrasyon Yöneticisi
+        # 5. PPO Adapter (optional soft RL guardrail)
+        self.ppo_adapter = None
+        if rl_config.get('ppo_enabled', False):
+            if PPOTradingAdapter is None:
+                logger.warning("⚠️ PPO adapter requested but module is unavailable (missing dependency).")
+            else:
+                try:
+                    self.ppo_adapter = PPOTradingAdapter(
+                        rl_config,
+                        market_data_pipeline=self.market_data_pipeline,
+                        feature_pipeline=self.feature_pipeline,
+                    )
+                    ml_components.append('ppo_adapter')
+                    logger.info("✅ PPO adapter initialized.")
+                except Exception as e:
+                    logger.error(f"❌ Failed to initialize PPO adapter: {e}", exc_info=True)
+                    self.ppo_adapter = None
+        else:
+            logger.info("ℹ️ PPO adapter disabled in config.")
+
+        # 6. ML Strateji Entegrasyon Yöneticisi
         try:
             # ✔️ DÜZELTME: Bu yöneticiye de tam 'ml_config' verilir.
             self.ml_integration = MLStrategyIntegrationManager(
@@ -1161,11 +1195,13 @@ class ProductionCoordinator:
             logger.error(f"❌ Failed to initialize ML Strategy Integration Manager: {e}", exc_info=True)
             self.ml_integration = None
         
-        # 6. Bileşenleri sistemin diğer parçalarına bağla
+        # 7. Bileşenleri sistemin diğer parçalarına bağla
         if self.strategy_coordinator:
             self.strategy_coordinator.ml_integration = self.ml_integration
             self.strategy_coordinator.feature_pipeline = self.feature_pipeline
             self.strategy_coordinator.rl_agent = self.rl_agent
+            if hasattr(self.strategy_coordinator, 'ppo_adapter'):
+                self.strategy_coordinator.ppo_adapter = self.ppo_adapter
             logger.info("🔗 ML components connected to StrategyCoordinator.")
         if self.trading_engine:
             self.trading_engine.ml_integration = self.ml_integration
@@ -2493,8 +2529,23 @@ class ProductionCoordinator:
                     continue
 
                 samples = stats.get('samples', 0)
-                if not samples:
+                ppo_samples = stats.get('ppo_samples', 0)
+                ppo_long_votes = stats.get('ppo_long_votes', 0)
+                ppo_flat_votes = stats.get('ppo_flat_votes', 0)
+                ppo_avg_score = stats.get('ppo_avg_score', 0.0)
+
+                if not samples and not ppo_samples:
                     logger.info("📈 [RL-TELEMETRY] No RL decisions recorded yet")
+                    continue
+
+                if not samples and ppo_samples:
+                    logger.info(
+                        "📈 [RL-TELEMETRY] RL inactive | PPO samples=%s | avg_score=%.3f | long=%s | flat=%s",
+                        ppo_samples,
+                        ppo_avg_score,
+                        ppo_long_votes,
+                        ppo_flat_votes,
+                    )
                     continue
 
                 q_std_values = stats.get('q_std_values', [])
@@ -2505,12 +2556,16 @@ class ProductionCoordinator:
                 bypass_rate = stats.get('rl_bypass_rate', stats.get('bypass_rate', 0.0)) * 100
 
                 logger.info(
-                    "📈 [RL-TELEMETRY] samples=%s | q_std_med=%.6f | q_range_med=%.6f | veto_rate=%.2f%% | bypass_rate=%.2f%%",
+                    "📈 [RL-TELEMETRY] samples=%s | q_std_med=%.6f | q_range_med=%.6f | veto_rate=%.2f%% | bypass_rate=%.2f%% | PPO samples=%s | PPO avg=%.3f | PPO long=%s | PPO flat=%s",
                     sample_count,
                     q_std_med,
                     q_range_med,
                     veto_rate,
-                    bypass_rate
+                    bypass_rate,
+                    ppo_samples,
+                    ppo_avg_score,
+                    ppo_long_votes,
+                    ppo_flat_votes,
                 )
 
                 if q_std_med < threshold:

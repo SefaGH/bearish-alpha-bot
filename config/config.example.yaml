@@ -77,17 +77,17 @@ risk:
     enabled: true                     # Override with: RR_DYNAMIC_ENABLED
     
     # Base Configuration
-    base_target_rr: 1.5              # Override with: RR_BASE_TARGET
-    lower_bound_rr: 0.8              # Override with: RR_LOWER_BOUND
-    upper_bound_rr: 2.0              # Override with: RR_UPPER_BOUND
+    base_target_rr: 2.0              # Override with: RR_BASE_TARGET
+    lower_bound_rr: 1.2              # Override with: RR_LOWER_BOUND
+    upper_bound_rr: 3.0              # Override with: RR_UPPER_BOUND
     
     # Intelligence Weights (sum should be ~1.0)
     weights:
-      ml_confidence: 0.3             # Override with: RR_WEIGHT_ML
-      rl_agreement: 0.3              # Override with: RR_WEIGHT_RL
+      ml_confidence: 0.35            # Override with: RR_WEIGHT_ML
+      rl_agreement: 0.35             # Override with: RR_WEIGHT_RL
       regime_clarity: 0.2            # Override with: RR_WEIGHT_REGIME
-      volume_strength: 0.1           # Override with: RR_WEIGHT_VOLUME
-      momentum_strength: 0.1         # Override with: RR_WEIGHT_MOMENTUM
+      volume_strength: 0.05          # Override with: RR_WEIGHT_VOLUME
+      momentum_strength: 0.05        # Override with: RR_WEIGHT_MOMENTUM
     
     # Fallback values when ML/RL data missing
     fallback:
@@ -191,8 +191,8 @@ signals:
   # when RSI reaches extreme oversold/overbought levels
   bypass:
     enabled: true                     # Override with: SIGNAL_BYPASS_ENABLED
-    rsi_oversold_threshold: 20        # Override with: SIGNAL_BYPASS_RSI_OVERSOLD (BUY signals when RSI < this)
-    rsi_overbought_threshold: 80      # Override with: SIGNAL_BYPASS_RSI_OVERBOUGHT (SELL signals when RSI > this)
+    rsi_oversold_threshold: 12        # Override with: SIGNAL_BYPASS_RSI_OVERSOLD (BUY signals when RSI < this)
+    rsi_overbought_threshold: 88      # Override with: SIGNAL_BYPASS_RSI_OVERBOUGHT (SELL signals when RSI > this)
   
   duplicate_prevention:
     min_price_change_pct: 0.0005      # Override with: DUPLICATE_PREVENTION_THRESHOLD
@@ -202,11 +202,11 @@ signals:
     ml_duplicate_detection_enabled: true
   oversold_bounce:
     enable: true                      # Override with: STRATEGY_OB_ENABLED
-    ignore_regime: true               # Override with: STRATEGY_OB_IGNORE_REGIME
-    min_rr_ratio: 0.5                 # 🔥 YENİ DEĞER: R/R filtresini gevşetmek için.
+    ignore_regime: false              # Override with: STRATEGY_OB_IGNORE_REGIME
+    min_rr_ratio: 1.5                 # 🔥 SNIPER MODE: Enforce higher R/R floor.
     rsi_max: 45
-    adaptive_rsi_base: 50             # Override with: RSI_BASE_OB
-    adaptive_rsi_range: 10            # Override with: RSI_RANGE_OB
+    adaptive_rsi_base: 32             # Override with: RSI_BASE_OB
+    adaptive_rsi_range: 8             # Override with: RSI_RANGE_OB
     adaptive_mode: "dynamic"
     volatility_sensitivity: "medium"
     tp_atr_mult: 2.5
@@ -215,11 +215,11 @@ signals:
     max_sl_pct: 0.015
   short_the_rip:
     enable: true                      # Override with: STRATEGY_STR_ENABLED
-    ignore_regime: true               # Override with: STRATEGY_STR_IGNORE_REGIME
-    min_rr_ratio: 0.5                 # 🔥 YENİ DEĞER: R/R filtresini gevşetmek için.
+    ignore_regime: false              # Override with: STRATEGY_STR_IGNORE_REGIME
+    min_rr_ratio: 1.5                 # 🔥 SNIPER MODE: Enforce higher R/R floor.
     rsi_min: 55
-    adaptive_rsi_base: 50             # Override with: RSI_BASE_STR
-    adaptive_rsi_range: 10            # Override with: RSI_RANGE_STR
+    adaptive_rsi_base: 68             # Override with: RSI_BASE_STR
+    adaptive_rsi_range: 8             # Override with: RSI_RANGE_STR
     adaptive_mode: "dynamic"
     volatility_sensitivity: "medium"
     tp_atr_mult: 3.0
@@ -359,6 +359,16 @@ ml:
   # ----------------------------------------------------------------------------
   reinforcement_learning:
     enabled: true                     # Override: ML_RL_ENABLED
+    legacy_dqn_enabled: false         # Override with: ML_RL_LEGACY_ENABLED
+    ppo_enabled: true                 # Override with: ML_RL_PPO_ENABLED
+    ppo_symbols: BTC/USDT:USDT        # Override with: ML_RL_PPO_SYMBOLS
+    ppo_timeframe: "1h"               # Override with: ML_RL_PPO_TIMEFRAME
+    ppo_model_path: "artifacts/ppo/ppo_trading_agent.zip" # Override with: ML_RL_PPO_MODEL
+    ppo_fallback_score: 0.5           # Override with: ML_RL_PPO_FALLBACK
+    ppo_rr_down_mult: 0.9             # Override with: ML_RL_PPO_RR_DOWN
+    ppo_rr_up_mult: 1.3               # Override with: ML_RL_PPO_RR_UP
+    ppo_position_base: 0.5            # Override with: ML_RL_PPO_POS_BASE
+    ppo_position_bonus: 0.5           # Override with: ML_RL_PPO_POS_BONUS
     
     # Training Mode Control
     # ============================================================================
@@ -383,26 +393,36 @@ ml:
     
     # Exploration Parameters (Epsilon-Greedy Strategy)
     epsilon_inference: 0.01           # Override: ML_RL_EPSILON_INFERENCE (for live trading, minimal exploration)
-    epsilon_start: 1.0                # ✅ ADDED: Override: ML_RL_EPSILON_START (training: start with full exploration)
-    epsilon_decay: 0.9897             # ✅ ADDED: Override: ML_RL_EPSILON_DECAY (training: decay rate per episode)
-                                      # Previous: 0.995 (too slow, resulted in 29% final epsilon)
-                                      # Formula: (target_final/initial)^(1/episodes) = (0.08/1.0)^(1/250)
-    epsilon_min: 0.01                 # ✅ ADDED: Override: ML_RL_EPSILON_MIN (training: minimum exploration floor)
+    epsilon_start: 1.0                # Override: ML_RL_EPSILON_START (training: start with full exploration)
+    epsilon_decay: 0.97               # Override: ML_RL_EPSILON_DECAY (training: decay rate per episode)
+    epsilon_min: 0.01                 # Override: ML_RL_EPSILON_MIN (training: minimum exploration floor)
     
-    regime_bias_strength: 2.0         # Override: ML_RL_REGIME_BIAS
+    regime_bias_strength: 0.0         # Override: ML_RL_REGIME_BIAS
     max_regime_bias: 3.0              # Override: ML_RL_MAX_REGIME_BIAS
     min_regime_confidence_for_bias: 0.6  # Override: ML_RL_MIN_REGIME_CONF
-    q_std_bypass_threshold: 0.0001    # Override: ML_RL_Q_STD_BYPASS (below this, fallback logic triggers)
-    risk_penalty_strength: 100.0      # Override: ML_RL_RISK_PENALTY
+    q_std_bypass_threshold: 0.0001    # Override: ML_RL_Q_STD_BYPASS
+    risk_penalty_strength: 10.0       # Override: ML_RL_RISK_PENALTY
 
     # Temel Algoritma Parametreleri (Uzman kullanıcılar için)
-    learning_rate: 0.00001            # Override: ML_RL_LEARNING_RATE
-    gamma: 0.99                       # Override: ML_RL_GAMMA
+    learning_rate: 0.00003            # Override: ML_RL_LEARNING_RATE
+    gamma: 0.95                       # Override: ML_RL_GAMMA
     gradient_clip_norm: 1.0           # Override: ML_RL_GRADIENT_CLIP
-    reward_clip_enabled: false        # Override: ML_RL_REWARD_CLIP_ENABLED
-    reward_clip_min: -10.0            # Override: RL_REWARD_CLIP_MIN
-    reward_clip_max: 10.0             # Override: RL_REWARD_CLIP_MAX
+
+    # Reward normalizasyonu ve stabilite ayarları
+    reward_clip_enabled: true         # Override: ML_RL_REWARD_CLIP_ENABLED
+    reward_clip_min: -2.0             # Override: RL_REWARD_CLIP_MIN
+    reward_clip_max: 2.0              # Override: RL_REWARD_CLIP_MAX
     reward_scale: 1.0                 # Override: RL_REWARD_SCALE
+
+    # Trade penaltisi: her adımda portföyün ne kadarlık kısmını çevirdiğine (0–1)
+    # bağlı küçük bir ceza uygular. Örn: 0.001 → portföyün %100'ünü tek adımda
+    # çevirmek reward'dan 0.001 düşer.
+    trade_penalty_alpha: 0.0          # Override: ML_RL_TRADE_PENALTY_ALPHA
+
+    # HOLD / idle cost: Ajan hiçbir trade yapmayıp sürekli HOLD ederse,
+    # her adımda küçük bir ceza alır ve uzun vadede negatif reward birikir.
+    idle_cost: 0.0                    # Override: ML_RL_IDLE_COST
+
     target_update_freq: 50            # Override: ML_RL_TARGET_UPDATE_FREQ
     batch_size: 32                    # Override: ML_RL_BATCH_SIZE
     buffer_size: 100000               # Override: ML_RL_BUFFER_SIZE
@@ -413,7 +433,7 @@ ml:
   # ----------------------------------------------------------------------------
   signal_scoring:
     enabled: true                     # Override: SIGNAL_SCORING_ENABLED
-    min_score_to_trade: 60            # Override: SIGNAL_MIN_SCORE (Minimum score to execute trade)
+    min_score_to_trade: 75            # Override: SIGNAL_MIN_SCORE (Minimum score to execute trade)
     
     # Component weights (should sum to 1.0)
     weights:

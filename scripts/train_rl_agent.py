@@ -160,10 +160,28 @@ def main() -> None:
 
     agent_cfg, episodes, save_every, batch_size = resolve_training_params(config, args)
 
-    logging.info("Building RL environment (rows=%d, state_size=%d)", len(features_df), state_size)
-    env = RLTradingEnv(features_df=features_df, raw_df=price_df)
+    logging.info("Building RL environment (rows=%d)...", len(features_df))
+    # 1. Env’i önce oluştur
+    idle_cost = agent_cfg.get("idle_cost", 0.0)
 
-    agent = TradingRLAgent(state_size=state_size, action_size=3, config=agent_cfg)
+    env = RLTradingEnv(
+        features_df=features_df,
+        raw_df=price_df,
+        idle_cost=idle_cost,
+    )
+    
+    # 2. Env’den gerçek state boyutunu al
+    env_state_size = getattr(env, "state_dim", features_df.shape[1])
+    
+    # 3. CLI override yoksa env’in boyutunu kullan
+    final_state_size = args.state_size or env_state_size
+    
+    if final_state_size != features_df.shape[1]:
+        logging.info(f"🧠 State Size Adjusted: Dataset({features_df.shape[1]}) -> Agent({final_state_size}) (due to env augmentation)")
+    
+    # 4. Agent’ı bu boyutla başlat
+    agent = TradingRLAgent(state_size=final_state_size, action_size=3, config=agent_cfg)
+
     replay = ExperienceReplay(agent_cfg.get("buffer_size", 100000))
 
     if args.reinit_head:

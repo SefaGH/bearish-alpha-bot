@@ -597,11 +597,14 @@ class RiskRewardRatioRule(BaseRiskRule):
         
         # Apply bounds
         final_target = max(lower_bound, min(dynamic_target, upper_bound))
+
+        ppo_rr_multiplier = float(signal.get('ppo_rr_multiplier', 1.0))
+        final_target *= max(0.1, ppo_rr_multiplier)
         
         # Detailed logging
         logger.info(f"📊 [Dynamic R/R Calc] Base={base_rr:.2f} - Relax={relaxation:.2f} + Tight={tightening:.2f} "
                    f"× Regime({regime_name}, mult={regime_mult:.1f}, weight={regime_weight:.2f})={regime_adjustment:.2f} "
-                   f"= {dynamic_target:.2f} → Final={final_target:.2f}")
+               f"= {dynamic_target:.2f} × PPO({ppo_rr_multiplier:.2f}) → Final={final_target:.2f}")
         
         return final_target
     

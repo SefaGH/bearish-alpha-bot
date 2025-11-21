@@ -583,6 +583,14 @@ class LiveTradingConfiguration:
             logger.info("🧠 ML Settings:")
             logger.info(f"   Min Regime Confidence: {get_nested(config, ['ml', 'prediction', 'min_confidence_threshold'])}")
             logger.info(f"   RL Veto Threshold:     {get_nested(config, ['ml', 'reinforcement_learning', 'hold_confidence_threshold'])}")
+            logger.info(f"   Legacy RL Enabled:     {get_nested(config, ['ml', 'reinforcement_learning', 'legacy_dqn_enabled'], False)}")
+            ppo_enabled = bool(get_nested(config, ['ml', 'reinforcement_learning', 'ppo_enabled'], False))
+            ppo_symbols = get_nested(config, ['ml', 'reinforcement_learning', 'ppo_symbols'], [])
+            if isinstance(ppo_symbols, list):
+                ppo_symbol_str = ', '.join(ppo_symbols)
+            else:
+                ppo_symbol_str = str(ppo_symbols)
+            logger.info(f"   PPO Enabled:           {ppo_enabled} | Symbols: {ppo_symbol_str}")
 
         # Trading Universe
         symbols_val = get_nested(config, ['universe', 'fixed_symbols'], [])
