@@ -156,7 +156,10 @@ class PPOTradingAdapter:
         position_fraction: Optional[float] = None,
         normalized_pv: Optional[float] = None,
     ) -> Tuple[float, Dict[str, Any]]:
-        """Return PPO score for long/flat decision (+ metadata)."""
+        """
+        Return PPO score for long/flat decision (+ metadata).
+        Sniper mode: require high-confidence BUYs before surfacing LONG.
+        """
         symbol_norm = self._normalize_symbol(symbol)
         if not self.cfg.enabled:
             return self.cfg.fallback_score, {
@@ -188,13 +191,58 @@ class PPOTradingAdapter:
         try:
             action, _ = self._model.predict(state[np.newaxis, :], deterministic=True)
             action_int = int(action)
-            score = 1.0 if action_int == 1 else 0.0
+
+            confidence = 1.0
+            if hasattr(self._model, "policy"):
+                try:  # Torch is an optional runtime dependency outside PPO
+                    import torch as th
+                except Exception:  # pragma: no cover - safety net for stripped envs
+                    th = None
+
+                if th is not None:
+                    with th.no_grad():
+                        obs_tensor = th.as_tensor(state[np.newaxis, :], device=self._model.device)
+                        distribution = self._model.policy.get_distribution(obs_tensor)
+                        probs = distribution.distribution.probs.cpu().numpy()[0]
+                        confidence = float(probs[action_int])
+
+            CONFIDENCE_THRESHOLD = 0.75
+            final_score = 0.0
+            decision = "FLAT"
+
+            if action_int == 1:
+                if confidence >= CONFIDENCE_THRESHOLD:
+                    final_score = 1.0
+                    decision = "LONG"
+                else:
+                    final_score = 0.5
+                    decision = "WEAK_LONG_IGNORED"
+            else:
+                final_score = 0.0
+                decision = "FLAT"
+
             metadata = {
                 "symbol": symbol_norm,
-                "action": "LONG" if action_int == 1 else "FLAT",
+                "action": decision,
                 "raw_action": action_int,
+                "confidence": confidence,
+                "state_tail": {
+                    "position_fraction": float(state[-2]),
+                    "normalized_pv": float(state[-1]),
+                },
+                "normalized_symbol": symbol_norm,
+                "requested_symbol": symbol,
             }
-            return score, metadata
+
+            if action_int == 1 and decision == "WEAK_LONG_IGNORED":
+                logger.info(
+                    "🎯 [SNIPER] Ignored weak PPO signal for %s. Conf: %.2f < %.2f",
+                    symbol,
+                    confidence,
+                    CONFIDENCE_THRESHOLD,
+                )
+
+            return final_score, metadata
         except Exception as exc:  # pragma: no cover - safety net
             logger.warning("PPO prediction failed for %s: %s", symbol_norm, exc)
             return self.cfg.fallback_score, {"reason": "prediction_error", "error": str(exc)}

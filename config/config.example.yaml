@@ -77,17 +77,17 @@ risk:
     enabled: true                     # Override with: RR_DYNAMIC_ENABLED
     
     # Base Configuration
-    base_target_rr: 1.5              # Override with: RR_BASE_TARGET
-    lower_bound_rr: 0.8              # Override with: RR_LOWER_BOUND
-    upper_bound_rr: 2.0              # Override with: RR_UPPER_BOUND
+    base_target_rr: 2.0              # Override with: RR_BASE_TARGET
+    lower_bound_rr: 1.2              # Override with: RR_LOWER_BOUND
+    upper_bound_rr: 3.0              # Override with: RR_UPPER_BOUND
     
     # Intelligence Weights (sum should be ~1.0)
     weights:
-      ml_confidence: 0.3             # Override with: RR_WEIGHT_ML
-      rl_agreement: 0.3              # Override with: RR_WEIGHT_RL
+      ml_confidence: 0.35            # Override with: RR_WEIGHT_ML
+      rl_agreement: 0.35             # Override with: RR_WEIGHT_RL
       regime_clarity: 0.2            # Override with: RR_WEIGHT_REGIME
-      volume_strength: 0.1           # Override with: RR_WEIGHT_VOLUME
-      momentum_strength: 0.1         # Override with: RR_WEIGHT_MOMENTUM
+      volume_strength: 0.05          # Override with: RR_WEIGHT_VOLUME
+      momentum_strength: 0.05        # Override with: RR_WEIGHT_MOMENTUM
     
     # Fallback values when ML/RL data missing
     fallback:
@@ -191,8 +191,8 @@ signals:
   # when RSI reaches extreme oversold/overbought levels
   bypass:
     enabled: true                     # Override with: SIGNAL_BYPASS_ENABLED
-    rsi_oversold_threshold: 20        # Override with: SIGNAL_BYPASS_RSI_OVERSOLD (BUY signals when RSI < this)
-    rsi_overbought_threshold: 80      # Override with: SIGNAL_BYPASS_RSI_OVERBOUGHT (SELL signals when RSI > this)
+    rsi_oversold_threshold: 12        # Override with: SIGNAL_BYPASS_RSI_OVERSOLD (BUY signals when RSI < this)
+    rsi_overbought_threshold: 88      # Override with: SIGNAL_BYPASS_RSI_OVERBOUGHT (SELL signals when RSI > this)
   
   duplicate_prevention:
     min_price_change_pct: 0.0005      # Override with: DUPLICATE_PREVENTION_THRESHOLD
@@ -202,11 +202,11 @@ signals:
     ml_duplicate_detection_enabled: true
   oversold_bounce:
     enable: true                      # Override with: STRATEGY_OB_ENABLED
-    ignore_regime: true               # Override with: STRATEGY_OB_IGNORE_REGIME
-    min_rr_ratio: 0.5                 # 🔥 YENİ DEĞER: R/R filtresini gevşetmek için.
+    ignore_regime: false              # Override with: STRATEGY_OB_IGNORE_REGIME
+    min_rr_ratio: 1.5                 # 🔥 SNIPER MODE: Enforce higher R/R floor.
     rsi_max: 45
-    adaptive_rsi_base: 50             # Override with: RSI_BASE_OB
-    adaptive_rsi_range: 10            # Override with: RSI_RANGE_OB
+    adaptive_rsi_base: 32             # Override with: RSI_BASE_OB
+    adaptive_rsi_range: 8             # Override with: RSI_RANGE_OB
     adaptive_mode: "dynamic"
     volatility_sensitivity: "medium"
     tp_atr_mult: 2.5
@@ -215,11 +215,11 @@ signals:
     max_sl_pct: 0.015
   short_the_rip:
     enable: true                      # Override with: STRATEGY_STR_ENABLED
-    ignore_regime: true               # Override with: STRATEGY_STR_IGNORE_REGIME
-    min_rr_ratio: 0.5                 # 🔥 YENİ DEĞER: R/R filtresini gevşetmek için.
+    ignore_regime: false              # Override with: STRATEGY_STR_IGNORE_REGIME
+    min_rr_ratio: 1.5                 # 🔥 SNIPER MODE: Enforce higher R/R floor.
     rsi_min: 55
-    adaptive_rsi_base: 50             # Override with: RSI_BASE_STR
-    adaptive_rsi_range: 10            # Override with: RSI_RANGE_STR
+    adaptive_rsi_base: 68             # Override with: RSI_BASE_STR
+    adaptive_rsi_range: 8             # Override with: RSI_RANGE_STR
     adaptive_mode: "dynamic"
     volatility_sensitivity: "medium"
     tp_atr_mult: 3.0
@@ -433,7 +433,7 @@ ml:
   # ----------------------------------------------------------------------------
   signal_scoring:
     enabled: true                     # Override: SIGNAL_SCORING_ENABLED
-    min_score_to_trade: 60            # Override: SIGNAL_MIN_SCORE (Minimum score to execute trade)
+    min_score_to_trade: 75            # Override: SIGNAL_MIN_SCORE (Minimum score to execute trade)
     
     # Component weights (should sum to 1.0)
     weights:
