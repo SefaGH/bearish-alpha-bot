@@ -98,3 +98,5 @@ paper_trading_bot.pid
 errors_found.txt
 
 .env
+
+.vars
