@@ -99,49 +99,27 @@ class AdaptiveShortTheRip(ShortTheRip):
         return None
     
     def get_adaptive_rsi_threshold(self, market_regime: Dict) -> float:
-        """
-        Dynamic RSI thresholds based on market conditions.
-        Now respects config values and uses gentler adjustments.
-        
-        Args:
-            market_regime: Dictionary with 'trend', 'momentum', 'volatility'
-            
-        Returns:
-            Adaptive RSI threshold for overbought detection
-        """
-        # Get config values with proper fallbacks
-        base_rsi = float(self.base_cfg.get('adaptive_rsi_base',
-                         self.base_cfg.get('rsi_min', 50)))
-        
-        # Get adjustment range from config (default ±10)
-        adapt_range = float(self.base_cfg.get('adaptive_rsi_range', 10))
-        
+        """Sniper-mode SELL signals only trigger on stretched pumps."""
+        base_rsi = float(self.base_cfg.get('adaptive_rsi_base', 68.0))
+        adapt_range = float(self.base_cfg.get('adaptive_rsi_range', 8.0))
+
         trend = market_regime.get('trend', 'neutral')
         momentum = market_regime.get('momentum', 'sideways')
-        
-        # Start with base value
         threshold = base_rsi
-        
-        # Gentler adjustments based on regime
-        # For short strategy: bearish = more aggressive (lower threshold), bullish = more selective (higher threshold)
+
         if trend == 'bearish':
-            # In downtrends, be slightly more aggressive with shorts
             if momentum == 'strong':
-                threshold = base_rsi - min(self.MAX_THRESHOLD_ADJUSTMENT, adapt_range/2)
+                threshold = base_rsi - 3.0
             else:
-                threshold = base_rsi - min(self.MAX_THRESHOLD_ADJUSTMENT * 0.6, adapt_range/3)
-        
+                threshold = base_rsi
         elif trend == 'bullish':
-            # In uptrends, be more selective (need higher RSI)
             if momentum == 'strong':
-                threshold = base_rsi + min(self.MAX_THRESHOLD_ADJUSTMENT, adapt_range/2)
+                threshold = base_rsi + 7.0  # Target ~75
             else:
-                threshold = base_rsi + min(self.MAX_THRESHOLD_ADJUSTMENT * 0.6, adapt_range/3)
-        
-        # Clamp to reasonable range for shorts (55-85 range)
-        min_threshold = max(55, base_rsi - adapt_range)  # STR için minimum 55
-        max_threshold = min(85, base_rsi + adapt_range)  # STR için maximum 85
-        
+                threshold = base_rsi + 3.0  # Target ~71
+
+        min_threshold = max(60, base_rsi - adapt_range)
+        max_threshold = min(90, base_rsi + adapt_range)
         return max(min_threshold, min(max_threshold, threshold))
     
     def calculate_dynamic_position_size(self, volatility_regime: str, 
