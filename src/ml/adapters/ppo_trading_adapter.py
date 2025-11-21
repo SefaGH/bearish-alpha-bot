@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import numpy as np
+import pandas as pd  # extra feature hesapları için
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,9 @@ class PPOTradingAdapter:
         self._load_error: Optional[str] = None
         self._tail_defaults = np.array([0.0, 1.0], dtype=np.float32)
         self._symbol_alias_map: Dict[str, str] = {}
+        self._normalized_symbols = set()
+        self._expected_obs_dim: Optional[int] = None  # PPO modelinin beklediği observation dim
+
         for raw_symbol in self.cfg.symbols:
             normalized = self._normalize_symbol(raw_symbol)
             if not normalized:
@@ -263,7 +267,27 @@ class PPOTradingAdapter:
                 if not model_path.exists():
                     raise FileNotFoundError(model_path)
                 self._model = PPO.load(str(model_path))
-                logger.info("✅ PPO adapter loaded model from %s", model_path)
+
+                # Modelin observation_space boyutunu çıkar
+                try:
+                    obs_space = getattr(self._model, "observation_space", None)
+                    if obs_space is not None and getattr(obs_space, "shape", None):
+                        self._expected_obs_dim = int(obs_space.shape[0])
+                        logger.info(
+                            "✅ PPO adapter loaded model from %s (expected_obs_dim=%d)",
+                            model_path,
+                            self._expected_obs_dim,
+                        )
+                    else:
+                        logger.warning(
+                            "PPO model loaded but observation_space.shape missing; "
+                            "state alignment will be disabled."
+                        )
+                        self._expected_obs_dim = None
+                except Exception as exc:  # pragma: no cover - inspection safety
+                    logger.warning("Failed to inspect PPO observation_space: %s", exc)
+                    self._expected_obs_dim = None
+
             except Exception as exc:  # pragma: no cover - IO errors
                 self._load_error = str(exc)
                 logger.error("❌ Failed to load PPO model: %s", exc, exc_info=True)
@@ -298,6 +322,7 @@ class PPOTradingAdapter:
                 logger.debug("PPO adapter received empty dataframe for %s", symbol)
                 return None
 
+            # 1) GEMMA/manifest'e göre price feature'ları (82)
             features_df = self.feature_pipeline.extract_features(df, mode="price")
             if features_df is None or features_df.empty:
                 return None
@@ -306,14 +331,131 @@ class PPOTradingAdapter:
             if np.isnan(latest).any():
                 logger.debug("PPO adapter found NaN in feature vector for %s", symbol)
                 return None
+
+            # 2) Ek 5 fiyat türevi feature (sabit, GEMMA'dan bağımsız)
+            extra = self._compute_extra_features_from_price(df)
+
+            # 3) Tail (position_fraction, normalized_pv)
             tail = self._compose_tail_state(position_fraction, normalized_pv)
-            return np.concatenate([latest, tail])
+
+            # Beklenen doğal yapı: 82 (GEMMA) + 5 (extra) + 2 (tail) = 89
+            raw_state = np.concatenate([latest, extra, tail]).astype(np.float32)
+
+            # Güvenlik için hala hizalama yapıyoruz ama normalde no-op olmalı
+            state = self._align_state_dim(raw_state)
+            return state
         except Exception as exc:
             logger.error("PPO adapter failed to build state for %s: %s", symbol, exc)
             return None
 
     def supported_symbols(self) -> Iterable[str]:
         return self.cfg.symbols
+
+    def _align_state_dim(self, state: np.ndarray) -> np.ndarray:
+        """
+        Align the state vector to the PPO model's expected observation dimension.
+
+        - Eğer modelden observation dim alınamadıysa, state aynen döner.
+        - Eğer state daha kısa ise: sonuna 0.0 ile pad edilir.
+        - Eğer state daha uzun ise: sonundan truncate edilir (safety).
+        """
+        if self._expected_obs_dim is None:
+            return state.astype(np.float32)
+
+        current_dim = int(state.shape[0])
+        expected_dim = int(self._expected_obs_dim)
+
+        if current_dim == expected_dim:
+            return state.astype(np.float32)
+
+        if current_dim > expected_dim:
+            logger.warning(
+                "PPO state dim (%d) > expected_obs_dim (%d). Truncating extra features.",
+                current_dim,
+                expected_dim,
+            )
+            return state[:expected_dim].astype(np.float32)
+
+        # current_dim < expected_dim → pad gerekiyor (normalde olmamalı)
+        missing = expected_dim - current_dim
+        logger.warning(
+            "PPO state dim (%d) < expected_obs_dim (%d). Padding %d dummy features.",
+            current_dim,
+            expected_dim,
+            missing,
+        )
+        pad_values = np.zeros(missing, dtype=np.float32)
+        padded = np.concatenate([state, pad_values])
+        return padded.astype(np.float32)
+
+    def _compute_extra_features_from_price(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Compute 5 additional price-derived features to bridge PPO's 87-dim legacy
+        space with the current GEMMA 82-dim feature space.
+
+        Features (heuristic, ama stable ve yalnızca OHLCV'den türetilmiş):
+
+        1) extra_ret_1           : last log-return
+        2) extra_ret_3           : sum of last 3 log-returns
+        3) extra_range_norm      : (high - low) / close (last bar)
+        4) extra_vol_10          : std of pct_change over last 10 bars
+        5) extra_trend_ema_ratio : (ema_10 - ema_50) / ema_50 (last bar)
+        """
+        # Varsayılan sıfırlar (her durumda 5-dim dönelim)
+        extra = np.zeros(5, dtype=np.float32)
+
+        try:
+            if df is None or df.empty:
+                return extra
+
+            # En az 2 bar yoksa, her şey 0 kalsın
+            if len(df) < 2:
+                return extra
+
+            close = df["close"].astype(float)
+            high = df.get("high", close).astype(float)
+            low = df.get("low", close).astype(float)
+
+            # ---------- 1) & 2) Log-return'ler ----------
+            # log-return serisi: ln(C_t / C_{t-1})
+            log_ret = np.log(close / close.shift(1)).replace([np.inf, -np.inf], np.nan)
+
+            last_log_ret = float(log_ret.iloc[-1]) if not np.isnan(log_ret.iloc[-1]) else 0.0
+            extra[0] = np.float32(last_log_ret)  # extra_ret_1
+
+            if len(log_ret) >= 3:
+                last3 = log_ret.iloc[-3:].fillna(0.0).sum()
+                extra[1] = np.float32(last3)  # extra_ret_3
+            else:
+                extra[1] = 0.0
+
+            # ---------- 3) Normalized range ----------
+            last_high = float(high.iloc[-1])
+            last_low = float(low.iloc[-1])
+            last_close = float(close.iloc[-1])
+            denom = last_close if last_close != 0 else 1.0
+            extra[2] = np.float32((last_high - last_low) / denom)  # extra_range_norm
+
+            # ---------- 4) Kısa vadeli volatilite (10 bar) ----------
+            pct = close.pct_change().replace([np.inf, -np.inf], np.nan)
+            if len(pct) >= 10:
+                extra[3] = np.float32(pct.iloc[-10:].std(skipna=True) or 0.0)  # extra_vol_10
+            else:
+                extra[3] = np.float32(pct.std(skipna=True) or 0.0)
+
+            # ---------- 5) EMA spread oranı ----------
+            # Basit EMA hesapları (price predictor'dan bağımsız)
+            ema10 = close.ewm(span=10, adjust=False).mean()
+            ema50 = close.ewm(span=50, adjust=False).mean()
+            last_ema10 = float(ema10.iloc[-1])
+            last_ema50 = float(ema50.iloc[-1])
+            denom_ema = last_ema50 if last_ema50 != 0 else 1.0
+            extra[4] = np.float32((last_ema10 - last_ema50) / denom_ema)  # extra_trend_ema_ratio
+
+        except Exception as exc:
+            logger.warning("PPO extra feature computation failed: %s", exc)
+
+        return extra
 
     def _compose_tail_state(
         self,
