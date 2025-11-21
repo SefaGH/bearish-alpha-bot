@@ -339,9 +339,13 @@ class LiveTradingEngine:
             self.tasks.clear()
             self.state = EngineState.STOPPED
             
-            # Log exit summary statistics
+            # Log exit summary statistics only when we actually have data
             if self.position_manager:
-                self.position_manager.log_exit_summary()
+                closed_trades = getattr(self.position_manager, 'closed_positions', [])
+                if closed_trades:
+                    self.position_manager.log_exit_summary()
+                else:
+                    logger.info("No closed positions captured yet; exit summary will be emitted after position closure.")
             
             logger.info("Live trading engine stopped")
             logger.info(f"  Total signals generated: {self._signal_count}")

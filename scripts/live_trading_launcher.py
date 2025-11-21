@@ -1225,11 +1225,18 @@ class LiveTradingLauncher:
                 logger.info(f"✅ Position closure completed. Result: {result}")
                 
                 # Verify positions were closed
-                remaining = len(getattr(self.coordinator.position_manager, 'positions', {}))
+                position_manager = self.coordinator.position_manager
+                remaining = len(getattr(position_manager, 'positions', {}))
                 if remaining > 0:
                     logger.warning(f"⚠️ Warning: {remaining} position(s) may still be open")
                 else:
                     logger.info("✅ All positions successfully closed")
+                    closed_trades = getattr(position_manager, 'closed_positions', [])
+                    if closed_trades:
+                        logger.info("\n📊 Posting individual trade history table...")
+                        position_manager.log_exit_summary()
+                    else:
+                        logger.info("ℹ️ No closed trades were recorded; skipping individual trade history table.")
                     
             except Exception as e:
                 error_msg = f"Critical error during position closure: {e}"
