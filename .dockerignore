@@ -15,6 +15,7 @@ build
 .venv
 venv
 env
+.env
 
 # Logs (keep structure but exclude content)
 logs/*.log
@@ -35,6 +36,7 @@ Thumbs.db
 
 # Tests
 .pytest_cache
+tests
 
 # Heavy files
 *.tar.gz
