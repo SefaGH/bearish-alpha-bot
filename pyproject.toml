@@ -27,6 +27,9 @@ dependencies = [
     "pytest-asyncio>=0.21.0",
     "stable-baselines3[extra]>=2.0.0",
     "shimmy>=2.0",
+    "flask",
+    "azure-identity",
+    "azure-keyvault-secrets",
 ]
 
 [build-system]

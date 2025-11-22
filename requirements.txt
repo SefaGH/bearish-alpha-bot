@@ -42,3 +42,8 @@ pytest-asyncio>=0.21.0
 pytest-timeout>=2.1.0
 pytest-mock>=3.11.0
 websocket-client>=1.6.0
+
+# === AZURE INTEGRATION ===
+flask
+azure-identity
+azure-keyvault-secrets
