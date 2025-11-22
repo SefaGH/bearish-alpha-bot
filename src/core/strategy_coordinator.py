@@ -4,7 +4,10 @@ Coordinates signals and positions across multiple strategies.
 """
 
 import asyncio
+import heapq
+import itertools
 import logging
+import time
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from collections import defaultdict
@@ -39,6 +42,231 @@ class ConflictResolutionStrategy(Enum):
     FIRST_IN_FIRST_OUT = 'fifo'
 
 
+class PrioritySignalQueue:
+    """Priority-based signal queue with TTL and per-symbol throttling."""
+
+    def __init__(self, queue_config: Dict[str, Any], logger: logging.Logger):
+        self._ttl = max(int(queue_config.get('ttl_seconds', 60)), 5)
+        self._max_depth = max(int(queue_config.get('max_queue_depth', 50)), 1)
+        self._max_pending_per_symbol = max(int(queue_config.get('max_pending_per_symbol', 1)), 0)
+        self._weights = queue_config.get('priority_weights') or {
+            'explicit_priority': 0.4,
+            'risk_reward': 0.3,
+            'ml_confidence': 0.2,
+            'urgency': 0.1,
+        }
+
+        self._condition = asyncio.Condition()
+        self._heap: List[Tuple[float, float, int, Dict[str, Any]]] = []
+        self._sequence = itertools.count()
+        self._pending_by_symbol: Dict[str, int] = defaultdict(int)
+        self._logger = logger
+        self._stats = {
+            'accepted': 0,
+            'dequeued': 0,
+            'expired': 0,
+            'rejected_capacity': 0,
+            'rejected_symbol_limit': 0,
+            'requeued': 0,
+        }
+
+    async def put(self, payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        symbol = self._extract_symbol(payload)
+        async with self._condition:
+            if self._max_pending_per_symbol and symbol:
+                if self._pending_by_symbol[symbol] >= self._max_pending_per_symbol:
+                    self._stats['rejected_symbol_limit'] += 1
+                    reason = f"Queue limit reached for {symbol}"
+                    self._logger.warning(f"🚫 [QUEUE] {reason}")
+                    return False, reason
+
+            now = time.time()
+            meta = payload.setdefault('queue_meta', {})
+            meta['enqueued_at'] = now
+            meta['expiration'] = now + self._ttl
+
+            priority_score = self._compute_priority(payload, now)
+            entry = (-priority_score, meta['enqueued_at'], next(self._sequence), payload)
+
+            if len(self._heap) >= self._max_depth:
+                replaced = self._maybe_replace_lowest(entry, priority_score)
+                if not replaced:
+                    self._stats['rejected_capacity'] += 1
+                    reason = "Signal queue at capacity"
+                    self._logger.warning(f"🚫 [QUEUE] {reason} (score={priority_score:.3f})")
+                    return False, reason
+            else:
+                heapq.heappush(self._heap, entry)
+
+            if symbol:
+                self._pending_by_symbol[symbol] += 1
+            self._stats['accepted'] += 1
+            self._condition.notify()
+            self._logger.info(
+                f"📥 [QUEUE] Signal enqueued: symbol={symbol}, score={priority_score:.3f}, depth={len(self._heap)}"
+            )
+            return True, None
+
+    async def get(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        async with self._condition:
+            deadline = None
+            loop = None
+            if timeout is not None:
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + timeout
+
+            while True:
+                self._purge_expired_locked()
+                self._refresh_priorities_locked()
+
+                if self._heap:
+                    entry = heapq.heappop(self._heap)
+                    payload = entry[3]
+                    symbol = self._extract_symbol(payload)
+                    if symbol and self._pending_by_symbol[symbol] > 0:
+                        self._pending_by_symbol[symbol] -= 1
+                    payload.setdefault('queue_meta', {})['dequeued_at'] = time.time()
+                    self._stats['dequeued'] += 1
+                    return payload
+
+                if timeout is None:
+                    await self._condition.wait()
+                else:
+                    loop = loop or asyncio.get_running_loop()
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError()
+                    await asyncio.wait_for(self._condition.wait(), timeout=remaining)
+
+    def qsize(self) -> int:
+        return len(self._heap)
+
+    def get_stats(self) -> Dict[str, int]:
+        return dict(self._stats)
+
+    async def requeue(self, payload: Dict[str, Any]) -> None:
+        symbol = self._extract_symbol(payload)
+        async with self._condition:
+            now = time.time()
+            meta = payload.setdefault('queue_meta', {})
+            meta.setdefault('enqueued_at', now)
+            meta.setdefault('expiration', now + self._ttl)
+
+            priority_score = self._compute_priority(payload, now)
+            entry = (-priority_score, meta['enqueued_at'], next(self._sequence), payload)
+            heapq.heappush(self._heap, entry)
+
+            if symbol:
+                self._pending_by_symbol[symbol] += 1
+
+            self._stats['requeued'] = self._stats.get('requeued', 0) + 1
+            self._condition.notify()
+
+    def _maybe_replace_lowest(self, entry, new_score: float) -> bool:
+        if not self._heap:
+            heapq.heappush(self._heap, entry)
+            return True
+
+        lowest_index = max(range(len(self._heap)), key=lambda idx: self._heap[idx][0])
+        lowest_entry = self._heap[lowest_index]
+        lowest_score = -lowest_entry[0]
+        if new_score <= lowest_score:
+            return False
+
+        removed_payload = lowest_entry[3]
+        removed_symbol = self._extract_symbol(removed_payload)
+        if removed_symbol and self._pending_by_symbol[removed_symbol] > 0:
+            self._pending_by_symbol[removed_symbol] -= 1
+        self._heap[lowest_index] = entry
+        heapq.heapify(self._heap)
+        self._logger.info(
+            f"♻️ [QUEUE] Replaced low-priority signal (score={lowest_score:.3f}) with higher score {new_score:.3f}"
+        )
+        return True
+
+    def _purge_expired_locked(self) -> None:
+        if not self._heap:
+            return
+
+        now = time.time()
+        kept: List[Tuple[float, float, int, Dict[str, Any]]] = []
+        expired = 0
+        while self._heap:
+            entry = heapq.heappop(self._heap)
+            payload = entry[3]
+            expiration = payload.get('queue_meta', {}).get('expiration', now + 1)
+            if expiration < now:
+                expired += 1
+                symbol = self._extract_symbol(payload)
+                if symbol and self._pending_by_symbol[symbol] > 0:
+                    self._pending_by_symbol[symbol] -= 1
+            else:
+                kept.append(entry)
+
+        for entry in kept:
+            heapq.heappush(self._heap, entry)
+
+        if expired:
+            self._stats['expired'] += expired
+            self._logger.warning(f"⏳ [QUEUE] Dropped {expired} expired signals")
+
+    def _refresh_priorities_locked(self) -> None:
+        if not self._heap:
+            return
+
+        now = time.time()
+        refreshed = [
+            (-self._compute_priority(entry[3], now), entry[1], entry[2], entry[3])
+            for entry in self._heap
+        ]
+        heapq.heapify(refreshed)
+        self._heap = refreshed
+
+    def _compute_priority(self, payload: Dict[str, Any], current_ts: float) -> float:
+        signal = payload.get('signal', {}) or {}
+        risk_assessment = payload.get('risk_assessment', {}) or {}
+        metrics = risk_assessment.get('metrics', {}) or {}
+
+        priority_value = signal.get('priority', SignalPriority.MEDIUM)
+        if isinstance(priority_value, SignalPriority):
+            priority_raw = priority_value.value
+        else:
+            try:
+                priority_raw = float(priority_value)
+            except (TypeError, ValueError):
+                priority_raw = SignalPriority.MEDIUM.value
+        priority_component = min(1.0, max(0.0, (priority_raw - 1) / 3))
+
+        rr_ratio = signal.get('rr_ratio') or metrics.get('risk_reward_ratio') or 1.0
+        try:
+            rr_component = min(1.5, float(rr_ratio)) / 1.5
+        except (TypeError, ValueError):
+            rr_component = 0.5
+
+        ml_conf = signal.get('ml_confidence') or signal.get('ml_price_confidence') or 0.5
+        try:
+            ml_component = min(max(float(ml_conf), 0.0), 1.0)
+        except (TypeError, ValueError):
+            ml_component = 0.5
+
+        enqueued_at = payload.get('queue_meta', {}).get('enqueued_at', current_ts)
+        age = max(0.0, current_ts - enqueued_at)
+        urgency_component = min(1.0, age / self._ttl)
+
+        score = (
+            self._weights.get('explicit_priority', 0.4) * priority_component +
+            self._weights.get('risk_reward', 0.3) * rr_component +
+            self._weights.get('ml_confidence', 0.2) * ml_component +
+            self._weights.get('urgency', 0.1) * urgency_component
+        )
+        return score
+
+    @staticmethod
+    def _extract_symbol(payload: Dict[str, Any]) -> Optional[str]:
+        signal = payload.get('signal') or {}
+        return signal.get('symbol')
+
+
 class StrategyCoordinator:
     """
     Coordinate signals and positions across multiple strategies.
@@ -65,9 +293,12 @@ class StrategyCoordinator:
     
         # Signal management
         self.active_signals = {}  # signal_id -> signal_data
-        self.signal_queue = asyncio.Queue()
+        queue_cfg = ((self.config.get('risk') or {}).get('queue')) or {}
+        self.signal_queue = PrioritySignalQueue(queue_cfg, logger)
         self.signal_history = []
         self._signal_history_lookup: Dict[str, Dict[str, Any]] = {}
+        self._dispatch_lock = asyncio.Lock()
+        self._dispatch_retry_delay = float(queue_cfg.get('dispatch_retry_delay', 0.2) or 0.2)
     
         # Conflict tracking
         self.conflict_history = []
@@ -94,7 +325,8 @@ class StrategyCoordinator:
             'approved_signals': 0,  # Phase 5: Signals approved for execution
             'rl_veto_count': 0,
             'rl_skipped_signals': 0,
-            'bypass_approvals': 0
+            'bypass_approvals': 0,
+            'queue_rejections': 0
         }
         self.rl_telemetry = {
             'total_decisions': 0,
@@ -595,10 +827,17 @@ class StrategyCoordinator:
             )
 
             # Adım 8: Sinyali Yürütme Kuyruğuna Ekle
-            await self.signal_queue.put({
-                'signal_id': signal_id, 'signal': enriched_signal,
-                'risk_assessment': risk_assessment, 'routing': routing_result
+            queued, queue_reason = await self.signal_queue.put({
+                'signal_id': signal_id,
+                'signal': enriched_signal,
+                'risk_assessment': risk_assessment,
+                'routing': routing_result
             })
+
+            if not queued:
+                self.processing_stats['rejected_signals'] += 1
+                self.processing_stats['queue_rejections'] += 1
+                return {'status': 'rejected', 'reason': queue_reason, 'stage': 'queue'}
             
             self.processing_stats['accepted_signals'] += 1
             self._add_signal_history_entry({
@@ -1567,8 +1806,13 @@ class StrategyCoordinator:
                         'conflict_type': 'same_direction'
                     })
         
-        # Check active positions from risk manager
-        for position_id, position in self.risk_manager.active_positions.items():
+        # Check active positions (prefer PortfolioManager as source of truth)
+        if self.portfolio_manager and hasattr(self.portfolio_manager, 'get_open_positions'):
+            active_positions = self.portfolio_manager.get_open_positions() or {}
+        else:
+            active_positions = getattr(self.risk_manager, 'active_positions', {}) or {}
+
+        for position_id, position in active_positions.items():
             if position.get('symbol') == symbol:
                 position_side = position.get('side')
                 if self._are_sides_opposite(side, position_side):
@@ -1943,16 +2187,80 @@ class StrategyCoordinator:
     async def get_next_signal(self, timeout: Optional[float] = None) -> Optional[Dict]:
         """Get next signal from queue."""
         try:
-            if timeout:
-                signal = await asyncio.wait_for(self.signal_queue.get(), timeout=timeout)
-            else:
-                signal = await self.signal_queue.get()
+            signal = await self.signal_queue.get(timeout=timeout)
             return signal
         except asyncio.TimeoutError:
             return None
         except Exception as e:
             logger.error(f"Error getting next signal: {e}")
             return None
+
+    def _has_execution_capacity(self, signal: Dict[str, Any], payload: Optional[Dict[str, Any]] = None) -> bool:
+        if not self.risk_manager:
+            return True
+
+        risk_assessment = None
+        cached_metrics = None
+        if isinstance(payload, dict):
+            risk_assessment = payload.get('risk_assessment') or {}
+            cached_metrics = risk_assessment.get('metrics') if isinstance(risk_assessment, dict) else None
+
+        gating_fn = getattr(self.risk_manager, 'can_open_new_position', None)
+
+        try:
+            if callable(gating_fn):
+                ok, reason, updated_metrics = gating_fn(signal, self.portfolio_manager, cached_metrics)
+                if isinstance(risk_assessment, dict) and isinstance(updated_metrics, dict):
+                    risk_assessment['metrics'] = updated_metrics
+            elif hasattr(self.risk_manager, 'has_execution_capacity'):
+                ok, reason = self.risk_manager.has_execution_capacity(signal, self.portfolio_manager)
+            else:
+                return True
+        except Exception as exc:
+            logger.error(f"Error during dispatch gating: {exc}")
+            return False
+
+        if not ok:
+            logger.debug(f"⏸️ Dispatch paused for {signal.get('symbol')}: {reason}")
+        return ok
+
+    async def try_dispatch_next(self, timeout: Optional[float] = 1.0) -> Optional[Dict[str, Any]]:
+        """Get next signal only when concurrent limits have spare capacity."""
+        loop = asyncio.get_running_loop()
+        deadline = None
+        if timeout is not None:
+            deadline = loop.time() + timeout
+
+        async with self._dispatch_lock:
+            while True:
+                remaining = None
+                if deadline is not None:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        return None
+
+                try:
+                    payload = await self.signal_queue.get(timeout=remaining)
+                except asyncio.TimeoutError:
+                    return None
+
+                signal = payload.get('signal') or {}
+                if self._has_execution_capacity(signal, payload):
+                    return payload
+
+                await self.signal_queue.requeue(payload)
+
+                if deadline is not None and loop.time() >= deadline:
+                    return None
+
+                sleep_for = self._dispatch_retry_delay
+                if deadline is not None:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        return None
+                    sleep_for = min(sleep_for, remaining)
+
+                await asyncio.sleep(sleep_for)
     
     def mark_signal_executed(self, signal_id: str, execution_result: Dict):
         """Mark signal as executed and remove from active signals."""
@@ -2037,12 +2345,14 @@ class StrategyCoordinator:
     
     def get_processing_stats(self) -> Dict[str, Any]:
         """Get signal processing statistics."""
+        queue_stats = self.signal_queue.get_stats() if hasattr(self.signal_queue, 'get_stats') else {}
         return {
             'stats': self.processing_stats.copy(),
             'active_signals': len(self.active_signals),
             'queued_signals': self.signal_queue.qsize(),
             'signal_history_count': len(self.signal_history),
-            'conflict_history_count': len(self.conflict_history)
+            'conflict_history_count': len(self.conflict_history),
+            'queue_stats': queue_stats
         }
     
     def get_active_signals_summary(self) -> List[Dict]:

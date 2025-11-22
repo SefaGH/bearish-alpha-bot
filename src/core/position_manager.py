@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 # Triple-fallback import strategy for maximum compatibility:
 # 1. Direct utils import (when src/ is on sys.path)
@@ -70,6 +70,9 @@ class ExitReason(Enum):
 class AdvancedPositionManager:
     """Comprehensive position lifecycle management."""
     
+    LONG_SIDES = {'long', 'buy'}
+    SHORT_SIDES = {'short', 'sell'}
+
     def __init__(self, risk_manager, order_manager, websocket_manager=None, portfolio_manager=None):
         """
         Initialize position manager.
@@ -99,6 +102,9 @@ class AdvancedPositionManager:
         # Monitoring state
         self.monitoring_active = False
         self.monitoring_task = None
+
+        # Dispatch notifier wiring (StrategyCoordinator -> LiveTradingEngine bridge wake-up)
+        self._dispatch_notifier: Optional[Callable[[], Awaitable[Any]]] = None
         
         logger.info("AdvancedPositionManager initialized")
 
@@ -108,6 +114,29 @@ class AdvancedPositionManager:
             self.trade_history_path.touch(exist_ok=True)
         except Exception as exc:
             logger.warning("Failed to prepare trade history file: %s", exc)
+
+    def set_dispatch_notifier(self, notifier: Optional[Callable[[], Awaitable[Any]]]) -> None:
+        """Register async callback that wakes the coordinator dispatch loop."""
+        self._dispatch_notifier = notifier
+
+    def _schedule_dispatch_nudge(self) -> None:
+        if not self._dispatch_notifier:
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("Dispatch notifier skipped; no running loop detected")
+            return
+
+        try:
+            result = self._dispatch_notifier()
+        except Exception as exc:
+            logger.debug("Dispatch notifier callable failed: %s", exc)
+            return
+
+        if asyncio.iscoroutine(result):
+            loop.create_task(result)
 
     def _generate_trade_id(self) -> str:
         return uuid.uuid4().hex[:8]
@@ -152,6 +181,92 @@ class AdvancedPositionManager:
             'entry_indicators': entry_indicators,
             'ml_metadata': ml_metadata
         }
+
+    def _extract_price_field(self, payload: Dict[str, Any], keys: List[str]) -> Optional[float]:
+        for key in keys:
+            if not isinstance(payload, dict):
+                continue
+            value = self._safe_float(payload.get(key))
+            if value and value > 0:
+                return value
+        return None
+
+    def _normalize_pct(self, raw_value: Optional[float]) -> Optional[float]:
+        if raw_value is None:
+            return None
+        try:
+            pct = float(raw_value)
+        except (TypeError, ValueError):
+            return None
+        if pct <= 0:
+            return None
+        return pct / 100.0 if pct > 1 else pct
+
+    def _derive_take_profit(self, signal: Dict[str, Any], entry_price: float,
+                            stop_loss: Optional[float], is_long: bool) -> float:
+        explicit_tp = self._extract_price_field(signal, ['target', 'take_profit', 'tp_price'])
+        if explicit_tp:
+            return explicit_tp
+
+        tp_pct = self._normalize_pct(
+            signal.get('tp_pct') or signal.get('take_profit_pct') or signal.get('target_pct')
+        )
+        if tp_pct:
+            return entry_price * (1 + tp_pct) if is_long else entry_price * (1 - tp_pct)
+
+        atr_value = self._safe_float(signal.get('atr') or signal.get('atr_value'))
+        tp_atr_mult = self._safe_float(signal.get('tp_atr_mult'))
+        if atr_value and tp_atr_mult:
+            distance = atr_value * tp_atr_mult
+            return entry_price + distance if is_long else entry_price - distance
+
+        risk_limits = getattr(self.risk_manager, 'risk_limits_dataclass', None)
+        take_profit_ratio = getattr(risk_limits, 'take_profit_ratio', None)
+        if take_profit_ratio and stop_loss:
+            distance = abs(entry_price - stop_loss) * take_profit_ratio
+            candidate = entry_price + distance if is_long else entry_price - distance
+            if candidate > 0:
+                return candidate
+
+        default_tp_pct = 0.05
+        return entry_price * (1 + default_tp_pct) if is_long else entry_price * (1 - default_tp_pct)
+
+    def _derive_exit_levels(self, signal: Dict[str, Any], entry_price: float) -> Tuple[float, float]:
+        side = (signal.get('side') or 'long').lower()
+        is_long = side not in self.SHORT_SIDES
+
+        stop_loss = self._extract_price_field(signal, ['stop', 'stop_loss', 'stop_price'])
+        if not stop_loss:
+            calc_stop = getattr(self.risk_manager, '_calculate_stop_loss_from_signal', None)
+            if callable(calc_stop):
+                try:
+                    stop_loss = self._safe_float(calc_stop(signal, entry_price))
+                except Exception:
+                    stop_loss = None
+
+        if not stop_loss or stop_loss <= 0:
+            fallback_pct = getattr(
+                getattr(self.risk_manager, 'risk_limits_dataclass', None),
+                'stop_loss_pct',
+                0.02
+            ) or 0.02
+            stop_loss = entry_price * (1 - fallback_pct) if is_long else entry_price * (1 + fallback_pct)
+
+        take_profit = self._derive_take_profit(signal, entry_price, stop_loss, is_long)
+
+        if is_long and stop_loss >= entry_price:
+            stop_loss = entry_price * 0.99
+        elif not is_long and stop_loss <= entry_price:
+            stop_loss = entry_price * 1.01
+
+        if is_long and take_profit <= entry_price:
+            take_profit = entry_price * 1.02
+        elif not is_long and take_profit >= entry_price:
+            take_profit = entry_price * 0.98
+
+        signal['stop'] = stop_loss
+        signal['target'] = take_profit
+        return stop_loss, take_profit
 
     def _append_trade_history(self, payload: Dict[str, Any]) -> None:
         try:
@@ -265,9 +380,8 @@ class AdvancedPositionManager:
             entry_price = execution_result.get('avg_price', 0)
             amount = execution_result.get('filled_amount', 0)
             
-            # Calculate stop-loss and take-profit levels
-            stop_loss = signal.get('stop', entry_price * 0.95)  # Default 5% stop
-            take_profit = signal.get('target', entry_price * 1.05)  # Default 5% target
+            # Calculate stop-loss and take-profit levels with directional awareness
+            stop_loss, take_profit = self._derive_exit_levels(signal, entry_price)
             
             # CRITICAL FIX: Get exchange from execution_result if not in signal
             # This ensures we always have a valid exchange name for position closure during shutdown
@@ -301,6 +415,7 @@ class AdvancedPositionManager:
                 'entry_price': entry_price,
                 'current_price': entry_price,
                 'amount': amount,
+                'size': amount,
                 'initial_amount': amount,
                 'stop_loss': stop_loss,
                 'take_profit': take_profit,
@@ -323,6 +438,7 @@ class AdvancedPositionManager:
                 'max_favorable_excursion_pct': 0.0,
                 'entry_metadata': entry_meta,
                 'risk_usd': risk_usd,
+                'risk_amount': risk_usd,
                 'position_notional': entry_price * amount if amount else 0.0,
                 'rsi_at_entry': entry_meta.get('rsi_at_entry'),
                 'regime_at_entry': entry_meta.get('regime_at_entry'),
@@ -337,6 +453,16 @@ class AdvancedPositionManager:
             
             # Register with risk manager
             self.risk_manager.register_position(position_id, position)
+
+            # Also register with portfolio manager so exposure/concurrency stats stay accurate
+            if self.portfolio_manager and hasattr(self.portfolio_manager, 'register_position'):
+                try:
+                    self.portfolio_manager.register_position(position_id, dict(position))
+                except Exception as pm_err:
+                    logger.error(
+                        f"⚠️ Failed to register position {position_id} with PortfolioManager: {pm_err}",
+                        exc_info=True
+                    )
             
             # Store position
             self.positions[position_id] = position
@@ -530,6 +656,16 @@ class AdvancedPositionManager:
             
             # Close with risk manager
             self.risk_manager.close_position(position_id, exit_price, realized_pnl)
+
+            # Keep PortfolioManager in sync for exposure/drawdown metrics
+            if self.portfolio_manager and hasattr(self.portfolio_manager, 'close_position'):
+                try:
+                    self.portfolio_manager.close_position(position_id, exit_price, realized_pnl)
+                except Exception as pm_err:
+                    logger.error(
+                        f"⚠️ Failed to close position {position_id} via PortfolioManager: {pm_err}",
+                        exc_info=True
+                    )
             
             # Move to closed positions
             self.closed_positions.append(position)
@@ -642,6 +778,8 @@ class AdvancedPositionManager:
             logger.debug("TRADE_CLOSED payload prepared for position %s", position_id)
             logger.info("TRADE_CLOSED %s", json.dumps(payload))
             self._append_trade_history(payload)
+
+            self._schedule_dispatch_nudge()
 
             return {
                 'success': True,

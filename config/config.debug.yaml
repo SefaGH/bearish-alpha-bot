@@ -14,10 +14,12 @@ execution:
 
 risk:
   equity_usd: 100  # 100 USDT capital
-  per_trade_risk_pct: 0.01  # 1% risk per trade
+  per_trade_risk_pct: 0.003  # 0.3% risk per trade to keep sizing below the cap
   daily_loss_limit_pct: 0.02
   risk_usd_cap: 5  # Max 5 USDT risk
-  max_notional_per_trade: 20
+  max_position_size_pct: 0.80
+  max_notional_pct_per_trade: 0.75
+  max_margin_pct_per_trade: 0.30
   min_stop_pct: 0.003
   min_amount_behavior: skip
   min_notional_behavior: skip

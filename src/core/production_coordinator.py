@@ -809,9 +809,47 @@ class ProductionCoordinator:
                     logger.error(f"❌ Error running strategy '{strategy_name}' for {symbol}: {e}", exc_info=True)
                     error_count += 1
 
+        await self._nudge_strategy_dispatch()
+
         end_time = time.time()
         logger.info(f"✅ [PROCESSING] Completed processing loop in {end_time - start_time:.2f}s")
         logger.info(f"   Processed: {processed_count}/{len(self.active_symbols)} symbols | Errors: {error_count}")
+
+    async def _nudge_strategy_dispatch(self) -> None:
+        """Drain the coordinator queue once per loop to keep execution responsive."""
+        if not self.strategy_coordinator:
+            return
+
+        # Prefer LiveTradingEngine helper so signals follow the normal bridge path
+        if self.trading_engine and hasattr(self.trading_engine, 'trigger_coordinator_drain'):
+            try:
+                drained = await self.trading_engine.trigger_coordinator_drain(timeout=0.0)
+            except Exception as exc:
+                logger.debug(f"[PROCESS] Queue drain via trading engine failed: {exc}")
+                drained = False
+            if drained:
+                return
+
+        dispatcher = getattr(self.strategy_coordinator, 'try_dispatch_next', None)
+        if not callable(dispatcher):
+            return
+
+        try:
+            payload = await dispatcher(timeout=0.0)
+        except Exception as exc:
+            logger.debug(f"[PROCESS] Strategy queue dispatch failed: {exc}")
+            return
+
+        if not payload:
+            return
+
+        if self.trading_engine and hasattr(self.trading_engine, '_forward_signal_from_coordinator'):
+            await self.trading_engine._forward_signal_from_coordinator(payload)
+            return
+
+        queue = getattr(self.strategy_coordinator, 'signal_queue', None)
+        if queue and hasattr(queue, 'requeue'):
+            await queue.requeue(payload)
 
     def _get_default_symbols(self) -> List[str]:
         """
@@ -1470,6 +1508,14 @@ class ProductionCoordinator:
                 market_data_pipeline=self.market_data_pipeline
             )
             logger.info(f"✓ Live trading engine initialized (mode: {mode})")
+
+            if (
+                hasattr(self.position_manager, 'set_dispatch_notifier')
+                and hasattr(self.trading_engine, 'trigger_coordinator_drain')
+            ):
+                self.position_manager.set_dispatch_notifier(
+                    lambda: self.trading_engine.trigger_coordinator_drain(timeout=0.0)
+                )
             
             # === STEP 13: SET ACTIVE SYMBOLS ===
             self.active_symbols = trading_symbols or self._get_default_symbols()
@@ -2320,11 +2366,10 @@ class ProductionCoordinator:
         Phase 3.4 - Issue #105: Position Dashboard
         """
         try:
-            if not self.portfolio_manager or not hasattr(self.portfolio_manager, 'risk_manager'):
+            if not self.portfolio_manager or not hasattr(self.portfolio_manager, 'get_open_positions'):
                 return
             
-            risk_manager = self.portfolio_manager.risk_manager
-            active_positions = risk_manager.active_positions if hasattr(risk_manager, 'active_positions') else {}
+            active_positions = self.portfolio_manager.get_open_positions() or {}
             
             if not active_positions:
                 logger.info("\n📊 POSITION DASHBOARD: No open positions")

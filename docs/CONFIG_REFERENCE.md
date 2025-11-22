@@ -43,6 +43,12 @@ signals:
     sl_atr_mult: 1.2
 ```
 
+  > Not: Artık sinyal sadece `tp_pct`/`sl_pct` ya da ATR katları yayınlasa bile,
+  > AdvancedPositionManager bu değerleri yönlü olarak fiyat seviyelerine çeviriyor.
+  > Long işlemler girişin üstünde TP, altında SL; short işlemler ise tam tersi yönde
+  > otomatik olarak ayarlanıyor ve RiskManager/PortfolioManager metrikleri bu güncel
+  > seviyeleri kullanıyor.
+
 > Not: Eğer dosyada `indicators` ve `universe` yoksa, kod **varsayılan değerleri** kullanır. Eklemek istersen:
 
 ### (Opsiyonel) `universe`

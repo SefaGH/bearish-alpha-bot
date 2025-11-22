@@ -11,15 +11,42 @@ import pytest
 import asyncio
 from unittest.mock import Mock, patch, MagicMock, AsyncMock
 
-from _launcher_factory import create_launcher
+# Ensure repository modules (src + scripts) are importable in tests
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+_SRC_ROOT = os.path.join(_REPO_ROOT, 'src')
+_SCRIPTS_ROOT = os.path.join(_REPO_ROOT, 'scripts')
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+for _path in (_SRC_ROOT, _SCRIPTS_ROOT):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
+from live_trading_launcher import LiveTradingLauncher, OptimizedWebSocketManager
 
 # Set env var to skip Python version check for testing
 os.environ['SKIP_PYTHON_VERSION_CHECK'] = '1'
 
+
+def create_launcher(
+    *,
+    mode: str = 'paper',
+    dry_run: bool = True,
+    infinite: bool = False,
+    auto_restart: bool = False,
+    max_restarts: int = 3,
+    restart_delay: int = 30,
+    debug_mode: bool = False,
+):
+    """Factory helper mirroring the legacy _launcher_factory output."""
+
+    return LiveTradingLauncher(
+        mode=mode,
+        dry_run=dry_run,
+        infinite=infinite,
+        auto_restart=auto_restart,
+        max_restarts=max_restarts,
+        restart_delay=restart_delay,
+        debug_mode=debug_mode,
+    )
 
 
 class TestLiveTradingLauncher:

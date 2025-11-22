@@ -536,6 +536,16 @@ class LiveTradingConfiguration:
             if not legacy_value:
                 risk_section['max_notional_per_trade'] = derived_notional
 
+        # Normalize advanced sub-sections
+        queue_cfg = risk_section.get('queue') or {}
+        risk_section['queue'] = self._normalize_queue_config(queue_cfg)
+
+        concurrent_cfg = risk_section.get('concurrent_limits') or {}
+        risk_section['concurrent_limits'] = self._normalize_concurrent_limits(concurrent_cfg)
+
+        volatility_cfg = risk_section.get('volatility_sizing') or {}
+        risk_section['volatility_sizing'] = self._normalize_volatility_sizing(volatility_cfg)
+
         config['risk'] = risk_section
 
     @staticmethod
@@ -562,6 +572,130 @@ class LiveTradingConfiguration:
                     f"❌ {field_name}={numeric} exceeds 100%. Clamping to 100% (1.0) to keep values in range."
                 )
                 numeric = 1.0
+        return numeric
+
+    def _normalize_queue_config(self, queue_cfg: Dict[str, Any]) -> Dict[str, Any]:
+        defaults = {
+            'ttl_seconds': 60,
+            'max_queue_depth': 50,
+            'batch_dequeue': 3,
+            'max_pending_per_symbol': 1,
+        }
+        normalized = {}
+        for key, default in defaults.items():
+            normalized[key] = self._coerce_int(queue_cfg.get(key, default), default, f"risk.queue.{key}", minimum=1)
+
+        weight_defaults = {
+            'explicit_priority': 0.4,
+            'risk_reward': 0.3,
+            'ml_confidence': 0.2,
+            'urgency': 0.1,
+        }
+        weights = {}
+        provided_weights = queue_cfg.get('priority_weights') or {}
+        total = 0.0
+        for key, default in weight_defaults.items():
+            value = self._coerce_float(provided_weights.get(key, default), default, f"risk.queue.priority_weights.{key}", minimum=0)
+            weights[key] = value
+            total += value
+
+        if total <= 0:
+            logger.warning("risk.queue.priority_weights sum to <= 0. Reverting to defaults.")
+            weights = weight_defaults.copy()
+            total = sum(weights.values())
+
+        normalized['priority_weights'] = {k: v / total for k, v in weights.items()}
+        return normalized
+
+    def _normalize_concurrent_limits(self, limits_cfg: Dict[str, Any]) -> Dict[str, Any]:
+        defaults = {
+            'max_open_positions': 3,
+            'max_positions_per_symbol': 1,
+            'max_total_risk_pct': 0.06,
+            'correlation_bucket_threshold': 0.8,
+        }
+        normalized = {
+            'max_open_positions': self._coerce_int(limits_cfg.get('max_open_positions', defaults['max_open_positions']),
+                                                   defaults['max_open_positions'], 'risk.concurrent_limits.max_open_positions', minimum=0),
+            'max_positions_per_symbol': self._coerce_int(
+                limits_cfg.get('max_positions_per_symbol', defaults['max_positions_per_symbol']),
+                defaults['max_positions_per_symbol'],
+                'risk.concurrent_limits.max_positions_per_symbol',
+                minimum=0,
+            ),
+        }
+
+        max_total_risk = limits_cfg.get('max_total_risk_pct', defaults['max_total_risk_pct'])
+        normalized['max_total_risk_pct'] = self._normalize_percent_value(max_total_risk, 'risk.concurrent_limits.max_total_risk_pct') or defaults['max_total_risk_pct']
+
+        corr_threshold = limits_cfg.get('correlation_bucket_threshold', defaults['correlation_bucket_threshold'])
+        normalized['correlation_bucket_threshold'] = self._normalize_percent_value(
+            corr_threshold,
+            'risk.concurrent_limits.correlation_bucket_threshold',
+        ) or defaults['correlation_bucket_threshold']
+
+        return normalized
+
+    def _normalize_volatility_sizing(self, vol_cfg: Dict[str, Any]) -> Dict[str, Any]:
+        defaults = {
+            'enabled': True,
+            'atr_window': 14,
+            'atr_floor_pct': 0.005,
+            'atr_ceiling_pct': 0.02,
+            'low_vol_multiplier': 1.2,
+            'baseline_multiplier': 1.0,
+            'high_vol_multiplier': 0.6,
+            'min_position_size_pct': 0.01,
+        }
+
+        normalized = {
+            'enabled': bool(vol_cfg.get('enabled', defaults['enabled'])),
+            'atr_window': self._coerce_int(vol_cfg.get('atr_window', defaults['atr_window']), defaults['atr_window'], 'risk.volatility_sizing.atr_window', minimum=1),
+            'low_vol_multiplier': self._coerce_float(vol_cfg.get('low_vol_multiplier', defaults['low_vol_multiplier']), defaults['low_vol_multiplier'], 'risk.volatility_sizing.low_vol_multiplier', minimum=0.1),
+            'baseline_multiplier': self._coerce_float(vol_cfg.get('baseline_multiplier', defaults['baseline_multiplier']), defaults['baseline_multiplier'], 'risk.volatility_sizing.baseline_multiplier', minimum=0.1),
+            'high_vol_multiplier': self._coerce_float(vol_cfg.get('high_vol_multiplier', defaults['high_vol_multiplier']), defaults['high_vol_multiplier'], 'risk.volatility_sizing.high_vol_multiplier', minimum=0.05),
+        }
+
+        normalized['atr_floor_pct'] = self._normalize_percent_value(
+            vol_cfg.get('atr_floor_pct', defaults['atr_floor_pct']), 'risk.volatility_sizing.atr_floor_pct'
+        ) or defaults['atr_floor_pct']
+        normalized['atr_ceiling_pct'] = self._normalize_percent_value(
+            vol_cfg.get('atr_ceiling_pct', defaults['atr_ceiling_pct']), 'risk.volatility_sizing.atr_ceiling_pct'
+        ) or defaults['atr_ceiling_pct']
+        normalized['min_position_size_pct'] = self._normalize_percent_value(
+            vol_cfg.get('min_position_size_pct', defaults['min_position_size_pct']), 'risk.volatility_sizing.min_position_size_pct'
+        ) or defaults['min_position_size_pct']
+
+        if normalized['atr_floor_pct'] >= normalized['atr_ceiling_pct']:
+            logger.warning("risk.volatility_sizing atr_floor_pct >= atr_ceiling_pct; adjusting ceiling to maintain spread")
+            normalized['atr_ceiling_pct'] = normalized['atr_floor_pct'] * 1.5
+
+        return normalized
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int, field_name: str, minimum: Optional[int] = None) -> int:
+        try:
+            numeric = int(value)
+        except (TypeError, ValueError):
+            logger.warning(f"⚠️ {field_name} value '{value}' invalid. Using default {default}.")
+            numeric = default
+
+        if minimum is not None and numeric < minimum:
+            logger.warning(f"⚠️ {field_name} value {numeric} below minimum {minimum}. Raising to minimum.")
+            numeric = minimum
+        return numeric
+
+    @staticmethod
+    def _coerce_float(value: Any, default: float, field_name: str, minimum: Optional[float] = None) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            logger.warning(f"⚠️ {field_name} value '{value}' invalid. Using default {default}.")
+            numeric = default
+
+        if minimum is not None and numeric < minimum:
+            logger.warning(f"⚠️ {field_name} value {numeric} below minimum {minimum}. Raising to minimum.")
+            numeric = minimum
         return numeric
 
     @staticmethod
