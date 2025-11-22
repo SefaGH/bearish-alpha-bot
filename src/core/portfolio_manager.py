@@ -153,8 +153,14 @@ class PortfolioManager:
             position_id: Unique position identifier
             position_data: Position data including entry, stop, size, etc.
         """
+        normalized = {**position_data}
+        if 'size' not in normalized:
+            normalized['size'] = position_data.get('amount')
+        if 'risk_amount' not in normalized and position_data.get('risk_usd') is not None:
+            normalized['risk_amount'] = position_data.get('risk_usd')
+
         self.active_positions[position_id] = {
-            **position_data,
+            **normalized,
             'entry_time': datetime.now(timezone.utc),
             'current_price': position_data.get('entry_price', 0)
         }
@@ -206,7 +212,7 @@ class PortfolioManager:
             Total exposure in USDT
         """
         total_exposure = sum(
-            pos.get('size', 0) * pos.get('entry_price', 0) 
+            (pos.get('size', pos.get('amount', 0)) or 0) * pos.get('entry_price', 0)
             for pos in self.active_positions.values()
         )
         
@@ -216,6 +222,24 @@ class PortfolioManager:
         logger.debug(f"📊 [EXPOSURE] Active positions: {active_count}, Total exposure: ${total_exposure:.2f}, Capital utilization: {capital_utilization:.1f}%")
         
         return total_exposure
+
+    def count_open_positions(self, symbol: Optional[str] = None) -> int:
+        """Count open positions globally or for a specific symbol."""
+        if not symbol:
+            return len(self.active_positions)
+        return sum(1 for pos in self.active_positions.values() if pos.get('symbol') == symbol)
+
+    def get_total_risk_amount(self) -> float:
+        """Aggregate risk allocation across open positions."""
+        total = 0.0
+        for pos in self.active_positions.values():
+            risk_val = pos.get('risk_amount')
+            if risk_val is None:
+                risk_val = pos.get('risk_usd')
+            if risk_val is None:
+                continue
+            total += float(risk_val)
+        return total
     
     def get_available_capital(self) -> float:
         """

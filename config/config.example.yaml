@@ -52,14 +52,14 @@ execution:
 risk:
   # Existing parameters (keep these)
   equity_usd: 100                     # Override with: CAPITAL_USDT
-  per_trade_risk_pct: 0.01            # Override with: PER_TRADE_RISK_PCT
+  per_trade_risk_pct: 0.003           # Override with: PER_TRADE_RISK_PCT
   daily_loss_limit_pct: 0.02          # Override with: DAILY_LOSS_LIMIT_PCT
   risk_usd_cap: 5                     # Override with: RISK_USD_CAP
   
   # NEW: Dynamic position sizing parameters
-  max_position_size_pct: 0.20         # Override with: MAX_POSITION_SIZE_PCT
-  max_notional_pct_per_trade: 0.20    # Override with: MAX_NOTIONAL_PCT_PER_TRADE
-  max_margin_pct_per_trade: 0.20      # Override with: MAX_MARGIN_PCT_PER_TRADE
+  max_position_size_pct: 0.80         # Override with: MAX_POSITION_SIZE_PCT
+  max_notional_pct_per_trade: 0.75    # Override with: MAX_NOTIONAL_PCT_PER_TRADE
+  max_margin_pct_per_trade: 0.30      # Override with: MAX_MARGIN_PCT_PER_TRADE
   
   # Safety limits
   min_position_size_usd: 10           # Override with: MIN_POSITION_SIZE_USD
@@ -70,7 +70,7 @@ risk:
   
   min_amount_behavior: skip
   min_notional_behavior: skip
-  daily_max_trades: 5                 # Override with: DAILY_MAX_TRADES
+  daily_max_trades: 8                 # Override with: DAILY_MAX_TRADES
   
   # NEW: Dynamic Risk/Reward System
   rr_dynamic:
@@ -101,6 +101,36 @@ risk:
       bearish: 0.9                   # Override with: RR_MULT_BEARISH
       neutral: 1.0                   # Override with: RR_MULT_NEUTRAL
       volatile: 1.2                  # Override with: RR_MULT_VOLATILE
+
+  # NEW: Signal execution queue controls
+  queue:
+    ttl_seconds: 60                 # Override with: SIGNAL_QUEUE_TTL_SECONDS (drop stale signals)
+    max_queue_depth: 50             # Override with: SIGNAL_QUEUE_MAX_DEPTH
+    batch_dequeue: 3                # Override with: SIGNAL_QUEUE_BATCH_DEQUEUE (signals pulled per cycle)
+    max_pending_per_symbol: 1       # Override with: SIGNAL_QUEUE_MAX_PENDING_PER_SYMBOL
+    priority_weights:
+      explicit_priority: 0.4        # Override with: SIGNAL_QUEUE_WEIGHT_PRIORITY
+      risk_reward: 0.3              # Override with: SIGNAL_QUEUE_WEIGHT_RR
+      ml_confidence: 0.2            # Override with: SIGNAL_QUEUE_WEIGHT_ML
+      urgency: 0.1                  # Override with: SIGNAL_QUEUE_WEIGHT_URGENCY
+
+  # NEW: Concurrent risk guardrails
+  concurrent_limits:
+    max_open_positions: 3           # Override with: MAX_OPEN_POSITIONS
+    max_positions_per_symbol: 1     # Override with: MAX_POSITIONS_PER_SYMBOL
+    max_total_risk_pct: 0.06        # Override with: MAX_TOTAL_RISK_PCT (fraction of equity at risk)
+    correlation_bucket_threshold: 0.8 # Override with: CORRELATION_BUCKET_THRESHOLD
+
+  # NEW: Volatility-aware sizing parameters
+  volatility_sizing:
+    enabled: true                   # Override with: VOL_SIZING_ENABLED
+    atr_window: 14                  # Override with: VOL_SIZING_ATR_WINDOW
+    atr_floor_pct: 0.005            # Override with: VOL_SIZING_ATR_FLOOR (0.5%)
+    atr_ceiling_pct: 0.02           # Override with: VOL_SIZING_ATR_CEILING (2%)
+    low_vol_multiplier: 1.2         # Override with: VOL_SIZING_LOW_MULT
+    baseline_multiplier: 1.0        # Override with: VOL_SIZING_BASE_MULT
+    high_vol_multiplier: 0.6        # Override with: VOL_SIZING_HIGH_MULT
+    min_position_size_pct: 0.01     # Override with: VOL_SIZING_MIN_POSITION_PCT
 
 # Asset class-specific risk limits (optional, not commonly overridden)
 class_limits:

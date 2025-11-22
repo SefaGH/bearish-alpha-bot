@@ -1,5 +1,20 @@
 # Değişiklik Günlüğü / Changelog
 
+## 2025-11-22
+
+### Fixed
+- **AdvancedPositionManager** yönlü SL/TP türetimini düzeltildi: yalnızca `%` veya ATR
+  katları sağlayan sinyallerde bile short işlemler için stop fiyatı girişin üstüne,
+  take-profit ise altına doğru hesaplanıyor ve `risk_amount` gibi metrikler gerçek
+  değerlere göre güncelleniyor.
+
+### Added
+- `tests/test_position_manager_exits.py` dosyası ile hem long hem short senaryolarında
+  yeni SL/TP türetme zincirine regresyon testleri eklendi.
+
+### Docs
+- `docs/CONFIG_REFERENCE.md` sinyal bölümüne yönlü SL/TP türetmesine dair açıklama eklendi.
+
 ## [0.1-phase1] - 2025-11-11
 
 ### Phase-1 Completion: Infrastructure Setup & Test Hygiene

@@ -103,6 +103,8 @@ class RiskManager:
             'max_drawdown': self.risk_limits_dataclass.max_drawdown,
             'max_correlation': self.risk_limits_dataclass.max_correlation,
         }
+        self.concurrent_limits = self.risk_config.get_concurrent_limits() if hasattr(self.risk_config, 'get_concurrent_limits') else None
+        self.volatility_sizing = self.risk_config.get_volatility_sizing() if hasattr(self.risk_config, 'get_volatility_sizing') else None
         
         # PHASE 3: Rules Engine - Composable, extensible risk validation
         if rules is not None:
@@ -124,10 +126,26 @@ class RiskManager:
         self.peak_portfolio_value = self.portfolio_value  # DEPRECATED: Use PortfolioManager.get_peak_equity()
         
         # Log initialization with standardized configuration
+        self.config = self._extract_risk_config_dict()
+
         logger.info(f"RiskManager initialized (PHASE 3: Rules Engine)")
         logger.info(f"Risk configuration: {self.risk_config.to_dict()}")
         logger.info(f"Risk limits: {self.risk_limits}")
         logger.info(f"Active rules: {[rule.rule_name for rule in self.rules]}")
+
+    def _extract_risk_config_dict(self) -> Dict[str, Any]:
+        """Get the flattened risk section for consumers that expect raw config values."""
+        try:
+            if hasattr(self.risk_config, 'get_flat_risk_settings'):
+                snapshot = self.risk_config.get_flat_risk_settings()
+                if isinstance(snapshot, dict):
+                    return snapshot
+            risk_dict = self.risk_config.to_dict().get('risk') if hasattr(self.risk_config, 'to_dict') else None
+            if isinstance(risk_dict, dict):
+                return risk_dict
+        except Exception as exc:
+            logger.warning(f"[RISK-ENGINE] Unable to extract risk config snapshot: {exc}")
+        return {}
     
     def _create_default_rules(self) -> List[BaseRiskRule]:
         """
@@ -216,7 +234,7 @@ class RiskManager:
         
         # Fallback to deprecated state for backward compatibility
         total_exposure = sum(
-            pos.get('size', 0) * pos.get('entry_price', 0) 
+            (pos.get('size', pos.get('amount', 0)) or 0) * pos.get('entry_price', 0)
             for pos in self.active_positions.values()
         )
         
@@ -227,6 +245,98 @@ class RiskManager:
         logger.debug(f"📊 [EXPOSURE] Active positions: {active_count}, Total exposure: ${total_exposure:.2f}, Capital utilization: {capital_utilization:.1f}%")
         
         return total_exposure
+
+    def _check_concurrent_limits(self, signal: Dict, risk_metrics: Dict[str, Any], portfolio_manager) -> Tuple[bool, str]:
+        if not self.concurrent_limits or portfolio_manager is None:
+            return True, "OK"
+
+        limits = self.concurrent_limits
+        active_positions: Optional[Dict[str, Dict[str, Any]]] = None
+        if hasattr(portfolio_manager, 'count_open_positions'):
+            active_count = portfolio_manager.count_open_positions()
+        else:
+            if hasattr(portfolio_manager, 'get_open_positions'):
+                active_positions = portfolio_manager.get_open_positions() or {}
+            elif isinstance(portfolio_manager, dict):
+                active_positions = portfolio_manager.get('open_positions', {}) or {}
+            else:
+                active_positions = {}
+            active_count = len(active_positions) if isinstance(active_positions, dict) else 0
+
+        symbol = signal.get('symbol') if signal else None
+
+        if limits.max_open_positions and active_count >= limits.max_open_positions:
+            return False, f"Max open positions reached ({active_count}/{limits.max_open_positions})"
+
+        if limits.max_positions_per_symbol and symbol:
+            if hasattr(portfolio_manager, 'count_open_positions'):
+                symbol_count = portfolio_manager.count_open_positions(symbol)
+            else:
+                active_positions = active_positions or {}
+                symbol_count = self._count_positions_for_symbol(active_positions, symbol)
+            if symbol_count >= limits.max_positions_per_symbol:
+                return False, f"Max positions for {symbol} reached ({symbol_count}/{limits.max_positions_per_symbol})"
+
+        projected_heat = risk_metrics.get('portfolio_heat') if isinstance(risk_metrics, dict) else None
+        max_heat = limits.max_total_risk_pct
+        if projected_heat is not None and max_heat and projected_heat >= max_heat:
+            return False, f"Portfolio heat {projected_heat:.2%} exceeds limit {max_heat:.2%}"
+
+        return True, "OK"
+
+    def can_open_new_position(
+        self,
+        signal: Dict,
+        portfolio_manager,
+        cached_metrics: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """Evaluate whether a queued signal can still be opened safely.
+
+        Args:
+            signal: Signal payload from StrategyCoordinator.
+            portfolio_manager: Live PortfolioManager instance.
+            cached_metrics: Optional previously computed risk metrics to merge for telemetry.
+
+        Returns:
+            Tuple of (allowed flag, rejection reason, merged risk metrics snapshot).
+        """
+        snapshot: Dict[str, Any] = dict(cached_metrics) if isinstance(cached_metrics, dict) else {}
+
+        if portfolio_manager is None:
+            return False, "Portfolio manager unavailable", snapshot
+
+        if signal is None:
+            return False, "Signal payload missing", snapshot
+
+        try:
+            recalculated_metrics = self._calculate_risk_metrics(signal, portfolio_manager) or {}
+            if snapshot:
+                merged_metrics = snapshot.copy()
+                merged_metrics.update(recalculated_metrics)
+                risk_metrics = merged_metrics
+            else:
+                risk_metrics = recalculated_metrics
+
+            limits_ok, limit_reason = self._check_concurrent_limits(signal, risk_metrics, portfolio_manager)
+            if not limits_ok:
+                return False, limit_reason, risk_metrics
+
+            return True, "OK", risk_metrics
+
+        except Exception as exc:
+            logger.error(f"[RISK-ENGINE] Failed to evaluate dispatch gating: {exc}", exc_info=True)
+            return False, f"Risk gating error: {exc}", snapshot
+
+    def has_execution_capacity(self, signal: Dict, portfolio_manager) -> Tuple[bool, str]:
+        """Backward-compatible wrapper for legacy callers."""
+        allowed, reason, _ = self.can_open_new_position(signal, portfolio_manager)
+        return allowed, reason
+
+    @staticmethod
+    def _count_positions_for_symbol(active_positions: Dict[str, Dict[str, Any]], symbol: str) -> int:
+        if not isinstance(active_positions, dict) or not symbol:
+            return 0
+        return sum(1 for pos in active_positions.values() if pos.get('symbol') == symbol)
     
     def set_risk_limits(self, max_portfolio_risk: float = 0.02, max_position_size: float = 0.10,
                        max_drawdown: float = 0.15, max_correlation: float = 0.7):
@@ -305,6 +415,11 @@ class RiskManager:
                 logger.debug(f"✅ [RISK-ENGINE] {rule.rule_name} passed")
             
             # Tüm kurallar geçti
+            limits_ok, limit_reason = self._check_concurrent_limits(signal, risk_metrics, portfolio_manager)
+            if not limits_ok:
+                logger.warning(f"🚫 [RISK-ENGINE] Position blocked by concurrent limits: {limit_reason}")
+                return (False, limit_reason, risk_metrics)
+
             logger.info(f"✅ [RISK-ENGINE] Position APPROVED for {symbol}")
             return (True, "All risk rules passed", risk_metrics)
             
@@ -409,7 +524,15 @@ class RiskManager:
             risk_reward_ratio = reward_distance / risk_distance if risk_distance > 0 else 0
             
             # Portfolio heat
-            total_risk = sum(pos.get('risk_amount', 0) for pos in active_positions.values()) if isinstance(active_positions, dict) else 0
+            total_risk = 0.0
+            if isinstance(active_positions, dict):
+                for pos in active_positions.values():
+                    risk_val = pos.get('risk_amount')
+                    if risk_val is None:
+                        risk_val = pos.get('risk_usd')
+                    if risk_val is None:
+                        risk_val = 0.0
+                    total_risk += float(risk_val)
             portfolio_heat = (total_risk + risk_amount) / portfolio_value if portfolio_value > 0 else 0
             
             return {
@@ -421,6 +544,7 @@ class RiskManager:
                 'position_size_pct': position_size_pct,
                 'max_position_value': portfolio_value * self.risk_limits['max_position_size'],
                 'risk_amount': risk_amount,
+                'total_risk_amount': total_risk + risk_amount,
                 'max_risk_amount': portfolio_value * self.risk_limits['max_portfolio_risk'],
                 'risk_pct': risk_pct,
                 'risk_reward_ratio': risk_reward_ratio,
@@ -651,6 +775,18 @@ class RiskManager:
             max_position_value = portfolio_value * self.risk_limits['max_position_size']
             max_size_by_limit = max_position_value / entry_price
             position_size = min(position_size, max_size_by_limit)
+
+            position_size, vol_meta = self._apply_volatility_sizing(
+                position_size,
+                signal,
+                entry_price,
+                portfolio_value,
+                max_size_by_limit
+            )
+
+            if vol_meta:
+                sizing_meta = signal.setdefault('sizing_meta', {})
+                sizing_meta.update(vol_meta)
             
             logger.info(f"Calculated position size: {position_size:.4f} (risk: ${risk_per_trade:.2f})")
             return position_size
@@ -658,6 +794,62 @@ class RiskManager:
         except Exception as e:
             logger.error(f"Error calculating position size: {e}")
             return 0.0
+
+    def _apply_volatility_sizing(
+        self,
+        base_size: float,
+        signal: Dict,
+        entry_price: float,
+        portfolio_value: float,
+        max_size_by_limit: float
+    ) -> Tuple[float, Dict[str, Any]]:
+        if not self.volatility_sizing or not getattr(self.volatility_sizing, 'enabled', False):
+            return base_size, {}
+
+        atr_value = signal.get('atr')
+        if not atr_value:
+            sizing_meta = signal.get('sizing_meta', {})
+            atr_value = sizing_meta.get('atr') if isinstance(sizing_meta, dict) else None
+        if not atr_value or entry_price <= 0:
+            return base_size, {}
+
+        atr_pct = float(atr_value) / entry_price
+        cfg = self.volatility_sizing
+        floor_pct = getattr(cfg, 'atr_floor_pct', 0.005)
+        ceiling_pct = getattr(cfg, 'atr_ceiling_pct', 0.02)
+        baseline = getattr(cfg, 'baseline_multiplier', 1.0)
+        low_mult = getattr(cfg, 'low_vol_multiplier', 1.2)
+        high_mult = getattr(cfg, 'high_vol_multiplier', 0.6)
+
+        if atr_pct <= floor_pct:
+            multiplier = low_mult
+            bucket = 'low'
+        elif atr_pct >= ceiling_pct:
+            multiplier = high_mult
+            bucket = 'high'
+        else:
+            bucket = 'medium'
+            span = ceiling_pct - floor_pct
+            progress = (atr_pct - floor_pct) / span if span > 0 else 0.5
+            multiplier = baseline - progress * (baseline - high_mult)
+
+        adjusted_size = max(base_size * multiplier, 0.0)
+        adjusted_size = min(adjusted_size, max_size_by_limit)
+
+        min_position_pct = getattr(cfg, 'min_position_size_pct', 0.0) or 0.0
+        min_position_units = 0.0
+        if min_position_pct > 0 and portfolio_value > 0:
+            min_notional = portfolio_value * min_position_pct
+            min_position_units = min_notional / entry_price
+            adjusted_size = max(adjusted_size, min_position_units)
+
+        meta = {
+            'atr_pct': atr_pct,
+            'volatility_bucket': bucket,
+            'volatility_multiplier': multiplier,
+            'min_position_units': min_position_units
+        }
+        return adjusted_size, meta
     
     def register_position(self, position_id: str, position_data: Dict):
         """

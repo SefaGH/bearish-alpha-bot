@@ -4,6 +4,7 @@ Centralized risk parameters and circuit breaker limits.
 """
 
 from typing import Dict, Any, Optional
+from copy import deepcopy
 from dataclasses import dataclass, field
 import logging
 import os
@@ -46,6 +47,40 @@ class EmergencyProtocols:
     })
 
 
+@dataclass
+class QueueConfig:
+    ttl_seconds: int = 60
+    max_queue_depth: int = 50
+    batch_dequeue: int = 3
+    max_pending_per_symbol: int = 1
+    priority_weights: Dict[str, float] = field(default_factory=lambda: {
+        'explicit_priority': 0.4,
+        'risk_reward': 0.3,
+        'ml_confidence': 0.2,
+        'urgency': 0.1,
+    })
+
+
+@dataclass
+class ConcurrentRiskLimitsConfig:
+    max_open_positions: int = 3
+    max_positions_per_symbol: int = 1
+    max_total_risk_pct: float = 0.06
+    correlation_bucket_threshold: float = 0.8
+
+
+@dataclass
+class VolatilitySizingConfig:
+    enabled: bool = True
+    atr_window: int = 14
+    atr_floor_pct: float = 0.005
+    atr_ceiling_pct: float = 0.02
+    low_vol_multiplier: float = 1.2
+    baseline_multiplier: float = 1.0
+    high_vol_multiplier: float = 0.6
+    min_position_size_pct: float = 0.01
+
+
 class RiskConfiguration:
     """Centralized risk management configuration."""
     
@@ -84,6 +119,8 @@ class RiskConfiguration:
         """
         # Store capital for USD calculations
         self.initial_capital = initial_capital or (custom_limits.get('equity_usd', 100.0) if custom_limits else 100.0)
+        # Preserve a flattened snapshot of the normalized risk section for downstream consumers
+        self._raw_risk_config = deepcopy(custom_limits) if custom_limits else {}
         
         # Store daily_max_trades if provided
         self.daily_max_trades = custom_limits.get('daily_max_trades') if custom_limits else None
@@ -119,6 +156,14 @@ class RiskConfiguration:
         }) if custom_limits else CircuitBreakerLimits()
         
         self.emergency_protocols = EmergencyProtocols()
+
+        queue_raw = custom_limits.get('queue') if custom_limits else None
+        concurrent_raw = custom_limits.get('concurrent_limits') if custom_limits else None
+        volatility_raw = custom_limits.get('volatility_sizing') if custom_limits else None
+
+        self.queue_config = self._load_queue_config(queue_raw or {})
+        self.concurrent_limits_config = self._load_concurrent_limits(concurrent_raw or {})
+        self.volatility_sizing_config = self._load_volatility_sizing(volatility_raw or {})
         
         # Load dynamic R/R configuration
         self._load_dynamic_rr_config(custom_limits)
@@ -433,6 +478,10 @@ Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
             },
             'emergency_protocols': self.emergency_protocols.protocols
         }
+
+        if self._raw_risk_config:
+            # Provide the complete risk section (already normalized by LiveTradingConfiguration)
+            result['risk'] = deepcopy(self._raw_risk_config)
         
         # Add daily_max_trades if available
         if hasattr(self, 'daily_max_trades') and self.daily_max_trades is not None:
@@ -449,5 +498,137 @@ Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
         # Add signal scoring config if available
         if hasattr(self, 'signal_scoring'):
             result['signal_scoring'] = self.signal_scoring
-        
+
+        result['queue_config'] = {
+            'ttl_seconds': self.queue_config.ttl_seconds,
+            'max_queue_depth': self.queue_config.max_queue_depth,
+            'batch_dequeue': self.queue_config.batch_dequeue,
+            'max_pending_per_symbol': self.queue_config.max_pending_per_symbol,
+            'priority_weights': self.queue_config.priority_weights,
+        }
+
+        result['concurrent_limits'] = {
+            'max_open_positions': self.concurrent_limits_config.max_open_positions,
+            'max_positions_per_symbol': self.concurrent_limits_config.max_positions_per_symbol,
+            'max_total_risk_pct': self.concurrent_limits_config.max_total_risk_pct,
+            'correlation_bucket_threshold': self.concurrent_limits_config.correlation_bucket_threshold,
+        }
+
+        result['volatility_sizing'] = {
+            'enabled': self.volatility_sizing_config.enabled,
+            'atr_window': self.volatility_sizing_config.atr_window,
+            'atr_floor_pct': self.volatility_sizing_config.atr_floor_pct,
+            'atr_ceiling_pct': self.volatility_sizing_config.atr_ceiling_pct,
+            'low_vol_multiplier': self.volatility_sizing_config.low_vol_multiplier,
+            'baseline_multiplier': self.volatility_sizing_config.baseline_multiplier,
+            'high_vol_multiplier': self.volatility_sizing_config.high_vol_multiplier,
+            'min_position_size_pct': self.volatility_sizing_config.min_position_size_pct,
+        }
+
         return result
+
+    def get_flat_risk_settings(self) -> Dict[str, Any]:
+        """Return a deepcopy of the normalized risk section for consumers like PositionSizing."""
+        return deepcopy(self._raw_risk_config)
+
+    def get_queue_config(self) -> QueueConfig:
+        return self.queue_config
+
+    def get_concurrent_limits(self) -> ConcurrentRiskLimitsConfig:
+        return self.concurrent_limits_config
+
+    def get_volatility_sizing(self) -> VolatilitySizingConfig:
+        return self.volatility_sizing_config
+
+    def _load_queue_config(self, cfg: Dict[str, Any]) -> QueueConfig:
+        weights = cfg.get('priority_weights') or {}
+        priority_weights = {
+            'explicit_priority': self._safe_float(weights.get('explicit_priority', 0.4), 0.4),
+            'risk_reward': self._safe_float(weights.get('risk_reward', 0.3), 0.3),
+            'ml_confidence': self._safe_float(weights.get('ml_confidence', 0.2), 0.2),
+            'urgency': self._safe_float(weights.get('urgency', 0.1), 0.1),
+        }
+        total = sum(priority_weights.values())
+        if total <= 0:
+            priority_weights = {
+                'explicit_priority': 0.4,
+                'risk_reward': 0.3,
+                'ml_confidence': 0.2,
+                'urgency': 0.1,
+            }
+            total = 1.0
+        priority_weights = {k: v / total for k, v in priority_weights.items()}
+
+        return QueueConfig(
+            ttl_seconds=self._safe_int(cfg.get('ttl_seconds', 60), 60),
+            max_queue_depth=self._safe_int(cfg.get('max_queue_depth', 50), 50),
+            batch_dequeue=self._safe_int(cfg.get('batch_dequeue', 3), 3, minimum=1),
+            max_pending_per_symbol=self._safe_int(cfg.get('max_pending_per_symbol', 1), 1, minimum=1),
+            priority_weights=priority_weights
+        )
+
+    def _load_concurrent_limits(self, cfg: Dict[str, Any]) -> ConcurrentRiskLimitsConfig:
+        max_total_risk = cfg.get('max_total_risk_pct', 0.06)
+        if max_total_risk > 1:
+            max_total_risk /= 100.0
+        correlation_threshold = cfg.get('correlation_bucket_threshold', 0.8)
+        if correlation_threshold > 1:
+            correlation_threshold /= 100.0
+
+        return ConcurrentRiskLimitsConfig(
+            max_open_positions=self._safe_int(cfg.get('max_open_positions', 3), 3, minimum=0),
+            max_positions_per_symbol=self._safe_int(cfg.get('max_positions_per_symbol', 1), 1, minimum=0),
+            max_total_risk_pct=float(max_total_risk),
+            correlation_bucket_threshold=float(correlation_threshold)
+        )
+
+    def _load_volatility_sizing(self, cfg: Dict[str, Any]) -> VolatilitySizingConfig:
+        floor_pct = cfg.get('atr_floor_pct', 0.005)
+        ceiling_pct = cfg.get('atr_ceiling_pct', 0.02)
+        min_pos_pct = cfg.get('min_position_size_pct', 0.01)
+
+        def normalize_pct(value: Any, fallback: float) -> float:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return fallback
+            if numeric > 1:
+                numeric /= 100.0
+            return max(numeric, 0.0)
+
+        floor_pct = normalize_pct(floor_pct, 0.005)
+        ceiling_pct = normalize_pct(ceiling_pct, 0.02)
+        if ceiling_pct <= floor_pct:
+            ceiling_pct = floor_pct * 1.5
+        min_pos_pct = normalize_pct(min_pos_pct, 0.01)
+
+        return VolatilitySizingConfig(
+            enabled=bool(cfg.get('enabled', True)),
+            atr_window=self._safe_int(cfg.get('atr_window', 14), 14, minimum=1),
+            atr_floor_pct=floor_pct,
+            atr_ceiling_pct=ceiling_pct,
+            low_vol_multiplier=self._safe_float(cfg.get('low_vol_multiplier', 1.2), 1.2, minimum=0.1),
+            baseline_multiplier=self._safe_float(cfg.get('baseline_multiplier', 1.0), 1.0, minimum=0.1),
+            high_vol_multiplier=self._safe_float(cfg.get('high_vol_multiplier', 0.6), 0.6, minimum=0.05),
+            min_position_size_pct=min_pos_pct
+        )
+
+    @staticmethod
+    def _safe_int(value: Any, fallback: int, minimum: Optional[int] = None) -> int:
+        try:
+            numeric = int(value)
+        except (TypeError, ValueError):
+            numeric = fallback
+        if minimum is not None and numeric < minimum:
+            numeric = minimum
+        return numeric
+
+    @staticmethod
+    def _safe_float(value: Any, fallback: float, minimum: Optional[float] = None) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            numeric = fallback
+        if minimum is not None and numeric < minimum:
+            numeric = minimum
+        return numeric

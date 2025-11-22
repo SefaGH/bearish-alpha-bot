@@ -734,62 +734,26 @@ class LiveTradingEngine:
                         continue
                     
                     # Get signal from StrategyCoordinator queue
-                    signal_data = await asyncio.wait_for(
-                        self.strategy_coordinator.get_next_signal(),
-                        timeout=1.0
-                    )
+                    dispatcher = getattr(self.strategy_coordinator, 'try_dispatch_next', None)
+                    if callable(dispatcher):
+                        signal_data = await dispatcher(timeout=1.0)
+                    else:
+                        signal_data = await asyncio.wait_for(
+                            self.strategy_coordinator.get_next_signal(),
+                            timeout=1.0
+                        )
                     
                     if signal_data:
-                        signal_id = signal_data.get('signal_id', 'unknown')
-                        symbol = signal_data.get('signal', {}).get('symbol', 'unknown')
-                        
-                        logger.info(f"📌 [BRIDGE-RECEIVE] Got signal {signal_id} for {symbol} from StrategyCoordinator")
-                        
-                        # Extract the actual signal with metadata
-                        enriched_signal = {
-                            **signal_data.get('signal', {}),
-                            'signal_id': signal_id,
-                            'risk_assessment': signal_data.get('risk_assessment'),
-                            'routing': signal_data.get('routing'),
-                            'from_coordinator': True,  # Mark source
-                            'bridge_timestamp': datetime.now(timezone.utc)
-                        }
-                        
-                        # ML Enhancement: Check if ML enhanced or blocked
-                        if enriched_signal.get('ml_enhanced'):
-                            bridge_stats['ml_enhanced'] = bridge_stats.get('ml_enhanced', 0) + 1
-                            logger.info(f"🧠 [ML-BRIDGE] Signal {signal_id} is ML-enhanced")
-                            
-                            # Feed to RL agent for learning (store state for later reward calculation)
-                            if hasattr(self, 'rl_agent') and self.rl_agent:
-                                try:
-                                    import numpy as np
-                                    state = enriched_signal.get('rl_state', np.zeros(50))
-                                    action = ['buy', 'hold', 'sell'].index(enriched_signal.get('side', 'hold'))
-                                    enriched_signal['rl_state'] = state
-                                    enriched_signal['rl_action'] = action
-                                except Exception as e:
-                                    logger.debug(f"RL state prep failed: {e}")
-                        
-                        # Check if ML blocked
-                        if enriched_signal.get('ml_blocked'):
-                            bridge_stats['ml_blocked'] = bridge_stats.get('ml_blocked', 0) + 1
-                            logger.info(f"🧠 [ML-BRIDGE] Signal {signal_id} blocked by ML - skipping")
-                            continue
-                        
-                        # Transfer to LiveTradingEngine queue
-                        await self.signal_queue.put(enriched_signal)
-                        
-                        bridge_stats['signals_transferred'] += 1
-                        bridge_stats['last_transfer_time'] = datetime.now(timezone.utc)
-                        
-                        logger.info(f"📌 [BRIDGE-TRANSFER] Signal {signal_id} transferred to LiveTradingEngine queue")
-                        logger.info(f"📌 [BRIDGE-STATS] Total transferred: {bridge_stats['signals_transferred']}")
-                        
-                        # Log queue states
-                        coordinator_queue_size = self.strategy_coordinator.signal_queue.qsize()
-                        engine_queue_size = self.signal_queue.qsize()
-                        logger.info(f"📌 [BRIDGE-QUEUES] Coordinator: {coordinator_queue_size} | Engine: {engine_queue_size}")
+                        success = await self._forward_signal_from_coordinator(signal_data, bridge_stats)
+                        if success:
+                            coordinator_queue_size = self.strategy_coordinator.signal_queue.qsize()
+                            engine_queue_size = self.signal_queue.qsize()
+                            logger.info(
+                                f"📌 [BRIDGE-QUEUES] Coordinator: {coordinator_queue_size} | Engine: {engine_queue_size}"
+                            )
+                        continue
+                    else:
+                        continue
                         
                 except asyncio.TimeoutError:
                     # Normal timeout, no signal available
@@ -808,6 +772,76 @@ class LiveTradingEngine:
             logger.critical(f"📌 [BRIDGE-FATAL] Fatal error in bridge loop: {e}", exc_info=True)
             raise
     
+    async def _forward_signal_from_coordinator(self, signal_data: Dict[str, Any], bridge_stats: Optional[Dict[str, Any]] = None) -> bool:
+        """Normalize coordinator payloads and enqueue them for execution."""
+        if not signal_data:
+            return False
+
+        signal_id = signal_data.get('signal_id', 'unknown')
+        symbol = signal_data.get('signal', {}).get('symbol', 'unknown')
+
+        logger.info(f"📌 [BRIDGE-RECEIVE] Got signal {signal_id} for {symbol} from StrategyCoordinator")
+
+        enriched_signal = {
+            **(signal_data.get('signal') or {}),
+            'signal_id': signal_id,
+            'risk_assessment': signal_data.get('risk_assessment'),
+            'routing': signal_data.get('routing'),
+            'from_coordinator': True,
+            'bridge_timestamp': datetime.now(timezone.utc)
+        }
+
+        if enriched_signal.get('ml_enhanced'):
+            if isinstance(bridge_stats, dict):
+                bridge_stats['ml_enhanced'] = bridge_stats.get('ml_enhanced', 0) + 1
+            logger.info(f"🧠 [ML-BRIDGE] Signal {signal_id} is ML-enhanced")
+
+            if hasattr(self, 'rl_agent') and self.rl_agent:
+                try:
+                    import numpy as np
+                    state = enriched_signal.get('rl_state', np.zeros(50))
+                    action = ['buy', 'hold', 'sell'].index(enriched_signal.get('side', 'hold'))
+                    enriched_signal['rl_state'] = state
+                    enriched_signal['rl_action'] = action
+                except Exception as exc:
+                    logger.debug(f"RL state prep failed: {exc}")
+
+        if enriched_signal.get('ml_blocked'):
+            if isinstance(bridge_stats, dict):
+                bridge_stats['ml_blocked'] = bridge_stats.get('ml_blocked', 0) + 1
+            logger.info(f"🧠 [ML-BRIDGE] Signal {signal_id} blocked by ML - skipping")
+            return False
+
+        await self.signal_queue.put(enriched_signal)
+
+        if isinstance(bridge_stats, dict):
+            bridge_stats['signals_transferred'] += 1
+            bridge_stats['last_transfer_time'] = datetime.now(timezone.utc)
+            logger.info(f"📌 [BRIDGE-STATS] Total transferred: {bridge_stats['signals_transferred']}")
+
+        logger.info(f"📌 [BRIDGE-TRANSFER] Signal {signal_id} transferred to LiveTradingEngine queue")
+        return True
+
+    async def trigger_coordinator_drain(self, timeout: float = 0.0) -> bool:
+        """Manually nudge the coordinator bridge when execution slots free up."""
+        if not self.strategy_coordinator:
+            return False
+
+        dispatcher = getattr(self.strategy_coordinator, 'try_dispatch_next', None)
+        if not callable(dispatcher):
+            return False
+
+        try:
+            payload = await dispatcher(timeout=timeout)
+        except Exception as exc:
+            logger.error(f"📌 [BRIDGE] Failed to drain coordinator queue: {exc}")
+            return False
+
+        if not payload:
+            return False
+
+        return await self._forward_signal_from_coordinator(payload)
+
     async def _prefetch_historical_data(self):
         """
         Prefetches historical data by delegating the task to the MarketDataPipeline.
