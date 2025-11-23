@@ -23,6 +23,9 @@ logs/*.log
 # Data (keep for state files)
 data/*.csv
 data/quarantine/
+data/models/
+data/training/
+data/checkpoints/
 
 # IDE
 .vscode
