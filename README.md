@@ -258,6 +258,15 @@ sudo docker run -d \
 ```
 
 - Container içindeki `logs/` klasörü golden graceful shutdown pattern'ini, exit summary'leri ve seans loglarını tutar;
+  host tarafında `/mnt/bearish/logs` altında görünür. Seans bittikten sonra container içinde:
+
+  ```bash
+  python scripts/run_last_session_analysis.py
+  ```
+
+  komutunu çalıştırmak, **son** `live_trading_*.log` dosyasını bu host log dizinine otomatik olarak kopyalar ve aynı dosya
+  üzerinde `diagnostics/log_analyzer_auto_plus.py` analizini tetikler. Böylece hem golden graceful shutdown pattern'i hem de
+  P&L / funnel metriklerini incelemek için ek `docker cp` veya manuel volume path arama ihtiyacı ortadan kalkar.
   host tarafında `/mnt/bearish/logs` altında görünür.
 - Container içindeki `data/` klasörü (örn. `data/state.json`, `data/day_stats.json`) host tarafında `/mnt/bearish/data`
   altında saklanır.

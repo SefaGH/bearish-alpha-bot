@@ -1618,6 +1618,36 @@ class StrategyCoordinator:
             if winner['signal_id'] == new_signal.get('signal_id', 'new'):
                 action = 'accept'
                 reason = f"Won conflict resolution ({resolution_strategy.value})"
+
+                # Reverse intent handling: if the winning signal is
+                # opposite side of an existing open position on the
+                # same symbol, annotate it as a reverse so that the
+                # engine can close then reopen atomically.
+                try:
+                    symbol = winner.get('symbol') or new_signal.get('symbol')
+                    side = str(winner.get('side', '')).lower()
+                    position_manager = getattr(self, 'position_manager', None)
+                    portfolio_manager = getattr(self, 'portfolio_manager', None)
+
+                    open_position = None
+                    if portfolio_manager is not None and hasattr(portfolio_manager, 'get_open_positions_for_symbol'):
+                        open_position = portfolio_manager.get_open_positions_for_symbol(symbol)
+                    elif position_manager is not None and hasattr(position_manager, 'get_open_position_for_symbol'):
+                        open_position = position_manager.get_open_position_for_symbol(symbol)
+
+                    if isinstance(open_position, dict) and open_position.get('position_id'):
+                        existing_side = str(open_position.get('side', '')).lower()
+                        if existing_side and side and existing_side != side:
+                            winner['intent'] = 'reverse'
+                            winner['reverse_from_position_id'] = open_position['position_id']
+                            logger.info(
+                                "[CONFLICT-RESOLUTION] Marking winning signal %s as reverse of position %s on %s",
+                                winner.get('signal_id'),
+                                open_position['position_id'],
+                                symbol,
+                            )
+                except Exception as reverse_error:
+                    logger.warning("[CONFLICT-RESOLUTION] Failed to annotate reverse intent: %s", reverse_error)
             else:
                 action = 'reject'
                 reason = f"Lost conflict resolution to {winner['strategy_name']} ({resolution_strategy.value})"

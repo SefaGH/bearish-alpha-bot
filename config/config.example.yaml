@@ -52,9 +52,9 @@ execution:
 risk:
   # Existing parameters (keep these)
   equity_usd: 100                     # Override with: CAPITAL_USDT
-  per_trade_risk_pct: 0.003           # Override with: PER_TRADE_RISK_PCT
+  per_trade_risk_pct: 0.01            # Override with: PER_TRADE_RISK_PCT
   daily_loss_limit_pct: 0.02          # Override with: DAILY_LOSS_LIMIT_PCT
-  risk_usd_cap: 5                     # Override with: RISK_USD_CAP
+  risk_usd_cap: 1                     # Override with: RISK_USD_CAP
   
   # NEW: Dynamic position sizing parameters
   max_position_size_pct: 0.80         # Override with: MAX_POSITION_SIZE_PCT

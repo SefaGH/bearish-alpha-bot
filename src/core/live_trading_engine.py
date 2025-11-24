@@ -370,6 +370,7 @@ class LiveTradingEngine:
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
             signal_id = signal.get('signal_id')
+            intent = signal.get('intent')
 
             sizing_meta = signal.get('sizing_meta') or {}
             risk_assessment_payload = signal.get('risk_assessment')
@@ -514,6 +515,50 @@ class LiveTradingEngine:
                 'signal': signal
             }
             
+            # Reverse intent handling: if this signal is marked as a
+            # reverse and references an existing position, try to close
+            # that position BEFORE opening the new one. This keeps
+            # trade history and exposure clean while still respecting
+            # intent-aware risk gating.
+            if intent == 'reverse':
+                reverse_from = signal.get('reverse_from_position_id')
+                if reverse_from:
+                    logger.info(
+                        "[REVERSE] Attempting to close existing position %s on %s before opening reverse.",
+                        reverse_from,
+                        symbol,
+                    )
+                    try:
+                        close_method = getattr(self.position_manager, 'close_position', None)
+                        if callable(close_method):
+                            close_result = await close_method(reverse_from, reason='reverse')
+                        else:
+                            close_result = {'success': False, 'reason': 'close_position_not_available'}
+
+                        if not close_result.get('success'):
+                            logger.error(
+                                "[REVERSE] Failed to close source position %s: %s",
+                                reverse_from,
+                                close_result.get('reason'),
+                            )
+                            return {
+                                'success': False,
+                                'reason': f"Failed to close source position {reverse_from}: {close_result.get('reason')}",
+                                'stage': 'reverse_close',
+                            }
+
+                        logger.info(
+                            "[REVERSE] Successfully closed source position %s; proceeding to open reverse.",
+                            reverse_from,
+                        )
+                    except Exception as reverse_error:
+                        logger.error("[REVERSE] Exception while closing source position %s: %s", reverse_from, reverse_error, exc_info=True)
+                        return {
+                            'success': False,
+                            'reason': f"Exception while closing source position {reverse_from}: {reverse_error}",
+                            'stage': 'reverse_close',
+                        }
+
             execution_result = await self.order_manager.place_order(order_request, execution_algo)
             
             if not execution_result.get('success'):

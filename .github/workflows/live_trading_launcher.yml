@@ -287,7 +287,7 @@ jobs:
 
       - name: Upload Pre-Flight Logs
         uses: actions/upload-artifact@v4
-        if: always() && env.CI == 'true'
+        if: ${{ always() && github.actor != 'nektos/act' }}
         continue-on-error: true
         with:
           name: pre-flight-logs
@@ -516,11 +516,12 @@ jobs:
 
           # Check if log files exist in logs/
           if compgen -G "logs/*.log" > /dev/null; then
-            echo "📄 Log files generated in logs/:"
-            ls -lh logs/*.log || true
+            echo "📄 Log files generated in logs/ (last 5):"
+            # Only show the 5 most recent log files for brevity
+            ls -lh $(ls -1t logs/*.log | head -n 5) || true
             echo ""
-            echo "📈 Log file statistics:"
-            for log in logs/*.log; do
+            echo "📈 Log file statistics (last 5 logs):"
+            for log in $(ls -1t logs/*.log | head -n 5); do
               [ -e "$log" ] || continue
               echo "  $log:"
               echo "    - Size: $(wc -c < "$log") bytes"
@@ -555,7 +556,7 @@ jobs:
 
       - name: Upload Trading Logs
         uses: actions/upload-artifact@v4
-        if: always() && env.CI == 'true'
+        if: ${{ always() && github.actor != 'nektos/act' }}
         with:
           name: trading-logs-${{ github.run_number }}
           path: |
@@ -564,8 +565,53 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+      - name: Fallback Copy latest live_trading log to mounted host logs
+        if: always()
+        run: |
+          set -e
+
+          resolve_path() {
+            if command -v realpath >/dev/null 2>&1; then
+              realpath "$1"
+            else
+              python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1"
+            fi
+          }
+
+          # logs/ klasöründeki en yeni live_trading_*.log dosyasını bul
+          LATEST_LOG=$(ls -1t logs/live_trading_*.log 2>/dev/null | head -n 1 || true)
+
+          if [ -z "$LATEST_LOG" ]; then
+            echo "ℹ️ No live_trading_*.log found under logs/, skipping fallback copy."
+            exit 0
+          fi
+
+          echo "📄 Latest live_trading log in container: $LATEST_LOG"
+
+          # Eğer /mnt/c/Users/sefaa/bearish-alpha-bot/logs/ mount edilmişse oraya aynı isimle kopyala
+          HOST_LOG_DIR="/mnt/c/Users/sefaa/bearish-alpha-bot/logs"
+
+          if [ -d "$HOST_LOG_DIR" ]; then
+            echo "📁 Host logs directory detected at $HOST_LOG_DIR, copying..."
+            BASENAME=$(basename "$LATEST_LOG")
+
+            CONTAINER_LOG_DIR=$(dirname "$LATEST_LOG")
+            HOST_REAL=$(resolve_path "$HOST_LOG_DIR")
+            CONTAINER_REAL=$(resolve_path "$CONTAINER_LOG_DIR")
+
+            if [ "$HOST_REAL" = "$CONTAINER_REAL" ]; then
+              echo "ℹ️ Host logs directory resolves to the same path as container logs; skipping redundant copy."
+            else
+              cp "$LATEST_LOG" "$HOST_LOG_DIR/$BASENAME" || echo "⚠️ Failed to copy to host logs dir."
+            fi
+            echo "✅ Fallback copy attempt finished."
+          else
+            echo "ℹ️ Host logs directory $HOST_LOG_DIR not available (likely not running under act/WSL)."
+            echo "   Skipping host copy fallback."
+          fi
+
       - name: Upload trading state
-        if: always() && env.CI == 'true'
+        if: ${{ always() && github.actor != 'nektos/act' }}
         uses: actions/upload-artifact@v4
         with:
           name: live-trading-state
@@ -577,7 +623,7 @@ jobs:
 
       - name: Upload Trading Data
         uses: actions/upload-artifact@v4
-        if: always() && env.CI == 'true'
+        if: ${{ always() && github.actor != 'nektos/act' }}
         with:
           name: trading-data-${{ github.run_number }}
           path: |
@@ -589,7 +635,7 @@ jobs:
 
       - name: Upload Health Reports
         uses: actions/upload-artifact@v4
-        if: always() && env.CI == 'true'
+        if: ${{ always() && github.actor != 'nektos/act' }}
         with:
           name: health-reports-${{ github.run_number }}
           path: |
@@ -600,7 +646,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Send Telegram Notification (Success)
-        if: success() && env.CI == 'true'
+        if: ${{ success() && github.actor != 'nektos/act' }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -635,7 +681,7 @@ jobs:
           fi
 
       - name: Send Telegram Notification (Failure)
-        if: failure() && env.CI == 'true'
+        if: ${{ failure() && github.actor != 'nektos/act' }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

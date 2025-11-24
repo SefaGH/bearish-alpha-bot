@@ -144,11 +144,8 @@ class RiskConfiguration:
                     logger.info(f"✓ {key}: {value*100:.1f}% (static value)")
             
             processed_limits[key] = value
-            
-        self.risk_limits = RiskLimits(**{
-            k: custom_limits.get(k, v) 
-            for k, v in self.DEFAULT_RISK_LIMITS.items()
-        }) if custom_limits else RiskLimits()
+
+        self.risk_limits = RiskLimits(**processed_limits)
         
         self.circuit_breaker_limits = CircuitBreakerLimits(**{
             k: custom_limits.get(k, v) 

@@ -54,10 +54,14 @@ sudo docker exec bearish-bot python diagnostics/log_analyzer_auto_plus.py
 sudo docker exec bearish-bot python scripts/run_last_session_analysis.py
 ```
 
-Her iki komut da container içindeki `logs/` klasöründe bulunan **son** `live_trading_*.log` üzerinde çalışır ve
-golden graceful shutdown pattern'ini, P&L özetini ve **Signal → Trade funnel** metriklerini raporlar. Helper script,
-seansın TRADING_DURATION ile bitip bitmediğine veya manuel/acil stop ile sonlanmasına bakmaz; her zaman en son seansı
-loglar üzerinden analiz eder.
+Bu helper script artık iki işi birden yapar:
+- Container içindeki `logs/` klasöründe bulunan **son** `live_trading_*.log` dosyasının bir kopyasını host'tan erişilebilir
+   log dizinine (örneğin `/mnt/bearish/logs`) tazeler.
+- Ardından aynı dosya üzerinde `diagnostics/log_analyzer_auto_plus.py` ile golden graceful shutdown pattern'i, P&L özeti ve
+   **Signal → Trade funnel** metriklerini raporlar.
+
+Helper script, seansın `TRADING_DURATION` ile bitip bitmediğine veya manuel/acil stop ile sonlanmasına bakmaz; her zaman en
+son seansı loglar üzerinden analiz eder ve host tarafındaki log kopyasını güncel tutmaya çalışır.
 
 ## 4. Container'ı Güvenli Şekilde Yeniden Başlatma
 

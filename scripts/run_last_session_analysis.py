@@ -14,7 +14,21 @@ def main() -> int:
     This is a thin wrapper around diagnostics/log_analyzer_auto_plus.py so that
     operators can call a single, stable entrypoint after any session ends
     (whether it stopped via TRADING_DURATION, manual stop, or an error).
+
+    VM/Azure-friendly enhancement: before running the analyzer, refresh the
+    latest live_trading_*.log copy into the host-mounted logs directory
+    (if such a mount exists), so operators can inspect the same file directly
+    from the VM host without docker/volume gymnastics.
     """
+
+    # Optional: keep the latest live log in a host-accessible logs/ dir
+    try:
+        from scripts.refresh_latest_live_log import refresh_latest_live_log  # type: ignore
+
+        log.info("[RUN-LAST-SESSION] Refreshing latest live_trading log for host access...")
+        refresh_latest_live_log()
+    except Exception as refresh_error:  # pragma: no cover - best-effort helper
+        log.warning("[RUN-LAST-SESSION] Failed to refresh latest live log: %s", refresh_error)
 
     analyzer = Path("diagnostics/log_analyzer_auto_plus.py")
     if not analyzer.exists():

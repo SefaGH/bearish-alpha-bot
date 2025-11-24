@@ -246,7 +246,21 @@ class RiskManager:
         
         return total_exposure
 
-    def _check_concurrent_limits(self, signal: Dict, risk_metrics: Dict[str, Any], portfolio_manager) -> Tuple[bool, str]:
+    def _check_concurrent_limits(
+        self,
+        signal: Dict,
+        risk_metrics: Dict[str, Any],
+        portfolio_manager
+    ) -> Tuple[bool, str]:
+        """Enforce concurrent exposure/position limits with intent-aware bypass.
+
+        PHASE 3.2 UPDATE:
+        - Close/reduce/reverse intents should NOT be blocked by
+          max_open_positions / per-symbol limits or portfolio heat.
+        - This prevents situations where risk guardrails accidentally
+          trap the engine in an over-constrained state and block de-risking operations.
+        """
+
         if not self.concurrent_limits or portfolio_manager is None:
             return True, "OK"
 
@@ -264,6 +278,18 @@ class RiskManager:
             active_count = len(active_positions) if isinstance(active_positions, dict) else 0
 
         symbol = signal.get('symbol') if signal else None
+
+        # Intent-aware bypass: never block de-risking operations
+        intent = (signal or {}).get('intent') if isinstance(signal, dict) else None
+        is_derisking_intent = intent in {"close", "reduce", "reverse"}
+
+        if is_derisking_intent:
+            logger.info(
+                "[RISK-LIMITS] Bypassing concurrent limits for de-risking intent %s on %s",
+                intent,
+                symbol or "UNKNOWN",
+            )
+            return True, "Bypassed for de-risking intent"
 
         if limits.max_open_positions and active_count >= limits.max_open_positions:
             return False, f"Max open positions reached ({active_count}/{limits.max_open_positions})"

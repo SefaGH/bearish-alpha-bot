@@ -151,5 +151,3 @@ if signals_generated > 0:
     print(f"Sinyal → Trade dönüşümü : {conversion_rate:.1f}%")
 else:
     print("Sinyal → Trade dönüşümü : N/A (sinyal adayı yok)")
-
-print("\nIssue #417 implement edildiğinde bu script 10× daha güçlü olacak!\n")
