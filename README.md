@@ -198,6 +198,54 @@ python -m pytest tests/test_phase3_low_priority.py::TestWebSocketPerformanceLogg
 - Performance improvement percentage
 - Log format validation
 
+## 🚀 Production Deployment Architecture (Azure VM + Docker)
+
+Canlı ortam şu anda **Azure VM üzerinde çalışan Docker container** ile sade bir mimari kullanıyor:
+
+```text
+GitHub (kod) ──► Docker build (lokal)
+            │
+            ▼
+        Azure Container Registry (ACR)
+            │   bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
+            ▼
+        Azure VM (BearishAlphaBot-VM-01)
+            │
+            ▼
+        Docker Container "bearish-bot"
+            │
+            ▼
+    vm_boot.py ──► scripts/live_trading_launcher.py --paper
+```
+
+**Ana bileşenler:**
+- `bearishalphabot` (ACR): Prod imaj `bearish-bot:vm-vmboot-4` burada tutulur.
+- `BearishAlphaBot-VM-01` (Azure VM): Docker daemon çalışır, imajı ACR'den çeker.
+- Docker container `bearish-bot`:
+  - `CMD ["python", "vm_boot.py"]` ile başlar.
+  - `vm_boot.py` environment değişkenlerini (`TRADING_MODE`, `TRADING_DURATION`, `EXCHANGES`, `DEBUG_MODE` vb.) okuyup
+   `scripts/live_trading_launcher.py` için doğru argümanları kurar.
+- `bearish-bot.env`: VM üzerinde `--env-file` olarak kullanılan, borsa credential'ları ve runtime ayarlarını içeren dosya.
+
+**Dağıtım akışı (özet):**
+1. Lokal makinede imaj build edilir:
+  ```pwsh
+  docker build -t bearish-bot:vm-vmboot-4 .
+  ```
+2. İmaj ACR'ye push edilir:
+  ```pwsh
+  docker tag bearish-bot:vm-vmboot-4 bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
+  docker push bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
+  ```
+3. Azure VM üzerinde container güncellenir:
+  ```pwsh
+  ssh azureuser@<VM_IP> "docker stop bearish-bot || true; docker rm bearish-bot || true; docker pull bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4; docker run -d --name bearish-bot --restart unless-stopped --env-file ~/bearish-bot.env bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4"
+  ```
+
+Bu mimaride **Azure App Service ve eski imaj tag'leri** kaldırılmıştır; yalnızca **tek bir temiz prod imaj** ve onu çalıştıran **VM tabanlı Docker ortamı** aktif olarak kullanılır.
+
+Detaylı günlük operasyon ve sorun giderme adımları için: `docs/VM_OPERATIONS_PLAYBOOK.md`.
+
 ## ⚙️ Duplicate Prevention Configuration
 
 The bot includes intelligent duplicate signal prevention to avoid spam trades while remaining responsive to market movements. 

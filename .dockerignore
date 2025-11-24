@@ -46,3 +46,6 @@ tests
 *.zip
 *.7z
 .dockerignore
+
+# Symlinks (created by setup scripts)
+artifacts/active

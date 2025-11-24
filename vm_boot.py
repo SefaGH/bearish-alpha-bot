@@ -1,0 +1,75 @@
+import os
+import sys
+import subprocess
+import logging
+from pathlib import Path
+
+from azure_boot import setup_environment, ensure_directories, setup_default_manifest, setup_ml_environment
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("vm_boot")
+
+
+def build_mode_args() -> list[str]:
+    """Build CLI args for live_trading_launcher based on environment variables.
+
+    Supported envs:
+      - TRADING_MODE: 'paper' (default) or 'live'
+      - DEBUG_MODE: 'true' / 'false'
+      - TRADING_DURATION: seconds, if set
+    """
+
+    mode_args: list[str] = []
+
+    trading_mode = os.environ.get("TRADING_MODE", "paper").lower()
+    debug_mode = os.environ.get("DEBUG_MODE", "false").lower() == "true"
+    duration = os.environ.get("TRADING_DURATION")
+
+    if trading_mode != "live":
+        mode_args.append("--paper")
+        log.info("Running in PAPER mode (default for VM)")
+    else:
+        log.info("Running in LIVE mode (TRADING_MODE=live)")
+
+    if debug_mode:
+        mode_args.append("--debug")
+        log.info("Debug mode enabled (DEBUG_MODE=true)")
+
+    if duration:
+        mode_args.extend(["--duration", duration])
+        log.info("Trading duration set to %s seconds", duration)
+
+    return mode_args
+
+
+def main() -> int:
+    log.info("========================================")
+    log.info("Bearish Alpha Bot - VM Boot")
+    log.info("========================================")
+    log.info("Python version: %s", sys.version.replace("\n", " "))
+    log.info("Working directory: %s", os.getcwd())
+
+    # 1) Ortam ve dizinleri hazırla (mevcut azure_boot yardımcılarını tekrar kullanıyoruz)
+    setup_environment()
+    ensure_directories()
+    setup_default_manifest()
+    setup_ml_environment()
+
+    # 2) Çalıştırma argümanlarını env'den üret
+    mode_args = build_mode_args()
+
+    cmd = [sys.executable, "scripts/live_trading_launcher.py", *mode_args]
+
+    log.info("========================================")
+    log.info("Starting Bearish Alpha Bot (VM)")
+    log.info("Command: %s", " ".join(cmd))
+    log.info("TRADING_MODE=%s", os.environ.get("TRADING_MODE", "paper"))
+    log.info("DEBUG_MODE=%s", os.environ.get("DEBUG_MODE", "false"))
+    log.info("EXCHANGES=%s", os.environ.get("EXCHANGES", "bingx"))
+    log.info("========================================")
+
+    return subprocess.call(cmd)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())
