@@ -37,7 +37,9 @@ def build_mode_args() -> list[str]:
 
     if duration:
         mode_args.extend(["--duration", duration])
-        log.info("Trading duration set to %s seconds", duration)
+        log.info("Trading duration set via env TRADING_DURATION=%s seconds", duration)
+    else:
+        log.info("Trading duration not set (TRADING_DURATION unset) - launcher controls loop length")
 
     return mode_args
 
@@ -65,10 +67,18 @@ def main() -> int:
     log.info("Command: %s", " ".join(cmd))
     log.info("TRADING_MODE=%s", os.environ.get("TRADING_MODE", "paper"))
     log.info("DEBUG_MODE=%s", os.environ.get("DEBUG_MODE", "false"))
+    log.info("TRADING_DURATION=%s", os.environ.get("TRADING_DURATION", "<unset>"))
     log.info("EXCHANGES=%s", os.environ.get("EXCHANGES", "bingx"))
     log.info("========================================")
 
-    return subprocess.call(cmd)
+    exit_code = subprocess.call(cmd)
+
+    log.info("========================================")
+    log.info("Bearish Alpha Bot process finished with exit code %s", exit_code)
+    log.info("(Analysis is based on logs; use diagnostics/log_analyzer_auto_plus.py or helper scripts after stop, regardless of reason)")
+    log.info("========================================")
+
+    return exit_code
 
 
 if __name__ == "__main__":  # pragma: no cover

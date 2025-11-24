@@ -200,7 +200,8 @@ python -m pytest tests/test_phase3_low_priority.py::TestWebSocketPerformanceLogg
 
 ## 🚀 Production Deployment Architecture (Azure VM + Docker)
 
-Canlı ortam şu anda **Azure VM üzerinde çalışan Docker container** ile sade bir mimari kullanıyor:
+Canlı ortam şu anda **Azure VM üzerinde çalışan tek bir Docker container** ile sade bir mimari kullanıyor. Eski
+Azure App Service / Container Apps dağıtımları ve eski imaj tag'leri tamamen devre dışıdır.
 
 ```text
 GitHub (kod) ──► Docker build (lokal)
@@ -215,36 +216,73 @@ GitHub (kod) ──► Docker build (lokal)
         Docker Container "bearish-bot"
             │
             ▼
-    vm_boot.py ──► scripts/live_trading_launcher.py --paper
+    vm_boot.py ──► scripts/live_trading_launcher.py --paper/--live
+                        └─► production_coordinator + core pipeline
 ```
 
 **Ana bileşenler:**
 - `bearishalphabot` (ACR): Prod imaj `bearish-bot:vm-vmboot-4` burada tutulur.
 - `BearishAlphaBot-VM-01` (Azure VM): Docker daemon çalışır, imajı ACR'den çeker.
 - Docker container `bearish-bot`:
-  - `CMD ["python", "vm_boot.py"]` ile başlar.
+  - Dockerfile'daki `CMD ["python", "vm_boot.py"]` ile başlar (değiştirilmemelidir).
   - `vm_boot.py` environment değişkenlerini (`TRADING_MODE`, `TRADING_DURATION`, `EXCHANGES`, `DEBUG_MODE` vb.) okuyup
-   `scripts/live_trading_launcher.py` için doğru argümanları kurar.
+    `scripts/live_trading_launcher.py` için doğru argümanları kurar.
+  - İçerideki golden shutdown akışı ve tüm phase'ler **`scripts/live_trading_launcher.py` + core modüller** tarafından yönetilir.
 - `bearish-bot.env`: VM üzerinde `--env-file` olarak kullanılan, borsa credential'ları ve runtime ayarlarını içeren dosya.
 
 **Dağıtım akışı (özet):**
 1. Lokal makinede imaj build edilir:
-  ```pwsh
-  docker build -t bearish-bot:vm-vmboot-4 .
-  ```
+   ```pwsh
+   docker build -t bearish-bot:vm-vmboot-4 .
+   ```
 2. İmaj ACR'ye push edilir:
-  ```pwsh
-  docker tag bearish-bot:vm-vmboot-4 bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
-  docker push bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
-  ```
+   ```pwsh
+   docker tag bearish-bot:vm-vmboot-4 bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
+   docker push bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
+   ```
 3. Azure VM üzerinde container güncellenir:
-  ```pwsh
-  ssh azureuser@<VM_IP> "docker stop bearish-bot || true; docker rm bearish-bot || true; docker pull bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4; docker run -d --name bearish-bot --restart unless-stopped --env-file ~/bearish-bot.env bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4"
-  ```
+   ```pwsh
+   ssh azureuser@<VM_IP> "docker stop bearish-bot || true; docker rm bearish-bot || true; docker pull bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4; docker run -d --name bearish-bot --restart unless-stopped --env-file ~/bearish-bot.env bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4"
+   ```
 
-Bu mimaride **Azure App Service ve eski imaj tag'leri** kaldırılmıştır; yalnızca **tek bir temiz prod imaj** ve onu çalıştıran **VM tabanlı Docker ortamı** aktif olarak kullanılır.
+İsteğe bağlı olarak log ve state dosyalarına VM seviyesinden rahat erişim için volume mount'ları kullanılabilir:
 
-Detaylı günlük operasyon ve sorun giderme adımları için: `docs/VM_OPERATIONS_PLAYBOOK.md`.
+```bash
+sudo docker run -d \
+  --name bearish-bot \
+  --restart unless-stopped \
+  --env-file /home/azureuser/bearish-bot.env \
+  -v /mnt/bearish/logs:/app/logs \
+  -v /mnt/bearish/data:/app/data \
+  bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
+```
+
+- Container içindeki `logs/` klasörü golden graceful shutdown pattern'ini, exit summary'leri ve seans loglarını tutar;
+  host tarafında `/mnt/bearish/logs` altında görünür.
+- Container içindeki `data/` klasörü (örn. `data/state.json`, `data/day_stats.json`) host tarafında `/mnt/bearish/data`
+  altında saklanır.
+
+Detaylı günlük operasyon, seans sonrası log analizi ve sorun giderme adımları için: `docs/VM_OPERATIONS_PLAYBOOK.md`.
+
+Seans bittiğinde (TRADING_DURATION dolarak, manuel/acil stop ile veya hata sonucu) son oturumu hızlıca analiz etmek için
+container içinde şu helper komutunu kullanabilirsin:
+
+```bash
+sudo docker exec bearish-bot python scripts/run_last_session_analysis.py
+```
+
+Bu helper, `diagnostics/log_analyzer_auto_plus.py` scriptini çağırır ve her zaman `logs/` altındaki en son
+`live_trading_*.log` dosyasını analiz eder; kapanış sebebine bakmadan aynı formatta seans raporu üretir.
+
+Container'ı güncellemek veya yeniden başlatmak için Azure VM üzerinde ops helper script'i de kullanabilirsin:
+
+```bash
+python scripts/vm_run_session.py --just-print   # Önce hangi docker komutlarının çalışacağını gör
+python scripts/vm_run_session.py                # Ardından gerçekten stop/rm/pull/run zincirini uygula
+```
+
+Bu script, `bearish-bot` container'ını standart ayarlarla yönetmek için tek bir giriş noktası sunar ve volume
+mount'larını (varsayılan olarak `/mnt/bearish/logs` ve `/mnt/bearish/data`) otomatik ekler.
 
 ## ⚙️ Duplicate Prevention Configuration
 

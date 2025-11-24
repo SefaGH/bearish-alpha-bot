@@ -543,6 +543,16 @@ jobs:
           echo "=============================================="
           echo "✅ Post-session analysis complete"
 
+      - name: Analyze latest live_trading log
+        if: always()
+        run: |
+          echo "🔍 Running log analyzer on latest live_trading_*.log..."
+          if ls logs/live_trading_*.log 1> /dev/null 2>&1; then
+            python diagnostics/log_analyzer_auto_plus.py || echo "Log analyzer failed (non-fatal)."
+          else
+            echo "ℹ️ No live_trading_*.log found in logs/ - skipping analysis."
+          fi
+
       - name: Upload Trading Logs
         uses: actions/upload-artifact@v4
         if: always() && env.CI == 'true'

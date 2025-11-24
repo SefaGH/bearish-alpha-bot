@@ -23,7 +23,7 @@ sudo docker ps -a
 Beklenen:
 - `bearish-bot` isimli container `STATUS` kolonunda `Up` olarak görünmelidir.
 
-## 3. Logları İnceleme
+## 3. Logları ve Seans Özetini İnceleme
 
 ```bash
 # Son 200 satır
@@ -38,10 +38,32 @@ sudo docker logs -f bearish-bot
 - GEMMA / PPO / TA-Lib health check mesajları
 - `WATCHDOG` heartbeat ve engine state
 - Aktif pozisyonlar ve P&L özetleri
+- Seans sonu **EXIT SUMMARY** ve **Bot shutdown complete** satırları (graceful shutdown doğrulaması için)
+
+Seans bittikten sonra en güncel `live_trading_*.log` dosyası üzerinde özet analiz almak için iki yol vardır:
+
+1. Doğrudan analyzer scriptini çalıştırmak:
+
+```bash
+sudo docker exec bearish-bot python diagnostics/log_analyzer_auto_plus.py
+```
+
+2. Operasyon için önerilen helper scripti kullanmak (önerilen):
+
+```bash
+sudo docker exec bearish-bot python scripts/run_last_session_analysis.py
+```
+
+Her iki komut da container içindeki `logs/` klasöründe bulunan **son** `live_trading_*.log` üzerinde çalışır ve
+golden graceful shutdown pattern'ini, P&L özetini ve **Signal → Trade funnel** metriklerini raporlar. Helper script,
+seansın TRADING_DURATION ile bitip bitmediğine veya manuel/acil stop ile sonlanmasına bakmaz; her zaman en son seansı
+loglar üzerinden analiz eder.
 
 ## 4. Container'ı Güvenli Şekilde Yeniden Başlatma
 
-Yeni imaj deploy edildiğinde veya config değiştiğinde:
+Yeni imaj deploy edildiğinde veya config değiştiğinde iki yol kullanabilirsin:
+
+1. Klasik docker komutlarıyla manuel yönetim:
 
 ```bash
 # VM üzerinde
@@ -51,15 +73,32 @@ sudo docker rm bearish-bot || true
 sudo docker pull bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
 
 sudo docker run -d \
-  --name bearish-bot \
-  --restart unless-stopped \
-  --env-file /home/azureuser/bearish-bot.env \
-  bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
+   --name bearish-bot \
+   --restart unless-stopped \
+   --env-file /home/azureuser/bearish-bot.env \
+   bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
+```
+
+2. Ops helper script ile tek adımda yönetim (önerilen):
+
+```bash
+cd /app  # container içinde repo kök dizini varsayımı
+python scripts/vm_run_session.py
+```
+
+Bu helper, sırasıyla `docker stop`, `docker rm`, `docker pull` ve `docker run` komutlarını standart parametrelerle
+çalıştırır. Volume mount'larını aktif tutmak için varsayılan olarak `/mnt/bearish/logs` → `/app/logs` ve
+`/mnt/bearish/data` → `/app/data` mapping'lerini kullanır. Sadece hangi komutların çalışacağını görmek için:
+
+```bash
+python scripts/vm_run_session.py --just-print
 ```
 
 Notlar:
 - `bearish-bot.env` dosyası credential ve runtime ayarlarını içerir.
 - `--restart unless-stopped` VM reboot sonrası container'ın otomatik başlamasını sağlar.
+- Container entry point **değiştirilmemelidir**: Dockerfile içindeki `CMD ["python", "vm_boot.py"]`
+  prod kontratının bir parçasıdır ve içerideki `scripts/live_trading_launcher.py` + core pipeline yapısını bozmaz.
 
 ## 5. Env Dosyasını Güncelleme (`bearish-bot.env`)
 
@@ -72,7 +111,7 @@ Sık kullanılan değişkenler:
 - `EXCHANGES=bingx`
 - `TRADING_SYMBOLS=BTC/USDT:USDT`
 - `TRADING_MODE=paper` veya `live`
-- `TRADING_DURATION=0` (0 = sınırsız, >0 = saniye cinsinden süre)
+- `TRADING_DURATION=0` (0 = sınırsız, >0 = saniye cinsinden süre; golden graceful shutdown TRADING_DURATION dolduğunda tetiklenir)
 - Borsa API key/secret değerleri
 
 Değişiklikten sonra container'ı yeniden başlat:
@@ -112,7 +151,29 @@ sudo docker ps --format 'table {{.Names}}\t{{.Status}}'
  sudo docker system prune -f
 ```
 
-## 8. Olası Sorun Senaryoları
+## 8. Log ve Data Volume Stratejisi
+
+Prod ortamda log ve state dosyalarına VM seviyesinden kolay erişim için aşağıdaki volume'leri kullanman önerilir:
+
+```bash
+sudo docker run -d \
+   --name bearish-bot \
+   --restart unless-stopped \
+   --env-file /home/azureuser/bearish-bot.env \
+   -v /mnt/bearish/logs:/app/logs \
+   -v /mnt/bearish/data:/app/data \
+   bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
+```
+
+- Container içindeki `logs/` klasörü golden graceful shutdown pattern'ini, exit summary'leri ve
+   tüm seans loglarını tutar; host tarafında `/mnt/bearish/logs` altında görünür.
+- Container içindeki `data/state.json` ve `data/day_stats.json` gibi runtime state dosyaları,
+   host tarafında `/mnt/bearish/data` altında saklanır.
+- `diagnostics/log_analyzer_auto_plus.py` scripti, container içindeki `logs/` dizinini
+   kullandığı için bu volume stratejisi ile hem CI (`act`), hem de Azure VM prod ortamında
+   aynı path'ler korunmuş olur.
+
+## 9. Olası Sorun Senaryoları
 
 ### a) Container Çalışmıyor / Hemen Çıkıyor
 

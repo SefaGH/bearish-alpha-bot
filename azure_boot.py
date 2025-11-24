@@ -150,6 +150,20 @@ def setup_ml_environment():
         else:
             log.warning(f"⚠️ Setup script not found: {script}")
 
+    # Verify GEMMA manifest exists (mirror of CI pre-flight check)
+    gemma_manifest = Path('artifacts/gemma/final/manifest.json')
+    if not gemma_manifest.exists():
+        log.error("❌ GEMMA manifest not found at %s", gemma_manifest)
+    else:
+        log.info("✅ GEMMA manifest found at %s", gemma_manifest)
+
+    # Verify PPO model artifact exists (mirror of CI pre-flight check)
+    ppo_path = Path('artifacts/ppo/ppo_trading_agent.zip')
+    if not ppo_path.exists():
+        log.error("❌ PPO model not found at %s", ppo_path)
+    else:
+        log.info("✅ PPO model found at %s", ppo_path)
+
 # 1. Sağlık Sunucusunu Başlat
 if HEALTH_SERVER_AVAILABLE:
     log.info("🟢 Azure Health Check Sunucusu Başlatılıyor...")
