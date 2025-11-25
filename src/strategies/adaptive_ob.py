@@ -218,6 +218,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
             close_price = float(last['close'])
             rsi_val = float(last['rsi'])
             ema_fast = float(last.get('ema_fast', 0))
+            ema_mid = float(last.get('ema_mid', 0))
             
             market_regime = {
                 'trend': regime_data.get('trend', 'neutral'),
@@ -232,11 +233,45 @@ class AdaptiveOversoldBounce(OversoldBounce):
             else:
                 adaptive_rsi_threshold = self.get_adaptive_rsi_threshold(market_regime)
 
+            # Trend confirmation: if market is in a strong downswing (ema_fast < ema_mid), demand deeper RSI
+            ema_trend_penalty = float(self.strategy_config.get('trend_confirmation_rsi_penalty', 5.0))
+            min_adaptive_rsi = float(self.strategy_config.get('trend_confirmation_min_rsi', 8.0))
+            trend_bias_active = False
+            if ema_fast > 0 and ema_mid > 0 and ema_fast < ema_mid:
+                new_threshold = max(min_adaptive_rsi, adaptive_rsi_threshold - ema_trend_penalty)
+                if new_threshold != adaptive_rsi_threshold:
+                    logger.info(
+                        f"⚠️ {log_prefix} Trend confirmation active: EMA fast ${ema_fast:,.2f} below EMA mid ${ema_mid:,.2f}."
+                        f" Adjusting RSI threshold {adaptive_rsi_threshold:.2f} → {new_threshold:.2f}."
+                    )
+                    adaptive_rsi_threshold = new_threshold
+                    trend_bias_active = True
+
+            # Volume confirmation: require current volume to exceed rolling average unless skipped
+            volume_window = int(self.strategy_config.get('volume_confirmation_window', 20))
+            volume_multiplier = float(self.strategy_config.get('volume_confirmation_multiplier', 1.5))
+            ignore_volume = bool(self.strategy_config.get('ignore_volume', False))
+            volume_confirmed = True
+            avg_volume = None
+            current_volume = float(last['volume']) if 'volume' in last.index else 0.0
+            if not ignore_volume and 'volume' in df_30m.columns:
+                recent_volume = df_30m['volume'].dropna().tail(max(volume_window, 1))
+                if len(recent_volume) >= max(5, volume_window // 2):
+                    avg_volume = recent_volume.mean()
+                    if avg_volume > 0:
+                        volume_confirmed = current_volume >= avg_volume * volume_multiplier
+                if not volume_confirmed:
+                    logger.info(
+                        f"🚫 {log_prefix} No Signal: Volume confirmation failed (current={current_volume:.0f},"
+                        f" avg={avg_volume:.0f}, required>={avg_volume * volume_multiplier:.0f})."
+                    )
+                    return None
+
             # --- Core Signal Condition Checks with Tracing ---
             if self.debug_logging:
                 logger.info(f"🔍 {log_prefix} Checking conditions...")
                 logger.info(f"  - Regime: {market_regime['trend']}, Volatility: {market_regime['volatility']}")
-                logger.info(f"  - Price: ${close_price:,.2f}, RSI: {rsi_val:.2f}, EMA Fast: ${ema_fast:,.2f}")
+                logger.info(f"  - Price: ${close_price:,.2f}, RSI: {rsi_val:.2f}, EMA Fast: ${ema_fast:,.2f}, EMA Mid: ${ema_mid:,.2f}")
                 logger.info(f"  - RSI Threshold: {adaptive_rsi_threshold:.2f}")
 
             # 1. RSI Condition Check
@@ -249,7 +284,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 logger.info(f"🚫 {log_prefix} No Signal: Price (${close_price:,.2f}) is not below the fast EMA (${ema_fast:,.2f}).")
                 return None
 
-            # 3. Volume Check
+            # 3. Volume Check (basic data sanity)
             if 'volume' in last.index and float(last['volume']) <= 0:
                 logger.info(f"🚫 {log_prefix} No Signal: Volume is zero or negative.")
                 return None
@@ -365,6 +400,21 @@ class AdaptiveOversoldBounce(OversoldBounce):
             # Expose RSI telemetry so downstream duplicate logic can react dynamically
             signal["rsi"] = float(rsi_val)
             signal.setdefault("features", {})["rsi"] = float(rsi_val)
+
+            meta = signal.setdefault('meta', {})
+            if trend_bias_active:
+                meta['trend_confirmation'] = {
+                    'ema_fast': ema_fast,
+                    'ema_mid': ema_mid,
+                    'rsi_threshold': adaptive_rsi_threshold,
+                }
+            if volume_confirmed and not ignore_volume:
+                meta['volume_boost'] = True
+                base_confidence = float(signal.get('confidence', 0.5))
+                signal['confidence'] = min(1.0, base_confidence + 0.1)
+                meta['volume_ratio'] = (
+                    (current_volume / avg_volume) if 'avg_volume' in locals() and avg_volume else None
+                )
             
             if ml_enhanced:
                 signal['ml_consensus'] = ml_context.get('consensus_score')

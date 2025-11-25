@@ -206,6 +206,12 @@ class AdaptiveShortTheRip(ShortTheRip):
             regime_data = DEFAULT_MARKET_REGIME.copy()
 
         try:
+            signal = {
+                "strategy_name": self.strategy_name,
+                "side": "sell",
+                "symbol": symbol,
+                "features": {}
+            }
             # --- Initial Data Extraction ---
             if 'rsi' not in last30.index or 'close' not in last30.index:
                 logger.warning(f"🚫 {log_prefix} No Signal: 'rsi' or 'close' column missing in the latest data.")
@@ -350,14 +356,18 @@ class AdaptiveShortTheRip(ShortTheRip):
             # --- Signal Generation ---
             logger.info(f"✅ {log_prefix} All checks passed. Generating SELL signal.")
             
-            signal = {
-                "strategy_name": self.strategy_name, "side": "sell", "symbol": symbol,
-                "entry": entry_price, "stop": stop_price, "target": target_price,
+            signal.update({
+                "entry": entry_price,
+                "stop": stop_price,
+                "target": target_price,
                 "reason": f"Adaptive RSI {rsi_val:.1f} >= {adaptive_rsi_threshold:.1f}",
-                "rr_ratio": rr_ratio, "is_adaptive": True, "position_multiplier": position_mult,
-                "ml_enhanced": ml_enhanced, "strategy_type": 'adaptive',
-                "strategy_min_rr": self.min_rr_ratio  # NEW: Strategy's own minimum R/R
-            }
+                "rr_ratio": rr_ratio,
+                "is_adaptive": True,
+                "position_multiplier": position_mult,
+                "ml_enhanced": ml_enhanced,
+                "strategy_type": 'adaptive',
+                "strategy_min_rr": self.min_rr_ratio
+            })
             
             if ml_enhanced:
                 signal['ml_consensus'] = ml_context.get('consensus_score')

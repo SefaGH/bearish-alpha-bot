@@ -2453,13 +2453,13 @@ class ProductionCoordinator:
         Logs every 10 seconds regardless of main loop state to help diagnose
         if the main loop is truly stuck or just not logging.
         """
-        logger.info("🐕 [WATCHDOG] Watchdog task started - will log every 10s")
+        logger.info("🐕 [WATCHDOG] Watchdog task started - will log every 60s")
         watchdog_count = 0
         
         try:
             while self.is_running:
                 watchdog_count += 1
-                logger.info(f"🐕 [WATCHDOG-{watchdog_count}] Heartbeat - is_running={self.is_running}")
+                logger.info(f"🐕 [WATCHDOG-{watchdog_count}] 💓 Heartbeat - is_running={self.is_running}")
                 logger.info(f"   Active symbols: {len(self.active_symbols)}")
                 logger.info(f"   Processed symbols: {self.processed_symbols_count}")
                 
@@ -2472,7 +2472,7 @@ class ProductionCoordinator:
                 sys.stdout.flush()
                 sys.stderr.flush()
                 
-                await asyncio.sleep(10)
+                await asyncio.sleep(60)
         except asyncio.CancelledError:
             logger.info("🐕 [WATCHDOG] Task cancelled")
         except Exception as e:

@@ -346,6 +346,7 @@ class RiskManager:
         pnl_threshold = float(scaling_cfg.get('min_unrealized_pnl_pct', 0.005))
         max_extra = int(scaling_cfg.get('max_additional_positions', 2))
         max_extra = max(0, max_extra)
+        min_distance_pct = float(scaling_cfg.get('min_distance_pct', 0.005))
 
         is_high_quality = quality_score >= quality_threshold
         if not is_high_quality:
@@ -381,6 +382,21 @@ class RiskManager:
             return False, ""
 
         pnl_values = []
+        last_entry_price = None
+        if positions:
+            last_position = max(
+                positions,
+                key=lambda pos: pos.get('entry_time') or pos.get('opened_at') or 0,
+            )
+            last_entry_candidate = (
+                last_position.get('entry_price')
+                or last_position.get('entry')
+                or last_position.get('price')
+            )
+            try:
+                last_entry_price = float(last_entry_candidate or 0.0)
+            except (TypeError, ValueError):
+                last_entry_price = None
         for pos in positions:
             pnl_val = pos.get('unrealized_pnl_pct')
             if pnl_val is None:
@@ -402,6 +418,34 @@ class RiskManager:
                 pnl_threshold * 100,
             )
             return False, ""
+
+        current_entry = None
+        if isinstance(signal, dict):
+            current_entry = signal.get('entry')
+            if not current_entry:
+                current_entry = signal.get('entry_price') or signal.get('price')
+        try:
+            current_entry = float(current_entry or 0.0)
+        except (TypeError, ValueError):
+            current_entry = None
+
+        if (
+            min_distance_pct > 0
+            and last_entry_price
+            and current_entry
+            and last_entry_price > 0
+        ):
+            price_diff_pct = abs(current_entry - last_entry_price) / last_entry_price
+            if price_diff_pct < min_distance_pct:
+                logger.info(
+                    "📉 [RISK-SCALING] Denied scale-in for %s | last=%.2f, new=%.2f, diff=%.2f%% < %.2f%%",
+                    symbol,
+                    last_entry_price,
+                    current_entry,
+                    price_diff_pct * 100,
+                    min_distance_pct * 100,
+                )
+                return False, ""
 
         max_allowed = limits.max_positions_per_symbol + max_extra
         if max_allowed <= limits.max_positions_per_symbol:
@@ -929,6 +973,13 @@ class RiskManager:
             if vol_meta:
                 sizing_meta = signal.setdefault('sizing_meta', {})
                 sizing_meta.update(vol_meta)
+                logger.info(
+                    "📊 [VOL-SIZING] ATR-Adj Applied | Multiplier: %.2fx | Bucket: %s | ATR/Price: %.2f%% | MinUnits: %.6f",
+                    vol_meta.get('volatility_multiplier', 1.0),
+                    vol_meta.get('volatility_bucket', 'unknown'),
+                    (vol_meta.get('atr_pct', 0.0) or 0.0) * 100,
+                    vol_meta.get('min_position_units', 0.0),
+                )
             
             logger.info(f"Calculated position size: {position_size:.4f} (risk: ${risk_per_trade:.2f})")
             return position_size
