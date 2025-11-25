@@ -305,6 +305,7 @@ class StrategyCoordinator:
     
         # Duplicate prevention tracking
         self.last_signal_time = {}  # "symbol:strategy" -> timestamp
+        self.last_signal_rsi = {}  # "symbol:strategy" -> last observed RSI
         self.signal_price_history = defaultdict(list)  # symbol -> [(timestamp, price), ...]
         
         # Signal processing stats
@@ -478,6 +479,47 @@ class StrategyCoordinator:
         
         # Create combined key: "symbol:strategy"
         signal_key = f"{symbol}:{strategy_name}"
+
+        # Dynamic cooldown sensitivity based on RSI delta
+        effective_cooldown = cooldown
+        current_rsi = None
+        try:
+            rsi_candidate = (signal.get('features') or {}).get('rsi')
+            if rsi_candidate is None:
+                rsi_candidate = signal.get('rsi')
+            if rsi_candidate is not None:
+                current_rsi = float(rsi_candidate)
+        except (TypeError, ValueError):
+            current_rsi = None
+
+        dynamic_cfg = dup_config.get('dynamic_cooldown', {}) if isinstance(dup_config, dict) else {}
+        if current_rsi is not None and dynamic_cfg.get('enabled', True):
+            last_rsi = self.last_signal_rsi.get(signal_key, current_rsi)
+            rsi_delta = abs(current_rsi - last_rsi)
+            high_delta = float(dynamic_cfg.get('high_delta_threshold', 15.0))
+            medium_delta = float(dynamic_cfg.get('medium_delta_threshold', 8.0))
+            fast_seconds = float(dynamic_cfg.get('fast_cooldown_seconds', 15.0))
+            medium_seconds = float(dynamic_cfg.get('medium_cooldown_seconds', 45.0))
+            slow_seconds = float(dynamic_cfg.get('slow_cooldown_seconds', cooldown))
+
+            if rsi_delta > high_delta:
+                effective_cooldown = fast_seconds
+            elif rsi_delta > medium_delta:
+                effective_cooldown = medium_seconds
+            else:
+                effective_cooldown = slow_seconds
+
+            self.last_signal_rsi[signal_key] = current_rsi
+            logger.info(
+                "⚡ [DUPLICATE] Dynamic cooldown applied | symbol=%s | strategy=%s | rsi=%.2f | Δrsi=%.2f | cooldown=%.1fs",
+                symbol,
+                strategy_name,
+                current_rsi,
+                rsi_delta,
+                effective_cooldown,
+            )
+
+        cooldown = effective_cooldown
         
         # Step 2: Calculate cooldown status
         within_cooldown = False
@@ -532,6 +574,8 @@ class StrategyCoordinator:
                         # Update tracking
                         self.last_signal_time[signal_key] = current_time
                         self.signal_price_history[symbol].append((current_time, entry_price))
+                        if current_rsi is not None:
+                            self.last_signal_rsi[signal_key] = current_rsi
                         
                         return True, f"OK (price delta bypass: {price_delta*100:.2f}%)"
                     
@@ -547,6 +591,8 @@ class StrategyCoordinator:
                         )
                         
                         self.processing_stats['rejected_price_delta'] += 1
+                        if current_rsi is not None:
+                            self.last_signal_rsi[signal_key] = current_rsi
                         
                         return False, f"Duplicate prevention: Signal cooldown: {remaining:.0f}s remaining (price change {price_delta*100:.2f}% < threshold)"
             
@@ -559,10 +605,14 @@ class StrategyCoordinator:
                 f"   ❌ SIGNAL REJECTED"
             )
             self.processing_stats['rejected_cooldown'] += 1
+            if current_rsi is not None:
+                self.last_signal_rsi[signal_key] = current_rsi
             return False, f"Duplicate prevention: Signal cooldown: {remaining:.0f}s remaining (same symbol+strategy)"
         
         # Step 4: IF outside cooldown, accept and update tracking
         self.last_signal_time[signal_key] = current_time
+        if current_rsi is not None:
+            self.last_signal_rsi[signal_key] = current_rsi
         if entry_price > 0:
             self.signal_price_history[symbol].append((current_time, entry_price))
         
@@ -1554,6 +1604,8 @@ class StrategyCoordinator:
         is_buy_signal = normalized_side in ['buy', 'long']
         is_sell_signal = normalized_side in ['sell', 'short']
         
+        force_swap_enabled = bypass_config.get('force_swap_enabled', True)
+
         # Check EXTREME OVERSOLD condition (RSI < oversold_threshold) with BUY signal
         if rsi_value < oversold_threshold and is_buy_signal:
             logger.warning(
@@ -1565,6 +1617,8 @@ class StrategyCoordinator:
                 f"   Bypassing all ML/RL checks - SIGNAL CONFIRMED\n"
                 f"   Reason: Extreme oversold condition detected"
             )
+            if force_swap_enabled:
+                self._prepare_force_swap_slot(signal, symbol)
             return True
         
         # Check EXTREME OVERBOUGHT condition (RSI > overbought_threshold) with SELL signal
@@ -1578,10 +1632,72 @@ class StrategyCoordinator:
                 f"   Bypassing all ML/RL checks - SIGNAL CONFIRMED\n"
                 f"   Reason: Extreme overbought condition detected"
             )
+            if force_swap_enabled:
+                self._prepare_force_swap_slot(signal, symbol)
             return True
         
         # No bypass triggered
         return False
+
+    def _prepare_force_swap_slot(self, signal: Dict, symbol: Optional[str]) -> None:
+        """Tag signal for force swap when symbol slots are fully occupied."""
+        if not symbol or not isinstance(signal, dict):
+            return
+        portfolio_manager = getattr(self, 'portfolio_manager', None)
+        if portfolio_manager is None:
+            return
+
+        max_limit = None
+        try:
+            if hasattr(self, 'risk_manager') and getattr(self.risk_manager, 'concurrent_limits', None):
+                max_limit = getattr(self.risk_manager.concurrent_limits, 'max_positions_per_symbol', None)
+        except Exception:
+            max_limit = None
+
+        if max_limit is None:
+            risk_section = (self.config or {}).get('risk') if isinstance(self.config, dict) else None
+            if isinstance(risk_section, dict):
+                max_limit = risk_section.get('concurrent_limits', {}).get('max_positions_per_symbol')
+
+        if not max_limit:
+            return
+
+        try:
+            getter = getattr(portfolio_manager, 'get_open_positions_for_symbol', None)
+            if callable(getter):
+                positions = getter(symbol)
+            else:
+                positions = []
+        except Exception as exc:
+            logger.debug(f"[EXTREME-SWAP] Unable to inspect positions for {symbol}: {exc}")
+            return
+
+        if not positions or len(positions) < max_limit:
+            return
+
+        def _pnl_value(position: Dict[str, Any]) -> float:
+            pnl_val = position.get('unrealized_pnl_pct')
+            if pnl_val is None:
+                metrics = position.get('metrics') or {}
+                pnl_val = metrics.get('unrealized_pnl_pct')
+            try:
+                return float(pnl_val or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        weakest = min(positions, key=_pnl_value)
+        target_id = weakest.get('position_id')
+        if not target_id:
+            return
+
+        signal['intent'] = 'force_swap'
+        signal['swap_target_id'] = target_id
+        logger.warning(
+            "⚡ [EXTREME-SWAP] Marking %s on %s for closure before opening new extreme signal (PnL=%.2f%%)",
+            target_id,
+            symbol,
+            _pnl_value(weakest) * 100,
+        )
     
     async def resolve_signal_conflicts(self, new_signal: Dict, 
                                       conflicting_signals: List[Dict],
@@ -1893,20 +2009,30 @@ class StrategyCoordinator:
                     signal['ml_confidence'] = float(ml_context.get('consensus_score', 0.5))
                     signal['regime_name'] = str(ml_context.get('regime', 'neutral'))
                     signal['regime_confidence'] = float(ml_context.get('regime_confidence', 0.3))
-                    logger.debug(f"✅ ML metrics added: conf={signal['ml_confidence']:.2f}")
+                    quality_score = float(ml_context.get('quality_score', 0.0) or 0.0)
+                    if quality_score > 1:
+                        quality_score /= 100.0
+                    signal['quality_score'] = max(0.0, min(1.0, quality_score))
+                    logger.debug(
+                        "✅ ML metrics added: conf=%.2f | quality=%.2f",
+                        signal['ml_confidence'],
+                        signal.get('quality_score', 0.0),
+                    )
                 else:
                     # No ML context, use explicit fallbacks
                     signal['ml_confidence'] = 0.5
                     signal['regime_name'] = 'neutral'
                     signal['regime_confidence'] = 0.3
+                    signal['quality_score'] = 0.0
                     logger.debug("⚠️ Using ML fallback values")
             else:
                 signal['ml_confidence'] = 0.5
                 signal['regime_name'] = 'neutral'
                 signal['regime_confidence'] = 0.3
+                signal['quality_score'] = 0.0
         except Exception as e:
             logger.debug(f"ML enrichment error: {e}")
-            signal.update({'ml_confidence': 0.5, 'regime_name': 'neutral', 'regime_confidence': 0.3})
+            signal.update({'ml_confidence': 0.5, 'regime_name': 'neutral', 'regime_confidence': 0.3, 'quality_score': 0.0})
         
         # 2. RL/PPO Metrics
         try:

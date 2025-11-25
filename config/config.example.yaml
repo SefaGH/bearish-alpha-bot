@@ -120,6 +120,11 @@ risk:
     max_positions_per_symbol: 1     # Override with: MAX_POSITIONS_PER_SYMBOL
     max_total_risk_pct: 0.06        # Override with: MAX_TOTAL_RISK_PCT (fraction of equity at risk)
     correlation_bucket_threshold: 0.8 # Override with: CORRELATION_BUCKET_THRESHOLD
+    dynamic_scaling:
+      enabled: true                 # Override with: DYNAMIC_SCALING_ENABLED
+      quality_threshold: 0.80       # Override with: DYNAMIC_SCALING_QUALITY_THRESHOLD (accepts 0-1 or 0-100)
+      min_unrealized_pnl_pct: 0.005 # Override with: DYNAMIC_SCALING_MIN_PNL_PCT (0.5% avg PnL requirement)
+      max_additional_positions: 2   # Override with: DYNAMIC_SCALING_MAX_EXTRA (extra slots per symbol)
 
   # NEW: Volatility-aware sizing parameters
   volatility_sizing:
@@ -223,6 +228,7 @@ signals:
     enabled: true                     # Override with: SIGNAL_BYPASS_ENABLED
     rsi_oversold_threshold: 12        # Override with: SIGNAL_BYPASS_RSI_OVERSOLD (BUY signals when RSI < this)
     rsi_overbought_threshold: 88      # Override with: SIGNAL_BYPASS_RSI_OVERBOUGHT (SELL signals when RSI > this)
+    force_swap_enabled: true          # Override with: SIGNAL_FORCE_SWAP_ENABLED (swap weakest position when slots are full)
   
   duplicate_prevention:
     min_price_change_pct: 0.0005      # Override with: DUPLICATE_PREVENTION_THRESHOLD
@@ -230,6 +236,13 @@ signals:
     price_delta_bypass_threshold: 0.0015 # Override with: PRICE_DELTA_BYPASS_THRESHOLD
     price_delta_bypass_enabled: false # Override with: PRICE_DELTA_BYPASS_ENABLED
     ml_duplicate_detection_enabled: true
+    dynamic_cooldown:
+      enabled: true                   # Override with: DUPLICATE_DYNAMIC_COOLDOWN_ENABLED
+      high_delta_threshold: 15        # Override with: DUPLICATE_DYNAMIC_HIGH_DELTA (RSI delta > value → fast cooldown)
+      medium_delta_threshold: 8       # Override with: DUPLICATE_DYNAMIC_MEDIUM_DELTA
+      fast_cooldown_seconds: 15       # Override with: DUPLICATE_DYNAMIC_FAST_SECONDS
+      medium_cooldown_seconds: 45     # Override with: DUPLICATE_DYNAMIC_MEDIUM_SECONDS
+      slow_cooldown_seconds: 120      # Override with: DUPLICATE_DYNAMIC_SLOW_SECONDS
   oversold_bounce:
     enable: true                      # Override with: STRATEGY_OB_ENABLED
     ignore_regime: false              # Override with: STRATEGY_OB_IGNORE_REGIME

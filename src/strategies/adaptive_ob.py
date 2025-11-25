@@ -361,6 +361,10 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 "ml_enhanced": ml_enhanced, "strategy_type": 'adaptive',
                 "strategy_min_rr": self.min_rr_ratio  # NEW: Strategy's own minimum R/R
             }
+
+            # Expose RSI telemetry so downstream duplicate logic can react dynamically
+            signal["rsi"] = float(rsi_val)
+            signal.setdefault("features", {})["rsi"] = float(rsi_val)
             
             if ml_enhanced:
                 signal['ml_consensus'] = ml_context.get('consensus_score')

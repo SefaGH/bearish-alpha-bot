@@ -10,8 +10,8 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 import numpy as np
 
-# Import RiskConfiguration for type-safe configuration
-from config.risk_config import RiskConfiguration
+# Import RiskConfiguration and related dataclasses for type-safe configuration
+from config.risk_config import RiskConfiguration, ConcurrentRiskLimitsConfig
 
 # PHASE 3: Import risk rules framework
 try:
@@ -281,7 +281,7 @@ class RiskManager:
 
         # Intent-aware bypass: never block de-risking operations
         intent = (signal or {}).get('intent') if isinstance(signal, dict) else None
-        is_derisking_intent = intent in {"close", "reduce", "reverse"}
+        is_derisking_intent = intent in {"close", "reduce", "reverse", "force_swap"}
 
         if is_derisking_intent:
             logger.info(
@@ -294,6 +294,7 @@ class RiskManager:
         if limits.max_open_positions and active_count >= limits.max_open_positions:
             return False, f"Max open positions reached ({active_count}/{limits.max_open_positions})"
 
+        symbol_limit_override_reason: Optional[str] = None
         if limits.max_positions_per_symbol and symbol:
             if hasattr(portfolio_manager, 'count_open_positions'):
                 symbol_count = portfolio_manager.count_open_positions(symbol)
@@ -301,14 +302,129 @@ class RiskManager:
                 active_positions = active_positions or {}
                 symbol_count = self._count_positions_for_symbol(active_positions, symbol)
             if symbol_count >= limits.max_positions_per_symbol:
-                return False, f"Max positions for {symbol} reached ({symbol_count}/{limits.max_positions_per_symbol})"
+                can_scale, scale_reason = self._can_dynamic_scale(signal, portfolio_manager, symbol, symbol_count, limits)
+                if can_scale:
+                    symbol_limit_override_reason = scale_reason
+                else:
+                    return False, f"Max positions for {symbol} reached ({symbol_count}/{limits.max_positions_per_symbol})"
 
         projected_heat = risk_metrics.get('portfolio_heat') if isinstance(risk_metrics, dict) else None
         max_heat = limits.max_total_risk_pct
         if projected_heat is not None and max_heat and projected_heat >= max_heat:
             return False, f"Portfolio heat {projected_heat:.2%} exceeds limit {max_heat:.2%}"
 
+        if symbol_limit_override_reason:
+            return True, symbol_limit_override_reason
         return True, "OK"
+
+    def _can_dynamic_scale(
+        self,
+        signal: Dict,
+        portfolio_manager,
+        symbol: Optional[str],
+        symbol_count: int,
+        limits: ConcurrentRiskLimitsConfig,
+    ) -> Tuple[bool, str]:
+        """Determine whether dynamic scaling rules permit exceeding per-symbol limits."""
+        if not symbol or portfolio_manager is None:
+            return False, ""
+
+        concurrent_cfg = (self.config.get('concurrent_limits') or {}) if isinstance(self.config, dict) else {}
+        scaling_cfg = concurrent_cfg.get('dynamic_scaling', {}) if isinstance(concurrent_cfg, dict) else {}
+        if not scaling_cfg.get('enabled', True):
+            return False, ""
+
+        try:
+            quality_score = float(signal.get('quality_score', 0) or 0)
+        except (TypeError, ValueError):
+            quality_score = 0.0
+        # Support percentages expressed as 0-100
+        if quality_score > 1:
+            quality_score /= 100.0
+
+        quality_threshold = float(scaling_cfg.get('quality_threshold', 0.80))
+        pnl_threshold = float(scaling_cfg.get('min_unrealized_pnl_pct', 0.005))
+        max_extra = int(scaling_cfg.get('max_additional_positions', 2))
+        max_extra = max(0, max_extra)
+
+        is_high_quality = quality_score >= quality_threshold
+        if not is_high_quality:
+            logger.info(
+                "📉 [RISK-SCALING] Denied scale-in for %s | quality=%.2f < %.2f",
+                symbol,
+                quality_score,
+                quality_threshold,
+            )
+            return False, ""
+
+        if max_extra == 0:
+            logger.info("📉 [RISK-SCALING] Dynamic scaling disabled via config (max_extra=0)")
+            return False, ""
+
+        positions: List[Dict[str, Any]] = []
+        try:
+            getter = getattr(portfolio_manager, 'get_open_positions_for_symbol', None)
+            if callable(getter):
+                positions = getter(symbol)
+            elif hasattr(portfolio_manager, 'get_open_positions'):
+                raw_positions = portfolio_manager.get_open_positions() or {}
+                positions = [dict(position, position_id=pid) for pid, position in raw_positions.items() if position.get('symbol') == symbol]
+        except Exception as exc:
+            logger.debug(f"[RISK-SCALING] Unable to inspect open positions for {symbol}: {exc}")
+            positions = []
+
+        if not positions:
+            logger.info(
+                "📉 [RISK-SCALING] Cannot evaluate scale-in for %s (no open positions)",
+                symbol,
+            )
+            return False, ""
+
+        pnl_values = []
+        for pos in positions:
+            pnl_val = pos.get('unrealized_pnl_pct')
+            if pnl_val is None:
+                metrics = pos.get('metrics') or {}
+                pnl_val = metrics.get('unrealized_pnl_pct')
+            try:
+                pnl_values.append(float(pnl_val or 0.0))
+            except (TypeError, ValueError):
+                pnl_values.append(0.0)
+
+        avg_pnl_pct = sum(pnl_values) / len(pnl_values) if pnl_values else 0.0
+        is_profitable = avg_pnl_pct >= pnl_threshold
+
+        if not is_profitable:
+            logger.info(
+                "📉 [RISK-SCALING] Denied scale-in for %s | avgPnL=%.2f%% < %.2f%%",
+                symbol,
+                avg_pnl_pct * 100,
+                pnl_threshold * 100,
+            )
+            return False, ""
+
+        max_allowed = limits.max_positions_per_symbol + max_extra
+        if max_allowed <= limits.max_positions_per_symbol:
+            max_allowed = limits.max_positions_per_symbol
+
+        if symbol_count >= max_allowed:
+            logger.info(
+                "📉 [RISK-SCALING] Denied scale-in for %s | slots=%d/%d",
+                symbol,
+                symbol_count,
+                max_allowed,
+            )
+            return False, ""
+
+        logger.info(
+            "📈 [RISK-SCALING] Allowing scale-in for %s | quality=%.2f | avgPnL=%.2f%% | slots=%d/%d",
+            symbol,
+            quality_score,
+            avg_pnl_pct * 100,
+            symbol_count,
+            max_allowed,
+        )
+        return True, "OK (Dynamic Scaling Allowed)"
 
     def can_open_new_position(
         self,

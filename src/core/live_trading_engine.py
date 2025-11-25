@@ -529,11 +529,7 @@ class LiveTradingEngine:
                         symbol,
                     )
                     try:
-                        close_method = getattr(self.position_manager, 'close_position', None)
-                        if callable(close_method):
-                            close_result = await close_method(reverse_from, reason='reverse')
-                        else:
-                            close_result = {'success': False, 'reason': 'close_position_not_available'}
+                        close_result = await self._execute_position_exit(reverse_from, {'exit_reason': 'reverse'})
 
                         if not close_result.get('success'):
                             logger.error(
@@ -558,6 +554,42 @@ class LiveTradingEngine:
                             'reason': f"Exception while closing source position {reverse_from}: {reverse_error}",
                             'stage': 'reverse_close',
                         }
+            elif intent == 'force_swap':
+                swap_target = signal.get('swap_target_id')
+                if swap_target:
+                    logger.warning(
+                        "⚡ [FORCE-SWAP] Closing weakest position %s on %s before opening new extreme entry.",
+                        swap_target,
+                        symbol,
+                    )
+                    try:
+                        close_result = await self._execute_position_exit(swap_target, {'exit_reason': 'force_swap'})
+
+                        if not close_result.get('success'):
+                            logger.error(
+                                "⚠️ [FORCE-SWAP] Failed to close swap target %s: %s",
+                                swap_target,
+                                close_result.get('reason'),
+                            )
+                            return {
+                                'success': False,
+                                'reason': f"Failed to close swap target {swap_target}: {close_result.get('reason')}",
+                                'stage': 'force_swap_close',
+                            }
+
+                        logger.info(
+                            "⚡ [FORCE-SWAP] Successfully closed %s; continuing with new position.",
+                            swap_target,
+                        )
+                    except Exception as swap_error:
+                        logger.error("[FORCE-SWAP] Exception while closing %s: %s", swap_target, swap_error, exc_info=True)
+                        return {
+                            'success': False,
+                            'reason': f"Exception while closing swap target {swap_target}: {swap_error}",
+                            'stage': 'force_swap_close',
+                        }
+                else:
+                    logger.warning("⚠️ [FORCE-SWAP] intent detected but no swap_target_id provided; proceeding without pre-close.")
 
             execution_result = await self.order_manager.place_order(order_request, execution_algo)
             
@@ -1179,52 +1211,62 @@ class LiveTradingEngine:
         except asyncio.CancelledError:
             logger.info("Performance reporting loop cancelled")
     
-    async def _execute_position_exit(self, position_id: str, exit_signal: Dict):
+    async def _execute_position_exit(self, position_id: str, exit_signal: Dict) -> Dict[str, Any]:
         """Execute position exit based on exit signal."""
         try:
             logger.info(f"Executing exit for position {position_id}")
-            
+
             position = self.active_positions.get(position_id)
             if not position:
                 logger.warning(f"Position not found: {position_id}")
-                return
-            
+                return {'success': False, 'reason': 'position_not_found'}
+
+            exit_reason = exit_signal.get('exit_reason') or 'manual'
+
             logger.info(f"  Symbol: {position.get('symbol')}")
             logger.info(f"  Side: {position.get('side')}")
             logger.info(f"  Amount: {position.get('amount')}")
-            logger.info(f"  Exit reason: {exit_signal.get('exit_reason')}")
-            
+            logger.info(f"  Exit reason: {exit_reason}")
+
             exit_order = {
                 'symbol': position['symbol'],
                 'side': 'sell' if position['side'] == 'long' else 'buy',
                 'amount': position['amount'],
                 'exchange': position['exchange']
             }
-            
+
             execution_result = await self.order_manager.place_order(exit_order, 'market')
-            
-            if execution_result.get('success'):
-                exit_price = execution_result.get('avg_price', 0)
-                close_result = await self.position_manager.close_position(
-                    position_id,
-                    exit_price,
-                    exit_signal.get('exit_reason')
-                )
-                
-                if close_result['success']:
-                    logger.info(f"✅ Position closed successfully: {position_id}")
-                    logger.info(f"   Exit price: ${exit_price:.2f}")
-                    logger.info(f"   P&L: {close_result.get('pnl', 0):.2%}")
-                    
-                    if position_id in self.active_positions:
-                        del self.active_positions[position_id]
-                else:
-                    logger.error(f"Failed to close position: {close_result.get('reason')}")
-            else:
+
+            if not execution_result.get('success'):
                 logger.error(f"Exit order failed: {execution_result.get('reason')}")
-                
+                return {'success': False, 'reason': execution_result.get('reason')}
+
+            exit_price = execution_result.get('avg_price')
+            if not exit_price:
+                exit_price = position.get('current_price') or position.get('entry_price') or 0
+
+            close_result = await self.position_manager.close_position(
+                position_id,
+                exit_price,
+                exit_reason
+            )
+
+            if not close_result.get('success'):
+                logger.error(f"Failed to close position: {close_result.get('reason')}")
+                return {'success': False, 'reason': close_result.get('reason')}
+
+            logger.info(f"✅ Position closed successfully: {position_id}")
+            logger.info(f"   Exit price: ${exit_price:.2f}")
+            logger.info(
+                f"   P&L: ${close_result.get('realized_pnl', 0):+.2f} ({close_result.get('return_pct', 0):+.2f}%)"
+            )
+
+            self.active_positions.pop(position_id, None)
+            return {'success': True, 'exit_price': exit_price, 'close_result': close_result}
+
         except Exception as e:
             logger.error(f"Error executing position exit: {e}", exc_info=True)
+            return {'success': False, 'reason': str(e)}
     
     async def _initialize_risk_management(self) -> Dict[str, Any]:
         """Initialize risk management systems."""

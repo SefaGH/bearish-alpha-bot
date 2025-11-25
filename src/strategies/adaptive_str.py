@@ -254,6 +254,8 @@ class AdaptiveShortTheRip(ShortTheRip):
 
             # --- ML-Aware Decision Making ---
             position_size_modifier = 1.0
+            signal["rsi"] = float(rsi_val)
+            signal.setdefault("features", {})["rsi"] = float(rsi_val)
             ml_enhanced = False
             MIN_ML_CONFIDENCE_THRESHOLD = 0.60
 

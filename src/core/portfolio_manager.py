@@ -132,6 +132,19 @@ class PortfolioManager:
             Dictionary of active positions {position_id: position_data}
         """
         return self.active_positions.copy()
+
+    def get_open_positions_for_symbol(self, symbol: str) -> List[Dict[str, Any]]:
+        """Return shallow copies of open positions for a specific symbol."""
+        if not symbol:
+            return []
+        matches: List[Dict[str, Any]] = []
+        for position_id, data in self.active_positions.items():
+            if data.get('symbol') != symbol:
+                continue
+            snapshot = dict(data)
+            snapshot.setdefault('position_id', position_id)
+            matches.append(snapshot)
+        return matches
     
     def get_position(self, position_id: str) -> Optional[Dict]:
         """
