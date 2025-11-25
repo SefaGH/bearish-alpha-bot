@@ -369,6 +369,11 @@ Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
             }
         }
         
+        strategy_overrides = rr_config.get('strategy_overrides', {}) if rr_config else {}
+        self.rr_dynamic_strategy_overrides = self._normalize_strategy_overrides(strategy_overrides)
+        if self.rr_dynamic_strategy_overrides:
+            logger.info("✓ Dynamic R/R strategy overrides loaded for %d strategies", len(self.rr_dynamic_strategy_overrides))
+        
         # Also store min_risk_reward_ratio for backward compatibility
         self.min_risk_reward_ratio = self.rr_dynamic['base_target_rr']
         
@@ -383,6 +388,17 @@ Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
                    f"bounds=[{self.rr_dynamic['lower_bound_rr']:.1f}-{self.rr_dynamic['upper_bound_rr']:.1f}], "
                    f"weights_sum={total_weight:.2f}")
     
+    def _normalize_strategy_overrides(self, overrides: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """Normalize per-strategy override keys for case-insensitive lookups."""
+        normalized = {}
+        if not overrides:
+            return normalized
+        for name, override in overrides.items():
+            if not isinstance(override, dict):
+                continue
+            normalized[name.lower()] = deepcopy(override)
+        return normalized
+
     def _load_regime_soft_weight_config(self, config_dict: Dict[str, Any]):
         """
         Load regime soft-weighting configuration.
