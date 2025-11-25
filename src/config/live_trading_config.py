@@ -590,6 +590,8 @@ class LiveTradingConfiguration:
             'risk_reward': 0.3,
             'ml_confidence': 0.2,
             'urgency': 0.1,
+            'regime_alignment': 0.05,
+            'strategy_urgency': 0.05,
         }
         weights = {}
         provided_weights = queue_cfg.get('priority_weights') or {}
@@ -598,6 +600,14 @@ class LiveTradingConfiguration:
             value = self._coerce_float(provided_weights.get(key, default), default, f"risk.queue.priority_weights.{key}", minimum=0)
             weights[key] = value
             total += value
+
+        # Surface any user-provided keys we don't yet honor to reduce confusion.
+        unknown_keys = set(provided_weights.keys()) - set(weight_defaults.keys())
+        if unknown_keys:
+            logger.warning(
+                "⚠️ Ignoring unsupported priority weight keys: %s",
+                ', '.join(sorted(unknown_keys))
+            )
 
         if total <= 0:
             logger.warning("risk.queue.priority_weights sum to <= 0. Reverting to defaults.")

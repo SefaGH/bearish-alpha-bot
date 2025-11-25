@@ -102,6 +102,26 @@ risk:
       neutral: 1.0                   # Override with: RR_MULT_NEUTRAL
       volatile: 1.2                  # Override with: RR_MULT_VOLATILE
 
+    # Strategy-specific overrides (optional)
+    strategy_overrides:
+      scalper:
+        base_target_rr: 1.5
+        lower_bound_rr: 1.0
+        weights:
+          ml_confidence: 0.25
+          regime_clarity: 0.10
+      mean_reversion:
+        upper_bound_rr: 2.2
+        regime_multipliers:
+          neutral: 0.9
+          volatile: 1.3
+      breakout_hunter:
+        base_target_rr: 2.2
+        lower_bound_rr: 1.4
+        weights:
+          ml_confidence: 0.45
+          volume_strength: 0.15
+
   # NEW: Signal execution queue controls
   queue:
     ttl_seconds: 60                 # Override with: SIGNAL_QUEUE_TTL_SECONDS (drop stale signals)
@@ -113,6 +133,8 @@ risk:
       risk_reward: 0.3              # Override with: SIGNAL_QUEUE_WEIGHT_RR
       ml_confidence: 0.2            # Override with: SIGNAL_QUEUE_WEIGHT_ML
       urgency: 0.1                  # Override with: SIGNAL_QUEUE_WEIGHT_URGENCY
+      regime_alignment: 0.05        # Override with: SIGNAL_QUEUE_WEIGHT_REGIME_ALIGNMENT
+      strategy_urgency: 0.05        # Override with: SIGNAL_QUEUE_WEIGHT_STRATEGY_URGENCY
 
   # NEW: Concurrent risk guardrails
   concurrent_limits:
@@ -269,6 +291,21 @@ signals:
     sl_atr_mult: 1.5
     min_tp_pct: 0.010
     max_sl_pct: 0.020
+    volatility_stop:
+      enabled: true
+      min_sl_pct: 0.0025
+      max_sl_pct: 0.02
+      overrides:
+        low:
+          atr_scale: 0.75
+          min_sl_pct: 0.0015
+          max_sl_pct: 0.015
+        normal:
+          atr_scale: 1.0
+        high:
+          atr_scale: 1.15
+          min_sl_pct: 0.003
+          max_sl_pct: 0.025
     symbols:
       "BTC/USDT:USDT":
         rsi_threshold: 50             # Override with: RSI_THRESHOLD_BTC
@@ -276,6 +313,30 @@ signals:
         rsi_threshold: 50
       "SOL/USDT:USDT":
         rsi_threshold: 50
+
+# ==============================================================================
+# STRATEGY ROUTING (Regime-aware)
+# ==============================================================================
+strategies:
+  regime_routing:
+    bullish:
+      preferred_strategies: ["trend_follower", "breakout_hunter"]
+      preferred_priority: 0.8
+      fallback_priority: 0.4
+      queue_priority_boost: 0.75
+    bearish:
+      preferred_strategies: ["short_the_rip", "mean_reversion"]
+      preferred_priority: 0.85
+    neutral:
+      preferred_strategies: ["range_sniper", "mean_reversion"]
+      preferred_priority: 0.7
+    volatile:
+      preferred_strategies: ["scalper", "volatility_breakout"]
+      preferred_priority: 0.9
+      queue_priority_boost: 0.9
+    default:
+      preferred_priority: 0.5
+      fallback_priority: 0.4
 
 # ==============================================================================
 # POSITION EXIT MANAGEMENT
@@ -412,6 +473,8 @@ ml:
     ppo_rr_up_mult: 1.3               # Override with: ML_RL_PPO_RR_UP
     ppo_position_base: 0.5            # Override with: ML_RL_PPO_POS_BASE
     ppo_position_bonus: 0.5           # Override with: ML_RL_PPO_POS_BONUS
+    ppo_lookback_bars: 240            # Override with: ML_RL_PPO_LOOKBACK_BARS (candles fetched for PPO state)
+    ppo_lookback_windows: [12, 24, 48, 96] # Override with: ML_RL_PPO_LOOKBACK_WINDOWS (summary windows for telemetry)
     
     # Training Mode Control
     # ============================================================================

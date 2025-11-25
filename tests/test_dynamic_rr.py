@@ -125,16 +125,12 @@ class TestDynamicRRCalculation:
             'strategy_min_rr': 0.5
         }
         
+        target_rr = rule._calculate_dynamic_target(signal)
+        assert target_rr == pytest.approx(0.8865, rel=1e-3)
+
         is_valid, reason = rule.validate(signal, portfolio)
-        # Should pass because:
-        # - Base = 1.5
-        # - Relaxation = 0.3 * 0.9 + 0.3 * 1.0 * 0.95 = 0.27 + 0.285 = 0.555
-        # - Tightening = 0.2 * (1 - 0.8) = 0.04
-        # - Dynamic = (1.5 - 0.555 + 0.04) * 0.9 = 0.887
-        # - Final = max(0.8, min(0.887, 2.0)) = 0.887
-        # - Actual R/R = 0.85, which is < 0.887, so should FAIL
-        # Let me recalculate...
-        assert is_valid is False or is_valid is True  # Accept either for now, we'll check the logic
+        assert is_valid is False
+        assert "0.89" in reason  # Reason should surface the rounded dynamic target
     
     def test_low_confidence_tightens_rr(self):
         """Low confidence should increase R/R requirement."""
@@ -182,15 +178,12 @@ class TestDynamicRRCalculation:
             'strategy_min_rr': 0.5
         }
         
+        target_rr = rule._calculate_dynamic_target(signal)
+        assert target_rr == pytest.approx(1.836, rel=1e-3)
+
         is_valid, reason = rule.validate(signal, portfolio)
-        # Should fail because:
-        # - Base = 1.5
-        # - Relaxation = 0.3 * 0.3 + 0.3 * 0.0 * 0.4 = 0.09
-        # - Tightening = 0.2 * (1 - 0.4) = 0.12
-        # - Dynamic = (1.5 - 0.09 + 0.12) * 1.2 = 1.836
-        # - Final = max(0.8, min(1.836, 2.0)) = 1.836
-        # - Actual R/R = 1.2 < 1.836, should FAIL
         assert is_valid is False
+        assert "1.84" in reason
 
     def test_ppo_rr_multiplier_increases_requirement(self):
         """PPO RR multiplier should tighten the required R/R threshold."""
@@ -380,8 +373,12 @@ class TestDynamicRRValidation:
             'strategy_min_rr': 0.5
         }
         
+        target_rr = rule._calculate_dynamic_target(signal)
+        assert target_rr == pytest.approx(1.14, rel=1e-2)
+
         is_valid, reason = rule.validate(signal, portfolio)
         assert is_valid is True
+        assert "1.14" in reason
     
     def test_disabled_dynamic_uses_static(self):
         """When dynamic R/R is disabled, should use static threshold."""
@@ -526,6 +523,110 @@ class TestRegimeMultipliers:
         target_neutral = rule._calculate_dynamic_target(signal_neutral)
         
         assert target_volatile > target_neutral
+
+
+class TestStrategyOverrides:
+    """Validate per-strategy override behavior for dynamic RR."""
+
+    def _build_base_config(self):
+        return RiskConfiguration({
+            'rr_dynamic': {
+                'enabled': True,
+                'base_target_rr': 1.5,
+                'lower_bound_rr': 0.8,
+                'upper_bound_rr': 2.0,
+                'weights': {
+                    'ml_confidence': 0.0,
+                    'rl_agreement': 0.0,
+                    'regime_clarity': 0.0,
+                    'volume_strength': 0.0,
+                    'momentum_strength': 0.0
+                },
+                'regime_multipliers': {
+                    'bullish': 0.9,
+                    'neutral': 1.0
+                },
+                'strategy_overrides': {
+                    'scalper': {
+                        'base_target_rr': 1.1,
+                        'regime_multipliers': {
+                            'bullish': 0.8
+                        },
+                        'lower_bound_rr': 0.7
+                    }
+                }
+            }
+        })
+
+    def test_strategy_override_applies_case_insensitive(self):
+        config = self._build_base_config()
+        rule = RiskRewardRatioRule(config=config)
+
+        base_signal = {
+            'symbol': 'BTC/USDT',
+            'regime_name': 'bullish',
+            'strategy_min_rr': 0.5
+        }
+
+        override_signal = {
+            **base_signal,
+            'strategy_name': 'Scalper'  # Different casing than config key
+        }
+
+        base_target = rule._calculate_dynamic_target(base_signal)
+        override_target = rule._calculate_dynamic_target(override_signal)
+
+        assert base_target == pytest.approx(1.35, rel=1e-2)
+        assert override_target == pytest.approx(0.88, rel=1e-2)
+
+    def test_strategy_override_can_change_weights(self):
+        config = RiskConfiguration({
+            'rr_dynamic': {
+                'enabled': True,
+                'base_target_rr': 1.5,
+                'lower_bound_rr': 0.8,
+                'upper_bound_rr': 2.0,
+                'weights': {
+                    'ml_confidence': 0.1,
+                    'rl_agreement': 0.0,
+                    'regime_clarity': 0.0,
+                    'volume_strength': 0.0,
+                    'momentum_strength': 0.0
+                },
+                'regime_multipliers': {
+                    'neutral': 1.0
+                },
+                'strategy_overrides': {
+                    'mean_reversion': {
+                        'weights': {
+                            'ml_confidence': 0.5
+                        }
+                    }
+                }
+            }
+        })
+
+        rule = RiskRewardRatioRule(config=config)
+
+        base_signal = {
+            'symbol': 'BTC/USDT',
+            'strategy_min_rr': 0.5,
+            'ml_confidence': 1.0,
+            'regime_name': 'neutral'
+        }
+
+        override_signal = {
+            **base_signal,
+            'strategy_name': 'mean_reversion'
+        }
+
+        base_target = rule._calculate_dynamic_target(base_signal)
+        override_target = rule._calculate_dynamic_target(override_signal)
+
+        # Higher ML weight should reduce the required RR further
+        assert override_target < base_target
+        assert base_target == pytest.approx(1.4, rel=1e-2)
+        assert override_target == pytest.approx(1.0, rel=1e-2)
 
 
 if __name__ == '__main__':

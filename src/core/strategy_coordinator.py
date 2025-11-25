@@ -15,6 +15,12 @@ from enum import Enum
 from pathlib import Path
 
 import numpy as np
+from copy import deepcopy
+
+try:  # Optional dependency; lazily initialized when available
+    from ml.adapters.ppo_trading_adapter import PPOTradingAdapter
+except Exception:  # pragma: no cover - optional runtime dependency
+    PPOTradingAdapter = None
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +55,16 @@ class PrioritySignalQueue:
         self._ttl = max(int(queue_config.get('ttl_seconds', 60)), 5)
         self._max_depth = max(int(queue_config.get('max_queue_depth', 50)), 1)
         self._max_pending_per_symbol = max(int(queue_config.get('max_pending_per_symbol', 1)), 0)
-        self._weights = queue_config.get('priority_weights') or {
-            'explicit_priority': 0.4,
-            'risk_reward': 0.3,
+        default_weights = {
+            'explicit_priority': 0.35,
+            'risk_reward': 0.25,
             'ml_confidence': 0.2,
             'urgency': 0.1,
+            'regime_alignment': 0.05,
+            'strategy_urgency': 0.05,
         }
+        provided_weights = queue_config.get('priority_weights') or {}
+        self._weights = {**default_weights, **provided_weights}
 
         self._condition = asyncio.Condition()
         self._heap: List[Tuple[float, float, int, Dict[str, Any]]] = []
@@ -249,6 +259,24 @@ class PrioritySignalQueue:
         except (TypeError, ValueError):
             ml_component = 0.5
 
+        regime_value = signal.get('regime_weight')
+        if regime_value is None:
+            regime_value = signal.get('regime_confidence')
+        try:
+            regime_component = min(max(float(regime_value), 0.0), 1.0)
+        except (TypeError, ValueError):
+            regime_component = 0.5
+
+        strategy_component_raw = signal.get('strategy_urgency')
+        if strategy_component_raw is None:
+            route_hint = signal.get('regime_route_hint')
+            if isinstance(route_hint, dict):
+                strategy_component_raw = route_hint.get('queue_priority_boost')
+        try:
+            strategy_component = min(max(float(strategy_component_raw), 0.0), 1.0)
+        except (TypeError, ValueError):
+            strategy_component = 0.5
+
         enqueued_at = payload.get('queue_meta', {}).get('enqueued_at', current_ts)
         age = max(0.0, current_ts - enqueued_at)
         urgency_component = min(1.0, age / self._ttl)
@@ -257,7 +285,9 @@ class PrioritySignalQueue:
             self._weights.get('explicit_priority', 0.4) * priority_component +
             self._weights.get('risk_reward', 0.3) * rr_component +
             self._weights.get('ml_confidence', 0.2) * ml_component +
-            self._weights.get('urgency', 0.1) * urgency_component
+            self._weights.get('urgency', 0.1) * urgency_component +
+            self._weights.get('regime_alignment', 0.0) * regime_component +
+            self._weights.get('strategy_urgency', 0.0) * strategy_component
         )
         return score
 
@@ -290,6 +320,21 @@ class StrategyCoordinator:
         self.market_data_pipeline = market_data_pipeline
         self.config = config or {}
         self._initial_equity = self._derive_initial_equity()
+
+        strategies_cfg = self.config.get('strategies', {}) or {}
+        self.regime_routing_rules = strategies_cfg.get('regime_routing', {}) or {}
+        self.regime_route_stats = {
+            'evaluated': 0,
+            'matched': 0,
+            'unmatched': 0,
+            'by_regime': defaultdict(int)
+        }
+        self.rr_telemetry = {
+            'samples': 0,
+            'avg_actual_rr': 0.0,
+            'avg_target_rr': 0.0,
+            'by_strategy': {}
+        }
     
         # Signal management
         self.active_signals = {}  # signal_id -> signal_data
@@ -356,6 +401,7 @@ class StrategyCoordinator:
         self.feature_pipeline = None
         self.rl_agent = None
         rl_cfg = (self.config.get('ml', {}) or {}).get('reinforcement_learning', {})
+        self._rl_config = rl_cfg
         self.legacy_rl_enabled = bool(rl_cfg.get('legacy_dqn_enabled', False))
         self.ppo_multipliers = {
             'rr_up_mult': float(rl_cfg.get('ppo_rr_up_mult', 1.3)),
@@ -365,6 +411,8 @@ class StrategyCoordinator:
         }
         self.ppo_fallback_score = float(rl_cfg.get('ppo_fallback_score', 0.5))
         self.ppo_adapter = None
+        self._ppo_adapter_failed = False
+        self._ppo_missing_dependency_logged = False
         
         # Track ML/RL rejection context for better telemetry
         self._last_ml_rejection_reason: Optional[str] = None
@@ -969,6 +1017,39 @@ class StrategyCoordinator:
         else:
             metrics['flat_votes'] += 1
 
+    def on_ml_components_connected(self) -> None:
+        """Hook invoked when ML pipelines are wired in (lazily start PPO)."""
+        self._initialize_ppo_adapter_if_ready()
+
+    def _initialize_ppo_adapter_if_ready(self) -> None:
+        """Instantiate the PPO adapter once all prerequisites are available."""
+        if self.ppo_adapter or self._ppo_adapter_failed:
+            return
+        rl_cfg = getattr(self, '_rl_config', {}) or {}
+        if not rl_cfg.get('ppo_enabled'):
+            return
+        if PPOTradingAdapter is None:
+            if not self._ppo_missing_dependency_logged:
+                logger.warning("⚠️ PPO adapter requested but dependency unavailable (import failed).")
+                self._ppo_missing_dependency_logged = True
+            return
+        if not self.market_data_pipeline or not self.feature_pipeline:
+            return
+        try:
+            self.ppo_adapter = PPOTradingAdapter(
+                rl_cfg,
+                market_data_pipeline=self.market_data_pipeline,
+                feature_pipeline=self.feature_pipeline,
+            )
+            logger.info("✅ StrategyCoordinator initialized PPO adapter (lazy hook).")
+        except Exception as exc:  # pragma: no cover - adapter init safety
+            self._ppo_adapter_failed = True
+            logger.error(
+                "❌ StrategyCoordinator failed to initialize PPO adapter: %s",
+                exc,
+                exc_info=True,
+            )
+
     @staticmethod
     def _map_signal_side_to_rl_action(side: str) -> str:
         """Map original strategy side to RL action semantics."""
@@ -1294,6 +1375,7 @@ class StrategyCoordinator:
 
         normalized_symbol = self._normalize_symbol_for_ppo(requested_symbol)
         tail_overrides = self._build_ppo_state_overrides(normalized_symbol)
+        self._initialize_ppo_adapter_if_ready()
         adapter = getattr(self, 'ppo_adapter', None)
 
         score: float
@@ -1323,6 +1405,9 @@ class StrategyCoordinator:
 
         signal['ppo_long_score'] = score
         signal['ppo_meta'] = metadata
+        lookback_meta = metadata.get('lookback') if isinstance(metadata, dict) else None
+        if lookback_meta:
+            signal['ppo_lookback_meta'] = lookback_meta
 
         action_label = 'BUY' if score >= 0.5 else 'HOLD'
         logger.info(
@@ -1982,6 +2067,90 @@ class StrategyCoordinator:
         
         return (side1 in long_sides and side2 in short_sides) or \
                (side1 in short_sides and side2 in long_sides)
+
+    def _apply_regime_route_hint(self, signal: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach regime-based routing metadata and urgency hints to a signal."""
+        if not self.regime_routing_rules:
+            return signal
+
+        regime_name = (signal.get('regime_name') or '').lower()
+        if not regime_name:
+            return signal
+
+        raw_rule = self.regime_routing_rules.get(regime_name) or self.regime_routing_rules.get('default')
+        self.regime_route_stats['evaluated'] += 1
+
+        if not raw_rule:
+            self.regime_route_stats['unmatched'] += 1
+            return signal
+
+        route_hint = self._normalize_route_hint(raw_rule)
+        if not route_hint:
+            self.regime_route_stats['unmatched'] += 1
+            return signal
+
+        self.regime_route_stats['matched'] += 1
+        self.regime_route_stats['by_regime'][regime_name] += 1
+        signal['regime_route_hint'] = route_hint
+        self._apply_strategy_urgency(signal, route_hint)
+        return signal
+
+    def _normalize_route_hint(self, raw_rule: Any) -> Optional[Dict[str, Any]]:
+        """Normalize routing rule definitions to a dictionary structure."""
+        if isinstance(raw_rule, dict):
+            return deepcopy(raw_rule)
+        if isinstance(raw_rule, str):
+            return {'preferred_strategies': [raw_rule]}
+        if isinstance(raw_rule, (list, tuple, set)):
+            return {'preferred_strategies': list(raw_rule)}
+        return None
+
+    def _apply_strategy_urgency(self, signal: Dict[str, Any], route_hint: Dict[str, Any]) -> None:
+        """Derive a strategy urgency score from routing metadata for queue prioritization."""
+        strategy_name = signal.get('strategy_name')
+        preferred = route_hint.get('preferred_strategies') or []
+        if strategy_name and preferred:
+            pref_priority = float(route_hint.get('preferred_priority', 0.8))
+            fallback_priority = float(route_hint.get('fallback_priority', 0.4))
+            if strategy_name in preferred:
+                signal['strategy_urgency'] = max(signal.get('strategy_urgency', 0.5), pref_priority)
+            else:
+                signal['strategy_urgency'] = min(signal.get('strategy_urgency', fallback_priority), 1.0)
+
+        boost = route_hint.get('queue_priority_boost')
+        if boost is not None:
+            try:
+                boost_value = float(boost)
+                signal['strategy_urgency'] = max(signal.get('strategy_urgency', 0.5), boost_value)
+            except (TypeError, ValueError):
+                pass
+
+    def _record_rr_telemetry(self, signal: Dict[str, Any]) -> None:
+        """Store rolling averages of actual vs. target R/R for analytics."""
+        actual_rr = signal.get('rr_ratio')
+        target_rr = signal.get('dynamic_rr_target')
+        if actual_rr is None or target_rr is None:
+            return
+
+        self._increment_rr_stats(self.rr_telemetry, actual_rr, target_rr)
+
+        strategy_bucket = self.rr_telemetry['by_strategy'].setdefault(
+            signal.get('strategy_name', 'unknown'),
+            {'samples': 0, 'avg_actual_rr': 0.0, 'avg_target_rr': 0.0}
+        )
+        self._increment_rr_stats(strategy_bucket, actual_rr, target_rr)
+
+    @staticmethod
+    def _increment_rr_stats(bucket: Dict[str, Any], actual_rr: float, target_rr: float) -> None:
+        """Update running averages for a telemetry bucket."""
+        samples = bucket.get('samples', 0) + 1
+        bucket['samples'] = samples
+
+        current_actual = bucket.get('avg_actual_rr', 0.0)
+        bucket['avg_actual_rr'] = current_actual + (actual_rr - current_actual) / samples
+
+        current_target = bucket.get('avg_target_rr', 0.0)
+        bucket['avg_target_rr'] = current_target + (target_rr - current_target) / samples
     
     async def _enrich_signal_for_dynamic_rr(self, signal: Dict) -> Dict:
         """
@@ -2093,6 +2262,8 @@ class StrategyCoordinator:
             )
         signal['ppo_rr_multiplier'] = ppo_rr_multiplier
 
+        signal = self._apply_regime_route_hint(signal)
+
         logger.info(
             f"📊 [Signal Enriched] {symbol}: ML={signal.get('ml_confidence', 0):.2f}, "
             f"RL_agree={signal.get('rl_is_agree', False)}, Regime={signal.get('regime_name', 'N/A')} "
@@ -2153,6 +2324,8 @@ class StrategyCoordinator:
                 sized_signal,
                 portfolio_manager=self.portfolio_manager
             )
+
+            self._record_rr_telemetry(sized_signal)
             
             if not is_valid:
                 return {

@@ -5,7 +5,7 @@ Dynamically adjusts parameters based on market conditions.
 
 import pandas as pd
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple, ClassVar, Any
 from .short_the_rip import ShortTheRip
 
 # Default market regime for fallback
@@ -31,6 +31,27 @@ class AdaptiveShortTheRip(ShortTheRip):
     
     # Maximum adjustment to base threshold (in RSI points)
     MAX_THRESHOLD_ADJUSTMENT = 5
+
+    DEFAULT_VOLATILITY_STOP_CFG: ClassVar[Dict[str, Any]] = {
+        'enabled': True,
+        'min_sl_pct': 0.0025,
+        'max_sl_pct': 0.02,
+        'overrides': {
+            'low': {
+                'atr_scale': 0.75,
+                'min_sl_pct': 0.0015,
+                'max_sl_pct': 0.015,
+            },
+            'normal': {
+                'atr_scale': 1.0,
+            },
+            'high': {
+                'atr_scale': 1.15,
+                'min_sl_pct': 0.003,
+                'max_sl_pct': 0.025,
+            },
+        },
+    }
     
     def __init__(self, cfg: Dict, regime_analyzer=None):
         """
@@ -58,6 +79,8 @@ class AdaptiveShortTheRip(ShortTheRip):
         self.min_rr_ratio = self.strategy_config.get('min_rr_ratio', 1.2)
         logger.info(f"[{self.strategy_name.upper()}] Minimum R/R Ratio initialized to: {self.min_rr_ratio}")
 
+        self.volatility_stop_cfg = self._build_volatility_stop_cfg(self.strategy_config)
+
     def _validate_input_data(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame, regime_data: Dict, symbol: str) -> tuple[bool, str]:
         """Gerekli tüm verilerin varlığını ve geçerliliğini kontrol eder."""
         if df_30m is None or df_30m.empty:
@@ -75,6 +98,29 @@ class AdaptiveShortTheRip(ShortTheRip):
                 logger.info(f"[{self.strategy_name.upper()}-INFO] {symbol} - 'regime_data' is missing. Strategy will fallback to non-adaptive mode.")
 
         return True, "All required data is present."
+
+    def _build_volatility_stop_cfg(self, strategy_config: Dict) -> Dict:
+        overrides = dict(self.DEFAULT_VOLATILITY_STOP_CFG)
+        user_cfg = strategy_config.get('volatility_stop') or {}
+        merged = {
+            **overrides,
+            **{k: v for k, v in user_cfg.items() if k not in ('overrides',)},
+        }
+        merged_overrides = dict(self.DEFAULT_VOLATILITY_STOP_CFG.get('overrides', {}))
+        merged_overrides.update(user_cfg.get('overrides', {}) or {})
+        merged['overrides'] = merged_overrides
+
+        # Respect global max_sl_pct if user didn't override explicitly.
+        if 'max_sl_pct' not in merged or merged['max_sl_pct'] is None:
+            merged['max_sl_pct'] = strategy_config.get('max_sl_pct', self.DEFAULT_VOLATILITY_STOP_CFG['max_sl_pct'])
+
+        if 'min_sl_pct' not in merged or merged['min_sl_pct'] is None:
+            merged['min_sl_pct'] = min(
+                merged['max_sl_pct'],
+                self.DEFAULT_VOLATILITY_STOP_CFG['min_sl_pct'],
+            )
+
+        return merged
     
     def get_symbol_specific_threshold(self, symbol: str) -> Optional[float]:
         """
@@ -98,7 +144,7 @@ class AdaptiveShortTheRip(ShortTheRip):
         
         return None
     
-    def get_adaptive_rsi_threshold(self, market_regime: Dict) -> float:
+    def get_adaptive_rsi_threshold(self, market_regime: Dict, *, return_reason: bool = False):
         """Sniper-mode SELL signals only trigger on stretched pumps."""
         base_rsi = float(self.base_cfg.get('adaptive_rsi_base', 68.0))
         adapt_range = float(self.base_cfg.get('adaptive_rsi_range', 8.0))
@@ -106,21 +152,38 @@ class AdaptiveShortTheRip(ShortTheRip):
         trend = market_regime.get('trend', 'neutral')
         momentum = market_regime.get('momentum', 'sideways')
         threshold = base_rsi
+        adjustment_reason = None
 
         if trend == 'bearish':
             if momentum == 'strong':
                 threshold = base_rsi - 3.0
+                adjustment_reason = "Bearish trend with strong momentum: lowering RSI threshold"
             else:
                 threshold = base_rsi
         elif trend == 'bullish':
             if momentum == 'strong':
                 threshold = base_rsi + 7.0  # Target ~75
+                adjustment_reason = "Bullish trend with strong momentum: demanding higher RSI"
             else:
                 threshold = base_rsi + 3.0  # Target ~71
+                adjustment_reason = "Bullish trend: raising RSI threshold"
 
         min_threshold = max(60, base_rsi - adapt_range)
         max_threshold = min(90, base_rsi + adapt_range)
-        return max(min_threshold, min(max_threshold, threshold))
+        clamped_threshold = max(min_threshold, min(max_threshold, threshold))
+
+        if adjustment_reason is None and clamped_threshold != base_rsi:
+            adjustment_reason = "Adaptive RSI clamp applied"
+
+        if not return_reason:
+            return clamped_threshold
+
+        return clamped_threshold, {
+            'base_threshold': base_rsi,
+            'reason': adjustment_reason,
+            'trend': trend,
+            'momentum': momentum
+        }
     
     def calculate_dynamic_position_size(self, volatility_regime: str, 
                                        base_multiplier: float = 1.0) -> float:
@@ -146,7 +209,7 @@ class AdaptiveShortTheRip(ShortTheRip):
         else:
             return base_multiplier
     
-    def adapt_ema_requirements(self, trend_strength: float) -> Dict[str, any]:
+    def adapt_ema_requirements(self, trend_strength: float) -> Dict[str, Any]:
         """
         EMA alignment requirements based on trend strength.
         
@@ -176,6 +239,36 @@ class AdaptiveShortTheRip(ShortTheRip):
                 'require_strict_ema_align': True,
                 'ema_tolerance': 0.005  # 0.5% tolerance
             }
+
+    def _apply_volatility_stop_tuning(self, volatility: str, base_sl_pct: float, atr_pct: float) -> Tuple[float, Dict[str, float]]:
+        cfg = self.volatility_stop_cfg or {}
+        if not cfg.get('enabled', False):
+            return base_sl_pct, {}
+
+        overrides = cfg.get('overrides', {})
+        vol_cfg = overrides.get(volatility, {})
+
+        atr_scale = float(vol_cfg.get('atr_scale', 1.0))
+        tuned_sl_pct = base_sl_pct * atr_scale
+
+        min_sl_pct = float(vol_cfg.get('min_sl_pct', cfg.get('min_sl_pct', base_sl_pct)))
+        max_sl_pct = float(vol_cfg.get('max_sl_pct', cfg.get('max_sl_pct', base_sl_pct)))
+
+        strategy_cap = float(self.strategy_config.get('max_sl_pct', max_sl_pct))
+        max_sl_pct = min(max_sl_pct, strategy_cap)
+
+        tuned_sl_pct = max(min_sl_pct, min(max_sl_pct, tuned_sl_pct))
+
+        metadata = {
+            'volatility': volatility,
+            'atr_pct': atr_pct,
+            'base_sl_pct': base_sl_pct,
+            'min_sl_pct': min_sl_pct,
+            'max_sl_pct': max_sl_pct,
+            'applied_scale': atr_scale,
+            'final_sl_pct': tuned_sl_pct,
+        }
+        return tuned_sl_pct, metadata
     
     def signal(self, df_30m: pd.DataFrame, 
                df_1h: pd.DataFrame = None,
@@ -229,9 +322,29 @@ class AdaptiveShortTheRip(ShortTheRip):
             # --- Adaptive Threshold Calculation ---
             adaptive_rsi_threshold = self.get_symbol_specific_threshold(symbol_display)
             if adaptive_rsi_threshold is not None:
-                if self.debug_logging: logger.info(f"ℹ️ {log_prefix} Using symbol-specific RSI threshold: {adaptive_rsi_threshold:.2f}")
+                base_threshold = float(self.base_cfg.get('adaptive_rsi_base', 68.0))
+                logger.info(
+                    f"⚠️ {log_prefix} Symbol-specific RSI threshold active: base {base_threshold:.2f} → {adaptive_rsi_threshold:.2f}."
+                )
             else:
-                adaptive_rsi_threshold = self.get_adaptive_rsi_threshold(market_regime)
+                adaptive_rsi_threshold, threshold_meta = self.get_adaptive_rsi_threshold(
+                    market_regime,
+                    return_reason=True
+                )
+                meta_base = threshold_meta.get('base_threshold', adaptive_rsi_threshold)
+                reason = threshold_meta.get('reason')
+                if reason and abs(adaptive_rsi_threshold - meta_base) >= 0.1:
+                    logger.info(
+                        f"⚠️ {log_prefix} {reason} (base {meta_base:.2f} → {adaptive_rsi_threshold:.2f})."
+                    )
+                elif abs(adaptive_rsi_threshold - meta_base) >= 0.1:
+                    logger.info(
+                        f"⚠️ {log_prefix} Adaptive RSI adjustment applied (base {meta_base:.2f} → {adaptive_rsi_threshold:.2f})."
+                    )
+                else:
+                    logger.info(
+                        f"ℹ️ {log_prefix} RSI threshold steady at {adaptive_rsi_threshold:.2f} (trend={market_regime['trend']}, momentum={market_regime['momentum']})."
+                    )
 
             # --- Core Signal Condition Checks with Tracing ---
             if self.debug_logging:
@@ -289,6 +402,7 @@ class AdaptiveShortTheRip(ShortTheRip):
             
             entry_price = float(last30['close'])
             atr_value = float(last30.get('atr', entry_price * 0.02))
+            atr_pct = (atr_value / entry_price) if entry_price else 0.0
             
             # 🔥 GÜNCELLEME: Config okumaları artık tutarlı bir şekilde `self.strategy_config` üzerinden yapılıyor.
             tp_atr_mult = float(self.strategy_config.get("tp_atr_mult", 3.0))
@@ -304,23 +418,30 @@ class AdaptiveShortTheRip(ShortTheRip):
             min_tp_pct = float(self.strategy_config.get("min_tp_pct", 0.010))
             max_sl_pct = float(self.strategy_config.get("max_sl_pct", 0.020))
             
+            intended_rr = tp_atr_mult / sl_atr_mult if sl_atr_mult else self.min_rr_ratio
+
             # Apply stop-loss cap CORRECTLY and realign TP if needed
             if theoretical_sl_pct > max_sl_pct:
-                # Risk needs capping
                 logger.info(f"📊 {log_prefix} [SL Cap Applied] {theoretical_sl_pct:.1%} → {max_sl_pct:.1%}")
                 actual_sl_pct = max_sl_pct
-                actual_sl_distance = entry_price * actual_sl_pct
-                
-                # CRITICAL - Realign TP to maintain intended R/R ratio
-                intended_rr = tp_atr_mult / sl_atr_mult  # e.g., 3.0/1.5 = 2.0
-                adjusted_tp_distance = actual_sl_distance * intended_rr
-                actual_tp_pct = adjusted_tp_distance / entry_price
-                
-                logger.info(f"📊 {log_prefix} [TP Realigned] Maintaining R/R={intended_rr:.2f}")
             else:
-                # No capping needed
                 actual_sl_pct = theoretical_sl_pct
-                actual_tp_pct = theoretical_tp_pct
+
+            volatility_stop_meta = None
+            if self.volatility_stop_cfg.get('enabled', False):
+                tuned_sl_pct, volatility_stop_meta = self._apply_volatility_stop_tuning(
+                    volatility,
+                    actual_sl_pct,
+                    atr_pct,
+                )
+                if abs(tuned_sl_pct - actual_sl_pct) >= 1e-6:
+                    logger.info(
+                        f"⚙️ {log_prefix} [VolStop] {volatility.capitalize()} volatility adjusted SL {actual_sl_pct:.1%} → {tuned_sl_pct:.1%}."
+                    )
+                actual_sl_pct = tuned_sl_pct
+
+            scaled_tp_pct = actual_sl_pct * intended_rr
+            actual_tp_pct = max(min_tp_pct, min(theoretical_tp_pct, scaled_tp_pct))
             
             # SHORT: Stop is ABOVE entry
             stop_price = entry_price * (1 + actual_sl_pct)
@@ -368,6 +489,8 @@ class AdaptiveShortTheRip(ShortTheRip):
                 "strategy_type": 'adaptive',
                 "strategy_min_rr": self.min_rr_ratio
             })
+            if volatility_stop_meta:
+                signal['volatility_stop_meta'] = volatility_stop_meta
             
             if ml_enhanced:
                 signal['ml_consensus'] = ml_context.get('consensus_score')

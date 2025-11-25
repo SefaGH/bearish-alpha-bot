@@ -14,7 +14,9 @@ Design goals:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Tuple
@@ -43,6 +45,8 @@ class PPOAdapterConfig:
     rr_down_mult: float = 0.9
     position_base: float = 0.5
     position_bonus: float = 0.5
+    lookback_bars: int = 240
+    lookback_windows: Tuple[int, ...] = (12, 24, 48, 96)
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, Any]) -> "PPOAdapterConfig":
@@ -68,6 +72,45 @@ class PPOAdapterConfig:
 
         symbols = tuple(str(s).strip() for s in symbols_cfg if s)
 
+        def _parse_window_sequence(raw_value: Any, fallback: Iterable[int]) -> Tuple[int, ...]:
+            if raw_value is None:
+                return tuple(int(v) for v in fallback)
+            sequence: Iterable[Any]
+            if isinstance(raw_value, (list, tuple)):
+                sequence = raw_value
+            else:
+                raw_str = str(raw_value).strip()
+                if raw_str.startswith("[") and raw_str.endswith("]"):
+                    try:
+                        parsed = json.loads(raw_str)
+                        if isinstance(parsed, list):
+                            sequence = parsed
+                        else:
+                            sequence = [parsed]
+                    except Exception:
+                        inner = raw_str[1:-1]
+                        sequence = [part.strip() for part in inner.split(",") if part.strip()]
+                else:
+                    sequence = [part.strip() for part in raw_str.split(",") if part.strip()]
+
+            parsed_values = []
+            for value in sequence:
+                try:
+                    num = int(float(value))
+                    if num > 0:
+                        parsed_values.append(num)
+                except (TypeError, ValueError):
+                    continue
+            return tuple(parsed_values) or tuple(int(v) for v in fallback)
+
+        lookback_windows = _parse_window_sequence(
+            rl_cfg.get("ppo_lookback_windows"),
+            fallback=(12, 24, 48, 96),
+        )
+        lookback_bars = int(rl_cfg.get("ppo_lookback_bars", 240) or 240)
+        if lookback_bars <= 0:
+            lookback_bars = 240
+
         return cls(
             enabled=bool(rl_cfg.get("ppo_enabled", False)),
             symbols=symbols or ("BTC/USDT:USDT",),
@@ -78,6 +121,8 @@ class PPOAdapterConfig:
             rr_down_mult=float(rl_cfg.get("ppo_rr_down_mult", 0.9)),
             position_base=float(rl_cfg.get("ppo_position_base", 0.5)),
             position_bonus=float(rl_cfg.get("ppo_position_bonus", 0.5)),
+            lookback_bars=lookback_bars,
+            lookback_windows=lookback_windows,
         )
 
 
@@ -103,6 +148,7 @@ class PPOTradingAdapter:
         self._symbol_alias_map: Dict[str, str] = {}
         self._normalized_symbols = set()
         self._expected_obs_dim: Optional[int] = None  # PPO modelinin beklediği observation dim
+        self._last_state_metadata: Dict[str, Any] = {}
 
         for raw_symbol in self.cfg.symbols:
             normalized = self._normalize_symbol(raw_symbol)
@@ -194,7 +240,7 @@ class PPOTradingAdapter:
 
         try:
             action, _ = self._model.predict(state[np.newaxis, :], deterministic=True)
-            action_int = int(action)
+            action_int = int(np.asarray(action).item())
 
             confidence = 1.0
             if hasattr(self._model, "policy"):
@@ -237,6 +283,9 @@ class PPOTradingAdapter:
                 "normalized_symbol": symbol_norm,
                 "requested_symbol": symbol,
             }
+            lookback_meta = getattr(self, '_last_state_metadata', None)
+            if lookback_meta:
+                metadata['lookback'] = lookback_meta
 
             if action_int == 1 and decision == "WEAK_LONG_IGNORED":
                 logger.info(
@@ -300,6 +349,7 @@ class PPOTradingAdapter:
         normalized_pv: Optional[float] = None,
     ) -> Optional[np.ndarray]:
         """Rebuild the PPO feature vector for the requested symbol."""
+        self._last_state_metadata = {}
         if not self.market_data_pipeline or not self.feature_pipeline:
             logger.warning("PPO adapter missing data/feature pipeline; returning fallback")
             return None
@@ -343,9 +393,11 @@ class PPOTradingAdapter:
 
             # Güvenlik için hala hizalama yapıyoruz ama normalde no-op olmalı
             state = self._align_state_dim(raw_state)
+            self._last_state_metadata = self._generate_lookback_metadata(df, symbol)
             return state
         except Exception as exc:
             logger.error("PPO adapter failed to build state for %s: %s", symbol, exc)
+            self._last_state_metadata = {}
             return None
 
     def supported_symbols(self) -> Iterable[str]:
@@ -475,3 +527,110 @@ class PPOTradingAdapter:
             except (TypeError, ValueError):
                 logger.debug("PPO tail normalized_pv invalid: %s", normalized_pv)
         return tail.astype(np.float32)
+
+    def get_last_lookback_metadata(self) -> Dict[str, Any]:
+        """Return a shallow copy of the most recent lookback metadata."""
+        return dict(self._last_state_metadata or {})
+
+    def _generate_lookback_metadata(self, df: pd.DataFrame, symbol: str) -> Dict[str, Any]:
+        if df is None or df.empty:
+            return {}
+
+        lookback_df = df.tail(self.cfg.lookback_bars) if self.cfg.lookback_bars else df
+        if lookback_df is None or lookback_df.empty:
+            return {}
+
+        metadata: Dict[str, Any] = {
+            "symbol": symbol,
+            "timeframe": self.cfg.timeframe,
+            "bars_requested": int(self.cfg.lookback_bars),
+            "bars_available": int(len(lookback_df)),
+            "start": self._format_timestamp(lookback_df.index[0])
+            if hasattr(lookback_df, "index") and len(lookback_df.index)
+            else None,
+            "end": self._format_timestamp(lookback_df.index[-1])
+            if hasattr(lookback_df, "index") and len(lookback_df.index)
+            else None,
+            "window_stats": {},
+        }
+
+        metadata["overall"] = self._summarize_window(lookback_df)
+
+        for window in self.cfg.lookback_windows:
+            if window <= 1:
+                continue
+            window_df = lookback_df.tail(window)
+            if window_df is None or len(window_df) < 2:
+                continue
+            metadata["window_stats"][str(window)] = self._summarize_window(window_df)
+
+        return metadata
+
+    def _summarize_window(self, window_df: pd.DataFrame) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {"bars": int(len(window_df))}
+        if len(window_df) < 2:
+            summary.update(
+                {
+                    "price_change_pct": 0.0,
+                    "volatility_pct": 0.0,
+                    "max_drawdown_pct": 0.0,
+                    "avg_volume": 0.0,
+                }
+            )
+            return summary
+
+        close = window_df["close"].astype(float)
+        first_close = float(close.iloc[0])
+        last_close = float(close.iloc[-1])
+        price_change = (last_close / first_close) - 1.0 if first_close else 0.0
+        returns = close.pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+        volatility = float(returns.std(skipna=True) or 0.0)
+        volume_series = window_df.get("volume")
+        avg_volume = (
+            float(volume_series.astype(float).mean())
+            if volume_series is not None and not volume_series.empty
+            else 0.0
+        )
+        max_drawdown = self._compute_max_drawdown(close)
+        atr_series = window_df.get("atr")
+        if atr_series is not None and not atr_series.empty:
+            atr_value = float(atr_series.astype(float).iloc[-min(len(atr_series), 14):].mean())
+        else:
+            atr_value = None
+
+        summary.update(
+            {
+                "price_change_pct": float(price_change),
+                "volatility_pct": float(volatility),
+                "max_drawdown_pct": float(max_drawdown),
+                "avg_volume": float(avg_volume),
+            }
+        )
+        if atr_value is not None and not math.isnan(atr_value):
+            summary["atr"] = float(atr_value)
+        return summary
+
+    @staticmethod
+    def _compute_max_drawdown(close: pd.Series) -> float:
+        if close is None or close.empty:
+            return 0.0
+        running_max = close.cummax()
+        drawdowns = close / running_max - 1.0
+        if drawdowns.empty:
+            return 0.0
+        return float(abs(drawdowns.min()))
+
+    @staticmethod
+    def _format_timestamp(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        try:
+            if isinstance(value, pd.Timestamp):
+                return value.to_pydatetime().isoformat()
+            if isinstance(value, np.datetime64):
+                return pd.Timestamp(value).to_pydatetime().isoformat()
+            if hasattr(value, "isoformat"):
+                return value.isoformat()
+        except Exception:  # pragma: no cover - formatting safety
+            return str(value)
+        return str(value)

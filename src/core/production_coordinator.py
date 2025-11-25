@@ -1245,6 +1245,11 @@ class ProductionCoordinator:
             self.strategy_coordinator.rl_agent = self.rl_agent
             if hasattr(self.strategy_coordinator, 'ppo_adapter'):
                 self.strategy_coordinator.ppo_adapter = self.ppo_adapter
+            if hasattr(self.strategy_coordinator, 'on_ml_components_connected'):
+                try:
+                    self.strategy_coordinator.on_ml_components_connected()
+                except Exception as exc:
+                    logger.warning("⚠️ StrategyCoordinator ML hookup callback failed: %s", exc)
             logger.info("🔗 ML components connected to StrategyCoordinator.")
         if self.trading_engine:
             self.trading_engine.ml_integration = self.ml_integration

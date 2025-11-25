@@ -11,6 +11,7 @@ composable, extensible rules engine following the Open/Closed Principle.
 """
 
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from typing import Dict, Tuple, Any
 import logging
 
@@ -485,6 +486,9 @@ class RiskRewardRatioRule(BaseRiskRule):
             
             # Get dynamic target R/R
             target_rr = self._calculate_dynamic_target(signal)
+            signal['dynamic_rr_target'] = target_rr
+            signal.setdefault('rr_ratio', calculated_rr)
+            signal['calculated_rr_ratio'] = calculated_rr
             
             # Enhanced diagnostic logging
             logger.info(f"📊 [R/R Analysis] {symbol}:")
@@ -542,7 +546,7 @@ class RiskRewardRatioRule(BaseRiskRule):
             logger.warning("[Dynamic R/R] Config not found, using static default 1.5")
             return 1.5
         
-        config = self.risk_config.rr_dynamic
+        config = self._get_rr_config_for_signal(signal)
         
         if not config.get('enabled', False):
             # Use static target if dynamic is disabled
@@ -607,6 +611,32 @@ class RiskRewardRatioRule(BaseRiskRule):
                f"= {dynamic_target:.2f} × PPO({ppo_rr_multiplier:.2f}) → Final={final_target:.2f}")
         
         return final_target
+
+    def _get_rr_config_for_signal(self, signal: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve dynamic R/R config, applying per-strategy overrides when available."""
+        base_config = deepcopy(self.risk_config.rr_dynamic)
+        overrides = getattr(self.risk_config, 'rr_dynamic_strategy_overrides', {}) or {}
+        if not overrides:
+            return base_config
+        strategy_name = signal.get('strategy_name') or signal.get('strategy')
+        if not strategy_name:
+            return base_config
+        strategy_key = strategy_name.lower()
+        override = overrides.get(strategy_key) or overrides.get(strategy_name)
+        if not override:
+            return base_config
+        return self._deep_merge_rr_config(base_config, override)
+
+    @staticmethod
+    def _deep_merge_rr_config(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively merge override values into the base dynamic R/R configuration."""
+        merged = deepcopy(base)
+        for key, value in override.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = RiskRewardRatioRule._deep_merge_rr_config(merged[key], value)
+            else:
+                merged[key] = deepcopy(value) if isinstance(value, dict) else value
+        return merged
     
     def _calculate_stop_from_signal(self, signal: Dict, entry_price: float) -> float:
         """
