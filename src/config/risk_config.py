@@ -58,6 +58,8 @@ class QueueConfig:
         'risk_reward': 0.3,
         'ml_confidence': 0.2,
         'urgency': 0.1,
+        'regime_alignment': 0.05,
+        'strategy_urgency': 0.05,
     })
 
 
@@ -502,7 +504,10 @@ Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
         
         # Add dynamic R/R config if available
         if hasattr(self, 'rr_dynamic'):
-            result['rr_dynamic'] = self.rr_dynamic
+            result['rr_dynamic'] = deepcopy(self.rr_dynamic)
+            overrides = getattr(self, 'rr_dynamic_strategy_overrides', {}) or {}
+            if overrides:
+                result['rr_dynamic']['strategy_overrides'] = deepcopy(overrides)
         
         # Add regime soft-weight config if available
         if hasattr(self, 'regime_soft_weight'):
@@ -555,21 +560,26 @@ Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
 
     def _load_queue_config(self, cfg: Dict[str, Any]) -> QueueConfig:
         weights = cfg.get('priority_weights') or {}
-        priority_weights = {
-            'explicit_priority': self._safe_float(weights.get('explicit_priority', 0.4), 0.4),
-            'risk_reward': self._safe_float(weights.get('risk_reward', 0.3), 0.3),
-            'ml_confidence': self._safe_float(weights.get('ml_confidence', 0.2), 0.2),
-            'urgency': self._safe_float(weights.get('urgency', 0.1), 0.1),
+        default_weights = {
+            'explicit_priority': 0.4,
+            'risk_reward': 0.3,
+            'ml_confidence': 0.2,
+            'urgency': 0.1,
+            'regime_alignment': 0.05,
+            'strategy_urgency': 0.05,
         }
+        priority_weights = {}
+        for key, default in default_weights.items():
+            priority_weights[key] = self._safe_float(weights.get(key, default), default)
+
+        extra_keys = set(weights.keys()) - set(default_weights.keys())
+        if extra_keys:
+            logger.warning("Ignoring unsupported priority weight keys: %s", ', '.join(sorted(extra_keys)))
+
         total = sum(priority_weights.values())
         if total <= 0:
-            priority_weights = {
-                'explicit_priority': 0.4,
-                'risk_reward': 0.3,
-                'ml_confidence': 0.2,
-                'urgency': 0.1,
-            }
-            total = 1.0
+            priority_weights = default_weights.copy()
+            total = sum(priority_weights.values())
         priority_weights = {k: v / total for k, v in priority_weights.items()}
 
         return QueueConfig(

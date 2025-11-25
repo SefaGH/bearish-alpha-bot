@@ -5,7 +5,7 @@ Dynamically adjusts parameters based on market conditions.
 
 import pandas as pd
 import logging
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, ClassVar, Any
 from .short_the_rip import ShortTheRip
 
 # Default market regime for fallback
@@ -32,7 +32,7 @@ class AdaptiveShortTheRip(ShortTheRip):
     # Maximum adjustment to base threshold (in RSI points)
     MAX_THRESHOLD_ADJUSTMENT = 5
 
-    DEFAULT_VOLATILITY_STOP_CFG = {
+    DEFAULT_VOLATILITY_STOP_CFG: ClassVar[Dict[str, Any]] = {
         'enabled': True,
         'min_sl_pct': 0.0025,
         'max_sl_pct': 0.02,
@@ -209,7 +209,7 @@ class AdaptiveShortTheRip(ShortTheRip):
         else:
             return base_multiplier
     
-    def adapt_ema_requirements(self, trend_strength: float) -> Dict[str, any]:
+    def adapt_ema_requirements(self, trend_strength: float) -> Dict[str, Any]:
         """
         EMA alignment requirements based on trend strength.
         
