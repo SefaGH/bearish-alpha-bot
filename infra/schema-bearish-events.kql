@@ -1,0 +1,37 @@
+.create table bearish_events (
+    run_id:string,
+    timestamp_utc:datetime,
+    event_type:string,
+    logger:string,
+    level:string,
+    message:string,
+    symbol:string,
+    entry_price:real,
+    exit_price:real,
+    pnl_usd:real,
+    holding_time_s:long,
+    strategy:string,
+    ml_confidence:real,
+    rl_confidence:real,
+    signal_score:real,
+    extra:dynamic
+)
+
+.create table bearish_events ingestion json mapping 'bearish_events_json_mapping' '[
+    {"column":"run_id","path":"$.run_id","datatype":"string"},
+    {"column":"timestamp_utc","path":"$.timestamp_utc","datatype":"datetime"},
+    {"column":"event_type","path":"$.event_type","datatype":"string"},
+    {"column":"logger","path":"$.logger","datatype":"string"},
+    {"column":"level","path":"$.level","datatype":"string"},
+    {"column":"message","path":"$.message","datatype":"string"},
+    {"column":"symbol","path":"$.symbol","datatype":"string"},
+    {"column":"entry_price","path":"$.entry_price","datatype":"real"},
+    {"column":"exit_price","path":"$.exit_price","datatype":"real"},
+    {"column":"pnl_usd","path":"$.pnl_usd","datatype":"real"},
+    {"column":"holding_time_s","path":"$.holding_time_s","datatype":"long"},
+    {"column":"strategy","path":"$.strategy","datatype":"string"},
+    {"column":"ml_confidence","path":"$.ml_confidence","datatype":"real"},
+    {"column":"rl_confidence","path":"$.rl_confidence","datatype":"real"},
+    {"column":"signal_score","path":"$.signal_score","datatype":"real"},
+    {"column":"extra","path":"$.extra","datatype":"dynamic"}
+]'

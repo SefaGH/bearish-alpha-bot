@@ -1,0 +1,2 @@
+{"run_id":"20251125_150553","timestamp_utc":"2025-11-25T15:05:02Z","event_type":"trade_exit","symbol":"BTCUSDT","pnl_usd":42.5,"strategy":"mean_reversion","ml_confidence":0.81,"rl_confidence":0.67,"signal_score":0.74}
+{"run_id":"20251125_150553","timestamp_utc":"2025-11-25T15:10:15Z","event_type":"trade_exit","symbol":"ETHUSDT","pnl_usd":-12.3,"strategy":"breakout","ml_confidence":0.55,"rl_confidence":0.49,"signal_score":0.61}

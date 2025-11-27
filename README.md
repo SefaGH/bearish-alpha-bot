@@ -240,22 +240,25 @@ GitHub (kod) ──► Docker build (lokal)
    docker tag bearish-bot:vm-vmboot-4 bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
    docker push bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
    ```
-3. Azure VM üzerinde container güncellenir:
+3. Azure VM üzerinde container güncellenir (auto-restart istemiyorsan `--restart` bayrağını kullanma):
    ```pwsh
-   ssh azureuser@<VM_IP> "docker stop bearish-bot || true; docker rm bearish-bot || true; docker pull bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4; docker run -d --name bearish-bot --restart unless-stopped --env-file ~/bearish-bot.env bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4"
+  ssh azureuser@<VM_IP> "docker stop bearish-bot || true; docker rm bearish-bot || true; docker pull bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4; docker run -d --name bearish-bot --env-file ~/bearish-bot.env bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4"
    ```
+
+  > Auto-restart isteyenler `docker run` komutuna ekstra olarak `--restart unless-stopped` ekleyebilir.
 
 İsteğe bağlı olarak log ve state dosyalarına VM seviyesinden rahat erişim için volume mount'ları kullanılabilir:
 
 ```bash
 sudo docker run -d \
   --name bearish-bot \
-  --restart unless-stopped \
   --env-file /home/azureuser/bearish-bot.env \
   -v /mnt/bearish/logs:/app/logs \
   -v /mnt/bearish/data:/app/data \
   bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
 ```
+
+- Auto-restart gerekiyorsa komuta `--restart unless-stopped` ekleyebilirsin.
 
 - Container içindeki `logs/` klasörü golden graceful shutdown pattern'ini, exit summary'leri ve seans loglarını tutar;
   host tarafında `/mnt/bearish/logs` altında görünür. Seans bittikten sonra container içinde:
@@ -290,8 +293,9 @@ python scripts/vm_run_session.py --just-print   # Önce hangi docker komutların
 python scripts/vm_run_session.py                # Ardından gerçekten stop/rm/pull/run zincirini uygula
 ```
 
-Bu script, `bearish-bot` container'ını standart ayarlarla yönetmek için tek bir giriş noktası sunar ve volume
-mount'larını (varsayılan olarak `/mnt/bearish/logs` ve `/mnt/bearish/data`) otomatik ekler.
+Bu script, `bearish-bot` container'ını standart ayarlarla yönetmek için tek bir giriş noktası sunar, volume
+mount'larını (varsayılan olarak `/mnt/bearish/logs` ve `/mnt/bearish/data`) otomatik ekler ve yeni `--restart-policy`
+argümanı ile auto-restart davranışını seçmeni sağlar (`no` varsayılandır; eski davranış için `--restart-policy unless-stopped`).
 
 ## ⚙️ Duplicate Prevention Configuration
 

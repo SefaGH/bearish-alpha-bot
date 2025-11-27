@@ -9,6 +9,7 @@ from datetime import datetime
 # Global değişkenler, listener'ın sadece bir kez başlatılmasını sağlar.
 _listener = None
 _log_queue = queue.Queue(-1)
+CURRENT_LOG_FILE = None  # Exposed for other modules to know the active log file
 
 def setup_logger(name: str = "bearish_alpha_bot",
                  debug_mode: bool = False,
@@ -80,16 +81,47 @@ def setup_logger(name: str = "bearish_alpha_bot",
                 file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
                 _create_symlinks(log_dir, log_file_path)
 
+            global CURRENT_LOG_FILE
+            CURRENT_LOG_FILE = log_file_path
+
             file_handler.setFormatter(formatter)
             handlers_to_listen.append(file_handler)
             
             print(f"File logging enabled: {log_file_path}")
 
-        _listener = logging.handlers.QueueListener(_log_queue, *handlers_to_listen, respect_handler_level=True)
-        _listener.start()
-        
-        queue_handler = logging.handlers.QueueHandler(_log_queue)
-        root_logger.addHandler(queue_handler)
+        # --- AZURE APPLICATION INSIGHTS SUPPORT ---
+        app_insights_key = os.getenv('APPLICATIONINSIGHTS_CONNECTION_STRING')
+        if app_insights_key:
+            try:
+                from opencensus.ext.azure.log_exporter import AzureLogHandler
+                
+                # Extract run_id from filename if available
+                run_id = "unknown"
+                if CURRENT_LOG_FILE:
+                    filename = os.path.basename(CURRENT_LOG_FILE)
+                    if filename.startswith("live_trading_") and filename.endswith(".log"):
+                        run_id = filename.replace("live_trading_", "").replace(".log", "")
+                
+                # Callback to add run_id to every log
+                def callback_add_run_id(envelope):
+                    envelope.data.baseData.properties['run_id'] = run_id
+                    return True
+
+                azure_handler = AzureLogHandler(connection_string=app_insights_key)
+                azure_handler.add_telemetry_processor(callback_add_run_id)
+                azure_handler.setFormatter(formatter)
+                handlers_to_listen.append(azure_handler)
+                print(f"Azure Application Insights logging enabled (run_id: {run_id})")
+            except ImportError:
+                print("opencensus-ext-azure not installed. Azure logging disabled.")
+            except Exception as e:
+                print(f"Failed to setup Azure logging: {e}")
+        # ------------------------------------------
+
+        # DIRECT LOGGING (Fix for missing logs in container)
+        # We bypass QueueListener to ensure logs are written immediately and not lost on exit.
+        for handler in handlers_to_listen:
+            root_logger.addHandler(handler)
 
         if log_level == logging.DEBUG:
             root_logger.info("DEBUG MODE: Enhanced logging enabled.")

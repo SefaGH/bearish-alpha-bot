@@ -6,6 +6,7 @@ Comprehensive position lifecycle management.
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from datetime import datetime, timezone
@@ -45,6 +46,24 @@ except ModuleNotFoundError:
             raise
 
 logger = logging.getLogger(__name__)
+
+
+def _read_int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _read_float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+_SHUTDOWN_CLOSE_MAX_ATTEMPTS = max(1, _read_int_env("POSITION_CLOSE_RETRY_LIMIT", 2))
+_SHUTDOWN_CLOSE_BACKOFF = max(0.0, _read_float_env("POSITION_CLOSE_RETRY_BACKOFF", 2.0))
 
 
 class PositionStatus(Enum):
@@ -329,21 +348,38 @@ class AdvancedPositionManager:
                     'exchange': exchange,  # Include exchange info in order
                 }
                 
-                # CRITICAL: Pass live exchange_clients to OrderManager
-                execution_result = await self.order_manager.place_order(
-                    close_order_request, 
-                    execution_algo='market',  # Close orders are typically market orders
-                    exchange_clients=exchange_clients  # *** CRITICAL: Inject live clients ***
-                )
+                max_attempts = _SHUTDOWN_CLOSE_MAX_ATTEMPTS
+                attempt_success = False
+                last_error = 'Execution failed'
 
-                if execution_result and execution_result.get('success'):
-                    exit_price = execution_result.get('avg_price')
-                    await self.close_position(position_id, exit_price, exit_reason=reason)
-                    closed_count += 1
-                else:
-                    error_reason = execution_result.get('reason', 'Execution failed')
-                    logger.error(f"Failed to close position {position_id}: {error_reason}")
-                    errors.append({'position_id': position_id, 'reason': error_reason})
+                for attempt in range(1, max_attempts + 1):
+                    execution_result = await self.order_manager.place_order(
+                        close_order_request,
+                        execution_algo='market',
+                        exchange_clients=exchange_clients
+                    )
+
+                    if execution_result and execution_result.get('success'):
+                        exit_price = execution_result.get('avg_price')
+                        await self.close_position(position_id, exit_price, exit_reason=reason)
+                        closed_count += 1
+                        attempt_success = True
+                        break
+
+                    last_error = execution_result.get('reason', 'Execution failed')
+                    logger.error(
+                        f"Failed to close position {position_id} (attempt {attempt}/{max_attempts}): {last_error}"
+                    )
+
+                    if attempt < max_attempts and _SHUTDOWN_CLOSE_BACKOFF > 0:
+                        wait_seconds = _SHUTDOWN_CLOSE_BACKOFF * attempt
+                        logger.warning(
+                            f"Retrying closure for {position_id} in {wait_seconds:.1f}s (attempt {attempt + 1}/{max_attempts})"
+                        )
+                        await asyncio.sleep(wait_seconds)
+
+                if not attempt_success:
+                    errors.append({'position_id': position_id, 'reason': last_error})
 
             except Exception as e:
                 logger.error(f"Critical error closing position {position_id}: {e}", exc_info=True)

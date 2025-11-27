@@ -1,0 +1,3 @@
+input_glob: /input/logs/live_trading_*.log
+output_dir: /output/ndjson
+poll_interval: 60

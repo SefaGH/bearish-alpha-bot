@@ -1,0 +1,13 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "LOG_ANALYTICS_WORKSPACE_ID": "",
+    "LOG_ANALYTICS_WORKSPACE_URL": "https://api.loganalytics.io/v1",
+    "ADX_CLUSTER_URI": "https://bearish-adx.westeurope.kusto.windows.net",
+    "ADX_DATABASE": "bearishdb",
+    "REPORTS_STORAGE_ACCOUNT": "bearishstorage",
+    "REPORTS_CONTAINER": "reports"
+  }
+}

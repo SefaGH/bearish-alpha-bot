@@ -1,0 +1,10 @@
+azure-functions
+azure-identity
+azure-monitor-query
+azure-storage-blob
+azure-kusto-data
+playwright
+reportlab
+jinja2
+requests
+sendgrid

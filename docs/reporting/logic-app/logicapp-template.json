@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "functionEndpoint": {
+      "type": "string",
+      "defaultValue": "https://bearish-reporting-func.azurewebsites.net/api/run-report"
+    }
+  },
+  "triggers": {
+    "manual": {
+      "type": "Request",
+      "kind": "Http",
+      "inputs": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": ["run_id"]
+        }
+      }
+    }
+  },
+  "actions": {
+    "Call_Function": {
+      "type": "Http",
+      "inputs": {
+        "method": "POST",
+        "uri": "@parameters('functionEndpoint')",
+        "body": {
+          "run_id": "@triggerBody()?['run_id']"
+        }
+      },
+      "runAfter": {}
+    }
+  },
+  "outputs": {}
+}
