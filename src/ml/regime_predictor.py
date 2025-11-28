@@ -10,8 +10,10 @@ import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
 import logging
 import os
+import asyncio
 from datetime import timedelta
 from pathlib import Path
+from collections import deque
 
 # ML_ENABLED ortam değişkenini oku
 ML_ENABLED = os.getenv("ML_ENABLED", "false").lower() in ("1", "true", "yes")
@@ -222,6 +224,13 @@ class MLRegimePredictor:
         }
         self.prediction_history = []
         
+        # Cache initialization
+        self.cache = {}
+        self.cache_ttl = 30  # seconds
+
+        # Confidence smoothing buffer (per symbol)
+        self.confidence_buffer = {}
+        
         logger.info("ML Regime Predictor initialized.")
         self.is_trained = self.load_models()
 
@@ -240,7 +249,24 @@ class MLRegimePredictor:
             bundle_path = Path(self.config.get('active_bundle', 'artifacts/legacy'))
             scaler_path = bundle_path / self.manifest.get('regime_scaler_path', 'scaler.pkl')
             rf_path = bundle_path / self.manifest.get('regime_rf_path', 'random_forest.pkl')
-            lstm_path = bundle_path / self.manifest.get('regime_model_path', 'lstm_regime.pth')
+            
+            # Check for quantized model first
+            base_model_name = self.manifest.get('regime_model_path', 'lstm_regime.pth')
+            # Handle both .pt and .pth extensions for quantization suffix
+            if base_model_name.endswith('.pt'):
+                quantized_name = base_model_name.replace('.pt', '_int8.pt')
+            elif base_model_name.endswith('.pth'):
+                quantized_name = base_model_name.replace('.pth', '_int8.pt')
+            else:
+                quantized_name = base_model_name + "_int8"
+                
+            quantized_path = bundle_path / quantized_name
+            
+            if quantized_path.exists():
+                lstm_path = quantized_path
+                logger.info(f"Found quantized regime model: {lstm_path}")
+            else:
+                lstm_path = bundle_path / base_model_name
 
         if not Path(scaler_path).parent.exists():
             logger.warning(f"Regime model directory not found. Models not loaded.")
@@ -361,6 +387,31 @@ class MLRegimePredictor:
         Returns:
             Dictionary with predictions and confidence metrics
         """
+        # 1. Cache Check
+        cache_key = f"{symbol}_{horizon}"
+        if cache_key in self.cache:
+            cached_result, timestamp = self.cache[cache_key]
+            if (pd.Timestamp.now() - timestamp).total_seconds() < self.cache_ttl:
+                logger.debug(f"🚀 Cache hit for {symbol} regime prediction")
+                return cached_result
+
+        # 2. Offload heavy computation to thread
+        try:
+            result = await asyncio.to_thread(
+                self._predict_sync, symbol, price_data, horizon
+            )
+            
+            # 3. Update Cache
+            self.cache[cache_key] = (result, pd.Timestamp.now())
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error predicting regime transition: {e}")
+            logger.debug(f"🧠 [ML-REGIME] Prediction error: {e}")
+            return self._default_prediction()
+
+    def _predict_sync(self, symbol: str, price_data: pd.DataFrame, horizon: str) -> Dict[str, Any]:
+        """Synchronous implementation of prediction logic for offloading."""
         try:
             logger.info(f"Predicting regime transition for {symbol} with {horizon} horizon")
             logger.debug(f"🧠 [ML-REGIME] Starting regime prediction for {symbol}")
@@ -402,7 +453,14 @@ class MLRegimePredictor:
                 predictions, probabilities = self.models['ensemble'].predict(feature_values)
                 
                 # Confidence interval calculation
-                confidence = self._calculate_confidence(probabilities[0])
+                raw_confidence = self._calculate_confidence(probabilities[0])
+
+                # Apply Smoothing (Moving Average)
+                if symbol not in self.confidence_buffer:
+                    self.confidence_buffer[symbol] = deque(maxlen=5)
+                
+                self.confidence_buffer[symbol].append(raw_confidence)
+                confidence = sum(self.confidence_buffer[symbol]) / len(self.confidence_buffer[symbol])
                 
                 # Prediction quality assessment
                 quality = self._assess_prediction_quality(features, probabilities[0])

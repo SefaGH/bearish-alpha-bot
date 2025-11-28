@@ -125,6 +125,13 @@ class GemmaTorchScriptAdapter:
         try:
             # 1. Load Model
             model_path = Path(self.config['model_path'])
+            
+            # Check for quantized version
+            quantized_path = model_path.with_name(model_path.stem + "_int8" + model_path.suffix)
+            if quantized_path.exists():
+                logger.info(f"Found quantized model, using: {quantized_path}")
+                model_path = quantized_path
+                
             if not model_path.exists():
                 raise FileNotFoundError(f"Model file not found at {model_path}")
             self.model = torch.jit.load(str(model_path), map_location=self.device)

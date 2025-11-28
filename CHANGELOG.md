@@ -1,5 +1,13 @@
 # Değişiklik Günlüğü / Changelog
 
+## 2025-11-28
+
+### Fixed
+- **PPO Shadow Mode**: Fixed silent failure in PPO monitoring.
+  - Implemented robust `monitor_ppo_state` in `StrategyCoordinator`.
+  - Added explicit `[PPO-MONITOR]` logging for telemetry (Score, Action, Confidence).
+  - Verified operation in test environment.
+
 ## 2025-11-22
 
 ### Fixed

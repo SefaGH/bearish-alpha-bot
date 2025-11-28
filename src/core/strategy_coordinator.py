@@ -1076,10 +1076,14 @@ class StrategyCoordinator:
             return
         rl_cfg = getattr(self, '_rl_config', {}) or {}
         if not rl_cfg.get('ppo_enabled'):
+            # Only log once to avoid spam
+            if not getattr(self, '_ppo_disabled_logged', False):
+                logger.info("ℹ️ [PPO] Adapter disabled in config.")
+                self._ppo_disabled_logged = True
             return
         if PPOTradingAdapter is None:
             if not self._ppo_missing_dependency_logged:
-                logger.warning("⚠️ PPO adapter requested but dependency unavailable (import failed).")
+                logger.warning("⚠️ [PPO] Adapter requested but dependency unavailable (import failed).")
                 self._ppo_missing_dependency_logged = True
             return
         if not self.market_data_pipeline or not self.feature_pipeline:
@@ -1090,11 +1094,11 @@ class StrategyCoordinator:
                 market_data_pipeline=self.market_data_pipeline,
                 feature_pipeline=self.feature_pipeline,
             )
-            logger.info("✅ StrategyCoordinator initialized PPO adapter (lazy hook).")
+            logger.info(f"✅ [PPO] Adapter initialized successfully. Symbols: {rl_cfg.get('ppo_symbols')}")
         except Exception as exc:  # pragma: no cover - adapter init safety
             self._ppo_adapter_failed = True
             logger.error(
-                "❌ StrategyCoordinator failed to initialize PPO adapter: %s",
+                "❌ [PPO] StrategyCoordinator failed to initialize PPO adapter: %s",
                 exc,
                 exc_info=True,
             )
@@ -1416,9 +1420,15 @@ class StrategyCoordinator:
     async def _apply_ppo_long_filter(self, signal: Dict[str, Any]) -> None:
         """Apply PPO-based soft gating for BTC/USDT long signals."""
         side = (signal.get('side') or '').lower()
-        if side not in ('buy', 'long'):
-            return
         requested_symbol = signal.get('symbol')
+        
+        # Log PPO check attempt
+        logger.debug(f"🔍 [PPO-CHECK] Checking PPO for {requested_symbol} ({side})")
+
+        if side not in ('buy', 'long'):
+            logger.debug(f"ℹ️ [PPO-SKIP] Signal is {side}, PPO only filters LONGs.")
+            return
+            
         if not requested_symbol:
             return
 
@@ -1436,6 +1446,11 @@ class StrategyCoordinator:
                     position_fraction=tail_overrides.get('position_fraction'),
                     normalized_pv=tail_overrides.get('normalized_pv'),
                 )
+                
+                # Log if symbol was unsupported by adapter
+                if metadata.get('reason') == 'unsupported_symbol':
+                    logger.debug(f"ℹ️ [PPO-SKIP] Symbol {requested_symbol} not in PPO universe.")
+                    
             except Exception as exc:  # pragma: no cover - extra safety
                 logger.warning(f"⚠️ [PPO-LONG] Adapter error for {requested_symbol}: {exc}")
                 score = self.ppo_fallback_score
@@ -1443,6 +1458,7 @@ class StrategyCoordinator:
         else:
             score = self.ppo_fallback_score
             metadata = {'reason': 'adapter_unavailable'}
+            logger.debug("ℹ️ [PPO-SKIP] Adapter unavailable.")
 
         score = float(score)
         metadata = dict(metadata or {})
@@ -1459,13 +1475,16 @@ class StrategyCoordinator:
             signal['ppo_lookback_meta'] = lookback_meta
 
         action_label = 'BUY' if score >= 0.5 else 'HOLD'
-        logger.info(
-            "🤖 [PPO-LONG] %s | action=%s | score=%.2f | meta=%s",
-            requested_symbol,
-            action_label,
-            score,
-            metadata,
-        )
+        
+        # Enhanced logging for active PPO decisions
+        if metadata.get('reason') not in ('unsupported_symbol', 'disabled'):
+            logger.info(
+                "🤖 [PPO-DECISION] %s | Action: %s | Score: %.2f | Conf: %.2f",
+                requested_symbol,
+                action_label,
+                score,
+                metadata.get('confidence', 0.0)
+            )
 
         self._record_ppo_telemetry(score)
         signal['rl_recommendation'] = action_label.lower()
@@ -1479,6 +1498,55 @@ class StrategyCoordinator:
             'timestamp': datetime.utcnow().isoformat(),
             'source': 'ppo'
         }
+
+    async def monitor_ppo_state(self, symbol: str) -> None:
+        """
+        Force PPO inference for telemetry purposes (Shadow Mode).
+        This ensures PPO logs appear even when no trade signal is present.
+        """
+        if not symbol:
+            return
+
+        # 1. Check if PPO is enabled in config
+        rl_cfg = getattr(self, '_rl_config', {}) or {}
+        if not rl_cfg.get('ppo_enabled'):
+            return
+
+        # 2. Initialize adapter if needed
+        self._initialize_ppo_adapter_if_ready()
+        adapter = getattr(self, 'ppo_adapter', None)
+        
+        if not adapter:
+            return
+
+        # 3. Run inference (Shadow Mode)
+        try:
+            normalized_symbol = self._normalize_symbol_for_ppo(symbol)
+            tail_overrides = self._build_ppo_state_overrides(normalized_symbol)
+            
+            score, metadata = await adapter.get_long_score(
+                normalized_symbol,
+                position_fraction=tail_overrides.get('position_fraction'),
+                normalized_pv=tail_overrides.get('normalized_pv'),
+            )
+            
+            # 4. Log result with specific tag for monitoring
+            if metadata.get('reason') != 'unsupported_symbol':
+                action = "BUY" if score >= 0.5 else "HOLD"
+                logger.info(
+                    f"👀 [PPO-MONITOR] {symbol} | Score: {score:.4f} | Action: {action} | "
+                    f"Conf: {metadata.get('confidence', 0.0):.2f}"
+                )
+                
+                # Record telemetry
+                self._record_ppo_telemetry(score)
+            else:
+                 # Log unsupported symbol at debug level
+                 logger.debug(f"ℹ️ [PPO-MONITOR] Unsupported symbol: {symbol} (norm: {normalized_symbol})")
+
+        except Exception as e:
+            # Log at WARNING level to avoid spamming errors if PPO fails frequently in shadow mode
+            logger.warning(f"⚠️ [PPO-MONITOR] Failed for {symbol}: {e}", exc_info=True)
 
     @staticmethod
     def _normalize_symbol_for_ppo(symbol: Optional[str]) -> str:

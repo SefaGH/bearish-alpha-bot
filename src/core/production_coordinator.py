@@ -757,6 +757,11 @@ class ProductionCoordinator:
                         reason = ml_context.get('reason', 'unknown') if ml_context else 'unknown'
                         logger.warning(f"🧠 [ML] {symbol}: ML context is unhealthy. Reason: {reason}")
                 
+                # --- PPO MONITORING (Shadow Mode) ---
+                # Force PPO inference for telemetry even if no signal is generated
+                if self.strategy_coordinator:
+                    await self.strategy_coordinator.monitor_ppo_state(symbol)
+
                 # 2. Get indicator data directly from MarketDataPipeline
                 if self.market_data_pipeline:
                     df_30m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "30m")
@@ -1216,12 +1221,12 @@ class ProductionCoordinator:
                         feature_pipeline=self.feature_pipeline,
                     )
                     ml_components.append('ppo_adapter')
-                    logger.info("✅ PPO adapter initialized.")
+                    logger.info(f"✅ [PPO] Adapter initialized in ProductionCoordinator. Symbols: {rl_config.get('ppo_symbols')}")
                 except Exception as e:
-                    logger.error(f"❌ Failed to initialize PPO adapter: {e}", exc_info=True)
+                    logger.error(f"❌ [PPO] Failed to initialize PPO adapter in ProductionCoordinator: {e}", exc_info=True)
                     self.ppo_adapter = None
         else:
-            logger.info("ℹ️ PPO adapter disabled in config.")
+            logger.info("ℹ️ [PPO] Adapter disabled in config (ProductionCoordinator).")
 
         # 6. ML Strateji Entegrasyon Yöneticisi
         try:

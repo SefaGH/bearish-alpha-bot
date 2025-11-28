@@ -492,7 +492,7 @@ ml:
     #   - Agent uses pre-trained weights without learning
     #   - Use for: Live trading
     # ============================================================================
-    training_mode: true               # Override: ML_RL_TRAINING_MODE (false → true for training)
+    training_mode: false               # Override: ML_RL_TRAINING_MODE (false → true for training)
 
     # Davranış Ayarları
     hold_confidence_threshold: 0.60   # Override: ML_RL_HOLD_CONFIDENCE_THRESHOLD

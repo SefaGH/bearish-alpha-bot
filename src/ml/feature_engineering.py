@@ -389,18 +389,16 @@ class AdvancedVolumeFeatures:
                 features['vwap'] = pd.Series([np.nan] * n, index=price_data.index)
                 features['distance_from_vwap'] = pd.Series([np.nan] * n, index=price_data.index)
             
-            # OBV (On-Balance Volume)
+            # OBV (On-Balance Volume) - Vectorized
+            # Replace slow loop with vectorized operations
             price_change = close.diff()
-            obv = pd.Series(index=price_data.index, dtype=float)
-            obv.iloc[0] = volume.iloc[0]
+            direction = np.sign(price_change).fillna(0)
             
-            for i in range(1, len(price_data)):
-                if price_change.iloc[i] > 0:
-                    obv.iloc[i] = obv.iloc[i-1] + volume.iloc[i]
-                elif price_change.iloc[i] < 0:
-                    obv.iloc[i] = obv.iloc[i-1] - volume.iloc[i]
-                else:
-                    obv.iloc[i] = obv.iloc[i-1]
+            # Calculate OBV: cumulative sum of signed volume
+            # Match original logic: start with volume[0]
+            obv = (direction * volume).cumsum()
+            if not obv.empty:
+                obv += volume.iloc[0]
             
             features['obv'] = obv
             features['obv_momentum'] = obv.pct_change(10)
