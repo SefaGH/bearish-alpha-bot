@@ -864,6 +864,7 @@ class StrategyCoordinator:
             "quality_reasons": quality_result.get("reason"),
             "ml_score": signal.get("ml_confidence"),
             "ml_regime": signal.get("predicted_regime"),
+            "ml_metadata": signal.get("ml_metadata"),
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         logger.info(f"SIGNAL_BREAKDOWN {json.dumps(breakdown)}")
