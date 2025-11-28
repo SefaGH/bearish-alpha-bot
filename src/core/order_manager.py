@@ -5,6 +5,7 @@ Advanced order management with execution optimization.
 
 import asyncio
 import logging
+import os
 import time
 from typing import Dict, List, Optional, Any, Callable, TYPE_CHECKING
 from datetime import datetime, timezone
@@ -14,6 +15,46 @@ if TYPE_CHECKING:
     from .market_data_pipeline import MarketDataPipeline
 
 logger = logging.getLogger(__name__)
+_REST_DEBUG_ENABLED = os.getenv("BINGX_REST_DEBUG", "").strip().lower() in {"1", "true", "yes", "debug"}
+
+
+def _log_rest_debug(context: str, exc: Exception) -> None:
+    """Emit detailed REST diagnostics when debug flag is enabled."""
+    if not _REST_DEBUG_ENABLED:
+        return
+
+    debug_payload: Dict[str, Any] = {"context": context}
+    status = getattr(exc, "http_status", None) or getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    if status:
+        debug_payload["status"] = status
+
+    url = getattr(exc, "url", None) or getattr(exc, "request_url", None)
+    if url:
+        debug_payload["url"] = url
+
+    headers = getattr(exc, "response_headers", None) or getattr(exc, "headers", None)
+    if headers:
+        if isinstance(headers, dict):
+            limited = list(headers.items())[:5]
+            debug_payload["headers"] = {k: v for k, v in limited}
+        else:
+            debug_payload["headers"] = str(headers)
+
+    raw_body = getattr(exc, "response", None) or getattr(exc, "body", None)
+    if raw_body:
+        if hasattr(raw_body, "text"):
+            raw_body = getattr(raw_body, "text")
+        if isinstance(raw_body, bytes):
+            try:
+                raw_body = raw_body.decode("utf-8", errors="ignore")
+            except Exception:
+                raw_body = repr(raw_body[:256])
+        if isinstance(raw_body, str):
+            debug_payload["response"] = raw_body[:512]
+        else:
+            debug_payload["response_type"] = str(type(raw_body))
+
+    logger.error("REST DEBUG :: %s", debug_payload)
 
 
 class OrderStatus(Enum):
@@ -145,10 +186,28 @@ class SmartOrderManager:
             logger.debug(f"🎪 [ORDER-MGR] Order parameters: algo={execution_algo}, symbol={order_request.get('symbol')}, "
                         f"side={order_request.get('side')}, amount={order_request.get('amount')}")
             
-            # Execute order with active clients
-            result = await exec_func(order_request, clients_to_use)
+            # Execute order with active clients (with retry for transient failures)
+            max_retries = 3
+            result = None
             
-            logger.debug(f"🎪 [ORDER-MGR] Execution result: {'SUCCESS' if result.get('success') else 'FAILED'}")
+            for attempt in range(max_retries):
+                result = await exec_func(order_request, clients_to_use)
+                
+                if result.get('success'):
+                    break
+                
+                # Check if we should retry based on reason
+                reason = result.get('reason', '').lower()
+                is_transient = any(x in reason for x in ['timeout', 'connection', 'rate limit', '500', '502', '503', '504', 'network', 'reset'])
+                
+                if not is_transient or attempt == max_retries - 1:
+                    break
+                
+                wait_time = (2 ** attempt) * 0.5
+                logger.warning(f"Transient failure in order execution: {reason}. Retrying in {wait_time}s (Attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(wait_time)
+            
+            logger.debug(f"🎪 [ORDER-MGR] Execution result: {'SUCCESS' if result and result.get('success') else 'FAILED'}")
             
             # Update statistics
             self.execution_stats['total_orders'] += 1
@@ -179,6 +238,7 @@ class SmartOrderManager:
             return result
             
         except Exception as e:
+            _log_rest_debug("place_order", e)
             logger.error(f"Error placing order: {e}")
             self.execution_stats['failed_orders'] += 1
             return {
@@ -347,6 +407,8 @@ class SmartOrderManager:
             }
             
         except Exception as e:
+            context = f"MARKET/{order_request.get('exchange')}/{order_request.get('symbol')}"
+            _log_rest_debug(context, e)
             logger.error(f"Market order execution failed: {e}")
             return {
                 'success': False,
@@ -435,6 +497,7 @@ class SmartOrderManager:
             }
             
         except Exception as e:
+            _log_rest_debug(f"LIMIT/{exchange}/{symbol}", e)
             self.logger.error(f"💥 {log_prefix} Limit order execution failed critically: {e}", exc_info=True)
             return {'success': False, 'reason': str(e), 'order_id': None}
     

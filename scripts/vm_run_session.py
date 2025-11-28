@@ -11,6 +11,7 @@ def build_docker_command(
     logs_host: str | None = None,
     data_host: str | None = None,
     detach: bool = True,
+    restart_policy: str | None = "no",
 ) -> list[str]:
     cmd: list[str] = [
         "sudo",
@@ -24,11 +25,12 @@ def build_docker_command(
     cmd.extend([
         "--name",
         name,
-        "--restart",
-        "unless-stopped",
         "--env-file",
         env_file,
     ])
+
+    if restart_policy and restart_policy != "no":
+        cmd.extend(["--restart", restart_policy])
 
     if logs_host:
         cmd.extend(["-v", f"{logs_host}:/app/logs"])
@@ -78,6 +80,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Do not mount host volumes (ignores logs-host and data-host)",
     )
     parser.add_argument(
+        "--restart-policy",
+        default="no",
+        choices=("no", "always", "unless-stopped", "on-failure"),
+        help="Docker restart policy; defaults to no auto-restart",
+    )
+    parser.add_argument(
         "--just-print",
         action="store_true",
         help="Print the docker commands instead of executing them",
@@ -108,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         name=name,
         logs_host=logs_host,
         data_host=data_host,
+        restart_policy=args.restart_policy,
     )
 
     commands = [

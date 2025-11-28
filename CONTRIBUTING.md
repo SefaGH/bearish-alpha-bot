@@ -74,6 +74,20 @@ pip install pytest pytest-asyncio pytest-timeout pytest-mock pytest-cov
 pip install ruff mypy bandit
 ```
 
+#### 4a. Set Up Local Storage (Azurite)
+
+This project uses Azurite for local Azure Storage emulation.
+
+1. **Install Azurite**:
+   - VS Code Extension: [Azurite](https://marketplace.visualstudio.com/items?itemName=Azurite.azurite)
+   - Or via npm: `npm install -g azurite`
+
+2. **Run Azurite**:
+   - VS Code: Open Command Palette (`Ctrl+Shift+P`) -> `Azurite: Start`
+   - Terminal: `azurite --location .`
+
+3. **Note**: Azurite generates `__azurite_db_*.json` files which are ignored by git.
+
 #### 5. Verify Installation
 
 ```bash

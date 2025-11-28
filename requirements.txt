@@ -49,3 +49,4 @@ websocket-client>=1.6.0
 flask
 azure-identity
 azure-keyvault-secrets
+opencensus-ext-azure

@@ -6,6 +6,7 @@ Comprehensive position lifecycle management.
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from datetime import datetime, timezone
@@ -45,6 +46,24 @@ except ModuleNotFoundError:
             raise
 
 logger = logging.getLogger(__name__)
+
+
+def _read_int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _read_float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+_SHUTDOWN_CLOSE_MAX_ATTEMPTS = max(1, _read_int_env("POSITION_CLOSE_RETRY_LIMIT", 2))
+_SHUTDOWN_CLOSE_BACKOFF = max(0.0, _read_float_env("POSITION_CLOSE_RETRY_BACKOFF", 2.0))
 
 
 class PositionStatus(Enum):
@@ -329,21 +348,38 @@ class AdvancedPositionManager:
                     'exchange': exchange,  # Include exchange info in order
                 }
                 
-                # CRITICAL: Pass live exchange_clients to OrderManager
-                execution_result = await self.order_manager.place_order(
-                    close_order_request, 
-                    execution_algo='market',  # Close orders are typically market orders
-                    exchange_clients=exchange_clients  # *** CRITICAL: Inject live clients ***
-                )
+                max_attempts = _SHUTDOWN_CLOSE_MAX_ATTEMPTS
+                attempt_success = False
+                last_error = 'Execution failed'
 
-                if execution_result and execution_result.get('success'):
-                    exit_price = execution_result.get('avg_price')
-                    await self.close_position(position_id, exit_price, exit_reason=reason)
-                    closed_count += 1
-                else:
-                    error_reason = execution_result.get('reason', 'Execution failed')
-                    logger.error(f"Failed to close position {position_id}: {error_reason}")
-                    errors.append({'position_id': position_id, 'reason': error_reason})
+                for attempt in range(1, max_attempts + 1):
+                    execution_result = await self.order_manager.place_order(
+                        close_order_request,
+                        execution_algo='market',
+                        exchange_clients=exchange_clients
+                    )
+
+                    if execution_result and execution_result.get('success'):
+                        exit_price = execution_result.get('avg_price')
+                        await self.close_position(position_id, exit_price, exit_reason=reason)
+                        closed_count += 1
+                        attempt_success = True
+                        break
+
+                    last_error = execution_result.get('reason', 'Execution failed')
+                    logger.error(
+                        f"Failed to close position {position_id} (attempt {attempt}/{max_attempts}): {last_error}"
+                    )
+
+                    if attempt < max_attempts and _SHUTDOWN_CLOSE_BACKOFF > 0:
+                        wait_seconds = _SHUTDOWN_CLOSE_BACKOFF * attempt
+                        logger.warning(
+                            f"Retrying closure for {position_id} in {wait_seconds:.1f}s (attempt {attempt + 1}/{max_attempts})"
+                        )
+                        await asyncio.sleep(wait_seconds)
+
+                if not attempt_success:
+                    errors.append({'position_id': position_id, 'reason': last_error})
 
             except Exception as e:
                 logger.error(f"Critical error closing position {position_id}: {e}", exc_info=True)
@@ -1334,7 +1370,16 @@ class AdvancedPositionManager:
                             result = await self.manage_position_exits(position_id)
                             
                             if result.get('should_exit'):
-                                logger.info(f"Position {position_id} exited: {result.get('exit_reason')}")
+                                exit_reason = result.get('exit_reason', 'unknown')
+                                logger.info(f"Position {position_id} triggering exit: {exit_reason}")
+                                
+                                # Execute actual close
+                                close_result = await self.execute_close_position(position_id, exit_reason)
+                                
+                                if close_result.get('success'):
+                                    logger.info(f"✅ Position {position_id} closed successfully via monitoring")
+                                else:
+                                    logger.error(f"❌ Failed to close position {position_id} via monitoring: {close_result.get('reason')}")
                         
                         except Exception as e:
                             logger.error(f"Error checking position {position_id}: {e}")
@@ -1367,39 +1412,215 @@ class AdvancedPositionManager:
         
         logger.info("Exit monitoring stopped")
     
-    def _calculate_rl_reward(self, pnl: float, return_pct: float, exit_reason: str) -> float:
+    async def execute_close_position(self, position_id: str, reason: str) -> Dict[str, Any]:
         """
-        Calculate reward for RL agent from trade outcome.
-        
-        The reward function balances profitability with risk management:
-        - Positive PnL: reward based on return percentage
-        - Negative PnL: penalty based on loss magnitude
-        - Exit reason modifiers: bonus for TP, penalty for SL
+        Execute market close for a specific position.
         
         Args:
-            pnl: Realized profit/loss in currency
-            return_pct: Return percentage
-            exit_reason: Reason for exit
+            position_id: Position identifier
+            reason: Reason for closing
             
         Returns:
-            Reward value for RL learning
+            Close result
         """
-        # Base reward is the return percentage (scaled down)
-        # We scale by 10 to keep rewards in a reasonable range [-1, 1]
-        reward = return_pct / 10.0
+        if position_id not in self.positions:
+            return {'success': False, 'reason': 'Position not found'}
+            
+        position = self.positions[position_id]
+        symbol = position['symbol']
+        amount = position['amount']
+        side = position['side']
+        close_side = 'sell' if side in ['long', 'buy'] else 'buy'
+        exchange = position.get('exchange')
         
-        # Apply exit reason modifiers
+        logger.info(f"Executing close for {position_id} ({reason})")
+        
+        try:
+            # Place market close order
+            order_req = {
+                'symbol': symbol,
+                'side': close_side,
+                'amount': amount,
+                'type': 'market',
+                'exchange': exchange,
+                'params': {'reduceOnly': True}
+            }
+            
+            # Use order manager
+            if self.order_manager:
+                # Pass exchange_clients if available in portfolio_manager
+                exchange_clients = getattr(self.portfolio_manager, 'exchange_clients', None)
+                
+                result = await self.order_manager.place_order(
+                    order_req, 
+                    execution_algo='market',
+                    exchange_clients=exchange_clients
+                )
+                
+                if result.get('success'):
+                    exit_price = result.get('avg_price', position.get('current_price'))
+                    return await self.close_position(position_id, exit_price, reason)
+                else:
+                    return {'success': False, 'reason': f"Order failed: {result.get('reason')}"}
+            else:
+                # Simulation / No order manager
+                exit_price = position.get('current_price')
+                return await self.close_position(position_id, exit_price, reason)
+                
+        except Exception as e:
+            logger.error(f"Failed to execute close for {position_id}: {e}")
+            return {'success': False, 'reason': str(e)}
+    
+    async def sync_positions(self, exchange_clients: Dict[str, Any]):
+        """
+        Sync open positions from exchanges on startup.
+        Issue #168: Position Sync
+        """
+        logger.info("🔄 Syncing positions from exchanges...")
+        
+        for ex_name, client in exchange_clients.items():
+            try:
+                if ex_name == 'bingx':
+                    # Use BingX specific method
+                    if hasattr(client, 'get_bingx_positions'):
+                        response = client.get_bingx_positions()
+                        if response.get('code') == 0:
+                            positions_data = response.get('data', [])
+                            for pos_data in positions_data:
+                                await self._import_bingx_position(pos_data, client)
+                    else:
+                        # Fallback to CCXT fetch_positions if available
+                        if hasattr(client, 'fetch_positions'):
+                            positions = await asyncio.to_thread(client.fetch_positions)
+                            for pos in positions:
+                                await self._import_ccxt_position(pos, ex_name)
+                else:
+                    # Generic CCXT sync
+                    if hasattr(client, 'fetch_positions'):
+                        positions = await asyncio.to_thread(client.fetch_positions)
+                        for pos in positions:
+                            await self._import_ccxt_position(pos, ex_name)
+                            
+            except Exception as e:
+                logger.error(f"Failed to sync positions from {ex_name}: {e}")
+        
+        logger.info(f"✅ Position sync complete. Active positions: {len(self.positions)}")
+
+    async def _import_bingx_position(self, pos_data: Dict, client: Any):
+        """Import raw BingX position data."""
+        try:
+            # BingX format: symbol="BTC-USDT", positionAmt="0.001", ...
+            raw_symbol = pos_data.get('symbol')
+            if not raw_symbol:
+                return
+
+            amount = float(pos_data.get('positionAmt', 0))
+            
+            if amount == 0:
+                return
+            
+            # Convert symbol
+            symbol = raw_symbol.replace('-', '/')
+            if 'USDT' in symbol and ':' not in symbol:
+                symbol += ':USDT'
+            
+            position_id = f"imported_{raw_symbol}_{int(time.time())}"
+            side = 'long' if amount > 0 else 'short'
+            entry_price = float(pos_data.get('avgPrice', 0) or pos_data.get('entryPrice', 0))
+            
+            # Create position record
+            position = {
+                'position_id': position_id,
+                'trade_id': self._generate_trade_id(),
+                'symbol': symbol,
+                'side': side,
+                'entry_price': entry_price,
+                'current_price': entry_price, # Will be updated by monitor
+                'amount': abs(amount),
+                'size': abs(amount),
+                'initial_amount': abs(amount),
+                'stop_loss': 0.0, # Unknown
+                'take_profit': 0.0, # Unknown
+                'status': PositionStatus.OPEN.value,
+                'opened_at': datetime.now(timezone.utc), # Unknown, use now
+                'entry_time_iso': datetime.now(timezone.utc).isoformat(),
+                'open_timestamp': time.time(),
+                'strategy': 'manual_or_imported',
+                'exchange': 'bingx',
+                'unrealized_pnl': float(pos_data.get('unrealizedProfit', 0)),
+                'realized_pnl': 0.0,
+                'trailing_stop_enabled': False,
+                'imported': True
+            }
+            
+            # Register
+            self.positions[position_id] = position
+            self.risk_manager.register_position(position_id, position)
+            if self.portfolio_manager:
+                self.portfolio_manager.register_position(position_id, position)
+                
+            logger.info(f"📥 Imported position: {symbol} {side} {abs(amount)}")
+            
+        except Exception as e:
+            logger.error(f"Error importing BingX position: {e}")
+
+    async def _import_ccxt_position(self, pos: Dict, exchange_name: str):
+        """Import CCXT unified position data."""
+        try:
+            amount = float(pos.get('contracts', 0) or pos.get('amount', 0))
+            if amount == 0:
+                return
+                
+            symbol = pos.get('symbol')
+            side = pos.get('side') # 'long' or 'short'
+            if not side:
+                side = 'long' if amount > 0 else 'short'
+            
+            position_id = f"imported_{symbol}_{int(time.time())}"
+            entry_price = float(pos.get('entryPrice', 0))
+            
+            position = {
+                'position_id': position_id,
+                'trade_id': self._generate_trade_id(),
+                'symbol': symbol,
+                'side': side,
+                'entry_price': entry_price,
+                'current_price': entry_price,
+                'amount': abs(amount),
+                'size': abs(amount),
+                'initial_amount': abs(amount),
+                'stop_loss': 0.0,
+                'take_profit': 0.0,
+                'status': PositionStatus.OPEN.value,
+                'opened_at': datetime.now(timezone.utc),
+                'entry_time_iso': datetime.now(timezone.utc).isoformat(),
+                'open_timestamp': time.time(),
+                'strategy': 'manual_or_imported',
+                'exchange': exchange_name,
+                'unrealized_pnl': float(pos.get('unrealizedPnl', 0) or 0),
+                'realized_pnl': 0.0,
+                'trailing_stop_enabled': False,
+                'imported': True
+            }
+            
+            self.positions[position_id] = position
+            self.risk_manager.register_position(position_id, position)
+            if self.portfolio_manager:
+                self.portfolio_manager.register_position(position_id, position)
+                
+            logger.info(f"📥 Imported position: {symbol} {side} {abs(amount)}")
+            
+        except Exception as e:
+            logger.error(f"Error importing CCXT position: {e}")
+
+    def _calculate_rl_reward(self, pnl: float, return_pct: float, exit_reason: str) -> float:
+        """Calculate reward for RL agent based on trade outcome."""
+        reward = return_pct / 10.0  # Base reward
+        
+        # Modifiers
         if exit_reason == ExitReason.TAKE_PROFIT.value:
-            # Bonus for hitting take profit (good risk management)
-            reward += 0.2
+            reward += 0.2  # Bonus for TP
         elif exit_reason == ExitReason.STOP_LOSS.value:
-            # Small additional penalty for stop loss (but not too harsh)
-            reward -= 0.1
-        elif exit_reason == ExitReason.TRAILING_STOP.value:
-            # Small bonus for using trailing stop (active management)
-            reward += 0.1
+            reward -= 0.1  # Small penalty for SL
         
-        # Clip reward to reasonable bounds
-        reward = max(-2.0, min(2.0, reward))
-        
-        return reward
+        return max(-2.0, min(2.0, reward))  # Clipped

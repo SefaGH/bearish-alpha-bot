@@ -2,34 +2,58 @@
 
 Bu doküman, Azure VM üzerindeki Docker tabanlı prod ortam için günlük operasyon ve temel sorun giderme adımlarını özetler.
 
-## 1. VM'ye Bağlanma
+## 1. VM'ye Bağlanma (Opsiyonel)
+
+Genellikle `az vm run-command` ile uzaktan yönetilir, ancak SSH ile bağlanmak isterseniz:
 
 ```pwsh
 ssh azureuser@<VM_IP>
 ```
 
-VM'ye bağlandıktan sonra komutlar genellikle `azureuser` ev dizininde (`/home/azureuser`) çalıştırılır.
+## 2. Uzaktan Yönetim (Azure CLI)
 
-## 2. Container Durumunu Kontrol Etme
+VM'ye bağlanmadan, yerel terminalinizden (VS Code) aşağıdaki komutları kullanabilirsiniz.
+
+### Container Durumunu Kontrol Etme
+
+```pwsh
+az vm run-command invoke -g TradeBot -n BearishAlphaBot-VM-01 --command-id RunShellScript --scripts "docker ps"
+```
+
+### Logları İnceleme
+
+**ÖNEMLİ:** `az vm run-command` ile logları izlerken `-f` (follow) parametresini **KULLANMAYIN**. Komutun bitmesini beklediği için terminaliniz donabilir. Bunun yerine `--tail` kullanın.
+
+```pwsh
+# Son 100 satırı getir
+az vm run-command invoke -g TradeBot -n BearishAlphaBot-VM-01 --command-id RunShellScript --scripts "docker logs --tail 100 bearish-bot"
+```
+
+### Botu Yeniden Başlatma (Yeni İmaj ile)
+
+```pwsh
+# Mevcut container'ı durdur, sil, yeni imajı çek ve başlat
+az vm run-command invoke -g TradeBot -n BearishAlphaBot-VM-01 --command-id RunShellScript --scripts "docker stop bearish-bot || true; docker rm bearish-bot || true; docker pull bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-9; docker run -d --name bearish-bot --restart unless-stopped -p 8000:8000 -e TRADING_MODE=paper -e DEBUG_MODE=false -e ML_ENABLED=true -e EXCHANGES=bingx -e TRADING_DURATION=1200 -e BINGX_REST_DEBUG=1 -e BINGX_KEY='...' -e BINGX_SECRET='...' -e TELEGRAM_BOT_TOKEN='...' -e TELEGRAM_CHAT_ID='...' -e CAPITAL_USDT=100 -e PER_TRADE_RISK_PCT=0.01 -e DAILY_MAX_TRADES=8 -e DUPLICATE_PREVENTION_THRESHOLD=0.0005 -e DUPLICATE_PREVENTION_COOLDOWN=20 -e TRADING_SYMBOLS='BTC/USDT:USDT' -e RSI_THRESHOLD_BTC=50 -e RSI_THRESHOLD_ETH=50 -e RSI_THRESHOLD_SOL=50 -e GEMMA_ENABLED=true -e ML_ACTIVE_BUNDLE='artifacts/gemma/final' -e ML_FEAT_VOL_WINDOWS='5,10,20,50' -e ML_FEAT_MOM_WINDOWS='5,10,20,50' -e WS_MAX_STREAMS_BINGX=10 -e PRICE_DELTA_BYPASS_ENABLED=true -e PRICE_DELTA_BYPASS_THRESHOLD=0.0015 -e LOG_LEVEL=INFO bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-9"
+```
+
+*(Not: Yukarıdaki komutta `...` olan yerlere gerçek secret değerlerinizi yazmalısınız veya `az vm run-command` ile mevcut env değişkenlerini okuyup kullanabilirsiniz.)*
+
+## 3. Container İçinde Komut Çalıştırma
+
+```pwsh
+# Örnek: Log klasörünü listele
+az vm run-command invoke -g TradeBot -n BearishAlphaBot-VM-01 --command-id RunShellScript --scripts "docker exec bearish-bot ls -lt logs/"
+```
+
+## 4. SSH ile Bağlanıldığında (Eski Yöntem)
+
+Eğer SSH ile bağlandıysanız:
 
 ```bash
 # Çalışan container'ları listele
 sudo docker ps
 
-# Tüm container'lar (duranlar dahil)
-sudo docker ps -a
-```
-
-Beklenen:
-- `bearish-bot` isimli container `STATUS` kolonunda `Up` olarak görünmelidir.
-
-## 3. Logları ve Seans Özetini İnceleme
-
-```bash
-# Son 200 satır
-sudo docker logs bearish-bot --tail 200
-
-# Log akışını canlı izlemek
+# Log akışını canlı izlemek (SSH içinde çalışır)
 sudo docker logs -f bearish-bot
 ```
 
@@ -74,14 +98,15 @@ Yeni imaj deploy edildiğinde veya config değiştiğinde iki yol kullanabilirsi
 sudo docker stop bearish-bot || true
 sudo docker rm bearish-bot || true
 
-sudo docker pull bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
+sudo docker pull bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-7
 
 sudo docker run -d \
    --name bearish-bot \
-   --restart unless-stopped \
    --env-file /home/azureuser/bearish-bot.env \
-   bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
+   bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-7
 ```
+
+> Otomatik yeniden başlatma gerekirse komuta `--restart unless-stopped` ekleyebilirsin; varsayılan komut auto-restart içermez.
 
 2. Ops helper script ile tek adımda yönetim (önerilen):
 
@@ -92,7 +117,8 @@ python scripts/vm_run_session.py
 
 Bu helper, sırasıyla `docker stop`, `docker rm`, `docker pull` ve `docker run` komutlarını standart parametrelerle
 çalıştırır. Volume mount'larını aktif tutmak için varsayılan olarak `/mnt/bearish/logs` → `/app/logs` ve
-`/mnt/bearish/data` → `/app/data` mapping'lerini kullanır. Sadece hangi komutların çalışacağını görmek için:
+`/mnt/bearish/data` → `/app/data` mapping'lerini kullanır. Yeni `--restart-policy` argümanı (varsayılan `no`) ile
+auto-restart davranışını belirleyebilirsin; önceki davranışa dönmek için `--restart-policy unless-stopped` geç. Sadece hangi komutların çalışacağını görmek için:
 
 ```bash
 python scripts/vm_run_session.py --just-print
@@ -100,7 +126,7 @@ python scripts/vm_run_session.py --just-print
 
 Notlar:
 - `bearish-bot.env` dosyası credential ve runtime ayarlarını içerir.
-- `--restart unless-stopped` VM reboot sonrası container'ın otomatik başlamasını sağlar.
+- Auto-restart istiyorsan manuel komuta `--restart unless-stopped` ekle veya helper script için `--restart-policy unless-stopped` kullan; aksi halde container seans bitince kapalı kalır.
 - Container entry point **değiştirilmemelidir**: Dockerfile içindeki `CMD ["python", "vm_boot.py"]`
   prod kontratının bir parçasıdır ve içerideki `scripts/live_trading_launcher.py` + core pipeline yapısını bozmaz.
 
@@ -162,12 +188,13 @@ Prod ortamda log ve state dosyalarına VM seviyesinden kolay erişim için aşa�
 ```bash
 sudo docker run -d \
    --name bearish-bot \
-   --restart unless-stopped \
    --env-file /home/azureuser/bearish-bot.env \
    -v /mnt/bearish/logs:/app/logs \
    -v /mnt/bearish/data:/app/data \
-   bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4
+   bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-7
 ```
+
+- Auto-restart gerekiyorsa burada da `--restart unless-stopped` ekleyebilirsin.
 
 - Container içindeki `logs/` klasörü golden graceful shutdown pattern'ini, exit summary'leri ve
    tüm seans loglarını tutar; host tarafında `/mnt/bearish/logs` altında görünür.

@@ -1,0 +1,12 @@
+version: "3.9"
+
+services:
+  log-parser:
+    build:
+      context: ../
+      dockerfile: docker/log-parser/Dockerfile
+    image: bearish/log-parser:dev
+    environment:
+      LOG_LEVEL: "INFO"
+    volumes:
+      - ../docker/log-parser/config.yaml:/app/config.yaml:ro

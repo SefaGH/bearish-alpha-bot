@@ -21,6 +21,8 @@ except ImportError:
     logger.warning("Kritik kütüphane 'pandas-ta-classic' bulunamadı! İndikatörler eklenemeyecek.")
     PANDAS_TA_AVAILABLE = False
 
+DEFAULT_TIMEOUT = 10
+
 EX_DEFAULTS = {
     "options": {"defaultType": "swap"},
     "enableRateLimit": True,
@@ -723,25 +725,41 @@ class CcxtClient:
         auth_data = self.bingx_auth.prepare_authenticated_request(params)
         url = f"https://open-api.bingx.com{endpoint}"
         
-        try:
-            if method == 'GET':
-                response = requests.get(url, params=auth_data['params'], headers=auth_data['headers'])
-            elif method == 'POST':
-                response = requests.post(url, data=auth_data['params'], headers=auth_data['headers'])
-            elif method == 'DELETE':
-                response = requests.delete(url, params=auth_data['params'], headers=auth_data['headers'])
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-            
-            response.raise_for_status()
-            result = response.json()
-            
-            logger.debug(f"🔐 [BINGX-API] {method} {endpoint} successful")
-            return result
-            
-        except requests.RequestException as e:
-            logger.error(f"🔐 [BINGX-API] {method} {endpoint} failed: {e}")
-            raise
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if method == 'GET':
+                    response = requests.get(url, params=auth_data['params'], headers=auth_data['headers'], timeout=DEFAULT_TIMEOUT)
+                elif method == 'POST':
+                    response = requests.post(url, data=auth_data['params'], headers=auth_data['headers'], timeout=DEFAULT_TIMEOUT)
+                elif method == 'DELETE':
+                    response = requests.delete(url, params=auth_data['params'], headers=auth_data['headers'], timeout=DEFAULT_TIMEOUT)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+                
+                if response.status_code == 429:
+                    logger.warning(f"🔐 [BINGX-API] Rate limit hit (429). Retrying in 1s... (Attempt {attempt+1}/{max_retries})")
+                    time.sleep(1)
+                    continue
+                
+                response.raise_for_status()
+                result = response.json()
+                
+                logger.debug(f"🔐 [BINGX-API] {method} {endpoint} successful")
+                return result
+                
+            except requests.RequestException as e:
+                # If it's a 429 that raised an exception (though we handle status_code above, raise_for_status might be called if we missed it)
+                if isinstance(e, requests.exceptions.HTTPError) and e.response.status_code == 429:
+                     logger.warning(f"🔐 [BINGX-API] Rate limit hit (429). Retrying in 1s... (Attempt {attempt+1}/{max_retries})")
+                     time.sleep(1)
+                     continue
+
+                if attempt == max_retries - 1:
+                    logger.error(f"🔐 [BINGX-API] {method} {endpoint} failed: {e}")
+                    raise
+                logger.warning(f"🔐 [BINGX-API] Request failed: {e}. Retrying... (Attempt {attempt+1}/{max_retries})")
+                time.sleep(0.5)
     
     def get_bingx_balance(self) -> Dict:
         """

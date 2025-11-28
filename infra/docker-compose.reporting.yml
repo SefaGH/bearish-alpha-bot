@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  log-parser:
+    image: ghcr.io/example/bearish-log-parser:latest  # TODO: update with actual image
+    restart: unless-stopped
+    environment:
+      RUN_INTERVAL_SECONDS: "60"
+      LOG_PATTERN: "/input/logs/live_trading_*.log"
+      OUTPUT_DIR: "/output/ndjson"
+    volumes:
+      - /mnt/bearish/logs:/input/logs:ro
+      - /mnt/bearish/data/parsed:/output/ndjson
+
+  fluent-bit:
+    image: fluent/fluent-bit:2.2
+    restart: unless-stopped
+    depends_on:
+      - log-parser
+    environment:
+      WORKSPACE_ID: "${WORKSPACE_ID}"   # from Key Vault / env injection
+      WORKSPACE_KEY: "${WORKSPACE_KEY}"
+      LOG_TYPE: "BearishEvents"
+    volumes:
+      - /mnt/bearish/data/parsed:/input/ndjson:ro
+      - ./fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro

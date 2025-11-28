@@ -16,7 +16,22 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
-from scripts.utils.validation_framework import TimeSeriesValidator, ValidationReport
+try:
+    from scripts.utils.validation_framework import TimeSeriesValidator, ValidationReport
+except ImportError:
+    try:
+        from utils.validation_framework import TimeSeriesValidator, ValidationReport
+    except ImportError:
+        import sys
+        from pathlib import Path
+        # Fallback: Add scripts directory to path
+        # Assuming this file is in src/ml/model_trainer.py
+        # Root is ../../
+        root_path = Path(__file__).resolve().parents[2]
+        scripts_path = root_path / "scripts"
+        if str(scripts_path) not in sys.path:
+            sys.path.append(str(scripts_path))
+        from utils.validation_framework import TimeSeriesValidator, ValidationReport
 
 # ML_ENABLED ortam değişkenini oku
 ML_ENABLED = os.getenv("ML_ENABLED", "false").lower() in ("1", "true", "yes")

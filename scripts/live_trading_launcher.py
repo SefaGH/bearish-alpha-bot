@@ -7,6 +7,9 @@ Live Trading Launcher for Bearish Alpha Bot
 import sys
 import os
 
+print("DEBUG: live_trading_launcher.py STARTED", file=sys.stderr)
+sys.stderr.flush()
+
 # Check Python version at startup (before any other imports)
 # Can be bypassed for testing by setting SKIP_PYTHON_VERSION_CHECK=1
 REQUIRED_PYTHON = (3, 11)
@@ -23,6 +26,7 @@ if sys.version_info[:2] != REQUIRED_PYTHON and not os.environ.get('SKIP_PYTHON_V
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import asyncio
+import aiohttp
 import logging
 import argparse
 import time
@@ -777,7 +781,7 @@ class HealthMonitor:
                 
                 # Send periodic Telegram update
                 if self.telegram and self.metrics['loops_completed'] % 12 == 0:  # Every hour
-                    self.telegram.send(
+                    await self.telegram.send_async(
                         f"💓 <b>Health Check</b>\n"
                         f"Status: {self.health_status.upper()}\n"
                         f"Uptime: {uptime/3600:.1f}h\n"
@@ -921,9 +925,6 @@ class AutoRestartManager:
     def get_status(self) -> Dict[str, Any]:
         return {
             'restart_count': self.restart_count,
-            'max_restarts': self.max_restarts,
-            'consecutive_failures': self.consecutive_failures,
-            'uptime_seconds': (datetime.now(timezone.utc) - self.start_time).total_seconds(),
             'last_restart': self.last_restart_time.isoformat() if self.last_restart_time else None
         }
 
@@ -1284,6 +1285,16 @@ class LiveTradingLauncher:
                     errors.append(f"Failed to close {name}: {e}")
                     logger.error(f"Failed to close {name}: {e}", exc_info=True)
         
+        # ========================================================================
+        # STEP 6: Trigger Reporting
+        # ========================================================================
+        logger.info("\nStep 6: Triggering reporting...")
+        try:
+            await self._trigger_report()
+        except Exception as e:
+            errors.append(f"Error triggering report: {e}")
+            logger.error(f"Error triggering report: {e}", exc_info=True)
+
         # ========================================================================
         # Shutdown Summary
         # ========================================================================
@@ -1847,7 +1858,7 @@ class LiveTradingLauncher:
                 failed_checks.append("System initialization")
             
             # Check 3: Risk limits
-            logger.info("Check 3/7: Risk limits...")
+            logger.info("Check  3/7: Risk limits...")
             if self.coordinator.risk_manager:
                 risk_summary = self.coordinator.risk_manager.get_portfolio_summary()
                 logger.info(f"✓ Portfolio value: ${risk_summary.get('portfolio_value', 0):.2f}")
@@ -2593,6 +2604,59 @@ class LiveTradingLauncher:
         except Exception as e:
             logger.critical(f"Error during emergency shutdown: {e}")
     
+    def _get_run_id(self) -> Optional[str]:
+        """Extract run_id from the current log file name."""
+        try:
+            # Use the exposed global from core.logger
+            import core.logger
+            log_path = core.logger.CURRENT_LOG_FILE
+            
+            if log_path:
+                filename = os.path.basename(log_path)
+                if filename.startswith("live_trading_") and filename.endswith(".log"):
+                    return filename.replace("live_trading_", "").replace(".log", "")
+            
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to extract run_id: {e}")
+            return None
+
+    async def _trigger_report(self):
+        """Trigger the reporting function for the current run."""
+        run_id = self._get_run_id()
+        if not run_id:
+            logger.warning("⚠️ Could not determine run_id, skipping report generation.")
+            return
+
+        logger.info(f"📊 Triggering report generation for run_id: {run_id}")
+        
+        # Use config or env vars for reporting endpoint
+        function_url = os.getenv("REPORT_FUNCTION_URL")
+        function_key = os.getenv("REPORT_FUNCTION_KEY")
+        
+        if not function_url or not function_key:
+            logger.warning("⚠️ REPORT_FUNCTION_URL or REPORT_FUNCTION_KEY not set, skipping report trigger.")
+            return
+
+        url = f"{function_url}?code={function_key}"
+        payload = {"run_id": run_id}
+        
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                # Give ADX a moment to ingest logs (though parser runs every 60s, so this is best effort)
+                # We won't wait here to avoid blocking shutdown too long, 
+                # but the function itself could have a retry logic or we rely on the user checking later if it fails.
+                async with session.post(url, json=payload) as response:
+                    if response.status == 200:
+                        logger.info("✅ Report generation triggered successfully.")
+                    elif response.status == 404:
+                        logger.warning("⚠️ Report trigger returned 404 (No events found yet). Data might still be ingesting.")
+                    else:
+                        logger.warning(f"⚠️ Report trigger failed with status {response.status}: {await response.text()}")
+        except Exception as e:
+            logger.exception(f"❌ Failed to trigger report: {e}")
+    
     async def run(self, duration: Optional[float] = None) -> int:
         """
         Main entry point - run complete live trading system.
@@ -2794,181 +2858,53 @@ class LiveTradingLauncher:
                 logger.info("\n⚠ Keyboard interrupt during restart delay")
                 return 0
 
-
-async def main():
-    """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description='Bearish Alpha Bot - Live Trading Launcher',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Start live trading with BingX
-  python scripts/live_trading_launcher.py
-  
-  # Run in paper trading mode
-  python scripts/live_trading_launcher.py --paper
-  
-  # Run for 1 hour (3600 seconds)
-  python scripts/live_trading_launcher.py --duration 3600
-  
-  # Dry run (pre-flight checks only)
-  python scripts/live_trading_launcher.py --dry-run
-  
-  # ULTIMATE MODE: True continuous trading (Layer 1 - never stops)
-  python scripts/live_trading_launcher.py --infinite
-  
-  # ULTIMATE MODE: Auto-restart failsafe (Layer 2 - external monitoring)
-  python scripts/live_trading_launcher.py --auto-restart
-  
-  # ULTIMATE MODE: Both layers enabled (maximum resilience)
-  python scripts/live_trading_launcher.py --infinite --auto-restart
-  
-  # ULTIMATE MODE: Custom restart parameters
-  python scripts/live_trading_launcher.py --infinite --auto-restart --max-restarts 500 --restart-delay 60
-        """
-    )
+def main():
+    parser = argparse.ArgumentParser(description='Bearish Alpha Bot - Live Trading Launcher')
     
-    parser.add_argument(
-        '--paper',
-        action='store_true',
-        help='Run in paper trading mode (simulated trades)'
-    )
+    # Mode selection
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument('--paper', action='store_true', help='Run in paper trading mode')
+    mode_group.add_argument('--live', action='store_true', help='Run in live trading mode')
     
-    parser.add_argument(
-        '--duration',
-        type=float,
-        default=None,
-        help='Trading duration in seconds (default: indefinite)'
-    )
+    # Execution flags
+    parser.add_argument('--dry-run', action='store_true', help='Perform pre-flight checks without trading')
+    parser.add_argument('--infinite', action='store_true', help='Run in infinite loop (restart on clean exit)')
+    parser.add_argument('--auto-restart', action='store_true', help='Enable auto-restart on failure')
+    parser.add_argument('--max-restarts', type=int, default=5, help='Maximum number of auto-restarts')
+    parser.add_argument('--restart-delay', type=int, default=60, help='Delay between restarts in seconds')
+    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+    parser.add_argument('--duration', type=float, help='Trading duration in seconds')
     
-    parser.add_argument(
-        '--dry-run',
-        action='store_true',
-        help='Perform pre-flight checks only without starting trading'
-    )
-    
-    parser.add_argument(
-        '--infinite',
-        action='store_true',
-        help='Enable TRUE CONTINUOUS mode (Layer 1: never stops, auto-recovers from errors)'
-    )
-    
-    parser.add_argument(
-        '--auto-restart',
-        action='store_true',
-        help='Enable auto-restart failsafe (Layer 2: external monitoring and restart)'
-    )
-    
-    parser.add_argument(
-        '--max-restarts',
-        type=int,
-        default=1000,
-        help='Maximum restart attempts when auto-restart is enabled (default: 1000)'
-    )
-    
-    parser.add_argument(
-        '--restart-delay',
-        type=int,
-        default=30,
-        help='Base delay between restarts in seconds (default: 30, uses exponential backoff)'
-    )
-    
-    parser.add_argument(
-        '--debug',
-        action='store_true',
-        help='Enable debug mode with comprehensive logging for analysis'
-    )
-        
     args = parser.parse_args()
     
-    # Determine mode
-    mode = 'paper' if args.paper else 'live'
+    # Default to paper if neither specified
+    if args.live:
+        mode = 'live'
+    else:
+        mode = 'paper'
     
-    launcher = None
-    exit_code = 0
+    launcher = LiveTradingLauncher(
+        mode=mode,
+        dry_run=args.dry_run,
+        infinite=args.infinite,
+        auto_restart=args.auto_restart,
+        max_restarts=args.max_restarts,
+        restart_delay=args.restart_delay,
+        debug_mode=args.debug
+    )
     
     try:
-        logger.info("=" * 70)
-        logger.info("BEARISH ALPHA BOT - STARTING")
-        logger.info("=" * 70)
-        
-        # Create launcher
-        launcher = LiveTradingLauncher(
-            mode=mode, 
-            dry_run=args.dry_run,
-            infinite=args.infinite,
-            auto_restart=args.auto_restart,
-            max_restarts=args.max_restarts,
-            restart_delay=args.restart_delay,
-            debug_mode=args.debug
-        )
-        
-        # Run launcher
-        exit_code = await launcher.run(duration=args.duration)
-        logger.info("✅ Trading completed successfully" if exit_code == 0 else f"⚠️ Trading exited with code {exit_code}")
-    
+        if args.auto_restart:
+            exit_code = asyncio.run(launcher._run_with_auto_restart(duration=args.duration))
+        else:
+            exit_code = asyncio.run(launcher._run_once(duration=args.duration))
     except KeyboardInterrupt:
-        logger.warning("⚠️ Interrupted by user (Ctrl+C)")
-        exit_code = 130  # Standard exit code for Ctrl+C
-    
+        exit_code = 0
     except Exception as e:
-        logger.error(f"❌ Fatal error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Fatal error: {e}", file=sys.stderr)
         exit_code = 1
-    
-    finally:
-        # ✅ ALWAYS cleanup, even on error!
-        if launcher and not launcher._cleanup_completed:
-            logger.info("Performing final cleanup...")
-            try:
-                await launcher.cleanup()
-            except Exception as e:
-                logger.error(f"❌ Cleanup failed: {e}")
-                if exit_code == 0:
-                    exit_code = 1
         
-        logger.info("=" * 70)
-        logger.info(f"👋 Bot shutdown complete (exit code: {exit_code})")
-        logger.info("=" * 70)
-    
-    return exit_code
+    sys.exit(exit_code)
 
-if __name__ == '__main__':
-    # Hata yakalama ve loglama için bu bloğu kullanın
-    try:
-        exit_code = asyncio.run(main())
-        sys.exit(exit_code)
-    except Exception as e:
-        # Hata anında loglamanın çalıştığından emin ol
-        import traceback
-        
-        # Hata detaylarını bir string olarak al
-        error_details = traceback.format_exc()
-        
-        # Hem konsola hem de dosyaya yaz
-        log_dir = "logs"
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-        
-        error_log_path = os.path.join(log_dir, "CRITICAL_FAILURE.log")
-        
-        # Konsola hatayı bas
-        print("="*80, file=sys.stderr)
-        print("❌ A CRITICAL, UNHANDLED ERROR OCCURRED IN THE LAUNCHER!", file=sys.stderr)
-        print("="*80, file=sys.stderr)
-        print(error_details, file=sys.stderr)
-        print("="*80, file=sys.stderr)
-        print(f"Full error details have been saved to: {error_log_path}", file=sys.stderr)
-        print("="*80, file=sys.stderr)
-        
-        # Dosyaya hatayı yaz
-        with open(error_log_path, 'w', encoding='utf-8') as f:
-            f.write(f"Timestamp: {datetime.now(timezone.utc).isoformat()}\n")
-            f.write("="*80 + "\n")
-            f.write("A critical, unhandled error occurred in the launcher:\n")
-            f.write("="*80 + "\n")
-            f.write(error_details)
-            
-        # Hata koduyla çık
-        sys.exit(1)
+if __name__ == "__main__":
+    main()

@@ -28,7 +28,7 @@ ENV/
 env/
 
 # IDE
-.vscode/
+
 .idea/
 *.swp
 *.swo
@@ -100,3 +100,9 @@ errors_found.txt
 .env
 
 .vars
+vm_bearish-bot.env
+
+# Azurite
+__azurite_db_*.json
+__blobstorage__/
+__queuestorage__/

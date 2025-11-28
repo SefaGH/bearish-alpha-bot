@@ -348,10 +348,21 @@ class AdaptiveShortTheRip(ShortTheRip):
 
             # --- Core Signal Condition Checks with Tracing ---
             if self.debug_logging:
-                logger.info(f"🔍 {log_prefix} Checking conditions...")
-                logger.info(f"  - Regime: {market_regime['trend']}, Volatility: {market_regime['volatility']}")
-                logger.info(f"  - Price: ${close_price:,.2f}, RSI: {rsi_val:.2f}")
-                logger.info(f"  - RSI Threshold: {adaptive_rsi_threshold:.2f}")
+                # Calculate EMA alignment for debug log
+                ema21 = float(last30.get('ema21', 0))
+                ema50 = float(last30.get('ema50', 0))
+                ema200 = float(last30.get('ema200', 0))
+                ema_aligned = (ema21 < ema50 <= ema200)
+                
+                atr_val = float(last30.get('atr', 0))
+                vol = float(last30.get('volume', 0))
+                
+                logger.info(f"🔍 [STR-DEBUG] {symbol_display}")
+                logger.info(f"   RSI: {rsi_val:.2f} (threshold: {adaptive_rsi_threshold:.2f})")
+                logger.info(f"   EMA Align: {ema_aligned} (21={ema21:.1f}, 50={ema50:.1f}, 200={ema200:.1f})")
+                logger.info(f"   Volume: {vol:.2f}")
+                logger.info(f"   ATR: {atr_val:.4f}")
+                logger.info(f"   Regime: {market_regime['trend']}, Volatility: {market_regime['volatility']}")
 
             # 1. RSI Condition Check
             if rsi_val < adaptive_rsi_threshold:
