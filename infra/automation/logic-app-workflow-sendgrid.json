@@ -1,0 +1,304 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    },
+    "sendgrid_api_key": {
+      "type": "SecureString"
+    }
+  },
+  "triggers": {
+    "manual": {
+      "type": "Request",
+      "kind": "Http",
+      "inputs": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "durationMinutes": {
+              "type": "integer",
+              "description": "Trading session duration in minutes (1-85)",
+              "minimum": 1,
+              "maximum": 85
+            },
+            "imageTag": {
+              "type": "string",
+              "description": "Docker image tag to use",
+              "default": "vm-vmboot-9"
+            },
+            "keyVaultName": {
+              "type": "string",
+              "description": "Azure Key Vault name",
+              "default": "bearish-kv"
+            },
+            "kvSecretNames": {
+              "type": "string",
+              "description": "Comma-separated secret names",
+              "default": "BINGX-KEY,BINGX-SECRET,TELEGRAM-BOT-TOKEN"
+            }
+          },
+          "required": ["durationMinutes"]
+        }
+      }
+    }
+  },
+  "actions": {
+    "Initialize_Idempotency_Token": {
+      "type": "InitializeVariable",
+      "inputs": {
+        "variables": [
+          {
+            "name": "IdempotencyToken",
+            "type": "String",
+            "value": "@{guid()}"
+          }
+        ]
+      },
+      "runAfter": {}
+    },
+    "Check_Concurrent_Executions": {
+      "type": "ApiConnection",
+      "inputs": {
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['azureautomation']['connectionId']"
+          }
+        },
+        "method": "get",
+        "path": "/subscriptions/@{encodeURIComponent('74ab10ba-c96d-449e-97cb-ee4f9c0de714')}/resourceGroups/@{encodeURIComponent('TradeBot')}/resourceGroups/@{encodeURIComponent('TradeBot')}/providers/Microsoft.Automation/automationAccounts/@{encodeURIComponent('tradebot-automation')}/jobs",
+        "queries": {
+          "$filter": "properties/runbook/name eq 'Start-BearishBot-Enhanced' and properties/status eq 'Running'"
+        }
+      },
+      "runAfter": {
+        "Initialize_Idempotency_Token": ["Succeeded"]
+      }
+    },
+    "Condition_Check_Running_Jobs": {
+      "type": "If",
+      "expression": {
+        "and": [
+          {
+            "greater": [
+              "@length(body('Check_Concurrent_Executions')?['value'])",
+              0
+            ]
+          }
+        ]
+      },
+      "actions": {
+        "Terminate_Concurrent_Execution": {
+          "type": "Terminate",
+          "inputs": {
+            "runStatus": "Failed",
+            "runError": {
+              "code": "ConcurrentExecution",
+              "message": "Another bot instance is already running. Aborting to prevent concurrent execution."
+            }
+          }
+        }
+      },
+      "runAfter": {
+        "Check_Concurrent_Executions": ["Succeeded"]
+      }
+    },
+    "Validate_Parameters": {
+      "type": "Compose",
+      "inputs": {
+        "durationMinutes": "@coalesce(triggerBody()?['durationMinutes'], 60)",
+        "imageTag": "@coalesce(triggerBody()?['imageTag'], 'vm-vmboot-9')",
+        "keyVaultName": "@coalesce(triggerBody()?['keyVaultName'], 'bearish-kv')",
+        "kvSecretNames": "@coalesce(triggerBody()?['kvSecretNames'], 'BINGX-KEY,BINGX-SECRET,TELEGRAM-BOT-TOKEN')"
+      },
+      "runAfter": {
+        "Condition_Check_Running_Jobs": ["Succeeded"]
+      }
+    },
+    "Start_Automation_Runbook": {
+      "type": "ApiConnection",
+      "inputs": {
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['azureautomation']['connectionId']"
+          }
+        },
+        "method": "put",
+        "path": "/subscriptions/@{encodeURIComponent('74ab10ba-c96d-449e-97cb-ee4f9c0de714')}/resourceGroups/@{encodeURIComponent('TradeBot')}/providers/Microsoft.Automation/automationAccounts/@{encodeURIComponent('tradebot-automation')}/jobs",
+        "queries": {
+          "runbookName": "Start-BearishBot-Enhanced",
+          "wait": false
+        },
+        "body": {
+          "properties": {
+            "parameters": {
+              "durationMinutes": "@outputs('Validate_Parameters')['durationMinutes']",
+              "resourceGroup": "TradeBot",
+              "vmName": "BearishAlphaBot-VM-01",
+              "imageTag": "@outputs('Validate_Parameters')['imageTag']",
+              "keyVaultName": "@outputs('Validate_Parameters')['keyVaultName']",
+              "kvSecretNames": "@outputs('Validate_Parameters')['kvSecretNames']",
+              "idempotencyToken": "@variables('IdempotencyToken')"
+            }
+          }
+        }
+      },
+      "runAfter": {
+        "Validate_Parameters": ["Succeeded"]
+      }
+    },
+    "Get_Job_ID": {
+      "type": "Compose",
+      "inputs": "@body('Start_Automation_Runbook')?['name']",
+      "runAfter": {
+        "Start_Automation_Runbook": ["Succeeded"]
+      }
+    },
+    "Wait_For_Job_Completion": {
+      "type": "Until",
+      "expression": "@or(equals(body('Get_Job_Status')?['properties']?['status'], 'Completed'), equals(body('Get_Job_Status')?['properties']?['status'], 'Failed'), equals(body('Get_Job_Status')?['properties']?['status'], 'Stopped'))",
+      "limit": {
+        "count": 180,
+        "timeout": "PT2H"
+      },
+      "actions": {
+        "Get_Job_Status": {
+          "type": "ApiConnection",
+          "inputs": {
+            "host": {
+              "connection": {
+                "name": "@parameters('$connections')['azureautomation']['connectionId']"
+              }
+            },
+            "method": "get",
+            "path": "/subscriptions/@{encodeURIComponent('74ab10ba-c96d-449e-97cb-ee4f9c0de714')}/resourceGroups/@{encodeURIComponent('TradeBot')}/providers/Microsoft.Automation/automationAccounts/@{encodeURIComponent('tradebot-automation')}/jobs/@{encodeURIComponent(outputs('Get_Job_ID'))}"
+          }
+        },
+        "Delay_30_Seconds": {
+          "type": "Wait",
+          "inputs": {
+            "interval": {
+              "count": 30,
+              "unit": "Second"
+            }
+          },
+          "runAfter": {
+            "Get_Job_Status": ["Succeeded"]
+          }
+        }
+      },
+      "runAfter": {
+        "Get_Job_ID": ["Succeeded"]
+      }
+    },
+    "Get_Job_Output": {
+      "type": "ApiConnection",
+      "inputs": {
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['azureautomation']['connectionId']"
+          }
+        },
+        "method": "get",
+        "path": "/subscriptions/@{encodeURIComponent('74ab10ba-c96d-449e-97cb-ee4f9c0de714')}/resourceGroups/@{encodeURIComponent('TradeBot')}/providers/Microsoft.Automation/automationAccounts/@{encodeURIComponent('tradebot-automation')}/jobs/@{encodeURIComponent(outputs('Get_Job_ID'))}/output"
+      },
+      "runAfter": {
+        "Wait_For_Job_Completion": ["Succeeded"]
+      }
+    },
+    "Send_Success_Email_SendGrid": {
+      "type": "Http",
+      "inputs": {
+        "method": "POST",
+        "uri": "https://api.sendgrid.com/v3/mail/send",
+        "headers": {
+          "Authorization": "Bearer @{parameters('sendgrid_api_key')}",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "personalizations": [
+            {
+              "to": [
+                {
+                  "email": "sefaasar@hotmail.com"
+                }
+              ],
+              "subject": "✓ Bearish Bot Session Completed - @{outputs('Validate_Parameters')['imageTag']}"
+            }
+          ],
+          "from": {
+            "email": "noreply@bearishbot.com",
+            "name": "Bearish Alpha Bot"
+          },
+          "content": [
+            {
+              "type": "text/html",
+              "value": "<html><body><h2 style='color:green;'>Trading Session Completed Successfully</h2><table style='border-collapse:collapse;width:100%;'><tr style='background:#f0f0f0;'><td style='padding:8px;border:1px solid #ddd;'><strong>Duration</strong></td><td style='padding:8px;border:1px solid #ddd;'>@{outputs('Validate_Parameters')['durationMinutes']} minutes</td></tr><tr><td style='padding:8px;border:1px solid #ddd;'><strong>Image Tag</strong></td><td style='padding:8px;border:1px solid #ddd;'>@{outputs('Validate_Parameters')['imageTag']}</td></tr><tr style='background:#f0f0f0;'><td style='padding:8px;border:1px solid #ddd;'><strong>Job ID</strong></td><td style='padding:8px;border:1px solid #ddd;'>@{outputs('Get_Job_ID')}</td></tr><tr><td style='padding:8px;border:1px solid #ddd;'><strong>Status</strong></td><td style='padding:8px;border:1px solid #ddd;'>@{body('Get_Job_Status')?['properties']?['status']}</td></tr><tr style='background:#f0f0f0;'><td style='padding:8px;border:1px solid #ddd;'><strong>Start Time</strong></td><td style='padding:8px;border:1px solid #ddd;'>@{body('Get_Job_Status')?['properties']?['startTime']}</td></tr><tr><td style='padding:8px;border:1px solid #ddd;'><strong>End Time</strong></td><td style='padding:8px;border:1px solid #ddd;'>@{body('Get_Job_Status')?['properties']?['endTime']}</td></tr></table><h3>Job Output</h3><pre style='background:#f5f5f5;padding:10px;border-radius:5px;overflow:auto;'>@{body('Get_Job_Output')}</pre></body></html>"
+            }
+          ]
+        }
+      },
+      "runAfter": {
+        "Get_Job_Output": ["Succeeded"]
+      }
+    },
+    "Send_Failure_Email_SendGrid": {
+      "type": "Http",
+      "inputs": {
+        "method": "POST",
+        "uri": "https://api.sendgrid.com/v3/mail/send",
+        "headers": {
+          "Authorization": "Bearer @{parameters('sendgrid_api_key')}",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "personalizations": [
+            {
+              "to": [
+                {
+                  "email": "sefaasar@hotmail.com"
+                }
+              ],
+              "subject": "✗ Bearish Bot Session Failed - @{outputs('Validate_Parameters')['imageTag']}"
+            }
+          ],
+          "from": {
+            "email": "noreply@bearishbot.com",
+            "name": "Bearish Alpha Bot"
+          },
+          "content": [
+            {
+              "type": "text/html",
+              "value": "<html><body><h2 style='color:red;'>Trading Session Failed</h2><table style='border-collapse:collapse;width:100%;'><tr style='background:#fff0f0;'><td style='padding:8px;border:1px solid #ddd;'><strong>Duration</strong></td><td style='padding:8px;border:1px solid #ddd;'>@{outputs('Validate_Parameters')['durationMinutes']} minutes</td></tr><tr><td style='padding:8px;border:1px solid #ddd;'><strong>Image Tag</strong></td><td style='padding:8px;border:1px solid #ddd;'>@{outputs('Validate_Parameters')['imageTag']}</td></tr><tr style='background:#fff0f0;'><td style='padding:8px;border:1px solid #ddd;'><strong>Job ID</strong></td><td style='padding:8px;border:1px solid #ddd;'>@{outputs('Get_Job_ID')}</td></tr><tr><td style='padding:8px;border:1px solid #ddd;'><strong>Status</strong></td><td style='padding:8px;border:1px solid #ddd;'>@{body('Get_Job_Status')?['properties']?['status']}</td></tr><tr style='background:#fff0f0;'><td style='padding:8px;border:1px solid #ddd;'><strong>Exception</strong></td><td style='padding:8px;border:1px solid #ddd;'><code>@{body('Get_Job_Status')?['properties']?['exception']}</code></td></tr></table><h3>Job Output</h3><pre style='background:#fff5f5;padding:10px;border-radius:5px;overflow:auto;'>@{body('Get_Job_Output')}</pre></body></html>"
+            }
+          ]
+        }
+      },
+      "runAfter": {
+        "Get_Job_Output": ["Failed", "TimedOut"]
+      }
+    },
+    "Response": {
+      "type": "Response",
+      "kind": "Http",
+      "inputs": {
+        "statusCode": 200,
+        "body": {
+          "jobId": "@outputs('Get_Job_ID')",
+          "status": "@body('Get_Job_Status')?['properties']?['status']",
+          "idempotencyToken": "@variables('IdempotencyToken')",
+          "parameters": "@outputs('Validate_Parameters')",
+          "startTime": "@body('Get_Job_Status')?['properties']?['startTime']",
+          "endTime": "@body('Get_Job_Status')?['properties']?['endTime']"
+        }
+      },
+      "runAfter": {
+        "Send_Success_Email_SendGrid": ["Succeeded", "Skipped"],
+        "Send_Failure_Email_SendGrid": ["Succeeded", "Skipped"]
+      }
+    }
+  },
+  "outputs": {}
+}
