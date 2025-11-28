@@ -186,10 +186,28 @@ class SmartOrderManager:
             logger.debug(f"🎪 [ORDER-MGR] Order parameters: algo={execution_algo}, symbol={order_request.get('symbol')}, "
                         f"side={order_request.get('side')}, amount={order_request.get('amount')}")
             
-            # Execute order with active clients
-            result = await exec_func(order_request, clients_to_use)
+            # Execute order with active clients (with retry for transient failures)
+            max_retries = 3
+            result = None
             
-            logger.debug(f"🎪 [ORDER-MGR] Execution result: {'SUCCESS' if result.get('success') else 'FAILED'}")
+            for attempt in range(max_retries):
+                result = await exec_func(order_request, clients_to_use)
+                
+                if result.get('success'):
+                    break
+                
+                # Check if we should retry based on reason
+                reason = result.get('reason', '').lower()
+                is_transient = any(x in reason for x in ['timeout', 'connection', 'rate limit', '500', '502', '503', '504', 'network', 'reset'])
+                
+                if not is_transient or attempt == max_retries - 1:
+                    break
+                
+                wait_time = (2 ** attempt) * 0.5
+                logger.warning(f"Transient failure in order execution: {reason}. Retrying in {wait_time}s (Attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(wait_time)
+            
+            logger.debug(f"🎪 [ORDER-MGR] Execution result: {'SUCCESS' if result and result.get('success') else 'FAILED'}")
             
             # Update statistics
             self.execution_stats['total_orders'] += 1

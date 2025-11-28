@@ -1,0 +1,11 @@
+{
+    "github-actions.workflows.pinned.workflows": [
+        ".github/workflows/live_trading_launcher.yml"
+    ],
+    "azureFunctions.deploySubpath": "azure_functions\\reporting",
+    "azureFunctions.scmDoBuildDuringDeployment": true,
+    "azureFunctions.pythonVenv": ".venv",
+    "azureFunctions.projectLanguage": "Python",
+    "azureFunctions.projectRuntime": "~4",
+    "debug.internalConsoleOptions": "neverOpen"
+}

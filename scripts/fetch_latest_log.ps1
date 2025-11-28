@@ -20,28 +20,18 @@ if (-not $ip) {
     exit 1
 }
 
-Write-Host "🔍 Finding latest log file on VM..." -ForegroundColor Cyan
-# We use run-command to find the filename to avoid complex SSH parsing
-$cmd = "ls -t /mnt/bearish/logs/live_trading_*.log | head -n 1"
-$res = az vm run-command invoke -g $ResourceGroup -n $VMName --command-id RunShellScript --scripts $cmd --query 'value[0].message' -o tsv
+Write-Host "🔍 Finding latest log file on VM (via SSH)..." -ForegroundColor Cyan
+# Use SSH to find the filename to avoid Azure Agent locks
+$findCmd = "ls -t /mnt/bearish/logs/live_trading_*.log | head -n 1"
+$remotePath = ssh -o StrictHostKeyChecking=no "${RemoteUser}@${ip}" $findCmd
 
-# Clean up output (sometimes contains extra newlines/stdout markers)
-# We take the last non-empty line which is usually the file path
-# Force array to avoid "char" indexing on single string result
-$lines = @($res -split "`n" | Where-Object { $_ -match "live_trading" })
-
-if ($lines.Count -eq 0) {
+if (-not $remotePath) {
     Write-Error "No log file found on VM."
     exit 1
 }
 
-# Take the first match
-$remotePath = $lines[0].Trim()
-
-if (-not $remotePath) {
-    Write-Error "No log file path resolved."
-    exit 1
-}
+# Clean up output (trim whitespace)
+$remotePath = $remotePath.Trim()
 
 Write-Host "⬇️ Downloading $remotePath from $ip..." -ForegroundColor Cyan
 try {

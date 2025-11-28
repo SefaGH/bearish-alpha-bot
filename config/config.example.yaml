@@ -57,7 +57,7 @@ risk:
   risk_usd_cap: 1                     # Override with: RISK_USD_CAP
   
   # NEW: Dynamic position sizing parameters
-  max_position_size_pct: 0.80         # Override with: MAX_POSITION_SIZE_PCT
+  max_position_size_pct: 0.10         # Override with: MAX_POSITION_SIZE_PCT
   max_notional_pct_per_trade: 0.75    # Override with: MAX_NOTIONAL_PCT_PER_TRADE
   max_margin_pct_per_trade: 0.30      # Override with: MAX_MARGIN_PCT_PER_TRADE
   

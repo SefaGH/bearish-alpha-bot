@@ -781,7 +781,7 @@ class HealthMonitor:
                 
                 # Send periodic Telegram update
                 if self.telegram and self.metrics['loops_completed'] % 12 == 0:  # Every hour
-                    self.telegram.send(
+                    await self.telegram.send_async(
                         f"💓 <b>Health Check</b>\n"
                         f"Status: {self.health_status.upper()}\n"
                         f"Uptime: {uptime/3600:.1f}h\n"
@@ -2630,9 +2630,9 @@ class LiveTradingLauncher:
 
         logger.info(f"📊 Triggering report generation for run_id: {run_id}")
         
-        # Hardcoded for now as per instructions, but ideally should be in config
-        function_url = "https://bearish-reporting-func.azurewebsites.net/api/run-report"
-        function_key = "Tlyw0_H2Cw2IIVNlPYgJ3lr4uxcfx0NDNKdjyiUnFlEyAzFulZRUpA=="
+        # Use config or env vars for reporting endpoint
+        function_url = os.getenv("REPORTING_URL", "https://bearish-reporting-func.azurewebsites.net/api/run-report")
+        function_key = os.getenv("REPORTING_KEY", "Tlyw0_H2Cw2IIVNlPYgJ3lr4uxcfx0NDNKdjyiUnFlEyAzFulZRUpA==")
         
         url = f"{function_url}?code={function_key}"
         payload = {"run_id": run_id}
