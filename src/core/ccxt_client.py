@@ -21,6 +21,8 @@ except ImportError:
     logger.warning("Kritik kütüphane 'pandas-ta-classic' bulunamadı! İndikatörler eklenemeyecek.")
     PANDAS_TA_AVAILABLE = False
 
+DEFAULT_TIMEOUT = 10
+
 EX_DEFAULTS = {
     "options": {"defaultType": "swap"},
     "enableRateLimit": True,
@@ -727,11 +729,11 @@ class CcxtClient:
         for attempt in range(max_retries):
             try:
                 if method == 'GET':
-                    response = requests.get(url, params=auth_data['params'], headers=auth_data['headers'], timeout=10)
+                    response = requests.get(url, params=auth_data['params'], headers=auth_data['headers'], timeout=DEFAULT_TIMEOUT)
                 elif method == 'POST':
-                    response = requests.post(url, data=auth_data['params'], headers=auth_data['headers'], timeout=10)
+                    response = requests.post(url, data=auth_data['params'], headers=auth_data['headers'], timeout=DEFAULT_TIMEOUT)
                 elif method == 'DELETE':
-                    response = requests.delete(url, params=auth_data['params'], headers=auth_data['headers'], timeout=10)
+                    response = requests.delete(url, params=auth_data['params'], headers=auth_data['headers'], timeout=DEFAULT_TIMEOUT)
                 else:
                     raise ValueError(f"Unsupported HTTP method: {method}")
                 

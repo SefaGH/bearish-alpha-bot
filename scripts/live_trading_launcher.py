@@ -2631,11 +2631,11 @@ class LiveTradingLauncher:
         logger.info(f"📊 Triggering report generation for run_id: {run_id}")
         
         # Use config or env vars for reporting endpoint
-        function_url = os.getenv("REPORTING_URL", "https://bearish-reporting-func.azurewebsites.net/api/run-report")
-        function_key = os.getenv("REPORTING_KEY")
+        function_url = os.getenv("REPORT_FUNCTION_URL")
+        function_key = os.getenv("REPORT_FUNCTION_KEY")
         
-        if not function_key:
-            logger.warning("⚠️ REPORTING_KEY not set, skipping report trigger.")
+        if not function_url or not function_key:
+            logger.warning("⚠️ REPORT_FUNCTION_URL or REPORT_FUNCTION_KEY not set, skipping report trigger.")
             return
 
         url = f"{function_url}?code={function_key}"
@@ -2655,7 +2655,7 @@ class LiveTradingLauncher:
                     else:
                         logger.warning(f"⚠️ Report trigger failed with status {response.status}: {await response.text()}")
         except Exception as e:
-            logger.error(f"❌ Failed to trigger report: {e}")
+            logger.exception(f"❌ Failed to trigger report: {e}")
     
     async def run(self, duration: Optional[float] = None) -> int:
         """
