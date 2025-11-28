@@ -358,16 +358,44 @@ class AdaptiveShortTheRip(ShortTheRip):
                 logger.info(f"🚫 {log_prefix} No Signal: RSI ({rsi_val:.2f}) is below the threshold ({adaptive_rsi_threshold:.2f}).")
                 return None
 
-            # 2. EMA Alignment Check
-            trend_strength = regime_data.get('micro_trend_strength', 0.5)
-            ema_params = self.adapt_ema_requirements(trend_strength)
-            if ema_params['require_strict_ema_align']:
-                ema21 = float(last30['ema21'])
-                ema50 = float(last30['ema50'])
-                ema200 = float(last30['ema200'])
-                if not (ema21 < ema50 <= ema200):
-                    logger.info(f"🚫 {log_prefix} No Signal: Strict EMA alignment failed (21={ema21:.1f}, 50={ema50:.1f}, 200={ema200:.1f}).")
+            # 2. Dynamic Rip Check (Replaces strict EMA alignment)
+            # "Rip" is defined as price extending significantly above a Long-Term EMA
+            
+            # Get Long-Term EMA (using EMA 50 as proxy for trend baseline)
+            long_ema_value = float(last30.get('ema50', 0))
+            atr_value = float(last30.get('atr', 0))
+            
+            if long_ema_value > 0 and atr_value > 0:
+                # Determine ATR Multiplier based on volatility
+                volatility_regime = market_regime.get('volatility', 'normal')
+                
+                if volatility_regime == 'high':
+                    atr_multiplier = 1.5  # High vol: require more aggressive extension
+                elif volatility_regime == 'low':
+                    atr_multiplier = 0.75 # Low vol: smaller extension is enough
+                else:
+                    atr_multiplier = 1.0  # Normal
+                
+                # Calculate Rip Threshold
+                rip_value = atr_value * atr_multiplier
+                required_price_threshold = long_ema_value + rip_value
+                
+                if close_price < required_price_threshold:
+                    logger.info(
+                        f"🚫 {log_prefix} No Signal: Rip Check Failed. Price ${close_price:,.2f} "
+                        f"is not above EMA50+Rip (${required_price_threshold:,.2f}). "
+                        f"(EMA50=${long_ema_value:,.2f}, Rip=${rip_value:,.2f}, Vol={volatility_regime})"
+                    )
                     return None
+                else:
+                    if self.debug_logging:
+                        logger.info(
+                            f"✅ {log_prefix} Rip Check Passed: Price ${close_price:,.2f} > "
+                            f"Threshold ${required_price_threshold:,.2f} (Rip=${rip_value:,.2f})"
+                        )
+            else:
+                # Fallback if indicators missing (should be caught by validation, but safe guard)
+                logger.warning(f"⚠️ {log_prefix} Missing EMA50 or ATR for Rip Check. Skipping.")
             
             logger.info(f"✅ {log_prefix} Base conditions met. Proceeding to ML & Risk checks.")
 
