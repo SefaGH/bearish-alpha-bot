@@ -32,6 +32,7 @@ EX_DEFAULTS = {
     "verify": False  # Disable SSL verification (for GitHub Actions environment)
 }
 
+DEFAULT_TIMEOUT = 10
 
 class CcxtClient:
     def __init__(self, ex_name: str, creds: dict | None = None):
@@ -470,7 +471,7 @@ class CcxtClient:
         """Get official KuCoin server timestamp with local fallback."""
         try:
             url = "https://api-futures.kucoin.com/api/v1/timestamp"
-            response = requests.get(url, timeout=5)
+            response = requests.get(url, timeout=DEFAULT_TIMEOUT)
             response.raise_for_status()
             
             server_data = response.json()
@@ -492,7 +493,7 @@ class CcxtClient:
         """Get official BingX server timestamp with local fallback."""
         try:
             url = "https://open-api.bingx.com/openApi/swap/v2/server/time"
-            response = requests.get(url, timeout=5)
+            response = requests.get(url, timeout=DEFAULT_TIMEOUT)
             response.raise_for_status()
             
             server_data = response.json()
@@ -522,7 +523,7 @@ class CcxtClient:
             
         try:
             url = "https://api-futures.kucoin.com/api/v1/contracts/active"
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=DEFAULT_TIMEOUT)
             response.raise_for_status()
             
             contracts_data = response.json()
@@ -574,7 +575,7 @@ class CcxtClient:
         try:
             # BingX public endpoint - authentication gerekmez
             url = "https://open-api.bingx.com/openApi/swap/v2/quote/contracts"
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=DEFAULT_TIMEOUT)
             response.raise_for_status()
             
             data = response.json()
