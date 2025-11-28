@@ -249,7 +249,35 @@ class AdaptiveOversoldBounce(OversoldBounce):
 
             # Volume confirmation: require current volume to exceed rolling average unless skipped
             volume_window = int(self.strategy_config.get('volume_confirmation_window', 20))
-            volume_multiplier = float(self.strategy_config.get('volume_confirmation_multiplier', 1.5))
+            
+            # --- Dynamic Volume Multiplier Implementation ---
+            # Calculate volume multiplier based on volatility/risk
+            if ml_context and self.regime_analyzer:
+                # 1. Get volatility score (risk_multiplier is a good proxy)
+                volatility_score = float(ml_context.get('risk_multiplier', 1.0))
+                
+                # 2. Get base multiplier
+                base_volume_multiplier = float(self.strategy_config.get('volume_confirmation_multiplier', 1.5))
+                
+                # 3. Inverse adjustment: Higher volatility -> Lower multiplier required
+                # (2.0 - volatility_score) maps 1.0->1.0, 1.5->0.5, 0.5->1.5
+                # We clamp the factor between 0.5 and 1.5 to avoid extreme adjustments
+                adjustment_factor = max(0.5, min(1.5, 2.0 - volatility_score))
+                
+                dynamic_volume_multiplier = base_volume_multiplier * adjustment_factor
+                
+                # 4. Clamp final multiplier
+                volume_multiplier = max(1.0, min(2.5, dynamic_volume_multiplier))
+                
+                if self.debug_logging:
+                    logger.info(
+                        f"📊 {log_prefix} Dynamic Volume Multiplier: Base={base_volume_multiplier:.2f}, "
+                        f"Vol_Score={volatility_score:.2f}, Final={volume_multiplier:.2f}"
+                    )
+            else:
+                volume_multiplier = float(self.strategy_config.get('volume_confirmation_multiplier', 1.5))
+            # --- End Dynamic Volume Multiplier ---
+
             ignore_volume = bool(self.strategy_config.get('ignore_volume', False))
             volume_confirmed = True
             avg_volume = None
@@ -259,11 +287,12 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 if len(recent_volume) >= max(5, volume_window // 2):
                     avg_volume = recent_volume.mean()
                     if avg_volume > 0:
-                        volume_confirmed = current_volume >= avg_volume * volume_multiplier
+                        required_volume = avg_volume * volume_multiplier
+                        volume_confirmed = current_volume >= required_volume
                 if not volume_confirmed:
                     logger.info(
                         f"🚫 {log_prefix} No Signal: Volume confirmation failed (current={current_volume:.0f},"
-                        f" avg={avg_volume:.0f}, required>={avg_volume * volume_multiplier:.0f})."
+                        f" avg={avg_volume:.0f}, required>={avg_volume * volume_multiplier:.0f}, factor={volume_multiplier:.2f})."
                     )
                     return None
 

@@ -11,8 +11,13 @@ import asyncio
 import pytest
 
 from unittest.mock import Mock, AsyncMock
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+# Add project root and src to path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+src_path = os.path.join(project_root, 'src')
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
 
 from core.production_coordinator import ProductionCoordinator
 from core.live_trading_engine import LiveTradingEngine
@@ -39,6 +44,7 @@ async def test_complete_signal_execution_pipeline():
     # Setup mock components with realistic behavior
     mock_risk_manager = Mock(spec=RiskManager)
     mock_risk_manager.portfolio_value = 10000.0
+    mock_risk_manager.get_portfolio_summary = Mock(return_value={'portfolio_value': 10000.0})
     mock_risk_manager.calculate_position_size = AsyncMock(return_value=0.01)
     mock_risk_manager.validate_new_position = AsyncMock(return_value=(True, "Valid", {
         'position_value': 500.0,
@@ -53,6 +59,8 @@ async def test_complete_signal_execution_pipeline():
     mock_portfolio_manager = Mock(spec=PortfolioManager)
     mock_portfolio_manager.strategies = {}
     mock_portfolio_manager.get_strategy_allocation = Mock(return_value=0.25)
+    mock_portfolio_manager.get_open_positions = Mock(return_value={})
+    mock_portfolio_manager.get_portfolio_state = Mock(return_value={'portfolio_value': 10000.0, 'cash': 10000.0})
     mock_portfolio_manager.performance_monitor = None
     mock_portfolio_manager.exchange_clients = {'test_exchange': mock_exchange_client}
     
@@ -101,6 +109,13 @@ async def test_complete_signal_execution_pipeline():
         result = await coordinator.submit_signal(signal)
         assert result['success'] == True, f"Signal submission failed: {result.get('reason')}"
         submitted_ids.append(result['signal_id'])
+    
+    # Allow time for async processing
+    await asyncio.sleep(0.5)
+
+    # Manually drain coordinator queue to engine queue (since production loop is not running)
+    while not coordinator.strategy_coordinator.signal_queue.qsize() == 0:
+        await coordinator.trading_engine.trigger_coordinator_drain()
     
     # Verify signals are in engine queue
     engine_queue_size = coordinator.trading_engine.signal_queue.qsize()
@@ -163,6 +178,7 @@ async def test_signal_flow_with_rejection():
     # Setup with strict risk limits
     mock_risk_manager = Mock(spec=RiskManager)
     mock_risk_manager.portfolio_value = 100.0  # Very small portfolio
+    mock_risk_manager.get_portfolio_summary = Mock(return_value={'portfolio_value': 100.0})
     mock_risk_manager.calculate_position_size = AsyncMock(return_value=0.0)  # Zero = rejection
     mock_risk_manager.validate_new_position = AsyncMock(return_value=(False, "Risk limit exceeded", {}))
     mock_risk_manager.active_positions = {}
@@ -170,6 +186,8 @@ async def test_signal_flow_with_rejection():
     mock_portfolio_manager = Mock(spec=PortfolioManager)
     mock_portfolio_manager.strategies = {}
     mock_portfolio_manager.get_strategy_allocation = Mock(return_value=0.25)
+    mock_portfolio_manager.get_open_positions = Mock(return_value={})
+    mock_portfolio_manager.get_portfolio_state = Mock(return_value={'portfolio_value': 100.0, 'cash': 100.0})
     mock_portfolio_manager.performance_monitor = None
     mock_portfolio_manager.exchange_clients = {}
     
@@ -228,6 +246,7 @@ async def test_queue_monitoring_integration():
     """
     # Setup
     mock_risk_manager = Mock(spec=RiskManager)
+    mock_risk_manager.get_portfolio_summary = Mock(return_value={'portfolio_value': 10000.0})
     mock_risk_manager.calculate_position_size = AsyncMock(return_value=0.01)
     mock_risk_manager.validate_new_position = AsyncMock(return_value=(True, "Valid", {}))
     mock_risk_manager.active_positions = {}
@@ -235,6 +254,8 @@ async def test_queue_monitoring_integration():
     mock_portfolio_manager = Mock(spec=PortfolioManager)
     mock_portfolio_manager.strategies = {}
     mock_portfolio_manager.get_strategy_allocation = Mock(return_value=0.25)
+    mock_portfolio_manager.get_open_positions = Mock(return_value={})
+    mock_portfolio_manager.get_portfolio_state = Mock(return_value={'portfolio_value': 10000.0, 'cash': 10000.0})
     mock_portfolio_manager.performance_monitor = None
     mock_portfolio_manager.exchange_clients = {}
     
@@ -260,12 +281,18 @@ async def test_queue_monitoring_integration():
             'symbol': f'TEST{i}/USDT:USDT',
             'side': 'long',
             'entry': 1000.0 + i,
+            'stop': 900.0 + i,
+            'target': 1200.0 + i,
             'strategy': 'test_strategy'
         }
         await coordinator.submit_signal(signal)
     
     # Let monitoring run briefly
     await asyncio.sleep(0.2)
+
+    # Manually drain coordinator queue to engine queue
+    while not coordinator.strategy_coordinator.signal_queue.qsize() == 0:
+        await coordinator.trading_engine.trigger_coordinator_drain()
     
     # Check queue sizes
     coordinator_queue_size = coordinator.strategy_coordinator.signal_queue.qsize()
