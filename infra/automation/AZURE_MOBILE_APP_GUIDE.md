@@ -65,7 +65,7 @@ The Azure mobile app **does NOT show a "Start" button** for runbooks. Instead, y
 9. Enter parameters:
    ```
    durationMinutes: 60
-   imageTag: vm-vmboot-9
+   imageTag: vm-vmboot-11
    forceRestart: ☐ (leave unchecked)
    ```
 10. Tap **OK**
@@ -113,7 +113,7 @@ Message: "❌ Bot is already RUNNING. Aborting to prevent duplicate execution."
 ```json
 {
   "durationMinutes": [Provided Input],
-  "imageTag": "vm-vmboot-9",
+  "imageTag": "vm-vmboot-11",
   "keyVaultName": "bearish-kv"
 }
 ```
@@ -165,7 +165,7 @@ az automation runbook start \
   --name Start-BearishBot-Enhanced \
   --automation-account-name tradebot-automation \
   --resource-group TradeBot \
-  --parameters durationMinutes=60 imageTag=vm-vmboot-9
+  --parameters durationMinutes=60 imageTag=vm-vmboot-11
 ```
 
 4. To force restart:
@@ -174,7 +174,7 @@ az automation runbook start \
   --name Start-BearishBot-Enhanced \
   --automation-account-name tradebot-automation \
   --resource-group TradeBot \
-  --parameters '{"durationMinutes":60,"imageTag":"vm-vmboot-9","forceRestart":true}'
+  --parameters '{"durationMinutes":60,"imageTag":"vm-vmboot-11","forceRestart":true}'
 ```
 
 ---
@@ -220,7 +220,7 @@ az automation runbook start \
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `imageTag` | String | `vm-vmboot-9` | Docker image tag |
+| `imageTag` | String | `vm-vmboot-11` | Docker image tag |
 | `keyVaultName` | String | `bearish-kv` | Key Vault name |
 | `forceRestart` | Boolean | `false` | Force restart if bot running |
 
@@ -243,7 +243,7 @@ az automation runbook start \
 ```json
 {
   "durationMinutes": 60,
-  "imageTag": "vm-vmboot-9"
+  "imageTag": "vm-vmboot-11"
 }
 ```
 
@@ -485,17 +485,17 @@ az vm get-instance-view -g TradeBot -n BearishAlphaBot-VM-01 --query "instanceVi
 
 **Quick Test (5 minutes):**
 ```json
-{"durationMinutes": 5, "imageTag": "vm-vmboot-9"}
+{"durationMinutes": 5, "imageTag": "vm-vmboot-11"}
 ```
 
 **Standard Session (1 hour):**
 ```json
-{"durationMinutes": 60, "imageTag": "vm-vmboot-9"}
+{"durationMinutes": 60, "imageTag": "vm-vmboot-11"}
 ```
 
 **Force Restart:**
 ```json
-{"durationMinutes": 60, "imageTag": "vm-vmboot-9", "forceRestart": true}
+{"durationMinutes": 60, "imageTag": "vm-vmboot-11", "forceRestart": true}
 ```
 
 ---
@@ -504,7 +504,7 @@ az vm get-instance-view -g TradeBot -n BearishAlphaBot-VM-01 --query "instanceVi
 
 ### 1. **Always Test with Short Duration First**
 ```json
-{"durationMinutes": 5, "imageTag": "vm-vmboot-9"}
+{"durationMinutes": 5, "imageTag": "vm-vmboot-11"}
 ```
 
 ### 2. **Monitor First Execution**

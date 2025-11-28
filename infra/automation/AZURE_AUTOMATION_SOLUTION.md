@@ -85,7 +85,7 @@ This solution provides a production-grade, serverless automation pipeline for re
 | `durationMinutes` | Integer | Yes | - | Trading session duration (1-85 min) |
 | `resourceGroup` | String | No | `TradeBot` | Azure resource group |
 | `vmName` | String | No | `BearishAlphaBot-VM-01` | Target VM name |
-| `imageTag` | String | No | `vm-vmboot-9` | Docker image tag |
+| `imageTag` | String | No | `vm-vmboot-11` | Docker image tag |
 | `keyVaultName` | String | No | `bearish-kv` | Key Vault for secrets |
 | `kvSecretNames` | String | No | `BINGX-KEY,BINGX-SECRET,TELEGRAM-BOT-TOKEN` | Secrets to inject |
 | `idempotencyToken` | String | No | Auto-generated | Unique execution ID |
@@ -200,7 +200,7 @@ az automation runbook start \
   --name Start-BearishBot-Enhanced \
   --automation-account-name tradebot-automation \
   --resource-group TradeBot \
-  --parameters durationMinutes=5 imageTag=vm-vmboot-9
+  --parameters durationMinutes=5 imageTag=vm-vmboot-11
 ```
 
 #### 6. Monitor Job
@@ -231,7 +231,7 @@ az automation runbook start \
   --name Start-BearishBot-Enhanced \
   --automation-account-name tradebot-automation \
   --resource-group TradeBot \
-  --parameters durationMinutes=60 imageTag=vm-vmboot-9
+  --parameters durationMinutes=60 imageTag=vm-vmboot-11
 ```
 
 ### Via Logic App (After Deployment)
@@ -243,7 +243,7 @@ Invoke-RestMethod -Method POST -Uri $endpoint `
   -ContentType "application/json" `
   -Body (@{
       durationMinutes = 60
-      imageTag = "vm-vmboot-9"
+      imageTag = "vm-vmboot-11"
       keyVaultName = "bearish-kv"
       kvSecretNames = "BINGX-KEY,BINGX-SECRET,TELEGRAM-BOT-TOKEN"
   } | ConvertTo-Json)
@@ -258,7 +258,7 @@ $params = @{
     durationMinutes = 30
     resourceGroup = "TradeBot"
     vmName = "BearishAlphaBot-VM-01"
-    imageTag = "vm-vmboot-9"
+    imageTag = "vm-vmboot-11"
     keyVaultName = "bearish-kv"
     kvSecretNames = "BINGX-KEY,BINGX-SECRET,TELEGRAM-BOT-TOKEN"
 }
@@ -285,7 +285,7 @@ All logs follow a consistent JSON-like structure:
   "message": "Step 1: Validating parameters...",
   "context": {
     "durationMinutes": 60,
-    "imageTag": "vm-vmboot-9",
+    "imageTag": "vm-vmboot-11",
     "jobId": "44fc1756-ad9b-4620-a66d-2c7b19c716cc"
   }
 }
@@ -499,7 +499,7 @@ az automation runbook start \
   --name Start-BearishBot-Enhanced \
   --automation-account-name tradebot-automation \
   --resource-group TradeBot \
-  --parameters durationMinutes=1 imageTag=vm-vmboot-9
+  --parameters durationMinutes=1 imageTag=vm-vmboot-11
 ```
 
 ---
@@ -525,7 +525,7 @@ JOB_ID=$(az automation runbook start \
   --name Start-BearishBot-Enhanced \
   --automation-account-name tradebot-automation \
   --resource-group TradeBot \
-  --parameters durationMinutes=5 imageTag=vm-vmboot-9 \
+  --parameters durationMinutes=5 imageTag=vm-vmboot-11 \
   --query name -o tsv)
 
 # Monitor progress

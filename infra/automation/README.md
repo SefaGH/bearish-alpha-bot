@@ -66,7 +66,7 @@ az automation runbook start \
   --name Start-BearishBot-Enhanced \
   --automation-account-name tradebot-automation \
   --resource-group TradeBot \
-  --parameters durationMinutes=5 imageTag=vm-vmboot-9
+  --parameters durationMinutes=5 imageTag=vm-vmboot-11
 ```
 
 ## ✅ Test Results
@@ -108,14 +108,14 @@ az automation runbook start \
   --name Start-BearishBot-Enhanced \
   --automation-account-name tradebot-automation \
   --resource-group TradeBot \
-  --parameters durationMinutes=60 imageTag=vm-vmboot-9
+  --parameters durationMinutes=60 imageTag=vm-vmboot-11
 
 # Force restart (stops existing container + starts new)
 az automation runbook start \
   --name Start-BearishBot-Enhanced \
   --automation-account-name tradebot-automation \
   --resource-group TradeBot \
-  --parameters '{"durationMinutes":60,"imageTag":"vm-vmboot-9","forceRestart":true}'
+  --parameters '{"durationMinutes":60,"imageTag":"vm-vmboot-11","forceRestart":true}'
 ```
 
 ### Programmatic Execution (PowerShell)
@@ -130,7 +130,7 @@ Start-AzAutomationRunbook `
     -ResourceGroupName "TradeBot" `
     -Parameters @{
         durationMinutes = 30
-        imageTag = "vm-vmboot-9"
+        imageTag = "vm-vmboot-11"
     }
 
 # Force restart
@@ -140,7 +140,7 @@ Start-AzAutomationRunbook `
     -ResourceGroupName "TradeBot" `
     -Parameters @{
         durationMinutes = 30
-        imageTag = "vm-vmboot-9"
+        imageTag = "vm-vmboot-11"
         forceRestart = $true
     }
 ```

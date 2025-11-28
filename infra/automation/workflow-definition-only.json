@@ -45,7 +45,9 @@
               "default": false
             }
           },
-          "required": ["durationMinutes"]
+          "required": [
+            "durationMinutes"
+          ]
         }
       }
     }
@@ -79,7 +81,9 @@
         }
       },
       "runAfter": {
-        "Initialize_Idempotency_Token": ["Succeeded"]
+        "Initialize_Idempotency_Token": [
+          "Succeeded"
+        ]
       }
     },
     "Condition_Check_Running_Jobs": {
@@ -107,7 +111,9 @@
         }
       },
       "runAfter": {
-        "Check_Concurrent_Executions": ["Succeeded"]
+        "Check_Concurrent_Executions": [
+          "Succeeded"
+        ]
       }
     },
     "Validate_Parameters": {
@@ -120,7 +126,9 @@
         "forceRestart": "@coalesce(triggerBody()?['forceRestart'], false)"
       },
       "runAfter": {
-        "Condition_Check_Running_Jobs": ["Succeeded"]
+        "Condition_Check_Running_Jobs": [
+          "Succeeded"
+        ]
       }
     },
     "Start_Automation_Runbook": {
@@ -153,14 +161,18 @@
         }
       },
       "runAfter": {
-        "Validate_Parameters": ["Succeeded"]
+        "Validate_Parameters": [
+          "Succeeded"
+        ]
       }
     },
     "Get_Job_ID": {
       "type": "Compose",
       "inputs": "@body('Start_Automation_Runbook')?['name']",
       "runAfter": {
-        "Start_Automation_Runbook": ["Succeeded"]
+        "Start_Automation_Runbook": [
+          "Succeeded"
+        ]
       }
     },
     "Wait_For_Job_Completion": {
@@ -192,12 +204,16 @@
             }
           },
           "runAfter": {
-            "Get_Job_Status": ["Succeeded"]
+            "Get_Job_Status": [
+              "Succeeded"
+            ]
           }
         }
       },
       "runAfter": {
-        "Get_Job_ID": ["Succeeded"]
+        "Get_Job_ID": [
+          "Succeeded"
+        ]
       }
     },
     "Get_Job_Output": {
@@ -212,7 +228,9 @@
         "path": "/subscriptions/@{encodeURIComponent('74ab10ba-c96d-449e-97cb-ee4f9c0de714')}/resourceGroups/@{encodeURIComponent('TradeBot')}/providers/Microsoft.Automation/automationAccounts/@{encodeURIComponent('tradebot-automation')}/jobs/@{encodeURIComponent(outputs('Get_Job_ID'))}/output"
       },
       "runAfter": {
-        "Wait_For_Job_Completion": ["Succeeded"]
+        "Wait_For_Job_Completion": [
+          "Succeeded"
+        ]
       }
     },
     "Send_Success_Email_SendGrid": {
@@ -248,7 +266,9 @@
         }
       },
       "runAfter": {
-        "Get_Job_Output": ["Succeeded"]
+        "Get_Job_Output": [
+          "Succeeded"
+        ]
       }
     },
     "Send_Failure_Email_SendGrid": {
@@ -284,7 +304,10 @@
         }
       },
       "runAfter": {
-        "Get_Job_Output": ["Failed", "TimedOut"]
+        "Get_Job_Output": [
+          "Failed",
+          "TimedOut"
+        ]
       }
     },
     "Response": {
@@ -302,8 +325,14 @@
         }
       },
       "runAfter": {
-        "Send_Success_Email_SendGrid": ["Succeeded", "Skipped"],
-        "Send_Failure_Email_SendGrid": ["Succeeded", "Skipped"]
+        "Send_Success_Email_SendGrid": [
+          "Succeeded",
+          "Skipped"
+        ],
+        "Send_Failure_Email_SendGrid": [
+          "Succeeded",
+          "Skipped"
+        ]
       }
     }
   },
