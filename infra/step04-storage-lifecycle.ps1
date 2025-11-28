@@ -36,9 +36,9 @@ az monitor action-group create `
     --output none
 $actionGroupResourceId = "/subscriptions/$subscriptionId/resourceGroups/$opsResourceGroup/providers/Microsoft.Insights/actionGroups/$actionGroupName"
 
-Write-Host "Creating container stop alert (Container Insights)..."
+Write-Host "Creating CPU high alert (VM Metrics)..."
 az monitor metrics alert create `
-    --name "bearish-container-stop" `
+    --name "bearish-cpu-high" `
     --resource-group $opsResourceGroup `
     --scopes $vmResourceId `
     --condition "avg Percentage CPU > 95" `

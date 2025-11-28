@@ -519,6 +519,23 @@ If you encounter Python version errors:
    pip install -r requirements.txt
    ```
 
+### Local Development with Azurite
+
+If you are developing locally and need to emulate Azure Storage:
+
+1. **Install Azurite**:
+   - VS Code Extension: [Azurite](https://marketplace.visualstudio.com/items?itemName=Azurite.azurite)
+   - Or via npm: `npm install -g azurite`
+
+2. **Run Azurite**:
+   - VS Code: Open Command Palette (`Ctrl+Shift+P`) -> `Azurite: Start`
+   - Terminal: `azurite --location .`
+
+3. **Note on Generated Files**:
+   - Azurite creates `__azurite_db_*.json` files and storage folders in your workspace.
+   - These are **ignored by git** and should not be committed.
+   - If you see them in `git status`, ensure your `.gitignore` is up to date.
+
 ---
 
 ## Hızlı Başlangıç (sadece GitHub)

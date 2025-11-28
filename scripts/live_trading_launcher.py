@@ -2632,13 +2632,18 @@ class LiveTradingLauncher:
         
         # Use config or env vars for reporting endpoint
         function_url = os.getenv("REPORTING_URL", "https://bearish-reporting-func.azurewebsites.net/api/run-report")
-        function_key = os.getenv("REPORTING_KEY", "Tlyw0_H2Cw2IIVNlPYgJ3lr4uxcfx0NDNKdjyiUnFlEyAzFulZRUpA==")
+        function_key = os.getenv("REPORTING_KEY")
         
+        if not function_key:
+            logger.warning("⚠️ REPORTING_KEY not set, skipping report trigger.")
+            return
+
         url = f"{function_url}?code={function_key}"
         payload = {"run_id": run_id}
         
         try:
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 # Give ADX a moment to ingest logs (though parser runs every 60s, so this is best effort)
                 # We won't wait here to avoid blocking shutdown too long, 
                 # but the function itself could have a retry logic or we rely on the user checking later if it fails.

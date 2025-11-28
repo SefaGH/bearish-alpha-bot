@@ -100,3 +100,8 @@ errors_found.txt
 .env
 
 .vars
+
+# Azurite
+__azurite_db_*.json
+__blobstorage__/
+__queuestorage__/

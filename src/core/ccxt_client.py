@@ -727,11 +727,11 @@ class CcxtClient:
         for attempt in range(max_retries):
             try:
                 if method == 'GET':
-                    response = requests.get(url, params=auth_data['params'], headers=auth_data['headers'])
+                    response = requests.get(url, params=auth_data['params'], headers=auth_data['headers'], timeout=10)
                 elif method == 'POST':
-                    response = requests.post(url, data=auth_data['params'], headers=auth_data['headers'])
+                    response = requests.post(url, data=auth_data['params'], headers=auth_data['headers'], timeout=10)
                 elif method == 'DELETE':
-                    response = requests.delete(url, params=auth_data['params'], headers=auth_data['headers'])
+                    response = requests.delete(url, params=auth_data['params'], headers=auth_data['headers'], timeout=10)
                 else:
                     raise ValueError(f"Unsupported HTTP method: {method}")
                 

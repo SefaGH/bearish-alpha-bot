@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
+if [ -z "${EVENT_HUB_CONNECTION_STRING:-}" ]; then
+    echo "Error: EVENT_HUB_CONNECTION_STRING is not set."
+    exit 1
+fi
+
 # Install Fluent Bit
 curl https://raw.githubusercontent.com/fluent/fluent-bit/master/install.sh | sh
 
@@ -20,7 +25,7 @@ cat > /etc/fluent-bit/parsers.conf <<'EOF'
 EOF
 
 # Write fluent-bit.conf
-cat > /etc/fluent-bit/fluent-bit.conf <<'EOF'
+cat > /etc/fluent-bit/fluent-bit.conf <<EOF
 [SERVICE]
     Flush        5
     Daemon       Off
@@ -47,8 +52,8 @@ cat > /etc/fluent-bit/fluent-bit.conf <<'EOF'
     Topics      parsed-events
     rdkafka.security.protocol   SASL_SSL
     rdkafka.sasl.mechanism      PLAIN
-    rdkafka.sasl.username       $ConnectionString
-    rdkafka.sasl.password       Endpoint=sb://bearishreportingehns.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=VfHL4TTTj05heBPWE3MWx7GDJg5zQ7lC++AEhLmrE2I=
+    rdkafka.sasl.username       \$ConnectionString
+    rdkafka.sasl.password       $EVENT_HUB_CONNECTION_STRING
     rdkafka.request.required.acks 1
 EOF
 

@@ -156,7 +156,7 @@ def _upload_pdf(run_id: str, pdf_bytes: bytes, credential: DefaultAzureCredentia
     return f"{blob_client.url}?{sas_token}"
 
 
-def _send_email(run_id: str, report_url: str):
+def _send_email(run_id: str, report_url: str) -> bool:
     """Sends an email with the report link using SendGrid."""
     from sendgrid import SendGridAPIClient
     from sendgrid.helpers.mail import Mail
@@ -164,7 +164,7 @@ def _send_email(run_id: str, report_url: str):
     api_key = os.environ.get("SENDGRID_API_KEY")
     if not api_key:
         LOGGER.warning("SENDGRID_API_KEY not found, skipping email.")
-        return
+        return False
 
     # TODO: Make recipient configurable
     to_email = "sefaasar@hotmail.com" 
@@ -189,11 +189,13 @@ def _send_email(run_id: str, report_url: str):
         sg = SendGridAPIClient(api_key)
         response = sg.send(message)
         LOGGER.info(f"Email sent. Status Code: {response.status_code}")
+        return 200 <= response.status_code < 300
     except Exception as e:
         LOGGER.error(f"Failed to send email: {str(e)}")
+        return False
 
 
-async def main(req: func.HttpRequest) -> func.HttpResponse:
+def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         body = req.get_json()
     except ValueError:
@@ -229,12 +231,12 @@ async def main(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse("Failed to upload report", status_code=500)
 
     # Send Email
-    _send_email(run_id, sas_url)
+    email_success = _send_email(run_id, sas_url)
 
     response_body = {
         "run_id": run_id,
         "report_url": sas_url,
-        "email_sent": True
+        "email_sent": email_success
     }
 
     return func.HttpResponse(json.dumps(response_body), status_code=200, mimetype="application/json")
