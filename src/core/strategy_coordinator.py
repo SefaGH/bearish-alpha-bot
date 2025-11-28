@@ -938,17 +938,21 @@ class StrategyCoordinator:
             
             # --- Quality Calculation ---
             features = enriched_signal.get('features', {})
+            
+            def _get_val(primary, secondary=None):
+                return primary if primary is not None else secondary
+
             quality_features = {
                 "ml_component": enriched_signal.get("ml_confidence"),
-                "volume_component": features.get("volume_score") or enriched_signal.get("volume_24h"),
-                "momentum_component": features.get("momentum") or enriched_signal.get("momentum"),
-                "spread_component": features.get("spread") or enriched_signal.get("spread")
+                "volume_component": _get_val(features.get("volume_score"), enriched_signal.get("volume_24h")),
+                "momentum_component": features.get("momentum"),
+                "spread_component": features.get("spread")
             }
             quality_result = compute_quality(quality_features, logger)
             enriched_signal["quality_score"] = quality_result["value"]
             enriched_signal["quality_breakdown"] = quality_result
 
-            # Adım 7: Sinyali ve Rota Bilgisini Hazırla
+            # Adim 7: Sinyali ve Rota Bilgisini Hazirla
             routing_result = self._route_signal(enriched_signal, risk_assessment)
             signal_id = self._generate_signal_id(strategy_name, enriched_signal)
             enriched_signal["signal_id"] = signal_id

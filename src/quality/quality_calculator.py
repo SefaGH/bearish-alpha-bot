@@ -7,7 +7,6 @@ Returns a dict:
 }
 """
 from typing import Dict, Any
-import math
 
 DEFAULT_FALLBACK = {
     "ml_component": 0.10,
@@ -59,7 +58,7 @@ def compute_quality(features: Dict[str, Any], logger=None) -> Dict[str, Any]:
         components["ml_component"] = DEFAULT_FALLBACK["ml_component"]
         reasons.append("ml_component_missing_fallback_used")
         if logger:
-            logger.debug("quality_input_missing", component="ml_component")
+            logger.debug("quality_input_missing - component=ml_component")
     else:
         try:
             components["ml_component"] = float(ml_raw)
@@ -67,7 +66,7 @@ def compute_quality(features: Dict[str, Any], logger=None) -> Dict[str, Any]:
             components["ml_component"] = DEFAULT_FALLBACK["ml_component"]
             reasons.append("ml_component_parse_error")
             if logger:
-                logger.debug("quality_input_parse_error", component="ml_component", raw=ml_raw)
+                logger.debug(f"quality_input_parse_error - component=ml_component raw={ml_raw}")
 
     # volume_component: typical raw scale 0..2 => normalize 0..1 using clamp
     vol_raw = features.get("volume_component")
@@ -75,7 +74,7 @@ def compute_quality(features: Dict[str, Any], logger=None) -> Dict[str, Any]:
         components["volume_component"] = DEFAULT_FALLBACK["volume_component"]
         reasons.append("volume_component_missing_fallback_used")
         if logger:
-            logger.debug("quality_input_missing", component="volume_component")
+            logger.debug("quality_input_missing - component=volume_component")
     else:
         n = _normalize(vol_raw, 0.0, 2.0)
         components["volume_component"] = n if n is not None else DEFAULT_FALLBACK["volume_component"]
@@ -86,7 +85,7 @@ def compute_quality(features: Dict[str, Any], logger=None) -> Dict[str, Any]:
         components["momentum_component"] = DEFAULT_FALLBACK["momentum_component"]
         reasons.append("momentum_component_missing_fallback_used")
         if logger:
-            logger.debug("quality_input_missing", component="momentum_component")
+            logger.debug("quality_input_missing - component=momentum_component")
     else:
         n = _normalize(mom_raw, -5.0, 5.0)
         components["momentum_component"] = n if n is not None else DEFAULT_FALLBACK["momentum_component"]
@@ -97,7 +96,7 @@ def compute_quality(features: Dict[str, Any], logger=None) -> Dict[str, Any]:
         components["spread_component"] = DEFAULT_FALLBACK["spread_component"]
         reasons.append("spread_component_missing_fallback_used")
         if logger:
-            logger.debug("quality_input_missing", component="spread_component")
+            logger.debug("quality_input_missing - component=spread_component")
     else:
         n = _normalize(sp_raw, 0.0, 1.0)
         components["spread_component"] = n if n is not None else DEFAULT_FALLBACK["spread_component"]
@@ -137,6 +136,6 @@ def compute_quality(features: Dict[str, Any], logger=None) -> Dict[str, Any]:
     }
 
     if logger:
-        logger.debug("quality_computed", **out)
+        logger.debug(f"quality_computed - {out}")
 
     return out

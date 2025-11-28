@@ -114,8 +114,15 @@ async def test_complete_signal_execution_pipeline():
     await asyncio.sleep(0.5)
 
     # Manually drain coordinator queue to engine queue (since production loop is not running)
+    max_drain_attempts = 50
+    drain_attempts = 0
     while not coordinator.strategy_coordinator.signal_queue.qsize() == 0:
+        if drain_attempts >= max_drain_attempts:
+            pytest.fail(f"Coordinator queue failed to drain after {max_drain_attempts} attempts")
+        
         await coordinator.trading_engine.trigger_coordinator_drain()
+        drain_attempts += 1
+        await asyncio.sleep(0.01)  # Avoid busy-waiting
     
     # Verify signals are in engine queue
     engine_queue_size = coordinator.trading_engine.signal_queue.qsize()
@@ -291,8 +298,15 @@ async def test_queue_monitoring_integration():
     await asyncio.sleep(0.2)
 
     # Manually drain coordinator queue to engine queue
+    max_drain_attempts = 50
+    drain_attempts = 0
     while not coordinator.strategy_coordinator.signal_queue.qsize() == 0:
+        if drain_attempts >= max_drain_attempts:
+            pytest.fail(f"Coordinator queue failed to drain after {max_drain_attempts} attempts")
+            
         await coordinator.trading_engine.trigger_coordinator_drain()
+        drain_attempts += 1
+        await asyncio.sleep(0.01)
     
     # Check queue sizes
     coordinator_queue_size = coordinator.strategy_coordinator.signal_queue.qsize()
