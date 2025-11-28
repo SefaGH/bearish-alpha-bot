@@ -8,6 +8,7 @@ import heapq
 import itertools
 import logging
 import time
+import json
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from collections import defaultdict
@@ -16,6 +17,8 @@ from pathlib import Path
 
 import numpy as np
 from copy import deepcopy
+
+from src.quality.quality_calculator import compute_quality
 
 try:  # Optional dependency; lazily initialized when available
     from ml.adapters.ppo_trading_adapter import PPOTradingAdapter
@@ -840,6 +843,31 @@ class StrategyCoordinator:
             return None
 
 
+    def emit_signal_breakdown(self, signal: Dict[str, Any], quality_result: Dict[str, Any]) -> None:
+        """
+        Log structured JSON breakdown of the signal for observability.
+        """
+        quality_score = quality_result.get("value", 0.0)
+        
+        # Alert on zero quality
+        if quality_score <= 0.0:
+            logger.warning(f"⚠️ [QUALITY-ALERT] Signal quality is 0.0 for {signal.get('symbol')}! Reasons: {quality_result.get('reason')}")
+
+        breakdown = {
+            "event": "signal_breakdown",
+            "signal_id": signal.get("signal_id"),
+            "symbol": signal.get("symbol"),
+            "strategy": signal.get("strategy_name"),
+            "side": signal.get("side"),
+            "quality_score": quality_score,
+            "quality_components": quality_result.get("components"),
+            "quality_reasons": quality_result.get("reason"),
+            "ml_score": signal.get("ml_confidence"),
+            "ml_regime": signal.get("predicted_regime"),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        logger.info(f"SIGNAL_BREAKDOWN {json.dumps(breakdown)}")
+
     # ===============================================================
     # ====================   DÜZELTİLMİŞ METOT   ====================
     # ===============================================================
@@ -908,9 +936,29 @@ class StrategyCoordinator:
                 logger.warning(f"🛡️  {log_prefix} REJECTED (Risk Check): {risk_assessment['reason']}")
                 return {'status': 'rejected', 'reason': risk_assessment['reason'], 'stage': 'risk_assessment'}
             
-            # Adım 7: Sinyali ve Rota Bilgisini Hazırla
+            # --- Quality Calculation ---
+            features = enriched_signal.get('features', {})
+            
+            def _get_val(primary, secondary=None):
+                return primary if primary is not None else secondary
+
+            quality_features = {
+                "ml_component": enriched_signal.get("ml_confidence"),
+                "volume_component": _get_val(features.get("volume_score"), enriched_signal.get("volume_24h")),
+                "momentum_component": features.get("momentum"),
+                "spread_component": features.get("spread")
+            }
+            quality_result = compute_quality(quality_features, logger)
+            enriched_signal["quality_score"] = quality_result["value"]
+            enriched_signal["quality_breakdown"] = quality_result
+
+            # Adim 7: Sinyali ve Rota Bilgisini Hazirla
             routing_result = self._route_signal(enriched_signal, risk_assessment)
             signal_id = self._generate_signal_id(strategy_name, enriched_signal)
+            enriched_signal["signal_id"] = signal_id
+
+            # --- Emit Signal Breakdown ---
+            self.emit_signal_breakdown(enriched_signal, quality_result)
             
             self.active_signals[signal_id] = {
                 'signal': enriched_signal, 'risk_assessment': risk_assessment,

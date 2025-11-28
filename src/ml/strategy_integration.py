@@ -201,6 +201,24 @@ class AIEnhancedStrategyAdapter:
                 enhancement["ai_signal"] = str(ai_signal.get("signal", "neutral"))
                 enhancement["ai_strength"] = float(ai_signal.get("strength", 0.0))
 
+                # Create comprehensive ML metadata for persistence and explainability
+                ai_consensus = float(ai_signal.get("consensus", 0.0))
+                ai_confidence = float(ai_signal.get("confidence", 0.0))
+                ai_uncertainty = float(ai_signal.get("uncertainty", 1.0))
+                ai_direction = str(ai_signal.get("signal", "neutral"))
+                
+                ml_metadata = {
+                    "consensus": ai_consensus,
+                    "price_direction": ai_direction,
+                    "regime": enhancement.get("predicted_regime", "neutral"),
+                    "price_confidence": ai_confidence,
+                    "uncertainty": ai_uncertainty,
+                    "forecast_price": ai_signal.get("forecast_price"),
+                    "ml_price_score_normalized": ai_consensus * 100.0, # 0-100 scale
+                    "regime_confidence": enhancement.get("regime_confidence", 0.0)
+                }
+                enhancement["ml_metadata"] = ml_metadata
+
                 combined = self._combine_signals(
                     processed_signal, ai_signal, price_forecast
                 )
