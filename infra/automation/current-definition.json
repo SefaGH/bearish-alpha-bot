@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "actions": {},
+  "contentVersion": "1.0.0.0",
+  "outputs": {},
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    },
+    "sendgrid_api_key": {
+      "defaultValue": "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",
+      "type": "String"
+    }
+  },
+  "triggers": {}
+}
