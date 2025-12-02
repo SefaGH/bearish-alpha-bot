@@ -4,7 +4,14 @@ import subprocess
 import logging
 from pathlib import Path
 
-from azure_boot import setup_environment, ensure_directories, setup_default_manifest, setup_ml_environment
+try:
+    from azure_boot import setup_environment, ensure_directories, setup_default_manifest, setup_ml_environment
+except ImportError as e:
+    logging.basicConfig(level=logging.ERROR, format="%(asctime)s %(levelname)s %(message)s")
+    log = logging.getLogger("vm_boot")
+    log.error("Failed to import azure_boot module: %s", e)
+    log.error("This container may be missing required Azure setup scripts.")
+    sys.exit(1)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("vm_boot")
@@ -36,8 +43,16 @@ def build_mode_args() -> list[str]:
         log.info("Debug mode enabled (DEBUG_MODE=true)")
 
     if duration:
-        mode_args.extend(["--duration", duration])
-        log.info("Trading duration set via env TRADING_DURATION=%s seconds", duration)
+        try:
+            # Validate duration is a valid integer
+            duration_int = int(duration)
+            if duration_int <= 0:
+                log.warning("TRADING_DURATION must be positive, got %s. Using default.", duration)
+            else:
+                mode_args.extend(["--duration", str(duration_int)])
+                log.info("Trading duration set via env TRADING_DURATION=%s seconds", duration_int)
+        except ValueError:
+            log.warning("Invalid TRADING_DURATION value '%s' (must be integer). Ignoring.", duration)
     else:
         log.info("Trading duration not set (TRADING_DURATION unset) - launcher controls loop length")
 
@@ -71,10 +86,22 @@ def main() -> int:
     log.info("EXCHANGES=%s", os.environ.get("EXCHANGES", "bingx"))
     log.info("========================================")
 
-    exit_code = subprocess.call(cmd)
+    try:
+        exit_code = subprocess.call(cmd)
+    except FileNotFoundError as e:
+        log.error("Failed to execute launcher: %s", e)
+        log.error("Launcher script not found: %s", cmd[1] if len(cmd) > 1 else "unknown")
+        return 127  # Command not found
+    except Exception as e:
+        log.error("Unexpected error during launcher execution: %s", e)
+        log.error("Command was: %s", " ".join(cmd))
+        return 1  # General error
 
     log.info("========================================")
-    log.info("Bearish Alpha Bot process finished with exit code %s", exit_code)
+    if exit_code == 0:
+        log.info("✅ Bearish Alpha Bot completed successfully (exit code 0)")
+    else:
+        log.warning("⚠️ Bearish Alpha Bot exited with non-zero code: %s", exit_code)
     log.info("(Analysis is based on logs; use diagnostics/log_analyzer_auto_plus.py or helper scripts after stop, regardless of reason)")
     log.info("========================================")
 

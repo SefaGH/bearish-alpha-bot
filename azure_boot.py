@@ -1,25 +1,21 @@
+"""Azure Boot Utilities
+
+Utility functions for Azure environment setup.
+Used by vm_boot.py for container initialization.
+
+Functions:
+    - setup_environment(): Configure PYTHONPATH for project
+    - ensure_directories(): Create required directories
+    - setup_default_manifest(): Create GEMMA-2.0.0 manifest (CRITICAL for ML)
+    - setup_ml_environment(): Configure ML environment variables
+"""
 import os
 import sys
 import subprocess
-import time
 import logging
 from pathlib import Path
 import json
-
-# Azure SDK (Hata almamak için try-except bloğu)
-try:
-    from azure.identity import DefaultAzureCredential
-    from azure.keyvault.secrets import SecretClient
-    from azure.core.exceptions import AzureError
-    AZURE_SDK_AVAILABLE = True
-except ImportError:
-    AZURE_SDK_AVAILABLE = False
-
-try:
-    from keep_alive import start_health_server
-    HEALTH_SERVER_AVAILABLE = True
-except ImportError:
-    HEALTH_SERVER_AVAILABLE = False
+from typing import Optional
 
 # Loglama Ayarları
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -81,9 +77,20 @@ def ensure_directories():
     
     log.info("✅ Required directories and placeholder files created")
 
-def setup_default_manifest():
-    """Set up proper GEMMA-2.0.0 manifest for Azure deployment."""
-    manifest_path = Path('artifacts/gemma/final/manifest.json')
+def setup_default_manifest(manifest_path: Optional[str] = None):
+    """Set up proper GEMMA-2.0.0 manifest for Azure deployment.
+    
+    Args:
+        manifest_path: Optional custom path for manifest. Defaults to artifacts/gemma/final/manifest.json
+        
+    Note:
+        This manifest is CRITICAL - ML system (Gemma adapter) reads this to determine feature count.
+        Missing or invalid manifest will cause ML predictions to fail.
+    """
+    if manifest_path is None:
+        manifest_path = os.getenv('GEMMA_MANIFEST_PATH', 'artifacts/gemma/final/manifest.json')
+    
+    manifest_path = Path(manifest_path)
     
     if not manifest_path.exists():
         manifest_content = {
@@ -140,146 +147,31 @@ def setup_ml_environment():
             try:
                 log.info(f"🔧 Running {script}...")
                 result = subprocess.run(['bash', script], 
-                                      capture_output=True, text=True, timeout=60)
+                                      capture_output=True, text=True, timeout=120)
                 if result.returncode == 0:
                     log.info(f"✅ {script} completed successfully")
                 else:
-                    log.warning(f"⚠️ {script} failed: {result.stderr}")
+                    log.warning(f"⚠️ {script} failed (non-critical): {result.stderr}")
+            except subprocess.TimeoutExpired:
+                log.error(f"❌ {script} timed out after 120 seconds")
+                raise RuntimeError(f"Critical setup script timed out: {script}")
             except Exception as e:
                 log.warning(f"⚠️ Failed to run {script}: {e}")
         else:
             log.warning(f"⚠️ Setup script not found: {script}")
 
     # Verify GEMMA manifest exists (mirror of CI pre-flight check)
-    gemma_manifest = Path('artifacts/gemma/final/manifest.json')
+    manifest_path_str = os.getenv('GEMMA_MANIFEST_PATH', 'artifacts/gemma/final/manifest.json')
+    gemma_manifest = Path(manifest_path_str)
     if not gemma_manifest.exists():
         log.error("❌ GEMMA manifest not found at %s", gemma_manifest)
+        raise FileNotFoundError(f"Critical: GEMMA manifest missing at {gemma_manifest}")
     else:
         log.info("✅ GEMMA manifest found at %s", gemma_manifest)
 
     # Verify PPO model artifact exists (mirror of CI pre-flight check)
     ppo_path = Path('artifacts/ppo/ppo_trading_agent.zip')
     if not ppo_path.exists():
-        log.error("❌ PPO model not found at %s", ppo_path)
+        log.warning("⚠️ PPO model not found at %s (optional)", ppo_path)
     else:
         log.info("✅ PPO model found at %s", ppo_path)
-
-# 1. Sağlık Sunucusunu Başlat
-if HEALTH_SERVER_AVAILABLE:
-    log.info("🟢 Azure Health Check Sunucusu Başlatılıyor...")
-    start_health_server()
-else:
-    log.warning("⚠️ Health server not available, continuing without health endpoint")
-
-# 2. Key Vault Entegrasyonu
-def load_secrets_from_keyvault(vault_name, secret_names):
-    if not AZURE_SDK_AVAILABLE:
-        log.warning("Azure SDK yüklü değil, Key Vault atlanıyor.")
-        return
-
-    if not vault_name:
-        log.info("ℹ️ KEYVAULT_NAME tanımlı değil; .env veya App Settings kullanılacak.")
-        return
-
-    kv_uri = f"https://{vault_name}.vault.azure.net"
-    try:
-        credential = DefaultAzureCredential()
-        client = SecretClient(vault_url=kv_uri, credential=credential)
-        log.info(f"🔐 Key Vault Bağlantısı Başarılı: {vault_name}")
-    except Exception as e:
-        log.error(f"❌ Key Vault bağlantı hatası: {e}")
-        return
-
-    for s in secret_names:
-        if os.getenv(s) is None:
-            try:
-                secret = client.get_secret(s)
-                os.environ[s] = secret.value
-                log.info(f"✅ Secret başarıyla yüklendi: {s}")
-            except AzureError as ae:
-                log.warning(f"⚠️ Secret okunamadı {s}: {ae}")
-
-KV_NAME = os.getenv("KEYVAULT_NAME")
-SECRETS_TO_LOAD = os.getenv("KV_SECRETS", "KUCOIN_API_KEY,KUCOIN_API_SECRET,KUCOIN_API_PASSPHRASE").split(",")
-
-if AZURE_SDK_AVAILABLE:
-    load_secrets_from_keyvault(KV_NAME, SECRETS_TO_LOAD)
-
-# 3. Eski Azure App Service retry döngüsü devre dışı
-# (VM senaryosunda yeni main() ve vm_boot.py akışı kullanılacak.)
-
-def determine_trading_mode():
-    """Determine the trading mode based on environment variables."""
-    trading_mode = os.environ.get('TRADING_MODE', 'paper').lower()
-    debug_mode = os.environ.get('DEBUG_MODE', 'false').lower() == 'true'
-    duration = os.environ.get('TRADING_DURATION')
-    
-    args = []
-    
-    # Always default to paper mode in Azure for safety
-    if trading_mode != 'live':
-        args.append('--paper')
-        log.info("📝 Running in paper trading mode (Azure default)")
-    else:
-        log.info("💰 Running in LIVE trading mode")
-    
-    if debug_mode:
-        args.append('--debug')
-        log.info("🔍 Debug mode enabled")
-    
-    if duration:
-        args.extend(['--duration', duration])
-        log.info(f"⏱️ Trading duration set to {duration} seconds")
-    
-    return args
-
-def main():
-    """Enhanced main function with proper Azure setup."""
-    log.info("========================================")
-    log.info("🤖 Bearish Alpha Bot - Azure Boot Enhanced")
-    log.info("========================================")
-    log.info(f"Python version: {sys.version}")
-    log.info(f"Working directory: {os.getcwd()}")
-    
-    try:
-        # Set up environment
-        setup_environment()
-        ensure_directories()
-        setup_default_manifest()
-        setup_ml_environment()
-        
-        # Load secrets from Key Vault if available
-        vault_name = os.environ.get("KEYVAULT_NAME")
-        if vault_name:
-            load_secrets_from_keyvault(vault_name, ["BINGX-KEY", "BINGX-SECRET", "TELEGRAM-BOT-TOKEN"])
-        
-        # Determine trading arguments
-        mode_args = determine_trading_mode()
-        
-        # Build command
-        cmd = [sys.executable, 'scripts/live_trading_launcher.py'] + mode_args
-        
-        log.info("========================================")
-        log.info("🚀 Starting Bearish Alpha Bot")
-        log.info("========================================")
-        log.info(f"Command: {' '.join(cmd)}")
-        log.info("Environment Variables:")
-        log.info(f"  TRADING_MODE: {os.environ.get('TRADING_MODE', 'paper')}")
-        log.info(f"  DEBUG_MODE: {os.environ.get('DEBUG_MODE', 'false')}")
-        log.info(f"  ML_ENABLED: {os.environ.get('ML_ENABLED', 'true')}")
-        log.info(f"  EXCHANGES: {os.environ.get('EXCHANGES', 'bingx')}")
-        log.info("========================================")
-        
-        # Execute the trading bot
-        proc = subprocess.run(cmd, check=False)
-        return proc.returncode
-        
-    except KeyboardInterrupt:
-        log.info("🛑 Received interrupt signal, shutting down gracefully...")
-        return 0
-    except Exception as e:
-        log.error(f"❌ Unexpected error in main: {e}")
-        return 1
-
-if __name__ == '__main__':
-    sys.exit(main())

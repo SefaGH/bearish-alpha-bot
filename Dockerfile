@@ -42,9 +42,6 @@ ENV PYTHONPATH="/app:/app/src:/app/scripts"
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 
-# Make startup script executable
-RUN chmod +x startup.sh
-
 # Expose port for Azure App Service
 EXPOSE 8000
 

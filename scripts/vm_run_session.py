@@ -51,7 +51,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     parser.add_argument(
         "--image",
-        default="bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-4",
+        default="bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-11",
         help="Docker image to run (default: %(default)s)",
     )
     parser.add_argument(
@@ -133,11 +133,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.just_print:
             continue
 
-        result = subprocess.run(cmd)
+        # Capture output to reduce stderr noise for expected failures (stop/rm)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
         # stop/rm may fail if container does not exist; do not abort for those
-        if description in {"Pulling image", "Starting container"} and result.returncode != 0:
-            print(f"Command failed with exit code {result.returncode}")
-            return result.returncode
+        if result.returncode != 0:
+            if description in {"Stopping existing container (if any)", "Removing existing container (if any)"}:
+                print(f"  ℹ️  Container not found (expected, continuing...)")
+            elif description in {"Pulling image", "Starting container"}:
+                print(f"  ❌ Command failed with exit code {result.returncode}")
+                if result.stderr:
+                    print(f"  Error: {result.stderr.strip()}")
+                return result.returncode
 
     return 0
 
