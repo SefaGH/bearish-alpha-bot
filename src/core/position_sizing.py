@@ -235,26 +235,10 @@ class AdvancedPositionSizing:
     
     async def calculate_optimal_size(self, signal: Dict, method: str = 'fixed_risk_capped', return_signal: bool = False, **kwargs) -> Union[Dict, float]:
         """
-        Calculate position size with two-stage safety:
-        1. Risk-based calculation
-        2. Dynamic capital percentage caps
-        
-        This method enriches the signal with:
-        - amount: Position size in base currency
-        - notional: Position value in USDT
-        - sizing_meta: Detailed calculation metadata
-        
-        Args:
-            signal: Trading signal with entry, stop, target, etc.
-            method: Sizing method (default: 'fixed_risk_capped')
-            return_signal: When True, return the enriched signal dict; otherwise
-                return just the calculated position amount for backward compatibility
-            **kwargs: Optional overrides such as risk_per_trade to enforce a
-                fixed USD risk amount
-            
-        Returns:
-            Enriched signal dictionary (when return_signal=True) or the numeric
-            position amount (default)
+        Calculate the uncapped, risk-based proposal for a position size.
+
+        The RiskManager now owns all cap enforcement, so this method only computes
+        the proposed notional based on risk inputs and annotates the signal.
         """
         try:
             # Allow explicit risk overrides for backward compatibility
@@ -290,67 +274,45 @@ class AdvancedPositionSizing:
             
             # Get configuration (use config from risk_manager)
             config = getattr(self.risk_manager, 'config', {})
-            
+
             # Use configuration with GitHub Variables priority
             risk_pct = float(config.get('per_trade_risk_pct', 0.01))
             risk_cap = config.get('risk_usd_cap')
-            max_notional_pct = float(config.get('max_notional_pct_per_trade', 0.20))
-            max_margin_pct = float(config.get('max_margin_pct_per_trade', 0.20))
             leverage = float(signal.get('leverage', config.get('leverage_default', 5)))
-            
-            # STAGE 1: Risk-based calculation
+
+            # Risk-based calculation only (no caps here)
             base_risk_usd = risk_per_trade_override if risk_per_trade_override is not None else capital * risk_pct
             if risk_cap:
                 base_risk_usd = min(base_risk_usd, float(risk_cap))
-            
+
             risk_based_notional = base_risk_usd / stop_pct if stop_pct > 0 else 0
-            
-            # STAGE 2: Apply dynamic caps (percentage of capital)
-            exposure_cap = capital * max_notional_pct
-            margin_cap = capital * max_margin_pct * leverage  # For futures
-            
-            # Determine final cap
-            caps_to_apply = [exposure_cap, margin_cap]
-            final_cap = min(caps_to_apply)
-            
-            # Apply the cap
-            final_notional = min(risk_based_notional, final_cap)
-            
-            # Calculate position amount
-            amount = final_notional / entry_price if entry_price > 0 else 0
-            
-            # Create detailed metadata
+            proposed_notional = risk_based_notional
+            proposed_amount = proposed_notional / entry_price if entry_price > 0 else 0
+
             sizing_meta = {
                 'method': method,
                 'capital': capital,
                 'risk_pct': risk_pct,
                 'stop_pct': stop_pct,
-                'calculations': {
-                    'base_risk_usd': base_risk_usd,
-                    'risk_based_notional': risk_based_notional,
-                    'exposure_cap': exposure_cap,
-                    'margin_cap': margin_cap,
-                    'final_notional': final_notional
-                },
-                'position_pct': (final_notional/capital)*100 if capital > 0 else 0,
-                'capped': risk_based_notional > final_cap
+                'base_risk_usd': base_risk_usd,
+                'risk_based_notional': risk_based_notional,
+                'proposed_notional': proposed_notional,
+                'capped': False,
+                'cap_applied_by': None,
             }
-            
-            # Log the calculation
-            logger.info(f"📊 [SIZING] {symbol}")
+
+            logger.info(f"📊 [SIZING-PROPOSED] {symbol}")
             logger.info(f"   Capital: ${capital:.2f}")
-            logger.info(f"   Risk-based: ${risk_based_notional:.2f}")
-            logger.info(f"   Cap applied: ${final_cap:.2f}")
-            logger.info(f"   Final notional: ${final_notional:.2f} ({sizing_meta['position_pct']:.1f}% of capital)")
-            
-            # Enrich signal with calculated values
-            signal['amount'] = amount
-            signal['notional'] = final_notional
-            signal['position_size'] = amount  # Backward compatibility
+            logger.info(f"   Risk-based notional: ${risk_based_notional:.2f}")
+            logger.info("   ⚠️ Limits will be applied by RiskManager.apply_position_limits()")
+
+            signal['amount'] = proposed_amount
+            signal['notional'] = proposed_notional
+            signal['position_size'] = proposed_amount
             signal['leverage'] = leverage
             signal['sizing_meta'] = sizing_meta
-            
-            return signal if return_signal else amount
+
+            return signal if return_signal else proposed_amount
             
         except Exception as e:
             logger.error(f"[SIZING] Error calculating size for {signal.get('symbol')}: {e}", exc_info=True)

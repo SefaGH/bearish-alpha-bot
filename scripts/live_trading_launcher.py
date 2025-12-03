@@ -1112,13 +1112,27 @@ class LiveTradingLauncher:
                 self.RISK_PARAMS[standard_key] = self.DEFAULT_RISK_PARAMS[standard_key]
                 logger.info(f"Risk param '{standard_key}' not found, using default: {self.DEFAULT_RISK_PARAMS[standard_key]}")
         
-        # CRITICAL: Add safety check for max_position_size
+        # CRITICAL: Normalize max_position_size format without enforcing artificial caps
         if 'max_position_size' in self.RISK_PARAMS and self.RISK_PARAMS['max_position_size'] is not None:
-            value = self.RISK_PARAMS['max_position_size']
-            if value > 1.0:
-                logger.warning(f"⚠️ max_position_size={value} > 1.0, converting to ratio")
-                self.RISK_PARAMS['max_position_size'] = min(value / 100.0, 0.20)  # Cap at 20%
-                logger.info(f"✅ Corrected max_position_size to {self.RISK_PARAMS['max_position_size']:.2%}")
+            raw_value = self.RISK_PARAMS['max_position_size']
+            try:
+                ratio = float(raw_value)
+            except (TypeError, ValueError):
+                logger.error(f"Invalid max_position_size value: {raw_value}. Falling back to default.")
+                ratio = float(self.DEFAULT_RISK_PARAMS.get('max_position_size', 0.10))
+
+            if ratio > 1.0:
+                logger.warning(f"⚠️ max_position_size={ratio} interpreted as percentage, converting to ratio")
+                ratio = ratio / 100.0
+
+            if ratio > 1.0:
+                logger.warning(f"⚠️ max_position_size={ratio:.1%} > 100%, capping to 100%")
+                ratio = 1.0
+            elif ratio > 0.75:
+                logger.warning(f"⚠️ max_position_size={ratio:.1%} is quite high (>75%)")
+
+            self.RISK_PARAMS['max_position_size'] = ratio
+            logger.info(f"✅ max_position_size normalized to {ratio:.1%}")
         
         # Validate risk parameter values (skip None values)
         for key, value in self.RISK_PARAMS.items():

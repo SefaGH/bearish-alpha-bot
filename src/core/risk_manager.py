@@ -102,6 +102,9 @@ class RiskManager:
             'max_position_size': self.risk_limits_dataclass.max_position_size,
             'max_drawdown': self.risk_limits_dataclass.max_drawdown,
             'max_correlation': self.risk_limits_dataclass.max_correlation,
+            'max_position_notional_usd': self.risk_limits_dataclass.max_position_notional_usd,
+            'position_size_policy': self.risk_limits_dataclass.position_size_policy,
+            'min_notional_threshold': self.risk_limits_dataclass.min_notional_threshold,
         }
         self.concurrent_limits = self.risk_config.get_concurrent_limits() if hasattr(self.risk_config, 'get_concurrent_limits') else None
         self.volatility_sizing = self.risk_config.get_volatility_sizing() if hasattr(self.risk_config, 'get_volatility_sizing') else None
@@ -614,37 +617,29 @@ class RiskManager:
             return (False, f"Validation error: {str(e)}", {})
     
     def _safe_get_equity(self, portfolio_manager) -> float:
-        """
-        Safely retrieve current equity with multiple fallback strategies.
-        
-        Args:
-            portfolio_manager: PortfolioManager instance or dict
-            
-        Returns:
-            float: Current equity value
-        """
-        try:
-            # Primary: Try PortfolioManager method
-            if hasattr(portfolio_manager, 'get_current_equity'):
-                return float(portfolio_manager.get_current_equity())
-            
-            # Secondary: Try dict access
-            if isinstance(portfolio_manager, dict):
-                logger.warning(f"[RISK-ENGINE] Received dict instead of PortfolioManager. "
-                             f"Using fallback dict access.")
-                if 'equity_usd' in portfolio_manager:
-                    return float(portfolio_manager.get('equity_usd', self.portfolio_value))
-                if 'portfolio_value' in portfolio_manager:
-                    return float(portfolio_manager.get('portfolio_value', self.portfolio_value))
-                return float(self.portfolio_value)
-            
-            # Fallback: Use internal value
-            logger.warning(f"[RISK-ENGINE] Invalid portfolio_manager type: {type(portfolio_manager)}. "
-                          f"Using fallback value: {self.portfolio_value}")
+        """Return best-effort equity reading without raising."""
+        if portfolio_manager is None:
             return float(self.portfolio_value)
-            
-        except Exception as e:
-            logger.error(f"[RISK-ENGINE] Failed to get equity: {e}. Using fallback: {self.portfolio_value}")
+
+        try:
+            if hasattr(portfolio_manager, 'get_total_equity'):
+                return float(portfolio_manager.get_total_equity())
+            if hasattr(portfolio_manager, 'portfolio_value'):
+                return float(getattr(portfolio_manager, 'portfolio_value'))
+            if hasattr(portfolio_manager, 'total_value'):
+                return float(getattr(portfolio_manager, 'total_value'))
+            if isinstance(portfolio_manager, dict):
+                for key in ('equity_usd', 'portfolio_value', 'total_value'):
+                    if key in portfolio_manager:
+                        return float(portfolio_manager[key])
+            logger.warning(
+                f"[RISK-ENGINE] Unable to read equity from portfolio_manager type={type(portfolio_manager)}; using fallback"
+            )
+            return float(self.portfolio_value)
+        except Exception as exc:
+            logger.warning(
+                f"[RISK-ENGINE] Failed to get equity from portfolio_manager: {exc}; using fallback {self.portfolio_value}"
+            )
             return float(self.portfolio_value)
     
     def _calculate_risk_metrics(self, signal: Dict, portfolio_manager) -> Dict[str, Any]:
@@ -742,6 +737,144 @@ class RiskManager:
         except Exception as e:
             logger.error(f"Error calculating risk metrics: {e}")
             return {}
+
+    def apply_position_limits(self, signal: Dict, portfolio_manager=None) -> Tuple[float, Dict[str, Any]]:
+        """Apply SSOT position limits and return the capped size plus metadata."""
+        portfolio_value = self._safe_get_equity(portfolio_manager)
+        entry_price = signal.get('entry', 0) or signal.get('entry_price', 0)
+
+        proposed_size = signal.get('position_size')
+        if proposed_size is None:
+            proposed_size = signal.get('amount', 0) or 0
+        proposed_notional = signal.get('notional')
+        if proposed_notional is None:
+            proposed_notional = proposed_size * entry_price if entry_price > 0 else 0
+
+        max_by_pct = portfolio_value * self.risk_limits['max_position_size']
+        max_abs_limit = self.risk_limits.get('max_position_notional_usd')
+        if max_abs_limit is None:
+            max_by_abs = float('inf')
+        else:
+            try:
+                max_by_abs = float(max_abs_limit)
+            except (TypeError, ValueError):
+                logger.warning(f"[RISK-LIMITS] Invalid max_position_notional_usd={max_abs_limit}, treating as unlimited")
+                max_by_abs = float('inf')
+        min_notional = float(self.risk_limits.get('min_notional_threshold', 5.0) or 0)
+        allowed_notional = min(max_by_pct, max_by_abs)
+        policy = self.risk_limits.get('position_size_policy', 'clip')
+
+        if proposed_notional > allowed_notional:
+            if policy == 'clip':
+                final_notional = allowed_notional
+                action = 'clip'
+                reason = f"Clipped from ${proposed_notional:.2f} to ${allowed_notional:.2f}"
+            else:
+                final_notional = 0.0
+                action = 'reject'
+                reason = f"Proposed ${proposed_notional:.2f} exceeds max ${allowed_notional:.2f}"
+        else:
+            final_notional = proposed_notional
+            action = 'none'
+            reason = 'Within limits'
+
+        if final_notional > 0 and final_notional < min_notional:
+            clipped_value = final_notional
+            logger.warning(
+                f"⚠️ Clipped notional ${clipped_value:.2f} below min ${min_notional:.2f} - rejecting"
+            )
+            final_notional = 0.0
+            action = 'reject'
+            if policy == 'clip':
+                reason = f"Clipped value ${clipped_value:.2f} below exchange minimum ${min_notional:.2f}"
+            else:
+                reason = f"Proposed ${proposed_notional:.2f} below minimum notional ${min_notional:.2f}"
+
+        final_size = final_notional / entry_price if entry_price > 0 and final_notional > 0 else 0.0
+
+        limit_meta = {
+            'action': action,
+            'reason': reason,
+            'proposed_notional': proposed_notional,
+            'allowed_notional': allowed_notional,
+            'final_notional': final_notional,
+            'final_size': final_size,
+            'max_by_pct': max_by_pct,
+            'max_by_pct_ratio': self.risk_limits['max_position_size'],
+            'max_by_abs': max_by_abs,
+            'min_notional': min_notional,
+            'policy': policy,
+        }
+
+        signal['limit_meta'] = limit_meta
+        self._log_position_limit_decision(signal, limit_meta)
+        return final_size, limit_meta
+
+    def _log_position_limit_decision(self, signal: Dict, limit_meta: Dict[str, Any]) -> None:
+        symbol = signal.get('symbol', 'UNKNOWN')
+        action = limit_meta.get('action')
+        reason = limit_meta.get('reason')
+        if action == 'clip':
+            logger.info(
+                f"📉 [RISK-LIMITS] {symbol} clipped to ${limit_meta.get('final_notional', 0):.2f} ({reason})"
+            )
+        elif action == 'reject':
+            logger.warning(
+                f"🚫 [RISK-LIMITS] {symbol} rejected by position limits: {reason}"
+            )
+        else:
+            logger.debug(
+                f"✅ [RISK-LIMITS] {symbol} within position limits (notional=${limit_meta.get('final_notional', 0):.2f})"
+            )
+
+    async def size_and_validate_position(
+        self,
+        signal: Dict,
+        portfolio_manager,
+        sizing_engine: 'AdvancedPositionSizing' = None,
+    ) -> Tuple[bool, float, Dict[str, Any]]:
+        """Unified API: size → apply limits → validate."""
+
+        combined_meta: Dict[str, Any] = {}
+
+        if portfolio_manager is None:
+            logger.error("[RISK-ENGINE] size_and_validate_position requires a PortfolioManager instance")
+            return False, 0.0, {'error': 'missing_portfolio_manager'}
+
+        try:
+            if sizing_engine:
+                signal = await sizing_engine.calculate_optimal_size(signal, return_signal=True)
+            combined_meta['sizing_meta'] = signal.get('sizing_meta', {})
+
+            final_size, limit_meta = self.apply_position_limits(signal, portfolio_manager)
+            combined_meta['limit_meta'] = limit_meta
+            signal['limit_meta'] = limit_meta
+
+            if limit_meta['action'] == 'reject':
+                return False, 0.0, combined_meta
+
+            signal['position_size'] = final_size
+            signal['amount'] = final_size
+            signal['notional'] = limit_meta['final_notional']
+
+            if 'sizing_meta' in signal:
+                signal['sizing_meta']['capped'] = limit_meta['action'] == 'clip'
+                signal['sizing_meta']['cap_applied_by'] = 'RiskManager.apply_position_limits'
+                signal['sizing_meta']['final_notional'] = limit_meta['final_notional']
+
+            is_valid, reason, risk_metrics = await self.validate_new_position(signal, portfolio_manager)
+            combined_meta['risk_metrics'] = risk_metrics
+            combined_meta['validation_reason'] = reason
+
+            if not is_valid:
+                return False, 0.0, combined_meta
+
+            return True, final_size, combined_meta
+
+        except Exception as exc:
+            logger.error(f"[RISK-ENGINE] size_and_validate_position failed: {exc}", exc_info=True)
+            combined_meta['error'] = str(exc)
+            return False, 0.0, combined_meta
     
     def _calculate_stop_loss_from_signal(self, signal: Dict, entry_price: float) -> float:
         """

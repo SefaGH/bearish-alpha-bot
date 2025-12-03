@@ -3,7 +3,7 @@ Risk Management Configuration.
 Centralized risk parameters and circuit breaker limits.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Literal
 from copy import deepcopy
 from dataclasses import dataclass, field
 import logging
@@ -16,15 +16,36 @@ logger = logging.getLogger(__name__)
 class RiskLimits:
     """Portfolio-level risk limits."""
     max_portfolio_risk: float = 0.02  # 2% max risk per trade
-    max_position_size: float = 0.10   # 10% max position size
+    max_position_size: float = 0.10   # 10% max position size (ratio)
     max_drawdown: float = 0.15        # 15% max portfolio drawdown
     max_correlation: float = 0.70     # 70% max position correlation
     stop_loss_multiplier: float = 2.0  # 2x ATR stop loss
     take_profit_ratio: float = 2.0     # 2:1 risk/reward minimum
 
+    # New limit controls (Single Source Of Truth for RiskManager)
+    max_position_notional_usd: Optional[float] = None
+    position_size_policy: Literal["clip", "reject"] = "clip"
+    min_notional_threshold: float = 5.0
+
     # Sentinel değerler - None = dinamik olarak belirlenecek
     take_profit_pct: Optional[float] = None
     stop_loss_pct: Optional[float] = None
+
+    def __post_init__(self):
+        if self.position_size_policy not in ("clip", "reject"):
+            raise ValueError(
+                f"Invalid position_size_policy='{self.position_size_policy}'. Must be 'clip' or 'reject'."
+            )
+
+        if not 0 <= self.max_position_size <= 1.0:
+            raise ValueError(
+                f"max_position_size must be between 0 and 1.0, got {self.max_position_size}"
+            )
+
+        if self.min_notional_threshold < 0:
+            raise ValueError(
+                f"min_notional_threshold must be >= 0, got {self.min_notional_threshold}"
+            )
 
 
 @dataclass
@@ -93,6 +114,9 @@ class RiskConfiguration:
         'max_correlation': 0.70,     # 70% max position correlation
         'stop_loss_multiplier': 2.0, # 2x ATR stop loss
         'take_profit_ratio': 2.0,    # 2:1 risk/reward minimum
+        'max_position_notional_usd': None,
+        'position_size_policy': 'clip',
+        'min_notional_threshold': 5.0,
         'take_profit_pct': None,     # None = dinamik
         'stop_loss_pct': None,       # None = dinamik
     }

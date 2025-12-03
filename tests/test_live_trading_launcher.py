@@ -81,11 +81,20 @@ class TestLiveTradingLauncher:
         """Test risk parameters are correctly configured."""
         launcher = create_launcher(dry_run=False)
         
-        assert launcher.RISK_PARAMS['max_position_size'] == 0.20  # 20%
+        assert launcher.RISK_PARAMS['max_position_size'] == 0.10  # default 10%
         assert launcher.RISK_PARAMS['stop_loss_pct'] == 0.02  # 2%
         assert launcher.RISK_PARAMS['take_profit_pct'] == 0.015  # 1.5%
         assert launcher.RISK_PARAMS['max_drawdown'] == 0.10  # 10%
         assert launcher.RISK_PARAMS['max_portfolio_risk'] == 0.05  # 5%
+
+    def test_risk_parameter_percentage_normalization(self):
+        """max_position_size > 1.0 should be interpreted as percentage without hard cap."""
+        launcher = create_launcher(dry_run=False)
+
+        launcher.RISK_PARAMS['max_position_size'] = 80  # 80%
+        launcher._normalize_risk_params()
+
+        assert launcher.RISK_PARAMS['max_position_size'] == pytest.approx(0.80)
     
     @patch.dict(os.environ, {
         'BINGX_KEY': 'test_key',
