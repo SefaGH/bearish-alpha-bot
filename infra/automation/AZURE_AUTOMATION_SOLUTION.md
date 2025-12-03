@@ -85,7 +85,7 @@ This solution provides a production-grade, serverless automation pipeline for re
 | `durationMinutes` | Integer | Yes | - | Trading session duration (1-85 min) |
 | `resourceGroup` | String | No | `TradeBot` | Azure resource group |
 | `vmName` | String | No | `BearishAlphaBot-VM-01` | Target VM name |
-| `imageTag` | String | No | `vm-vmboot-11` | Docker image tag |
+| `imageTag` | String | No | `vm-vmboot-12` | Docker image tag |
 | `keyVaultName` | String | No | `bearish-kv` | Key Vault for secrets |
 | `kvSecretNames` | String | No | `BINGX-KEY,BINGX-SECRET,TELEGRAM-BOT-TOKEN` | Secrets to inject |
 | `idempotencyToken` | String | No | Auto-generated | Unique execution ID |

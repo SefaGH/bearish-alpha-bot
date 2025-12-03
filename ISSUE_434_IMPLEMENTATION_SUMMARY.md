@@ -30,7 +30,7 @@ All requirements from Issue #434 have been fully addressed.
 durationMinutes      # Required: 1-85 minutes
 resourceGroup        # Default: TradeBot
 vmName               # Default: BearishAlphaBot-VM-01
-imageTag             # Default: vm-vmboot-11
+imageTag             # Default: vm-vmboot-12
 keyVaultName         # Default: bearish-kv
 kvSecretNames        # Default: BINGX-KEY,BINGX-SECRET,TELEGRAM-BOT-TOKEN
 idempotencyToken     # Optional: Unique execution ID
@@ -74,7 +74,7 @@ retryDelaySeconds    # Default: 30 (exponential backoff)
 ```json
 {
   "durationMinutes": 60,        // Required: 1-85
-  "imageTag": "vm-vmboot-11",    // Optional
+  "imageTag": "vm-vmboot-12",    // Optional
   "keyVaultName": "bearish-kv", // Optional
   "kvSecretNames": "..."        // Optional
 }
@@ -178,7 +178,7 @@ az automation runbook start \
 ```powershell
 $body = @{
     durationMinutes = 60
-    imageTag = "vm-vmboot-11"
+    imageTag = "vm-vmboot-12"
 } | ConvertTo-Json
 
 Invoke-RestMethod -Uri $LOGIC_APP_URL -Method POST -Body $body
@@ -320,7 +320,7 @@ fi
 - **Issue**: #434
 - **VM IP**: 20.73.171.66 (SSH available)
 - **Container Registry**: `bearishalphabot.azurecr.io`
-- **Default Image**: `vm-vmboot-11`
+- **Default Image**: `vm-vmboot-12`
 - **Key Vault**: `bearish-kv`
 
 ---

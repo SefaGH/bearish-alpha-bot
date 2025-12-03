@@ -187,8 +187,8 @@ Invoke-RestMethod -Method POST -Uri $endpoint `
 ### 4. iOS Shortcuts (Azure CLI)
 ```json
 {
-  "durationMinutes": 30,
-  "imageTag": "vm-vmboot-11",
+  "durationMinutes": 60,
+  "imageTag": "vm-vmboot-12",
   "forceRestart": false
 }
 ```
@@ -209,14 +209,14 @@ Invoke-RestMethod -Method POST -Uri $endpoint `
 - [ ] Test force restart (should stop + start)
 - [ ] Verify container status check logs
 - [ ] Confirm 30-second graceful stop timeout
-- [ ] Validate vm-vmboot-11 image pulls correctly
+- [ ] Validate vm-vmboot-12 image pulls correctly
 
 ### Documentation Review
 - [x] README.md synchronized
 - [x] AZURE_AUTOMATION_SOLUTION.md synchronized
 - [x] AZURE_MOBILE_APP_GUIDE.md synchronized
 - [x] ISSUE_434_IMPLEMENTATION_SUMMARY.md synchronized
-- [x] All image tags updated to vm-vmboot-11
+- [x] All image tags updated to vm-vmboot-12
 - [x] All forceRestart examples added
 
 ---
@@ -295,7 +295,7 @@ az automation runbook start --name Start-BearishBot-Enhanced \
 ### Completed ✅
 - ✅ Logic App workflow synchronized (forceRestart + imageTag)
 - ✅ All 6 documentation files updated (25 replacements)
-- ✅ Docker image vm-vmboot-11 built, pushed, and documented
+- ✅ Docker image vm-vmboot-12 built, pushed, and documented
 - ✅ Old images cleaned up (vm-vmboot-4 through 9)
 - ✅ Usage examples updated with new parameters
 - ✅ Mobile app guide synchronized (7 replacements)
@@ -326,7 +326,7 @@ az automation runbook start --name Start-BearishBot-Enhanced \
 **GitHub:**
 - Issue: #434 (Azure Automation for VM execution)
 - Runbook Version: 1.1.0
-- Docker Image: vm-vmboot-11 (latest)
+- Docker Image: vm-vmboot-12 (latest)
 
 ---
 

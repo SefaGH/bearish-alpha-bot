@@ -292,7 +292,7 @@
       "inputs": {
         "durationMinutes": "@coalesce(triggerBody()?['durationMinutes'], 60)",
         "forceRestart": "@coalesce(triggerBody()?['forceRestart'], false)",
-        "imageTag": "@coalesce(triggerBody()?['imageTag'], 'vm-vmboot-11')",
+        "imageTag": "@coalesce(triggerBody()?['imageTag'], 'vm-vmboot-12')",
         "keyVaultName": "@coalesce(triggerBody()?['keyVaultName'], 'bearish-kv')",
         "kvSecretNames": "@coalesce(triggerBody()?['kvSecretNames'], 'BINGX-KEY,BINGX-SECRET,TELEGRAM-BOT-TOKEN')"
       },
@@ -384,7 +384,7 @@
               "type": "boolean"
             },
             "imageTag": {
-              "default": "vm-vmboot-11",
+              "default": "vm-vmboot-12",
               "description": "Docker image tag to use",
               "type": "string"
             },

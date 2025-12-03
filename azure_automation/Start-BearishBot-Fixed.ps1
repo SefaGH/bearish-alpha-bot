@@ -14,7 +14,7 @@
 .PARAMETER VMName
     Botun çalışacağı sanal makine adı
 .PARAMETER ImageTag
-    Docker imajının tag'i (örn: vm-vmboot-11, latest)
+    Docker imajının tag'i (örn: vm-vmboot-12, latest)
 .PARAMETER DurationMinutes
     Botun kaç dakika çalışacağı (0 = sınırsız)
 .PARAMETER IdempotencyToken
@@ -39,7 +39,7 @@ param(
     [string] $VMName = "BearishAlphaBot-VM-01",
     
     [Parameter(Mandatory=$false)]
-    [string] $ImageTag = "vm-vmboot-11",
+    [string] $ImageTag = "vm-vmboot-12",
     
     [Parameter(Mandatory=$false)]
     [int] $DurationMinutes = 60,

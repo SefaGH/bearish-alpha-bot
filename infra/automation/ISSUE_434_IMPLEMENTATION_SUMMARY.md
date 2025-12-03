@@ -206,7 +206,7 @@ Start-AzAutomationRunbook `
     -ResourceGroupName "TradeBot" `
     -Parameters @{
         durationMinutes = 30
-        imageTag = "vm-vmboot-11"
+        imageTag = "vm-vmboot-12"
     }
 ```
 
@@ -217,7 +217,7 @@ Invoke-RestMethod -Method POST -Uri $endpoint `
   -ContentType "application/json" `
   -Body (@{
       durationMinutes = 60
-      imageTag = "vm-vmboot-11"
+      imageTag = "vm-vmboot-12"
   } | ConvertTo-Json)
 ```
 
