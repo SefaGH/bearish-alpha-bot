@@ -1,0 +1,179 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "actions": {
+    "Condition": {
+      "actions": {
+        "Send_No_Data_Email_SendGrid": {
+          "inputs": {
+            "body": {
+              "content": [
+                {
+                  "type": "text/plain",
+                  "value": "Merhaba,\n\nBot al²■mas²n² tamamlad² ancak raporlanacak i■lem verisi bulunamad².\n\nSistem Mesaj²: @{body('Parse_JSON')?['message']}\n\nTarih: @{utcNow()}"
+                }
+              ],
+              "from": {
+                "email": "@parameters('sendgrid_from_email')",
+                "name": "@parameters('sendgrid_from_name')"
+              },
+              "personalizations": [
+                {
+                  "subject": "Bearish Bot - ¦■lem Yok (Run ID: @{body('Parse_JSON')?['run_id']})",
+                  "to": [
+                    {
+                      "email": "@parameters('notification_recipient_email')"
+                    }
+                  ]
+                }
+              ]
+            },
+            "headers": {
+              "Authorization": "Bearer @{parameters('sendgrid_api_key')}",
+              "Content-Type": "application/json"
+            },
+            "method": "POST",
+            "uri": "https://api.sendgrid.com/v3/mail/send"
+          },
+          "type": "Http"
+        }
+      },
+      "else": {
+        "actions": {
+          "Send_Report_Email_SendGrid": {
+            "inputs": {
+              "body": {
+                "content": [
+                  {
+                    "type": "text/plain",
+                    "value": "Merhaba,\n\nBot al²■mas² ba■ar²yla tamamland² ve rapor olu■turuldu.\n\nRapor Linki: @{body('Parse_JSON')?['report_url']}\n\nDetayl² analiz iin linke t²klay²n²z."
+                  }
+                ],
+                "from": {
+                  "email": "@parameters('sendgrid_from_email')",
+                  "name": "@parameters('sendgrid_from_name')"
+                },
+                "personalizations": [
+                  {
+                    "subject": "Bearish Bot - G³nl³k Rapor Haz²r (Run ID: @{body('Parse_JSON')?['run_id']})",
+                    "to": [
+                      {
+                        "email": "@parameters('notification_recipient_email')"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "headers": {
+                "Authorization": "Bearer @{parameters('sendgrid_api_key')}",
+                "Content-Type": "application/json"
+              },
+              "method": "POST",
+              "uri": "https://api.sendgrid.com/v3/mail/send"
+            },
+            "type": "Http"
+          }
+        }
+      },
+      "expression": {
+        "and": [
+          {
+            "equals": [
+              "@body('Parse_JSON')?['status']",
+              "no_data"
+            ]
+          }
+        ]
+      },
+      "runAfter": {
+        "Parse_JSON": [
+          "Succeeded"
+        ]
+      },
+      "type": "If"
+    },
+    "HTTP_-_run_report": {
+      "inputs": {
+        "body": {
+          "run_id": "@coalesce(triggerBody()?['run_id'], concat('manual-', utcNow()))"
+        },
+        "method": "POST",
+        "uri": "@parameters('functionEndpoint')"
+      },
+      "runAfter": {},
+      "type": "Http"
+    },
+    "Parse_JSON": {
+      "inputs": {
+        "content": "@body('HTTP_-_run_report')",
+        "schema": {
+          "properties": {
+            "email_sent": {
+              "type": "boolean"
+            },
+            "message": {
+              "type": "string"
+            },
+            "report_url": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "runAfter": {
+        "HTTP_-_run_report": [
+          "Succeeded"
+        ]
+      },
+      "type": "ParseJson"
+    }
+  },
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    },
+    "functionEndpoint": {
+      "type": "String"
+    },
+    "notification_recipient_email": {
+      "type": "String"
+    },
+    "sendgrid_api_key": {
+      "defaultValue": "@Microsoft.KeyVault(SecretUri='https://bearish-kv.vault.azure.net/secrets/sendgrid-api-key/866a278cb2e549fba2a3f8e8e5b48f36')",
+      "type": "SecureString"
+    },
+    "sendgrid_from_email": {
+      "type": "String"
+    },
+    "sendgrid_from_name": {
+      "type": "String"
+    }
+  },
+  "triggers": {
+    "manual": {
+      "inputs": {
+        "schema": {
+          "properties": {
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        }
+      },
+      "kind": "Http",
+      "type": "Request"
+    }
+  }
+}

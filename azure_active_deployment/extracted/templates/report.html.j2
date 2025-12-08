@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Bearish Alpha Bot Report</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; }
+      h1 { color: #1f2937; }
+      table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+      th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; }
+      th { background: #f3f4f6; }
+    </style>
+  </head>
+  <body>
+    <h1>Bearish Alpha Bot — Run Report</h1>
+    <p>Generated at {{ generated_at }}</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Timestamp (UTC)</th>
+          <th>Event Type</th>
+          <th>Symbol</th>
+          <th>PnL (USD)</th>
+          <th>Strategy</th>
+          <th>Message</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for event in events %}
+        <tr>
+          <td>{{ event["timestamp_utc_t"] or event["timestamp_utc"] }}</td>
+          <td>{{ event["event_type_s"] or event["event_type"] }}</td>
+          <td>{{ event.get("symbol_s") or event.get("symbol") or "-" }}</td>
+          <td>{{ event.get("pnl_usd_d") or event.get("pnl_usd") or "-" }}</td>
+          <td>{{ event.get("strategy_s") or event.get("strategy") or "-" }}</td>
+          <td>{{ event.get("message_s") or event.get("message") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </body>
+</html>

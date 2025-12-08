@@ -1,0 +1,892 @@
+WARNING: Unable to encode the output with cp1254 encoding. Unsupported characters are discarded.
+{
+  "accessEndpoint": "https://prod-194.westeurope.logic.azure.com:443/workflows/352ef158a11843588debe65e0cb7573f",
+  "changedTime": "2025-12-05T03:23:15.2033426Z",
+  "createdTime": "2025-11-29T00:14:01.8051659Z",
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "actions": {
+      "Analyze_Failure_Reason": {
+        "inputs": "@if(contains(toLower(string(body('Get_Job_Output_And_Errors'))), 'no space left'), 'DiskFullError', if(contains(toLower(string(body('Get_Job_Output_And_Errors'))), 'error'), 'GeneralScriptError', 'Unknown'))",
+        "runAfter": {
+          "Get_Job_Output_And_Errors": [
+            "Succeeded"
+          ]
+        },
+        "type": "Compose"
+      },
+      "Build_KeyVault_BaseUri": {
+        "inputs": "@concat('https://', parameters('keyVaultName'), '.vault.azure.net')",
+        "runAfter": {
+          "Initialize_Container_Status": [
+            "Succeeded"
+          ]
+        },
+        "type": "Compose"
+      },
+      "Check_Concurrent_Executions": {
+        "inputs": {
+          "authentication": {
+            "resource": "https://management.azure.com/",
+            "type": "ManagedServiceIdentity"
+          },
+          "method": "GET",
+          "queries": {
+            "$filter": "properties/runbook/name eq 'Start-BearishBot-Enhanced' and properties/status eq 'Running'",
+            "api-version": "2015-10-31"
+          },
+          "uri": "https://management.azure.com/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/TradeBot/providers/Microsoft.Automation/automationAccounts/tradebot-automation/jobs"
+        },
+        "runAfter": {
+          "Get_LogUploader_Key": [
+            "Succeeded"
+          ]
+        },
+        "type": "Http"
+      },
+      "Condition_Check_Running_Jobs": {
+        "actions": {
+          "Terminate_Concurrent_Execution": {
+            "inputs": {
+              "runError": {
+                "code": "ConcurrentExecution",
+                "message": "Another bot instance is already running. Aborting to prevent concurrent execution."
+              },
+              "runStatus": "Failed"
+            },
+            "type": "Terminate"
+          }
+        },
+        "else": {
+          "actions": {}
+        },
+        "expression": {
+          "and": [
+            {
+              "greater": [
+                "@length(body('Check_Concurrent_Executions')?['value'])",
+                0
+              ]
+            }
+          ]
+        },
+        "runAfter": {
+          "Check_Concurrent_Executions": [
+            "Succeeded"
+          ]
+        },
+        "type": "If"
+      },
+      "Condition_Job_Success": {
+        "actions": {
+          "Trigger_Report_Orchestrator_V2": {
+            "inputs": {
+              "body": {
+                "run_id": "@outputs('Get_Job_ID')"
+              },
+              "host": {
+                "triggerName": "manual",
+                "workflow": {
+                  "id": "/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/tradebot-ops/providers/Microsoft.Logic/workflows/bearish-report-orchestrator",
+                  "resourceGroup": "tradebot-ops"
+                }
+              }
+            },
+            "runAfter": {
+              "Upload_Raw_Logs_Backup": [
+                "Succeeded",
+                "Failed",
+                "Skipped"
+              ]
+            },
+            "type": "Workflow"
+          },
+          "Upload_Raw_Logs_Backup": {
+            "inputs": {
+              "body": {},
+              "headers": {
+                "x-functions-key": "@body('Get_LogUploader_Key')?['value']"
+              },
+              "method": "POST",
+              "queries": {
+                "resourceGroup": "TradeBot",
+                "vmName": "BearishAlphaBot-VM-01"
+              },
+              "timeout": "PT2M",
+              "uri": "@parameters('log_uploader_function_url')"
+            },
+            "type": "Http"
+          }
+        },
+        "else": {
+          "actions": {
+            "Send_Failure_Email": {
+              "inputs": {
+                "body": {
+                  "content": [
+                    {
+                      "type": "text/plain",
+                      "value": "Bot almas srasnda kritik bir hata olutu.\n\nDurum: @{body('Get_Job_Status')?['properties']?['status']}\n\nTehis: @{outputs('Analyze_Failure_Reason')}\n\nOlas Nedenler:\n- DiskFullError: Docker disk alan dolmu olabilir.\n- GeneralScriptError: Kod veya balant hatas.\n\nJob Output: \n@{body('Get_Job_Output_And_Errors')?['body']}\n\nJob ID: @{outputs('Get_Job_ID')}"
+                    }
+                  ],
+                  "from": {
+                    "email": "@parameters('sendgrid_from_email')",
+                    "name": "@parameters('sendgrid_from_name')"
+                  },
+                  "personalizations": [
+                    {
+                      "subject": " Bearish Bot Hatas: @{outputs('Analyze_Failure_Reason')}",
+                      "to": [
+                        {
+                          "email": "@parameters('notification_recipient_email')"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "headers": {
+                  "Authorization": "Bearer @{body('Get_SendGrid_Key')?['value']}",
+                  "Content-Type": "application/json"
+                },
+                "method": "POST",
+                "uri": "https://api.sendgrid.com/v3/mail/send"
+              },
+              "type": "Http"
+            }
+          }
+        },
+        "expression": {
+          "and": [
+            {
+              "equals": [
+                "@body('Get_Job_Status')?['properties']?['status']",
+                "Completed"
+              ]
+            }
+          ]
+        },
+        "runAfter": {
+          "Analyze_Failure_Reason": [
+            "Succeeded"
+          ]
+        },
+        "type": "If"
+      },
+      "Get_Job_ID": {
+        "inputs": "@variables('IdempotencyToken')",
+        "runAfter": {
+          "Start_Automation_Runbook": [
+            "Succeeded"
+          ]
+        },
+        "type": "Compose"
+      },
+      "Get_Job_Output_And_Errors": {
+        "inputs": {
+          "authentication": {
+            "resource": "https://management.azure.com/",
+            "type": "ManagedServiceIdentity"
+          },
+          "method": "GET",
+          "queries": {
+            "api-version": "2015-10-31"
+          },
+          "uri": "https://management.azure.com/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/TradeBot/providers/Microsoft.Automation/automationAccounts/tradebot-automation/jobs/@{encodeURIComponent(outputs('Get_Job_ID'))}/output"
+        },
+        "runAfter": {
+          "Until": [
+            "Succeeded"
+          ]
+        },
+        "type": "Http"
+      },
+      "Get_LogUploader_Key": {
+        "inputs": {
+          "authentication": {
+            "audience": "https://vault.azure.net",
+            "type": "ManagedServiceIdentity"
+          },
+          "method": "GET",
+          "uri": "@concat(outputs('Build_KeyVault_BaseUri'), '/secrets/', parameters('logUploaderSecretName'), '?api-version=7.4')"
+        },
+        "runAfter": {
+          "Get_SendGrid_Key": [
+            "Succeeded"
+          ]
+        },
+        "type": "Http"
+      },
+      "Get_SendGrid_Key": {
+        "inputs": {
+          "authentication": {
+            "audience": "https://vault.azure.net",
+            "type": "ManagedServiceIdentity"
+          },
+          "method": "GET",
+          "uri": "@concat(outputs('Build_KeyVault_BaseUri'), '/secrets/', parameters('sendGridSecretName'), '?api-version=7.4')"
+        },
+        "runAfter": {
+          "Build_KeyVault_BaseUri": [
+            "Succeeded"
+          ]
+        },
+        "type": "Http"
+      },
+      "Initialize_Container_Status": {
+        "inputs": {
+          "variables": [
+            {
+              "name": "IdempotencyToken",
+              "type": "String",
+              "value": "@{guid()}"
+            },
+            {
+              "name": "ContainerStatus",
+              "type": "string",
+              "value": "starting"
+            }
+          ]
+        },
+        "runAfter": {
+          "Send_Initial_Response": [
+            "Succeeded"
+          ]
+        },
+        "type": "InitializeVariable"
+      },
+      "Send_Http_Response": {
+        "inputs": {
+          "body": {
+            "failureReason": "@outputs('Analyze_Failure_Reason')",
+            "jobId": "@outputs('Get_Job_ID')",
+            "reportTriggered": "@if(equals(body('Get_Job_Status')?['properties']?['status'], 'Completed'), true, false)",
+            "status": "@body('Get_Job_Status')?['properties']?['status']"
+          },
+          "statusCode": 200
+        },
+        "runAfter": {
+          "Condition_Job_Success": [
+            "Succeeded"
+          ]
+        },
+        "type": "Response"
+      },
+      "Send_Initial_Response": {
+        "inputs": {
+          "body": {
+            "message": "Bot workflow started successfully",
+            "runId": "@{workflow().run.name}",
+            "status": "accepted",
+            "timestamp": "@{utcNow()}"
+          },
+          "headers": {
+            "application": "json"
+          },
+          "statusCode": 202
+        },
+        "kind": "Http",
+        "runAfter": {},
+        "type": "Response"
+      },
+      "Start_Automation_Runbook": {
+        "inputs": {
+          "authentication": {
+            "resource": "https://management.azure.com/",
+            "type": "ManagedServiceIdentity"
+          },
+          "body": {
+            "properties": {
+              "parameters": {
+                "durationMinutes": "@outputs('Validate_Parameters')['durationMinutes']",
+                "forceRestart": "@outputs('Validate_Parameters')['forceRestart']",
+                "idempotencyToken": "@variables('IdempotencyToken')",
+                "imageTag": "@outputs('Validate_Parameters')['imageTag']"
+              },
+              "runbook": {
+                "name": "Start-BearishBot-Enhanced"
+              }
+            }
+          },
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "method": "PUT",
+          "queries": {
+            "api-version": "2015-10-31"
+          },
+          "uri": "https://management.azure.com/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/TradeBot/providers/Microsoft.Automation/automationAccounts/tradebot-automation/jobs/@{encodeURIComponent(variables('IdempotencyToken'))}"
+        },
+        "runAfter": {
+          "Validate_Parameters": [
+            "Succeeded"
+          ]
+        },
+        "type": "Http"
+      },
+      "Until": {
+        "actions": {
+          "Delay": {
+            "inputs": {
+              "interval": {
+                "count": 1,
+                "unit": "Minute"
+              }
+            },
+            "type": "Wait"
+          },
+          "HTTP": {
+            "inputs": {
+              "authentication": {
+                "type": "ManagedServiceIdentity"
+              },
+              "body": {
+                "commandId": "RunShellScript",
+                "script": [
+                  "status=$(sudo docker inspect -f '{{.State.Status}}' bearish-bot 2>/dev/null || echo 'not_found')",
+                  "if [ \"$status\" = \"running\" ]; then",
+                  "  echo 'running'",
+                  "else",
+                  "  echo 'exited'",
+                  "fi"
+                ]
+              },
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "method": "POST",
+              "uri": "https://management.azure.com/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/TradeBot/providers/Microsoft.Compute/virtualMachines/BearishAlphaBot-VM-01/runCommand?api-version=2023-03-01"
+            },
+            "runAfter": {
+              "Delay": [
+                "Succeeded"
+              ]
+            },
+            "runtimeConfiguration": {
+              "contentTransfer": {
+                "transferMode": "Chunked"
+              }
+            },
+            "type": "Http"
+          },
+          "Set_variable": {
+            "inputs": {
+              "name": "ContainerStatus",
+              "value": "@if(equals(actions('HTTP')?['status'], 'Succeeded'), trim(split(split(body('HTTP')?['value']?[0]?['message'], '[stdout]')[1], '[stderr]')[0]), 'error')"
+            },
+            "runAfter": {
+              "HTTP": [
+                "Succeeded",
+                "TimedOut",
+                "Skipped",
+                "Failed"
+              ]
+            },
+            "type": "SetVariable"
+          }
+        },
+        "expression": "@equals(variables('ContainerStatus'), 'exited')",
+        "limit": {
+          "count": 400,
+          "timeout": "PT8H"
+        },
+        "runAfter": {
+          "Wait_For_Job_Completion": [
+            "Succeeded"
+          ]
+        },
+        "type": "Until"
+      },
+      "Validate_Parameters": {
+        "inputs": {
+          "durationMinutes": "@coalesce(triggerBody()?['durationMinutes'], 60)",
+          "forceRestart": "@coalesce(triggerBody()?['forceRestart'], false)",
+          "imageTag": "@coalesce(triggerBody()?['imageTag'], 'vm-vmboot-12')"
+        },
+        "runAfter": {
+          "Condition_Check_Running_Jobs": [
+            "Succeeded"
+          ]
+        },
+        "type": "Compose"
+      },
+      "Wait_For_Job_Completion": {
+        "actions": {
+          "Delay_30_Seconds": {
+            "inputs": {
+              "interval": {
+                "count": 30,
+                "unit": "Second"
+              }
+            },
+            "runAfter": {
+              "Get_Job_Status": [
+                "Succeeded"
+              ]
+            },
+            "type": "Wait"
+          },
+          "Get_Job_Status": {
+            "inputs": {
+              "authentication": {
+                "resource": "https://management.azure.com/",
+                "type": "ManagedServiceIdentity"
+              },
+              "method": "GET",
+              "queries": {
+                "api-version": "2015-10-31"
+              },
+              "uri": "https://management.azure.com/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/TradeBot/providers/Microsoft.Automation/automationAccounts/tradebot-automation/jobs/@{encodeURIComponent(outputs('Get_Job_ID'))}"
+            },
+            "type": "Http"
+          }
+        },
+        "expression": "@or(equals(body('Get_Job_Status')?['properties']?['status'], 'Completed'), equals(body('Get_Job_Status')?['properties']?['status'], 'Failed'), equals(body('Get_Job_Status')?['properties']?['status'], 'Stopped'), equals(body('Get_Job_Status')?['properties']?['status'], 'Suspended'))",
+        "limit": {
+          "count": 20,
+          "timeout": "PT10M"
+        },
+        "runAfter": {
+          "Get_Job_ID": [
+            "Succeeded"
+          ]
+        },
+        "type": "Until"
+      }
+    },
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "$connections": {
+        "defaultValue": {},
+        "type": "Object"
+      },
+      "keyVaultName": {
+        "type": "String"
+      },
+      "logUploaderSecretName": {
+        "type": "String"
+      },
+      "log_uploader_function_url": {
+        "type": "String"
+      },
+      "notification_recipient_email": {
+        "type": "String"
+      },
+      "sendGridSecretName": {
+        "type": "String"
+      },
+      "sendgrid_from_email": {
+        "type": "String"
+      },
+      "sendgrid_from_name": {
+        "type": "String"
+      }
+    },
+    "triggers": {
+      "manual": {
+        "inputs": {
+          "schema": {
+            "properties": {
+              "durationMinutes": {
+                "description": "Trading session duration in minutes",
+                "maximum": 420,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "forceRestart": {
+                "default": false,
+                "description": "Force restart even if bot is already running",
+                "type": "boolean"
+              },
+              "imageTag": {
+                "default": "vm-vmboot-12",
+                "description": "Docker image tag to use",
+                "type": "string"
+              }
+            },
+            "required": [
+              "durationMinutes"
+            ],
+            "type": "object"
+          }
+        },
+        "kind": "Http",
+        "type": "Request"
+      }
+    }
+  },
+  "endpointsConfiguration": {
+    "connector": {
+      "outgoingIpAddresses": [
+        {
+          "address": "52.174.88.118"
+        },
+        {
+          "address": "40.91.208.65"
+        },
+        {
+          "address": "13.69.64.208/28"
+        },
+        {
+          "address": "13.69.71.192/27"
+        },
+        {
+          "address": "13.93.36.78"
+        },
+        {
+          "address": "20.86.93.32/27"
+        },
+        {
+          "address": "20.86.93.64/28"
+        },
+        {
+          "address": "20.126.243.151"
+        },
+        {
+          "address": "20.126.241.238"
+        },
+        {
+          "address": "20.103.132.139"
+        },
+        {
+          "address": "20.103.131.1"
+        }
+      ]
+    },
+    "workflow": {
+      "accessEndpointIpAddresses": [
+        {
+          "address": "98.64.193.78"
+        },
+        {
+          "address": "98.64.194.143"
+        },
+        {
+          "address": "98.64.198.223"
+        },
+        {
+          "address": "98.64.198.203"
+        },
+        {
+          "address": "98.64.208.186"
+        },
+        {
+          "address": "98.64.209.52"
+        },
+        {
+          "address": "172.211.196.189"
+        },
+        {
+          "address": "172.211.195.251"
+        },
+        {
+          "address": "98.64.154.66"
+        },
+        {
+          "address": "98.64.156.81"
+        },
+        {
+          "address": "98.64.156.180"
+        },
+        {
+          "address": "98.64.156.68"
+        },
+        {
+          "address": "20.238.229.165"
+        },
+        {
+          "address": "20.8.128.2"
+        },
+        {
+          "address": "20.238.230.113"
+        },
+        {
+          "address": "108.141.139.111"
+        },
+        {
+          "address": "108.142.111.162"
+        },
+        {
+          "address": "108.142.111.174"
+        },
+        {
+          "address": "108.142.111.178"
+        },
+        {
+          "address": "108.142.111.183"
+        },
+        {
+          "address": "108.142.111.152"
+        },
+        {
+          "address": "108.142.111.156"
+        },
+        {
+          "address": "108.142.111.179"
+        },
+        {
+          "address": "108.142.111.169"
+        },
+        {
+          "address": "98.64.203.30"
+        },
+        {
+          "address": "98.64.156.172"
+        },
+        {
+          "address": "20.56.202.157"
+        },
+        {
+          "address": "20.56.203.30"
+        },
+        {
+          "address": "57.153.19.33"
+        },
+        {
+          "address": "57.153.59.202"
+        },
+        {
+          "address": "108.141.95.140"
+        },
+        {
+          "address": "20.61.147.216"
+        },
+        {
+          "address": "57.153.83.52"
+        },
+        {
+          "address": "57.153.38.174"
+        },
+        {
+          "address": "57.153.3.13"
+        },
+        {
+          "address": "57.153.1.223"
+        },
+        {
+          "address": "108.142.29.55"
+        },
+        {
+          "address": "108.142.31.220"
+        },
+        {
+          "address": "108.142.31.202"
+        },
+        {
+          "address": "20.61.153.22"
+        },
+        {
+          "address": "57.153.7.252"
+        },
+        {
+          "address": "108.141.83.61"
+        },
+        {
+          "address": "57.153.7.252"
+        },
+        {
+          "address": "108.141.83.61"
+        }
+      ],
+      "outgoingIpAddresses": [
+        {
+          "address": "20.103.17.247"
+        },
+        {
+          "address": "20.103.16.47"
+        },
+        {
+          "address": "20.103.57.29"
+        },
+        {
+          "address": "20.101.174.23"
+        },
+        {
+          "address": "20.93.235.107"
+        },
+        {
+          "address": "20.76.174.72"
+        },
+        {
+          "address": "20.82.87.16"
+        },
+        {
+          "address": "20.103.91.39"
+        },
+        {
+          "address": "20.76.161.156"
+        },
+        {
+          "address": "98.64.193.64"
+        },
+        {
+          "address": "98.64.194.135"
+        },
+        {
+          "address": "98.64.198.219"
+        },
+        {
+          "address": "98.64.198.194"
+        },
+        {
+          "address": "98.64.208.46"
+        },
+        {
+          "address": "98.64.209.43"
+        },
+        {
+          "address": "172.211.196.188"
+        },
+        {
+          "address": "172.211.195.181"
+        },
+        {
+          "address": "98.64.157.37"
+        },
+        {
+          "address": "98.64.156.69"
+        },
+        {
+          "address": "98.64.156.152"
+        },
+        {
+          "address": "98.64.156.62"
+        },
+        {
+          "address": "20.238.229.108"
+        },
+        {
+          "address": "108.141.139.225"
+        },
+        {
+          "address": "20.238.230.87"
+        },
+        {
+          "address": "108.141.139.80"
+        },
+        {
+          "address": "108.142.111.161"
+        },
+        {
+          "address": "108.142.111.173"
+        },
+        {
+          "address": "108.142.111.175"
+        },
+        {
+          "address": "108.142.111.182"
+        },
+        {
+          "address": "108.142.111.151"
+        },
+        {
+          "address": "108.142.111.155"
+        },
+        {
+          "address": "108.142.111.157"
+        },
+        {
+          "address": "108.142.111.167"
+        },
+        {
+          "address": "98.64.203.5"
+        },
+        {
+          "address": "98.64.156.150"
+        },
+        {
+          "address": "20.56.202.134"
+        },
+        {
+          "address": "20.56.202.244"
+        },
+        {
+          "address": "57.153.19.27"
+        },
+        {
+          "address": "57.153.59.193"
+        },
+        {
+          "address": "108.141.95.129"
+        },
+        {
+          "address": "20.61.147.200"
+        },
+        {
+          "address": "57.153.83.40"
+        },
+        {
+          "address": "57.153.38.60"
+        },
+        {
+          "address": "57.153.2.162"
+        },
+        {
+          "address": "57.153.1.215"
+        },
+        {
+          "address": "108.142.24.182"
+        },
+        {
+          "address": "108.142.31.170"
+        },
+        {
+          "address": "108.142.31.143"
+        },
+        {
+          "address": "20.61.152.226"
+        },
+        {
+          "address": "57.153.7.245"
+        },
+        {
+          "address": "108.141.83.46"
+        },
+        {
+          "address": "57.153.7.245"
+        },
+        {
+          "address": "108.141.83.46"
+        }
+      ]
+    }
+  },
+  "id": "/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/TradeBot/providers/Microsoft.Logic/workflows/bearish-bot-orchestrator",
+  "identity": {
+    "principalId": "5e161906-b319-46bb-ab94-95572dfee884",
+    "tenantId": "f52d191d-6ba4-4217-a625-3a0696356c9f",
+    "type": "SystemAssigned"
+  },
+  "location": "westeurope",
+  "name": "bearish-bot-orchestrator",
+  "parameters": {
+    "$connections": {
+      "value": {}
+    },
+    "keyVaultName": {
+      "value": "bearish-kv"
+    },
+    "logUploaderSecretName": {
+      "value": "LOG-UPLOADER-FUNCTION-KEY"
+    },
+    "log_uploader_function_url": {
+      "value": "https://bearish-reporting-func-v2.azurewebsites.net/api/loguploader"
+    },
+    "notification_recipient_email": {
+      "value": "sefaasar@hotmail.com"
+    },
+    "sendGridSecretName": {
+      "value": "sendgrid-api-key"
+    },
+    "sendgrid_from_email": {
+      "value": "sefaasar@gmail.com"
+    },
+    "sendgrid_from_name": {
+      "value": "Bearish Alpha Bot"
+    }
+  },
+  "provisioningState": "Succeeded",
+  "resourceGroup": "TradeBot",
+  "state": "Enabled",
+  "type": "Microsoft.Logic/workflows",
+  "version": "08584367018902882883"
+}

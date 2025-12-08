@@ -3,6 +3,8 @@
         ".github/workflows/live_trading_launcher.yml"
     ],
     "azureFunctions.deploySubpath": "azure_functions\\reporting",
+    "azureFunctions.projectSubpath": "azure_functions\\reporting",
+    "azureFunctions.coreToolsPath": "C:\\Users\\sefaa\\AppData\\Local\\func4_5455\\func.exe",
     "azureFunctions.scmDoBuildDuringDeployment": true,
     "azureFunctions.pythonVenv": ".venv",
     "azureFunctions.projectLanguage": "Python",
