@@ -66,6 +66,36 @@ def main() -> int:
     log.info("Python version: %s", sys.version.replace("\n", " "))
     log.info("Working directory: %s", os.getcwd())
 
+    # Verify critical environment variables are loaded
+    required_env_vars = [
+        'BINGX_KEY',
+        'BINGX_SECRET',
+        'CAPITAL_USDT',
+        'TRADING_MODE',
+        'EXCHANGES',
+    ]
+    
+    optional_env_vars = [
+        'AZURE_APPCONFIG_ENDPOINT',
+        'AZURE_APPCONFIG_LABEL',
+        'TELEGRAM_BOT_TOKEN',
+    ]
+    
+    missing_required = [var for var in required_env_vars if not os.getenv(var)]
+    if missing_required:
+        log.error("❌ CRITICAL: Missing required environment variables: %s", ', '.join(missing_required))
+        log.error("   Ensure --env-file is passed to docker run or env vars are set manually")
+        return 1
+    
+    log.info("✅ All required environment variables present")
+    
+    # Check optional App Configuration env vars
+    appconfig_vars = [var for var in optional_env_vars if var.startswith('AZURE_APPCONFIG')]
+    if all(os.getenv(var) for var in appconfig_vars):
+        log.info("✅ Azure App Configuration environment variables configured")
+    else:
+        log.warning("⚠️ App Configuration env vars missing (will fallback to YAML config)")
+
     # 1) Ortam ve dizinleri hazırla (mevcut azure_boot yardımcılarını tekrar kullanıyoruz)
     setup_environment()
     ensure_directories()
