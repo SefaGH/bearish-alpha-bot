@@ -51,7 +51,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     parser.add_argument(
         "--image",
-        default="bearishalphabot.azurecr.io/bearish-bot:vm-vmboot-12",
+        default="bearishalphabot.azurecr.io/bearish-bot:appconfig-rest-api-v2",
         help="Docker image to run (default: %(default)s)",
     )
     parser.add_argument(

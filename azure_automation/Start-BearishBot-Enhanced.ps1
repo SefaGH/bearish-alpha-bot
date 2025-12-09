@@ -33,7 +33,7 @@ param(
     [string] $VMName = "BearishAlphaBot-VM-01",
     
     [Parameter(Mandatory=$false)]
-    [string] $ImageTag = "vm-vmboot-12",
+    [string] $ImageTag = "",
     
     [Parameter(Mandatory=$false)]
     [int] $DurationMinutes = 60,
@@ -61,6 +61,33 @@ try {
     # 1. AUTHENTICATION
     Write-Output "[1/6] Authenticating..."
     Connect-AzAccount -Identity | Out-Null
+    
+    # 1b. FETCH IMAGE TAG FROM APP CONFIGURATION (if not provided)
+    if ([string]::IsNullOrEmpty($ImageTag)) {
+        Write-Output "[1b/6] Fetching image tag from Azure App Configuration..."
+        try {
+            $appConfigName = "appcs-bearish-bot"
+            $keyName = "DOCKER_IMAGE_TAG"
+            $label = "production"
+            
+            $imageTagValue = Get-AzAppConfigurationKeyValue `
+                -Endpoint "https://$appConfigName.azconfig.io" `
+                -Key $keyName `
+                -Label $label `
+                -ErrorAction Stop
+            
+            $ImageTag = $imageTagValue.Value
+            Write-Output "      ✅ Image tag from App Config: $ImageTag"
+        }
+        catch {
+            $ImageTag = "appconfig-rest-api-v2"  # Production fallback
+            Write-Output "      ⚠️ App Config fetch failed, using fallback: $ImageTag"
+            Write-Output "      Error: $($_.Exception.Message)"
+        }
+    }
+    else {
+        Write-Output "      ℹ️ Using provided image tag: $ImageTag"
+    }
     
     # 2. VM STATUS CHECK
     Write-Output "[2/6] Checking VM status..."
