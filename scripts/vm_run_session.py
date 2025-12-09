@@ -104,6 +104,15 @@ def main(argv: list[str] | None = None) -> int:
     env_file = args.env_file
     name = args.name
 
+    # Validate that env_file exists
+    env_path = Path(env_file)
+    if not env_path.exists():
+        print(f"❌ ERROR: Environment file not found: {env_file}")
+        print(f"   Please ensure the file exists before running the container.")
+        return 1
+    
+    print(f"✓ Environment file verified: {env_file}")
+
     logs_host = None if args.no_volumes else args.logs_host
     data_host = None if args.no_volumes else args.data_host
 

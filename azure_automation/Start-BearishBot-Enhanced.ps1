@@ -102,13 +102,23 @@ if [ -n "$tradingDurationSeconds" ]; then
     sudo sed -i "s/^#\\? *TRADING_DURATION=.*/TRADING_DURATION=$tradingDurationSeconds/" /home/azureuser/bearish-bot.env
 fi
 
-# Verify App Configuration environment variables exist
-echo "3b. Verifying App Configuration settings..."
-if grep -q "AZURE_APPCONFIG_ENDPOINT" /home/azureuser/bearish-bot.env; then
-    echo "   ✓ App Configuration endpoint found"
-else
-    echo "   ⚠️ WARNING: AZURE_APPCONFIG_ENDPOINT not set in env file"
+# --- ADIM 3b: AZURE APP CONFIGURATION ENV VARS ---
+echo "3b. Ensuring Azure App Configuration environment variables..."
+ENV_FILE="/home/azureuser/bearish-bot.env"
+
+# Ensure AZURE_APPCONFIG_ENDPOINT is set
+if ! grep -q "^AZURE_APPCONFIG_ENDPOINT=" "$ENV_FILE"; then
+    echo "   Adding AZURE_APPCONFIG_ENDPOINT..."
+    echo "AZURE_APPCONFIG_ENDPOINT=https://appcs-bearish-bot.azconfig.io" | sudo tee -a "$ENV_FILE" > /dev/null
 fi
+
+# Ensure AZURE_APPCONFIG_LABEL is set
+if ! grep -q "^AZURE_APPCONFIG_LABEL=" "$ENV_FILE"; then
+    echo "   Adding AZURE_APPCONFIG_LABEL..."
+    echo "AZURE_APPCONFIG_LABEL=production" | sudo tee -a "$ENV_FILE" > /dev/null
+fi
+
+echo "   ✓ App Configuration environment variables configured"
 
 # --- ADIM 4: BOTU BAŞLAT (PYTHON WRAPPER) ---
 echo "4. Launching bot container..."
@@ -136,7 +146,7 @@ fi
 "@
 
     # 4. EXECUTE ON VM
-    Write-Output "[4/6] Sending command to VM..."
+    Write-Output "[5/6] Sending command to VM..."
     
     $invokeParams = @{
         ResourceGroupName = $ResourceGroup
@@ -148,7 +158,7 @@ fi
     $result = Invoke-AzVMRunCommand @invokeParams
     
     # 5. ANALYZE OUTPUT
-    Write-Output "[5/6] Analyzing result..."
+    Write-Output "[6/6] Analyzing result..."
     
     $output = ""
     if ($result.Value -and $result.Value[0].Message) { $output = $result.Value[0].Message }
