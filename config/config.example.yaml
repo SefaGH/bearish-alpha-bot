@@ -44,7 +44,7 @@ execution:
   leverage:
     default: 5                   # Override with: LEVERAGE_DEFAULT
     overrides:
-      "BTC/USDT:USDT": 10
+      "BTC/USDT:USDT": 10       # Override with: LEVERAGE_BTC_USDT
 
 # ==============================================================================
 # RISK MANAGEMENT - ENHANCED POSITION SIZING
@@ -68,8 +68,8 @@ risk:
   # Deprecated - DO NOT USE (causes the bug)
   # max_notional_per_trade: 20        # REMOVED - use max_notional_pct_per_trade instead
   
-  min_amount_behavior: skip
-  min_notional_behavior: skip
+  min_amount_behavior: skip           # Override with: MIN_AMOUNT_BEHAVIOR
+  min_notional_behavior: skip         # Override with: MIN_NOTIONAL_BEHAVIOR
   daily_max_trades: 8                 # Override with: DAILY_MAX_TRADES
   
   # NEW: Dynamic Risk/Reward System
@@ -105,22 +105,22 @@ risk:
     # Strategy-specific overrides (optional)
     strategy_overrides:
       scalper:
-        base_target_rr: 1.5
-        lower_bound_rr: 1.0
+        base_target_rr: 1.5              # Override with: RR_SCALPER_BASE_TARGET
+        lower_bound_rr: 1.0              # Override with: RR_SCALPER_LOWER_BOUND
         weights:
-          ml_confidence: 0.25
-          regime_clarity: 0.10
+          ml_confidence: 0.25            # Override with: RR_SCALPER_WEIGHT_ML
+          regime_clarity: 0.10           # Override with: RR_SCALPER_WEIGHT_REGIME
       mean_reversion:
-        upper_bound_rr: 2.2
+        upper_bound_rr: 2.2              # Override with: RR_MEANREV_UPPER_BOUND
         regime_multipliers:
-          neutral: 0.9
-          volatile: 1.3
+          neutral: 0.9                   # Override with: RR_MEANREV_MULT_NEUTRAL
+          volatile: 1.3                  # Override with: RR_MEANREV_MULT_VOLATILE
       breakout_hunter:
-        base_target_rr: 2.2
-        lower_bound_rr: 1.4
+        base_target_rr: 2.2              # Override with: RR_BREAKOUT_BASE_TARGET
+        lower_bound_rr: 1.4              # Override with: RR_BREAKOUT_LOWER_BOUND
         weights:
-          ml_confidence: 0.45
-          volume_strength: 0.15
+          ml_confidence: 0.45            # Override with: RR_BREAKOUT_WEIGHT_ML
+          volume_strength: 0.15          # Override with: RR_BREAKOUT_WEIGHT_VOLUME
 
   # NEW: Signal execution queue controls
   queue:
@@ -162,30 +162,30 @@ risk:
 # Asset class-specific risk limits (optional, not commonly overridden)
 class_limits:
   meme:
-    max_notional_per_trade: 10
-    risk_usd_cap: 0.5
+    max_notional_per_trade: 10       # Override with: CLASS_MEME_MAX_NOTIONAL
+    risk_usd_cap: 0.5                # Override with: CLASS_MEME_RISK_CAP
   microcap:
-    max_notional_per_trade: 15
-    risk_usd_cap: 0.75
+    max_notional_per_trade: 15       # Override with: CLASS_MICROCAP_MAX_NOTIONAL
+    risk_usd_cap: 0.75               # Override with: CLASS_MICROCAP_RISK_CAP
   bluechip:
-    max_notional_per_trade: 25
-    risk_usd_cap: 1.0
+    max_notional_per_trade: 25       # Override with: CLASS_BLUECHIP_MAX_NOTIONAL
+    risk_usd_cap: 1.0                # Override with: CLASS_BLUECHIP_RISK_CAP
 
 # ==============================================================================
 # NOTIFICATIONS
 # ==============================================================================
 notify:
-  send_all: true
-  push_no_signal: true
-  push_debug: true
-  min_cooldown_sec: 300
-  push_trail_updates: false
+  send_all: true                      # Override with: NOTIFY_SEND_ALL
+  push_no_signal: true                # Override with: NOTIFY_PUSH_NO_SIGNAL
+  push_debug: true                    # Override with: NOTIFY_PUSH_DEBUG
+  min_cooldown_sec: 300               # Override with: NOTIFY_MIN_COOLDOWN_SEC
+  push_trail_updates: false           # Override with: NOTIFY_PUSH_TRAIL_UPDATES
 
 # ==============================================================================
 # MARKET REGIME
 # ==============================================================================
 regime:
-  min_slow_candles: 90
+  min_slow_candles: 90                # Override with: REGIME_MIN_SLOW_CANDLES
 
 # ==============================================================================
 # WEBSOCKET & DATA
@@ -195,7 +195,7 @@ websocket:
   priority_enabled: true              # Override with: WEBSOCKET_PRIORITY_ENABLED
   max_data_age: 60                    # Override with: WEBSOCKET_MAX_DATA_AGE
   fallback_threshold: 3               # Override with: WEBSOCKET_FALLBACK_THRESHOLD
-  buffer_size: 300
+  buffer_size: 300                    # Override with: WEBSOCKET_BUFFER_SIZE
   max_streams_per_exchange:
     bingx: 10                         # Override with: WS_MAX_STREAMS_BINGX
     binance: 20                       # Override with: WS_MAX_STREAMS_BINANCE
@@ -210,8 +210,8 @@ websocket:
 # ==============================================================================
 universe:
   prefetch:
-    enabled: true
-    startup_candle_count: 500
+    enabled: true                     # Override with: UNIVERSE_PREFETCH_ENABLED
+    startup_candle_count: 500         # Override with: UNIVERSE_STARTUP_CANDLE_COUNT
   fixed_symbols: "BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT" # Override with: TRADING_SYMBOLS
   auto_select: false                  # Override with: UNIVERSE_AUTO_SELECT
   priority_order: "BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT" # Override with: TRADING_SYMBOLS_PRIORITY
@@ -230,15 +230,15 @@ indicators:
 # ADAPTIVE STRATEGIES CONTROL
 # ==============================================================================
 adaptive_strategies:
-  enable: true
+  enable: true                        # Override with: ADAPTIVE_STRATEGIES_ENABLE
   monitoring:
-    enabled: true
-    report_interval: 300
-    track_performance: true
+    enabled: true                     # Override with: ADAPTIVE_MONITORING_ENABLED
+    report_interval: 300              # Override with: ADAPTIVE_REPORT_INTERVAL
+    track_performance: true           # Override with: ADAPTIVE_TRACK_PERFORMANCE
   performance:
-    min_volatility_for_adjustment: 0.02
-    max_position_multiplier: 2.0
-    min_position_multiplier: 0.5
+    min_volatility_for_adjustment: 0.02 # Override with: ADAPTIVE_MIN_VOLATILITY
+    max_position_multiplier: 2.0      # Override with: ADAPTIVE_MAX_POS_MULT
+    min_position_multiplier: 0.5      # Override with: ADAPTIVE_MIN_POS_MULT
 
 # ==============================================================================
 # SIGNAL GENERATION & STRATEGIES
@@ -257,7 +257,7 @@ signals:
     cooldown_seconds: 20              # Override with: DUPLICATE_PREVENTION_COOLDOWN
     price_delta_bypass_threshold: 0.0015 # Override with: PRICE_DELTA_BYPASS_THRESHOLD
     price_delta_bypass_enabled: false # Override with: PRICE_DELTA_BYPASS_ENABLED
-    ml_duplicate_detection_enabled: true
+    ml_duplicate_detection_enabled: true # Override with: DUPLICATE_ML_DETECTION_ENABLED
     dynamic_cooldown:
       enabled: true                   # Override with: DUPLICATE_DYNAMIC_COOLDOWN_ENABLED
       high_delta_threshold: 15        # Override with: DUPLICATE_DYNAMIC_HIGH_DELTA (RSI delta > value → fast cooldown)
@@ -268,51 +268,51 @@ signals:
   oversold_bounce:
     enable: true                      # Override with: STRATEGY_OB_ENABLED
     ignore_regime: false              # Override with: STRATEGY_OB_IGNORE_REGIME
-    min_rr_ratio: 1.5                 # 🔥 SNIPER MODE: Enforce higher R/R floor.
-    rsi_max: 45
+    min_rr_ratio: 1.5                 # Override with: STRATEGY_OB_MIN_RR
+    rsi_max: 45                       # Override with: STRATEGY_OB_RSI_MAX
     adaptive_rsi_base: 32             # Override with: RSI_BASE_OB
     adaptive_rsi_range: 8             # Override with: RSI_RANGE_OB
-    adaptive_mode: "dynamic"
-    volatility_sensitivity: "medium"
-    tp_atr_mult: 2.5
-    sl_atr_mult: 1.2
-    min_tp_pct: 0.008
-    max_sl_pct: 0.015
+    adaptive_mode: "dynamic"           # Override with: STRATEGY_OB_ADAPTIVE_MODE
+    volatility_sensitivity: "medium"   # Override with: STRATEGY_OB_VOL_SENSITIVITY
+    tp_atr_mult: 2.5                  # Override with: STRATEGY_OB_TP_ATR_MULT
+    sl_atr_mult: 1.2                  # Override with: STRATEGY_OB_SL_ATR_MULT
+    min_tp_pct: 0.008                 # Override with: STRATEGY_OB_MIN_TP_PCT
+    max_sl_pct: 0.015                 # Override with: STRATEGY_OB_MAX_SL_PCT
   short_the_rip:
     enable: true                      # Override with: STRATEGY_STR_ENABLED
     ignore_regime: false              # Override with: STRATEGY_STR_IGNORE_REGIME
-    min_rr_ratio: 1.5                 # 🔥 SNIPER MODE: Enforce higher R/R floor.
-    rsi_min: 55
+    min_rr_ratio: 1.5                 # Override with: STRATEGY_STR_MIN_RR
+    rsi_min: 55                       # Override with: STRATEGY_STR_RSI_MIN
     adaptive_rsi_base: 68             # Override with: RSI_BASE_STR
     adaptive_rsi_range: 8             # Override with: RSI_RANGE_STR
-    adaptive_mode: "dynamic"
-    volatility_sensitivity: "medium"
-    tp_atr_mult: 3.0
-    sl_atr_mult: 1.5
-    min_tp_pct: 0.010
-    max_sl_pct: 0.020
+    adaptive_mode: "dynamic"           # Override with: STRATEGY_STR_ADAPTIVE_MODE
+    volatility_sensitivity: "medium"   # Override with: STRATEGY_STR_VOL_SENSITIVITY
+    tp_atr_mult: 3.0                  # Override with: STRATEGY_STR_TP_ATR_MULT
+    sl_atr_mult: 1.5                  # Override with: STRATEGY_STR_SL_ATR_MULT
+    min_tp_pct: 0.010                 # Override with: STRATEGY_STR_MIN_TP_PCT
+    max_sl_pct: 0.020                 # Override with: STRATEGY_STR_MAX_SL_PCT
     volatility_stop:
-      enabled: true
-      min_sl_pct: 0.0025
-      max_sl_pct: 0.02
+      enabled: true                   # Override with: STRATEGY_STR_VOL_STOP_ENABLED
+      min_sl_pct: 0.0025              # Override with: STRATEGY_STR_VOL_STOP_MIN_SL
+      max_sl_pct: 0.02                # Override with: STRATEGY_STR_VOL_STOP_MAX_SL
       overrides:
         low:
-          atr_scale: 0.75
-          min_sl_pct: 0.0015
-          max_sl_pct: 0.015
+          atr_scale: 0.75             # Override with: STRATEGY_STR_VOL_LOW_ATR_SCALE
+          min_sl_pct: 0.0015          # Override with: STRATEGY_STR_VOL_LOW_MIN_SL
+          max_sl_pct: 0.015           # Override with: STRATEGY_STR_VOL_LOW_MAX_SL
         normal:
-          atr_scale: 1.0
+          atr_scale: 1.0              # Override with: STRATEGY_STR_VOL_NORMAL_ATR_SCALE
         high:
-          atr_scale: 1.15
-          min_sl_pct: 0.003
-          max_sl_pct: 0.025
+          atr_scale: 1.15             # Override with: STRATEGY_STR_VOL_HIGH_ATR_SCALE
+          min_sl_pct: 0.003           # Override with: STRATEGY_STR_VOL_HIGH_MIN_SL
+          max_sl_pct: 0.025           # Override with: STRATEGY_STR_VOL_HIGH_MAX_SL
     symbols:
       "BTC/USDT:USDT":
         rsi_threshold: 50             # Override with: RSI_THRESHOLD_BTC
       "ETH/USDT:USDT":
-        rsi_threshold: 50
+        rsi_threshold: 50             # Override with: RSI_THRESHOLD_ETH
       "SOL/USDT:USDT":
-        rsi_threshold: 50
+        rsi_threshold: 50             # Override with: RSI_THRESHOLD_SOL
 
 # ==============================================================================
 # STRATEGY ROUTING (Regime-aware)
@@ -320,41 +320,41 @@ signals:
 strategies:
   regime_routing:
     bullish:
-      preferred_strategies: ["trend_follower", "breakout_hunter"]
-      preferred_priority: 0.8
-      fallback_priority: 0.4
-      queue_priority_boost: 0.75
+      preferred_strategies: ["trend_follower", "breakout_hunter"] # Override with: REGIME_BULLISH_STRATEGIES
+      preferred_priority: 0.8         # Override with: REGIME_BULLISH_PRIORITY
+      fallback_priority: 0.4          # Override with: REGIME_BULLISH_FALLBACK
+      queue_priority_boost: 0.75      # Override with: REGIME_BULLISH_QUEUE_BOOST
     bearish:
-      preferred_strategies: ["short_the_rip", "mean_reversion"]
-      preferred_priority: 0.85
+      preferred_strategies: ["short_the_rip", "mean_reversion"] # Override with: REGIME_BEARISH_STRATEGIES
+      preferred_priority: 0.85        # Override with: REGIME_BEARISH_PRIORITY
     neutral:
-      preferred_strategies: ["range_sniper", "mean_reversion"]
-      preferred_priority: 0.7
+      preferred_strategies: ["range_sniper", "mean_reversion"] # Override with: REGIME_NEUTRAL_STRATEGIES
+      preferred_priority: 0.7         # Override with: REGIME_NEUTRAL_PRIORITY
     volatile:
-      preferred_strategies: ["scalper", "volatility_breakout"]
-      preferred_priority: 0.9
-      queue_priority_boost: 0.9
+      preferred_strategies: ["scalper", "volatility_breakout"] # Override with: REGIME_VOLATILE_STRATEGIES
+      preferred_priority: 0.9         # Override with: REGIME_VOLATILE_PRIORITY
+      queue_priority_boost: 0.9       # Override with: REGIME_VOLATILE_QUEUE_BOOST
     default:
-      preferred_priority: 0.5
-      fallback_priority: 0.4
+      preferred_priority: 0.5         # Override with: REGIME_DEFAULT_PRIORITY
+      fallback_priority: 0.4          # Override with: REGIME_DEFAULT_FALLBACK
 
 # ==============================================================================
 # POSITION EXIT MANAGEMENT
 # ==============================================================================
 position_management:
   exit_monitoring:
-    enabled: true
-    check_frequency: 5
+    enabled: true                     # Override with: EXIT_MONITORING_ENABLED
+    check_frequency: 5                # Override with: EXIT_CHECK_FREQUENCY
   time_based_exit:
-    max_position_duration: 3600
+    max_position_duration: 3600       # Override with: MAX_POSITION_DURATION
 
 # ==============================================================================
 # QUARANTINE SYSTEM
 # ==============================================================================
 quarantine:
-  enable: true
-  days: 7
-  file: data/quarantine.json
+  enable: true                        # Override with: QUARANTINE_ENABLE
+  days: 7                             # Override with: QUARANTINE_DAYS
+  file: data/quarantine.json          # Override with: QUARANTINE_FILE
 
 # ==============================================================================
 # ML (MACHINE LEARNING) CONFIGURATION (v3.6 - Refactored for Clarity)
@@ -388,8 +388,8 @@ ml:
   # ----------------------------------------------------------------------------
   price_prediction:
     # 1. Genel Ayarlar
-    enabled: true                     # Fiyat tahmin motorunu etkinleştirir.
-    timeframes: ['5m', '15m', '30m', '1h', '4h'] # Override: ML_PRED_TIMEFRAMES
+    enabled: true                     # Override with: ML_PRED_ENABLED
+    timeframes: ['5m', '15m', '30m', '1h', '4h'] # Override with: ML_PRED_TIMEFRAMES
     update_interval_seconds: 60       # Override: ML_PRED_UPDATE_INTERVAL
     cache_ttl_seconds: 300            # Override: ML_PRED_CACHE_TTL
     
@@ -401,18 +401,18 @@ ml:
     # 3. Model Parametreleri (SADECE Fiyat Tahmincisi için)
     model_params:
       lstm:
-        hidden_size: 128
-        num_layers: 3
-        dropout: 0.2
+        hidden_size: 128              # Override with: ML_PRED_LSTM_HIDDEN
+        num_layers: 3                 # Override with: ML_PRED_LSTM_LAYERS
+        dropout: 0.2                  # Override with: ML_PRED_LSTM_DROPOUT
       transformer:
-        d_model: 256
-        nhead: 8
-        num_layers: 6
+        d_model: 256                  # Override with: ML_PRED_TRANS_D_MODEL
+        nhead: 8                      # Override with: ML_PRED_TRANS_NHEAD
+        num_layers: 6                 # Override with: ML_PRED_TRANS_LAYERS
     
     # 4. Ensemble (Model Birleştirme) Ağırlıkları
     ensemble_weights:
-      lstm: 0.5
-      transformer: 0.5
+      lstm: 0.5                       # Override with: ML_PRED_WEIGHT_LSTM
+      transformer: 0.5                # Override with: ML_PRED_WEIGHT_TRANSFORMER
 
   # ----------------------------------------------------------------------------
   # C) PİYASA REJİMİ TAHMİNCİSİ (MLRegimePredictor)
@@ -420,8 +420,8 @@ ml:
   # hangisinde olduğunu tahmin eden modellerin (Random Forest vb.) ayarları.
   # ----------------------------------------------------------------------------
   regime_prediction:
-    enabled: true                     # Rejim tahmin motorunu etkinleştirir.
-    min_confidence_threshold: 0.6     # Override: ML_REGIME_MIN_CONFIDENCE
+    enabled: true                     # Override with: ML_REGIME_ENABLED
+    min_confidence_threshold: 0.6     # Override with: ML_REGIME_MIN_CONFIDENCE
     
     # NEW: Soft-Weighting Configuration
     # Instead of hard cutoff, use graduated weighting based on confidence
@@ -440,11 +440,11 @@ ml:
     # FAZ 3.1 OPTIMIZATION: Neural network parameters optimized for better performance
     model_params:
       random_forest:
-        n_estimators: 150
-        max_depth: 15
+        n_estimators: 150             # Override with: ML_RF_N_ESTIMATORS
+        max_depth: 15                 # Override with: ML_RF_MAX_DEPTH
       xgboost:
-        n_estimators: 200
-        learning_rate: 0.05
+        n_estimators: 200             # Override with: ML_XGB_N_ESTIMATORS
+        learning_rate: 0.05           # Override with: ML_XGB_LEARNING_RATE
       lstm_regime:
         # FAZ 3.3 VALUES (Anti-Overfit V2) - SYNCHRONIZED WITH model_trainer.py
         hidden_size: 64               # ✅ SYNCED: Override: ML_LSTM_HIDDEN (matches model_trainer.py LSTM_HIDDEN_SIZE)
@@ -453,8 +453,8 @@ ml:
     
     # 2. Ensemble Ağırlıkları
     ensemble_weights:
-      random_forest: 0.6
-      xgboost: 0.4
+      random_forest: 0.6              # Override with: ML_REGIME_WEIGHT_RF
+      xgboost: 0.4                    # Override with: ML_REGIME_WEIGHT_XGB
       # lstm_regime: 0.2 # (Gelecekte eklenebilir)
 
   # ----------------------------------------------------------------------------
@@ -558,79 +558,79 @@ ml:
     
     # Model Yolları (.pt uzantılı TorchScript modelleri olmalıdır)
     # Updated to new production location (Plan 2)
-    model_path: "data/models/final/gemma_price.pt"
+    model_path: "data/models/final/gemma_price.pt" # Override with: GEMMA_MODEL_PATH
     
     # Özellik (Feature) Konfigürasyon Dosyaları
-    features_path: "features/gemma/selected/gemma_price_selected_82.json"
-    feature_count: 82                 # Active feature count aligned with GEMMA manifest
+    features_path: "features/gemma/selected/gemma_price_selected_82.json" # Override with: GEMMA_FEATURES_PATH
+    feature_count: 82                 # Override with: GEMMA_FEATURE_COUNT
     
     # Yardımcı Dosyalar
     # Updated to new production location (Plan 2) - co-located with models
-    scaler_path: "data/models/final/gemma_price_scaler.joblib"
-    feature_mask_path: "data/cache/gemma/feature_selection_mask.npy"
+    scaler_path: "data/models/final/gemma_price_scaler.joblib" # Override with: GEMMA_SCALER_PATH
+    feature_mask_path: "data/cache/gemma/feature_selection_mask.npy" # Override with: GEMMA_FEATURE_MASK_PATH
     
     # Gölge Modu (Mevcut sistemle paralel çalışarak doğrulama yapar)
-    shadow_mode: false
-    shadow_duration_hours: 48
+    shadow_mode: false                # Override with: GEMMA_SHADOW_MODE
+    shadow_duration_hours: 48         # Override with: GEMMA_SHADOW_DURATION
     
     # Performans Ayarları
-    cache_ttl: 30  # Saniye cinsinden aynı tahminler için önbellek süresi
-    max_inference_time: 0.5 # Saniye cinsinden maksimum tahmin süresi (izleme için)
+    cache_ttl: 30                     # Override with: GEMMA_CACHE_TTL
+    max_inference_time: 0.5           # Override with: GEMMA_MAX_INFERENCE_TIME
     
     # Circuit Breaker (Hata toleransı)
     # Model tahmininde art arda hata alınması durumunda devreye girer.
     circuit_breaker:
-      enabled: true
-      failure_threshold: 5      # Bu sayıda hata sonrası devre açılır
-      recovery_timeout: 60      # Saniye cinsinden tekrar deneme süresi
+      enabled: true                   # Override with: GEMMA_CIRCUIT_BREAKER_ENABLED
+      failure_threshold: 5            # Override with: GEMMA_FAILURE_THRESHOLD
+      recovery_timeout: 60            # Override with: GEMMA_RECOVERY_TIMEOUT
     
     # Training Configuration
     thresholds:
-      deployment_accuracy: 0.72  # Minimum balanced accuracy required for deployment
-      min_samples: 1000          # Minimum number of samples required for training
+      deployment_accuracy: 0.72       # Override with: GEMMA_DEPLOYMENT_ACCURACY
+      min_samples: 1000               # Override with: GEMMA_MIN_SAMPLES
     
     training:
-      batch_size: 64          # <-- BatchNorm stability safeguard (was 32)
-      epochs: 50
-      learning_rate: 0.0001330 # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
-      early_stopping_patience: 10
+      batch_size: 64                  # Override with: GEMMA_BATCH_SIZE
+      epochs: 50                      # Override with: GEMMA_EPOCHS
+      learning_rate: 0.0001330        # Override with: GEMMA_LEARNING_RATE
+      early_stopping_patience: 10     # Override with: GEMMA_EARLY_STOPPING_PATIENCE
     
     architecture:
-      input_size: 82          # <-- GEMMA feature count (manifest tabanlı)
-      hidden_size: 55         # <-- Optuna'dan gelen en iyi değer
-      num_layers: 3           # <-- Optuna'dan gelen en iyi değer (değişmedi)
-      dropout: 0.3243         # <-- Optuna'dan gelen en iyi değer (yuvarlanmış)
-      num_classes: 3          # <-- DOĞRU: Bullish (0), Neutral (1), Bearish (2)
+      input_size: 82                  # Override with: GEMMA_INPUT_SIZE
+      hidden_size: 55                 # Override with: GEMMA_HIDDEN_SIZE
+      num_layers: 3                   # Override with: GEMMA_NUM_LAYERS
+      dropout: 0.3243                 # Override with: GEMMA_DROPOUT
+      num_classes: 3                  # Override with: GEMMA_NUM_CLASSES
       
-    feature_set: "gemma_v1"
+    feature_set: "gemma_v1"          # Override with: GEMMA_FEATURE_SET
     
   # =======================================================
   # AI-Gate Güven Eşikleri
   # =======================================================
   price:
     # Fiyat tahmini için minimum güven skoru
-    min_confidence: 0.66
+    min_confidence: 0.66              # Override with: ML_PRICE_MIN_CONFIDENCE
     
   regime:
     # Rejim tahmini için minimum güven skoru
-    min_confidence: 0.60
+    min_confidence: 0.60              # Override with: ML_REGIME_AIGATE_MIN_CONFIDENCE
 
 # ==============================================================================
 # MODEL BUNDLE MANAGEMENT
 # ==============================================================================
 models:
   # Model bundle management - dynamic feature adaptation
-  active_bundle: "artifacts/gemma/final"  # Path to active model bundle (can be symlink)
-  fallback_bundle: "artifacts/legacy"  # Fallback bundle for errors
+  active_bundle: "artifacts/gemma/final"  # Override with: ML_ACTIVE_BUNDLE
+  fallback_bundle: "artifacts/legacy"  # Override with: ML_FALLBACK_BUNDLE
   
   # Deployment configuration
   deployment:
-    validation_mode: "strict"  # strict | lenient - how to handle dimension mismatches
-    allow_missing_features: false  # Allow prediction with missing features (pad with zeros)
-    canary_percentage: 0  # Percentage of traffic to route to new model (0-100)
+    validation_mode: "strict"         # Override with: MODEL_VALIDATION_MODE
+    allow_missing_features: false     # Override with: MODEL_ALLOW_MISSING_FEATURES
+    canary_percentage: 0              # Override with: MODEL_CANARY_PERCENTAGE
     
   # GEMMA specific overrides
   gemma:
-    use_manifest: true  # Enable manifest-driven model loading
-    shadow_mode: false  # GEMMA predictions now control AI-Gate decisions
+    use_manifest: true                # Override with: MODEL_GEMMA_USE_MANIFEST
+    shadow_mode: false                # Override with: MODEL_GEMMA_SHADOW_MODE
 
