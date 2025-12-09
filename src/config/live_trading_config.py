@@ -26,6 +26,14 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
 
+# Azure App Configuration imports (optional, graceful fallback if not available)
+try:
+    from azure.appconfiguration.provider import load as load_appconfig
+    from azure.identity import DefaultAzureCredential
+    AZURE_APPCONFIG_AVAILABLE = True
+except ImportError:
+    AZURE_APPCONFIG_AVAILABLE = False
+
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +140,13 @@ class LiveTradingConfiguration:
         return (config_path, snapshot)
 
     def _load_and_merge_configs(self) -> Dict[str, Any]:
-        """Orchestrates the loading and merging process."""
+        """Orchestrates the loading and merging process with Azure App Configuration support.
+        
+        Priority Order:
+        1. Azure App Configuration (cloud-based overrides)
+        2. Environment Variables (legacy support)
+        3. config.example.yaml (defaults)
+        """
         # 1. Load the base YAML config and parse env var mappings from its comments
         yaml_config, env_map = self._load_yaml_and_map_env_vars()
         yaml_config = yaml_config or {}
@@ -141,11 +155,17 @@ class LiveTradingConfiguration:
         # 2. Normalize YAML values (e.g., convert trading symbol strings to lists)
         yaml_config = self._normalize_yaml_values(yaml_config)
 
-        # 3. Get overrides from environment variables using the parsed map
+        # 3. Try to load from Azure App Configuration (if available)
+        appconfig_overrides = self._load_from_app_config() if AZURE_APPCONFIG_AVAILABLE else {}
+
+        # 4. Get overrides from environment variables using the parsed map
         env_overrides = self._get_env_overrides(env_map, yaml_config)
 
-        # 4. Deep merge YAML config with environment overrides
+        # 5. Deep merge with priority: App Config > ENV Vars > YAML
         merged = self._deep_merge(yaml_config, env_overrides)
+        if appconfig_overrides:
+            merged = self._deep_merge(merged, appconfig_overrides)
+        
         self._apply_universe_defaults(merged)
         self._normalize_risk_config(merged)
         return merged
@@ -681,6 +701,122 @@ class LiveTradingConfiguration:
             normalized['atr_ceiling_pct'] = normalized['atr_floor_pct'] * 1.5
 
         return normalized
+
+    def _load_from_app_config(self) -> Dict[str, Any]:
+        """
+        Load configuration from Azure App Configuration using REST API.
+        
+        Uses REST API directly instead of SDK to work around IMDS API version issues
+        with Managed Identity on some Azure VMs.
+        
+        Returns:
+            Dict with configuration overrides from App Configuration.
+            Returns empty dict if not available or on any error (graceful fallback).
+        """
+        if not AZURE_APPCONFIG_AVAILABLE:
+            return {}
+        
+        endpoint = os.getenv('AZURE_APPCONFIG_ENDPOINT')
+        if not endpoint:
+            logger.debug("AZURE_APPCONFIG_ENDPOINT not set, skipping App Configuration load")
+            return {}
+        
+        try:
+            import json
+            import subprocess
+            from urllib.parse import quote
+            
+            label = os.getenv('AZURE_APPCONFIG_LABEL', 'production')
+            
+            logger.info(f"📡 Loading configuration from Azure App Configuration (via REST API)...")
+            logger.info(f"   Endpoint: {endpoint}")
+            logger.info(f"   Label: {label}")
+            
+            # Get token from IMDS using correct API version (2017-12-01)
+            try:
+                token_cmd = [
+                    'curl', '-s', '-H', 'Metadata:true',
+                    'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2017-12-01&resource=https://appconfig.azure.com'
+                ]
+                try:
+                    token_response = subprocess.check_output(token_cmd, text=True, stderr=subprocess.STDOUT)
+                    token_data = json.loads(token_response)
+                    access_token = token_data.get('access_token')
+                    
+                    if not access_token:
+                        logger.warning("⚠️ Failed to acquire token from IMDS (no access_token in response)")
+                        logger.debug(f"   IMDS Response: {token_response[:200]}")
+                        return {}
+                except FileNotFoundError:
+                    logger.error("❌ curl command not found in container. Install curl in Dockerfile.")
+                    return {}
+                    
+                # Query App Configuration REST API
+                url = f"{endpoint}/kv?key=BearishAlphaBot/*&label={quote(label)}&api-version=1.0"
+                
+                curl_cmd = ['curl', '-s', '-H', f'Authorization: Bearer {access_token}', url]
+                try:
+                    response = subprocess.check_output(curl_cmd, text=True, stderr=subprocess.STDOUT)
+                    response_data = json.loads(response)
+                except json.JSONDecodeError:
+                    logger.error(f"❌ Failed to parse App Configuration response as JSON")
+                    logger.debug(f"   Response: {response[:500]}")
+                    return {}
+                
+                # Extract items from response
+                items = response_data.get('items', [])
+                app_config_dict = {}
+                
+                for item in items:
+                    key = item.get('key', '')
+                    # Remove prefix 'BearishAlphaBot/'
+                    if key.startswith('BearishAlphaBot/'):
+                        key = key[len('BearishAlphaBot/'):]
+                    app_config_dict[key] = item.get('value', '')
+                
+                if app_config_dict:
+                    logger.info(f"✅ Loaded {len(app_config_dict)} settings from App Configuration")
+                    nested_config = self._flatten_to_nested(app_config_dict)
+                    logger.info(f"   Converted to nested structure")
+                    return nested_config
+                else:
+                    logger.info("⊘ No settings found in App Configuration")
+                    return {}
+                    
+            except subprocess.CalledProcessError as e:
+                logger.error(f"❌ curl command failed with exit code {e.returncode}: {e}")
+                return {}
+                
+        except Exception as e:
+            logger.error(
+                f"❌ Failed to load from Azure App Configuration: {e}",
+                exc_info=True
+            )
+            return {}
+    
+    @staticmethod
+    def _flatten_to_nested(flat_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Convert flat dictionary keys to nested structure.
+        
+        Example:
+            {'TRADING_MODE': 'paper', 'CAPITAL_USDT': '1000'}
+            ->
+            {'trading_mode': 'paper', 'capital_usdt': '1000'}
+            (keys lowercase to match config.example.yaml structure)
+        """
+        nested = {}
+        
+        for key, value in flat_dict.items():
+            # Convert key to lowercase to match YAML structure
+            # Example: TRADING_MODE -> trading_mode
+            lowercase_key = key.lower()
+            
+            # For now, keep at top level with lowercase
+            # This matches the env var override structure
+            nested[lowercase_key] = value
+        
+        return nested
 
     @staticmethod
     def _coerce_int(value: Any, default: int, field_name: str, minimum: Optional[int] = None) -> int:

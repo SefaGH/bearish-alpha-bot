@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libc-dev \
     libgomp1 \
     wget \
+    curl \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
