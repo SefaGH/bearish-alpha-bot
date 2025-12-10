@@ -11,6 +11,22 @@ _listener = None
 _log_queue = queue.Queue(-1)
 CURRENT_LOG_FILE = None  # Exposed for other modules to know the active log file
 
+
+def get_current_run_id(default: str = "unknown") -> str:
+    """Return the inferred run_id based on the active log filename or env override."""
+    explicit = os.getenv("RUN_ID")
+    if explicit:
+        return explicit
+
+    if not CURRENT_LOG_FILE:
+        return default
+
+    filename = os.path.basename(CURRENT_LOG_FILE)
+    if filename.startswith("live_trading_") and filename.endswith(".log"):
+        return filename.replace("live_trading_", "").replace(".log", "")
+
+    return default
+
 def setup_logger(name: str = "bearish_alpha_bot",
                  debug_mode: bool = False,
                  log_to_file: bool = True,
@@ -96,11 +112,7 @@ def setup_logger(name: str = "bearish_alpha_bot",
                 from opencensus.ext.azure.log_exporter import AzureLogHandler
                 
                 # Extract run_id from filename if available
-                run_id = "unknown"
-                if CURRENT_LOG_FILE:
-                    filename = os.path.basename(CURRENT_LOG_FILE)
-                    if filename.startswith("live_trading_") and filename.endswith(".log"):
-                        run_id = filename.replace("live_trading_", "").replace(".log", "")
+                run_id = get_current_run_id()
                 
                 # Callback to add run_id to every log
                 def callback_add_run_id(envelope):

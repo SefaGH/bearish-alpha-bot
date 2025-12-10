@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from core.logger import get_current_run_id
 
 # Triple-fallback import strategy for maximum compatibility:
 # 1. Direct utils import (when src/ is on sys.path)
@@ -166,6 +167,12 @@ class AdvancedPositionManager:
             return float(value) if value is not None else fallback
         except (TypeError, ValueError):
             return fallback
+
+    @staticmethod
+    def _isoformat_z(dt: Optional[datetime]) -> Optional[str]:
+        if not dt:
+            return None
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def _extract_entry_metadata(self, signal: Dict[str, Any]) -> Dict[str, Any]:
         metadata = signal.get('metadata') if isinstance(signal, dict) else {}
@@ -412,10 +419,12 @@ class AdvancedPositionManager:
             
             # Generate position ID
             position_id = f"pos_{signal.get('symbol', 'UNKNOWN')}_{int(datetime.now(timezone.utc).timestamp())}"
+            run_id = get_current_run_id()
             
             # Extract position details
             symbol = signal.get('symbol')
             side = signal.get('side', 'long')
+            timeframe = signal.get('timeframe') or signal.get('tf')
             entry_price = execution_result.get('avg_price', 0)
             amount = execution_result.get('filled_amount', 0)
             
@@ -446,21 +455,25 @@ class AdvancedPositionManager:
             risk_per_unit = abs(entry_price - stop_loss)
             risk_usd = risk_per_unit * amount if amount and amount > 0 else 0.0
             opened_at = datetime.now(timezone.utc)
+            opened_at_iso = self._isoformat_z(opened_at)
             position = {
                 'position_id': position_id,
                 'trade_id': self._generate_trade_id(),
+                'run_id': run_id,
                 'symbol': symbol,
                 'side': side,
+                'timeframe': timeframe,
                 'entry_price': entry_price,
                 'current_price': entry_price,
                 'amount': amount,
                 'size': amount,
+                'position_size': amount,
                 'initial_amount': amount,
                 'stop_loss': stop_loss,
                 'take_profit': take_profit,
                 'status': PositionStatus.OPEN.value,
                 'opened_at': opened_at,
-                'entry_time_iso': opened_at.isoformat(),
+                'entry_time_iso': opened_at_iso,
                 'open_timestamp': time.time(),
                 'strategy': strategy_name,
                 'strategy_name': strategy_name,
@@ -490,6 +503,10 @@ class AdvancedPositionManager:
                 'ml_position_modifier': entry_meta.get('ml_position_modifier'),
                 'quality_score': entry_meta.get('quality_score'),
                 'exit_reason': None,
+                'volume_bucket_at_entry': signal.get('volume_bucket'),
+                'volume_strength_at_entry': signal.get('volume_strength'),
+                'volume_ctx_source': signal.get('volume_ctx_source'),
+                'momentum_strength_at_entry': signal.get('momentum_strength'),
             }
             
             # Register with risk manager
@@ -770,6 +787,8 @@ class AdvancedPositionManager:
             )
             exit_time = position.get('closed_at')
             open_time = position.get('opened_at')
+            entry_time_iso = self._isoformat_z(open_time)
+            exit_time_iso = self._isoformat_z(exit_time)
             duration_seconds = ((exit_time - open_time).total_seconds()
                                  if exit_time and open_time else 0.0)
             duration_min = round(duration_seconds / 60, 1)
@@ -783,18 +802,26 @@ class AdvancedPositionManager:
                 regime_data = {}
             payload = {
                 'event': 'TRADE_CLOSED',
+                'timestamp': exit_time_iso or self._isoformat_z(datetime.now(timezone.utc)),
+                'run_id': position.get('run_id') or get_current_run_id(),
                 'trade_id': position.get('trade_id'),
                 'position_id': position_id,
                 'symbol': position.get('symbol'),
+                'timeframe': position.get('timeframe'),
                 'side': position.get('side', '').upper(),
                 'strategy': position.get('strategy_name') or position.get('strategy'),
+                'strategy_name': position.get('strategy_name') or position.get('strategy'),
                 'entry_price': round(position.get('entry_price', 0.0), 4),
-                'entry_time': open_time.isoformat() if open_time else None,
+                'entry_time': entry_time_iso,
                 'exit_price': round(exit_price, 4),
-                'exit_time': exit_time.isoformat() if exit_time else None,
+                'exit_time': exit_time_iso,
                 'exit_reason': exit_reason,
+                'position_size': position.get('position_size') or position.get('size') or position.get('amount'),
                 'pnl_usd': round(realized_pnl, 4),
+                'realized_pnl_usd': round(realized_pnl, 4),
+                'realized_pnl_usdt': round(realized_pnl, 4),
                 'pnl_pct': round(return_pct, 3),
+                'rr': rr_achieved,
                 'rr_achieved': rr_achieved,
                 'duration_min': duration_min,
                 'rsi_at_entry': position.get('rsi_at_entry'),
@@ -810,6 +837,10 @@ class AdvancedPositionManager:
                 'quality_breakdown': position.get('entry_metadata', {}).get('quality_breakdown'),
                 'mfe_pct': round(mfe_pct, 3),
                 'mae_pct': round(mae_pct, 3),
+                'volume_bucket_at_entry': position.get('volume_bucket_at_entry'),
+                'volume_strength_at_entry': position.get('volume_strength_at_entry'),
+                'volume_ctx_source': position.get('volume_ctx_source'),
+                'momentum_strength_at_entry': position.get('momentum_strength_at_entry'),
                 'entry_metadata': {
                     'entry_indicators': entry_meta.get('entry_indicators'),
                     'ml_metadata': entry_meta.get('ml_metadata'),

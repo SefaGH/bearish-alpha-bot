@@ -13,7 +13,10 @@ composable, extensible rules engine following the Open/Closed Principle.
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from typing import Dict, Tuple, Any
+from datetime import datetime, timezone
 import logging
+
+from core.logger import get_current_run_id
 
 logger = logging.getLogger(__name__)
 
@@ -134,10 +137,15 @@ class VolumeAwarePositionSizingRule(BaseRiskRule):
             if 'take_profit_dist' in signal:
                 signal['take_profit_dist'] = float(signal['take_profit_dist']) * float(cfg.get('take_profit_multiplier', 1.0))
 
+            now_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            run_id = get_current_run_id()
+
             logger.info(
                 "volume_bucket_risk %s",
                 {
                     'event': 'volume_bucket_risk',
+                    'timestamp': now_ts,
+                    'run_id': run_id,
                     'symbol': signal.get('symbol'),
                     'timeframe': signal.get('timeframe') or signal.get('tf'),
                     'volume_bucket': bucket,

@@ -22,6 +22,7 @@ from src.quality.quality_calculator import compute_quality
 from core.volume_analyzer import VolumeAnalyzer
 from src.core.interfaces import PositionSizingProtocol
 from src.utils.volume_utils import get_bucket_rank
+from core.logger import get_current_run_id
 
 try:  # Optional dependency; lazily initialized when available
     from ml.adapters.ppo_trading_adapter import PPOTradingAdapter
@@ -2364,6 +2365,8 @@ class StrategyCoordinator:
         as_of_ts = signal.get('timestamp') or signal.get('ts')
 
         try:
+            now_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            run_id = get_current_run_id()
             computed_by_analyzer = False
             volume_ctx_log = None
             if self.volume_analyzer and self._volume_analyzer_enabled:
@@ -2379,6 +2382,8 @@ class StrategyCoordinator:
                     volume_ctx_source = "analyzer"
                     volume_ctx_log = {
                         "event": "volume_context",
+                        "timestamp": now_ts,
+                        "run_id": run_id,
                         "symbol": symbol,
                         "timeframe": trade_tf,
                         "volume_bucket": ctx.bucket,
@@ -2486,16 +2491,18 @@ class StrategyCoordinator:
 
                 central_bucket_decision = 'accepted' if bucket_rank >= get_bucket_rank(min_bucket) else 'rejected'
                 audit_payload = {
-                    'event': 'volume_decision_check',
-                    'strategy_name': strategy_key or 'unknown',
-                    'symbol': signal.get('symbol'),
-                    'timeframe': signal.get('timeframe') or signal.get('tf'),
-                    'volume_bucket': volume_bucket,
-                    'volume_strength': volume_strength,
-                    'volume_ctx_source': signal.get('volume_ctx_source'),
-                    'strategy_internal_volume_decision': strategy_volume_decision,
-                    'central_bucket_decision': central_bucket_decision,
-                }
+                        'event': 'volume_decision_check',
+                        'timestamp': now_ts,
+                        'run_id': run_id,
+                        'strategy_name': strategy_key or 'unknown',
+                        'symbol': signal.get('symbol'),
+                        'timeframe': signal.get('timeframe') or signal.get('tf'),
+                        'volume_bucket': volume_bucket,
+                        'volume_strength': volume_strength,
+                        'volume_ctx_source': signal.get('volume_ctx_source'),
+                        'strategy_internal_volume_decision': strategy_volume_decision,
+                        'central_bucket_decision': central_bucket_decision,
+                    }
 
                 if (
                     audit_payload['strategy_internal_volume_decision'] != 'unknown'
