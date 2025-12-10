@@ -17,10 +17,10 @@ pandas-ta-classic==0.3.14b1
 
 # === MACHINE LEARNING & ANALYSIS ===
 torch>=2.0.0
-scikit-learn>=1.0
+scikit-learn>=1.5.2,<1.6
 optuna>=3.0.0
 scipy>=1.11.0
-imbalanced-learn>=0.12.4
+imbalanced-learn>=0.12.4,<0.13.0
 shap
 matplotlib
 stable-baselines3[extra]
