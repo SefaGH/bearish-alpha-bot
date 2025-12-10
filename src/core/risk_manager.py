@@ -157,6 +157,8 @@ class RiskManager:
         Returns:
             List of risk rule instances
         """
+        risk_matrix = self.config.get('volume_bucket_risk_matrix') if isinstance(self.config, dict) else None
+
         rules = [
             # Order matters: Check capital availability first
             CapitalLimitRule(),
@@ -171,12 +173,18 @@ class RiskManager:
             MaxDrawdownRule(max_drawdown=self.risk_limits['max_drawdown']),
             # Validate risk/reward ratio with dynamic intelligence
             RiskRewardRatioRule(config=self.risk_config),
-            # Optional: Check strategy performance
+        ]
+
+        if risk_matrix:
+            from core.risk_rules import VolumeAwarePositionSizingRule
+            rules.append(VolumeAwarePositionSizingRule(risk_matrix))
+
+        rules.append(
             StrategyPerformanceRule(
                 min_win_rate=0.40,
                 performance_monitor=self.performance_monitor
             )
-        ]
+        )
         
         # Add daily trade limit rule if configured
         daily_max_trades = self._get_daily_max_trades_from_config()

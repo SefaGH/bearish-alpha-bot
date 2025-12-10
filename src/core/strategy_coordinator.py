@@ -19,6 +19,8 @@ import numpy as np
 from copy import deepcopy
 
 from src.quality.quality_calculator import compute_quality
+from core.volume_analyzer import VolumeAnalyzer
+from src.utils.volume_utils import get_bucket_rank
 
 try:  # Optional dependency; lazily initialized when available
     from ml.adapters.ppo_trading_adapter import PPOTradingAdapter
@@ -323,6 +325,13 @@ class StrategyCoordinator:
         self.market_data_pipeline = market_data_pipeline
         self.config = config or {}
         self._initial_equity = self._derive_initial_equity()
+
+        va_cfg = self.config.get('volume_analyzer') if isinstance(self.config, dict) else {}
+        self._volume_analyzer_enabled = bool(va_cfg.get('enabled', True) if isinstance(va_cfg, dict) else True)
+        # Volume analyzer (async) for dynamic volume context
+        self.volume_analyzer = kwargs.get('volume_analyzer') if self._volume_analyzer_enabled else None
+        if not self.volume_analyzer and self.market_data_pipeline and self._volume_analyzer_enabled:
+            self.volume_analyzer = VolumeAnalyzer(self.market_data_pipeline, va_cfg or {})
 
         strategies_cfg = self.config.get('strategies', {}) or {}
         self.regime_routing_rules = strategies_cfg.get('regime_routing', {}) or {}
@@ -2346,28 +2355,71 @@ class StrategyCoordinator:
             signal.update({'rl_is_agree': False, 'rl_action_prob': 0.5})
         
         # 3. Market Metrics (Volume & Momentum)
+        volume_strength = 0.5
+        volume_bucket = "NORMAL"
+        volume_ctx_source = "unknown"
+        momentum_strength = 0.5
+        trade_tf = signal.get('timeframe') or signal.get('tf') or '5m'
+        as_of_ts = signal.get('timestamp') or signal.get('ts')
+
         try:
-            if hasattr(self, 'market_data_pipeline') and self.market_data_pipeline:
-                # Get latest market data
-                data = await self.market_data_pipeline.get_latest_ohlcv(symbol, '5m')
-                if data is not None and len(data) >= 20:
-                    # Volume strength: recent vs average
+            computed_by_analyzer = False
+            volume_ctx_log = None
+            if self.volume_analyzer and self._volume_analyzer_enabled:
+                ctx = await self.volume_analyzer.compute_context(
+                    symbol=symbol,
+                    trade_timeframe=trade_tf,
+                    as_of_ts=as_of_ts,
+                )
+                if ctx:
+                    volume_strength = float(ctx.volume_strength)
+                    volume_bucket = ctx.bucket
+                    computed_by_analyzer = True
+                    volume_ctx_source = "analyzer"
+                    volume_ctx_log = {
+                        "event": "volume_context",
+                        "symbol": symbol,
+                        "timeframe": trade_tf,
+                        "volume_bucket": ctx.bucket,
+                        "volume_strength": ctx.volume_strength,
+                        "ratio_short": ctx.ratio_short,
+                        "ratio_medium": ctx.ratio_medium,
+                        "ratio_combined": ctx.ratio_combined,
+                        "source": "analyzer",
+                    }
+
+            data = None
+            if self.market_data_pipeline:
+                data = await self.market_data_pipeline.get_latest_ohlcv(symbol, trade_tf)
+
+            if data is not None and len(data) >= 20:
+                # Momentum: price change normalized
+                price_change_pct = data['close'].pct_change(10).iloc[-1]
+                momentum_strength = max(0, min(1, (price_change_pct + MOMENTUM_PRICE_CHANGE_OFFSET) / MOMENTUM_PRICE_CHANGE_RANGE))
+
+                # Fallback volume strength if analyzer unavailable or returned no context
+                if not computed_by_analyzer:
+                    volume_ctx_source = "fallback"
                     recent_vol = data['volume'].tail(5).mean()
                     avg_vol = data['volume'].tail(20).mean()
-                    signal['volume_strength'] = min(recent_vol / avg_vol, VOLUME_NORMALIZATION_MAX) / VOLUME_NORMALIZATION_DIVISOR if avg_vol > 0 else 0.5
-                    
-                    # Momentum: price change normalized
-                    price_change_pct = data['close'].pct_change(10).iloc[-1]
-                    signal['momentum_strength'] = max(0, min(1, (price_change_pct + MOMENTUM_PRICE_CHANGE_OFFSET) / MOMENTUM_PRICE_CHANGE_RANGE))
-                    logger.debug(f"✅ Market metrics: vol={signal['volume_strength']:.2f}, mom={signal['momentum_strength']:.2f}")
-                else:
-                    signal.update({'volume_strength': 0.5, 'momentum_strength': 0.5})
-                    logger.debug("⚠️ Insufficient market data, using defaults")
-            else:
-                signal.update({'volume_strength': 0.5, 'momentum_strength': 0.5})
+                    volume_strength = min(recent_vol / avg_vol, VOLUME_NORMALIZATION_MAX) / VOLUME_NORMALIZATION_DIVISOR if avg_vol > 0 else volume_strength
+            if volume_ctx_log:
+                logger.info(f"volume_context {volume_ctx_log}")
+
+            logger.debug(
+                "✅ Market metrics: vol=%.2f bucket=%s, mom=%.2f (analyzer=%s)",
+                volume_strength,
+                volume_bucket,
+                momentum_strength,
+                computed_by_analyzer,
+            )
         except Exception as e:
             logger.debug(f"Market metrics error: {e}")
-            signal.update({'volume_strength': 0.5, 'momentum_strength': 0.5})
+
+        signal['volume_strength'] = volume_strength
+        signal['volume_bucket'] = volume_bucket
+        signal['volume_ctx_source'] = volume_ctx_source
+        signal['momentum_strength'] = momentum_strength
 
         # 4. PPO Multipliers for downstream risk modules
         side = (signal.get('side') or '').lower()
@@ -2384,7 +2436,8 @@ class StrategyCoordinator:
         logger.info(
             f"📊 [Signal Enriched] {symbol}: ML={signal.get('ml_confidence', 0):.2f}, "
             f"RL_agree={signal.get('rl_is_agree', False)}, Regime={signal.get('regime_name', 'N/A')} "
-            f"({signal.get('regime_confidence', 0):.2f}), Vol={signal.get('volume_strength', 0):.2f}, "
+            f"({signal.get('regime_confidence', 0):.2f}), Vol={signal.get('volume_strength', 0):.2f} "
+            f"[{signal.get('volume_bucket', 'N/A')}], "
             f"Mom={signal.get('momentum_strength', 0):.2f}, PPO_RR={ppo_rr_multiplier:.2f}"
         )
         
@@ -2406,6 +2459,62 @@ class StrategyCoordinator:
             signal = await self._enrich_signal_for_dynamic_rr(signal)
             position_multiplier = self._compute_ppo_position_multiplier(signal)
             signal['ppo_position_multiplier'] = position_multiplier
+
+            # Apply volume bucket filters/boosts per-strategy
+            strategies_cfg = self.config.get('strategies', {}) if isinstance(self.config, dict) else {}
+            strategy_key = (signal.get('strategy_name') or signal.get('strategy') or '').lower()
+            volume_bucket = signal.get('volume_bucket')
+            volume_strength = float(signal.get('volume_strength', 0.5))
+
+            filters_cfg = None
+            if strategy_key in ('adaptive_ob', 'oversold_bounce'):
+                filters_cfg = (strategies_cfg.get('adaptive_ob') or {}).get('volume_filters', {})
+            elif strategy_key in ('short_the_rip', 'adaptive_short_the_rip'):
+                filters_cfg = (strategies_cfg.get('adaptive_short_the_rip') or {}).get('volume_filters', {})
+
+            strategy_volume_decision = signal.get('strategy_volume_decision') or 'unknown'
+
+            if (
+                filters_cfg and filters_cfg.get('enabled', True) and volume_bucket
+                and self._volume_analyzer_enabled and self.volume_analyzer
+                and signal.get('volume_ctx_source') == 'analyzer'
+            ):
+                min_bucket = filters_cfg.get('min_bucket', 'NORMAL')
+                high_bucket = filters_cfg.get('high_volume_min_bucket', 'HIGH')
+                bucket_rank = get_bucket_rank(volume_bucket)
+
+                central_bucket_decision = 'accepted' if bucket_rank >= get_bucket_rank(min_bucket) else 'rejected'
+                audit_payload = {
+                    'event': 'volume_decision_check',
+                    'strategy_name': strategy_key or 'unknown',
+                    'symbol': signal.get('symbol'),
+                    'timeframe': signal.get('timeframe') or signal.get('tf'),
+                    'volume_bucket': volume_bucket,
+                    'volume_strength': volume_strength,
+                    'volume_ctx_source': signal.get('volume_ctx_source'),
+                    'strategy_internal_volume_decision': strategy_volume_decision,
+                    'central_bucket_decision': central_bucket_decision,
+                }
+
+                if (
+                    audit_payload['strategy_internal_volume_decision'] != 'unknown'
+                    and audit_payload['strategy_internal_volume_decision'] != audit_payload['central_bucket_decision']
+                ):
+                    audit_payload['event'] = 'volume_decision_mismatch'
+                    logger.info(f"volume_decision_mismatch {audit_payload}")
+                else:
+                    logger.info(f"volume_decision_check {audit_payload}")
+
+                if central_bucket_decision == 'rejected':
+                    return {
+                        'acceptable': False,
+                        'reason': f"Volume bucket {volume_bucket} below minimum {min_bucket}",
+                        'metrics': {'volume_bucket': volume_bucket}
+                    }
+
+                if bucket_rank >= get_bucket_rank(high_bucket) and filters_cfg.get('use_volume_strength_in_score', True):
+                    weight = float(filters_cfg.get('volume_score_weight', 0.15))
+                    signal['quality_score'] = min(1.0, float(signal.get('quality_score', 0.0)) + (weight * volume_strength))
             
             # 3. Calculate R/R ratio if not already present
             if 'rr_ratio' not in signal and signal.get('entry') and signal.get('stop') and signal.get('target'):

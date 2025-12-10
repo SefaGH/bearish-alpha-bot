@@ -104,6 +104,54 @@ class BaseRiskRule(ABC):
         return f"<{self.rule_name} ({status})>"
 
 
+class VolumeAwarePositionSizingRule(BaseRiskRule):
+    """Adjusts sizing and R/R distances based on volume bucket context."""
+
+    def __init__(self, risk_matrix: Dict[str, Dict[str, float]], rule_name: str = None):
+        super().__init__(rule_name or "VolumeAwarePositionSizingRule")
+        self.risk_matrix = risk_matrix or {}
+
+    def validate(self, signal: Dict, portfolio_manager) -> Tuple[bool, str]:
+        if not self.enabled:
+            return (True, f"{self.rule_name} disabled")
+
+        ctx_source = signal.get('volume_ctx_source')
+        if ctx_source and ctx_source != 'analyzer':
+            return (True, "Volume context not analyzer-derived; skipping")
+
+        bucket = (signal.get('volume_bucket') or '').upper()
+        if not bucket or not self.risk_matrix:
+            return (True, "No volume bucket provided; skipping")
+
+        cfg = self.risk_matrix.get(bucket) or self.risk_matrix.get('NORMAL')
+        if not cfg:
+            return (True, "No volume matrix configured; skipping")
+
+        try:
+            signal['position_size'] = float(signal.get('position_size', 0)) * float(cfg.get('position_size_multiplier', 1.0))
+            if 'stop_loss_dist' in signal:
+                signal['stop_loss_dist'] = float(signal['stop_loss_dist']) * float(cfg.get('stop_loss_multiplier', 1.0))
+            if 'take_profit_dist' in signal:
+                signal['take_profit_dist'] = float(signal['take_profit_dist']) * float(cfg.get('take_profit_multiplier', 1.0))
+
+            logger.info(
+                "volume_bucket_risk %s",
+                {
+                    'event': 'volume_bucket_risk',
+                    'symbol': signal.get('symbol'),
+                    'timeframe': signal.get('timeframe') or signal.get('tf'),
+                    'volume_bucket': bucket,
+                    'position_size_multiplier': cfg.get('position_size_multiplier', 1.0),
+                    'stop_loss_multiplier': cfg.get('stop_loss_multiplier', 1.0),
+                    'take_profit_multiplier': cfg.get('take_profit_multiplier', 1.0),
+                },
+            )
+            return (True, f"Applied volume bucket {bucket}")
+        except Exception as exc:
+            logger.error(f"[{self.rule_name}] Error applying matrix for {bucket}: {exc}")
+            return (False, f"Volume sizing error: {exc}")
+
+
 class CapitalLimitRule(BaseRiskRule):
     """
     Validates that total portfolio exposure does not exceed available capital.

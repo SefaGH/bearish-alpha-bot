@@ -247,8 +247,10 @@ class AdaptiveOversoldBounce(OversoldBounce):
                     adaptive_rsi_threshold = new_threshold
                     trend_bias_active = True
 
+            # TODO(volume): unify this internal volume confirmation with central bucket gating after calibration.
             # Volume confirmation: require current volume to exceed rolling average unless skipped
             volume_window = int(self.strategy_config.get('volume_confirmation_window', 20))
+            strategy_volume_decision = 'accepted'
             
             # --- Dynamic Volume Multiplier Implementation ---
             # Calculate volume multiplier based on volatility/risk
@@ -290,6 +292,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
                         required_volume = avg_volume * volume_multiplier
                         volume_confirmed = current_volume >= required_volume
                 if not volume_confirmed:
+                    strategy_volume_decision = 'rejected'
                     logger.info(
                         f"🚫 {log_prefix} No Signal: Volume confirmation failed (current={current_volume:.0f},"
                         f" avg={avg_volume:.0f}, required>={avg_volume * volume_multiplier:.0f}, factor={volume_multiplier:.2f})."
@@ -423,7 +426,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 "reason": f"Adaptive RSI {rsi_val:.1f} <= {adaptive_rsi_threshold:.1f}",
                 "rr_ratio": rr_ratio, "is_adaptive": True, "position_multiplier": position_mult,
                 "ml_enhanced": ml_enhanced, "strategy_type": 'adaptive',
-                "strategy_min_rr": self.min_rr_ratio  # NEW: Strategy's own minimum R/R
+                "strategy_min_rr": self.min_rr_ratio,  # NEW: Strategy's own minimum R/R
+                "strategy_volume_decision": strategy_volume_decision,
             }
 
             # Expose RSI telemetry so downstream duplicate logic can react dynamically
