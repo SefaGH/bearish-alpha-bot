@@ -251,12 +251,35 @@ class AdvancedPositionSizing(PositionSizingProtocol):
             entry_price = signal.get('entry', 0) or signal.get('entry_price', 0)
             stop_loss = signal.get('stop', 0) or signal.get('stop_loss', 0)
             
-            # Calculate stop loss percentage
+            # Calculate stop loss percentage with stop floor
             if entry_price > 0 and stop_loss > 0:
-                stop_pct = abs(entry_price - stop_loss) / entry_price
+                raw_stop_pct = abs(entry_price - stop_loss) / entry_price
             else:
                 logger.warning(f"[SIZING] Missing price data for {symbol}, cannot calculate position size")
                 # Return signal with zero position to indicate sizing failure
+                signal['amount'] = 0
+                signal['notional'] = 0
+                signal['position_size'] = 0
+                return signal
+
+            min_stop_pct = 0.0
+            try:
+                min_stop_pct = float(getattr(self.risk_manager, 'risk_limits', {}).get('min_stop_pct', 0.0) or 0.0)
+            except Exception:
+                min_stop_pct = 0.0
+
+            effective_stop_pct = raw_stop_pct
+            if min_stop_pct and min_stop_pct > 0:
+                effective_stop_pct = max(raw_stop_pct, min_stop_pct)
+
+            floor_triggered = False
+            if min_stop_pct and raw_stop_pct < min_stop_pct:
+                floor_triggered = True
+
+            stop_pct = effective_stop_pct
+
+            if stop_pct <= 0:
+                logger.warning(f"[SIZING] Non-positive stop distance for {symbol}")
                 signal['amount'] = 0
                 signal['notional'] = 0
                 signal['position_size'] = 0
@@ -283,7 +306,8 @@ class AdvancedPositionSizing(PositionSizingProtocol):
             leverage = float(signal.get('leverage', config.get('leverage_default', 5)))
 
             # Risk-based calculation only (no caps here)
-            base_risk_usd = risk_per_trade_override if risk_per_trade_override is not None else capital * risk_pct
+            per_trade_risk_usd = getattr(self.risk_manager.risk_config, 'max_risk_per_trade_usd', None)
+            base_risk_usd = risk_per_trade_override if risk_per_trade_override is not None else per_trade_risk_usd or (capital * risk_pct)
             if risk_cap:
                 base_risk_usd = min(base_risk_usd, float(risk_cap))
 
@@ -291,16 +315,29 @@ class AdvancedPositionSizing(PositionSizingProtocol):
             proposed_notional = risk_based_notional
             proposed_amount = proposed_notional / entry_price if entry_price > 0 else 0
 
+            # Enforce minimum notional to avoid unfillable micro orders
+            min_notional = float(getattr(self.risk_manager, 'risk_limits', {}).get('min_notional_threshold', 0) or 0)
+            if min_notional and proposed_notional < min_notional:
+                # Raise so callers can convert into a graceful rejection
+                raise ValueError(
+                    f"Notional {proposed_notional:.2f} below minimum {min_notional:.2f}"
+                )
+
             sizing_meta = {
                 'method': method,
                 'capital': capital,
                 'risk_pct': risk_pct,
                 'stop_pct': stop_pct,
+                'raw_stop_pct': raw_stop_pct,
+                'effective_stop_pct': effective_stop_pct,
+                'floor_triggered': floor_triggered,
+                'min_stop_pct': min_stop_pct,
                 'base_risk_usd': base_risk_usd,
                 'risk_based_notional': risk_based_notional,
                 'proposed_notional': proposed_notional,
                 'capped': False,
                 'cap_applied_by': None,
+                'original_notional': risk_per_trade_override if risk_per_trade_override is not None else per_trade_risk_usd or (capital * risk_pct) / (raw_stop_pct if raw_stop_pct > 0 else 1),
             }
 
             logger.info(f"📊 [SIZING-PROPOSED] {symbol}")
@@ -317,5 +354,8 @@ class AdvancedPositionSizing(PositionSizingProtocol):
             return signal if return_signal else proposed_amount
             
         except Exception as e:
+            if isinstance(e, ValueError):
+                # Bubble up explicit validation errors so callers can reject cleanly
+                raise
             logger.error(f"[SIZING] Error calculating size for {signal.get('symbol')}: {e}", exc_info=True)
             return signal if return_signal else 0.0

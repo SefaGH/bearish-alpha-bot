@@ -22,6 +22,9 @@ class RiskLimits:
     stop_loss_multiplier: float = 2.0  # 2x ATR stop loss
     take_profit_ratio: float = 2.0     # 2:1 risk/reward minimum
 
+    # Stop floor to prevent microscopic stops from inflating position size
+    min_stop_pct: float = 0.005  # 0.5% default
+
     # New limit controls (Single Source Of Truth for RiskManager)
     max_position_notional_usd: Optional[float] = None
     position_size_policy: Literal["clip", "reject"] = "clip"
@@ -45,6 +48,11 @@ class RiskLimits:
         if self.min_notional_threshold < 0:
             raise ValueError(
                 f"min_notional_threshold must be >= 0, got {self.min_notional_threshold}"
+            )
+
+        if self.min_stop_pct is not None and self.min_stop_pct < 0:
+            raise ValueError(
+                f"min_stop_pct must be >= 0, got {self.min_stop_pct}"
             )
 
 
@@ -114,6 +122,7 @@ class RiskConfiguration:
         'max_correlation': 0.70,     # 70% max position correlation
         'stop_loss_multiplier': 2.0, # 2x ATR stop loss
         'take_profit_ratio': 2.0,    # 2:1 risk/reward minimum
+        'min_stop_pct': 0.005,       # 0.5% stop floor
         'max_position_notional_usd': None,
         'position_size_policy': 'clip',
         'min_notional_threshold': 5.0,
@@ -170,6 +179,16 @@ class RiskConfiguration:
                     logger.info(f"✓ {key}: {value*100:.1f}% (static value)")
             
             processed_limits[key] = value
+
+        # ENV → YAML → default priority for min_stop_pct
+        processed_limits['min_stop_pct'] = self._get_env_or_config(
+            'RISK_MIN_STOP_PCT',
+            processed_limits.get('min_stop_pct', 0.005),
+            float
+        )
+        if processed_limits['min_stop_pct'] is not None and processed_limits['min_stop_pct'] > 1:
+            # Normalize percent-style values (e.g., 0.5 -> 0.5%, 50 -> 50%)
+            processed_limits['min_stop_pct'] = processed_limits['min_stop_pct'] / 100.0
 
         self.risk_limits = RiskLimits(**processed_limits)
         

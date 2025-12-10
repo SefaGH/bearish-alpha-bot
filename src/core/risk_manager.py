@@ -105,9 +105,15 @@ class RiskManager:
             'max_position_notional_usd': self.risk_limits_dataclass.max_position_notional_usd,
             'position_size_policy': self.risk_limits_dataclass.position_size_policy,
             'min_notional_threshold': self.risk_limits_dataclass.min_notional_threshold,
+            'min_notional': self.risk_limits_dataclass.min_notional_threshold,
+            'min_stop_pct': getattr(self.risk_limits_dataclass, 'min_stop_pct', 0.0),
+            'max_risk_per_trade_usd': getattr(self.risk_config, 'max_risk_per_trade_usd', None),
         }
         self.concurrent_limits = self.risk_config.get_concurrent_limits() if hasattr(self.risk_config, 'get_concurrent_limits') else None
         self.volatility_sizing = self.risk_config.get_volatility_sizing() if hasattr(self.risk_config, 'get_volatility_sizing') else None
+
+        # Flattened config snapshot for downstream consumers (used by rules)
+        self.config = self._extract_risk_config_dict()
         
         # PHASE 3: Rules Engine - Composable, extensible risk validation
         if rules is not None:
@@ -127,9 +133,9 @@ class RiskManager:
         self.active_positions = {}  # DEPRECATED: Use PortfolioManager.get_open_positions()
         self.current_drawdown = 0.0  # DEPRECATED: Use PortfolioManager.get_current_drawdown()
         self.peak_portfolio_value = self.portfolio_value  # DEPRECATED: Use PortfolioManager.get_peak_equity()
-        
-        # Log initialization with standardized configuration
-        self.config = self._extract_risk_config_dict()
+
+        # Track resize attempts per logical position to avoid repeated retries
+        self._resize_attempted_for_position: Dict[str, bool] = {}
 
         logger.info(f"RiskManager initialized (PHASE 3: Rules Engine)")
         logger.info(f"Risk configuration: {self.risk_config.to_dict()}")
@@ -851,7 +857,16 @@ class RiskManager:
 
         try:
             if sizing_engine:
-                signal = await sizing_engine.calculate_optimal_size(signal, return_signal=True)
+                try:
+                    signal = await sizing_engine.calculate_optimal_size(signal, return_signal=True)
+                except ValueError as exc:
+                    logger.warning(
+                        "[RISK-ENGINE] Position sizing rejected trade",
+                        extra={'symbol': signal.get('symbol'), 'error': str(exc)}
+                    )
+                    combined_meta['sizing_error'] = str(exc)
+                    combined_meta['blocked_by'] = 'PositionSizing'
+                    return False, 0.0, combined_meta
             combined_meta['sizing_meta'] = signal.get('sizing_meta', {})
 
             final_size, limit_meta = self.apply_position_limits(signal, portfolio_manager)
@@ -875,6 +890,21 @@ class RiskManager:
             combined_meta['validation_reason'] = reason
 
             if not is_valid:
+                if self._should_attempt_resize(signal, reason):
+                    resize_outcome = self._attempt_resize(signal, portfolio_manager)
+                    if resize_outcome and resize_outcome.get('signal') is not None:
+                        combined_meta['resize_meta'] = resize_outcome.get('meta', {})
+                        resized_signal = resize_outcome['signal']
+
+                        is_valid, reason, risk_metrics = await self.validate_new_position(resized_signal, portfolio_manager)
+                        combined_meta['risk_metrics'] = risk_metrics
+                        combined_meta['validation_reason'] = reason
+
+                        if is_valid:
+                            return True, resized_signal.get('position_size', 0.0), combined_meta
+                    else:
+                        combined_meta['resize_failed'] = True
+
                 return False, 0.0, combined_meta
 
             return True, final_size, combined_meta
@@ -883,6 +913,126 @@ class RiskManager:
             logger.error(f"[RISK-ENGINE] size_and_validate_position failed: {exc}", exc_info=True)
             combined_meta['error'] = str(exc)
             return False, 0.0, combined_meta
+
+    def _generate_position_key(self, signal: Dict) -> str:
+        """Deterministic key for tracking resize attempts (no timestamps)."""
+        symbol = signal.get('symbol', 'UNKNOWN')
+        entry_price = signal.get('entry') or signal.get('entry_price') or 0
+        stop_loss = signal.get('stop') or signal.get('stop_loss') or 0
+        qty = signal.get('position_size') or signal.get('amount') or signal.get('size') or 0
+        leverage = signal.get('leverage') or 0
+        return f"{symbol}-{entry_price}-{stop_loss}-{qty}-{leverage}"
+
+    def _should_attempt_resize(self, signal: Dict, reason: str) -> bool:
+        """Attempt auto-resize only once per logical position and only for margin/capital errors."""
+        position_key = self._generate_position_key(signal)
+        if self._resize_attempted_for_position.get(position_key, False):
+            return False
+
+        if not reason:
+            return False
+
+        reason_lower = str(reason).lower()
+        keywords = ('margin', 'balance', 'capital', 'available')
+        return any(word in reason_lower for word in keywords)
+
+    def _get_available_balance(self, portfolio_manager) -> Optional[float]:
+        """Best-effort available balance reader for auto-resize."""
+        try:
+            if hasattr(portfolio_manager, 'get_available_balance'):
+                return float(portfolio_manager.get_available_balance())
+            if hasattr(portfolio_manager, 'get_available_capital'):
+                return float(portfolio_manager.get_available_capital())
+            equity = self._safe_get_equity(portfolio_manager)
+            exposure = portfolio_manager.get_total_exposure() if hasattr(portfolio_manager, 'get_total_exposure') else 0.0
+            return float(equity - exposure)
+        except Exception as exc:
+            logger.warning(f"[RISK-ENGINE] Failed to read available balance for auto-resize: {exc}")
+            return None
+
+    def _attempt_resize(self, signal: Dict, portfolio_manager) -> Optional[Dict[str, Any]]:
+        """Try to shrink position to fit available margin/capital."""
+        position_key = self._generate_position_key(signal)
+        self._resize_attempted_for_position[position_key] = True
+
+        entry_price = signal.get('entry', 0) or signal.get('entry_price', 0)
+        leverage = signal.get('leverage', 1) or 1
+
+        proposed_notional = signal.get('notional')
+        if proposed_notional is None:
+            proposed_size = signal.get('position_size') or signal.get('amount') or signal.get('size') or 0.0
+            proposed_notional = proposed_size * entry_price
+
+        available_balance = self._get_available_balance(portfolio_manager)
+        if available_balance is None:
+            return None
+
+        safety_factor = 0.95
+        max_affordable = available_balance * leverage * safety_factor
+
+        max_notional_limit = self.risk_limits.get('max_position_notional_usd')
+        try:
+            if max_notional_limit is not None:
+                max_affordable = min(max_affordable, float(max_notional_limit))
+        except (TypeError, ValueError):
+            logger.warning(f"[RISK-ENGINE] Invalid max_position_notional_usd={max_notional_limit}, skipping clamp")
+
+        min_notional = float(self.risk_limits.get('min_notional_threshold', 0) or 0)
+
+        if max_affordable <= 0 or max_affordable < min_notional:
+            logger.warning(
+                "[RISK-ENGINE] Auto-resize failed: affordable notional too low",
+                extra={'max_affordable': max_affordable, 'min_notional': min_notional}
+            )
+            return None
+
+        if proposed_notional is None or proposed_notional <= 0:
+            return None
+
+        if max_affordable >= proposed_notional:
+            return None  # Nothing to do
+
+        scale_factor = max_affordable / proposed_notional
+        proposed_size = signal.get('position_size') or signal.get('amount') or signal.get('size') or 0.0
+        new_size = proposed_size * scale_factor
+        new_notional = new_size * entry_price
+
+        resized_signal = dict(signal)
+        resized_signal['position_size'] = new_size
+        resized_signal['amount'] = new_size
+        resized_signal['notional'] = new_notional
+
+        final_size, limit_meta = self.apply_position_limits(resized_signal, portfolio_manager)
+        resized_signal['position_size'] = final_size
+        resized_signal['amount'] = final_size
+        resized_signal['notional'] = limit_meta.get('final_notional', new_notional)
+
+        if limit_meta.get('action') == 'reject' or final_size <= 0:
+            return None
+
+        meta = {
+            'attempted': True,
+            'position_key': position_key,
+            'max_affordable': max_affordable,
+            'available_balance': available_balance,
+            'leverage': leverage,
+            'safety_factor': safety_factor,
+            'used_notional': limit_meta.get('final_notional', new_notional),
+            'clipped_after_resize': limit_meta.get('action') == 'clip'
+        }
+
+        logger.warning(
+            "[RISK-ENGINE] Position auto-resized due to capital limits",
+            extra={
+                'symbol': signal.get('symbol'),
+                'original_notional': proposed_notional,
+                'new_notional': meta['used_notional'],
+                'available_balance': available_balance,
+                'leverage': leverage
+            }
+        )
+
+        return {'signal': resized_signal, 'meta': meta}
     
     def _calculate_stop_loss_from_signal(self, signal: Dict, entry_price: float) -> float:
         """
@@ -1294,3 +1444,54 @@ class RiskManager:
             'capital_utilization': capital_utilization,
             'risk_limits': self.risk_limits
         }
+
+    def run_health_check(self) -> Dict[str, Any]:
+        """Lightweight internal health check for critical risk settings."""
+        health = {
+            'status': 'HEALTHY',
+            'timestamp': datetime.now().isoformat(),
+            'component': 'RiskManager',
+            'checks': {}
+        }
+
+        critical_keys = [
+            'max_position_notional_usd',
+            'min_stop_pct',
+            'min_notional_threshold',
+            'max_risk_per_trade_usd',
+            'max_position_size',
+            'max_portfolio_risk'
+        ]
+
+        for key in critical_keys:
+            value = self.risk_limits.get(key)
+            if key == 'max_position_notional_usd':
+                is_ok = value is None or (isinstance(value, (int, float)) and value > 0)
+            else:
+                is_ok = value is not None and isinstance(value, (int, float)) and value > 0
+
+            health['checks'][f'config_{key}'] = {
+                'ok': is_ok,
+                'value': value,
+                'required': True
+            }
+
+            if not is_ok:
+                health['status'] = 'UNHEALTHY'
+
+        deps = ['portfolio_value', 'performance_monitor', 'ws_manager']
+        for dep in deps:
+            exists = hasattr(self, dep)
+            health['checks'][f'dep_{dep}'] = {
+                'ok': exists,
+                'detail': f"Attribute {dep} exists: {exists}"
+            }
+            if not exists:
+                health['status'] = 'UNHEALTHY'
+
+        if health['status'] == 'HEALTHY':
+            logger.info("RiskManager health check PASSED", extra=health)
+        else:
+            logger.error("RiskManager health check FAILED", extra=health)
+
+        return health
