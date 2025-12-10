@@ -7,7 +7,7 @@ from src.core.risk_rules import VolumeAwarePositionSizingRule
 
 
 class StubPositionSizing:
-    async def calculate_optimal_size(self, signal, return_signal=False):
+    async def calculate_optimal_size(self, signal, method: str = "fixed_risk_capped", return_signal: bool = True, **kwargs):
         sized = dict(signal)
         sized.setdefault('amount', 1.0)
         sized.setdefault('notional', sized.get('entry', 0) * sized['amount'])

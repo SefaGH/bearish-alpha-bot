@@ -7,10 +7,12 @@ import logging
 import numpy as np
 from typing import Dict, Union
 
+from src.core.interfaces import PositionSizingProtocol
+
 logger = logging.getLogger(__name__)
 
 
-class AdvancedPositionSizing:
+class AdvancedPositionSizing(PositionSizingProtocol):
     """Advanced position sizing algorithms for optimal capital allocation."""
     
     def __init__(self, risk_manager):

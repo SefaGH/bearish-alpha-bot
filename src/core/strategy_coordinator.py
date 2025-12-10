@@ -20,6 +20,7 @@ from copy import deepcopy
 
 from src.quality.quality_calculator import compute_quality
 from core.volume_analyzer import VolumeAnalyzer
+from src.core.interfaces import PositionSizingProtocol
 from src.utils.volume_utils import get_bucket_rank
 
 try:  # Optional dependency; lazily initialized when available
@@ -2452,7 +2453,7 @@ class StrategyCoordinator:
             # Initialize position sizing if not already done
             if not hasattr(self, 'position_sizing'):
                 from core.position_sizing import AdvancedPositionSizing
-                self.position_sizing = AdvancedPositionSizing(self.risk_manager)
+                self.position_sizing: PositionSizingProtocol = AdvancedPositionSizing(self.risk_manager)
                 logger.info("✅ AdvancedPositionSizing initialized in StrategyCoordinator")
             
             # CRITICAL: Enrich signal BEFORE risk validation
