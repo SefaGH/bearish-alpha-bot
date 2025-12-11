@@ -2483,7 +2483,6 @@ class StrategyCoordinator:
             if (
                 filters_cfg and filters_cfg.get('enabled', True) and volume_bucket
                 and self._volume_analyzer_enabled and self.volume_analyzer
-                and signal.get('volume_ctx_source') == 'analyzer'
             ):
                 min_bucket = filters_cfg.get('min_bucket', 'NORMAL')
                 high_bucket = filters_cfg.get('high_volume_min_bucket', 'HIGH')
@@ -2491,19 +2490,20 @@ class StrategyCoordinator:
 
                 central_bucket_decision = 'accepted' if bucket_rank >= get_bucket_rank(min_bucket) else 'rejected'
                 audit_payload = {
-                        'event': 'volume_decision_check',
-                        'timestamp': now_ts,
-                        'run_id': run_id,
-                        'strategy_name': strategy_key or 'unknown',
-                        'symbol': signal.get('symbol'),
-                        'timeframe': signal.get('timeframe') or signal.get('tf'),
-                        'volume_bucket': volume_bucket,
-                        'volume_strength': volume_strength,
-                        'volume_ctx_source': signal.get('volume_ctx_source'),
-                        'strategy_internal_volume_decision': strategy_volume_decision,
-                        'central_bucket_decision': central_bucket_decision,
-                    }
+                    'event': 'volume_decision_check',
+                    'timestamp': now_ts,
+                    'run_id': run_id,
+                    'strategy_name': strategy_key or 'unknown',
+                    'symbol': signal.get('symbol'),
+                    'timeframe': signal.get('timeframe') or signal.get('tf'),
+                    'volume_bucket': volume_bucket,
+                    'volume_strength': volume_strength,
+                    'volume_ctx_source': signal.get('volume_ctx_source'),
+                    'strategy_internal_volume_decision': strategy_volume_decision,
+                    'central_bucket_decision': central_bucket_decision,
+                }
 
+                # Always log for observability, even if ctx_source is fallback
                 if (
                     audit_payload['strategy_internal_volume_decision'] != 'unknown'
                     and audit_payload['strategy_internal_volume_decision'] != audit_payload['central_bucket_decision']
@@ -2513,16 +2513,18 @@ class StrategyCoordinator:
                 else:
                     logger.info(f"volume_decision_check {audit_payload}")
 
-                if central_bucket_decision == 'rejected':
-                    return {
-                        'acceptable': False,
-                        'reason': f"Volume bucket {volume_bucket} below minimum {min_bucket}",
-                        'metrics': {'volume_bucket': volume_bucket}
-                    }
+                # Preserve gating semantics: enforce only when analyzer provided context
+                if signal.get('volume_ctx_source') == 'analyzer':
+                    if central_bucket_decision == 'rejected':
+                        return {
+                            'acceptable': False,
+                            'reason': f"Volume bucket {volume_bucket} below minimum {min_bucket}",
+                            'metrics': {'volume_bucket': volume_bucket}
+                        }
 
-                if bucket_rank >= get_bucket_rank(high_bucket) and filters_cfg.get('use_volume_strength_in_score', True):
-                    weight = float(filters_cfg.get('volume_score_weight', 0.15))
-                    signal['quality_score'] = min(1.0, float(signal.get('quality_score', 0.0)) + (weight * volume_strength))
+                    if bucket_rank >= get_bucket_rank(high_bucket) and filters_cfg.get('use_volume_strength_in_score', True):
+                        weight = float(filters_cfg.get('volume_score_weight', 0.15))
+                        signal['quality_score'] = min(1.0, float(signal.get('quality_score', 0.0)) + (weight * volume_strength))
             
             # 3. Calculate R/R ratio if not already present
             if 'rr_ratio' not in signal and signal.get('entry') and signal.get('stop') and signal.get('target'):

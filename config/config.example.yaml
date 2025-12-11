@@ -123,7 +123,7 @@ risk:
           volume_strength: 0.15          # Override with: RR_BREAKOUT_WEIGHT_VOLUME
 
   # Volume-aware risk scaling
-  volume_bucket_risk_matrix:
+  volume_bucket_risk_matrix:        # Override with: RISK_VOLUME_BUCKET_MATRIX
     LOW:
       position_size_multiplier: 0.5
       stop_loss_multiplier: 1.3
@@ -246,21 +246,30 @@ indicators:
   ema_slow: 200                       # Override with: INDICATOR_EMA_SLOW
 
 # ============================================================================== 
+# VALIDATOR
+# ============================================================================== 
+validator:
+  # If true, VolumeAnalyzer readiness failures will mark the symbol as FAIL
+  # during indicator validation (and can abort pre-flight checks). If false,
+  # VolumeAnalyzer readiness issues will log a warning but not fail the symbol.
+  volume_analyzer_required: false    # Override with: VALIDATOR_VOLUME_ANALYZER_REQUIRED
+
+# ============================================================================== 
 # VOLUME ANALYZER
 # ==============================================================================
 volume_analyzer:
-  enabled: true
-  baseline_short_tf: "1h"
-  baseline_medium_tf: "4h"
-  short_lookback: 168
-  medium_lookback: 180
-  window_bars: 3
+  enabled: true                      # Override with: VOLUME_ANALYZER_ENABLED
+  baseline_short_tf: "1h"            # Override with: VOLUME_ANALYZER_BASELINE_SHORT_TF
+  baseline_medium_tf: "4h"           # Override with: VOLUME_ANALYZER_BASELINE_MEDIUM_TF
+  short_lookback: 168                # Override with: VOLUME_ANALYZER_SHORT_LOOKBACK
+  medium_lookback: 180               # Override with: VOLUME_ANALYZER_MEDIUM_LOOKBACK
+  window_bars: 3                     # Override with: VOLUME_ANALYZER_WINDOW_BARS
   weight_short: 0.6
   weight_medium: 0.4
-  sigmoid_alpha: 1.2
-  min_ratio: 0.1
-  max_ratio: 10.0
-  buckets:
+  sigmoid_alpha: 1.2                 # Override with: VOLUME_ANALYZER_SIGMOID_ALPHA
+  min_ratio: 0.1                     # Override with: VOLUME_ANALYZER_MIN_RATIO
+  max_ratio: 10.0                    # Override with: VOLUME_ANALYZER_MAX_RATIO
+  buckets:                           # Override with: VOLUME_ANALYZER_BUCKETS
     - [0.0, "LOW"]
     - [0.3, "NORMAL"]
     - [0.6, "HIGH"]
@@ -380,19 +389,19 @@ strategies:
 
   adaptive_ob:
     volume_filters:
-      enabled: true
-      min_bucket: "NORMAL"
-      high_volume_min_bucket: "HIGH"
-      use_volume_strength_in_score: true
-      volume_score_weight: 0.15
+      enabled: true                 # Override with: STRATEGY_OB_VOLUME_FILTERS_ENABLED
+      min_bucket: "NORMAL"          # Override with: STRATEGY_OB_VOLUME_FILTERS_MIN_BUCKET
+      high_volume_min_bucket: "HIGH" # Override with: STRATEGY_OB_VOLUME_FILTERS_HIGH_VOL_MIN_BUCKET
+      use_volume_strength_in_score: true  # Override with: STRATEGY_OB_VOLUME_FILTERS_USE_STRENGTH
+      volume_score_weight: 0.15     # Override with: STRATEGY_OB_VOLUME_FILTERS_WEIGHT
 
   adaptive_short_the_rip:
     volume_filters:
-      enabled: true
-      min_bucket: "NORMAL"
-      high_volume_min_bucket: "HIGH"
-      use_volume_strength_in_score: true
-      volume_score_weight: 0.15
+      enabled: true                 # Override with: STRATEGY_STR_VOLUME_FILTERS_ENABLED
+      min_bucket: "NORMAL"          # Override with: STRATEGY_STR_VOLUME_FILTERS_MIN_BUCKET
+      high_volume_min_bucket: "HIGH" # Override with: STRATEGY_STR_VOLUME_FILTERS_HIGH_VOL_MIN_BUCKET
+      use_volume_strength_in_score: true  # Override with: STRATEGY_STR_VOLUME_FILTERS_USE_STRENGTH
+      volume_score_weight: 0.15     # Override with: STRATEGY_STR_VOLUME_FILTERS_WEIGHT
 
 # ==============================================================================
 # POSITION EXIT MANAGEMENT

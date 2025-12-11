@@ -1968,7 +1968,10 @@ class LiveTradingLauncher:
                     
                     logger.info("  -> Validating indicator data (prefetch already completed in Phase 1)...")
                     # --- DÜZELTME 1: Validator'a artık ws_manager yerine doğrudan collector veriliyor ---
-                    validator = IndicatorValidator(self.ws_optimizer.ws_manager.collector)
+                    validator = IndicatorValidator(
+                        self.ws_optimizer.ws_manager.collector,
+                        config=self.coordinator.config,
+                    )
                     
                     # --- DÜZELTME 2: Yeni `validate_all` metodu çağrılıyor ---
                     timeframes = self.ws_optimizer._parse_stream_timeframes()

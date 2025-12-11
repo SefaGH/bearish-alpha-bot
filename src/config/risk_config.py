@@ -230,11 +230,12 @@ class RiskConfiguration:
             if custom_limits 
             else self.risk_limits.max_portfolio_risk
         )
-        per_trade_risk_pct = self._get_env_or_config(
+        per_trade_risk_value = self._get_env_or_config(
             'PER_TRADE_RISK_PCT', 
-            default_per_trade_risk * 100,  # Convert to percentage
+            default_per_trade_risk,  # already normalized to fraction
             float
         )
+        per_trade_risk_pct = self._normalize_fraction_value(per_trade_risk_value, 'PER_TRADE_RISK_PCT')
         
         # Get default daily_loss_limit value from config or circuit breaker limits
         default_daily_loss = (
@@ -242,15 +243,16 @@ class RiskConfiguration:
             if custom_limits 
             else self.circuit_breaker_limits.daily_loss_limit
         )
-        daily_loss_limit_pct = self._get_env_or_config(
+        daily_loss_limit_value = self._get_env_or_config(
             'DAILY_LOSS_LIMIT_PCT',
-            default_daily_loss * 100,  # Convert to percentage
+            default_daily_loss,  # already normalized to fraction
             float
         )
+        daily_loss_limit_pct = self._normalize_fraction_value(daily_loss_limit_value, 'DAILY_LOSS_LIMIT_PCT')
         
         # Calculate USD amounts
-        self.max_risk_per_trade_usd = self.initial_capital * (per_trade_risk_pct / 100)
-        self.daily_loss_limit_usd = self.initial_capital * (daily_loss_limit_pct / 100)
+        self.max_risk_per_trade_usd = self.initial_capital * per_trade_risk_pct
+        self.daily_loss_limit_usd = self.initial_capital * daily_loss_limit_pct
         self.max_drawdown_usd = self.initial_capital * self.risk_limits.max_drawdown
         
         # Update circuit breaker with USD values
@@ -263,11 +265,32 @@ class RiskConfiguration:
         logger.info(f"""
 ===== RISK USD AMOUNTS CALCULATED =====
 Capital: ${self.initial_capital:.2f}
-Per-Trade Risk: {per_trade_risk_pct}% = ${self.max_risk_per_trade_usd:.2f}
-Daily Loss Limit: {daily_loss_limit_pct}% = ${self.daily_loss_limit_usd:.2f}
+Per-Trade Risk: {per_trade_risk_pct*100:.2f}% = ${self.max_risk_per_trade_usd:.2f}
+Daily Loss Limit: {daily_loss_limit_pct*100:.2f}% = ${self.daily_loss_limit_usd:.2f}
 Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
 =======================================
 """)
+
+    @staticmethod
+    def _normalize_fraction_value(value: Any, field_name: str) -> float:
+        """Interpret value as fraction; allow percent-style inputs for backward compatibility."""
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            logger.warning(f"⚠️ {field_name} value '{value}' is invalid; defaulting to 0.0")
+            return 0.0
+
+        if numeric >= 1:
+            logger.warning(
+                f"⚠️ {field_name} appears to be percent-style ({numeric}); converting to fraction."
+            )
+            numeric = numeric / 100.0
+
+        if numeric < 0:
+            logger.warning(f"⚠️ {field_name} value {numeric} is negative; clamping to 0.")
+            return 0.0
+
+        return numeric
     
     def get_risk_params_for_sizing(self) -> Dict:
         """Get risk parameters with USD amounts for position sizing."""

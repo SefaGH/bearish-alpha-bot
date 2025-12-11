@@ -194,7 +194,7 @@ class ProductionCoordinator:
                  logger.error("❌ [HEALTH-CHECK] WebSocket manager or collector not available!")
                  return False
             
-            validator = IndicatorValidator(self.websocket_manager.collector)
+            validator = IndicatorValidator(self.websocket_manager.collector, config=self.config)
             # --- NİHAİ DÜZELTME SONU ---
             
             # 1. Gerekli zaman dilimlerini config'den alalım.

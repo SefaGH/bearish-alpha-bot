@@ -15,6 +15,7 @@
 - **Stop floor:** `effective_stop = max(raw_stop, entry * min_stop_pct)`; sets `floor_triggered` flag.
 - **Min notional:** sizing raises `ValueError` if proposed notional < `min_notional_threshold`; RiskManager returns blocked result.
 - **Config priority:** `min_stop_pct` read as ENV `RISK_MIN_STOP_PCT` → YAML → default `0.005`. Values ≤1 are treated as decimals (0.005 = 0.5%); values >1 are treated as percentages and divided by 100 (e.g., 50 → 0.5).
+- **Per-trade risk pct:** `risk.per_trade_risk_pct` is a fraction end-to-end (0.01 = 1%). Operators can supply 1 or 2 in YAML/App Config; `LiveTradingConfiguration` normalizes values >1 to fractions (1 → 0.01). `RiskConfiguration` now consumes the fraction as-is for USD caps.
 - **Resize tracking:** deterministic key (symbol/entry/stop/qty/leverage) prevents multiple retries per position.
 - **Auto-resize clamp:** affordable notional is clamped by `max_position_notional_usd`; marks `resize_failed` when balance is too low.
 - **Health check:** `run_health_check()` validates critical config (min_stop_pct >0, max_position_notional_usd, min_notional_threshold, max_risk_per_trade_usd, etc.) and logs HEALTHY/UNHEALTHY.
@@ -39,6 +40,15 @@ per_trade_risk_pct = 1
 risk.min_stop_pct = 0.5
 max_position_notional_usd = 250
 ```
+
+Example (sanity check, equity 100):
+
+| Input | Value | Resulting USD |
+|---|---|---|
+| `risk.equity_usd` | 100 | — |
+| `risk.per_trade_risk_pct` | 0.01 (or 1 via env/App Config) | `max_risk_per_trade_usd` = 1.00 |
+| `risk.daily_loss_limit_pct` | 0.02 | `daily_loss_limit_usd` = 2.00 |
+| `risk.max_drawdown` | 0.10 | `max_drawdown_usd` = 10.00 |
 
 ## Tests (coverage snapshot)
 - Stop floor notional (~200 USD band on tight stop).

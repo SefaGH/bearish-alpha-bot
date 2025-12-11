@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple, Any
 
 # StreamDataCollector'ı doğrudan import etmek, tip ipuçları ve doğrudan erişim için daha iyidir.
 from .stream_data_collector import StreamDataCollector
+from .volume_analyzer import VolumeAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class IndicatorValidator:
     
     REQUIRED_CANDLES = 250  # İndikatörler için gereken minimum mum sayısı
     
-    def __init__(self, collector: StreamDataCollector, rest_client: Any = None):
+    def __init__(self, collector: StreamDataCollector, rest_client: Any = None, config: Dict[str, Any] = None):
         """
         Initialize the validator with a direct reference to the data collector.
 
@@ -42,6 +43,9 @@ class IndicatorValidator:
         """
         self.collector = collector
         self.rest_client = rest_client # Şu an için kullanılmıyor ama gelecekteki geliştirmeler için saklanıyor.
+        self.config = config or {}
+        validator_cfg = self.config.get('validator', {}) if isinstance(self.config, dict) else {}
+        self.volume_analyzer_required: bool = bool(validator_cfg.get('volume_analyzer_required', False))
 
         if not self.collector:
             # Bu durum artık bir hata olmalı, çünkü sistemin çalışması için collector şart.
@@ -94,6 +98,7 @@ class IndicatorValidator:
         """
         logger.info(f"\n📊 Validating indicators for {symbol}...")
         results = {'status': 'FAIL', 'reason': 'Unknown failure'}
+        va_result = None
         
         # En kritik ve en hızlı güncellenen zaman dilimini kontrol et, genelde '1m' olur.
         validation_tf = '1m' if '1m' in timeframes else timeframes[0]
@@ -126,7 +131,50 @@ class IndicatorValidator:
             results['reason'] = reason
             return results
 
-        # Adım 2: Veriyi DataFrame'e Çevir ve İndikatörleri Hesapla
+        # Adım 2: VolumeAnalyzer hazır olma kontrolü (sadece mevcut veriyi kullanarak)
+        va_cfg = self._get_volume_analyzer_config()
+        va_enabled = bool(va_cfg.get('enabled', True))
+        if va_enabled:
+            trade_tf = va_cfg.get('trade_timeframe') or va_cfg.get('trade_tf') or '5m'
+            short_tf = va_cfg.get('baseline_short_tf')
+            medium_tf = va_cfg.get('baseline_medium_tf')
+            short_lb = int(va_cfg.get('short_lookback'))
+            medium_lb = int(va_cfg.get('medium_lookback'))
+            window_bars = int(va_cfg.get('window_bars'))
+
+            va_result = self.validate_volume_analyzer_for_symbol(
+                symbol=symbol,
+                trade_tf=trade_tf,
+                short_tf=short_tf,
+                medium_tf=medium_tf,
+                window_bars=window_bars,
+                short_lookback=short_lb,
+                medium_lookback=medium_lb,
+            )
+
+            log_payload = {
+                "event": "volume_analyzer_validation",
+                "symbol": symbol,
+                "trade_tf": trade_tf,
+                "short_tf": short_tf,
+                "medium_tf": medium_tf,
+                "trade_bars_available": va_result["trade_bars_available"],
+                "required_trade_bars": va_result["required_trade_bars"],
+                "short_bars_available": va_result["short_bars_available"],
+                "required_short_bars": va_result["required_short_bars"],
+                "medium_bars_available": va_result["medium_bars_available"],
+                "required_medium_bars": va_result["required_medium_bars"],
+                "ready": va_result["ready"],
+            }
+
+            if va_result["ready"]:
+                logger.info(log_payload)
+            else:
+                logger.warning("[VOLUME VALIDATION] VolumeAnalyzer not ready for %s: %s", symbol, log_payload)
+        else:
+            logger.info("[VOLUME VALIDATION] Skipping volume analyzer validation for %s (disabled in config).", symbol)
+
+        # Adım 3: Veriyi DataFrame'e Çevir ve İndikatörleri Hesapla
         try:
             df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']).apply(pd.to_numeric)
             
@@ -167,6 +215,22 @@ class IndicatorValidator:
         logger.info(f"✅ {symbol}: All indicators seem healthy and ready.")
         results['status'] = 'OK'
         results['reason'] = 'All indicators validated successfully.'
+
+        # Adım 4: VolumeAnalyzer zorunluluk kontrolü
+        if va_enabled and va_result is not None:
+            results['volume_ready'] = bool(va_result.get('ready'))
+            results['volume_validation'] = va_result
+            if self.volume_analyzer_required and not va_result.get('ready'):
+                results['status'] = 'FAIL'
+                results['reason'] = (
+                    f"VolumeAnalyzer not ready: trade {va_result['trade_bars_available']}/"
+                    f"{va_result['required_trade_bars']}, short {va_result['short_bars_available']}/"
+                    f"{va_result['required_short_bars']}, medium {va_result['medium_bars_available']}/"
+                    f"{va_result['required_medium_bars']}"
+                )
+        elif not va_enabled:
+            results['volume_ready'] = None
+            results['volume_validation'] = {'ready': None, 'skipped': True}
         return results
 
     def _log_validation_summary(self, results: Dict):
@@ -176,8 +240,17 @@ class IndicatorValidator:
         
         total = len(results)
         valid = sum(1 for res in results.values() if res['status'] == 'OK')
+        volume_ready = [res for res in results.values() if res.get('volume_ready') is True]
+        volume_not_ready = [res for res in results.values() if res.get('volume_ready') is False]
+        volume_skipped = [res for res in results.values() if res.get('volume_ready') is None]
         
         logger.info(f"Total Symbols: {total}, Valid Symbols: {valid}, Failed Symbols: {total - valid}")
+        logger.info(
+            "VolumeAnalyzer readiness: %s ok, %s not ready, %s skipped/disabled",
+            len(volume_ready),
+            len(volume_not_ready),
+            len(volume_skipped),
+        )
         
         if valid != total:
             logger.error("❌ SOME INDICATORS FAILED VALIDATION:")
@@ -188,6 +261,49 @@ class IndicatorValidator:
             logger.info("✅ ALL INDICATORS READY FOR TRADING")
             
         logger.info("="*80)
+
+    def _get_volume_analyzer_config(self) -> Dict[str, Any]:
+        va_cfg = self.config.get('volume_analyzer') if isinstance(self.config, dict) else {}
+        merged = {**VolumeAnalyzer.DEFAULT_CONFIG, **(va_cfg or {})}
+        return merged
+
+    def validate_volume_analyzer_for_symbol(
+        self,
+        symbol: str,
+        trade_tf: str,
+        short_tf: str,
+        medium_tf: str,
+        window_bars: int,
+        short_lookback: int,
+        medium_lookback: int,
+    ) -> Dict[str, Any]:
+        def _len_for_tf(tf: str, limit: int) -> int:
+            candles = self.collector.get_latest_ohlcv('bingx', symbol, tf, limit)
+            return len(candles) if candles else 0
+
+        trade_len = _len_for_tf(trade_tf, window_bars)
+        short_len = _len_for_tf(short_tf, short_lookback)
+        medium_len = _len_for_tf(medium_tf, medium_lookback)
+
+        ready = (
+            trade_len >= window_bars
+            and short_len >= short_lookback
+            and medium_len >= medium_lookback
+        )
+
+        return {
+            "symbol": symbol,
+            "trade_tf": trade_tf,
+            "short_tf": short_tf,
+            "medium_tf": medium_tf,
+            "trade_bars_available": trade_len,
+            "required_trade_bars": window_bars,
+            "short_bars_available": short_len,
+            "required_short_bars": short_lookback,
+            "medium_bars_available": medium_len,
+            "required_medium_bars": medium_lookback,
+            "ready": ready,
+        }
 
     # --- ML VALIDATION METHODS (UNCHANGED) ---
     def validate_ml_data(self, price_data: pd.DataFrame, symbol: str) -> Tuple[bool, List[str]]:

@@ -51,6 +51,9 @@ import math
 import statistics
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Sequence
+import logging
+
+from core.logger import get_current_run_id
 
 
 @dataclass
@@ -158,6 +161,36 @@ class VolumeAnalyzer:
         # Merge user‑provided config with defaults; nested keys are not
         # deep merged intentionally.
         self.config: Dict[str, Any] = {**self.DEFAULT_CONFIG, **(config or {})}
+        self._readiness_emitted: Dict[str, int] = {}
+
+    def _log_readiness(self, symbol: str, trade_tf: str, short_tf: str, medium_tf: str,
+                       trade_len: int, short_len: int, medium_len: int,
+                       window_bars: int, short_lb: int, med_lb: int,
+                       will_return: bool) -> None:
+        """Emit a limited readiness log to show bar availability."""
+        key = f"{symbol}:{trade_tf}:{short_tf}:{medium_tf}"
+        count = self._readiness_emitted.get(key, 0)
+        if count >= 5:
+            return  # avoid log spam
+        self._readiness_emitted[key] = count + 1
+
+        payload = {
+            "event": "volume_analyzer_readiness",
+            "run_id": get_current_run_id(),
+            "symbol": symbol,
+            "trade_timeframe": trade_tf,
+            "baseline_short_tf": short_tf,
+            "baseline_medium_tf": medium_tf,
+            "trade_bars_available": trade_len,
+            "required_trade_bars": window_bars,
+            "short_bars_available": short_len,
+            "required_short_bars": short_lb,
+            "medium_bars_available": medium_len,
+            "required_medium_bars": med_lb,
+            "ready": trade_len >= window_bars and short_len >= short_lb and medium_len >= med_lb,
+            "will_return_context": will_return,
+        }
+        logging.getLogger(__name__).info(payload)
 
     async def _get_volume_series(self, symbol: str, timeframe: str) -> Sequence[float]:
         """Extract a series of volumes for the given symbol/timeframe.
@@ -250,9 +283,27 @@ class VolumeAnalyzer:
         short_lb: int = int(cfg["short_lookback"])
         med_lb: int = int(cfg["medium_lookback"])
 
-        short_baseline = await self._compute_baseline(symbol, short_tf, short_lb)
-        medium_baseline = await self._compute_baseline(symbol, medium_tf, med_lb)
+        # Pull raw series first to measure availability for readiness logging
+        series_short = await self._get_volume_series(symbol, short_tf)
+        series_medium = await self._get_volume_series(symbol, medium_tf)
+        series_trade = await self._get_volume_series(symbol, trade_timeframe)
+
+        short_baseline = statistics.median(series_short[-short_lb:]) if series_short else None
+        medium_baseline = statistics.median(series_medium[-med_lb:]) if series_medium else None
         if short_baseline is None or medium_baseline is None:
+            self._log_readiness(
+                symbol,
+                trade_timeframe,
+                short_tf,
+                medium_tf,
+                len(series_trade),
+                len(series_short),
+                len(series_medium),
+                int(cfg["window_bars"]),
+                short_lb,
+                med_lb,
+                False,
+            )
             return None
 
         tf_minutes = self._get_tf_minutes(trade_timeframe)
@@ -266,8 +317,20 @@ class VolumeAnalyzer:
         medium_baseline_scaled = medium_baseline * (tf_minutes / medium_tf_minutes)
 
         window_bars: int = int(cfg["window_bars"])
-        series_trade = await self._get_volume_series(symbol, trade_timeframe)
         if not series_trade:
+            self._log_readiness(
+                symbol,
+                trade_timeframe,
+                short_tf,
+                medium_tf,
+                len(series_trade),
+                len(series_short),
+                len(series_medium),
+                window_bars,
+                short_lb,
+                med_lb,
+                False,
+            )
             return None
         current_window = series_trade[-window_bars:] if len(series_trade) >= window_bars else series_trade
         if not current_window:
@@ -296,7 +359,7 @@ class VolumeAnalyzer:
             else:
                 break
 
-        return VolumeContext(
+        ctx = VolumeContext(
             symbol=symbol,
             trade_timeframe=trade_timeframe,
             current_window_volume=current_volume,
@@ -309,3 +372,19 @@ class VolumeAnalyzer:
             bucket=bucket_name,
             last_updated_ts=as_of_ts or 0.0,
         )
+
+        self._log_readiness(
+            symbol,
+            trade_timeframe,
+            short_tf,
+            medium_tf,
+            len(series_trade),
+            len(series_short),
+            len(series_medium),
+            window_bars,
+            short_lb,
+            med_lb,
+            True,
+        )
+
+        return ctx
