@@ -5,9 +5,7 @@
       "label": "🚀 Run Act Test (10min)",
       "type": "shell",
       "command": "${workspaceFolder}/run_act_test.ps1",
-      "args": [
-        "600"
-      ],
+      "args": ["600"],
       "presentation": {
         "echo": true,
         "reveal": "always",
@@ -22,9 +20,7 @@
       "label": "🚀 Run Act Test (1min - Quick)",
       "type": "shell",
       "command": "${workspaceFolder}/run_act_test.ps1",
-      "args": [
-        "60"
-      ],
+      "args": ["60"],
       "presentation": {
         "echo": true,
         "reveal": "always",
@@ -39,9 +35,7 @@
       "label": "🚀 Run Act Test (20min)",
       "type": "shell",
       "command": "${workspaceFolder}/run_act_test.ps1",
-      "args": [
-        "1200"
-      ],
+      "args": ["1200"],
       "presentation": {
         "echo": true,
         "reveal": "always",
@@ -74,6 +68,23 @@
       },
       "linux": {
         "command": "${config:azureFunctions.pythonVenv}/bin/python -m pip install -r requirements.txt"
+      },
+      "problemMatcher": [],
+      "options": {
+        "cwd": "${workspaceFolder}/azure_functions\\reporting"
+      }
+    },
+    {
+      "label": "pip check (functions)",
+      "type": "shell",
+      "osx": {
+        "command": "${config:azureFunctions.pythonVenv}/bin/python -m pip check"
+      },
+      "windows": {
+        "command": "${config:azureFunctions.pythonVenv}\\Scripts\\python -m pip check"
+      },
+      "linux": {
+        "command": "${config:azureFunctions.pythonVenv}/bin/python -m pip check"
       },
       "problemMatcher": [],
       "options": {

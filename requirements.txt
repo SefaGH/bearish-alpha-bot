@@ -28,6 +28,8 @@ shimmy>=2.0
 
 # === ASYNC/WEBSOCKET ===
 aiohttp==3.8.6
+aiodns>=3.2.0
+pycares>=4.4.0,<5.0.0
 yarl<2.0
 multidict<7.0
 websockets>=10.0

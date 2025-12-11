@@ -2757,6 +2757,10 @@ class LiveTradingLauncher:
                 return 0
 
 def main():
+    # Fix for aiodns on Windows (requires SelectorEventLoop)
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     parser = argparse.ArgumentParser(description='Bearish Alpha Bot - Live Trading Launcher')
     
     # Mode selection
