@@ -352,8 +352,49 @@ class VolumeAnalyzer:
         x = alpha * (ratio_combined - 1.0)
         volume_strength = 1.0 / (1.0 + math.exp(-x))
 
-        bucket_name = cfg["buckets"][0][1]
-        for threshold, name in cfg["buckets"]:
+        buckets_raw = cfg.get("buckets", [])
+
+        def _normalize_bucket(entry):
+            try:
+                if isinstance(entry, dict):
+                    if "threshold" in entry and "name" in entry:
+                        return float(entry["threshold"]), str(entry["name"])
+                    logging.getLogger(__name__).warning(
+                        "Invalid bucket entry missing threshold/name keys: %s", entry
+                    )
+                    return None
+                if isinstance(entry, (list, tuple)):
+                    if len(entry) >= 2:
+                        return float(entry[0]), str(entry[1])
+                    logging.getLogger(__name__).warning(
+                        "Invalid bucket entry (too few elements): %s", entry
+                    )
+                    return None
+                logging.getLogger(__name__).warning(
+                    "Invalid bucket entry type: %s", type(entry)
+                )
+                return None
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Failed to normalize bucket entry %s: %s", entry, exc
+                )
+                return None
+
+        normalized_buckets = []
+        for entry in buckets_raw:
+            norm = _normalize_bucket(entry)
+            if norm is not None:
+                normalized_buckets.append(norm)
+
+        if not normalized_buckets:
+            logging.getLogger(__name__).error(
+                "volume_analyzer.buckets config is invalid or empty; skipping volume context for %s",
+                symbol,
+            )
+            return None
+
+        bucket_name = normalized_buckets[0][1]
+        for threshold, name in normalized_buckets:
             if volume_strength >= threshold:
                 bucket_name = name
             else:

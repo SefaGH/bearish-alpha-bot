@@ -53,6 +53,79 @@ async def test_compute_context_bucket_and_strength():
     assert ctx.last_updated_ts == 123.0
 
 
+@pytest.mark.asyncio
+async def test_compute_context_accepts_three_element_bucket_tuples():
+    symbol = "BTC/USDT:USDT"
+    baseline_df = pd.DataFrame({"volume": [100, 100, 100]})
+    trade_df = pd.DataFrame({"volume": [50, 50, 50]})
+    mdp = FakeMDP({(symbol, "1h"): baseline_df, (symbol, "5m"): trade_df})
+
+    cfg = {
+        "baseline_short_tf": "1h",
+        "baseline_medium_tf": "1h",
+        "short_lookback": 3,
+        "medium_lookback": 3,
+        "window_bars": 3,
+        "weight_short": 0.6,
+        "weight_medium": 0.4,
+        "sigmoid_alpha": 1.2,
+        "min_ratio": 0.1,
+        "max_ratio": 10.0,
+        # Real-world shape includes extra metadata (ignored)
+        "buckets": [
+            (0.0, "VERY_LOW", "gray"),
+            (0.3, "LOW", "blue"),
+            (0.6, "NORMAL", "green"),
+            (0.85, "HIGH", "orange"),
+            (0.95, "EXTREME", "red"),
+        ],
+    }
+
+    analyzer = VolumeAnalyzer(mdp, cfg)
+    ctx = await analyzer.compute_context(symbol, trade_timeframe="5m", as_of_ts=456.0)
+
+    assert ctx is not None
+    assert ctx.bucket in {"NORMAL", "HIGH", "EXTREME", "LOW", "VERY_LOW"}
+    assert 0.0 <= ctx.volume_strength <= 1.0
+    assert ctx.last_updated_ts == 456.0
+
+
+@pytest.mark.asyncio
+async def test_compute_context_accepts_dict_bucket_entries():
+    symbol = "ETH/USDT:USDT"
+    baseline_df = pd.DataFrame({"volume": [80, 80, 80]})
+    trade_df = pd.DataFrame({"volume": [20, 25, 30]})
+    mdp = FakeMDP({(symbol, "1h"): baseline_df, (symbol, "5m"): trade_df})
+
+    cfg = {
+        "baseline_short_tf": "1h",
+        "baseline_medium_tf": "1h",
+        "short_lookback": 3,
+        "medium_lookback": 3,
+        "window_bars": 3,
+        "weight_short": 0.6,
+        "weight_medium": 0.4,
+        "sigmoid_alpha": 1.2,
+        "min_ratio": 0.1,
+        "max_ratio": 10.0,
+        # Dict-based entries with extra metadata
+        "buckets": [
+            {"threshold": 0.0, "name": "VL", "color": "gray"},
+            {"threshold": 0.4, "name": "L", "color": "blue"},
+            {"threshold": 0.7, "name": "N", "color": "green"},
+            {"threshold": 0.9, "name": "H", "color": "orange"},
+        ],
+    }
+
+    analyzer = VolumeAnalyzer(mdp, cfg)
+    ctx = await analyzer.compute_context(symbol, trade_timeframe="5m", as_of_ts=789.0)
+
+    assert ctx is not None
+    assert ctx.bucket in {"VL", "L", "N", "H"}
+    assert 0.0 <= ctx.volume_strength <= 1.0
+    assert ctx.last_updated_ts == 789.0
+
+
 def test_bucket_rank_helper_defaults_to_normal():
     assert get_bucket_rank("LOW") == VOLUME_BUCKET_ORDER["LOW"]
     assert get_bucket_rank("EXTREME") == VOLUME_BUCKET_ORDER["EXTREME"]
