@@ -88,7 +88,7 @@ Example (sanity check, equity 100):
 3) **Size Planner (RiskManager):**
 	- Caps: `cap_size_pct = equity * max_position_size`; `cap_notional = max_position_notional_usd` or derived `equity * risk.max_notional_pct_per_trade` or ∞; `cap_capital = compute_max_affordable_notional(available_balance, leverage, 0.95)` (same logic as CapitalLimitRule); `cap_heat = max_portfolio_risk_usd - current_open_risk_usd` (∞ if disabled)
 	- `planned_notional = min(raw_notional, cap_size_pct, cap_notional, cap_capital, cap_heat)`
-	- If `planned_notional < min_notional_threshold`: early reject with clear reason (use heat-specific reason if cap_heat binds)
+	- If `planned_notional < min_notional_threshold`: early reject with clear reason (`REJECT_TOO_SMALL_AFTER_CAP` when heat not binding; `portfolio_heat_exhausted` when heat binds)
 	- `planned_qty = planned_notional / price` (exchange normalization happens later)
 4) **Risk rules:** consume `planned_notional`; PositionSizeRule expected quiet; PortfolioHeatRule acts as guard-rail using the same portfolio heat helper.
 5) **Auto-resize:** only for capital/margin failures; no size%-based auto-resize. Optional broker-min retry can be considered separately.
@@ -96,7 +96,7 @@ Example (sanity check, equity 100):
 ## `position_size_policy` behavior with planner
 - Config key: `risk.position_size_policy` (allowed: "clip", "reject"; default "clip" if unset).
 - "clip" (default): planner clips to the tightest cap (`planned_notional = min(...)`); accepts if ≥ `min_notional_threshold`.
-- "reject": if a **size-driven** cap binds (size_pct or max_notional), planner rejects instead of clipping. Capital and heat caps remain safety caps and still clip by default. If `planned_notional < min_notional_threshold`, reject with reason.
+- "reject": if a **size-driven** cap binds (size_pct or max_notional), planner rejects instead of clipping (`reason="REJECT_SIZE_CAP"`). Capital and heat caps remain safety caps and still clip by default. If `planned_notional < min_notional_threshold`, reject per min-notional rules.
 
 ## Canonical portfolio heat
 - `current_open_risk_usd` is computed via a shared helper (e.g., `compute_portfolio_open_risk_usd()`), summing per-position risk in USD using the same definition as PortfolioHeatRule (risk = position size × |entry - stop|, aligned with APS risk semantics).
@@ -116,6 +116,10 @@ Example (sanity check, equity 100):
 
 ## Out of scope (Option B)
 - Planner does **not** handle exchange microstructure: min order/notional, qty step size, tick size, rounding. Exchange adapters remain responsible for normalizing `planned_qty`/`planned_notional` to broker constraints.
+- Order manager/exchange adapter will round/normalize the planner output; risk logs refer to pre-normalized planner values. Any material drift should be handled by the adapter (future enhancement if needed).
 
 ## Rollout / feature flag
-- `RISK_SIZE_PLANNER_ENABLED`: `false` → Sprint 1 behavior (planner optional shadow logging). `true` → planner active as described. Shadow mode logs `size_planner.decision` and metrics without changing live behavior; flip after acceptable observation.
+- `RISK_SIZE_PLANNER_ENABLED`: `false` → Sprint 1 behavior (planner optional shadow logging). `true` → planner active as described. Shadow mode logs `size_planner.decision` (including deltas) and metrics without changing live behavior; flip after acceptable observation.
+
+## Observability (planner)
+- Structured log `size_planner.decision` includes: symbol, equity, raw_notional, planned_notional, price, planned_qty, cap flags, heat_remaining_usd, max_portfolio_risk_usd, below_min_notional, position_size_policy, reason, and delta fields `notional_delta_abs`, `notional_delta_ratio`, plus `shadow_mode`.

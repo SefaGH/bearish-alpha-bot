@@ -317,11 +317,7 @@ class AdvancedPositionSizing(PositionSizingProtocol):
 
             # Enforce minimum notional to avoid unfillable micro orders
             min_notional = float(getattr(self.risk_manager, 'risk_limits', {}).get('min_notional_threshold', 0) or 0)
-            if min_notional and proposed_notional < min_notional:
-                # Raise so callers can convert into a graceful rejection
-                raise ValueError(
-                    f"Notional {proposed_notional:.2f} below minimum {min_notional:.2f}"
-                )
+            below_min_flag = bool(min_notional and proposed_notional < min_notional)
 
             sizing_meta = {
                 'method': method,
@@ -338,6 +334,7 @@ class AdvancedPositionSizing(PositionSizingProtocol):
                 'capped': False,
                 'cap_applied_by': None,
                 'original_notional': risk_per_trade_override if risk_per_trade_override is not None else per_trade_risk_usd or (capital * risk_pct) / (raw_stop_pct if raw_stop_pct > 0 else 1),
+                'below_min_notional': below_min_flag,
             }
 
             logger.info(f"📊 [SIZING-PROPOSED] {symbol}")

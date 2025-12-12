@@ -21,6 +21,54 @@ from core.logger import get_current_run_id
 logger = logging.getLogger(__name__)
 
 
+def compute_max_affordable_notional(available_balance: float, leverage: float, safety_factor: float = 0.95) -> float:
+    """Shared helper for capital affordability (planner + CapitalLimitRule).
+
+    Args:
+        available_balance: free capital available (portfolio value minus exposure)
+        leverage: leverage multiplier for the instrument
+        safety_factor: haircut to avoid edge-of-limit fills
+    """
+    try:
+        leverage = leverage or 1
+        available_balance = float(available_balance)
+        return max(0.0, available_balance * float(leverage) * float(safety_factor))
+    except Exception:
+        return 0.0
+
+
+def compute_portfolio_open_risk_usd(portfolio_manager, signal: Dict = None, default_portfolio_value: float = 100.0) -> Tuple[float, float]:
+    """Canonical portfolio heat calculator (risk USD).
+
+    Returns (open_risk_usd, portfolio_value). Uses per-position risk = size * |entry - stop|,
+    falling back to `risk_amount` when provided.
+    """
+    portfolio_value = _get_portfolio_value(portfolio_manager, signal or {}, default=default_portfolio_value)
+
+    if isinstance(portfolio_manager, dict):
+        active_positions = portfolio_manager.get('open_positions', portfolio_manager.get('active_positions', {})) or {}
+    elif hasattr(portfolio_manager, 'get_open_positions'):
+        active_positions = portfolio_manager.get_open_positions() or {}
+    else:
+        active_positions = {}
+
+    total_risk = 0.0
+    for pos in active_positions.values():
+        try:
+            if isinstance(pos, dict) and 'risk_amount' in pos:
+                total_risk += float(pos.get('risk_amount') or 0.0)
+                continue
+            entry = float(pos.get('entry_price') or pos.get('entry') or 0.0)
+            stop = float(pos.get('stop_loss') or pos.get('stop') or 0.0)
+            size = float(pos.get('size') or pos.get('position_size') or pos.get('amount') or 0.0)
+            if entry > 0 and stop > 0 and size > 0:
+                total_risk += abs(entry - stop) * size
+        except Exception:
+            continue
+
+    return total_risk, portfolio_value
+
+
 def _get_portfolio_value(portfolio_manager, signal, default=100):
     """
     Helper to get portfolio value from either portfolio_manager object or fallback to signal.
@@ -204,29 +252,24 @@ class CapitalLimitRule(BaseRiskRule):
             portfolio_value = _get_portfolio_value(portfolio_manager, signal)
             current_exposure = _get_portfolio_exposure(portfolio_manager, signal)
             available = portfolio_value - current_exposure
-            logger.debug(f"[CapitalLimitRule] portfolio_value={portfolio_value}, current_exposure={current_exposure}, available={available}")
+            affordable_notional = compute_max_affordable_notional(available, leverage)
+            logger.debug(
+                f"[CapitalLimitRule] portfolio_value={portfolio_value}, current_exposure={current_exposure}, available={available}, affordable={affordable_notional}, leverage={leverage}"
+            )
             
             if notional <= 0:
                 return (False, f"Invalid notional value: {notional}")
             
-            # Spot trading (leverage = 1)
-            if leverage <= 1:
-                if notional > available:
-                    logger.warning(f"🚫 [CapitalLimitRule] REJECTED {symbol} (spot): ${notional:.2f} > ${available:.2f}")
-                    return (False, f"Position ${notional:.2f} would exceed capital limit ${available:.2f} available")
-                else:
-                    logger.info(f"✅ [CapitalLimitRule] PASSED {symbol} (spot): ${notional:.2f} <= ${available:.2f}")
-                    return (True, "Capital check passed (spot)")
-            
-            # Futures trading (leverage > 1)
-            required_margin = notional / leverage
-            
-            if required_margin > available:
-                logger.warning(f"🚫 [CapitalLimitRule] REJECTED {symbol} (futures): Margin ${required_margin:.2f} > ${available:.2f}")
-                return (False, f"Margin ${required_margin:.2f} exceeds available ${available:.2f}")
+            if notional > affordable_notional:
+                logger.warning(
+                    f"🚫 [CapitalLimitRule] REJECTED {symbol}: ${notional:.2f} > affordable ${affordable_notional:.2f} (avail={available:.2f}, lev={leverage})"
+                )
+                return (False, f"Position ${notional:.2f} exceeds affordable notional ${affordable_notional:.2f}")
             else:
-                logger.info(f"✅ [CapitalLimitRule] PASSED {symbol} (futures): Margin ${required_margin:.2f} <= ${available:.2f}")
-                return (True, f"Margin check passed (leverage {leverage}x)")
+                logger.info(
+                    f"✅ [CapitalLimitRule] PASSED {symbol}: ${notional:.2f} <= affordable ${affordable_notional:.2f} (avail={available:.2f}, lev={leverage})"
+                )
+                return (True, "Capital check passed")
                 
         except Exception as e:
             logger.error(f"[CapitalLimitRule] Error: {e}", exc_info=True)
@@ -332,42 +375,29 @@ class PortfolioHeatRule(BaseRiskRule):
             position_size = signal.get('position_size', 0)
             entry_price = signal.get('entry', 0)
             stop_loss = signal.get('stop', 0)
-            
-            # Calculate stop loss if missing
+
             if not stop_loss:
                 stop_loss = self._calculate_stop_loss(signal, entry_price)
-            
-            # Get portfolio value using helper function
-            portfolio_value = _get_portfolio_value(portfolio_manager, signal)
-            
-            # Get active positions (empty dict for test compatibility)
-            if isinstance(portfolio_manager, dict) or not hasattr(portfolio_manager, 'get_open_positions'):
-                active_positions = {}
-            else:
-                active_positions = portfolio_manager.get_open_positions()
-            
-            # Calculate risk for this position
+
+            open_risk_usd, portfolio_value = compute_portfolio_open_risk_usd(portfolio_manager, signal)
+
             risk_amount = abs(entry_price - stop_loss) * position_size
             max_risk = portfolio_value * self.max_portfolio_risk
-            
             risk_pct = risk_amount / portfolio_value if portfolio_value > 0 else 0
-            
-            # Check individual position risk
+
             if risk_amount > max_risk:
                 logger.warning(f"🚫 [{self.rule_name}] REJECTED: {symbol} risk ${risk_amount:.2f} ({risk_pct:.2%}) exceeds max ${max_risk:.2f} ({self.max_portfolio_risk:.2%})")
                 return (False, f"Risk amount ${risk_amount:.2f} exceeds max ${max_risk:.2f}")
-            
-            # Calculate total portfolio heat
-            total_risk = sum(pos.get('risk_amount', 0) for pos in active_positions.values())
-            total_risk += risk_amount
+
+            total_risk = open_risk_usd + risk_amount
             portfolio_heat = total_risk / portfolio_value if portfolio_value > 0 else 0
-            
+
             logger.debug(f"[{self.rule_name}] {symbol}: risk ${risk_amount:.2f} ({risk_pct:.2%}), total heat {portfolio_heat:.2%}")
-            
+
             if portfolio_heat > self.max_portfolio_heat:
                 logger.warning(f"🚫 [{self.rule_name}] REJECTED: {symbol} portfolio heat {portfolio_heat:.2%} would exceed max {self.max_portfolio_heat:.2%}")
                 return (False, f"Portfolio heat {portfolio_heat:.2%} would exceed {self.max_portfolio_heat:.2%}")
-            
+
             logger.debug(f"✅ [{self.rule_name}] PASSED: {symbol}")
             return (True, f"Portfolio heat within limits")
             

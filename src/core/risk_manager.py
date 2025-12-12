@@ -6,7 +6,9 @@ PHASE 3 REFACTOR: Transform into Rules Engine
 """
 
 import logging
+import os
 from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import numpy as np
 
@@ -23,7 +25,9 @@ try:
         MaxDrawdownRule,
         RiskRewardRatioRule,
         StrategyPerformanceRule,
-        DailyTradeLimitRule
+        DailyTradeLimitRule,
+        compute_max_affordable_notional,
+        compute_portfolio_open_risk_usd,
     )
 except ModuleNotFoundError:
     try:
@@ -35,7 +39,9 @@ except ModuleNotFoundError:
             MaxDrawdownRule,
             RiskRewardRatioRule,
             StrategyPerformanceRule,
-            DailyTradeLimitRule
+            DailyTradeLimitRule,
+            compute_max_affordable_notional,
+            compute_portfolio_open_risk_usd,
         )
     except ModuleNotFoundError:
         try:
@@ -47,7 +53,9 @@ except ModuleNotFoundError:
                 MaxDrawdownRule,
                 RiskRewardRatioRule,
                 StrategyPerformanceRule,
-                DailyTradeLimitRule
+                DailyTradeLimitRule,
+                compute_max_affordable_notional,
+                compute_portfolio_open_risk_usd,
             )
         except ImportError:
             raise
@@ -71,6 +79,20 @@ except ModuleNotFoundError:
             # Unable to import, re-raise
             raise
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PlannedSizeResult:
+    planned_notional: float
+    planned_qty: float
+    capped_by_size_pct: bool
+    capped_by_max_notional: bool
+    capped_by_capital: bool
+    capped_by_heat: bool
+    below_min_notional: bool
+    position_size_policy: Optional[str] = None
+    reason: Optional[str] = None
+
 
 
 class RiskManager:
@@ -655,6 +677,126 @@ class RiskManager:
                 f"[RISK-ENGINE] Failed to get equity from portfolio_manager: {exc}; using fallback {self.portfolio_value}"
             )
             return float(self.portfolio_value)
+
+    def _is_size_planner_enabled(self) -> bool:
+        flag = os.getenv("RISK_SIZE_PLANNER_ENABLED", "false").lower()
+        return flag in ("1", "true", "yes", "on")
+
+    def _log_planner_decision(self, symbol: str, raw_notional: float, planned: PlannedSizeResult,
+                               max_portfolio_risk_usd: Optional[float], cap_heat: float, shadow: bool) -> None:
+        notional_delta_abs = raw_notional - planned.planned_notional
+        notional_delta_ratio = (planned.planned_notional / raw_notional) if raw_notional else 0.0
+        logger.info(
+            "[RISK-PLANNER] size_planner.decision",
+            extra={
+                'symbol': symbol,
+                'raw_notional': raw_notional,
+                'planned_notional': planned.planned_notional,
+                'planned_qty': planned.planned_qty,
+                'capped_by_size_pct': planned.capped_by_size_pct,
+                'capped_by_max_notional': planned.capped_by_max_notional,
+                'capped_by_capital': planned.capped_by_capital,
+                'capped_by_heat': planned.capped_by_heat,
+                'heat_remaining_usd': cap_heat if cap_heat != float('inf') else None,
+                'max_portfolio_risk_usd': max_portfolio_risk_usd,
+                'below_min_notional': planned.below_min_notional,
+                'position_size_policy': planned.position_size_policy,
+                'reason': planned.reason,
+                'notional_delta_abs': notional_delta_abs,
+                'notional_delta_ratio': notional_delta_ratio,
+                'shadow_mode': shadow,
+            }
+        )
+
+    def plan_position_size(
+        self,
+        *,
+        raw_notional: float,
+        symbol: str,
+        equity: float,
+        price: float,
+        available_balance: float,
+        leverage: float,
+        risk_limits: Dict[str, Any],
+        min_notional_threshold: float,
+        max_portfolio_risk_usd: Optional[float],
+        current_open_risk_usd: float,
+        position_size_policy: str,
+    ) -> PlannedSizeResult:
+        max_position_size_pct = float(risk_limits.get('max_position_size', 0) or 0)
+        max_position_notional_usd = risk_limits.get('max_position_notional_usd')
+        max_notional_pct_per_trade = risk_limits.get('max_notional_pct_per_trade') or risk_limits.get('computed_max_notional_pct_per_trade')
+
+        cap_size_pct = equity * max_position_size_pct if max_position_size_pct else float('inf')
+        cap_notional = float('inf')
+        try:
+            if max_position_notional_usd is not None:
+                cap_notional = float(max_position_notional_usd)
+            elif max_notional_pct_per_trade:
+                cap_notional = equity * float(max_notional_pct_per_trade)
+        except Exception:
+            cap_notional = float('inf')
+
+        cap_capital = compute_max_affordable_notional(available_balance or 0.0, leverage or 1.0)
+
+        cap_heat = float('inf')
+        if max_portfolio_risk_usd is not None:
+            cap_heat = max(0.0, max_portfolio_risk_usd - max(0.0, current_open_risk_usd))
+
+        planned_notional = min(raw_notional, cap_size_pct, cap_notional, cap_capital, cap_heat)
+
+        capped_by_size_pct = planned_notional < raw_notional and planned_notional == cap_size_pct
+        capped_by_max_notional = planned_notional < raw_notional and planned_notional == cap_notional
+        capped_by_capital = planned_notional < raw_notional and planned_notional == cap_capital
+        capped_by_heat = planned_notional < raw_notional and planned_notional == cap_heat
+
+        # position_size_policy handling
+        reason = None
+        if position_size_policy == 'reject' and (capped_by_size_pct or capped_by_max_notional):
+            return PlannedSizeResult(
+                planned_notional=0.0,
+                planned_qty=0.0,
+                capped_by_size_pct=capped_by_size_pct,
+                capped_by_max_notional=capped_by_max_notional,
+                capped_by_capital=capped_by_capital,
+                capped_by_heat=capped_by_heat,
+                below_min_notional=False,
+                position_size_policy=position_size_policy,
+                reason="REJECT_SIZE_CAP",
+            )
+
+        planned_qty = planned_notional / price if price > 0 else 0.0
+
+        # min-notional enforcement
+        if planned_notional < min_notional_threshold:
+            if cap_heat == planned_notional:
+                reason = "portfolio_heat_exhausted"
+                capped_by_heat = True
+            else:
+                reason = "REJECT_TOO_SMALL_AFTER_CAP"
+            return PlannedSizeResult(
+                planned_notional=planned_notional,
+                planned_qty=planned_qty,
+                capped_by_size_pct=capped_by_size_pct,
+                capped_by_max_notional=capped_by_max_notional,
+                capped_by_capital=capped_by_capital,
+                capped_by_heat=capped_by_heat,
+                below_min_notional=True,
+                position_size_policy=position_size_policy,
+                reason=reason,
+            )
+
+        return PlannedSizeResult(
+            planned_notional=planned_notional,
+            planned_qty=planned_qty,
+            capped_by_size_pct=capped_by_size_pct,
+            capped_by_max_notional=capped_by_max_notional,
+            capped_by_capital=capped_by_capital,
+            capped_by_heat=capped_by_heat,
+            below_min_notional=False,
+            position_size_policy=position_size_policy,
+            reason=reason,
+        )
     
     def _calculate_risk_metrics(self, signal: Dict, portfolio_manager) -> Dict[str, Any]:
         """
@@ -869,21 +1011,98 @@ class RiskManager:
                     return False, 0.0, combined_meta
             combined_meta['sizing_meta'] = signal.get('sizing_meta', {})
 
-            final_size, limit_meta = self.apply_position_limits(signal, portfolio_manager)
-            combined_meta['limit_meta'] = limit_meta
-            signal['limit_meta'] = limit_meta
+            planner_enabled = self._is_size_planner_enabled()
+            entry_price = signal.get('entry', 0) or signal.get('entry_price', 0)
+            raw_notional = signal.get('notional')
+            if raw_notional is None:
+                proposed_size = signal.get('position_size') or signal.get('amount') or 0.0
+                raw_notional = proposed_size * entry_price if entry_price else 0.0
+            equity = self._safe_get_equity(portfolio_manager)
+            available_balance = self._get_available_balance(portfolio_manager)
+            leverage = signal.get('leverage', 1) or 1
+            max_portfolio_risk_usd = self.config.get('max_portfolio_risk_usd') if isinstance(self.config, dict) else None
+            if max_portfolio_risk_usd is None and equity is not None:
+                try:
+                    max_portfolio_risk_usd = equity * float(self.risk_limits.get('max_portfolio_risk', 0))
+                except Exception:
+                    max_portfolio_risk_usd = None
+            current_open_risk_usd, _ = compute_portfolio_open_risk_usd(portfolio_manager, signal)
+            cap_heat_value = max(0.0, (max_portfolio_risk_usd - current_open_risk_usd)) if max_portfolio_risk_usd is not None else float('inf')
 
-            if limit_meta['action'] == 'reject':
-                return False, 0.0, combined_meta
+            risk_limits_for_planner = dict(self.risk_limits)
+            if isinstance(self.config, dict):
+                if 'max_notional_pct_per_trade' in self.config:
+                    risk_limits_for_planner['max_notional_pct_per_trade'] = self.config.get('max_notional_pct_per_trade')
 
-            signal['position_size'] = final_size
-            signal['amount'] = final_size
-            signal['notional'] = limit_meta['final_notional']
+            planner_result = self.plan_position_size(
+                raw_notional=raw_notional,
+                symbol=signal.get('symbol', 'UNKNOWN'),
+                equity=equity,
+                price=entry_price,
+                available_balance=available_balance if available_balance is not None else 0.0,
+                leverage=leverage,
+                risk_limits=risk_limits_for_planner,
+                min_notional_threshold=float(self.risk_limits.get('min_notional_threshold', 0) or 0.0),
+                max_portfolio_risk_usd=max_portfolio_risk_usd,
+                current_open_risk_usd=current_open_risk_usd,
+                position_size_policy=self.risk_limits.get('position_size_policy', 'clip'),
+            )
 
-            if 'sizing_meta' in signal:
-                signal['sizing_meta']['capped'] = limit_meta['action'] == 'clip'
-                signal['sizing_meta']['cap_applied_by'] = 'RiskManager.apply_position_limits'
-                signal['sizing_meta']['final_notional'] = limit_meta['final_notional']
+            shadow_mode = not planner_enabled
+            self._log_planner_decision(
+                signal.get('symbol', 'UNKNOWN'),
+                raw_notional,
+                planner_result,
+                max_portfolio_risk_usd,
+                cap_heat_value,
+                shadow_mode,
+            )
+
+            combined_meta['planner'] = planner_result
+            combined_meta['planner_reason'] = planner_result.reason
+            combined_meta['planner_raw_notional'] = raw_notional
+            combined_meta['planner_delta_abs'] = raw_notional - planner_result.planned_notional
+            combined_meta['planner_delta_ratio'] = (
+                planner_result.planned_notional / raw_notional
+            ) if raw_notional else 0.0
+
+            if planner_enabled:
+                if planner_result.below_min_notional or (planner_result.reason and planner_result.planned_notional == 0):
+                    combined_meta['blocked_by'] = 'SizePlanner'
+                    return False, 0.0, combined_meta
+
+                final_size = planner_result.planned_qty
+                signal['position_size'] = planner_result.planned_qty
+                signal['amount'] = planner_result.planned_qty
+                signal['notional'] = planner_result.planned_notional
+
+                if 'sizing_meta' in signal:
+                    signal['sizing_meta']['capped'] = any([
+                        planner_result.capped_by_size_pct,
+                        planner_result.capped_by_max_notional,
+                        planner_result.capped_by_capital,
+                        planner_result.capped_by_heat,
+                    ])
+                    signal['sizing_meta']['cap_applied_by'] = 'RiskManager.plan_position_size'
+                    signal['sizing_meta']['final_notional'] = planner_result.planned_notional
+
+            else:
+                # Legacy Sprint1 path
+                final_size, limit_meta = self.apply_position_limits(signal, portfolio_manager)
+                combined_meta['limit_meta'] = limit_meta
+                signal['limit_meta'] = limit_meta
+
+                if limit_meta['action'] == 'reject':
+                    return False, 0.0, combined_meta
+
+                signal['position_size'] = final_size
+                signal['amount'] = final_size
+                signal['notional'] = limit_meta['final_notional']
+
+                if 'sizing_meta' in signal:
+                    signal['sizing_meta']['capped'] = limit_meta['action'] == 'clip'
+                    signal['sizing_meta']['cap_applied_by'] = 'RiskManager.apply_position_limits'
+                    signal['sizing_meta']['final_notional'] = limit_meta['final_notional']
 
             is_valid, reason, risk_metrics = await self.validate_new_position(signal, portfolio_manager)
             combined_meta['risk_metrics'] = risk_metrics
