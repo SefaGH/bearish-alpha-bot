@@ -273,18 +273,10 @@ volume_analyzer:
   min_ratio: 0.1                     # Override with: VOLUME_ANALYZER_MIN_RATIO
   max_ratio: 10.0                    # Override with: VOLUME_ANALYZER_MAX_RATIO
   buckets:                           # Override with: VOLUME_ANALYZER_BUCKETS
-    -
-      threshold: 0.0
-      name: "LOW"
-    -
-      threshold: 0.3
-      name: "NORMAL"
-    -
-      threshold: 0.6
-      name: "HIGH"
-    -
-      threshold: 0.85
-      name: "EXTREME"
+    - [0.0, "LOW"]
+    - [0.3, "NORMAL"]
+    - [0.6, "HIGH"]
+    - [0.85, "EXTREME"]
 
 # ==============================================================================
 # ADAPTIVE STRATEGIES CONTROL
