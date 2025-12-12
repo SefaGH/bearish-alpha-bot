@@ -47,10 +47,11 @@ This module does not handle caching by default; callers can wrap
 
 from __future__ import annotations
 
+import ast
 import math
 import statistics
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, Sequence
+from typing import Optional, Dict, Any, Sequence, List
 import logging
 
 from core.logger import get_current_run_id
@@ -157,11 +158,84 @@ class VolumeAnalyzer:
     }
 
     def __init__(self, market_data_pipeline: Any, config: Optional[Dict[str, Any]] = None) -> None:
+        self.logger = logging.getLogger(__name__)
         self._mdp = market_data_pipeline
         # Merge user‑provided config with defaults; nested keys are not
         # deep merged intentionally.
         self.config: Dict[str, Any] = {**self.DEFAULT_CONFIG, **(config or {})}
         self._readiness_emitted: Dict[str, int] = {}
+
+        raw_buckets = self.config.get("buckets", [])
+        self._buckets = self._normalize_buckets(raw_buckets)
+        self.logger.info(
+            "VolumeAnalyzer buckets normalized",
+            extra={
+                "event": "volume_analyzer_buckets_normalized",
+                "bucket_count": len(self._buckets),
+                "buckets": self._buckets,
+            },
+        )
+
+    def _normalize_buckets(self, raw_buckets: Any) -> List[Dict[str, Any]]:
+        """Normalize raw bucket config into [{'threshold': float, 'name': str}, ...]."""
+        if not isinstance(raw_buckets, list) or not raw_buckets:
+            self.logger.warning(
+                "VolumeAnalyzer: invalid or empty buckets config: %r (type=%s)",
+                raw_buckets,
+                type(raw_buckets).__name__,
+            )
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+
+        for entry in raw_buckets:
+            try:
+                # Handle stringified entries produced by the minimal YAML parser
+                if isinstance(entry, str):
+                    try:
+                        entry = ast.literal_eval(entry.strip())
+                    except (ValueError, SyntaxError) as exc:
+                        self.logger.warning(
+                            "VolumeAnalyzer: failed to parse string bucket entry %r: %s",
+                            entry,
+                            exc,
+                        )
+                        continue
+
+                if isinstance(entry, dict):
+                    threshold = entry.get("threshold")
+                    name = entry.get("name")
+                    if threshold is None or name is None:
+                        self.logger.warning(
+                            "VolumeAnalyzer: skipping incomplete dict bucket: %r",
+                            entry,
+                        )
+                        continue
+                    normalized.append({"threshold": float(threshold), "name": str(name)})
+                elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    threshold, name = entry[0], entry[1]
+                    normalized.append({"threshold": float(threshold), "name": str(name)})
+                else:
+                    self.logger.warning(
+                        "VolumeAnalyzer: skipping invalid bucket entry: %r (type=%s)",
+                        entry,
+                        type(entry).__name__,
+                    )
+            except Exception as exc:  # Defensive guardrail to keep normalization resilient
+                self.logger.error(
+                    "VolumeAnalyzer: error processing bucket entry %r: %s",
+                    entry,
+                    exc,
+                )
+
+        normalized = sorted(normalized, key=lambda b: b["threshold"])
+
+        if not normalized:
+            self.logger.error(
+                "VolumeAnalyzer: no valid buckets after normalization; volume context will be disabled.",
+            )
+
+        return normalized
 
     def _log_readiness(self, symbol: str, trade_tf: str, short_tf: str, medium_tf: str,
                        trade_len: int, short_len: int, medium_len: int,
@@ -352,53 +426,26 @@ class VolumeAnalyzer:
         x = alpha * (ratio_combined - 1.0)
         volume_strength = 1.0 / (1.0 + math.exp(-x))
 
-        buckets_raw = cfg.get("buckets", [])
-
-        def _normalize_bucket(entry):
-            try:
-                if isinstance(entry, dict):
-                    if "threshold" in entry and "name" in entry:
-                        return float(entry["threshold"]), str(entry["name"])
-                    logging.getLogger(__name__).warning(
-                        "Invalid bucket entry missing threshold/name keys: %s", entry
-                    )
-                    return None
-                if isinstance(entry, (list, tuple)):
-                    if len(entry) >= 2:
-                        return float(entry[0]), str(entry[1])
-                    logging.getLogger(__name__).warning(
-                        "Invalid bucket entry (too few elements): %s", entry
-                    )
-                    return None
-                logging.getLogger(__name__).warning(
-                    "Invalid bucket entry type: %s", type(entry)
-                )
-                return None
-            except Exception as exc:
-                logging.getLogger(__name__).warning(
-                    "Failed to normalize bucket entry %s: %s", entry, exc
-                )
-                return None
-
-        normalized_buckets = []
-        for entry in buckets_raw:
-            norm = _normalize_bucket(entry)
-            if norm is not None:
-                normalized_buckets.append(norm)
-
-        if not normalized_buckets:
-            logging.getLogger(__name__).error(
+        if not self._buckets:
+            self.logger.warning(
                 "volume_analyzer.buckets config is invalid or empty; skipping volume context for %s",
                 symbol,
             )
             return None
 
-        bucket_name = normalized_buckets[0][1]
-        for threshold, name in normalized_buckets:
+        bucket_name = self._buckets[0]["name"]
+        for bucket in self._buckets:
+            try:
+                threshold = float(bucket["threshold"])
+            except (KeyError, TypeError, ValueError):
+                self.logger.warning(
+                    "VolumeAnalyzer: skipping malformed bucket entry in compute_context: %r",
+                    bucket,
+                )
+                continue
+
             if volume_strength >= threshold:
-                bucket_name = name
-            else:
-                break
+                bucket_name = bucket.get("name", bucket_name)
 
         ctx = VolumeContext(
             symbol=symbol,
