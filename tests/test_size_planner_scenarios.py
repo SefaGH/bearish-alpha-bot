@@ -171,3 +171,11 @@ def test_heat_cap_exhausted():
     assert res.capped_by_heat is True
     assert res.below_min_notional is True
     assert res.reason == "portfolio_heat_exhausted"
+
+    def test_planner_flag_reads_risk_config(monkeypatch):
+        monkeypatch.delenv("RISK_SIZE_PLANNER_ENABLED", raising=False)
+        cfg = RiskConfiguration(custom_limits={"size_planner_enabled": True}, initial_capital=100)
+        rm = RiskManager(portfolio_value=100, risk_config=cfg, rules=[])
+
+        assert rm._is_size_planner_enabled() is True
+        assert getattr(rm, "_planner_flag_source", None) == "risk_config"

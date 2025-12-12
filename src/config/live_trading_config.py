@@ -805,17 +805,19 @@ class LiveTradingConfiguration:
             {'trading_mode': 'paper', 'capital_usdt': '1000'}
             (keys lowercase to match config.example.yaml structure)
         """
-        nested = {}
-        
+        nested: Dict[str, Any] = {}
+
         for key, value in flat_dict.items():
-            # Convert key to lowercase to match YAML structure
-            # Example: TRADING_MODE -> trading_mode
             lowercase_key = key.lower()
-            
-            # For now, keep at top level with lowercase
-            # This matches the env var override structure
-            nested[lowercase_key] = value
-        
+            parts = lowercase_key.split('.') if '.' in lowercase_key else [lowercase_key]
+
+            cursor = nested
+            for segment in parts[:-1]:
+                if segment not in cursor or not isinstance(cursor.get(segment), dict):
+                    cursor[segment] = {}
+                cursor = cursor[segment]
+            cursor[parts[-1]] = value
+
         return nested
 
     @staticmethod

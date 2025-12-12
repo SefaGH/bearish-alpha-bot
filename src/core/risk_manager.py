@@ -136,6 +136,18 @@ class RiskManager:
 
         # Flattened config snapshot for downstream consumers (used by rules)
         self.config = self._extract_risk_config_dict()
+
+        # Compute planner flag once and log source for observability
+        self._compute_size_planner_flag()
+        logger.info(
+            "[RISK-PLANNER] size_planner.flag",
+            extra={
+                'enabled': self._size_planner_enabled,
+                'source': getattr(self, '_planner_flag_source', 'default'),
+                'env_raw': getattr(self, '_planner_flag_details', {}).get('env_raw'),
+                'risk_cfg_raw': getattr(self, '_planner_flag_details', {}).get('risk_cfg_raw'),
+            },
+        )
         
         # PHASE 3: Rules Engine - Composable, extensible risk validation
         if rules is not None:
@@ -678,9 +690,60 @@ class RiskManager:
             )
             return float(self.portfolio_value)
 
+    @staticmethod
+    def _coerce_bool(val: Any) -> Optional[bool]:
+        if val is None:
+            return None
+        if isinstance(val, bool):
+            return val
+        try:
+            sval = str(val).strip().lower()
+        except Exception:
+            return None
+        if sval in ("1", "true", "yes", "on"):  # truthy
+            return True
+        if sval in ("0", "false", "no", "off"):  # falsy
+            return False
+        return None
+
+    def _compute_size_planner_flag(self) -> bool:
+        env_raw = os.getenv("RISK_SIZE_PLANNER_ENABLED")
+        env_val = self._coerce_bool(env_raw)
+
+        risk_cfg_raw = None
+        risk_val = None
+        try:
+            if isinstance(self.config, dict):
+                risk_cfg_raw = self.config.get('size_planner_enabled')
+                risk_val = self._coerce_bool(risk_cfg_raw)
+        except Exception:
+            risk_cfg_raw = None
+            risk_val = None
+
+        if env_val is not None:
+            enabled = env_val
+            source = 'env'
+        elif risk_val is not None:
+            enabled = risk_val
+            source = 'risk_config'
+        else:
+            enabled = False
+            source = 'default'
+
+        self._size_planner_enabled = enabled
+        self._planner_flag_source = source
+        self._planner_flag_details = {
+            'env_raw': env_raw,
+            'risk_cfg_raw': risk_cfg_raw,
+            'source': source,
+        }
+        return enabled
+
     def _is_size_planner_enabled(self) -> bool:
-        flag = os.getenv("RISK_SIZE_PLANNER_ENABLED", "false").lower()
-        return flag in ("1", "true", "yes", "on")
+        # Cached after __init__; recompute if missing
+        if getattr(self, '_size_planner_enabled', None) is None:
+            return self._compute_size_planner_flag()
+        return self._size_planner_enabled
 
     def _log_planner_decision(self, symbol: str, raw_notional: float, planned: PlannedSizeResult,
                                max_portfolio_risk_usd: Optional[float], cap_heat: float, shadow: bool) -> None:
@@ -1012,6 +1075,14 @@ class RiskManager:
             combined_meta['sizing_meta'] = signal.get('sizing_meta', {})
 
             planner_enabled = self._is_size_planner_enabled()
+            logger.info(
+                "[RISK-PLANNER] size_planner.mode",
+                extra={
+                    'mode': 'active' if planner_enabled else 'shadow',
+                    'enabled': planner_enabled,
+                    'flag_source': getattr(self, '_planner_flag_source', 'unknown'),
+                },
+            )
             entry_price = signal.get('entry', 0) or signal.get('entry_price', 0)
             raw_notional = signal.get('notional')
             if raw_notional is None:

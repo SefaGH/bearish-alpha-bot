@@ -41,6 +41,7 @@ per_trade_risk_pct = 1
 risk.min_stop_pct = 0.5
 max_position_notional_usd = 250
 risk.max_notional_pct_per_trade = 75
+risk.size_planner_enabled = true
 ```
 
 **Max notional precedence:**
@@ -77,6 +78,10 @@ Example (sanity check, equity 100):
 # Option B (Sprint 2 Plan) – Size Planner in RiskManager
 
 **Status:** Planned, gated by `RISK_SIZE_PLANNER_ENABLED`. When the flag is **false**, Sprint 1 behavior applies. When **true**, the Size Planner becomes active. A shadow mode can run the planner for logs/metrics only before activation.
+
+Supported keys to enable planner:
+- ENV: `RISK_SIZE_PLANNER_ENABLED=true|false`
+- App Config: `risk.size_planner_enabled=true|false` (preferred nested key)
 
 ## End-to-end pipeline (planner enabled)
 1) **Config inputs:** `risk.per_trade_risk_pct` (fraction), `risk.risk_usd_cap`, `risk.max_position_size` (`max_position_size_pct`), `max_position_notional_usd` or `risk.max_notional_pct_per_trade`, `risk.min_stop_pct`, `risk.min_notional_threshold`, `risk.max_portfolio_risk_usd`, `equity_usd`, `available_balance`, `leverage`, `price`.
