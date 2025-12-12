@@ -1453,6 +1453,13 @@ class ProductionCoordinator:
             )
             logger.info(f"✓ Risk manager initialized (portfolio value: ${self.risk_manager.portfolio_value:.2f})")
 
+            # Startup health check for visibility (non-fatal in Sprint 1)
+            try:
+                health = self.risk_manager.run_health_check()
+                logger.info("RiskManager startup health", extra={'health': health})
+            except Exception as exc:
+                logger.warning(f"⚠️ Failed to run RiskManager health check at startup: {exc}")
+
             # === STEP 6: INITIALIZE EXECUTION MANAGERS ===
             self.order_manager = SmartOrderManager(
                 market_data_pipeline=self.market_data_pipeline,

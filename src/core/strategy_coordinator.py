@@ -907,7 +907,73 @@ class StrategyCoordinator:
                 return {'status': 'rejected', 'reason': validation_result['reason'], 'stage': 'validation'}
             
             # Adım 2: Sinyali Zenginleştir
-            enriched_signal = self._enrich_signal(strategy_name, signal)
+            enriched_signal = await self._enrich_signal(strategy_name, signal)
+            
+            # --- Volume Gating (Issue #450) ---
+            strat_cfg = self.config.get('strategies', {}).get(strategy_name, {})
+            vol_filters = strat_cfg.get('volume_filters', {})
+            volume_bucket = enriched_signal.get('volume_bucket')
+            
+            if volume_bucket:
+                decision = "accepted"
+                rejection_reason = None
+                
+                # 1. Check min_bucket if filters enabled
+                if vol_filters.get('enabled', False):
+                    min_bucket = vol_filters.get('min_bucket', 'NORMAL')
+                    current_rank = get_bucket_rank(volume_bucket)
+                    min_rank = get_bucket_rank(min_bucket)
+                    
+                    if current_rank < min_rank:
+                        # Check for override
+                        allow_low = strat_cfg.get('allow_low_volume', False)
+                        if allow_low:
+                            logger.info(
+                                f"⚠️ [VOLUME-OVERRIDE] {log_prefix} | Bucket '{volume_bucket}' < min '{min_bucket}' "
+                                f"but allow_low_volume=True. Accepting."
+                            )
+                        else:
+                            decision = "rejected_low_bucket"
+                            rejection_reason = f"Volume bucket '{volume_bucket}' < min '{min_bucket}' and allow_low_volume=False"
+
+                # 2. Check very_low/LOW hard floor if not already rejected
+                # If bucket is LOW (or very_low) and allow_low_volume is False, we should reject 
+                # even if min_bucket is set to LOW? 
+                # That seems to be what the user implied with "If volume_bucket is very_low and allow_low_volume is false...".
+                # But if min_bucket is LOW, then we explicitly allowed LOW.
+                # Let's assume 'very_low' is a special case or alias for LOW in the user's mind.
+                # If we stick to the override logic above, it handles the most common case (min=NORMAL, bucket=LOW).
+                # If min=LOW, then bucket=LOW passes. 
+                # If the user wants to block LOW, they should set min=NORMAL.
+                # So I will stick to the override logic above as the primary mechanism.
+                
+                # However, to be safe and strictly follow "If volume_bucket is very_low ... rejection",
+                # I will add a check for 'very_low' specifically, in case it appears (e.g. from a custom analyzer).
+                if decision == "accepted" and volume_bucket.lower() == 'very_low':
+                     allow_low = strat_cfg.get('allow_low_volume', False)
+                     if not allow_low:
+                         decision = "rejected_very_low"
+                         rejection_reason = "Volume bucket is 'very_low' and allow_low_volume=False"
+
+                # Log the decision check (Structured for analysis)
+                audit_payload = {
+                    'event': 'volume_decision_check',
+                    'timestamp': datetime.now(timezone.utc).isoformat(),
+                    'run_id': get_current_run_id(),
+                    'strategy_name': strategy_name,
+                    'symbol': symbol,
+                    'timeframe': enriched_signal.get('timeframe', '5m'),
+                    'volume_bucket': volume_bucket,
+                    'volume_strength': enriched_signal.get('volume_strength', 0.0),
+                    'volume_ctx_source': 'analyzer',
+                    'central_bucket_decision': decision
+                }
+                logger.info(f"volume_decision_check {json.dumps(audit_payload)}")
+
+                if decision != "accepted":
+                    self.processing_stats['rejected_signals'] += 1
+                    logger.warning(f"🛡️  {log_prefix} REJECTED (Volume Gating): {rejection_reason}")
+                    return {'status': 'rejected', 'reason': rejection_reason, 'stage': 'volume_gating'}
             
             # Adım 3: Duplikasyon ve Cooldown Kontrolü
             is_valid_duplicate, duplicate_reason = self.validate_duplicate(enriched_signal, strategy_name)
@@ -2041,7 +2107,7 @@ class StrategyCoordinator:
         
         return {'valid': True}
     
-    def _enrich_signal(self, strategy_name: str, signal: Dict) -> Dict:
+    async def _enrich_signal(self, strategy_name: str, signal: Dict) -> Dict:
         """Enrich signal with additional metadata."""
         enriched = signal.copy()
 
@@ -2083,6 +2149,54 @@ class StrategyCoordinator:
         if self.portfolio_manager.performance_monitor:
             summary = self.portfolio_manager.performance_monitor.get_strategy_summary(strategy_name)
             enriched['strategy_metrics'] = summary.get('metrics', {})
+        
+        # --- Volume Analysis Injection (Issue #450) ---
+        if self.volume_analyzer and 'symbol' in enriched:
+            symbol = enriched['symbol']
+            try:
+                # Get volume context
+                trade_tf = enriched.get('timeframe', '5m')
+                vol_context = await self.volume_analyzer.compute_context(symbol, trade_tf)
+                
+                if vol_context:
+                    enriched['volume_bucket'] = vol_context.bucket
+                    enriched['volume_strength'] = vol_context.volume_strength
+                    
+                    # Log volume context injection
+                    logger.info(
+                        f"📊 [VOLUME-CONTEXT] {symbol} | Bucket: {vol_context.bucket} | "
+                        f"Strength: {vol_context.volume_strength:.2f} | Source: analyzer"
+                    )
+                    
+                    # Calculate volume score based on strategy config
+                    strat_cfg = self.config.get('strategies', {}).get(strategy_name, {})
+                    vol_filters = strat_cfg.get('volume_filters', {})
+                    
+                    if vol_filters.get('enabled', False) and vol_filters.get('use_volume_strength_in_score', False):
+                        weight = float(vol_filters.get('volume_score_weight', 0.0))
+                        # Normalize strength: 1.0 -> 0.5, 2.0 -> 1.0
+                        strength = enriched['volume_strength']
+                        raw_vol_score = min(1.0, strength / 2.0)
+                        
+                        # Apply weight
+                        volume_score = raw_vol_score * weight
+                        enriched['volume_score'] = volume_score
+                        
+                        # Adjust base score if present
+                        base_score = enriched.get('score') or enriched.get('signal_score')
+                        if base_score is not None:
+                            enriched['score'] = float(base_score) + volume_score
+                            logger.debug(f"   Volume Score Adjustment: {base_score:.3f} + {volume_score:.3f} -> {enriched['score']:.3f}")
+
+                        # Also adjust quality_score if present (for RiskManager visibility)
+                        base_quality = enriched.get('quality_score')
+                        if base_quality is not None:
+                            enriched['quality_score'] = float(base_quality) + volume_score
+                    else:
+                        enriched['volume_score'] = 0.0
+
+            except Exception as e:
+                logger.warning(f"Failed to inject volume context for {symbol}: {e}")
         
         return enriched
     
@@ -2326,10 +2440,13 @@ class StrategyCoordinator:
                 signal['ml_confidence'] = 0.5
                 signal['regime_name'] = 'neutral'
                 signal['regime_confidence'] = 0.3
-                signal['quality_score'] = 0.0
+                if 'quality_score' not in signal:
+                    signal['quality_score'] = 0.0
         except Exception as e:
             logger.debug(f"ML enrichment error: {e}")
-            signal.update({'ml_confidence': 0.5, 'regime_name': 'neutral', 'regime_confidence': 0.3, 'quality_score': 0.0})
+            signal.update({'ml_confidence': 0.5, 'regime_name': 'neutral', 'regime_confidence': 0.3})
+            if 'quality_score' not in signal:
+                signal['quality_score'] = 0.0
         
         # 2. RL/PPO Metrics
         try:
@@ -2467,64 +2584,8 @@ class StrategyCoordinator:
             signal['ppo_position_multiplier'] = position_multiplier
 
             # Apply volume bucket filters/boosts per-strategy
-            strategies_cfg = self.config.get('strategies', {}) if isinstance(self.config, dict) else {}
-            strategy_key = (signal.get('strategy_name') or signal.get('strategy') or '').lower()
-            volume_bucket = signal.get('volume_bucket')
-            volume_strength = float(signal.get('volume_strength', 0.5))
-
-            filters_cfg = None
-            if strategy_key in ('adaptive_ob', 'oversold_bounce'):
-                filters_cfg = (strategies_cfg.get('adaptive_ob') or {}).get('volume_filters', {})
-            elif strategy_key in ('short_the_rip', 'adaptive_short_the_rip'):
-                filters_cfg = (strategies_cfg.get('adaptive_short_the_rip') or {}).get('volume_filters', {})
-
-            strategy_volume_decision = signal.get('strategy_volume_decision') or 'unknown'
-
-            if (
-                filters_cfg and filters_cfg.get('enabled', True) and volume_bucket
-                and self._volume_analyzer_enabled and self.volume_analyzer
-            ):
-                min_bucket = filters_cfg.get('min_bucket', 'NORMAL')
-                high_bucket = filters_cfg.get('high_volume_min_bucket', 'HIGH')
-                bucket_rank = get_bucket_rank(volume_bucket)
-
-                central_bucket_decision = 'accepted' if bucket_rank >= get_bucket_rank(min_bucket) else 'rejected'
-                audit_payload = {
-                    'event': 'volume_decision_check',
-                    'timestamp': now_ts,
-                    'run_id': run_id,
-                    'strategy_name': strategy_key or 'unknown',
-                    'symbol': signal.get('symbol'),
-                    'timeframe': signal.get('timeframe') or signal.get('tf'),
-                    'volume_bucket': volume_bucket,
-                    'volume_strength': volume_strength,
-                    'volume_ctx_source': signal.get('volume_ctx_source'),
-                    'strategy_internal_volume_decision': strategy_volume_decision,
-                    'central_bucket_decision': central_bucket_decision,
-                }
-
-                # Always log for observability, even if ctx_source is fallback
-                if (
-                    audit_payload['strategy_internal_volume_decision'] != 'unknown'
-                    and audit_payload['strategy_internal_volume_decision'] != audit_payload['central_bucket_decision']
-                ):
-                    audit_payload['event'] = 'volume_decision_mismatch'
-                    logger.info(f"volume_decision_mismatch {audit_payload}")
-                else:
-                    logger.info(f"volume_decision_check {audit_payload}")
-
-                # Preserve gating semantics: enforce only when analyzer provided context
-                if signal.get('volume_ctx_source') == 'analyzer':
-                    if central_bucket_decision == 'rejected':
-                        return {
-                            'acceptable': False,
-                            'reason': f"Volume bucket {volume_bucket} below minimum {min_bucket}",
-                            'metrics': {'volume_bucket': volume_bucket}
-                        }
-
-                    if bucket_rank >= get_bucket_rank(high_bucket) and filters_cfg.get('use_volume_strength_in_score', True):
-                        weight = float(filters_cfg.get('volume_score_weight', 0.15))
-                        signal['quality_score'] = min(1.0, float(signal.get('quality_score', 0.0)) + (weight * volume_strength))
+            # NOTE: Volume gating and scoring are now handled in process_strategy_signal and _enrich_signal (Issue #450).
+            # The legacy logic here has been removed to prevent duplication and errors.
             
             # 3. Calculate R/R ratio if not already present
             if 'rr_ratio' not in signal and signal.get('entry') and signal.get('stop') and signal.get('target'):

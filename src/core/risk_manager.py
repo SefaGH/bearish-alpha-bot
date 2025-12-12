@@ -1466,6 +1466,7 @@ class RiskManager:
         for key in critical_keys:
             value = self.risk_limits.get(key)
             if key == 'max_position_notional_usd':
+                # Optional clamp: None means "no clamp" and is acceptable
                 is_ok = value is None or (isinstance(value, (int, float)) and value > 0)
             else:
                 is_ok = value is not None and isinstance(value, (int, float)) and value > 0

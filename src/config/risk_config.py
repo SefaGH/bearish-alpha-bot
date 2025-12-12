@@ -190,6 +190,25 @@ class RiskConfiguration:
             # Normalize percent-style values (e.g., 0.5 -> 0.5%, 50 -> 50%)
             processed_limits['min_stop_pct'] = processed_limits['min_stop_pct'] / 100.0
 
+        # Max position notional: explicit override > computed > None
+        explicit_max_notional = self._get_env_or_config(
+            'MAX_POSITION_NOTIONAL_USD',
+            custom_limits.get('max_position_notional_usd') if custom_limits else None,
+            float
+        )
+        computed_max_notional = None
+        if custom_limits:
+            computed_max_notional = custom_limits.get('computed_max_notional_usd') or custom_limits.get('max_notional_per_trade')
+
+        max_notional_choice = None
+        if explicit_max_notional is not None and explicit_max_notional > 0:
+            max_notional_choice = explicit_max_notional
+        elif computed_max_notional is not None and computed_max_notional > 0:
+            max_notional_choice = computed_max_notional
+
+        if max_notional_choice is not None:
+            processed_limits['max_position_notional_usd'] = float(max_notional_choice)
+
         self.risk_limits = RiskLimits(**processed_limits)
         
         self.circuit_breaker_limits = CircuitBreakerLimits(**{

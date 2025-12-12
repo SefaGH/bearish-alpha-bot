@@ -44,6 +44,11 @@ def _make_coordinator(config=None, volume_analyzer=None, risk_manager=None):
     cfg = config or {}
     portfolio_manager = MagicMock()
     portfolio_manager.get_current_equity.return_value = 1000
+    portfolio_manager.cfg = cfg
+    portfolio_manager.get_strategy_allocation.return_value = 0.1
+    portfolio_manager.performance_monitor = None
+    portfolio_manager.exchange_clients = {}
+    
     rm = risk_manager or StubRiskManager()
     coord = StrategyCoordinator(
         portfolio_manager,
@@ -85,9 +90,10 @@ async def test_bucket_gating_rejects_low_volume():
         'quality_score': 0.5,
     }
 
-    assessment = await coord._assess_signal_risk(signal)
-    assert assessment['acceptable'] is False
-    assert assessment['metrics']['volume_bucket'] == 'LOW'
+    result = await coord.process_strategy_signal('adaptive_ob', signal)
+    
+    assert result['status'] == 'rejected'
+    assert 'Volume bucket' in result['reason']
 
 
 @pytest.mark.asyncio
@@ -122,11 +128,13 @@ async def test_bucket_high_boosts_quality_score():
         'quality_score': 0.1,
     }
 
-    assessment = await coord._assess_signal_risk(signal)
-    assert assessment['acceptable'] is True
+    await coord.process_strategy_signal('adaptive_short_the_rip', signal)
+    
+    assert len(rm.calls) > 0
     boosted = rm.calls[0]['quality_score']
-    # base quality defaults to 0.0; weight 0.2 * strength 1.2 ≈ 0.24 boost
-    assert boosted == pytest.approx(0.24, rel=1e-3)
+    # base quality 0.1; weight 0.2 * strength 1.2 / 2.0 = 0.12 boost
+    # Total = 0.1 + 0.12 = 0.22
+    assert boosted == pytest.approx(0.22, rel=1e-3)
 
 
 @pytest.mark.parametrize(
@@ -245,5 +253,6 @@ async def test_fallback_path_when_analyzer_disabled_or_missing(volume_cfg, injec
     assert assessment['acceptable'] is True
     assert rm.calls[0].get('volume_ctx_source') != 'analyzer'
     assert rm.calls[0].get('volume_bucket') == 'NORMAL'
-    assert rm.calls[0].get('quality_score', 0.0) == pytest.approx(0.0)
+    # We now preserve existing quality_score if ML/Volume is missing, instead of resetting to 0.0
+    assert rm.calls[0].get('quality_score', 0.0) == pytest.approx(0.25)
     assert volume.calls == 0

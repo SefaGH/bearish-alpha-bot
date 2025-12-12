@@ -282,8 +282,7 @@ class AdaptiveShortTheRip(ShortTheRip):
         """
         symbol_display = symbol or "UNKNOWN"
         log_prefix = f"[{self.strategy_name.upper()}/{symbol_display}]"
-        # TODO(volume): unify this strategy's volume confirmation heuristics with central bucket gating once calibrated.
-        strategy_volume_decision = 'accepted'
+        # Volume logic centralized in StrategyCoordinator (Issue #450)
 
         # --- Data Validation Step ---
         validation_passed, reason = self._validate_input_data(df_30m, df_1h, regime_data, symbol_display)
@@ -529,7 +528,6 @@ class AdaptiveShortTheRip(ShortTheRip):
                 "ml_enhanced": ml_enhanced,
                 "strategy_type": 'adaptive',
                 "strategy_min_rr": self.min_rr_ratio,
-                "strategy_volume_decision": strategy_volume_decision,
             })
             if volatility_stop_meta:
                 signal['volatility_stop_meta'] = volatility_stop_meta

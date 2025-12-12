@@ -388,6 +388,7 @@ strategies:
       fallback_priority: 0.4          # Override with: REGIME_DEFAULT_FALLBACK
 
   adaptive_ob:
+    allow_low_volume: false         # Override with: STRATEGY_OB_ALLOW_LOW_VOLUME
     volume_filters:
       enabled: true                 # Override with: STRATEGY_OB_VOLUME_FILTERS_ENABLED
       min_bucket: "NORMAL"          # Override with: STRATEGY_OB_VOLUME_FILTERS_MIN_BUCKET
@@ -396,6 +397,7 @@ strategies:
       volume_score_weight: 0.15     # Override with: STRATEGY_OB_VOLUME_FILTERS_WEIGHT
 
   adaptive_short_the_rip:
+    allow_low_volume: false         # Override with: STRATEGY_STR_ALLOW_LOW_VOLUME
     volume_filters:
       enabled: true                 # Override with: STRATEGY_STR_VOLUME_FILTERS_ENABLED
       min_bucket: "NORMAL"          # Override with: STRATEGY_STR_VOLUME_FILTERS_MIN_BUCKET

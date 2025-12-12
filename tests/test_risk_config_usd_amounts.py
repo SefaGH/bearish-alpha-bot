@@ -31,3 +31,26 @@ def test_usd_amounts_accept_percent_style_env(monkeypatch):
     assert cfg.max_risk_per_trade_usd == pytest.approx(1.0)
     assert cfg.daily_loss_limit_usd == pytest.approx(2.0)
     assert cfg.max_drawdown_usd == pytest.approx(10.0)
+
+
+def test_max_notional_precedence_computed_then_explicit():
+    # No explicit max_position_notional_usd -> use computed_max_notional_usd
+    cfg_computed = RiskConfiguration(custom_limits={
+        'equity_usd': 100.0,
+        'per_trade_risk_pct': 0.01,
+        'daily_loss_limit_pct': 0.02,
+        'max_drawdown': 0.10,
+        'computed_max_notional_usd': 75.0,
+    })
+    assert cfg_computed.get_risk_limits().max_position_notional_usd == pytest.approx(75.0)
+
+    # Explicit USD clamp overrides computed value
+    cfg_explicit = RiskConfiguration(custom_limits={
+        'equity_usd': 100.0,
+        'per_trade_risk_pct': 0.01,
+        'daily_loss_limit_pct': 0.02,
+        'max_drawdown': 0.10,
+        'computed_max_notional_usd': 75.0,
+        'max_position_notional_usd': 50.0,
+    })
+    assert cfg_explicit.get_risk_limits().max_position_notional_usd == pytest.approx(50.0)
