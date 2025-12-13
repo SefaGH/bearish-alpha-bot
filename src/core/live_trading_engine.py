@@ -374,9 +374,11 @@ class LiveTradingEngine:
 
             sizing_meta = signal.get('sizing_meta') or {}
             risk_assessment_payload = signal.get('risk_assessment')
-            if not sizing_meta and isinstance(risk_assessment_payload, dict):
-                metrics = risk_assessment_payload.get('metrics') or {}
-                sizing_meta = metrics.get('sizing_meta') or {}
+            risk_assessment_metrics = {}
+            if isinstance(risk_assessment_payload, dict):
+                risk_assessment_metrics = risk_assessment_payload.get('metrics') or {}
+                if not sizing_meta:
+                    sizing_meta = risk_assessment_metrics.get('sizing_meta') or {}
             raw_ppo_mult = sizing_meta.get('ppo_position_multiplier')
             if raw_ppo_mult is None:
                 raw_ppo_mult = signal.get('ppo_position_multiplier', 1.0)
@@ -414,37 +416,34 @@ class LiveTradingEngine:
                     ppo_multiplier,
                     engine_multiplier,
                 )
-            
-            # Step 1: Risk validation (Phase 3.2)
-            # FIX: Pass PortfolioManager object, not dict
-            risk_validation = await self.risk_manager.validate_new_position(signal, self.portfolio_manager)
-            
-            if not risk_validation[0]:  # is_valid
-                logger.warning(f"❌ Risk validation failed: {risk_validation[1]}")
-                risk_metrics = risk_validation[2]
-                
-                # Enhanced logging for capital limit failures
-                if 'current_exposure' in risk_metrics:
-                    logger.warning(f"   Current Exposure: ${risk_metrics.get('current_exposure', 0):.2f}")
-                    logger.warning(f"   Attempted Position Value: ${risk_metrics.get('new_position_value', 0):.2f}")
-                    logger.warning(f"   Capital Limit: ${risk_metrics.get('capital_limit', 0):.2f}")
-                
-                return {
-                    'success': False,
-                    'reason': f"Risk validation failed: {risk_validation[1]}",
-                    'stage': 'risk_validation',
-                    'risk_metrics': risk_metrics
-                }
-            
-            risk_metrics = risk_validation[2]
-            logger.info(f"  ✓ Risk validation passed: {risk_metrics}")
-            
-            # Step 2: Portfolio allocation check (Phase 3.3)
+
+            # Prefer planner-approved sizing when present
+            planner_size = risk_assessment_metrics.get('final_position_size') or signal.get('planner_planned_qty')
+            planner_notional = risk_assessment_metrics.get('final_notional')
+            if planner_size:
+                signal.setdefault('position_size', planner_size)
+                signal.setdefault('amount', planner_size)
+            if planner_notional:
+                signal.setdefault('notional', planner_notional)
+
+            planner_active = bool(signal.get('planner_active') or planner_notional or planner_size)
+            # Planner invariant (RISK_SIZE_PLANNER_ENABLED=true): execution uses planner_planned_notional/qty (or risk_assessment.metrics.final_*), skips multipliers, and passes the already-capped notional into validate_new_position so PositionSizeRule cannot see a larger value than the planner cap.
+
+            # Step 1: Determine portfolio allocation (planner-aware)
             strategy_name = signal.get('strategy', 'default')
-            if allocation_size is None:
+            if allocation_size is not None:
+                position_size = allocation_size
+            elif planner_active:
+                position_size = signal.get('position_size') or signal.get('amount') or 0.0
+                if abs(engine_multiplier - 1.0) > 1e-6:
+                    logger.info(
+                        "  Skipping engine multiplier: planner_active",
+                        extra={'engine_multiplier': engine_multiplier, 'ppo_multiplier': ppo_multiplier},
+                    )
+            else:
                 # Calculate position size based on risk
                 position_size = await self.risk_manager.calculate_position_size(signal)
-                
+
                 # Apply adaptive/engine position multiplier if configured
                 if abs(engine_multiplier - 1.0) > 1e-6:
                     position_size *= engine_multiplier
@@ -454,9 +453,7 @@ class LiveTradingEngine:
                         ppo_multiplier,
                         combined_multiplier,
                     )
-            else:
-                position_size = allocation_size
-            
+
             if position_size <= 0:
                 logger.warning("Position size is zero or negative")
                 return {
@@ -464,9 +461,43 @@ class LiveTradingEngine:
                     'reason': 'Invalid position size',
                     'stage': 'position_sizing'
                 }
-            
+
+            entry_price = signal.get('entry', 0)
+            if planner_active and signal.get('notional'):
+                try:
+                    notional_value = float(signal.get('notional'))
+                except (TypeError, ValueError):
+                    notional_value = position_size * entry_price
+            else:
+                notional_value = position_size * entry_price
+
             signal['position_size'] = position_size
-            logger.info(f"  ✓ Position size calculated: {position_size:.6f}")
+            signal['amount'] = position_size
+            signal['notional'] = notional_value
+            logger.info(f"  ✓ Position size prepared: {position_size:.6f} (notional=${notional_value:.2f})")
+
+            # Step 2: Risk validation (Phase 3.2) now runs against final size
+            risk_validation = await self.risk_manager.validate_new_position(signal, self.portfolio_manager)
+
+            if not risk_validation[0]:  # is_valid
+                logger.warning(f"❌ Risk validation failed: {risk_validation[1]}")
+                risk_metrics = risk_validation[2]
+
+                # Enhanced logging for capital limit failures
+                if 'current_exposure' in risk_metrics:
+                    logger.warning(f"   Current Exposure: ${risk_metrics.get('current_exposure', 0):.2f}")
+                    logger.warning(f"   Attempted Position Value: ${risk_metrics.get('new_position_value', 0):.2f}")
+                    logger.warning(f"   Capital Limit: ${risk_metrics.get('capital_limit', 0):.2f}")
+
+                return {
+                    'success': False,
+                    'reason': f"Risk validation failed: {risk_validation[1]}",
+                    'stage': 'risk_validation',
+                    'risk_metrics': risk_metrics
+                }
+
+            risk_metrics = risk_validation[2]
+            logger.info(f"  ✓ Risk validation passed: {risk_metrics}")
             
             # Step 3: Select optimal exchange (Phase 1)
             exchange = signal.get('exchange', list(self.exchange_clients.keys())[0] if self.exchange_clients else None)
@@ -484,7 +515,7 @@ class LiveTradingEngine:
             
             # Step 4: Determine execution algorithm
             # Calculate notional value once for use in algorithm selection and logging
-            notional_value = position_size * signal.get('entry', 0)
+            notional_value = signal.get('notional', position_size * signal.get('entry', 0))
             
             # ✅ FIX: Respect ORDER_TYPE configuration from environment/config
             config_order_type = self.config.get('trading', {}).get('order_type', 'limit')

@@ -1453,6 +1453,25 @@ class ProductionCoordinator:
             )
             logger.info(f"✓ Risk manager initialized (portfolio value: ${self.risk_manager.portfolio_value:.2f})")
 
+            # Emit one-time planner flag diagnostic for observability (safe for prod)
+            env_planner = os.getenv("RISK_SIZE_PLANNER_ENABLED")
+            config_planner = None
+            try:
+                cfg_dict = risk_config.to_dict() if hasattr(risk_config, "to_dict") else {}
+                config_planner = (cfg_dict.get('risk') or {}).get('size_planner_enabled') if isinstance(cfg_dict, dict) else None
+            except Exception:
+                config_planner = None
+
+            resolved_mode = 'active' if self.risk_manager._is_size_planner_enabled() else 'shadow'
+            logger.info(
+                "[RISK-PLANNER-FLAG] size_planner_flag_resolved",
+                extra={
+                    'env_value': env_planner,
+                    'config_value': config_planner,
+                    'resolved_mode': resolved_mode,
+                },
+            )
+
             # Startup health check for visibility (non-fatal in Sprint 1)
             try:
                 health = self.risk_manager.run_health_check()

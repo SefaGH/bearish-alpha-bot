@@ -9,6 +9,7 @@ import itertools
 import logging
 import time
 import json
+from dataclasses import asdict
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from collections import defaultdict
@@ -1044,10 +1045,17 @@ class StrategyCoordinator:
             }
             
             # --- TELEMETRİ: Sinyal kuyruğa eklenirken (DÜZELTİLDİ) ---
+            display_notional = risk_assessment.get('notional')
+            if display_notional is None:
+                try:
+                    display_notional = float(risk_assessment.get('position_size', 0) or 0) * float(enriched_signal.get('entry') or 0)
+                except Exception:
+                    display_notional = 0.0
+
             logger.info(
                 f"✅ {log_prefix} ENQUEUED. Side: {enriched_signal.get('side')}, "
                 f"Entry: ${enriched_signal.get('entry'):.2f}, SL: ${enriched_signal.get('stop'):.2f}, TP: ${enriched_signal.get('target'):.2f}, "
-                f"Size: ${risk_assessment.get('position_size'):.2f}"
+                f"Size: ${display_notional:.2f}"
             )
 
             # Adım 8: Sinyali Yürütme Kuyruğuna Ekle
@@ -2615,30 +2623,60 @@ class StrategyCoordinator:
                     'reason': 'Unable to calculate valid position size',
                     'metrics': sized_signal.get('sizing_meta', {})
                 }
-            
-            # NOW validate the sized position with risk rules
-            is_valid, reason, risk_metrics = await self.risk_manager.validate_new_position(
+
+            # Validate AND enforce planner limits via RiskManager
+            allowed, final_size, meta = await self.risk_manager.size_and_validate_position(
                 sized_signal,
-                portfolio_manager=self.portfolio_manager
+                portfolio_manager=self.portfolio_manager,
+            )
+
+            planner_result = meta.get('planner')
+            planner_dict = asdict(planner_result) if planner_result else None
+            risk_metrics = meta.get('risk_metrics', {}) or {}
+            if planner_dict:
+                risk_metrics['planner'] = planner_dict
+            risk_metrics['planner_raw_notional'] = meta.get('planner_raw_notional')
+            risk_metrics['planner_delta_abs'] = meta.get('planner_delta_abs')
+            risk_metrics['planner_delta_ratio'] = meta.get('planner_delta_ratio')
+            risk_metrics['planner_reason'] = meta.get('planner_reason')
+            risk_metrics['sizing_meta'] = sized_signal.get('sizing_meta', {})
+            risk_metrics['sizing_meta']['ppo_position_multiplier'] = position_multiplier
+
+            # Final execution size fields (canonical when planner is active)
+            risk_metrics['final_position_size'] = final_size
+            risk_metrics['final_notional'] = sized_signal.get('notional')
+
+            planner_mode = 'active' if self.risk_manager._is_size_planner_enabled() else 'shadow'
+            logger.info(
+                "[RISK-PLANNER] strategy_path",
+                extra={
+                    'symbol': sized_signal.get('symbol'),
+                    'mode': planner_mode,
+                    'raw_notional': meta.get('planner_raw_notional'),
+                    'final_notional': sized_signal.get('notional'),
+                    'planner_reason': meta.get('planner_reason'),
+                },
             )
 
             self._record_rr_telemetry(sized_signal)
-            
-            if not is_valid:
+
+            if not allowed:
+                reason = (
+                    meta.get('validation_reason')
+                    or meta.get('planner_reason')
+                    or meta.get('blocked_by')
+                    or 'Risk validation failed'
+                )
                 return {
                     'acceptable': False,
                     'reason': reason,
                     'metrics': risk_metrics
                 }
             
-            # Add sizing metadata to risk metrics
-            risk_metrics['sizing_meta'] = sized_signal.get('sizing_meta', {})
-            risk_metrics['sizing_meta']['ppo_position_multiplier'] = position_multiplier
-            
             return {
                 'acceptable': True,
-                'position_size': sized_signal['amount'],
-                'notional': sized_signal['notional'],
+                'position_size': final_size,
+                'notional': sized_signal.get('notional'),
                 'metrics': risk_metrics
             }
             

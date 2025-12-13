@@ -621,6 +621,19 @@ class RiskManager:
             # ==========================================================
 
             logger.debug(f"🛡️ [RISK-ENGINE] Validating position for {symbol}")
+
+            planner_mode = 'active' if signal.get('planner_active') else 'inactive'
+            if planner_mode == 'active':
+                logger.info(
+                    "[RISK-PLANNER] validate_path",
+                    extra={
+                        'symbol': symbol,
+                        'mode': planner_mode,
+                        'raw_notional': signal.get('planner_raw_notional'),
+                        'planned_notional': signal.get('planner_planned_notional'),
+                        'cap_flags': signal.get('planner_cap_flags', {}),
+                    },
+                )
             
             # Risk metriklerini hesapla
             risk_metrics = self._calculate_risk_metrics(signal, portfolio_manager)
@@ -644,6 +657,17 @@ class RiskManager:
                 is_valid, reason = rule.validate(signal, portfolio_manager)
                 
                 if not is_valid:
+                    if planner_mode == 'active' and getattr(rule, 'rule_name', '') == 'PositionSizeRule':
+                        logger.warning(
+                            "[RISK-PLANNER] anomaly_position_size_rule",
+                            extra={
+                                'symbol': symbol,
+                                'raw_notional': signal.get('planner_raw_notional'),
+                                'planned_notional': signal.get('planner_planned_notional'),
+                                'cap_flags': signal.get('planner_cap_flags', {}),
+                                'reason': reason,
+                            },
+                        )
                     logger.warning(f"🚫 [RISK-ENGINE] Position REJECTED by {rule.rule_name}")
                     logger.warning(f"   Symbol: {symbol}")
                     logger.warning(f"   Reason: {reason}")
@@ -1146,6 +1170,15 @@ class RiskManager:
                 signal['position_size'] = planner_result.planned_qty
                 signal['amount'] = planner_result.planned_qty
                 signal['notional'] = planner_result.planned_notional
+                signal['planner_active'] = True
+                signal['planner_cap_flags'] = {
+                    'capped_by_size_pct': planner_result.capped_by_size_pct,
+                    'capped_by_max_notional': planner_result.capped_by_max_notional,
+                    'capped_by_capital': planner_result.capped_by_capital,
+                    'capped_by_heat': planner_result.capped_by_heat,
+                }
+                signal['planner_raw_notional'] = raw_notional
+                signal['planner_planned_notional'] = planner_result.planned_notional
 
                 if 'sizing_meta' in signal:
                     signal['sizing_meta']['capped'] = any([

@@ -172,10 +172,68 @@ def test_heat_cap_exhausted():
     assert res.below_min_notional is True
     assert res.reason == "portfolio_heat_exhausted"
 
-    def test_planner_flag_reads_risk_config(monkeypatch):
-        monkeypatch.delenv("RISK_SIZE_PLANNER_ENABLED", raising=False)
-        cfg = RiskConfiguration(custom_limits={"size_planner_enabled": True}, initial_capital=100)
-        rm = RiskManager(portfolio_value=100, risk_config=cfg, rules=[])
 
-        assert rm._is_size_planner_enabled() is True
-        assert getattr(rm, "_planner_flag_source", None) == "risk_config"
+def test_planner_flag_reads_risk_config(monkeypatch):
+    monkeypatch.delenv("RISK_SIZE_PLANNER_ENABLED", raising=False)
+    cfg = RiskConfiguration(custom_limits={"size_planner_enabled": True}, initial_capital=100)
+    rm = RiskManager(portfolio_value=100, risk_config=cfg, rules=[])
+
+    assert rm._is_size_planner_enabled() is True
+    assert getattr(rm, "_planner_flag_source", None) == "risk_config"
+
+
+@pytest.mark.asyncio
+async def test_planner_caps_before_position_size_rule(monkeypatch):
+    monkeypatch.setenv("RISK_SIZE_PLANNER_ENABLED", "true")
+
+    class StrategyFakePM:
+        def __init__(self, equity: float):
+            self._equity = equity
+
+        def get_total_equity(self):
+            return self._equity
+
+        def get_total_exposure(self):
+            return 0.0
+
+        def get_open_positions(self):
+            return {}
+
+        def get_current_drawdown(self):
+            return 0.0
+
+        def get_available_capital(self):
+            return self._equity
+
+    cfg = RiskConfiguration(
+        custom_limits={
+            'max_position_size': 0.1,
+            'position_size_policy': 'clip',
+            'min_notional_threshold': 5.0,
+            'size_planner_enabled': True,
+            'max_portfolio_risk': 1.0,
+        },
+        initial_capital=100,
+    )
+    rm = RiskManager(portfolio_value=100, risk_config=cfg)
+    pm = StrategyFakePM(equity=100)
+
+    signal = {
+        'symbol': 'BTC/USDT',
+        'side': 'buy',
+        'entry': 33.3,
+        'stop': 30.0,
+        'target': 40.0,
+        'notional': 333.0,
+        'position_size': 10.0,
+    }
+
+    allowed, final_size, meta = await rm.size_and_validate_position(signal, pm)
+
+    assert allowed is True, f"planner_result={meta}"
+    assert meta.get('planner') is not None
+    assert math.isclose(signal['notional'], 10.0, rel_tol=1e-3)
+    assert math.isclose(final_size * signal['entry'], 10.0, rel_tol=1e-3)
+    assert meta['planner'].capped_by_size_pct is True
+    risk_metrics = meta.get('risk_metrics', {})
+    assert risk_metrics.get('position_size_pct', 0) <= rm.risk_limits['max_position_size'] + 1e-6

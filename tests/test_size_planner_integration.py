@@ -3,6 +3,7 @@ import pytest
 from config.risk_config import RiskConfiguration
 from core.risk_manager import RiskManager
 from core.risk_rules import compute_max_affordable_notional
+from core.strategy_coordinator import StrategyCoordinator
 
 
 class DummyPM:
@@ -165,3 +166,107 @@ async def test_flag_gates_legacy_vs_planner(monkeypatch):
     assert planner.reason is None
     assert planner.below_min_notional is False
     assert pytest.approx(final_size_plan, rel=1e-6) == planner.planned_qty
+
+
+@pytest.mark.asyncio
+async def test_planner_notional_used_for_enqueue_display(monkeypatch):
+    monkeypatch.setenv("RISK_SIZE_PLANNER_ENABLED", "true")
+
+    cfg = RiskConfiguration(
+        custom_limits={
+            'max_position_size': 0.1,
+            'position_size_policy': 'clip',
+            'min_notional_threshold': 5.0,
+            'size_planner_enabled': True,
+            'max_portfolio_risk': 1.0,
+        },
+        initial_capital=100,
+    )
+    rm = RiskManager(portfolio_value=100, risk_config=cfg)
+
+    class PM:
+        def get_total_equity(self):
+            return 100
+        def get_total_exposure(self):
+            return 0.0
+        def get_open_positions(self):
+            return {}
+        def get_current_drawdown(self):
+            return 0.0
+        def get_available_capital(self):
+            return 100
+
+    pm = PM()
+    sc = StrategyCoordinator(portfolio_manager=pm, risk_manager=rm, market_data_pipeline=None, config={'strategies': {}})
+
+    signal = {
+        'strategy_name': 'test_strategy',
+        'symbol': 'BTC/USDT',
+        'side': 'buy',
+        'entry': 33.3,
+        'stop': 30.0,
+        'target': 40.0,
+        'reason': 'test',
+        'notional': 333.0,
+        'position_size': 10.0,
+    }
+
+    risk_assessment = await sc._assess_signal_risk(signal)
+
+    assert risk_assessment['acceptable'] is True
+    planner_notional = risk_assessment['metrics']['planner']['planned_notional']
+    assert risk_assessment['notional'] == pytest.approx(planner_notional, rel=1e-6)
+    assert risk_assessment['notional'] > 0
+    assert risk_assessment['position_size'] == pytest.approx(risk_assessment['notional'] / signal['entry'], rel=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_legacy_notional_unchanged_when_planner_off(monkeypatch):
+    monkeypatch.delenv("RISK_SIZE_PLANNER_ENABLED", raising=False)
+
+    cfg = RiskConfiguration(
+        custom_limits={
+            'max_position_size': 0.2,
+            'position_size_policy': 'clip',
+            'min_notional_threshold': 5.0,
+            'size_planner_enabled': False,
+            'max_portfolio_risk': 1.0,
+        },
+        initial_capital=200,
+    )
+    rm = RiskManager(portfolio_value=200, risk_config=cfg)
+
+    class PM:
+        def get_total_equity(self):
+            return 200
+        def get_total_exposure(self):
+            return 0.0
+        def get_open_positions(self):
+            return {}
+        def get_current_drawdown(self):
+            return 0.0
+        def get_available_capital(self):
+            return 200
+
+    pm = PM()
+    sc = StrategyCoordinator(portfolio_manager=pm, risk_manager=rm, market_data_pipeline=None, config={'strategies': {}})
+
+    signal = {
+        'strategy_name': 'test_strategy',
+        'symbol': 'ETH/USDT',
+        'side': 'buy',
+        'entry': 20.0,
+        'stop': 19.0,
+        'target': 22.0,
+        'reason': 'test',
+        'notional': 40.0,
+        'position_size': 2.0,
+    }
+
+    risk_assessment = await sc._assess_signal_risk(signal)
+
+    assert risk_assessment['acceptable'] is True
+    final_notional = risk_assessment['metrics'].get('final_notional')
+    assert final_notional is None or final_notional == pytest.approx(risk_assessment['notional'], rel=1e-6)
+    assert risk_assessment['notional'] > 0
+    assert risk_assessment['position_size'] == pytest.approx(risk_assessment['notional'] / signal['entry'], rel=1e-3)
