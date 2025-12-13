@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RiskLimits:
     """Portfolio-level risk limits."""
-    max_portfolio_risk: float = 0.02  # 2% max risk per trade
-    max_position_size: float = 0.10   # 10% max position size (ratio)
+    max_portfolio_risk: float = 0.003  # 0.3% max risk per trade (balanced preset)
+    max_position_size: float = 0.25    # 25% max position size (ratio)
     max_drawdown: float = 0.15        # 15% max portfolio drawdown
     max_correlation: float = 0.70     # 70% max position correlation
     stop_loss_multiplier: float = 2.0  # 2x ATR stop loss
@@ -116,8 +116,8 @@ class RiskConfiguration:
     """Centralized risk management configuration."""
     
     DEFAULT_RISK_LIMITS = {
-        'max_portfolio_risk': 0.02,  # 2% max risk per trade
-        'max_position_size': 0.10,   # 10% max position size
+        'max_portfolio_risk': 0.003,  # 0.3% max risk per trade (balanced preset)
+        'max_position_size': 0.25,    # 25% max position size
         'max_drawdown': 0.15,        # 15% max portfolio drawdown
         'max_correlation': 0.70,     # 70% max position correlation
         'stop_loss_multiplier': 2.0, # 2x ATR stop loss
@@ -153,7 +153,7 @@ class RiskConfiguration:
             initial_capital: Trading capital for USD calculations
         """
         # Store capital for USD calculations
-        self.initial_capital = initial_capital or (custom_limits.get('equity_usd', 100.0) if custom_limits else 100.0)
+        self.initial_capital = initial_capital or (custom_limits.get('equity_usd', 500.0) if custom_limits else 500.0)
         # Preserve a flattened snapshot of the normalized risk section for downstream consumers
         self._raw_risk_config = deepcopy(custom_limits) if custom_limits else {}
         
@@ -208,6 +208,9 @@ class RiskConfiguration:
 
         if max_notional_choice is not None:
             processed_limits['max_position_notional_usd'] = float(max_notional_choice)
+        elif processed_limits.get('max_position_notional_usd') is None:
+            # Balanced fallback: cap notional at 25% of equity when no explicit/computed value is supplied
+            processed_limits['max_position_notional_usd'] = self.initial_capital * 0.25
 
         self.risk_limits = RiskLimits(**processed_limits)
         

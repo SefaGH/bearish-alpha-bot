@@ -516,15 +516,15 @@ class LiveTradingConfiguration:
                         f"⚠️ PER_TRADE_RISK_PCT env value '{env_fallback}' is invalid; ignoring fallback."
                     )
         if per_trade_raw is None:
-            logger.warning("PER_TRADE_RISK_PCT not set, defaulting to 1% (0.01)")
-            per_trade_raw = 0.01
+            logger.warning("PER_TRADE_RISK_PCT not set, defaulting to 0.3% (0.003)")
+            per_trade_raw = 0.003
 
         normalized_per_trade = self._normalize_percent_value(per_trade_raw, 'risk.per_trade_risk_pct')
         if not normalized_per_trade or normalized_per_trade <= 0 or normalized_per_trade > 1:
             logger.error(
-                f"❌ per_trade_risk_pct out of bounds after normalization: {normalized_per_trade}. Resetting to 0.01 (1%)."
+                f"❌ per_trade_risk_pct out of bounds after normalization: {normalized_per_trade}. Resetting to 0.003 (0.3%)."
             )
-            normalized_per_trade = 0.01
+            normalized_per_trade = 0.003
         risk_section['per_trade_risk_pct'] = normalized_per_trade
 
         for key in percent_keys:

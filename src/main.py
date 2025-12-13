@@ -81,27 +81,27 @@ def get_risk_params():
     return {
         'equity_usd': float(
             risk_cfg.get('equity_usd') or 
-            os.getenv('RISK_EQUITY_USD', '100')
+            os.getenv('RISK_EQUITY_USD', '500')
         ),
         'per_trade_risk_pct': float(
             risk_cfg.get('per_trade_risk_pct') or 
-            os.getenv('RISK_PER_TRADE_RISK_PCT', '0.01')
+            os.getenv('RISK_PER_TRADE_RISK_PCT', '0.003')
         ),
         'risk_usd_cap': float(
             risk_cfg.get('risk_usd_cap') or 
-            os.getenv('RISK_RISK_USD_CAP', '5')
+            os.getenv('RISK_RISK_USD_CAP', '1')
         ),
         'max_notional_per_trade': float(
             risk_cfg.get('max_notional_per_trade') or 
-            os.getenv('RISK_MAX_NOTIONAL_PER_TRADE', '20')
+            os.getenv('RISK_MAX_NOTIONAL_PER_TRADE', '125')
         ),
         'min_stop_pct': float(
             risk_cfg.get('min_stop_pct') or 
-            os.getenv('RISK_MIN_STOP_PCT', '0.003')
+            os.getenv('RISK_MIN_STOP_PCT', '0.005')
         ),
         'daily_max_trades': int(
             risk_cfg.get('daily_max_trades') or 
-            os.getenv('RISK_DAILY_MAX_TRADES', '5')
+            os.getenv('RISK_DAILY_MAX_TRADES', '8')
         ),
         'min_amount_behavior': (
             risk_cfg.get('min_amount_behavior') or 
@@ -444,7 +444,7 @@ async def main_live_trading():
         
         # Portfolio configuration from environment
         portfolio_config = {
-            'equity_usd': float(os.getenv('EQUITY_USD', '100'))
+            'equity_usd': float(os.getenv('EQUITY_USD', '500'))
         }
         logger.info(f"Portfolio config: {portfolio_config}")
         

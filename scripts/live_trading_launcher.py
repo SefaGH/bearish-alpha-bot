@@ -952,12 +952,12 @@ class LiveTradingLauncher:
     
     # Default risk parameters - used across normalization and fallbacks
     DEFAULT_RISK_PARAMS = {
-        'max_position_size': 0.20,
+        'max_position_size': 0.25,   # Balanced preset fallback
         'stop_loss_pct': 0.02,
         'take_profit_pct': 0.015,
-        'risk_per_trade': 0.05,
+        'risk_per_trade': 0.003,     # Balanced preset fallback (0.3%)
         'max_drawdown': 0.10,
-        'max_portfolio_risk': 0.05,
+        'max_portfolio_risk': 0.003, # Align with per-trade risk when falling back
     }
     
     def __init__(self, mode: str, dry_run: bool, infinite: bool, auto_restart: bool,
@@ -977,7 +977,7 @@ class LiveTradingLauncher:
         
         # 3. Gerekli tüm parametreleri DOĞRUDAN bu tek, güvenilir kaynaktan al.
         #    _load_config() metodu, sembollerin her zaman bir LİSTE olmasını garanti eder.
-        self.CAPITAL_USDT = self.config.get('risk', {}).get('equity_usd', 100.0)
+        self.CAPITAL_USDT = self.config.get('risk', {}).get('equity_usd', 500.0)
         self.TRADING_PAIRS = self.config.get('universe', {}).get('fixed_symbols', [])
 
         # ✅ ADD THIS LINE FOR COMPATIBILITY

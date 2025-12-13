@@ -1439,7 +1439,7 @@ class ProductionCoordinator:
             if portfolio_value is None:
                 config = self.config
                 risk_params = config.get('risk', {})
-                portfolio_value = float(risk_params.get('equity_usd', 100))
+                portfolio_value = float(risk_params.get('equity_usd', 500))
                 logger.info(f"✓ Portfolio value from config: ${portfolio_value:.2f}")
             else:
                 logger.info(f"✓ Using provided portfolio value: ${portfolio_value:.2f}")
