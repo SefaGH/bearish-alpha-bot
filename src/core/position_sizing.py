@@ -301,7 +301,8 @@ class AdvancedPositionSizing(PositionSizingProtocol):
             config = getattr(self.risk_manager, 'config', {})
 
             # Use configuration with GitHub Variables priority
-            risk_pct = float(config.get('per_trade_risk_pct', 0.01))
+            # Default to balanced preset (0.3%) when config is missing
+            risk_pct = float(config.get('per_trade_risk_pct', 0.003))
             risk_cap = config.get('risk_usd_cap')
             leverage = float(signal.get('leverage', config.get('leverage_default', 5)))
 
@@ -318,6 +319,11 @@ class AdvancedPositionSizing(PositionSizingProtocol):
             # Enforce minimum notional to avoid unfillable micro orders
             min_notional = float(getattr(self.risk_manager, 'risk_limits', {}).get('min_notional_threshold', 0) or 0)
             below_min_flag = bool(min_notional and proposed_notional < min_notional)
+
+            if below_min_flag:
+                raise ValueError(
+                    f"Proposed notional ${proposed_notional:.2f} below min_notional_threshold ${min_notional:.2f}"
+                )
 
             sizing_meta = {
                 'method': method,

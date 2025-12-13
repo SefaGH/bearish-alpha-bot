@@ -1264,7 +1264,7 @@ class RiskManager:
             return False
 
         reason_lower = str(reason).lower()
-        keywords = ('margin', 'balance', 'capital', 'available')
+        keywords = ('margin', 'balance', 'capital', 'available', 'affordable')
         return any(word in reason_lower for word in keywords)
 
     def _get_available_balance(self, portfolio_manager) -> Optional[float]:

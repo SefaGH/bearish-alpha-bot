@@ -256,7 +256,7 @@ class PPOTradingAdapter:
                         probs = distribution.distribution.probs.cpu().numpy()[0]
                         confidence = float(probs[action_int])
 
-            CONFIDENCE_THRESHOLD = 0.75
+            CONFIDENCE_THRESHOLD = 0.60
             final_score = 0.0
             decision = "FLAT"
 

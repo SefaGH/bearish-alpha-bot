@@ -119,6 +119,17 @@ def test_health_check_reports_min_stop_pct():
     assert health['checks']['config_min_stop_pct']['ok'] is True
 
 
+def test_balanced_defaults_snapshot():
+    cfg = RiskConfiguration()
+
+    assert cfg.initial_capital == pytest.approx(500.0)
+    assert cfg.risk_limits.max_portfolio_risk == pytest.approx(0.003, rel=1e-9)
+    assert cfg.max_risk_per_trade_usd == pytest.approx(1.5, rel=1e-6)
+    assert cfg.risk_limits.max_position_size == pytest.approx(0.25, rel=1e-9)
+    assert cfg.risk_limits.max_position_notional_usd == pytest.approx(125.0, rel=1e-6)
+    assert cfg.risk_limits.min_stop_pct == pytest.approx(0.005, rel=1e-9)
+
+
 @pytest.mark.asyncio
 async def test_min_notional_rejection_from_sizing():
     cfg = RiskConfiguration(custom_limits={'equity_usd': 100.0, 'min_notional_threshold': 50.0, 'min_stop_pct': 0.01})

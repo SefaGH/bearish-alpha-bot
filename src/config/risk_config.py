@@ -258,6 +258,7 @@ class RiskConfiguration:
             float
         )
         per_trade_risk_pct = self._normalize_fraction_value(per_trade_risk_value, 'PER_TRADE_RISK_PCT')
+        self.per_trade_risk_pct = per_trade_risk_pct
         
         # Get default daily_loss_limit value from config or circuit breaker limits
         default_daily_loss = (
@@ -271,6 +272,7 @@ class RiskConfiguration:
             float
         )
         daily_loss_limit_pct = self._normalize_fraction_value(daily_loss_limit_value, 'DAILY_LOSS_LIMIT_PCT')
+        self.daily_loss_limit_pct = daily_loss_limit_pct
         
         # Calculate USD amounts
         self.max_risk_per_trade_usd = self.initial_capital * per_trade_risk_pct
@@ -292,6 +294,44 @@ Daily Loss Limit: {daily_loss_limit_pct*100:.2f}% = ${self.daily_loss_limit_usd:
 Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
 =======================================
 """)
+
+        risk_usd_cap = None
+        try:
+            raw_cap = (custom_limits or {}).get('risk_usd_cap') if custom_limits else None
+            if raw_cap is not None:
+                risk_usd_cap = float(raw_cap)
+        except Exception:
+            risk_usd_cap = None
+        self.risk_usd_cap = risk_usd_cap
+
+        size_planner_mode = None
+        try:
+            if custom_limits and 'size_planner_enabled' in custom_limits:
+                size_planner_mode = bool(custom_limits.get('size_planner_enabled'))
+        except Exception:
+            size_planner_mode = None
+
+        def _safe_round(value: Any, places: int = 6):
+            try:
+                return round(value, places)
+            except Exception:
+                return None
+
+        logger.info(
+            "[RISK-CONFIG-SNAPSHOT] %s",
+            {
+                'equity_usd': _safe_round(self.initial_capital, 4),
+                'per_trade_risk_pct': _safe_round(per_trade_risk_pct),
+                'max_portfolio_risk_pct': _safe_round(self.risk_limits.max_portfolio_risk),
+                'max_position_size_pct': _safe_round(self.risk_limits.max_position_size),
+                'max_notional_pct_per_trade': _safe_round(self.risk_limits.max_position_size),
+                'max_position_notional_usd': _safe_round(self.risk_limits.max_position_notional_usd),
+                'min_stop_pct': _safe_round(self.risk_limits.min_stop_pct or 0.0),
+                'min_notional_threshold': _safe_round(self.risk_limits.min_notional_threshold or 0.0),
+                'risk_usd_cap': risk_usd_cap,
+                'size_planner_mode': size_planner_mode,
+            },
+        )
 
     @staticmethod
     def _normalize_fraction_value(value: Any, field_name: str) -> float:

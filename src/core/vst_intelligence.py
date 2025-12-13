@@ -187,7 +187,7 @@ class VSTMarketAnalyzer:
         base_params = {
             'position_size_mult': 0.1,  # 10% allocation for testing
             'max_positions': 1,          # Single position at a time
-            'risk_per_trade': 0.01,      # 1% risk per trade
+            'risk_per_trade': 0.003,     # Balanced 0.3% risk per trade
         }
         
         # Adjust based on VST patterns if available
