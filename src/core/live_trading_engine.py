@@ -427,6 +427,8 @@ class LiveTradingEngine:
                 signal.setdefault('notional', planner_notional)
 
             planner_active = bool(signal.get('planner_active') or planner_notional or planner_size)
+            if planner_active:
+                signal['planner_active'] = True
             # Planner invariant (RISK_SIZE_PLANNER_ENABLED=true): execution uses planner_planned_notional/qty (or risk_assessment.metrics.final_*), skips multipliers, and passes the already-capped notional into validate_new_position so PositionSizeRule cannot see a larger value than the planner cap.
 
             # Step 1: Determine portfolio allocation (planner-aware)

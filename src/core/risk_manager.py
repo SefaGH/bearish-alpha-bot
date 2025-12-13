@@ -658,6 +658,12 @@ class RiskManager:
                 
                 if not is_valid:
                     if planner_mode == 'active' and getattr(rule, 'rule_name', '') == 'PositionSizeRule':
+                        pos_value = signal.get('__position_size_rule_position_value')
+                        if pos_value is None:
+                            try:
+                                pos_value = (signal.get('notional') or 0) or (signal.get('position_size', 0) * signal.get('entry', 0))
+                            except Exception:
+                                pos_value = None
                         logger.warning(
                             "[RISK-PLANNER] anomaly_position_size_rule",
                             extra={
@@ -665,6 +671,8 @@ class RiskManager:
                                 'raw_notional': signal.get('planner_raw_notional'),
                                 'planned_notional': signal.get('planner_planned_notional'),
                                 'cap_flags': signal.get('planner_cap_flags', {}),
+                                'position_value_seen_by_rule': pos_value,
+                                'planner_mode': planner_mode,
                                 'reason': reason,
                             },
                         )

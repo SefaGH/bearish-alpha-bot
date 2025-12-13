@@ -312,14 +312,21 @@ class PositionSizeRule(BaseRiskRule):
             symbol = signal.get('symbol', 'UNKNOWN')
             position_size = signal.get('position_size', 0)
             entry_price = signal.get('entry', 0)
+
+            # Prefer notional provided by planner/size pipeline to avoid drift when prices change downstream
+            position_value = signal.get('notional')
+            if position_value is None or position_value <= 0:
+                position_value = position_size * entry_price
             
             # Get portfolio value using helper function
             portfolio_value = _get_portfolio_value(portfolio_manager, signal)
                 
-            position_value = position_size * entry_price
             max_position_value = portfolio_value * self.max_position_size
             
             position_size_pct = position_value / portfolio_value if portfolio_value > 0 else 0
+
+            # Expose the value seen by the rule for downstream anomaly logging
+            signal['__position_size_rule_position_value'] = position_value
             
             logger.debug(f"[{self.rule_name}] {symbol}: ${position_value:.2f} ({position_size_pct:.1%}) vs max ${max_position_value:.2f} ({self.max_position_size:.1%})")
             
