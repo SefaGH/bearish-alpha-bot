@@ -527,6 +527,21 @@ class LiveTradingConfiguration:
             normalized_per_trade = 0.003
         risk_section['per_trade_risk_pct'] = normalized_per_trade
 
+        # --- Normalize max_portfolio_risk (Portfolio Heat) ---
+        portfolio_risk_raw = risk_section.get('max_portfolio_risk') or risk_section.get('max_portfolio_risk_pct')
+        if portfolio_risk_raw is None:
+            # Default to 6% (Balanced preset)
+            portfolio_risk_raw = 0.06
+        
+        normalized_portfolio_risk = self._normalize_percent_value(portfolio_risk_raw, 'risk.max_portfolio_risk')
+        if not normalized_portfolio_risk or normalized_portfolio_risk <= 0:
+            logger.warning(f"⚠️ Invalid max_portfolio_risk: {normalized_portfolio_risk}. Resetting to 0.06 (6%).")
+            normalized_portfolio_risk = 0.06
+        
+        risk_section['max_portfolio_risk'] = normalized_portfolio_risk
+        # Ensure consistency
+        risk_section['max_portfolio_risk_pct'] = normalized_portfolio_risk
+
         for key in percent_keys:
             if key not in risk_section or risk_section[key] is None:
                 continue

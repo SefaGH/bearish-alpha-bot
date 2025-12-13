@@ -30,7 +30,12 @@ class DummyPortfolioManager:
 
 @pytest.mark.asyncio
 async def test_stop_floor_applies_min_stop_pct():
-    cfg = RiskConfiguration(custom_limits={'equity_usd': 100.0, 'min_stop_pct': 0.005, 'max_portfolio_risk': 0.01})
+    cfg = RiskConfiguration(custom_limits={
+        'equity_usd': 100.0, 
+        'min_stop_pct': 0.005, 
+        'max_portfolio_risk': 0.01,
+        'per_trade_risk_pct': 0.01  # Explicitly set 1% risk to match expected notional
+    })
     risk_manager = RiskManager(portfolio_value=100.0, risk_config=cfg)
     sizing = AdvancedPositionSizing(risk_manager)
 
@@ -185,6 +190,7 @@ async def test_end_to_end_tight_stop_scenario_passes_with_stop_floor():
         'min_stop_pct': 0.005,
         'max_position_size': 0.5,  # allow notional up to 50% of equity
         'max_portfolio_risk': 0.001,  # 0.1% risk per trade
+        'per_trade_risk_pct': 0.001,  # Explicitly set 0.1% risk
     })
     risk_manager = RiskManager(portfolio_value=1000.0, risk_config=cfg)
     sizing = AdvancedPositionSizing(risk_manager)

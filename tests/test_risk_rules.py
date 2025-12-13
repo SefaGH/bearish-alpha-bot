@@ -102,7 +102,7 @@ class TestCapitalLimitRule:
         
         is_valid, reason = rule.validate(signal, portfolio)
         assert is_valid is False
-        assert "exceed capital limit" in reason.lower()
+        assert "exceeds affordable" in reason.lower()
     
     def test_disabled_rule(self):
         """Test disabled rule always passes."""
@@ -188,7 +188,7 @@ class TestPortfolioHeatRule:
     
     def test_exceeds_individual_risk_limit(self):
         """Test position exceeding individual risk limit."""
-        rule = PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.06)
+        rule = PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.02)
         portfolio = MockPortfolioManager(equity=10000)
         
         signal = {

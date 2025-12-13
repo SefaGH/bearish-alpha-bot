@@ -957,7 +957,7 @@ class LiveTradingLauncher:
         'take_profit_pct': 0.015,
         'risk_per_trade': 0.003,     # Balanced preset fallback (0.3%)
         'max_drawdown': 0.10,
-        'max_portfolio_risk': 0.003, # Align with per-trade risk when falling back
+        'max_portfolio_risk': 0.06,  # Balanced preset fallback (6.0%)
     }
     
     def __init__(self, mode: str, dry_run: bool, infinite: bool, auto_restart: bool,
