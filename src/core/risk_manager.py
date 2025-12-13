@@ -575,7 +575,7 @@ class RiskManager:
             return 0
         return sum(1 for pos in active_positions.values() if pos.get('symbol') == symbol)
     
-    def set_risk_limits(self, max_portfolio_risk: float = 0.02, max_position_size: float = 0.10,
+    def set_risk_limits(self, max_portfolio_risk: float = 0.06, max_position_size: float = 0.10,
                        max_drawdown: float = 0.15, max_correlation: float = 0.7):
         """
         Configure portfolio-level risk limits.

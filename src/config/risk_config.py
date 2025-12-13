@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RiskLimits:
     """Portfolio-level risk limits."""
-    max_portfolio_risk: float = 0.003  # 0.3% max risk per trade (balanced preset)
+    max_portfolio_risk: float = 0.06   # 6% max portfolio heat cap (balanced preset)
     max_position_size: float = 0.25    # 25% max position size (ratio)
     max_drawdown: float = 0.15        # 15% max portfolio drawdown
     max_correlation: float = 0.70     # 70% max position correlation
@@ -114,9 +114,11 @@ class VolatilitySizingConfig:
 
 class RiskConfiguration:
     """Centralized risk management configuration."""
-    
+
+    PER_TRADE_RISK_DEFAULT = 0.003  # 0.3% per-trade risk (balanced preset)
+
     DEFAULT_RISK_LIMITS = {
-        'max_portfolio_risk': 0.003,  # 0.3% max risk per trade (balanced preset)
+        'max_portfolio_risk': 0.06,   # 6% max portfolio heat cap (balanced preset)
         'max_position_size': 0.25,    # 25% max position size
         'max_drawdown': 0.15,        # 15% max portfolio drawdown
         'max_correlation': 0.70,     # 70% max position correlation
@@ -245,15 +247,15 @@ class RiskConfiguration:
         """Calculate USD amounts based on percentages and capital."""
         # Read ENV overrides for critical risk parameters
         # Convert from percentage (e.g., 1.0 for 1%) to decimal (0.01)
-        
-        # Get default per_trade_risk value from config or risk limits
+
+        # Get default per_trade_risk value from config or the balanced preset
         default_per_trade_risk = (
-            custom_limits.get('per_trade_risk_pct', self.risk_limits.max_portfolio_risk) 
-            if custom_limits 
-            else self.risk_limits.max_portfolio_risk
+            custom_limits.get('per_trade_risk_pct', self.PER_TRADE_RISK_DEFAULT)
+            if custom_limits
+            else self.PER_TRADE_RISK_DEFAULT
         )
         per_trade_risk_value = self._get_env_or_config(
-            'PER_TRADE_RISK_PCT', 
+            'PER_TRADE_RISK_PCT',
             default_per_trade_risk,  # already normalized to fraction
             float
         )
@@ -278,6 +280,7 @@ class RiskConfiguration:
         self.max_risk_per_trade_usd = self.initial_capital * per_trade_risk_pct
         self.daily_loss_limit_usd = self.initial_capital * daily_loss_limit_pct
         self.max_drawdown_usd = self.initial_capital * self.risk_limits.max_drawdown
+        self.max_portfolio_risk_usd = self.initial_capital * self.risk_limits.max_portfolio_risk
         
         # Update circuit breaker with USD values
         self.circuit_breaker_limits_usd = {
@@ -292,6 +295,7 @@ Capital: ${self.initial_capital:.2f}
 Per-Trade Risk: {per_trade_risk_pct*100:.2f}% = ${self.max_risk_per_trade_usd:.2f}
 Daily Loss Limit: {daily_loss_limit_pct*100:.2f}% = ${self.daily_loss_limit_usd:.2f}
 Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
+Portfolio Heat Cap: {self.risk_limits.max_portfolio_risk:.1%} = ${self.max_portfolio_risk_usd:.2f}
 =======================================
 """)
 
@@ -376,7 +380,7 @@ Max Drawdown: {self.risk_limits.max_drawdown:.1%} = ${self.max_drawdown_usd:.2f}
         """
         Get emergency protocol for event type.
         
-        Args:
+                'max_portfolio_risk': 0.06,   # 6% portfolio heat cap (balanced preset)
             event_type: Type of emergency event
             
         Returns:

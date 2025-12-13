@@ -350,13 +350,13 @@ class PortfolioHeatRule(BaseRiskRule):
     This prevents excessive overall risk exposure.
     """
     
-    def __init__(self, max_portfolio_heat: float = 0.10, max_portfolio_risk: float = 0.02, rule_name: str = None):
+    def __init__(self, max_portfolio_heat: float = 0.10, max_portfolio_risk: float = 0.06, rule_name: str = None):
         """
         Initialize portfolio heat rule.
         
         Args:
             max_portfolio_heat: Maximum total portfolio heat (default 10%)
-            max_portfolio_risk: Maximum risk per single trade (default 2%)
+            max_portfolio_risk: Maximum risk per single trade / heat cap fraction (default 6%)
             rule_name: Optional custom rule name
         """
         super().__init__(rule_name or "PortfolioHeatRule")

@@ -173,6 +173,34 @@ def test_heat_cap_exhausted():
     assert res.reason == "portfolio_heat_exhausted"
 
 
+def test_heat_cap_allows_single_balanced_trade():
+    cfg = RiskConfiguration(
+        custom_limits={
+            'equity_usd': 500.0,
+            'per_trade_risk_pct': 0.003,
+            'max_position_size': 0.25,
+        }
+    )
+    rm = RiskManager(portfolio_value=500, risk_config=cfg, rules=[])
+
+    res = rm.plan_position_size(
+        raw_notional=50.0,
+        symbol="BTC/USDT",
+        equity=500.0,
+        price=100.0,
+        available_balance=500.0,
+        leverage=1,
+        risk_limits=rm.risk_limits,
+        min_notional_threshold=5.0,
+        max_portfolio_risk_usd=None,
+        current_open_risk_usd=0.0,
+        position_size_policy="clip",
+    )
+
+    assert res.capped_by_heat is False
+    assert res.reason != "portfolio_heat_exhausted"
+
+
 def test_planner_flag_reads_risk_config(monkeypatch):
     monkeypatch.delenv("RISK_SIZE_PLANNER_ENABLED", raising=False)
     cfg = RiskConfiguration(custom_limits={"size_planner_enabled": True}, initial_capital=100)

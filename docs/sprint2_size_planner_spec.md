@@ -28,3 +28,8 @@ Status: Implemented behind `RISK_SIZE_PLANNER_ENABLED`. Covered by `test_size_pl
 - Heat exhaustion scenario: rejects with `capped_by_heat=True`, `reason="portfolio_heat_exhausted"`.
 - Normal account: planner is a no-op; PositionSizeRule remains quiet.
 - Capital-bound scenario: capital cap binds and planner emits capped notional consistent with CapitalLimitRule.
+
+### Balanced preset (500 USDT)
+- `per_trade_risk_pct = 0.003` → ~1.5 USDT per-trade risk
+- `max_portfolio_risk_pct = 0.06` → ~30 USDT total heat cap
+- A single balanced trade should not exhaust portfolio heat; multiple concurrent trades fit under the 6% cap.

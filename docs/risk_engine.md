@@ -49,6 +49,17 @@ risk.size_planner_enabled = true
 - Else, if `computed_max_notional_usd` exists (from `risk.max_notional_pct_per_trade * equity_usd`), it is used.
 - Else, no clamp is applied (default None).
 
+Balanced preset (equity 500):
+
+| Param | Value | USD |
+|---|---|---|
+| `risk.equity_usd` | 500 | — |
+| `risk.per_trade_risk_pct` | 0.003 (0.3%) | `max_risk_per_trade_usd` = 1.50 |
+| `risk.max_portfolio_risk_pct` | 0.06 (6%) | `max_portfolio_risk_usd` = 30.0 |
+| `risk.daily_loss_limit_pct` | 0.02 (2%) | `daily_loss_limit_usd` = 10.0 |
+| `risk.max_position_size` | 0.25 (25%) | `max_position_notional_usd` = 125.0 |
+| `risk.min_stop_pct` | 0.005 (0.5%) | stop floor applied in sizing |
+
 Example (sanity check, equity 100):
 
 | Input | Value | Resulting USD |

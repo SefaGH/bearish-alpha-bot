@@ -173,7 +173,7 @@ class TestPortfolioHeatRule:
     
     def test_within_portfolio_heat_limit(self):
         """Test portfolio heat within limits."""
-        rule = PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.02)
+        rule = PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.06)
         portfolio = MockPortfolioManager(equity=10000)
         
         signal = {
@@ -188,7 +188,7 @@ class TestPortfolioHeatRule:
     
     def test_exceeds_individual_risk_limit(self):
         """Test position exceeding individual risk limit."""
-        rule = PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.02)
+        rule = PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.06)
         portfolio = MockPortfolioManager(equity=10000)
         
         signal = {
@@ -204,7 +204,7 @@ class TestPortfolioHeatRule:
     
     def test_exceeds_portfolio_heat_limit(self):
         """Test portfolio heat exceeding limit."""
-        rule = PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.02)
+        rule = PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.06)
         
         # Existing positions with $800 total risk (8% heat)
         existing_positions = {
@@ -238,7 +238,7 @@ class TestPortfolioHeatRule:
     
     def test_stop_loss_calculation_atr(self):
         """Test stop loss calculation from ATR."""
-        rule = PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.02)
+        rule = PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.06)
         portfolio = MockPortfolioManager(equity=10000)
         
         signal = {
@@ -257,7 +257,7 @@ class TestPortfolioHeatRule:
     
     def test_stop_loss_calculation_percentage(self):
         """Test stop loss calculation from percentage."""
-        rule = PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.02)
+        rule = PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.06)
         portfolio = MockPortfolioManager(equity=10000)
         
         signal = {
@@ -453,7 +453,7 @@ class TestRulesEngineIntegration:
         rules = [
             CapitalLimitRule(),
             PositionSizeRule(max_position_size=0.10),
-            PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.02),
+            PortfolioHeatRule(max_portfolio_heat=0.10, max_portfolio_risk=0.06),
             MaxDrawdownRule(max_drawdown=0.15),
             RiskRewardRatioRule(min_risk_reward=1.5)
         ]
