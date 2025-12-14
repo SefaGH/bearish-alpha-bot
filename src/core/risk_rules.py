@@ -179,11 +179,66 @@ class VolumeAwarePositionSizingRule(BaseRiskRule):
             return (True, "No volume matrix configured; skipping")
 
         try:
-            signal['position_size'] = float(signal.get('position_size', 0)) * float(cfg.get('position_size_multiplier', 1.0))
+            base_position_size = float(signal.get('position_size', 0))
+            entry_price = signal.get('entry') or signal.get('entry_price') or 0
+            try:
+                entry_price = float(entry_price)
+            except (TypeError, ValueError):
+                entry_price = 0.0
+
+            base_notional = signal.get('notional')
+            try:
+                if (base_notional is None or base_notional <= 0) and entry_price > 0:
+                    base_notional = base_position_size * entry_price
+            except Exception:
+                base_notional = signal.get('notional')
+
+            scaled_position_size = base_position_size * float(cfg.get('position_size_multiplier', 1.0))
+            signal['position_size'] = scaled_position_size
             if 'stop_loss_dist' in signal:
                 signal['stop_loss_dist'] = float(signal['stop_loss_dist']) * float(cfg.get('stop_loss_multiplier', 1.0))
             if 'take_profit_dist' in signal:
                 signal['take_profit_dist'] = float(signal['take_profit_dist']) * float(cfg.get('take_profit_multiplier', 1.0))
+
+            scaled_notional = None
+            if entry_price and entry_price > 0:
+                try:
+                    scaled_notional = scaled_position_size * entry_price
+                except Exception:
+                    scaled_notional = None
+
+            caps_snapshot = None
+            try:
+                caps = signal.get('planner_caps_snapshot') or {}
+                max_notional_cap = caps.get('max_notional_cap')
+                max_size_pct_notional = caps.get('max_size_pct_notional')
+                heat_cap_notional = caps.get('heat_cap_notional')
+                caps_snapshot = {
+                    'max_notional_cap': max_notional_cap,
+                    'max_size_pct_notional': max_size_pct_notional,
+                    'heat_cap_notional': heat_cap_notional,
+                }
+            except Exception:
+                caps_snapshot = None
+
+            cap_floor = None
+            try:
+                candidates = [c for c in [
+                    caps_snapshot.get('max_notional_cap') if isinstance(caps_snapshot, dict) else None,
+                    caps_snapshot.get('max_size_pct_notional') if isinstance(caps_snapshot, dict) else None,
+                    caps_snapshot.get('heat_cap_notional') if isinstance(caps_snapshot, dict) else None,
+                ] if c is not None]
+                if candidates:
+                    cap_floor = min(candidates)
+            except Exception:
+                cap_floor = None
+
+            would_breach_caps = False
+            if scaled_notional is not None and cap_floor is not None:
+                try:
+                    would_breach_caps = scaled_notional > cap_floor
+                except Exception:
+                    would_breach_caps = False
 
             now_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             run_id = get_current_run_id()
@@ -200,6 +255,12 @@ class VolumeAwarePositionSizingRule(BaseRiskRule):
                     'position_size_multiplier': cfg.get('position_size_multiplier', 1.0),
                     'stop_loss_multiplier': cfg.get('stop_loss_multiplier', 1.0),
                     'take_profit_multiplier': cfg.get('take_profit_multiplier', 1.0),
+                    'base_position_size': base_position_size,
+                    'base_notional': base_notional,
+                    'scaled_position_size': scaled_position_size,
+                    'scaled_notional': scaled_notional,
+                    'caps_snapshot': caps_snapshot,
+                    'would_breach_caps_after_volume': would_breach_caps,
                 },
             )
             return (True, f"Applied volume bucket {bucket}")

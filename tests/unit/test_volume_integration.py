@@ -39,6 +39,15 @@ class StubRiskManager:
         self.calls.append(dict(signal))
         return True, "ok", {}
 
+    async def size_and_validate_position(self, signal, portfolio_manager=None, sizing_engine=None):
+        # Mimic modern RiskManager interface used by StrategyCoordinator
+        await self.validate_new_position(signal, portfolio_manager)
+        # Return allowed flag, final size, and meta as expected by coordinator
+        return True, signal.get('position_size', signal.get('amount', 0) or 0), {'risk_metrics': {}}
+
+    def _is_size_planner_enabled(self):
+        return False
+
 
 def _make_coordinator(config=None, volume_analyzer=None, risk_manager=None):
     cfg = config or {}

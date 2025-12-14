@@ -22,6 +22,8 @@ from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 from datetime import datetime, timezone
 from enum import Enum
 
+from core.logger import get_current_run_id
+
 # ✅ DÜZELTME 1: Import hatası düzeltildi
 # Strategy imports - both adaptive and base strategies
 try:
@@ -477,6 +479,31 @@ class LiveTradingEngine:
             signal['amount'] = position_size
             signal['notional'] = notional_value
             logger.info(f"  ✓ Position size prepared: {position_size:.6f} (notional=${notional_value:.2f})")
+
+            try:
+                ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                run_id = get_current_run_id()
+                logger.info(
+                    "trade_execution_size_debug %s",
+                    {
+                        'event': 'trade_execution_size_debug',
+                        'timestamp': ts,
+                        'run_id': run_id,
+                        'symbol': symbol,
+                        'timeframe': signal.get('timeframe') or signal.get('tf'),
+                        'strategy_name': signal.get('strategy_name') or signal.get('strategy'),
+                        'entry_price': entry_price,
+                        'final_position_size': position_size,
+                        'final_notional': notional_value,
+                        'planner_final_notional': signal.get('planner_planned_notional') or signal.get('notional'),
+                        'planner_final_position_size': signal.get('planner_planned_qty') or signal.get('position_size'),
+                        'volume_bucket_at_entry': signal.get('volume_bucket'),
+                        'position_size_multiplier_from_volume': signal.get('position_size_multiplier'),
+                        'planner_active': planner_active,
+                    },
+                )
+            except Exception:
+                pass
 
             # Step 2: Risk validation (Phase 3.2) now runs against final size
             risk_validation = await self.risk_manager.validate_new_position(signal, self.portfolio_manager)

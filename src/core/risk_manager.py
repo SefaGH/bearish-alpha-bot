@@ -1151,6 +1151,17 @@ class RiskManager:
                 position_size_policy=self.risk_limits.get('position_size_policy', 'clip'),
             )
 
+            # Telemetry helper: surface the cap components used by the planner to downstream consumers
+            try:
+                signal['planner_caps_snapshot'] = {
+                    'max_notional_cap': cap_notional,
+                    'max_size_pct_notional': cap_size_pct,
+                    'heat_cap_notional': cap_heat_value,
+                }
+            except Exception:
+                # Best-effort only; never block sizing
+                signal['planner_caps_snapshot'] = None
+
             shadow_mode = not planner_enabled
             self._log_planner_decision(
                 signal.get('symbol', 'UNKNOWN'),
