@@ -1,0 +1,230 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": { "type": "string", "defaultValue": "westeurope" },
+    "logicAppName": { "type": "string", "defaultValue": "bearish-bot-stop-core" },
+
+    "subscriptionId": { "type": "string" },
+    "vmResourceGroup": { "type": "string" },
+    "vmName": { "type": "string" },
+
+    "containerName": { "type": "string", "defaultValue": "bearish-bot" },
+    "defaultStopTimeoutSeconds": { "type": "int", "defaultValue": 90 },
+
+    "notification_recipient_email": { "type": "string" },
+    "sender_email_address": { "type": "string" },
+
+    "$connections": { "type": "object", "defaultValue": {} }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('logicAppName')]",
+      "location": "[parameters('location')]",
+      "identity": { "type": "SystemAssigned" },
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": { "type": "Object", "defaultValue": {} },
+            "subscriptionId": { "type": "String" },
+            "vmResourceGroup": { "type": "String" },
+            "vmName": { "type": "String" },
+            "containerName": { "type": "String" },
+            "defaultStopTimeoutSeconds": { "type": "Int" },
+            "notification_recipient_email": { "type": "String" },
+            "sender_email_address": { "type": "String" }
+          },
+          "triggers": {
+            "manual": {
+              "type": "Request",
+              "kind": "Http",
+              "inputs": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "timeoutSeconds": { "type": "integer", "minimum": 30, "maximum": 180 },
+                    "reason": { "type": "string" },
+                    "requestedBy": { "type": "string" },
+                    "correlationId": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "actions": {
+            "Validate_And_Default_Inputs": {
+              "type": "Compose",
+              "inputs": {
+                "timeoutSeconds": "@coalesce(triggerBody()?['timeoutSeconds'], parameters('defaultStopTimeoutSeconds'))",
+                "reason": "@coalesce(triggerBody()?['reason'], 'manual_stop')",
+                "requestedBy": "@coalesce(triggerBody()?['requestedBy'], 'unknown')",
+                "correlationId": "@coalesce(triggerBody()?['correlationId'], workflow().run.name)"
+              }
+            },
+
+            "Check_Container_Status": {
+              "runAfter": { "Validate_And_Default_Inputs": [ "Succeeded" ] },
+              "type": "Http",
+              "inputs": {
+                "uri": "@concat('https://management.azure.com/subscriptions/', parameters('subscriptionId'), '/resourceGroups/', parameters('vmResourceGroup'), '/providers/Microsoft.Compute/virtualMachines/', parameters('vmName'), '/runCommand?api-version=2024-07-01')",
+                "method": "POST",
+                "headers": { "Content-Type": "application/json" },
+                "body": {
+                  "commandId": "RunShellScript",
+                  "script": [
+                    "set -e",
+                    "NAME=\"@{parameters('containerName')}\"",
+                    "status=$(sudo docker inspect -f '{{.State.Status}}' \"$NAME\" 2>/dev/null || echo 'not_found')",
+                    "if [ \"$status\" = \"running\" ]; then",
+                    "  echo \"running\"",
+                    "else",
+                    "  echo \"$status\"",
+                    "fi"
+                  ]
+                },
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "audience": "https://management.azure.com"
+                }
+              }
+            },
+
+            "Parse_Container_Status": {
+              "runAfter": { "Check_Container_Status": [ "Succeeded", "Failed", "TimedOut" ] },
+              "type": "Compose",
+              "inputs": "@if(equals(actions('Check_Container_Status')?['status'],'Succeeded'), trim(split(split(body('Check_Container_Status')?['value']?[0]?['message'], '[stdout]')[1], '[stderr]')[0]), 'error')"
+            },
+
+            "If_Running_Stop_Container": {
+              "runAfter": { "Parse_Container_Status": [ "Succeeded" ] },
+              "type": "If",
+              "expression": {
+                "equals": [
+                  "@toLower(outputs('Parse_Container_Status'))",
+                  "running"
+                ]
+              },
+              "actions": {
+                "Stop_Container": {
+                  "type": "Http",
+                  "inputs": {
+                    "uri": "@concat('https://management.azure.com/subscriptions/', parameters('subscriptionId'), '/resourceGroups/', parameters('vmResourceGroup'), '/providers/Microsoft.Compute/virtualMachines/', parameters('vmName'), '/runCommand?api-version=2024-07-01')",
+                    "method": "POST",
+                    "headers": { "Content-Type": "application/json" },
+                    "body": {
+                      "commandId": "RunShellScript",
+                      "script": [
+                        "set -e",
+                        "NAME=\"@{parameters('containerName')}\"",
+                        "TIMEOUT=\"@{string(outputs('Validate_And_Default_Inputs')['timeoutSeconds'])}\"",
+                        "echo \"Stopping $NAME with timeout=$TIMEOUT\"",
+                        "sudo docker stop -t \"$TIMEOUT\" \"$NAME\" || true",
+                        "status2=$(sudo docker inspect -f '{{.State.Status}}' \"$NAME\" 2>/dev/null || echo 'not_found')",
+                        "echo \"FinalStatus=$status2\""
+                      ]
+                    },
+                    "authentication": {
+                      "type": "ManagedServiceIdentity",
+                      "audience": "https://management.azure.com"
+                    }
+                  }
+                }
+              },
+              "else": {
+                "actions": {}
+              }
+            },
+
+            "Verify_Final_Status": {
+              "runAfter": { "If_Running_Stop_Container": [ "Succeeded", "Skipped", "Failed", "TimedOut" ] },
+              "type": "Http",
+              "inputs": {
+                "uri": "@concat('https://management.azure.com/subscriptions/', parameters('subscriptionId'), '/resourceGroups/', parameters('vmResourceGroup'), '/providers/Microsoft.Compute/virtualMachines/', parameters('vmName'), '/runCommand?api-version=2024-07-01')",
+                "method": "POST",
+                "headers": { "Content-Type": "application/json" },
+                "body": {
+                  "commandId": "RunShellScript",
+                  "script": [
+                    "set -e",
+                    "NAME=\"@{parameters('containerName')}\"",
+                    "status=$(sudo docker inspect -f '{{.State.Status}}' \"$NAME\" 2>/dev/null || echo 'not_found')",
+                    "echo \"$status\""
+                  ]
+                },
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "audience": "https://management.azure.com"
+                }
+              }
+            },
+
+            "Parse_Final_Status": {
+              "runAfter": { "Verify_Final_Status": [ "Succeeded", "Failed", "TimedOut" ] },
+              "type": "Compose",
+              "inputs": "@if(equals(actions('Verify_Final_Status')?['status'], 'Succeeded'), trim(split(split(body('Verify_Final_Status')?['value']?[0]?['message'], '[stdout]')[1], '[stderr]')[0]), 'error')"
+            },
+
+            "Send_Stop_Email": {
+              "runAfter": { "Parse_Final_Status": [ "Succeeded" ] },
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['acsemail']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/emails:sendGAVersion",
+                "queries": { "api-version": "2023-03-31" },
+                "body": {
+                  "senderAddress": "@parameters('sender_email_address')",
+                  "recipients": { "to": [ { "address": "@parameters('notification_recipient_email')" } ] },
+                  "content": {
+                    "subject": "@concat('🛑 Bearish Bot: Stop Requested (', outputs('Validate_And_Default_Inputs')['requestedBy'], ') - Final: ', outputs('Parse_Final_Status'))",
+                    "html": "@concat('Correlation: ', outputs('Validate_And_Default_Inputs')['correlationId'], '<br/>Reason: ', outputs('Validate_And_Default_Inputs')['reason'], '<br/>InitialStatus: ', outputs('Parse_Container_Status'), '<br/>FinalStatus: ', outputs('Parse_Final_Status'), '<br/>Time: ', utcNow())"
+                  },
+                  "importance": "High"
+                }
+              }
+            },
+
+            "Return_Result": {
+              "runAfter": { "Send_Stop_Email": [ "Succeeded", "Failed", "Skipped" ] },
+              "type": "Response",
+              "kind": "Http",
+              "inputs": {
+                "statusCode": 200,
+                "headers": { "Content-Type": "application/json" },
+                "body": {
+                  "status": "ok",
+                  "initialContainerStatus": "@outputs('Parse_Container_Status')",
+                  "finalContainerStatus": "@outputs('Parse_Final_Status')",
+                  "timeoutSeconds": "@outputs('Validate_And_Default_Inputs')['timeoutSeconds']",
+                  "reason": "@outputs('Validate_And_Default_Inputs')['reason']",
+                  "requestedBy": "@outputs('Validate_And_Default_Inputs')['requestedBy']",
+                  "correlationId": "@outputs('Validate_And_Default_Inputs')['correlationId']",
+                  "timestamp": "@utcNow()"
+                }
+              }
+            }
+          }
+        },
+        "parameters": {
+          "$connections": { "value": "[parameters('$connections')]" },
+          "subscriptionId": { "value": "[parameters('subscriptionId')]" },
+          "vmResourceGroup": { "value": "[parameters('vmResourceGroup')]" },
+          "vmName": { "value": "[parameters('vmName')]" },
+          "containerName": { "value": "[parameters('containerName')]" },
+          "defaultStopTimeoutSeconds": { "value": "[parameters('defaultStopTimeoutSeconds')]" },
+          "notification_recipient_email": { "value": "[parameters('notification_recipient_email')]" },
+          "sender_email_address": { "value": "[parameters('sender_email_address')]" }
+        }
+      }
+    }
+  ]
+}

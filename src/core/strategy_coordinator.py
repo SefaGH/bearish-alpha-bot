@@ -24,6 +24,15 @@ from core.volume_analyzer import VolumeAnalyzer
 from src.core.interfaces import PositionSizingProtocol
 from src.utils.volume_utils import get_bucket_rank
 from core.logger import get_current_run_id
+from src.core.signal_intents import (
+    INTENT_ENTRY,
+    INTENT_REENTRY,
+    INTENT_SCALE_IN,
+    MAINTENANCE_INTENTS,
+    INTENT_FORCE_SWAP,
+    INTENT_REVERSE,
+)
+INTENT_HOLD = "hold"
 
 try:  # Optional dependency; lazily initialized when available
     from ml.adapters.ppo_trading_adapter import PPOTradingAdapter
@@ -63,6 +72,8 @@ class PrioritySignalQueue:
         self._ttl = max(int(queue_config.get('ttl_seconds', 60)), 5)
         self._max_depth = max(int(queue_config.get('max_queue_depth', 50)), 1)
         self._max_pending_per_symbol = max(int(queue_config.get('max_pending_per_symbol', 1)), 0)
+        self._max_pending_scale_in_per_symbol = max(int(queue_config.get('max_pending_scale_in_per_symbol', 0)), 0)
+        self._pyramiding_enabled = bool(queue_config.get('pyramiding_enabled', False))
         default_weights = {
             'explicit_priority': 0.35,
             'risk_reward': 0.25,
@@ -77,7 +88,7 @@ class PrioritySignalQueue:
         self._condition = asyncio.Condition()
         self._heap: List[Tuple[float, float, int, Dict[str, Any]]] = []
         self._sequence = itertools.count()
-        self._pending_by_symbol: Dict[str, int] = defaultdict(int)
+        self._pending_by_symbol: Dict[str, Dict[str, int]] = defaultdict(lambda: {"total": 0, "scale_in": 0})
         self._logger = logger
         self._stats = {
             'accepted': 0,
@@ -90,13 +101,44 @@ class PrioritySignalQueue:
 
     async def put(self, payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         symbol = self._extract_symbol(payload)
+        intent = self._extract_intent(payload)
         async with self._condition:
-            if self._max_pending_per_symbol and symbol:
-                if self._pending_by_symbol[symbol] >= self._max_pending_per_symbol:
-                    self._stats['rejected_symbol_limit'] += 1
-                    reason = f"Queue limit reached for {symbol}"
-                    self._logger.warning(f"🚫 [QUEUE] {reason}")
-                    return False, reason
+            now = time.time()
+            self._purge_expired_locked()
+            if symbol:
+                pending_totals = self._pending_by_symbol[symbol]
+                pending_total = pending_totals["total"]
+                pending_scale = pending_totals["scale_in"]
+
+                if not self._pyramiding_enabled:
+                    if self._max_pending_per_symbol and pending_total >= self._max_pending_per_symbol:
+                        self._stats['rejected_symbol_limit'] += 1
+                        reason = f"Queue limit reached for {symbol}"
+                        self._logger.warning(f"🚫 [QUEUE] {reason}")
+                        return False, reason
+                else:
+                    if intent == INTENT_SCALE_IN:
+                        max_allowed = self._max_pending_per_symbol + self._max_pending_scale_in_per_symbol
+                        if self._max_pending_scale_in_per_symbol <= 0:
+                            max_allowed = self._max_pending_per_symbol
+                        if pending_total >= max_allowed or pending_scale >= self._max_pending_scale_in_per_symbol > 0:
+                            self._stats['rejected_symbol_limit'] += 1
+                            reason = "Scale-in queue limit reached"
+                            self._logger.info(
+                                "[PYRAMID-QUEUE] scale-in rejected at enqueue | sym=%s | pending_total=%d | pending_scale_in=%d | max_entry=%d | max_scale_in=%d",
+                                symbol,
+                                pending_total,
+                                pending_scale,
+                                self._max_pending_per_symbol,
+                                self._max_pending_scale_in_per_symbol,
+                            )
+                            return False, reason
+                    else:
+                        if self._max_pending_per_symbol and pending_total >= self._max_pending_per_symbol:
+                            self._stats['rejected_symbol_limit'] += 1
+                            reason = f"Queue limit reached for {symbol}"
+                            self._logger.warning(f"🚫 [QUEUE] {reason}")
+                            return False, reason
 
             now = time.time()
             meta = payload.setdefault('queue_meta', {})
@@ -117,7 +159,9 @@ class PrioritySignalQueue:
                 heapq.heappush(self._heap, entry)
 
             if symbol:
-                self._pending_by_symbol[symbol] += 1
+                self._pending_by_symbol[symbol]["total"] += 1
+                if intent == INTENT_SCALE_IN:
+                    self._pending_by_symbol[symbol]["scale_in"] += 1
             self._stats['accepted'] += 1
             self._condition.notify()
             self._logger.info(
@@ -141,8 +185,13 @@ class PrioritySignalQueue:
                     entry = heapq.heappop(self._heap)
                     payload = entry[3]
                     symbol = self._extract_symbol(payload)
-                    if symbol and self._pending_by_symbol[symbol] > 0:
-                        self._pending_by_symbol[symbol] -= 1
+                    if symbol:
+                        counts = self._pending_by_symbol.get(symbol, {"total": 0, "scale_in": 0})
+                        if counts.get("total", 0) > 0:
+                            counts["total"] = max(0, counts.get("total", 0) - 1)
+                            if self._extract_intent(payload) == INTENT_SCALE_IN:
+                                counts["scale_in"] = max(0, counts.get("scale_in", 0) - 1)
+                            self._pending_by_symbol[symbol] = counts
                     payload.setdefault('queue_meta', {})['dequeued_at'] = time.time()
                     self._stats['dequeued'] += 1
                     return payload
@@ -166,6 +215,7 @@ class PrioritySignalQueue:
         symbol = self._extract_symbol(payload)
         async with self._condition:
             now = time.time()
+            self._purge_expired_locked()
             meta = payload.setdefault('queue_meta', {})
             meta.setdefault('enqueued_at', now)
             meta.setdefault('expiration', now + self._ttl)
@@ -175,7 +225,9 @@ class PrioritySignalQueue:
             heapq.heappush(self._heap, entry)
 
             if symbol:
-                self._pending_by_symbol[symbol] += 1
+                self._pending_by_symbol[symbol]["total"] += 1
+                if self._extract_intent(payload) == INTENT_SCALE_IN:
+                    self._pending_by_symbol[symbol]["scale_in"] += 1
 
             self._stats['requeued'] = self._stats.get('requeued', 0) + 1
             self._condition.notify()
@@ -193,8 +245,12 @@ class PrioritySignalQueue:
 
         removed_payload = lowest_entry[3]
         removed_symbol = self._extract_symbol(removed_payload)
-        if removed_symbol and self._pending_by_symbol[removed_symbol] > 0:
-            self._pending_by_symbol[removed_symbol] -= 1
+        if removed_symbol:
+            pending_counts = self._pending_by_symbol[removed_symbol]
+            if pending_counts["total"] > 0:
+                pending_counts["total"] -= 1
+            if self._extract_intent(removed_payload) == INTENT_SCALE_IN and pending_counts["scale_in"] > 0:
+                pending_counts["scale_in"] -= 1
         self._heap[lowest_index] = entry
         heapq.heapify(self._heap)
         self._logger.info(
@@ -216,8 +272,12 @@ class PrioritySignalQueue:
             if expiration < now:
                 expired += 1
                 symbol = self._extract_symbol(payload)
-                if symbol and self._pending_by_symbol[symbol] > 0:
-                    self._pending_by_symbol[symbol] -= 1
+                if symbol:
+                    counts = self._pending_by_symbol[symbol]
+                    if counts["total"] > 0:
+                        counts["total"] -= 1
+                    if self._extract_intent(payload) == INTENT_SCALE_IN and counts["scale_in"] > 0:
+                        counts["scale_in"] -= 1
             else:
                 kept.append(entry)
 
@@ -304,6 +364,11 @@ class PrioritySignalQueue:
         signal = payload.get('signal') or {}
         return signal.get('symbol')
 
+    @staticmethod
+    def _extract_intent(payload: Dict[str, Any]) -> Optional[str]:
+        signal = payload.get('signal') or {}
+        return signal.get('intent')
+
 
 class StrategyCoordinator:
     """
@@ -354,6 +419,12 @@ class StrategyCoordinator:
         # Signal management
         self.active_signals = {}  # signal_id -> signal_data
         queue_cfg = ((self.config.get('risk') or {}).get('queue')) or {}
+        # Pass pyramiding flag to queue for intent-aware pending limits
+        try:
+            pyramiding_cfg = self.config.get("pyramiding", {}) if isinstance(self.config, dict) else {}
+            queue_cfg = {**queue_cfg, "pyramiding_enabled": bool(pyramiding_cfg.get("enabled", False))}
+        except Exception:
+            pass
         self.signal_queue = PrioritySignalQueue(queue_cfg, logger)
         self.signal_history = []
         self._signal_history_lookup: Dict[str, Dict[str, Any]] = {}
@@ -478,6 +549,59 @@ class StrategyCoordinator:
         except Exception as e:
             logger.error(f"❌ GEMMA adapter initialization failed: {e}", exc_info=True)
             self.gemma_adapter = None
+
+    def _determine_intent(self, signal: Dict, strategy_name: str) -> str:
+        """
+        Classify signal intent (entry vs scale-in) based on current open positions.
+
+        Shadow mode when pyramiding is disabled: always returns entry but logs if a scale-in
+        candidate is detected. Behavior-changing branches only apply when config enables pyramiding.
+        """
+        symbol = signal.get("symbol")
+        side = str(signal.get("side", "")).lower()
+
+        cfg_source = {}
+        try:
+            if hasattr(self.portfolio_manager, "cfg"):
+                cfg_source = self.portfolio_manager.cfg or {}
+        except Exception:
+            cfg_source = {}
+        if not cfg_source and isinstance(self.config, dict):
+            cfg_source = self.config
+
+        pyramiding_cfg = cfg_source.get("pyramiding", {}) if isinstance(cfg_source, dict) else {}
+        pyramiding_enabled = bool(pyramiding_cfg.get("enabled", False))
+
+        # Gather open positions for this symbol
+        open_positions: List[Dict[str, Any]] = []
+        pm = getattr(self, "portfolio_manager", None)
+        try:
+            if pm and hasattr(pm, "get_open_positions_for_symbol") and symbol:
+                open_positions = pm.get_open_positions_for_symbol(symbol) or []
+        except Exception as exc:
+            logger.debug("Intent classification: unable to fetch open positions for %s: %s", symbol, exc)
+            open_positions = []
+
+        def _matches(pos: Dict[str, Any]) -> bool:
+            pos_side = str(pos.get("side", "")).lower()
+            pos_strategy = (pos.get("strategy_name") or pos.get("strategy") or "").lower()
+            return (not side or pos_side == side) and pos_strategy == strategy_name.lower()
+
+        candidate_exists = any(_matches(p) for p in open_positions if isinstance(p, dict))
+
+        if not pyramiding_enabled:
+            if candidate_exists:
+                logger.info(
+                    "Pyramiding shadow: signal would be classified as scale_in if enabled | sym=%s | strat=%s | side=%s",
+                    symbol,
+                    strategy_name,
+                    side,
+                )
+            return INTENT_ENTRY
+
+        if candidate_exists:
+            return INTENT_SCALE_IN
+        return INTENT_ENTRY
     
     def validate_duplicate(self, signal: Dict, strategy_name: str) -> Tuple[bool, str]:
         """
@@ -496,52 +620,82 @@ class StrategyCoordinator:
             Tuple of (is_valid, rejection_reason)
         """
         import time
-        
+
+        intent = signal.get("intent", INTENT_ENTRY)
+
+        # Maintenance intents should not be blocked by duplicate logic
+        if intent in MAINTENANCE_INTENTS:
+            return True, "ok_maintenance_intent"
+
         # Step 1: Get config
         config = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
-        
+        pyramiding_cfg = config.get("pyramiding", {}) if isinstance(config, dict) else {}
+        pyramiding_enabled = bool(pyramiding_cfg.get("enabled", False))
+
         # ✅ FIX #1: Proper config path detection
         # Check if signals.duplicate_prevention exists (not just empty dict)
         has_signals_config = (
-            'signals' in config and 
+            'signals' in config and
             'duplicate_prevention' in config.get('signals', {}) and
             config['signals']['duplicate_prevention']  # Not empty
         )
-        
+
         if has_signals_config:
             # ✅ Use signals config (NEW location, CORRECT values)
             dup_config = config['signals']['duplicate_prevention']
             enabled = dup_config.get('enabled', True)
-            cooldown = float(dup_config.get('cooldown_seconds', 20))
-            
-            # ✅ FIX #2: No double division - value is already in decimal
-            # Config has min_price_change_pct: 0.0005 which means 0.05% in decimal
-            price_delta_bypass_threshold = float(dup_config.get('min_price_change_pct', 0.0005))
+            base_cooldown = float(dup_config.get('cooldown_seconds', 20))
+            base_min_price_change = float(dup_config.get('min_price_change_pct', 0.0005))
+
+            # Dedicated bypass threshold
+            price_delta_bypass_threshold = float(dup_config.get('price_delta_bypass_threshold', 0.0015))
             price_delta_bypass_enabled = dup_config.get('price_delta_bypass_enabled', True)
-            
+
+            # Optional scale-in specific settings (defaults mirror base)
+            scale_in_min_price_change = float(dup_config.get('scale_in_min_price_change_pct', base_min_price_change))
+            scale_in_cooldown = float(dup_config.get('scale_in_cooldown_seconds', base_cooldown))
+
             logger.debug(f"✓ Using signals.duplicate_prevention config")
         else:
             # ✅ Fallback to monitoring config (OLD location, backward compatibility)
             dup_config = config.get('monitoring', {}).get('duplicate_prevention', {})
             enabled = dup_config.get('enabled', True)
-            cooldown = float(dup_config.get('same_symbol_cooldown', 60))
+            base_cooldown = float(dup_config.get('same_symbol_cooldown', 60))
+            base_min_price_change = float(dup_config.get('min_price_change_pct', 0.0005))
             price_delta_bypass_enabled = dup_config.get('price_delta_bypass_enabled', True)
-            
-            # ✅ FIX #3: monitoring config uses different unit (0.0015 = 0.15%)
-            # Keep as-is for backward compatibility
+
+            # monitoring config uses different unit (0.0015 = 0.15%)
             price_delta_bypass_threshold = float(dup_config.get('price_delta_bypass_threshold', 0.0015))
-            
+
+            # Legacy path has no scale-in overrides; mirror base
+            scale_in_min_price_change = base_min_price_change
+            scale_in_cooldown = base_cooldown
+
             logger.debug(f"⚠️ Using monitoring.duplicate_prevention config (legacy)")
-        
+
         if not enabled:
             return True, "OK"
-        
+
+        # Select effective thresholds by intent (conservative: scale_in mirrors entry)
+        if intent in (INTENT_ENTRY, INTENT_REENTRY):
+            effective_min_price_change = base_min_price_change
+            cooldown = base_cooldown
+        elif intent == INTENT_SCALE_IN:
+            effective_min_price_change = scale_in_min_price_change
+            cooldown = scale_in_cooldown
+            if pyramiding_enabled:
+                cooldown = min(scale_in_cooldown, base_cooldown)
+        else:
+            effective_min_price_change = base_min_price_change
+            cooldown = base_cooldown
+
         symbol = signal.get('symbol')
         entry_price = signal.get('entry', 0)
         current_time = time.time()
         
         # Create combined key: "symbol:strategy"
         signal_key = f"{symbol}:{strategy_name}"
+        prev_signal_time = self.last_signal_time.get(signal_key)
 
         # Dynamic cooldown sensitivity based on RSI delta
         effective_cooldown = cooldown
@@ -587,15 +741,57 @@ class StrategyCoordinator:
         # Step 2: Calculate cooldown status
         within_cooldown = False
         remaining = 0
+        elapsed_time = None
         
         if signal_key in self.last_signal_time:
             elapsed = current_time - self.last_signal_time[signal_key]
             if elapsed < cooldown:
                 within_cooldown = True
                 remaining = cooldown - elapsed
+                elapsed_time = elapsed
         
         # Step 3: IF within cooldown, check for price delta bypass
         if within_cooldown:
+            # Scale-in soft guard when pyramiding enabled: reject only spammy repeats
+            if pyramiding_enabled and intent == INTENT_SCALE_IN:
+                spam_window = float(pyramiding_cfg.get("spam_window_seconds", 3.0)) if isinstance(pyramiding_cfg, dict) else 3.0
+                spam_delta_threshold = min(
+                    effective_min_price_change,
+                    float(pyramiding_cfg.get("spam_delta_pct", 0.0002) if isinstance(pyramiding_cfg, dict) else 0.0002),
+                )
+
+                price_delta = None
+                if symbol in self.signal_price_history and entry_price > 0 and self.signal_price_history[symbol]:
+                    _, last_price = self.signal_price_history[symbol][-1]
+                    price_delta = abs(entry_price - last_price) / last_price
+
+                if (elapsed_time is not None and elapsed_time < spam_window) and (price_delta is None or price_delta < spam_delta_threshold):
+                    logger.warning(
+                        "❌ [DUPLICATE-REJECT] Scale-in rejected (spam window) | sym=%s | strat=%s | intent=%s | elapsed=%.2fs | delta=%s | threshold=%.5f",
+                        symbol,
+                        strategy_name,
+                        intent,
+                        elapsed_time,
+                        f"{price_delta:.5f}" if price_delta is not None else "n/a",
+                        spam_delta_threshold,
+                    )
+                    return False, "duplicate_scale_in_spam_window"
+
+                # Not spam: allow; update tracking and continue
+                self.last_signal_time[signal_key] = current_time
+                if current_rsi is not None:
+                    self.last_signal_rsi[signal_key] = current_rsi
+                if entry_price > 0:
+                    self.signal_price_history[symbol].append((current_time, entry_price))
+                logger.info(
+                    "✅ [DUPLICATE] Scale-in cooldown skipped under pyramiding | sym=%s | strat=%s | intent=%s | elapsed=%.2fs | cooldown=%.2fs",
+                    symbol,
+                    strategy_name,
+                    intent,
+                    elapsed_time or 0.0,
+                    cooldown,
+                )
+                return True, "OK (scale_in_soft_guard)"
             # Step 3a: Get last price from history
             if symbol in self.signal_price_history and entry_price > 0 and price_delta_bypass_enabled:
                 # Find last price for this symbol
@@ -603,6 +799,7 @@ class StrategyCoordinator:
                     last_timestamp, last_price = self.signal_price_history[symbol][-1]
                     
                     # Step 3b: Calculate price_delta (in decimal, e.g., 0.0005 = 0.05%)
+                    # TODO (pyramiding/DCA): consider signed delta for certain strategies
                     price_delta = abs(entry_price - last_price) / last_price
                     
                     # Step 3c: IF price_delta >= threshold, BYPASS
@@ -612,6 +809,7 @@ class StrategyCoordinator:
                             f"✅ [DUPLICATE-BYPASS] Cooldown bypassed\n"
                             f"   Symbol: {symbol}\n"
                             f"   Strategy: {strategy_name}\n"
+                            f"   Intent: {intent}\n"
                             f"   Last Price: ${last_price:.2f}\n"
                             f"   New Price: ${entry_price:.2f}\n"
                             f"   Delta: {price_delta*100:.2f}% (>= {price_delta_bypass_threshold*100:.2f}%)\n"
@@ -648,6 +846,7 @@ class StrategyCoordinator:
                             f"❌ [DUPLICATE-REJECT] Signal rejected - insufficient price movement\n"
                             f"   Symbol: {symbol}\n"
                             f"   Strategy: {strategy_name}\n"
+                            f"   Intent: {intent}\n"
                             f"   Price Change: {price_delta*100:.2f}% (< {price_delta_bypass_threshold*100:.2f}%)\n"
                             f"   Cooldown Remaining: {remaining:.1f}s\n"
                             f"   ❌ SIGNAL REJECTED"
@@ -664,6 +863,7 @@ class StrategyCoordinator:
                 f"❌ [DUPLICATE-REJECT] Signal rejected - cooldown active\n"
                 f"   Symbol: {symbol}\n"
                 f"   Strategy: {strategy_name}\n"
+                f"   Intent: {intent}\n"
                 f"   Cooldown Remaining: {remaining:.1f}s\n"
                 f"   ❌ SIGNAL REJECTED"
             )
@@ -678,6 +878,18 @@ class StrategyCoordinator:
             self.last_signal_rsi[signal_key] = current_rsi
         if entry_price > 0:
             self.signal_price_history[symbol].append((current_time, entry_price))
+
+        elapsed = None
+        if prev_signal_time is not None:
+            elapsed = current_time - prev_signal_time
+        logger.info(
+            "Duplicate check accepted outside cooldown | sym=%s | strat=%s | intent=%s | cooldown=%.2fs | min_price_change_pct=%.5f",
+            symbol,
+            strategy_name,
+            intent,
+            cooldown,
+            effective_min_price_change,
+        )
         
         return True, "OK"
     
@@ -819,6 +1031,13 @@ class StrategyCoordinator:
         For full strategy signal processing, use process_strategy_signal instead.
         """
         try:
+            # Ordering (simplified path):
+            # 1) AI-Gate → 2) RL (if present) → 3) Risk → 4) Duplicate → 5) Queue/Execution
+            # Ensure intent is set for downstream components
+            signal.setdefault("intent", INTENT_ENTRY)
+            strategy_name = signal.get('strategy_name') or signal.get('strategy') or 'unknown'
+            signal["intent"] = self._determine_intent(signal, strategy_name)
+
             # ADIM 1: AI-Gate (GEMMA veya eski ML modeli ile filtreleme)
             if not self._apply_ai_gate(signal):
                 return None  # Sinyal AI-Gate tarafından reddedildi.
@@ -831,8 +1050,11 @@ class StrategyCoordinator:
                     return None
                 signal = enhanced_signal
             
+            # ADIM 2.5: Quality hesapla (RiskManager'in girdi kalitesini iyileştir)
+            self._compute_signal_quality(signal)
+
             # ADIM 3: Risk kontrolleri (mevcut risk_manager üzerinden)
-            risk_assessment = await self._assess_signal_risk(signal)
+            risk_assessment = await self._assess_signal_risk(signal, strategy_name)
             if not risk_assessment['acceptable']:
                 logger.warning(f"Signal for {signal.get('symbol')} rejected by risk assessment: {risk_assessment['reason']}")
                 return None
@@ -881,6 +1103,71 @@ class StrategyCoordinator:
         }
         logger.info(f"SIGNAL_BREAKDOWN {json.dumps(breakdown)}")
 
+    def _compute_signal_quality(self, signal: Dict[str, Any]) -> Dict[str, Any]:
+        """Compute and attach quality metrics to a signal (single source of truth)."""
+        # Extreme bypass profile (skip ML, rely on non-ML components)
+        if signal.get("extreme_bypass"):
+            cfg = self.config.get("signals", {}).get("signal_scoring", {}) if isinstance(self.config, dict) else {}
+            weights = cfg.get("extreme_weights", {}) if isinstance(cfg, dict) else {}
+            w_regime = float(weights.get("regime", 0.4))
+            w_vol = float(weights.get("volume", 0.3))
+            w_mom = float(weights.get("momentum", 0.3))
+            w_rr = float(weights.get("risk_reward", 0.0))
+            total_w = max(w_regime + w_vol + w_mom + w_rr, 1e-6)
+
+            def _clamp(v: Any, lo: float = 0.0, hi: float = 1.0) -> float:
+                try:
+                    return max(lo, min(hi, float(v)))
+                except Exception:
+                    return lo
+
+            q_regime = _clamp(signal.get("regime_confidence", signal.get("regime_weight", 0.5)), 0.0, 1.0)
+            q_vol = _clamp(signal.get("volume_strength", signal.get("volume_score", 0.5)), 0.0, 1.0)
+            q_mom = _clamp(signal.get("momentum_strength", 0.5), 0.0, 1.0)
+            rr_ratio = signal.get("rr_ratio")
+            try:
+                q_rr = _clamp((float(rr_ratio) / 3.0) if rr_ratio is not None else 0.5, 0.0, 1.0)
+            except Exception:
+                q_rr = 0.5
+
+            q_base = (w_regime * q_regime + w_vol * q_vol + w_mom * q_mom + w_rr * q_rr) / total_w
+            extreme_min = 0.0
+            try:
+                extreme_min = float(cfg.get("extreme_min_quality", 0.0) or 0.0)
+            except Exception:
+                extreme_min = 0.0
+            quality_value = max(q_base, extreme_min)
+            quality_result = {
+                "value": round(quality_value, 4),
+                "components": {
+                    "regime_component": round(q_regime, 4),
+                    "volume_component": round(q_vol, 4),
+                    "momentum_component": round(q_mom, 4),
+                    "risk_reward_component": round(q_rr, 4),
+                },
+                "reason": [],
+            }
+            signal["quality_score"] = quality_result["value"]
+            signal["quality_breakdown"] = quality_result
+            return quality_result
+
+        # Normal profile (includes ML component if available)
+        features = signal.get('features', {}) or {}
+
+        def _get_val(primary, secondary=None):
+            return primary if primary is not None else secondary
+
+        quality_features = {
+            "ml_component": signal.get("ml_confidence"),
+            "volume_component": _get_val(features.get("volume_score"), signal.get("volume_24h")),
+            "momentum_component": features.get("momentum"),
+            "spread_component": features.get("spread"),
+        }
+        quality_result = compute_quality(quality_features, logger)
+        signal["quality_score"] = quality_result["value"]
+        signal["quality_breakdown"] = quality_result
+        return quality_result
+
     # ===============================================================
     # ====================   DÜZELTİLMİŞ METOT   ====================
     # ===============================================================
@@ -888,10 +1175,34 @@ class StrategyCoordinator:
         """
         Process incoming signals from registered strategies.
         (GÜNCELLENDİ: 'self.logger' -> 'logger' hatası düzeltildi)
+        
+        Ordering (full path, default entry/reentry):
+          1) Validate format
+          2) Enrich signal
+          3) Volume gating
+          4) Duplicate check
+          5) ML enhancement
+          6) Conflict resolution
+          7) Risk sizing/validation
+          8) Quality calc + queue
+        
+        For scale_in when pyramiding is enabled, duplicate is deferred to a late stage (after risk)
+        to let RiskManager's dynamic scaling be the primary gate.
         """
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
             log_prefix = f"[{strategy_name.upper()}/{symbol}]"
+
+            # Default all signals to entry intent unless explicitly provided
+            signal.setdefault("intent", INTENT_ENTRY)
+            signal["intent"] = self._determine_intent(signal, strategy_name)
+            intent = signal.get("intent", INTENT_ENTRY)
+
+            cfg_source = self.config if isinstance(self.config, dict) else {}
+            if hasattr(self.portfolio_manager, "cfg") and isinstance(getattr(self.portfolio_manager, "cfg"), dict):
+                cfg_source = getattr(self.portfolio_manager, "cfg")
+            pyramiding_cfg = cfg_source.get("pyramiding", {}) if isinstance(cfg_source, dict) else {}
+            pyramiding_enabled = bool(pyramiding_cfg.get("enabled", False))
 
             self.processing_stats['total_signals'] += 1
             self.processing_stats['last_signal_time'] = datetime.now(timezone.utc)
@@ -977,11 +1288,15 @@ class StrategyCoordinator:
                     return {'status': 'rejected', 'reason': rejection_reason, 'stage': 'volume_gating'}
             
             # Adım 3: Duplikasyon ve Cooldown Kontrolü
-            is_valid_duplicate, duplicate_reason = self.validate_duplicate(enriched_signal, strategy_name)
-            if not is_valid_duplicate:
-                self.processing_stats['rejected_signals'] += 1
-                self.processing_stats['duplicate_rejections'] += 1
-                return {'status': 'rejected', 'reason': duplicate_reason, 'stage': 'duplicate_validation'}
+            run_duplicate_early = not (pyramiding_enabled and intent == INTENT_SCALE_IN)
+            duplicate_checked = False
+            if run_duplicate_early:
+                is_valid_duplicate, duplicate_reason = self.validate_duplicate(enriched_signal, strategy_name)
+                duplicate_checked = True
+                if not is_valid_duplicate:
+                    self.processing_stats['rejected_signals'] += 1
+                    self.processing_stats['duplicate_rejections'] += 1
+                    return {'status': 'rejected', 'reason': duplicate_reason, 'stage': 'duplicate_validation'}
             
             # Adım 4: ML ile Sinyali Geliştirme
             if hasattr(self, 'ml_integration') and self.ml_integration:
@@ -1008,29 +1323,23 @@ class StrategyCoordinator:
                     return {'status': 'rejected', 'reason': resolution['reason'], 'stage': 'conflict_resolution'}
             
             # Adım 6: Risk Değerlendirmesi
-            risk_assessment = await self._assess_signal_risk(enriched_signal)
+            quality_result = self._compute_signal_quality(enriched_signal)
+
+            risk_assessment = await self._assess_signal_risk(enriched_signal, strategy_name)
             if not risk_assessment['acceptable']:
                 self.processing_stats['rejected_signals'] += 1
                 # --- TELEMETRİ: Ret Sebebi (DÜZELTİLDİ) ---
                 logger.warning(f"🛡️  {log_prefix} REJECTED (Risk Check): {risk_assessment['reason']}")
                 return {'status': 'rejected', 'reason': risk_assessment['reason'], 'stage': 'risk_assessment'}
-            
-            # --- Quality Calculation ---
-            features = enriched_signal.get('features', {})
-            
-            def _get_val(primary, secondary=None):
-                return primary if primary is not None else secondary
 
-            quality_features = {
-                "ml_component": enriched_signal.get("ml_confidence"),
-                "volume_component": _get_val(features.get("volume_score"), enriched_signal.get("volume_24h")),
-                "momentum_component": features.get("momentum"),
-                "spread_component": features.get("spread")
-            }
-            quality_result = compute_quality(quality_features, logger)
-            enriched_signal["quality_score"] = quality_result["value"]
-            enriched_signal["quality_breakdown"] = quality_result
-
+            # Late duplicate check for scale-in when pyramiding is enabled (soft guard)
+            if not duplicate_checked:
+                is_valid_duplicate, duplicate_reason = self.validate_duplicate(enriched_signal, strategy_name)
+                if not is_valid_duplicate:
+                    self.processing_stats['rejected_signals'] += 1
+                    self.processing_stats['duplicate_rejections'] += 1
+                    return {'status': 'rejected', 'reason': duplicate_reason, 'stage': 'duplicate_validation'}
+            
             # Adim 7: Sinyali ve Rota Bilgisini Hazirla
             routing_result = self._route_signal(enriched_signal, risk_assessment)
             signal_id = self._generate_signal_id(strategy_name, enriched_signal)
@@ -1278,6 +1587,9 @@ class StrategyCoordinator:
                     # Bypass confirmed - skip RL veto and return signal with minimal ML enhancement
                     signal['bypass_triggered'] = True
                     signal['bypass_rsi'] = rsi_value
+                    signal.setdefault('extreme_bypass', True)
+                    signal.setdefault('extreme_type', signal.get('extreme_type'))
+                    signal.setdefault('extreme_rsi', rsi_value)
                     signal.setdefault('ml_confidence', 0.8)
                     signal['ml_strength'] = signal.get('ml_strength', signal.get('strength'))
                     self.processing_stats['bypass_approvals'] += 1
@@ -1904,6 +2216,9 @@ class StrategyCoordinator:
                 f"   Bypassing all ML/RL checks - SIGNAL CONFIRMED\n"
                 f"   Reason: Extreme oversold condition detected"
             )
+            signal["extreme_bypass"] = True
+            signal["extreme_type"] = "oversold"
+            signal["extreme_rsi"] = rsi_value
             if force_swap_enabled:
                 self._prepare_force_swap_slot(signal, symbol)
             return True
@@ -1919,6 +2234,9 @@ class StrategyCoordinator:
                 f"   Bypassing all ML/RL checks - SIGNAL CONFIRMED\n"
                 f"   Reason: Extreme overbought condition detected"
             )
+            signal["extreme_bypass"] = True
+            signal["extreme_type"] = "overbought"
+            signal["extreme_rsi"] = rsi_value
             if force_swap_enabled:
                 self._prepare_force_swap_slot(signal, symbol)
             return True
@@ -1962,6 +2280,8 @@ class StrategyCoordinator:
         if not positions or len(positions) < max_limit:
             return
 
+        incoming_side = str(signal.get('side', '')).lower()
+
         def _pnl_value(position: Dict[str, Any]) -> float:
             pnl_val = position.get('unrealized_pnl_pct')
             if pnl_val is None:
@@ -1977,7 +2297,35 @@ class StrategyCoordinator:
         if not target_id:
             return
 
-        signal['intent'] = 'force_swap'
+        target_side = str(weakest.get('side', '')).lower()
+        same_direction = incoming_side and target_side and incoming_side == target_side
+
+        if same_direction:
+            cfg_source = self.config if isinstance(self.config, dict) else {}
+            if hasattr(self.portfolio_manager, "cfg") and isinstance(getattr(self.portfolio_manager, "cfg"), dict):
+                cfg_source = getattr(self.portfolio_manager, "cfg")
+            pyramiding_cfg = cfg_source.get("pyramiding", {}) if isinstance(cfg_source, dict) else {}
+            pyramiding_enabled = bool(pyramiding_cfg.get("enabled", False))
+
+            if pyramiding_enabled:
+                signal['intent'] = INTENT_SCALE_IN
+                signal.pop('swap_target_id', None)
+                logger.info(
+                    "⚖️ [EXTREME-SAME-SIDE] Keeping position open; converting bypass signal to SCALE_IN | sym=%s | side=%s",
+                    symbol,
+                    incoming_side,
+                )
+            else:
+                signal['intent'] = INTENT_HOLD
+                signal.pop('swap_target_id', None)
+                logger.info(
+                    "⚖️ [EXTREME-SAME-SIDE] Keeping position open; marking bypass signal as HOLD | sym=%s | side=%s",
+                    symbol,
+                    incoming_side,
+                )
+            return
+
+        signal['intent'] = INTENT_FORCE_SWAP
         signal['swap_target_id'] = target_id
         logger.warning(
             "⚡ [EXTREME-SWAP] Marking %s on %s for closure before opening new extreme signal (PnL=%.2f%%)",
@@ -2041,7 +2389,7 @@ class StrategyCoordinator:
                     if isinstance(open_position, dict) and open_position.get('position_id'):
                         existing_side = str(open_position.get('side', '')).lower()
                         if existing_side and side and existing_side != side:
-                            winner['intent'] = 'reverse'
+                            winner['intent'] = INTENT_REVERSE
                             winner['reverse_from_position_id'] = open_position['position_id']
                             logger.info(
                                 "[CONFLICT-RESOLUTION] Marking winning signal %s as reverse of position %s on %s",
@@ -2431,7 +2779,10 @@ class StrategyCoordinator:
                     quality_score = float(ml_context.get('quality_score', 0.0) or 0.0)
                     if quality_score > 1:
                         quality_score /= 100.0
-                    signal['quality_score'] = max(0.0, min(1.0, quality_score))
+                    ml_quality = max(0.0, min(1.0, quality_score))
+                    signal['ml_quality_score'] = ml_quality
+                    if 'quality_score' not in signal:
+                        signal['quality_score'] = ml_quality
                     logger.debug(
                         "✅ ML metrics added: conf=%.2f | quality=%.2f",
                         signal['ml_confidence'],
@@ -2442,17 +2793,21 @@ class StrategyCoordinator:
                     signal['ml_confidence'] = 0.5
                     signal['regime_name'] = 'neutral'
                     signal['regime_confidence'] = 0.3
-                    signal['quality_score'] = 0.0
+                    signal['ml_quality_score'] = 0.0
+                    if 'quality_score' not in signal:
+                        signal['quality_score'] = 0.0
                     logger.debug("⚠️ Using ML fallback values")
             else:
                 signal['ml_confidence'] = 0.5
                 signal['regime_name'] = 'neutral'
                 signal['regime_confidence'] = 0.3
+                signal['ml_quality_score'] = signal.get('ml_quality_score', 0.0)
                 if 'quality_score' not in signal:
-                    signal['quality_score'] = 0.0
+                    signal['quality_score'] = signal.get('ml_quality_score', 0.0)
         except Exception as e:
             logger.debug(f"ML enrichment error: {e}")
             signal.update({'ml_confidence': 0.5, 'regime_name': 'neutral', 'regime_confidence': 0.3})
+            signal['ml_quality_score'] = signal.get('ml_quality_score', 0.0)
             if 'quality_score' not in signal:
                 signal['quality_score'] = 0.0
         
@@ -2574,7 +2929,7 @@ class StrategyCoordinator:
         
         return signal
     
-    async def _assess_signal_risk(self, signal: Dict) -> Dict[str, Any]:
+    async def _assess_signal_risk(self, signal: Dict, strategy_name: str) -> Dict[str, Any]:
         """
         UPDATED: Use AdvancedPositionSizing instead of risk_manager for sizing.
         Also enriches signals with ML/RL intelligence for dynamic R/R calculation.
@@ -2623,6 +2978,15 @@ class StrategyCoordinator:
                     'reason': 'Unable to calculate valid position size',
                     'metrics': sized_signal.get('sizing_meta', {})
                 }
+
+            logger.info(
+                "[QUALITY-BEFORE-RISK] strat=%s | sym=%s | intent=%s | extreme_bypass=%s | quality=%.3f",
+                strategy_name,
+                sized_signal.get('symbol'),
+                sized_signal.get('intent'),
+                sized_signal.get('extreme_bypass', False),
+                float(sized_signal.get('quality_score', 0.0) or 0.0),
+            )
 
             # Validate AND enforce planner limits via RiskManager
             allowed, final_size, meta = await self.risk_manager.size_and_validate_position(

@@ -16,6 +16,8 @@ from unittest.mock import MagicMock, Mock
 
 # Add src and scripts to path for imports
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Ensure repository root is on path so `import src....` works
+sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / 'src'))
 sys.path.insert(0, str(REPO_ROOT / 'scripts'))
 

@@ -32,6 +32,8 @@ import argparse
 import time
 import inspect
 import json
+import signal
+import functools
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
@@ -1014,6 +1016,10 @@ class LiveTradingLauncher:
         self.health_monitor = None
         self.ws_optimizer = None
         self._cleanup_completed = False
+        self._shutdown_requested = False
+        self._cleanup_task = None
+        self._shutdown_complete_event = None
+        self._signal_handlers_registered = False
         self._has_bingx_credentials = False
         self._cached_exchange_status = None
         self._cached_ws_status = None
@@ -1163,6 +1169,15 @@ class LiveTradingLauncher:
         """Return the source used for resolving capital."""
 
         return self._capital_source
+
+    def _ensure_shutdown_event(self):
+        """Create the shutdown completion event if a loop is running."""
+        if self._shutdown_complete_event is None:
+            try:
+                self._shutdown_complete_event = asyncio.Event()
+            except RuntimeError:
+                # No running loop; will be created later when a loop is available
+                logger.warning("Shutdown event could not be created (no running event loop yet).")
     
     async def cleanup(self, signum=None, frame=None):
         """
@@ -1178,7 +1193,11 @@ class LiveTradingLauncher:
         """
         if self._cleanup_completed:
             logger.info("Cleanup already completed, skipping.")
+            if self._shutdown_complete_event:
+                self._shutdown_complete_event.set()
             return
+
+        self._ensure_shutdown_event()
 
         logger.info("\n" + "="*70)
         logger.info("🧹 STARTING GRACEFUL SHUTDOWN")
@@ -1316,6 +1335,86 @@ class LiveTradingLauncher:
             for i, err in enumerate(errors, 1):
                 logger.warning(f"  - Error {i}: {err}")
         logger.info("="*70)
+
+        if self._shutdown_complete_event:
+            self._shutdown_complete_event.set()
+    
+    async def request_shutdown(self, reason: str, signal_name: Optional[str] = None) -> None:
+        """
+        Unified manual/automatic shutdown trigger that converges on cleanup().
+
+        Args:
+            reason: Human-readable reason (e.g., 'signal', 'manual', 'duration')
+            signal_name: Optional signal name (e.g., 'SIGTERM')
+        """
+        if self._cleanup_completed or self._shutdown_requested:
+            logger.info("Shutdown already in progress or completed; ignoring duplicate request.")
+            return
+
+        self._shutdown_requested = True
+        logger.info("Shutdown requested (reason=%s%s)",
+                    reason,
+                    f", signal={signal_name}" if signal_name else "")
+
+        self._ensure_shutdown_event()
+
+        # Halt new work, but keep connections alive for position closure
+        if self.coordinator:
+            try:
+                self.coordinator.is_running = False
+                if hasattr(self.coordinator, 'emergency_stop_triggered'):
+                    self.coordinator.emergency_stop_triggered = True
+                await self.coordinator.stop_system()
+            except Exception as exc:
+                logger.error("Error while initiating coordinator stop: %s", exc, exc_info=True)
+
+        # If cleanup already scheduled, do not schedule twice
+        if self._cleanup_task and not self._cleanup_task.done():
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+            self._cleanup_task = loop.create_task(self.cleanup())
+        except RuntimeError:
+            # Fallback (should not happen in normal async execution)
+            await self.cleanup()
+
+    def _register_signal_handlers(self) -> None:
+        """
+        Register OS signal handlers to trigger graceful shutdown.
+        Linux: uses loop.add_signal_handler
+        Windows fallback: uses signal.signal (limited to SIGINT)
+        """
+        if self._signal_handlers_registered:
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("Cannot register signal handlers before event loop is running.")
+            return
+
+        def _schedule_shutdown(sig_name: str) -> None:
+            try:
+                loop.create_task(self.request_shutdown(reason="signal", signal_name=sig_name))
+            except RuntimeError:
+                # Loop may be closing; nothing else to do
+                pass
+
+        for sig_name in ("SIGTERM", "SIGINT"):
+            if not hasattr(signal, sig_name):
+                continue
+            sig = getattr(signal, sig_name)
+            try:
+                loop.add_signal_handler(sig, functools.partial(_schedule_shutdown, sig_name))
+                self._signal_handlers_registered = True
+            except (NotImplementedError, RuntimeError):
+                # Fallback: best-effort using signal.signal (works for SIGINT on Windows)
+                try:
+                    signal.signal(sig, lambda *_: loop.call_soon_threadsafe(_schedule_shutdown, sig_name))
+                    self._signal_handlers_registered = True
+                except Exception as exc:
+                    logger.warning("Failed to register handler for %s: %s", sig_name, exc)
     
     def _load_environment(self) -> bool:
         """
@@ -2577,6 +2676,13 @@ class LiveTradingLauncher:
         """
         exit_code = 0
         try:
+            # Reset shutdown state for this run
+            self._shutdown_requested = False
+            self._cleanup_completed = False
+            self._cleanup_task = None
+            self._shutdown_complete_event = None
+            self._ensure_shutdown_event()
+            self._register_signal_handlers()
             # ===================================================================
             # ADIM 1: ORTAM VE BORSA BAĞLANTISINI HAZIRLA
             # ===================================================================
@@ -2672,9 +2778,14 @@ class LiveTradingLauncher:
             return 1
         
         finally:
-            if not self._cleanup_completed:
+            if self._cleanup_task and not self._cleanup_task.done():
+                await self._cleanup_task
+            elif not self._cleanup_completed:
                 logger.info("Performing final cleanup in _run_once...")
                 await self.cleanup()
+
+            if self._shutdown_complete_event:
+                await self._shutdown_complete_event.wait()
     
     async def _run_with_auto_restart(self, duration: Optional[float] = None) -> int:
         """

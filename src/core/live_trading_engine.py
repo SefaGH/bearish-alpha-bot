@@ -21,6 +21,7 @@ from collections import defaultdict, deque
 from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 from datetime import datetime, timezone
 from enum import Enum
+from src.core.signal_intents import INTENT_ENTRY, INTENT_FORCE_SWAP, INTENT_REVERSE
 
 from core.logger import get_current_run_id
 
@@ -372,7 +373,7 @@ class LiveTradingEngine:
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
             signal_id = signal.get('signal_id')
-            intent = signal.get('intent')
+            intent = signal.get('intent', INTENT_ENTRY)
 
             sizing_meta = signal.get('sizing_meta') or {}
             risk_assessment_payload = signal.get('risk_assessment')
@@ -580,7 +581,7 @@ class LiveTradingEngine:
             # that position BEFORE opening the new one. This keeps
             # trade history and exposure clean while still respecting
             # intent-aware risk gating.
-            if intent == 'reverse':
+            if intent == INTENT_REVERSE:
                 reverse_from = signal.get('reverse_from_position_id')
                 if reverse_from:
                     logger.info(
@@ -614,7 +615,7 @@ class LiveTradingEngine:
                             'reason': f"Exception while closing source position {reverse_from}: {reverse_error}",
                             'stage': 'reverse_close',
                         }
-            elif intent == 'force_swap':
+            elif intent == INTENT_FORCE_SWAP:
                 swap_target = signal.get('swap_target_id')
                 if swap_target:
                     logger.warning(

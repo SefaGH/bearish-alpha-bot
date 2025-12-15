@@ -1,0 +1,22 @@
+# Example paper-mode overrides for controlled pyramiding.
+# Keep this file as a template; do not commit live overrides here.
+
+pyramiding:
+  enabled: true
+  max_layers_per_symbol: 2
+  min_scale_in_quality: 0.82
+  min_scale_in_unrealized_pnl_pct: 0.006
+  min_scale_in_distance_pct: 0.005
+
+risk:
+  concurrent_limits:
+    max_positions_per_symbol: 1
+    dynamic_scaling:
+      enabled: true
+      quality_threshold: 0.8
+      min_unrealized_pnl_pct: 0.005
+      min_distance_pct: 0.005
+      max_additional_positions: 2
+  queue:
+    max_pending_per_symbol: 1
+    max_pending_scale_in_per_symbol: 1

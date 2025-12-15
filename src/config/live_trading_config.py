@@ -615,10 +615,12 @@ class LiveTradingConfiguration:
             'max_queue_depth': 50,
             'batch_dequeue': 3,
             'max_pending_per_symbol': 1,
+            'max_pending_scale_in_per_symbol': 0,
         }
         normalized = {}
         for key, default in defaults.items():
-            normalized[key] = self._coerce_int(queue_cfg.get(key, default), default, f"risk.queue.{key}", minimum=1)
+            minimum = 1 if key != 'max_pending_scale_in_per_symbol' else 0
+            normalized[key] = self._coerce_int(queue_cfg.get(key, default), default, f"risk.queue.{key}", minimum=minimum)
 
         weight_defaults = {
             'explicit_priority': 0.4,
@@ -911,6 +913,21 @@ class LiveTradingConfiguration:
         ):
             max_notional_usd = get_nested(config, ['risk', 'computed_max_notional_usd'], 0.0)
         logger.info(f"   Max Notional Per Trade: {max_notional_usd:.2f} USDT")
+
+        # Pyramiding summary
+        logger.info("Pyramiding Settings:")
+        pyramiding_enabled = bool(get_nested(config, ['pyramiding', 'enabled'], False))
+        logger.info(f"   Enabled: {pyramiding_enabled}")
+        logger.info(f"   Max layers per symbol: {get_nested(config, ['pyramiding', 'max_layers_per_symbol'], 'N/A')}")
+        logger.info(
+            f"   Min scale-in quality: {get_nested(config, ['pyramiding', 'min_scale_in_quality'], 'N/A')} | "
+            f"Min scale-in PnL pct: {get_nested(config, ['pyramiding', 'min_scale_in_unrealized_pnl_pct'], 'N/A')} | "
+            f"Min scale-in distance pct: {get_nested(config, ['pyramiding', 'min_scale_in_distance_pct'], 'N/A')}"
+        )
+        logger.info(
+            f"   Queue max pending scale_in per symbol: "
+            f"{get_nested(config, ['risk', 'queue', 'max_pending_scale_in_per_symbol'], 'N/A')}"
+        )
         
         logger.info("="*70)
 

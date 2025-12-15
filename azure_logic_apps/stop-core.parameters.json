@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": { "value": "westeurope" },
+    "logicAppName": { "value": "bearish-bot-stop-core" },
+
+    "subscriptionId": { "value": "74ab10ba-c96d-449e-97cb-ee4f9c0de714" },
+    "vmResourceGroup": { "value": "TradeBot" },
+    "vmName": { "value": "BearishAlphaBot-VM-01" },
+
+    "containerName": { "value": "bearish-bot" },
+    "defaultStopTimeoutSeconds": { "value": 90 },
+
+    "notification_recipient_email": { "value": "sefaasar@hotmail.com" },
+    "sender_email_address": { "value": "DoNotReply@dedf8228-9b97-4d99-a4a8-12ea32134c1c.azurecomm.net" },
+
+    "$connections": {
+      "value": {
+        "acsemail": {
+          "id": "/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/providers/Microsoft.Web/locations/westeurope/managedApis/acsemail",
+          "connectionId": "/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/TradeBot/providers/Microsoft.Web/connections/acsemail",
+          "connectionName": "acsemail",
+          "connectionProperties": {}
+        }
+      }
+    }
+  }
+}

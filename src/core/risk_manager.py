@@ -14,6 +14,14 @@ import numpy as np
 
 # Import RiskConfiguration and related dataclasses for type-safe configuration
 from config.risk_config import RiskConfiguration, ConcurrentRiskLimitsConfig
+from src.core.signal_intents import (
+    INTENT_ENTRY,
+    INTENT_FORCE_SWAP,
+    INTENT_REDUCE,
+    INTENT_REVERSE,
+    INTENT_SCALE_IN,
+    MAINTENANCE_INTENTS,
+)
 
 # PHASE 3: Import risk rules framework
 try:
@@ -331,8 +339,18 @@ class RiskManager:
         symbol = signal.get('symbol') if signal else None
 
         # Intent-aware bypass: never block de-risking operations
-        intent = (signal or {}).get('intent') if isinstance(signal, dict) else None
-        is_derisking_intent = intent in {"close", "reduce", "reverse", "force_swap"}
+        intent = (signal or {}).get('intent', INTENT_ENTRY) if isinstance(signal, dict) else INTENT_ENTRY
+        is_derisking_intent = intent in MAINTENANCE_INTENTS
+
+        pyramiding_cfg = {}
+        try:
+            if portfolio_manager and hasattr(portfolio_manager, "cfg"):
+                cfg_source = portfolio_manager.cfg or {}
+                if isinstance(cfg_source, dict):
+                    pyramiding_cfg = cfg_source.get("pyramiding", {}) or {}
+        except Exception:
+            pyramiding_cfg = {}
+        pyramiding_enabled = bool(pyramiding_cfg.get("enabled", False))
 
         if is_derisking_intent:
             logger.info(
@@ -353,10 +371,20 @@ class RiskManager:
                 active_positions = active_positions or {}
                 symbol_count = self._count_positions_for_symbol(active_positions, symbol)
             if symbol_count >= limits.max_positions_per_symbol:
-                can_scale, scale_reason = self._can_dynamic_scale(signal, portfolio_manager, symbol, symbol_count, limits)
+                can_scale, scale_reason = self._can_dynamic_scale(
+                    signal,
+                    portfolio_manager,
+                    symbol,
+                    symbol_count,
+                    limits,
+                    intent=intent,
+                    pyramiding_cfg=pyramiding_cfg,
+                )
                 if can_scale:
                     symbol_limit_override_reason = scale_reason
                 else:
+                    if scale_reason:
+                        return False, scale_reason
                     return False, f"Max positions for {symbol} reached ({symbol_count}/{limits.max_positions_per_symbol})"
 
         projected_heat = risk_metrics.get('portfolio_heat') if isinstance(risk_metrics, dict) else None
@@ -375,6 +403,8 @@ class RiskManager:
         symbol: Optional[str],
         symbol_count: int,
         limits: ConcurrentRiskLimitsConfig,
+        intent: str = INTENT_ENTRY,
+        pyramiding_cfg: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, str]:
         """Determine whether dynamic scaling rules permit exceeding per-symbol limits."""
         if not symbol or portfolio_manager is None:
@@ -385,6 +415,8 @@ class RiskManager:
         if not scaling_cfg.get('enabled', True):
             return False, ""
 
+        pyramiding_enabled = bool(pyramiding_cfg.get("enabled", False)) if isinstance(pyramiding_cfg, dict) else False
+
         try:
             quality_score = float(signal.get('quality_score', 0) or 0)
         except (TypeError, ValueError):
@@ -393,21 +425,37 @@ class RiskManager:
         if quality_score > 1:
             quality_score /= 100.0
 
-        quality_threshold = float(scaling_cfg.get('quality_threshold', 0.80))
-        pnl_threshold = float(scaling_cfg.get('min_unrealized_pnl_pct', 0.005))
+        base_quality_threshold = float(scaling_cfg.get('quality_threshold', 0.80))
+        base_pnl_threshold = float(scaling_cfg.get('min_unrealized_pnl_pct', 0.005))
+        base_distance_pct = float(scaling_cfg.get('min_distance_pct', 0.005))
         max_extra = int(scaling_cfg.get('max_additional_positions', 2))
         max_extra = max(0, max_extra)
-        min_distance_pct = float(scaling_cfg.get('min_distance_pct', 0.005))
 
-        is_high_quality = quality_score >= quality_threshold
+        eff_quality_threshold = base_quality_threshold
+        eff_pnl_threshold = base_pnl_threshold
+        eff_distance_pct = base_distance_pct
+        max_layers = None
+
+        if pyramiding_enabled and intent == INTENT_SCALE_IN and isinstance(pyramiding_cfg, dict):
+            eff_quality_threshold = float(pyramiding_cfg.get('min_scale_in_quality', base_quality_threshold))
+            eff_pnl_threshold = float(pyramiding_cfg.get('min_scale_in_unrealized_pnl_pct', base_pnl_threshold))
+            eff_distance_pct = float(pyramiding_cfg.get('min_scale_in_distance_pct', base_distance_pct))
+            try:
+                max_layers = int(pyramiding_cfg.get('max_layers_per_symbol'))
+                if max_layers is not None and max_layers < 1:
+                    max_layers = None
+            except Exception:
+                max_layers = None
+
+        is_high_quality = quality_score >= eff_quality_threshold
         if not is_high_quality:
             logger.info(
                 "📉 [RISK-SCALING] Denied scale-in for %s | quality=%.2f < %.2f",
                 symbol,
                 quality_score,
-                quality_threshold,
+                eff_quality_threshold,
             )
-            return False, ""
+            return False, "scale_in_quality_below_threshold"
 
         if max_extra == 0:
             logger.info("📉 [RISK-SCALING] Dynamic scaling disabled via config (max_extra=0)")
@@ -459,16 +507,16 @@ class RiskManager:
                 pnl_values.append(0.0)
 
         avg_pnl_pct = sum(pnl_values) / len(pnl_values) if pnl_values else 0.0
-        is_profitable = avg_pnl_pct >= pnl_threshold
+        is_profitable = avg_pnl_pct >= eff_pnl_threshold
 
         if not is_profitable:
             logger.info(
                 "📉 [RISK-SCALING] Denied scale-in for %s | avgPnL=%.2f%% < %.2f%%",
                 symbol,
                 avg_pnl_pct * 100,
-                pnl_threshold * 100,
+                eff_pnl_threshold * 100,
             )
-            return False, ""
+            return False, "scale_in_pnl_below_threshold"
 
         current_entry = None
         if isinstance(signal, dict):
@@ -480,27 +528,32 @@ class RiskManager:
         except (TypeError, ValueError):
             current_entry = None
 
+        price_diff_pct = None
         if (
-            min_distance_pct > 0
+            eff_distance_pct > 0
             and last_entry_price
             and current_entry
             and last_entry_price > 0
         ):
             price_diff_pct = abs(current_entry - last_entry_price) / last_entry_price
-            if price_diff_pct < min_distance_pct:
+            if price_diff_pct < eff_distance_pct:
                 logger.info(
                     "📉 [RISK-SCALING] Denied scale-in for %s | last=%.2f, new=%.2f, diff=%.2f%% < %.2f%%",
                     symbol,
                     last_entry_price,
                     current_entry,
                     price_diff_pct * 100,
-                    min_distance_pct * 100,
+                    eff_distance_pct * 100,
                 )
-                return False, ""
+                return False, "scale_in_distance_below_threshold"
 
         max_allowed = limits.max_positions_per_symbol + max_extra
         if max_allowed <= limits.max_positions_per_symbol:
             max_allowed = limits.max_positions_per_symbol
+        if pyramiding_enabled and intent == INTENT_SCALE_IN and max_layers:
+            max_allowed = min(max_allowed, max_layers)
+            if max_allowed < limits.max_positions_per_symbol:
+                max_allowed = limits.max_positions_per_symbol
 
         if symbol_count >= max_allowed:
             logger.info(
@@ -509,16 +562,32 @@ class RiskManager:
                 symbol_count,
                 max_allowed,
             )
+            if pyramiding_enabled and intent == INTENT_SCALE_IN and max_layers:
+                return False, "pyramiding_max_layers_reached"
             return False, ""
 
-        logger.info(
-            "📈 [RISK-SCALING] Allowing scale-in for %s | quality=%.2f | avgPnL=%.2f%% | slots=%d/%d",
-            symbol,
-            quality_score,
-            avg_pnl_pct * 100,
-            symbol_count,
-            max_allowed,
-        )
+        if intent == INTENT_SCALE_IN and pyramiding_enabled:
+            logger.info(
+                "[PYRAMID] scale-in allowed | sym=%s | slots=%d/%d | quality=%.2f/%.2f | avgPnL=%.2f%%/%.2f%% | dist=%s/%s",
+                symbol,
+                symbol_count,
+                max_allowed,
+                quality_score,
+                eff_quality_threshold,
+                avg_pnl_pct * 100,
+                eff_pnl_threshold * 100,
+                f"{price_diff_pct*100:.2f}%" if price_diff_pct is not None else "n/a",
+                f"{eff_distance_pct*100:.2f}%",
+            )
+        else:
+            logger.info(
+                "📈 [RISK-SCALING] Allowing scale-in for %s | quality=%.2f | avgPnL=%.2f%% | slots=%d/%d",
+                symbol,
+                quality_score,
+                avg_pnl_pct * 100,
+                symbol_count,
+                max_allowed,
+            )
         return True, "OK (Dynamic Scaling Allowed)"
 
     def can_open_new_position(

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": { "value": "westeurope" },
+    "logicAppName": { "value": "bearish-bot-stop-api" },
+    "defaultStopTimeoutSeconds": { "value": 90 },
+    "stopCoreWorkflowResourceId": {
+      "value": "/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/TradeBot/providers/Microsoft.Logic/workflows/bearish-bot-stop-core"
+    }
+  }
+}

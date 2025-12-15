@@ -153,6 +153,7 @@ risk:
     max_queue_depth: 50             # Override with: SIGNAL_QUEUE_MAX_DEPTH
     batch_dequeue: 3                # Override with: SIGNAL_QUEUE_BATCH_DEQUEUE (signals pulled per cycle)
     max_pending_per_symbol: 1       # Override with: SIGNAL_QUEUE_MAX_PENDING_PER_SYMBOL
+    max_pending_scale_in_per_symbol: 2 # Override with: SIGNAL_QUEUE_MAX_PENDING_SCALE_IN_PER_SYMBOL (only for scale_in when pyramiding enabled)
     priority_weights:
       explicit_priority: 0.4        # Override with: SIGNAL_QUEUE_WEIGHT_PRIORITY
       risk_reward: 0.3              # Override with: SIGNAL_QUEUE_WEIGHT_RR
@@ -312,6 +313,9 @@ signals:
     cooldown_seconds: 20              # Override with: DUPLICATE_PREVENTION_COOLDOWN
     price_delta_bypass_threshold: 0.0015 # Override with: PRICE_DELTA_BYPASS_THRESHOLD
     price_delta_bypass_enabled: false # Override with: PRICE_DELTA_BYPASS_ENABLED
+    # Optional scale-in specific thresholds (defaults mirror entry for safety)
+    scale_in_min_price_change_pct: 0.0005
+    scale_in_cooldown_seconds: 20
     ml_duplicate_detection_enabled: true # Override with: DUPLICATE_ML_DETECTION_ENABLED
     dynamic_cooldown:
       enabled: true                   # Override with: DUPLICATE_DYNAMIC_COOLDOWN_ENABLED
@@ -420,6 +424,16 @@ position_management:
     check_frequency: 5                # Override with: EXIT_CHECK_FREQUENCY
   time_based_exit:
     max_position_duration: 3600       # Override with: MAX_POSITION_DURATION
+
+# ==============================================================================
+# PYRAMIDING (Shadow mode by default)
+# ==============================================================================
+pyramiding:
+  enabled: false                      # Override with: PYRAMIDING_ENABLED (shadow: no behavior change)
+  max_layers_per_symbol: 3            # Override with: PYRAMIDING_MAX_LAYERS_PER_SYMBOL
+  min_scale_in_quality: 0.80          # Override with: PYRAMIDING_MIN_SCALE_IN_QUALITY (future use)
+  min_scale_in_unrealized_pnl_pct: 0.005 # Override with: PYRAMIDING_MIN_SCALE_IN_PNL (future use)
+  min_scale_in_distance_pct: 0.005    # Override with: PYRAMIDING_MIN_SCALE_IN_DISTANCE (future use)
 
 # ==============================================================================
 # QUARANTINE SYSTEM
@@ -706,4 +720,3 @@ models:
   gemma:
     use_manifest: true                # Override with: MODEL_GEMMA_USE_MANIFEST
     shadow_mode: false                # Override with: MODEL_GEMMA_SHADOW_MODE
-

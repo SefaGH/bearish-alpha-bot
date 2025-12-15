@@ -116,7 +116,8 @@ async def test_planner_active_rejects_too_small(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_flag_gates_legacy_vs_planner(monkeypatch):
-    # Legacy path should keep raw notional; planner path should cap by capital affordability
+    # Legacy path should respect SSOT limits (including default max_notional=25% of equity);
+    # planner path should cap by capital affordability with the active flag.
     base_limits = {
         "max_position_size": 1.0,  # no pct cap
         "max_position_notional_usd": None,
@@ -143,8 +144,11 @@ async def test_flag_gates_legacy_vs_planner(monkeypatch):
     assert planner_shadow is not None  # shadow planner still computed
     assert pytest.approx(planner_shadow.planned_notional, rel=1e-6) == compute_max_affordable_notional(10, 1)
     # Legacy path output stays on raw notional (no capital cap applied)
-    assert pytest.approx(signal["notional"], rel=1e-6) == 50.0
-    assert pytest.approx(final_size_legacy, rel=1e-6) == 50.0
+    # Default RiskConfiguration injects max_position_notional_usd = 25% of equity when unset.
+    # With equity=100, legacy path clips to $25 notional (qty=25 at $1 entry).
+    legacy_final_notional = meta_legacy['limit_meta']['final_notional']
+    assert pytest.approx(legacy_final_notional, rel=1e-6) == 25.0
+    assert pytest.approx(final_size_legacy, rel=1e-6) == 25.0
     assert meta_legacy.get("planner_delta_abs") > 0
 
     # Planner (flag on) should cap by capital (available 10 → 9.5 after safety factor)
@@ -204,14 +208,15 @@ async def test_planner_notional_used_for_enqueue_display(monkeypatch):
         'symbol': 'BTC/USDT',
         'side': 'buy',
         'entry': 33.3,
-        'stop': 30.0,
+        # Tighten stop so APS risk-based notional clears the $5.00 min_notional guard
+        'stop': 32.7,
         'target': 40.0,
         'reason': 'test',
         'notional': 333.0,
         'position_size': 10.0,
     }
 
-    risk_assessment = await sc._assess_signal_risk(signal)
+    risk_assessment = await sc._assess_signal_risk(signal, signal.get('strategy_name', 'test_strategy'))
 
     assert risk_assessment['acceptable'] is True
     planner_notional = risk_assessment['metrics']['planner']['planned_notional']
@@ -263,7 +268,7 @@ async def test_legacy_notional_unchanged_when_planner_off(monkeypatch):
         'position_size': 2.0,
     }
 
-    risk_assessment = await sc._assess_signal_risk(signal)
+    risk_assessment = await sc._assess_signal_risk(signal, signal.get('strategy_name', 'test_strategy'))
 
     assert risk_assessment['acceptable'] is True
     final_notional = risk_assessment['metrics'].get('final_notional')
