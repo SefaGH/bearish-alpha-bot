@@ -141,10 +141,9 @@ async def test_bucket_high_boosts_quality_score():
     
     assert len(rm.calls) > 0
     boosted = rm.calls[0]['quality_score']
-    # Quality is recomputed via _compute_signal_quality (fallback components) after enrichment,
-    # so the downstream risk check sees the normalized fallback score (~0.08) rather than
-    # the precomputed 0.1 + volume boost. This asserts the current pipeline behavior.
-    assert boosted == pytest.approx(0.08, rel=1e-3)
+    # Quality is recomputed via the new neutral-default model; HIGH volume strength (1.2 -> 0.6)
+    # now lifts the score into a mid-range band (~0.52 here) instead of collapsing to a floor.
+    assert boosted == pytest.approx(0.52, rel=1e-3)
 
 
 @pytest.mark.parametrize(

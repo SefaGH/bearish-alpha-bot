@@ -66,168 +66,268 @@
                 "correlationId": "@coalesce(triggerBody()?['correlationId'], workflow().run.name)"
               }
             },
-
-            "Check_Container_Status": {
-              "runAfter": { "Validate_And_Default_Inputs": [ "Succeeded" ] },
+            "Acquire_Lock": {
               "type": "Http",
               "inputs": {
-                "uri": "@concat('https://management.azure.com/subscriptions/', parameters('subscriptionId'), '/resourceGroups/', parameters('vmResourceGroup'), '/providers/Microsoft.Compute/virtualMachines/', parameters('vmName'), '/runCommand?api-version=2024-07-01')",
-                "method": "POST",
-                "headers": { "Content-Type": "application/json" },
-                "body": {
-                  "commandId": "RunShellScript",
-                  "script": [
-                    "set -e",
-                    "NAME=\"@{parameters('containerName')}\"",
-                    "status=$(sudo docker inspect -f '{{.State.Status}}' \"$NAME\" 2>/dev/null || echo 'not_found')",
-                    "if [ \"$status\" = \"running\" ]; then",
-                    "  echo \"running\"",
-                    "else",
-                    "  echo \"$status\"",
-                    "fi"
-                  ]
+                "method": "PUT",
+                "uri": "https://bearishstorage.blob.core.windows.net/locks/runcommand.lock?comp=lease",
+                "headers": {
+                  "x-ms-lease-action": "acquire",
+                  "x-ms-lease-duration": "-1",
+                  "x-ms-version": "2019-02-02"
                 },
-                "authentication": {
-                  "type": "ManagedServiceIdentity",
-                  "audience": "https://management.azure.com"
-                }
-              }
-            },
-
-            "Parse_Container_Status": {
-              "runAfter": { "Check_Container_Status": [ "Succeeded", "Failed", "TimedOut" ] },
-              "type": "Compose",
-              "inputs": "@if(equals(actions('Check_Container_Status')?['status'],'Succeeded'), trim(split(split(body('Check_Container_Status')?['value']?[0]?['message'], '[stdout]')[1], '[stderr]')[0]), 'error')"
-            },
-
-            "If_Running_Stop_Container": {
-              "runAfter": { "Parse_Container_Status": [ "Succeeded" ] },
-              "type": "If",
-              "expression": {
-                "equals": [
-                  "@toLower(outputs('Parse_Container_Status'))",
-                  "running"
-                ]
+                "authentication": { "type": "ManagedServiceIdentity" }
               },
+              "runAfter": { "Validate_And_Default_Inputs": ["Succeeded"] }
+            },
+            "Critical_Section": {
+              "type": "Scope",
               "actions": {
-                "Stop_Container": {
-                  "type": "Http",
+                "Until_Check_Container_Status": {
+                  "type": "Until",
+                  "expression": "@not(equals(outputs('Compose_StatusCode_Check'), 409))",
+                  "limit": { "count": 10, "timeout": "PT5M" },
+                  "actions": {
+                    "Check_Container_Status": {
+                      "type": "Http",
+                      "inputs": {
+                        "retryPolicy": { "type": "none" },
+                        "uri": "@concat('https://management.azure.com/subscriptions/', parameters('subscriptionId'), '/resourceGroups/', parameters('vmResourceGroup'), '/providers/Microsoft.Compute/virtualMachines/', parameters('vmName'), '/runCommand?api-version=2024-07-01')",
+                        "method": "POST",
+                        "headers": { "Content-Type": "application/json" },
+                        "body": {
+                          "commandId": "RunShellScript",
+                          "script": [
+                            "set -e",
+                            "NAME=\"@{parameters('containerName')}\"",
+                            "status=$(sudo docker inspect -f '{{.State.Status}}' \"$NAME\" 2>/dev/null || echo 'not_found')",
+                            "if [ \"$status\" = \"running\" ]; then",
+                            "  echo \"running\"",
+                            "else",
+                            "  echo \"$status\"",
+                            "fi"
+                          ]
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "audience": "https://management.azure.com"
+                        }
+                      },
+                      "limit": { "timeout": "PT2M" }
+                    },
+                    "Compose_StatusCode_Check": {
+                      "type": "Compose",
+                      "inputs": "@int(coalesce(actions('Check_Container_Status')?['outputs']?['statusCode'], 0))",
+                      "runAfter": { "Check_Container_Status": ["Succeeded", "Failed"] }
+                    },
+                    "If_Conflict_Delay_Check": {
+                      "type": "If",
+                      "expression": { "and": [ { "equals": [ "@outputs('Compose_StatusCode_Check')", 409 ] } ] },
+                      "actions": { "Delay_Check": { "type": "Wait", "inputs": { "interval": { "count": 10, "unit": "Second" } } } },
+                      "runAfter": { "Compose_StatusCode_Check": ["Succeeded"] }
+                    }
+                  },
+                  "runAfter": {}
+                },
+                "Parse_Container_Status": {
+                  "runAfter": { "Until_Check_Container_Status": [ "Succeeded", "Failed", "TimedOut" ] },
+                  "type": "Compose",
+                  "inputs": "@if(equals(outputs('Check_Container_Status')?['statusCode'], 200), trim(split(split(body('Check_Container_Status')?['value']?[0]?['message'], '[stdout]')[1], '[stderr]')[0]), 'error')"
+                },
+                "If_Running_Stop_Container": {
+                  "runAfter": { "Parse_Container_Status": [ "Succeeded" ] },
+                  "type": "If",
+                  "expression": {
+                    "equals": [
+                      "@toLower(outputs('Parse_Container_Status'))",
+                      "running"
+                    ]
+                  },
+                  "actions": {
+                    "Wait_Before_Stop": {
+                      "type": "Wait",
+                      "inputs": { "interval": { "count": 5, "unit": "Second" } }
+                    },
+                    "Until_Stop_Container": {
+                      "type": "Until",
+                      "expression": "@not(equals(outputs('Compose_StatusCode_Stop'), 409))",
+                      "limit": { "count": 10, "timeout": "PT5M" },
+                      "actions": {
+                        "Stop_Container": {
+                          "type": "Http",
+                          "inputs": {
+                            "retryPolicy": { "type": "none" },
+                            "uri": "@concat('https://management.azure.com/subscriptions/', parameters('subscriptionId'), '/resourceGroups/', parameters('vmResourceGroup'), '/providers/Microsoft.Compute/virtualMachines/', parameters('vmName'), '/runCommand?api-version=2024-07-01')",
+                            "method": "POST",
+                            "headers": { "Content-Type": "application/json" },
+                            "body": {
+                              "commandId": "RunShellScript",
+                              "script": [
+                                "set -e",
+                                "NAME=\"@{parameters('containerName')}\"",
+                                "TIMEOUT=\"@{string(outputs('Validate_And_Default_Inputs')['timeoutSeconds'])}\"",
+                                "echo \"=== STOP_CORE: pre-signal launcher (docker top) ===\"",
+                                "LAUNCHER_PID=\"$(sudo docker top \"$NAME\" -eo pid,args 2>/dev/null | awk '/live_trading_launcher\\.py/ {print $1; exit}')\"",
+                                "echo \"LauncherPID=$LAUNCHER_PID\"",
+                                "if [ -n \"$LAUNCHER_PID\" ]; then",
+                                "  echo \"Found launcher PID=$LAUNCHER_PID. Sending SIGTERM...\"",
+                                "  sudo kill -TERM \"$LAUNCHER_PID\" || true",
+                                "  echo \"Waiting up to $TIMEOUT seconds for launcher to exit...\"",
+                                "  elapsed=0",
+                                "  while [ $elapsed -lt \"$TIMEOUT\" ]; do",
+                                "    if ! sudo docker top \"$NAME\" -eo pid,args 2>/dev/null | grep -q 'live_trading_launcher\\.py'; then",
+                                "      echo \"Launcher process exited after ${elapsed}s.\"",
+                                "      break",
+                                "    fi",
+                                "    sleep 2",
+                                "    elapsed=$((elapsed+2))",
+                                "  done",
+                                "else",
+                                "  echo \"Launcher PID not found via docker top.\"",
+                                "fi",
+                                "echo \"=== STOP_CORE: docker stop finalizer ===\"",
+                                "echo \"Finalizing container stop (timeout=10s)...\"",
+                                "sudo docker stop -t 10 \"$NAME\" || true",
+                                "echo \"Diagnostics:\"",
+                                "sudo docker inspect -f 'Status={{.State.Status}} ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}} FinishedAt={{.State.FinishedAt}}' \"$NAME\" 2>/dev/null || true"
+                              ]
+                            },
+                            "authentication": {
+                              "type": "ManagedServiceIdentity",
+                              "audience": "https://management.azure.com"
+                            }
+                          },
+                          "limit": { "timeout": "PT2M" }
+                        },
+                        "Compose_StatusCode_Stop": {
+                          "type": "Compose",
+                          "inputs": "@int(coalesce(actions('Stop_Container')?['outputs']?['statusCode'], 0))",
+                          "runAfter": { "Stop_Container": ["Succeeded", "Failed"] }
+                        },
+                        "If_Conflict_Delay_Stop": {
+                          "type": "If",
+                          "expression": { "and": [ { "equals": [ "@outputs('Compose_StatusCode_Stop')", 409 ] } ] },
+                          "actions": { "Delay_Stop": { "type": "Wait", "inputs": { "interval": { "count": 10, "unit": "Second" } } } },
+                          "runAfter": { "Compose_StatusCode_Stop": ["Succeeded"] }
+                        }
+                      },
+                      "runAfter": { "Wait_Before_Stop": ["Succeeded"] }
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  }
+                },
+                "Wait_Before_Verify": {
+                  "runAfter": { "If_Running_Stop_Container": [ "Succeeded", "Skipped", "Failed", "TimedOut" ] },
+                  "type": "Wait",
+                  "inputs": { "interval": { "count": 10, "unit": "Second" } }
+                },
+                "Until_Verify_Final_Status": {
+                  "type": "Until",
+                  "expression": "@not(equals(outputs('Compose_StatusCode_Verify'), 409))",
+                  "limit": { "count": 10, "timeout": "PT5M" },
+                  "actions": {
+                    "Verify_Final_Status": {
+                      "type": "Http",
+                      "inputs": {
+                        "retryPolicy": { "type": "none" },
+                        "uri": "@concat('https://management.azure.com/subscriptions/', parameters('subscriptionId'), '/resourceGroups/', parameters('vmResourceGroup'), '/providers/Microsoft.Compute/virtualMachines/', parameters('vmName'), '/runCommand?api-version=2024-07-01')",
+                        "method": "POST",
+                        "headers": { "Content-Type": "application/json" },
+                        "body": {
+                          "commandId": "RunShellScript",
+                          "script": [
+                            "set -e",
+                            "NAME=\"@{parameters('containerName')}\"",
+                            "status=$(sudo docker inspect -f '{{.State.Status}}' \"$NAME\" 2>/dev/null || echo 'not_found')",
+                            "echo \"$status\""
+                          ]
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "audience": "https://management.azure.com"
+                        }
+                      },
+                      "limit": { "timeout": "PT2M" }
+                    },
+                    "Compose_StatusCode_Verify": {
+                      "type": "Compose",
+                      "inputs": "@int(coalesce(actions('Verify_Final_Status')?['outputs']?['statusCode'], 0))",
+                      "runAfter": { "Verify_Final_Status": ["Succeeded", "Failed"] }
+                    },
+                    "If_Conflict_Delay_Verify": {
+                      "type": "If",
+                      "expression": { "and": [ { "equals": [ "@outputs('Compose_StatusCode_Verify')", 409 ] } ] },
+                      "actions": { "Delay_Verify": { "type": "Wait", "inputs": { "interval": { "count": 10, "unit": "Second" } } } },
+                      "runAfter": { "Compose_StatusCode_Verify": ["Succeeded"] }
+                    }
+                  },
+                  "runAfter": { "Wait_Before_Verify": ["Succeeded"] }
+                },
+                "Parse_Final_Status": {
+                  "runAfter": { "Until_Verify_Final_Status": [ "Succeeded", "Failed", "TimedOut" ] },
+                  "type": "Compose",
+                  "inputs": "@if(equals(outputs('Verify_Final_Status')?['statusCode'], 200), trim(split(split(body('Verify_Final_Status')?['value']?[0]?['message'], '[stdout]')[1], '[stderr]')[0]), 'error')"
+                },
+                "Send_Stop_Email": {
+                  "runAfter": { "Parse_Final_Status": [ "Succeeded" ] },
+                  "type": "ApiConnection",
                   "inputs": {
-                    "uri": "@concat('https://management.azure.com/subscriptions/', parameters('subscriptionId'), '/resourceGroups/', parameters('vmResourceGroup'), '/providers/Microsoft.Compute/virtualMachines/', parameters('vmName'), '/runCommand?api-version=2024-07-01')",
-                    "method": "POST",
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['acsemail']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/emails:sendGAVersion",
+                    "queries": { "api-version": "2023-03-31" },
+                    "body": {
+                      "senderAddress": "@parameters('sender_email_address')",
+                      "recipients": { "to": [ { "address": "@parameters('notification_recipient_email')" } ] },
+                      "content": {
+                        "subject": "@concat('🛑 Bearish Bot: Stop Requested (', outputs('Validate_And_Default_Inputs')['requestedBy'], ') - Final: ', outputs('Parse_Final_Status'))",
+                        "html": "@concat('Correlation: ', outputs('Validate_And_Default_Inputs')['correlationId'], '<br/>Reason: ', outputs('Validate_And_Default_Inputs')['reason'], '<br/>InitialStatus: ', outputs('Parse_Container_Status'), '<br/>FinalStatus: ', outputs('Parse_Final_Status'), '<br/>Time: ', utcNow())"
+                      },
+                      "importance": "High"
+                    }
+                  }
+                },
+                "Return_Result": {
+                  "runAfter": { "Send_Stop_Email": [ "Succeeded", "Failed", "Skipped" ] },
+                  "type": "Response",
+                  "kind": "Http",
+                  "inputs": {
+                    "statusCode": 200,
                     "headers": { "Content-Type": "application/json" },
                     "body": {
-                      "commandId": "RunShellScript",
-                      "script": [
-                        "set -e",
-                        "NAME=\"@{parameters('containerName')}\"",
-                        "TIMEOUT=\"@{string(outputs('Validate_And_Default_Inputs')['timeoutSeconds'])}\"",
-                        "echo \"Attempting graceful shutdown via signal injection for $NAME...\"",
-                        "LAUNCHER_PID=$(sudo docker top \"$NAME\" | grep \"live_trading_launcher.py\" | awk '{print $2}')",
-                        "if [ -n \"$LAUNCHER_PID\" ]; then",
-                        "  echo \"Found launcher PID: $LAUNCHER_PID. Sending SIGTERM...\"",
-                        "  sudo kill -TERM \"$LAUNCHER_PID\"",
-                        "  elapsed=0",
-                        "  while [ $elapsed -lt $TIMEOUT ]; do",
-                        "    if ! sudo docker ps | grep -q \"$NAME\"; then",
-                        "      echo \"Container stopped gracefully.\"",
-                        "      break",
-                        "    fi",
-                        "    sleep 1",
-                        "    elapsed=$((elapsed+1))",
-                        "  done",
-                        "else",
-                        "  echo \"Launcher process not found.\"",
-                        "fi",
-                        "echo \"Ensuring container is stopped...\"",
-                        "sudo docker stop -t 5 \"$NAME\" || true",
-                        "status2=$(sudo docker inspect -f '{{.State.Status}}' \"$NAME\" 2>/dev/null || echo 'not_found')",
-                        "echo \"FinalStatus=$status2\""
-                      ]
-                    },
-                    "authentication": {
-                      "type": "ManagedServiceIdentity",
-                      "audience": "https://management.azure.com"
+                      "status": "ok",
+                      "initialContainerStatus": "@outputs('Parse_Container_Status')",
+                      "finalContainerStatus": "@outputs('Parse_Final_Status')",
+                      "timeoutSeconds": "@outputs('Validate_And_Default_Inputs')['timeoutSeconds']",
+                      "reason": "@outputs('Validate_And_Default_Inputs')['reason']",
+                      "requestedBy": "@outputs('Validate_And_Default_Inputs')['requestedBy']",
+                      "correlationId": "@outputs('Validate_And_Default_Inputs')['correlationId']",
+                      "timestamp": "@utcNow()"
                     }
                   }
                 }
               },
-              "else": {
-                "actions": {}
-              }
+              "runAfter": { "Acquire_Lock": ["Succeeded"] }
             },
-
-            "Verify_Final_Status": {
-              "runAfter": { "If_Running_Stop_Container": [ "Succeeded", "Skipped", "Failed", "TimedOut" ] },
+            "Release_Lock": {
               "type": "Http",
               "inputs": {
-                "uri": "@concat('https://management.azure.com/subscriptions/', parameters('subscriptionId'), '/resourceGroups/', parameters('vmResourceGroup'), '/providers/Microsoft.Compute/virtualMachines/', parameters('vmName'), '/runCommand?api-version=2024-07-01')",
-                "method": "POST",
-                "headers": { "Content-Type": "application/json" },
-                "body": {
-                  "commandId": "RunShellScript",
-                  "script": [
-                    "set -e",
-                    "NAME=\"@{parameters('containerName')}\"",
-                    "status=$(sudo docker inspect -f '{{.State.Status}}' \"$NAME\" 2>/dev/null || echo 'not_found')",
-                    "echo \"$status\""
-                  ]
+                "method": "PUT",
+                "uri": "https://bearishstorage.blob.core.windows.net/locks/runcommand.lock?comp=lease",
+                "headers": {
+                  "x-ms-lease-action": "release",
+                  "x-ms-lease-id": "@outputs('Acquire_Lock')['headers']['x-ms-lease-id']",
+                  "x-ms-version": "2019-02-02"
                 },
-                "authentication": {
-                  "type": "ManagedServiceIdentity",
-                  "audience": "https://management.azure.com"
-                }
-              }
-            },
-
-            "Parse_Final_Status": {
-              "runAfter": { "Verify_Final_Status": [ "Succeeded", "Failed", "TimedOut" ] },
-              "type": "Compose",
-              "inputs": "@if(equals(actions('Verify_Final_Status')?['status'], 'Succeeded'), trim(split(split(body('Verify_Final_Status')?['value']?[0]?['message'], '[stdout]')[1], '[stderr]')[0]), 'error')"
-            },
-
-            "Send_Stop_Email": {
-              "runAfter": { "Parse_Final_Status": [ "Succeeded" ] },
-              "type": "ApiConnection",
-              "inputs": {
-                "host": {
-                  "connection": {
-                    "name": "@parameters('$connections')['acsemail']['connectionId']"
-                  }
-                },
-                "method": "post",
-                "path": "/emails:sendGAVersion",
-                "queries": { "api-version": "2023-03-31" },
-                "body": {
-                  "senderAddress": "@parameters('sender_email_address')",
-                  "recipients": { "to": [ { "address": "@parameters('notification_recipient_email')" } ] },
-                  "content": {
-                    "subject": "@concat('🛑 Bearish Bot: Stop Requested (', outputs('Validate_And_Default_Inputs')['requestedBy'], ') - Final: ', outputs('Parse_Final_Status'))",
-                    "html": "@concat('Correlation: ', outputs('Validate_And_Default_Inputs')['correlationId'], '<br/>Reason: ', outputs('Validate_And_Default_Inputs')['reason'], '<br/>InitialStatus: ', outputs('Parse_Container_Status'), '<br/>FinalStatus: ', outputs('Parse_Final_Status'), '<br/>Time: ', utcNow())"
-                  },
-                  "importance": "High"
-                }
-              }
-            },
-
-            "Return_Result": {
-              "runAfter": { "Send_Stop_Email": [ "Succeeded", "Failed", "Skipped" ] },
-              "type": "Response",
-              "kind": "Http",
-              "inputs": {
-                "statusCode": 200,
-                "headers": { "Content-Type": "application/json" },
-                "body": {
-                  "status": "ok",
-                  "initialContainerStatus": "@outputs('Parse_Container_Status')",
-                  "finalContainerStatus": "@outputs('Parse_Final_Status')",
-                  "timeoutSeconds": "@outputs('Validate_And_Default_Inputs')['timeoutSeconds']",
-                  "reason": "@outputs('Validate_And_Default_Inputs')['reason']",
-                  "requestedBy": "@outputs('Validate_And_Default_Inputs')['requestedBy']",
-                  "correlationId": "@outputs('Validate_And_Default_Inputs')['correlationId']",
-                  "timestamp": "@utcNow()"
-                }
-              }
+                "authentication": { "type": "ManagedServiceIdentity" }
+              },
+              "runAfter": { "Critical_Section": ["Succeeded", "Failed", "Skipped", "TimedOut"] }
             }
           }
         },

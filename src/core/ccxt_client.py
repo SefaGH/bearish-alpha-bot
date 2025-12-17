@@ -8,7 +8,9 @@ import inspect
 import pandas as pd
 import ssl
 import certifi
-from typing import Dict, Any, List, Optional
+import os
+import random
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from .bingx_authenticator import BingXAuthenticator
 
@@ -41,6 +43,13 @@ class CcxtClient:
         
         ex_cls = getattr(ccxt, ex_name)
         params = EX_DEFAULTS | (creds or {})
+
+        # Env-driven timeout for CCXT (fails fast to allow retries upstream)
+        try:
+            timeout_ms = int(os.getenv("CCXT_TIMEOUT_MS", "5000"))
+        except (TypeError, ValueError):
+            timeout_ms = 5000
+        params["timeout"] = timeout_ms
         
         if ex_name in ['kucoin', 'kucoinfutures']:
             params['sandbox'] = False
@@ -57,6 +66,24 @@ class CcxtClient:
         self.ex = ex_cls(params)
         self.exchange = self.ex
         self.name = ex_name
+
+        # Ticker resilience configuration
+        try:
+            self._ticker_cache_ttl_s = float(os.getenv("TICKER_CACHE_TTL_S", "1.0"))
+        except (TypeError, ValueError):
+            self._ticker_cache_ttl_s = 1.0
+        try:
+            self._ticker_attempts = int(os.getenv("TICKER_MAX_ATTEMPTS", "2"))
+        except (TypeError, ValueError):
+            self._ticker_attempts = 2
+        try:
+            self._ticker_base_delay_s = float(os.getenv("TICKER_RETRY_BASE_DELAY_S", "0.4"))
+        except (TypeError, ValueError):
+            self._ticker_base_delay_s = 0.4
+        self._ticker_attempts = max(1, self._ticker_attempts)
+        if self._ticker_cache_ttl_s < 0:
+            self._ticker_cache_ttl_s = 0.0
+        self._ticker_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         
         # Increase connection pool size to avoid urllib3 pool saturation warnings
         try:
@@ -88,9 +115,9 @@ class CcxtClient:
         else:
             self.bingx_auth = None
 
-    # --- YENİ YARDIMCI METOT: Sembol formatını BingX için düzeltir ---
+        # Convert symbol to BingX native format
     def _get_bingx_native_symbol(self, symbol: str) -> str:
-        """Converts a CCXT symbol (e.g., BTC/USDT) to BingX native format (BTC-USDT)."""
+        # Convert symbol to BingX native format
         if self.name != 'bingx':
             return symbol
         # "BTC/USDT:USDT" -> "BTC/USDT"
@@ -169,11 +196,79 @@ class CcxtClient:
             raise last_exc
         raise RuntimeError(error_msg)
 
+    def _is_transient_ccxt_error(self, e: Exception) -> bool:
+        """Classify transient CCXT/network errors safely across versions."""
+        try:
+            from ccxt.base import errors as ccxt_errors
+        except Exception:
+            return False
+
+        transient_names = [
+            "RequestTimeout",
+            "NetworkError",
+            "ExchangeNotAvailable",
+            "DDoSProtection",
+            "BadGateway",
+            "ServiceUnavailable",
+        ]
+        transient_types = tuple(
+            err_type for err_type in (getattr(ccxt_errors, name, None) for name in transient_names) if err_type
+        )
+
+        if transient_types:
+            return isinstance(e, transient_types)
+
+        fallback_types = tuple(
+            err_type for err_type in (
+                getattr(ccxt, "RequestTimeout", None),
+                getattr(ccxt, "NetworkError", None),
+            ) if err_type
+        )
+        return isinstance(e, fallback_types) if fallback_types else False
+
+    def _retry_ticker(self, native_symbol: str, symbol: str) -> Dict[str, Any]:
+        """Retry wrapper around fetch_ticker with bounded backoff + jitter."""
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(1, self._ticker_attempts + 1):
+            try:
+                return self.ex.fetch_ticker(native_symbol)
+            except Exception as e:
+                if not self._is_transient_ccxt_error(e):
+                    raise
+
+                last_exc = e
+                logger.warning(
+                    f"[CCXT-TICKER-RETRY/{self.name}/{symbol}] "
+                    f"attempt={attempt}/{self._ticker_attempts} {type(e).__name__}: {e}"
+                )
+
+                if attempt >= self._ticker_attempts:
+                    raise
+
+                delay = self._ticker_base_delay_s * (2 ** (attempt - 1)) + random.uniform(0.0, 0.2)
+                time.sleep(delay)
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Ticker retry failed without exception")
+
     def ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetch current ticker data for a symbol."""
-        # --- DÜZELTME: Sembolü BingX formatına çevir ---
+        now = time.monotonic()
+
+        cached = self._ticker_cache.get(symbol)
+        if cached:
+            ts, data = cached
+            if (now - ts) <= self._ticker_cache_ttl_s:
+                return data
+
+        # Convert symbol to BingX native format
         native_symbol = self._get_bingx_native_symbol(symbol)
-        return self.ex.fetch_ticker(native_symbol)
+
+        data = self._retry_ticker(native_symbol=native_symbol, symbol=symbol)
+        self._ticker_cache[symbol] = (now, data)
+        return data
 
     def tickers(self) -> Dict[str, Dict[str, Any]]:
         """Fetch all tickers. Returns empty dict on failure."""

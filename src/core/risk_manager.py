@@ -7,7 +7,7 @@ PHASE 3 REFACTOR: Transform into Rules Engine
 
 import logging
 import os
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Protocol
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import numpy as np
@@ -103,11 +103,24 @@ class PlannedSizeResult:
 
 
 
+class PositionPnlProviderProtocol(Protocol):
+    """Lightweight PnL provider interface for scale-in gating."""
+
+    def get_positions_for_symbol(
+        self,
+        symbol: str,
+        strategy_name: Optional[str] = None,
+        side: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        ...
+
+
 class RiskManager:
     """Comprehensive risk management engine for multi-strategy portfolio."""
     
     def __init__(self, portfolio_value: float, risk_config: RiskConfiguration, 
-                 websocket_manager=None, performance_monitor=None, rules: List[BaseRiskRule] = None):
+                 websocket_manager=None, performance_monitor=None, rules: List[BaseRiskRule] = None,
+                 pnl_provider: Optional[PositionPnlProviderProtocol] = None):
         """
         Initialize risk manager with standardized configuration.
         
@@ -176,6 +189,9 @@ class RiskManager:
         self.current_drawdown = 0.0  # DEPRECATED: Use PortfolioManager.get_current_drawdown()
         self.peak_portfolio_value = self.portfolio_value  # DEPRECATED: Use PortfolioManager.get_peak_equity()
 
+        # PnL provider for dynamic scaling (PositionManager-backed)
+        self._pnl_provider: Optional[PositionPnlProviderProtocol] = pnl_provider
+
         # Track resize attempts per logical position to avoid repeated retries
         self._resize_attempted_for_position: Dict[str, bool] = {}
 
@@ -183,6 +199,10 @@ class RiskManager:
         logger.info(f"Risk configuration: {self.risk_config.to_dict()}")
         logger.info(f"Risk limits: {self.risk_limits}")
         logger.info(f"Active rules: {[rule.rule_name for rule in self.rules]}")
+
+    def set_pnl_provider(self, provider: PositionPnlProviderProtocol) -> None:
+        """Inject or replace the PnL provider used for dynamic scaling decisions."""
+        self._pnl_provider = provider
 
     def _extract_risk_config_dict(self) -> Dict[str, Any]:
         """Get the flattened risk section for consumers that expect raw config values."""
@@ -461,24 +481,24 @@ class RiskManager:
             logger.info("📉 [RISK-SCALING] Dynamic scaling disabled via config (max_extra=0)")
             return False, ""
 
-        positions: List[Dict[str, Any]] = []
+        pnl_provider = getattr(self, "_pnl_provider", None)
+        if pnl_provider is None:
+            logger.warning("📉 [RISK-SCALING] PnL provider unavailable for %s", symbol or "UNKNOWN")
+            return False, "scale_in_pnl_data_unavailable"
+
         try:
-            getter = getattr(portfolio_manager, 'get_open_positions_for_symbol', None)
-            if callable(getter):
-                positions = getter(symbol)
-            elif hasattr(portfolio_manager, 'get_open_positions'):
-                raw_positions = portfolio_manager.get_open_positions() or {}
-                positions = [dict(position, position_id=pid) for pid, position in raw_positions.items() if position.get('symbol') == symbol]
+            positions: List[Dict[str, Any]] = pnl_provider.get_positions_for_symbol(
+                symbol,
+                strategy_name=signal.get("strategy_name") if isinstance(signal, dict) else None,
+                side=signal.get("side") if isinstance(signal, dict) else None,
+            )
         except Exception as exc:
-            logger.debug(f"[RISK-SCALING] Unable to inspect open positions for {symbol}: {exc}")
-            positions = []
+            logger.warning(f"📉 [RISK-SCALING] Failed to read PnL from provider for {symbol}: {exc}")
+            return False, "scale_in_pnl_data_unavailable"
 
         if not positions:
-            logger.info(
-                "📉 [RISK-SCALING] Cannot evaluate scale-in for %s (no open positions)",
-                symbol,
-            )
-            return False, ""
+            logger.warning("📉 [RISK-SCALING] No PnL data available for %s", symbol)
+            return False, "scale_in_pnl_data_unavailable"
 
         pnl_values = []
         last_entry_price = None
@@ -502,10 +522,22 @@ class RiskManager:
                 metrics = pos.get('metrics') or {}
                 pnl_val = metrics.get('unrealized_pnl_pct')
             try:
-                pnl_values.append(float(pnl_val or 0.0))
+                if pnl_val is None:
+                    continue
+                pnl_values.append(float(pnl_val))
             except (TypeError, ValueError):
-                pnl_values.append(0.0)
+                continue
 
+        if not pnl_values:
+            logger.warning("📉 [RISK-SCALING] PnL data unavailable/invalid for %s (positions=%d)", symbol, len(positions))
+            return False, "scale_in_pnl_data_unavailable"
+
+        logger.info(
+            "[RISK-SCALING-PNL] sym=%s | layers=%d | pnls=%s",
+            symbol,
+            len(pnl_values),
+            [round(v * 100, 3) for v in pnl_values],
+        )
         avg_pnl_pct = sum(pnl_values) / len(pnl_values) if pnl_values else 0.0
         is_profitable = avg_pnl_pct >= eff_pnl_threshold
 

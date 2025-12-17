@@ -51,7 +51,7 @@ class RealTimePerformanceMonitor:
         }
 
 from .order_manager import SmartOrderManager
-from .position_manager import AdvancedPositionManager
+from .position_manager import AdvancedPositionManager, PositionManagerPnlProvider
 
 # Phase 3.1-3.3: Risk & Portfolio Management
 from .risk_manager import RiskManager
@@ -1493,6 +1493,13 @@ class ProductionCoordinator:
                 websocket_manager=self.websocket_manager
             )
             logger.info("✓ Position manager initialized and linked with OrderManager")
+
+            # Link RiskManager to PositionManager for live PnL sourcing in scale-in gating
+            try:
+                self.risk_manager.set_pnl_provider(PositionManagerPnlProvider(self.position_manager))
+                logger.info("✓ RiskManager PnL provider set from PositionManager")
+            except Exception as exc:
+                logger.warning(f"⚠️ Unable to set PnL provider on RiskManager: {exc}")
             
             # === STEP 7: INITIALIZE PORTFOLIO MANAGER ===
             self.portfolio_manager = PortfolioManager(

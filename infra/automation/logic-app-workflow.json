@@ -238,6 +238,11 @@
             "name": "ContainerStatus",
             "type": "string",
             "value": "starting"
+          },
+          {
+            "name": "PollErrorStreak",
+            "type": "Integer",
+            "value": 0
           }
         ]
       },
@@ -301,63 +306,114 @@
         "Delay": {
           "inputs": {
             "interval": {
-              "count": 1,
-              "unit": "Minute"
+              "count": 90,
+              "unit": "Second"
             }
           },
           "type": "Wait"
         },
-        "HTTP": {
+        "Acquire_Lock": {
+          "type": "Http",
           "inputs": {
-            "authentication": {
-              "type": "ManagedServiceIdentity"
-            },
-            "body": {
-              "commandId": "RunShellScript",
-              "script": [
-                "status=$(sudo docker inspect -f '{{.State.Status}}' bearish-bot 2>/dev/null || echo 'not_found')",
-                "if [ \"$status\" = \"running\" ]; then",
-                "  echo 'running'",
-                "else",
-                "  echo 'exited'",
-                "fi"
-              ]
-            },
+            "method": "PUT",
+            "uri": "https://bearishstorage.blob.core.windows.net/locks/runcommand.lock?comp=lease",
             "headers": {
-              "Content-Type": "application/json"
+              "x-ms-lease-action": "acquire",
+              "x-ms-lease-duration": "15",
+              "x-ms-version": "2019-02-02"
             },
-            "method": "POST",
-            "uri": "https://management.azure.com/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/TradeBot/providers/Microsoft.Compute/virtualMachines/BearishAlphaBot-VM-01/runCommand?api-version=2023-03-01"
+            "authentication": { "type": "ManagedServiceIdentity" }
           },
-          "runAfter": {
-            "Delay": [
-              "Succeeded"
+          "runAfter": { "Delay": ["Succeeded"] }
+        },
+        "Condition_Lock_Acquired": {
+          "type": "If",
+          "expression": {
+            "and": [
+              { "equals": [ "@actions('Acquire_Lock')?['status']", "Succeeded" ] }
             ]
           },
-          "runtimeConfiguration": {
-            "contentTransfer": {
-              "transferMode": "Chunked"
+          "actions": {
+            "HTTP": {
+              "inputs": {
+                "authentication": {
+                  "type": "ManagedServiceIdentity"
+                },
+                "body": {
+                  "commandId": "RunShellScript",
+                  "script": [
+                    "status=$(sudo docker inspect -f '{{.State.Status}}' bearish-bot 2>/dev/null || echo 'not_found')",
+                    "if [ \"$status\" = \"running\" ]; then",
+                    "  echo 'running'",
+                    "else",
+                    "  echo 'exited'",
+                    "fi"
+                  ]
+                },
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "method": "POST",
+                "uri": "https://management.azure.com/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/TradeBot/providers/Microsoft.Compute/virtualMachines/BearishAlphaBot-VM-01/runCommand?api-version=2023-03-01"
+              },
+              "limit": { "timeout": "PT2M" },
+              "runAfter": {},
+              "runtimeConfiguration": {
+                "contentTransfer": {
+                  "transferMode": "Chunked"
+                }
+              },
+              "type": "Http"
+            },
+            "Release_Lock": {
+              "type": "Http",
+              "inputs": {
+                "method": "PUT",
+                "uri": "https://bearishstorage.blob.core.windows.net/locks/runcommand.lock?comp=lease",
+                "headers": {
+                  "x-ms-lease-action": "release",
+                  "x-ms-lease-id": "@outputs('Acquire_Lock')['headers']['x-ms-lease-id']",
+                  "x-ms-version": "2019-02-02"
+                },
+                "authentication": { "type": "ManagedServiceIdentity" }
+              },
+              "runAfter": { "HTTP": ["Succeeded", "Failed", "TimedOut"] }
             }
           },
-          "type": "Http"
+          "runAfter": { "Acquire_Lock": ["Succeeded", "Failed"] }
         },
-        "Set_variable": {
+        "Analyze_Poll_Result": {
+          "type": "Compose",
+          "inputs": {
+            "lockStatus": "@actions('Acquire_Lock')?['status']",
+            "httpStatus": "@if(equals(actions('Acquire_Lock')?['status'], 'Succeeded'), actions('HTTP')?['status'], 'Skipped')",
+            "httpCode": "@if(equals(actions('Acquire_Lock')?['status'], 'Succeeded'), actions('HTTP')?['statusCode'], 0)"
+          },
+          "runAfter": { "Condition_Lock_Acquired": ["Succeeded", "Failed"] }
+        },
+        "Update_Container_Status": {
+          "type": "SetVariable",
           "inputs": {
             "name": "ContainerStatus",
-            "value": "@if(equals(actions('HTTP')?['status'], 'Succeeded'), trim(split(split(body('HTTP')?['value']?[0]?['message'], '[stdout]')[1], '[stderr]')[0]), 'error')"
+            "value": "@if(equals(outputs('Analyze_Poll_Result')['lockStatus'], 'Succeeded'), if(equals(outputs('Analyze_Poll_Result')['httpStatus'], 'Succeeded'), trim(split(split(body('HTTP')?['value']?[0]?['message'], '[stdout]')[1], '[stderr]')[0]), 'running'), 'running')"
           },
-          "runAfter": {
-            "HTTP": [
-              "Succeeded",
-              "TimedOut",
-              "Skipped",
-              "Failed"
-            ]
+          "runAfter": { "Analyze_Poll_Result": ["Succeeded"] }
+        },
+        "Calculate_New_Streak": {
+          "type": "Compose",
+          "inputs": "@if(equals(outputs('Analyze_Poll_Result')['lockStatus'], 'Succeeded'), if(equals(outputs('Analyze_Poll_Result')['httpStatus'], 'Succeeded'), 0, if(equals(outputs('Analyze_Poll_Result')['httpCode'], 409), variables('PollErrorStreak'), add(variables('PollErrorStreak'), 1))), variables('PollErrorStreak'))",
+          "runAfter": { "Update_Container_Status": ["Succeeded"] }
+        },
+        "Update_Streak": {
+          "type": "SetVariable",
+          "inputs": {
+            "name": "PollErrorStreak",
+            "value": "@outputs('Calculate_New_Streak')"
           },
-          "type": "SetVariable"
+          "runAfter": { "Calculate_New_Streak": ["Succeeded"] }
         }
       },
-      "expression": "@equals(variables('ContainerStatus'), 'exited')",
+      "expression": "@or(equals(variables('ContainerStatus'), 'exited'), greaterOrEquals(variables('PollErrorStreak'), 5))",
       "limit": {
         "count": 400,
         "timeout": "PT8H"
@@ -368,6 +424,24 @@
         ]
       },
       "type": "Until"
+    },
+    "Final_Verify_Status": {
+      "type": "Http",
+      "inputs": {
+        "authentication": { "type": "ManagedServiceIdentity" },
+        "body": {
+          "commandId": "RunShellScript",
+          "script": [
+            "status=$(sudo docker inspect -f '{{.State.Status}}' bearish-bot 2>/dev/null || echo 'not_found')",
+            "echo \"$status\""
+          ]
+        },
+        "headers": { "Content-Type": "application/json" },
+        "method": "POST",
+        "uri": "https://management.azure.com/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/TradeBot/providers/Microsoft.Compute/virtualMachines/BearishAlphaBot-VM-01/runCommand?api-version=2023-03-01"
+      },
+      "limit": { "timeout": "PT2M" },
+      "runAfter": { "Until": ["Succeeded", "Failed", "TimedOut"] }
     },
     "Validate_Parameters": {
       "inputs": {
@@ -444,13 +518,8 @@
     "notification_recipient_email": {
       "type": "String"
     },
-    "sendGridSecretName": {
-      "type": "String"
-    },
-    "sendgrid_from_email": {
-      "type": "String"
-    },
-    "sendgrid_from_name": {
+    "sender_email_address": {
+      "defaultValue": "DoNotReply@dedf8228-9b97-4d99-a4a8-12ea32134c1c.azurecomm.net",
       "type": "String"
     }
   },

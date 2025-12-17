@@ -1151,19 +1151,104 @@ class StrategyCoordinator:
             signal["quality_breakdown"] = quality_result
             return quality_result
 
-        # Normal profile (includes ML component if available)
-        features = signal.get('features', {}) or {}
+        # Normal profile (config-backed, neutral fallbacks, enriched field mapping)
+        cfg = self.config if isinstance(self.config, dict) else {}
+        scoring_cfg = (cfg.get("signals") or {}).get("signal_scoring") or {}
 
-        def _get_val(primary, secondary=None):
-            return primary if primary is not None else secondary
-
-        quality_features = {
-            "ml_component": signal.get("ml_confidence"),
-            "volume_component": _get_val(features.get("volume_score"), signal.get("volume_24h")),
-            "momentum_component": features.get("momentum"),
-            "spread_component": features.get("spread"),
+        default_normal_weights = {
+            "ml": 0.25,
+            "volume": 0.20,
+            "momentum": 0.20,
+            "regime": 0.15,
+            "ppo_rl": 0.15,
+            "spread": 0.05,
         }
-        quality_result = compute_quality(quality_features, logger)
+        normal_weights_cfg = scoring_cfg.get("normal_weights") or {}
+        weights = {k: float(normal_weights_cfg.get(k, v)) for k, v in default_normal_weights.items()}
+        total_w = max(sum(weights.values()), 1e-6)
+
+        def _clamp(v: Any, lo: float = 0.0, hi: float = 1.0) -> float:
+            try:
+                return max(lo, min(hi, float(v)))
+            except Exception:
+                return lo
+
+        def _normalize_vol(v: Any) -> float:
+            # Volume strength is typically 0..~2; clamp to [0,1] with soft cap
+            try:
+                val = float(v)
+                if val < 0:
+                    val = 0.0
+                if val > 1.0:
+                    return min(val, 2.0) / 2.0
+                return val
+            except Exception:
+                return 0.5
+
+        features = signal.get("features") or {}
+
+        # Components (neutral defaults = 0.5)
+        ml_component = _clamp(signal.get("ml_confidence", 0.5), 0.0, 1.0)
+        volume_component = _clamp(
+            _normalize_vol(signal.get("volume_strength", signal.get("volume_score", 0.5))),
+            0.0,
+            1.0,
+        )
+        momentum_component = _clamp(signal.get("momentum_strength", 0.5), 0.0, 1.0)
+        regime_component = _clamp(signal.get("regime_confidence", signal.get("regime_weight", 0.5)), 0.0, 1.0)
+
+        # PPO/RL: prefer PPO score; blend with explicit RL agreement if present
+        ppo_val = signal.get("ppo_long_score")
+        ppo_component = _clamp(ppo_val if ppo_val is not None else 0.5, 0.0, 1.0)
+        rl_agree = signal.get("rl_is_agree")
+        rl_component = _clamp(1.0 if rl_agree else 0.0, 0.0, 1.0) if rl_agree is not None else None
+        if rl_component is None:
+            ppo_rl_component = ppo_component
+        else:
+            ppo_rl_component = _clamp((ppo_component + rl_component) / 2.0, 0.0, 1.0)
+
+        spread_component = _clamp(signal.get("spread_component", features.get("spread", 0.5)), 0.0, 1.0)
+
+        raw_score = (
+            weights["ml"] * ml_component
+            + weights["volume"] * volume_component
+            + weights["momentum"] * momentum_component
+            + weights["regime"] * regime_component
+            + weights["ppo_rl"] * ppo_rl_component
+            + weights["spread"] * spread_component
+        )
+
+        base_quality = raw_score / total_w
+
+        # Optional R/R adjustment (small, controlled)
+        rr_ratio = signal.get("rr_ratio") or signal.get("risk_reward_ratio")
+        rr_adj = 1.0
+        try:
+            if rr_ratio is not None:
+                rr_val = float(rr_ratio)
+                if rr_val >= 2.5:
+                    rr_adj = min(1.10, 1.05 + (rr_val - 2.5) * 0.02)
+                elif rr_val <= 1.2:
+                    rr_adj = max(0.90, 0.95 - (1.2 - rr_val) * 0.05)
+        except Exception:
+            rr_adj = 1.0
+
+        quality_value = _clamp(base_quality * rr_adj, 0.0, 1.0)
+
+        quality_result = {
+            "value": round(quality_value, 4),
+            "components": {
+                "ml_component": round(ml_component, 4),
+                "volume_component": round(volume_component, 4),
+                "momentum_component": round(momentum_component, 4),
+                "regime_component": round(regime_component, 4),
+                "ppo_rl_component": round(ppo_rl_component, 4),
+                "spread_component": round(spread_component, 4),
+            },
+            "weights": {k: round(v, 4) for k, v in weights.items()},
+            "rr_adjustment": round(rr_adj, 4),
+            "reason": [],
+        }
         signal["quality_score"] = quality_result["value"]
         signal["quality_breakdown"] = quality_result
         return quality_result

@@ -11,6 +11,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
+import math
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from core.logger import get_current_run_id
@@ -73,6 +74,98 @@ class PositionStatus(Enum):
     CLOSED = 'closed'
     PARTIALLY_CLOSED = 'partially_closed'
     PENDING_CLOSE = 'pending_close'
+
+
+class PositionManagerPnlProvider:
+    """PnL view backed directly by AdvancedPositionManager positions."""
+
+    def __init__(self, position_manager: "AdvancedPositionManager"):
+        self.position_manager = position_manager
+
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _extract_unrealized_pnl_pct(self, position: Dict[str, Any]) -> Optional[float]:
+        """
+        Extract and normalize unrealized PnL percentage from a position snapshot.
+
+        Normalization: `_pct` fields coming from PositionManager computations are stored
+        as human-readable percentages (e.g., 0.44 for +0.44%). RiskManager thresholds
+        expect fractional form (e.g., 0.0044). This helper converts percent-style fields
+        into fractional form while preserving already-normalized values.
+        """
+        metrics = position.get("metrics") if isinstance(position.get("metrics"), dict) else {}
+        pnl_obj = position.get("pnl") if isinstance(position.get("pnl"), dict) else {}
+
+        def _normalize(value: Optional[float], source: str) -> Optional[float]:
+            if value is None or not math.isfinite(value):
+                return None
+            # Fields named `pnl_pct` (or computed here) are percent-based -> convert to fraction
+            if source in {"pnl_pct", "pnl.pct", "computed"}:
+                return value / 100.0
+            # For explicit unrealized_pnl_pct, accept fractional inputs directly; if unusually large, treat as percent.
+            if abs(value) > 10:
+                return value / 100.0
+            return value
+
+        candidates = [
+            ("unrealized_pnl_pct", position.get("unrealized_pnl_pct")),
+            ("metrics.unrealized_pnl_pct", metrics.get("unrealized_pnl_pct")),
+            ("pnl_pct", position.get("pnl_pct")),
+            ("pnl.pct", pnl_obj.get("pct")),
+        ]
+        for source, raw_val in candidates:
+            candidate = self._safe_float(raw_val)
+            normalized = _normalize(candidate, source) if candidate is not None else None
+            if normalized is not None:
+                return normalized
+
+        # Fallback: derive from unrealized PnL using entry/amount
+        unrealized = self._safe_float(position.get("unrealized_pnl"))
+        entry_price = self._safe_float(position.get("entry_price"))
+        amount = self._safe_float(position.get("amount"))
+        if unrealized is None or entry_price is None or amount is None:
+            return None
+        if entry_price <= 0 or amount <= 0:
+            return None
+
+        computed_pct = self._safe_float(
+            calculate_pnl_percentage(unrealized, entry_price, amount)
+        )
+        return _normalize(computed_pct, "computed") if computed_pct is not None else None
+
+    def get_positions_for_symbol(
+        self,
+        symbol: str,
+        strategy_name: Optional[str] = None,
+        side: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        if not symbol:
+            return []
+        positions_store = getattr(self.position_manager, "positions", {}) or {}
+        results: List[Dict[str, Any]] = []
+        for pos_id, pos in positions_store.items():
+            if pos.get("symbol") != symbol:
+                continue
+            if strategy_name and pos.get("strategy_name") and pos.get("strategy_name") != strategy_name:
+                continue
+            if side and pos.get("side") and pos.get("side") != side:
+                continue
+            snapshot = dict(pos)
+            snapshot.setdefault("position_id", pos_id)
+            normalized_pct = self._extract_unrealized_pnl_pct(snapshot)
+            if normalized_pct is not None:
+                snapshot["unrealized_pnl_pct"] = normalized_pct
+                metrics_source = snapshot.get("metrics")
+                metrics = dict(metrics_source) if isinstance(metrics_source, dict) else {}
+                metrics.setdefault("unrealized_pnl_pct", normalized_pct)
+                snapshot["metrics"] = metrics
+            results.append(snapshot)
+        return results
 
 
 class ExitReason(Enum):
@@ -588,6 +681,14 @@ class AdvancedPositionManager:
             
             # Calculate P&L percentage
             pnl_pct = calculate_pnl_percentage(unrealized_pnl, entry_price, amount)
+            position['pnl_pct'] = pnl_pct
+            normalized_unrealized_pct = (pnl_pct / 100.0) if pnl_pct is not None else None
+            if normalized_unrealized_pct is not None:
+                position['unrealized_pnl_pct'] = normalized_unrealized_pct
+                metrics = position.get('metrics') if isinstance(position.get('metrics'), dict) else {}
+                metrics = dict(metrics) if metrics else {}
+                metrics['unrealized_pnl_pct'] = normalized_unrealized_pct
+                position['metrics'] = metrics
             
             # Update max adverse/favorable excursion
             if unrealized_pnl < 0 and abs(unrealized_pnl) > abs(position['max_adverse_excursion']):

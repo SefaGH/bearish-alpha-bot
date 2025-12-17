@@ -7,6 +7,14 @@ from src.core.strategy_coordinator import StrategyCoordinator
 from src.core.risk_manager import RiskManager
 
 
+class _StubPnlProvider:
+    def __init__(self, positions):
+        self.positions = positions
+
+    def get_positions_for_symbol(self, symbol, strategy_name=None, side=None):
+        return [p for p in self.positions if p.get("symbol") == symbol]
+
+
 def _make_coordinator(config=None):
     pm = MagicMock()
     pm.cfg = config or {}
@@ -96,6 +104,7 @@ def test_extreme_bypass_scale_in_allows_when_quality_high():
             }
         },
     )
+    rm.set_pnl_provider(_StubPnlProvider(pm._positions))
 
     # Build an extreme-bypass quality profile manually
     signal = {

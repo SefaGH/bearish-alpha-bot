@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import time
+import ccxt
 from typing import Dict, List, Optional, Any, Callable, TYPE_CHECKING
 from datetime import datetime, timezone
 from enum import Enum
@@ -55,6 +56,40 @@ def _log_rest_debug(context: str, exc: Exception) -> None:
             debug_payload["response_type"] = str(type(raw_body))
 
     logger.error("REST DEBUG :: %s", debug_payload)
+
+
+def _is_transient_ccxt_error(exc: Exception) -> bool:
+    """Classify transient CCXT/network errors safely across ccxt versions."""
+    try:
+        from ccxt.base import errors as ccxt_errors
+    except Exception:
+        ccxt_errors = None
+
+    transient_names = [
+        "RequestTimeout",
+        "NetworkError",
+        "ExchangeNotAvailable",
+        "DDoSProtection",
+        "BadGateway",
+        "ServiceUnavailable",
+    ]
+
+    transient_types = tuple(
+        err_type for err_type in (
+            getattr(ccxt_errors, name, None) for name in transient_names
+        ) if err_type
+    ) if ccxt_errors else ()
+
+    if transient_types and isinstance(exc, transient_types):
+        return True
+
+    fallback_types = tuple(
+        err_type for err_type in (
+            getattr(ccxt, "RequestTimeout", None),
+            getattr(ccxt, "NetworkError", None),
+        ) if err_type
+    )
+    return isinstance(exc, fallback_types) if fallback_types else False
 
 
 class OrderStatus(Enum):
@@ -441,7 +476,14 @@ class SmartOrderManager:
                 return {'success': False, 'reason': f"REJECT:MARKET_METADATA - {error_msg}", 'order_id': None}
             
             # Get current price from exchange
-            ticker = client.ticker(symbol)
+            try:
+                ticker = client.ticker(symbol)
+            except Exception as e:
+                if _is_transient_ccxt_error(e):
+                    self.logger.warning(f"[WARN] {log_prefix} Ticker fetch failed (transient): {e}")
+                    return {'success': False, 'reason': str(e), 'order_id': None}
+                raise
+
             market_price = float(ticker.get('last', 0))
             
             # Calculate optimal limit price
