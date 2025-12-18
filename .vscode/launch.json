@@ -13,7 +13,7 @@
         },
         {
             "name": "1. Analyze Volume (Active Log)",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/scripts/analyze_volume_buckets.py",
             "args": [
@@ -25,7 +25,7 @@
         },
         {
             "name": "2. Analyze Pyramiding (Active Log)",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/scripts/analyze_pyramiding_logs.py",
             "args": [
@@ -41,7 +41,7 @@
         },
         {
             "name": "3. Log Analizi Yap (Aktif Dosya)",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/scripts/signal_quality_analyzer.py",
             "args": [
@@ -52,7 +52,7 @@
         },
         {
             "name": "4. Analyze Trend Alignment",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/scripts/analyze_trend_alignment.py",
             "args": [
@@ -60,6 +60,18 @@
                 "${file}",
                 "--symbol",
                 "BTC"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "5. GEMMA Summary Report (Active Log)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/gemma_summary_report.py",
+            "args": [
+                "--log-file",
+                "${file}"
             ],
             "console": "integratedTerminal",
             "justMyCode": true
