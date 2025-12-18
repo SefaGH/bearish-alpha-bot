@@ -33,8 +33,27 @@ PYRAMID_RE = re.compile(r"(?P<ts>\d{4}-\d{2}-\d{2} [^ ]+)? .*?\[PYRAMID\].*", re
 PYRAMID_QUEUE_RE = re.compile(r"(?P<ts>\d{4}-\d{2}-\d{2} [^ ]+)? .*?\[PYRAMID-QUEUE\].*", re.IGNORECASE)
 REASON_RE = re.compile(r"reason=([A-Za-z0-9_\-\.]+)", re.IGNORECASE)
 QUALITY_IN_TAIL_RE = re.compile(r"quality=([0-9.]+)")
-PNL_RE = re.compile(r"pnl[=_](-?[0-9.]+)", re.IGNORECASE)
-DIST_RE = re.compile(r"dist(?:ance)?[=_]([0-9.]+)", re.IGNORECASE)
+PNL_RE = re.compile(r"(?:avgPnL|pnl)[=_](-?[0-9.]+)", re.IGNORECASE)
+DIST_RE = re.compile(r"(?:dist(?:ance)?|diff)[=_]([0-9.]+)", re.IGNORECASE)
+
+COMPARE_RE = re.compile(
+    r"(?P<metric>avgPnL|pnl|quality|dist(?:ance)?|dist|diff)\s*=\s*(?P<value>-?[0-9.]+)%?\s*(?P<op><=|<|>=|>)\s*(?P<threshold>-?[0-9.]+)%?",
+    re.IGNORECASE,
+)
+RISK_SCALING_PNL_RE = re.compile(
+    r"(?P<ts>\d{4}-\d{2}-\d{2} [^ ]+)? .*?\[RISK-SCALING-PNL\]\s+sym=(?P<symbol>[^|]+)\s*\|\s*layers=(?P<layers>\d+)\s*\|\s*pnls=\[(?P<pnls>[^\]]*)\]",
+    re.IGNORECASE,
+)
+PYRAMID_DETAIL_RE = re.compile(r"(?P<ts>\d{4}-\d{2}-\d{2} [^ ]+)? .*?\[PYRAMID\]\s+(?P<msg>.*)", re.IGNORECASE)
+RISK_ENGINE_BLOCK_RE = re.compile(
+    r"(?P<ts>\d{4}-\d{2}-\d{2} [^ ]+)? .*?\[RISK-ENGINE\].*?:\s*(?P<reason>scale_in_[A-Za-z0-9_\-]+)",
+    re.IGNORECASE,
+)
+STRATEGY_REJECT_RE = re.compile(
+    r"(?P<ts>\d{4}-\d{2}-\d{2} [^ ]+)? .*?\[(?P<strategy>[A-Z0-9_]+)/(?P<symbol>[^\]]+)\].*REJECTED.*:\s*(?P<reason>scale_in_[A-Za-z0-9_\-]+)",
+    re.IGNORECASE,
+)
+
 
 
 def parse_ts(ts_raw: str) -> datetime:
@@ -76,9 +95,16 @@ def summarize_distribution(values: List[float]) -> Dict[str, float]:
 
 
 def line_passes_filters(line: str, symbol_filter: str, strategy_filter: str) -> bool:
+    # Note: some lines (e.g., [RISK-ENGINE]) do not contain symbol/strategy text. We still want them for correlation.
     if symbol_filter and symbol_filter not in line:
+        if "[RISK-ENGINE]" in line:
+            return True
         return False
-    if strategy_filter and strategy_filter not in line:
+    if strategy_filter and strategy_filter.lower() not in line.lower():
+        # Some lines (risk scaling / pyramiding / PnL updates) do not carry strategy text; keep them for analysis.
+        passthrough_tags = ("[RISK-SCALING]", "[RISK-SCALING-PNL]", "[PYRAMID]", "[RISK-ENGINE]", "[P&L-UPDATE]")
+        if any(tag in line for tag in passthrough_tags):
+            return True
         return False
     return True
 
@@ -86,6 +112,12 @@ def line_passes_filters(line: str, symbol_filter: str, strategy_filter: str) -> 
 def analyze_logs(paths: List[str], symbol_filter: str = None, strategy_filter: str = None) -> Dict[str, Any]:
     quality_entries: List[Dict[str, Any]] = []
     scaling_entries: List[Dict[str, Any]] = []
+    scaling_pnl_entries: List[Dict[str, Any]] = []
+    pyramid_events: List[Dict[str, Any]] = []
+    risk_engine_blocks: List[Dict[str, Any]] = []
+    strategy_rejects: List[Dict[str, Any]] = []
+    last_scaling_event: Dict[str, Any] = None
+
     pyramid_queue = Counter()
     pyramid_reasons = Counter()
     queue_reasons = Counter()
@@ -112,6 +144,82 @@ def analyze_logs(paths: List[str], symbol_filter: str = None, strategy_filter: s
                         quality_entries.append(entry)
                         continue
 
+                    m_rsp = RISK_SCALING_PNL_RE.search(line)
+                    if m_rsp:
+                        pnls_raw = m_rsp.group("pnls").strip()
+                        pnls = []
+                        if pnls_raw:
+                            for tok in pnls_raw.split(","):
+                                tok = tok.strip()
+                                if tok:
+                                    try:
+                                        pnls.append(float(tok))
+                                    except Exception:
+                                        pass
+                        avg_pnl = (sum(pnls) / len(pnls)) if pnls else None
+                        scaling_pnl_entries.append(
+                            {
+                                "ts": m_rsp.group("ts"),
+                                "symbol": m_rsp.group("symbol").strip(),
+                                "layers": int(m_rsp.group("layers")),
+                                "pnls": pnls,
+                                "avg_pnl": avg_pnl,
+                                "raw": line,
+                            }
+                        )
+                        continue
+
+                    m_pyr = PYRAMID_DETAIL_RE.search(line)
+                    if m_pyr:
+                        msg = m_pyr.group("msg").strip()
+                        if "scale-in" in msg.lower():
+                            parts = [p.strip() for p in msg.split("|")]
+                            head = parts[0].lower() if parts else ""
+                            decision = None
+                            if "allowed" in head:
+                                decision = "allowed"
+                            elif "denied" in head:
+                                decision = "denied"
+                            kv = {}
+                            for p in parts[1:]:
+                                if "=" in p:
+                                    k, v = p.split("=", 1)
+                                    kv[k.strip()] = v.strip()
+                            pyramid_events.append(
+                                {
+                                    "ts": m_pyr.group("ts"),
+                                    "decision": decision,
+                                    "symbol": (kv.get("sym") or kv.get("symbol")),
+                                    "slots": kv.get("slots"),
+                                    "quality": kv.get("quality"),
+                                    "avgPnL": kv.get("avgPnL"),
+                                    "dist": (kv.get("dist") or kv.get("distance") or kv.get("diff")),
+                                    "raw": line,
+                                }
+                            )
+                        continue
+
+                    m_block = RISK_ENGINE_BLOCK_RE.search(line)
+                    if m_block:
+                        reason = m_block.group("reason")
+                        risk_engine_blocks.append({"ts": m_block.group("ts"), "symbol": None, "reason": reason, "raw": line})
+                        if last_scaling_event is not None and not last_scaling_event.get("reason"):
+                            last_scaling_event["reason"] = reason
+                        continue
+
+                    m_srej = STRATEGY_REJECT_RE.search(line)
+                    if m_srej:
+                        strategy_rejects.append(
+                            {
+                                "ts": m_srej.group("ts"),
+                                "strategy": m_srej.group("strategy").lower(),
+                                "symbol": m_srej.group("symbol").strip(),
+                                "reason": m_srej.group("reason"),
+                                "raw": line,
+                            }
+                        )
+                        continue
+
                     m_rs = RISK_SCALING_RE.search(line)
                     if m_rs:
                         tail = m_rs.group("tail")
@@ -119,18 +227,35 @@ def analyze_logs(paths: List[str], symbol_filter: str = None, strategy_filter: s
                         pnl_match = PNL_RE.search(tail)
                         dist_match = DIST_RE.search(tail)
                         reason_match = REASON_RE.search(tail)
-                        scaling_entries.append(
-                            {
-                                "ts": m_rs.group("ts"),
-                                "symbol": m_rs.group("symbol").strip(),
-                                "decision": m_rs.group("decision").lower(),
-                                "quality": float(quality_match.group(1)) if quality_match else None,
-                                "pnl": float(pnl_match.group(1)) if pnl_match else None,
-                                "distance": float(dist_match.group(1)) if dist_match else None,
-                                "reason": reason_match.group(1) if reason_match else None,
-                                "raw": line,
-                            }
-                        )
+                        cmp = COMPARE_RE.search(tail)
+                        metric = cmp.group("metric").lower() if cmp else None
+                        value = float(cmp.group("value")) if cmp else None
+                        threshold = float(cmp.group("threshold")) if cmp else None
+
+                        # Prefer explicit reason=... if present; otherwise infer from metric.
+                        reason = reason_match.group(1) if reason_match else None
+                        if not reason and metric:
+                            if metric == "quality":
+                                reason = "scale_in_quality_below_threshold"
+                            elif metric in ("avgpnl", "pnl"):
+                                reason = "scale_in_pnl_below_threshold"
+                            elif metric in ("diff", "dist", "distance"):
+                                reason = "scale_in_distance_below_threshold"
+
+                        last_scaling_event = {
+                            "ts": m_rs.group("ts"),
+                            "symbol": m_rs.group("symbol").strip(),
+                            "decision": m_rs.group("decision").lower(),
+                            "metric": metric,
+                            "value": value,
+                            "threshold": threshold,
+                            "quality": float(quality_match.group(1)) if quality_match else None,
+                            "pnl": float(pnl_match.group(1)) if pnl_match else None,
+                            "distance": float(dist_match.group(1)) if dist_match else None,
+                            "reason": reason,
+                            "raw": line,
+                        }
+                        scaling_entries.append(last_scaling_event)
                         continue
 
                     if PYRAMID_RE.search(line):
@@ -157,7 +282,7 @@ def analyze_logs(paths: List[str], symbol_filter: str = None, strategy_filter: s
     quality_summary = {f"{k[0]}|extreme={k[1]}": summarize_distribution(v) for k, v in dist_by_group.items()}
 
     # Scale-in outcomes
-    scale_in_entries = [s for s in scaling_entries if "scale" in s.get("raw", "").lower() or True]
+    scale_in_entries = list(scaling_entries)
     quality_rejects = [s for s in scale_in_entries if s.get("reason") and "quality" in s["reason"]]
     quality_reject_dist = summarize_distribution(
         [s["quality"] for s in quality_rejects if s.get("quality") is not None]
@@ -177,6 +302,11 @@ def analyze_logs(paths: List[str], symbol_filter: str = None, strategy_filter: s
         "pyramid_reasons": pyramid_reasons,
         "queue_reasons": queue_reasons,
         "duplicate_spam": duplicate_spam,
+        "scaling_pnl_entries": scaling_pnl_entries,
+        "pyramid_events": pyramid_events,
+        "risk_engine_blocks": risk_engine_blocks,
+        "strategy_rejects": strategy_rejects,
+
     }
 
 
