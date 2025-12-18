@@ -250,23 +250,32 @@ class MLRegimePredictor:
             scaler_path = bundle_path / self.manifest.get('regime_scaler_path', 'scaler.pkl')
             rf_path = bundle_path / self.manifest.get('regime_rf_path', 'random_forest.pkl')
             
-            # Check for quantized model first
+            # Check for quantized model (float-first, quant fallback unless forced)
             base_model_name = self.manifest.get('regime_model_path', 'lstm_regime.pth')
-            # Handle both .pt and .pth extensions for quantization suffix
             if base_model_name.endswith('.pt'):
                 quantized_name = base_model_name.replace('.pt', '_int8.pt')
             elif base_model_name.endswith('.pth'):
                 quantized_name = base_model_name.replace('.pth', '_int8.pt')
             else:
                 quantized_name = base_model_name + "_int8"
-                
+
             quantized_path = bundle_path / quantized_name
-            
-            if quantized_path.exists():
+            float_path = bundle_path / base_model_name
+            prefer_quant = bool(self.config.get('prefer_quantized'))
+            force_quant = bool(self.config.get('force_quantized'))
+
+            if force_quant and quantized_path.exists():
                 lstm_path = quantized_path
-                logger.info(f"Found quantized regime model: {lstm_path}")
+                logger.info(f"Quantized regime model forced via config: {lstm_path}")
+            elif not prefer_quant and float_path.exists():
+                lstm_path = float_path
+                if quantized_path.exists():
+                    logger.info(f"Using float regime model; quantized available at {quantized_path} for fallback")
+            elif quantized_path.exists():
+                lstm_path = quantized_path
+                logger.warning(f"Float regime model missing or not preferred; using quantized: {lstm_path}")
             else:
-                lstm_path = bundle_path / base_model_name
+                lstm_path = float_path
 
         if not Path(scaler_path).parent.exists():
             logger.warning(f"Regime model directory not found. Models not loaded.")
@@ -437,6 +446,16 @@ class MLRegimePredictor:
             # Bu adım olmadan, model tamamen anlamsız verilerle tahmin yapmaya çalışır.
             if self.scaler is not None and self.is_trained:
                 try:
+                    if feature_values.shape[1] != self.expected_features:
+                        logger.warning(
+                            "Feature dimension mismatch for regime: got %s expected %s",
+                            feature_values.shape[1],
+                            self.expected_features,
+                        )
+                        return self._default_prediction()
+                    if not np.all(np.isfinite(feature_values)):
+                        logger.warning("Non-finite regime features detected; returning default prediction.")
+                        return self._default_prediction()
                     feature_values = self.scaler.transform(feature_values)
                     logger.debug("🧠 [ML-REGIME] Feature values successfully scaled for prediction.")
                 except Exception as e:
@@ -451,6 +470,16 @@ class MLRegimePredictor:
             # Model ensemble prediction
             if self.models['ensemble'] is not None and self.is_trained:
                 predictions, probabilities = self.models['ensemble'].predict(feature_values)
+                if not np.all(np.isfinite(probabilities)):
+                    logger.warning("Regime probabilities contain non-finite values; using fallback.")
+                    return self._default_prediction()
+                prob_sum = probabilities[0].sum()
+                if prob_sum == 0 or not np.isfinite(prob_sum):
+                    logger.warning("Regime probabilities sum invalid (%.4f); using fallback.", prob_sum)
+                    return self._default_prediction()
+                if not 0.99 <= prob_sum <= 1.01:
+                    probabilities = probabilities / (prob_sum + 1e-12)
+                    logger.warning("Regime probabilities renormalized (sum was %.4f).", prob_sum)
                 
                 # Confidence interval calculation
                 raw_confidence = self._calculate_confidence(probabilities[0])

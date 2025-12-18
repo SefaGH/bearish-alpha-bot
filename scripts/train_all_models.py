@@ -423,6 +423,11 @@ async def main():
         regime_pred_config = ml_config.get('regime_prediction', {})
         price_pred_config = ml_config.get('price_prediction', {})
         rl_config = ml_config.get('reinforcement_learning', {})
+        # Optional override to skip RL/DQN training (e.g., when only PPO is used)
+        skip_rl = os.getenv("SKIP_RL_TRAINING", "true").lower() in ("1", "true", "yes")
+        if skip_rl:
+            rl_config['enabled'] = False
+            logger.info("RL/DQN training skipped via SKIP_RL_TRAINING=true (using PPO separately).")
         logger.info("Konfigürasyon başarıyla yüklendi.")
     except Exception as e:
         logger.error(f"Konfigürasyon yüklenirken kritik hata: {e}", exc_info=True)
@@ -483,17 +488,22 @@ async def main():
     logger.info("\n" + "="*60)
     logger.info("ADIM 3: REINFORCEMENT LEARNING AJANI EĞİTİLİYOR")
     logger.info("="*60)
-    # Yeni RL eğitim sürecini tetikle (82 özellikli durum uzayı hedefleniyor)
-    rl_feature_target = ml_config.get('gemma', {}).get('feature_count', 82)
-    for symbol in SYMBOLS_TO_TRAIN:
-        rl_summary = train_reinforcement_learning_agent(
-            symbol=symbol,
-            rl_config=rl_config,
-            feature_engine=feature_engine,
-            training_data_raw=training_data_raw,
-            target_feature_count=rl_feature_target,
-        )
-        training_metrics['rl_models'][symbol] = rl_summary
+    if not rl_config.get('enabled', True):
+        logger.info("RL/DQN eğitimi atlandı (devre dışı veya SKIP_RL_TRAINING=true).")
+        for symbol in SYMBOLS_TO_TRAIN:
+            training_metrics['rl_models'][symbol] = {'status': 'skipped', 'reason': 'disabled'}
+    else:
+        # Yeni RL eğitim sürecini tetikle (82 özellikli durum uzayı hedefleniyor)
+        rl_feature_target = ml_config.get('gemma', {}).get('feature_count', 82)
+        for symbol in SYMBOLS_TO_TRAIN:
+            rl_summary = train_reinforcement_learning_agent(
+                symbol=symbol,
+                rl_config=rl_config,
+                feature_engine=feature_engine,
+                training_data_raw=training_data_raw,
+                target_feature_count=rl_feature_target,
+            )
+            training_metrics['rl_models'][symbol] = rl_summary
 
     # --- YENİ VE TEMİZ VERİ PİPELINE'INI KULLANMA ---
     # GEMMA modelini eğitmeden hemen önce, bizim yeni ve standartlaşmış

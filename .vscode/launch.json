@@ -10,6 +10,59 @@
                 "port": 9091
             },
             "preLaunchTask": "func: host start"
+        },
+        {
+            "name": "1. Analyze Volume (Active Log)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/analyze_volume_buckets.py",
+            "args": [
+                "--log-file",
+                "${file}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "2. Analyze Pyramiding (Active Log)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/analyze_pyramiding_logs.py",
+            "args": [
+                "--files",
+                "${file}",
+                "--symbol",
+                "BTC/USDT:USDT",
+                "--json-out",
+                "${workspaceFolder}/diagnostics/pyramiding_summary.json"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "3. Log Analizi Yap (Aktif Dosya)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/signal_quality_analyzer.py",
+            "args": [
+                "${file}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "4. Analyze Trend Alignment",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/analyze_trend_alignment.py",
+            "args": [
+                "--log-file",
+                "${file}",
+                "--symbol",
+                "BTC"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
         }
     ]
 }

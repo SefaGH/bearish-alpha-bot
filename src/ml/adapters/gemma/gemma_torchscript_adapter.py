@@ -92,6 +92,12 @@ class GemmaTorchScriptAdapter:
         self.prediction_cache = {}
         self.cache_ttl = config.get('cache_ttl', 30)
 
+        # Lightweight monitoring buffers (rolling window)
+        self.recent_confidences = deque(maxlen=500)
+        self.class_counts = {'bearish': 0, 'neutral': 0, 'bullish': 0}
+        self._last_metrics_log = time.time()
+        self._metrics_log_interval = config.get('metrics_log_interval', 60)
+
         self.shadow_mode = config.get('shadow_mode', False)
         self.shadow_predictions = deque(maxlen=5000)
 
@@ -123,20 +129,30 @@ class GemmaTorchScriptAdapter:
     def _load_model_and_components(self):
         """Load TorchScript model and all auxiliary components."""
         try:
-            # 1. Load Model
+            # 1. Load Model (float-first, quantized fallback)
             model_path = Path(self.config['model_path'])
-            
-            # Check for quantized version
             quantized_path = model_path.with_name(model_path.stem + "_int8" + model_path.suffix)
-            if quantized_path.exists():
-                logger.info(f"Found quantized model, using: {quantized_path}")
-                model_path = quantized_path
-                
-            if not model_path.exists():
-                raise FileNotFoundError(f"Model file not found at {model_path}")
-            self.model = torch.jit.load(str(model_path), map_location=self.device)
+            prefer_quantized = bool(self.config.get("prefer_quantized"))
+            use_quantized = prefer_quantized or bool(self.config.get("force_quantized"))
+
+            selected_path = model_path
+            if use_quantized and quantized_path.exists():
+                selected_path = quantized_path
+                logger.info(f"Quantized model requested via config; using: {selected_path}")
+            elif model_path.exists():
+                selected_path = model_path
+                if quantized_path.exists():
+                    logger.info(f"Float model preferred; quantized available at {quantized_path} as fallback")
+            elif quantized_path.exists():
+                selected_path = quantized_path
+                logger.warning(f"Float model missing; falling back to quantized: {selected_path}")
+
+            if not selected_path.exists():
+                raise FileNotFoundError(f"Model file not found at {selected_path}")
+
+            self.model = torch.jit.load(str(selected_path), map_location=self.device)
             self.model.eval()
-            logger.info(f"✅ Loaded TorchScript model from: {model_path}")
+            logger.info(f"✅ Loaded TorchScript model from: {selected_path}")
 
             # 2. Load Scaler
             # Updated default path to new production location (Plan 2)
@@ -205,6 +221,8 @@ class GemmaTorchScriptAdapter:
         if self.shadow_mode:
             self.shadow_predictions.append({'timestamp': datetime.now().isoformat(), 'features_hash': cache_key, 'prediction': result})
 
+        self._record_metrics(result, inference_time)
+
         return result
 
     def _predict_internal(self, features_dict: Dict[str, float]) -> Dict[str, Any]:
@@ -213,7 +231,20 @@ class GemmaTorchScriptAdapter:
             raise RuntimeError("Adapter is not fully initialized. Cannot predict.")
 
         feature_vector_aligned = self._align_features(features_dict)
+        # Input sanity checks
+        if np.any(~np.isfinite(feature_vector_aligned)):
+            logger.warning("Non-finite values detected in feature vector; returning fallback.")
+            return self._get_fallback_prediction()
+        zero_ratio = float(np.sum(feature_vector_aligned == 0) / len(feature_vector_aligned))
+        if zero_ratio > 0.8:
+            logger.warning("High zero ratio in features (%.2f); returning fallback.", zero_ratio)
+            return self._get_fallback_prediction()
+
         feature_vector_scaled = self.scaler.transform([feature_vector_aligned])
+        if np.any(~np.isfinite(feature_vector_scaled)):
+            logger.warning("Scaled features contain non-finite values; returning fallback.")
+            return self._get_fallback_prediction()
+
         tensor = torch.tensor(feature_vector_scaled, dtype=torch.float32, device=self.device)
 
         output = self.model(tensor)
@@ -222,19 +253,53 @@ class GemmaTorchScriptAdapter:
 
         prediction_label = ['bearish', 'neutral', 'bullish'][prediction_idx.item()]
 
-        return {
-            'price_confidence': confidence.item(),
-            'prediction': prediction_idx.item(),
+        probabilities = probs[0].cpu().numpy()
+        # Output sanity checks
+        if not np.all(np.isfinite(probabilities)):
+            logger.warning("Model output contains non-finite probabilities; returning fallback.")
+            return self._get_fallback_prediction()
+        prob_sum = probabilities.sum()
+        if not 0.99 <= prob_sum <= 1.01:
+            probabilities = probabilities / (prob_sum + 1e-12)
+            logger.warning("Probabilities renormalized (sum was %.4f).", prob_sum)
+        confidence_val = float(np.max(probabilities))
+
+        result = {
+            'price_confidence': confidence_val,
+            'prediction': int(prediction_idx.item()),
             'prediction_label': prediction_label,
-            'probabilities': probs[0].cpu().numpy().tolist(),
+            'probabilities': probabilities.tolist(),
             'timestamp': datetime.now().isoformat(),
             'fallback': False
         }
+        return result
 
     def _align_features(self, features_dict: Dict[str, float]) -> np.ndarray:
         """Aligns incoming feature dictionary to the model's required input vector."""
         # This assumes 'self.features' is the list of 82 feature names in the correct order.
-        full_vector = np.array([features_dict.get(f, 0.0) for f in self.features])
+        full_vector = np.array([features_dict.get(f, 0.0) for f in self.features], dtype=float)
+
+        # Apply feature mask if present (boolean mask expected)
+        if self.feature_mask is not None:
+            try:
+                if self.feature_mask.dtype == bool:
+                    full_vector = full_vector[self.feature_mask]
+                else:
+                    full_vector = full_vector[np.where(self.feature_mask)[0]]
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning(f"Feature mask application failed: {exc}")
+
+        # Enforce expected length (pad/truncate)
+        if self.expected_feature_count and len(full_vector) != self.expected_feature_count:
+            if len(full_vector) > self.expected_feature_count:
+                full_vector = full_vector[: self.expected_feature_count]
+            else:
+                padding = np.zeros(self.expected_feature_count - len(full_vector))
+                full_vector = np.concatenate([full_vector, padding])
+            logger.warning(
+                "Feature vector length adjusted to expected count (%s)", self.expected_feature_count
+            )
+
         return full_vector
 
     def _get_cache_key(self, features: Dict[str, float]) -> str:
@@ -263,5 +328,35 @@ class GemmaTorchScriptAdapter:
             'cache_size': len(self.prediction_cache),
             'avg_inference_time_ms': np.mean(self.inference_times) if self.inference_times else 0,
             'p95_inference_time_ms': np.percentile(self.inference_times, 95) if len(self.inference_times) > 1 else 0,
-            'shadow_log_size': len(self.shadow_predictions)
+            'shadow_log_size': len(self.shadow_predictions),
+            'recent_conf_p50': float(np.percentile(self.recent_confidences, 50)) if self.recent_confidences else 0.0,
+            'recent_conf_p95': float(np.percentile(self.recent_confidences, 95)) if len(self.recent_confidences) > 1 else 0.0,
+            'class_counts': self.class_counts,
         }
+
+    def _record_metrics(self, result: Dict[str, Any], inference_time_ms: float) -> None:
+        """Track lightweight rolling metrics and emit occasional logs."""
+        try:
+            conf = float(result.get('price_confidence', 0.0))
+            label = result.get('prediction_label', 'unknown')
+            self.recent_confidences.append(conf)
+            if label in self.class_counts:
+                self.class_counts[label] += 1
+        except Exception:
+            return
+
+        now = time.time()
+        if now - self._last_metrics_log >= self._metrics_log_interval:
+            if self.recent_confidences:
+                p50 = float(np.percentile(self.recent_confidences, 50))
+                p95 = float(np.percentile(self.recent_confidences, 95))
+            else:
+                p50 = p95 = 0.0
+            logger.info(
+                "📊 [GEMMA] conf_p50=%.3f conf_p95=%.3f p95_latency=%.1fms class_counts=%s",
+                p50,
+                p95,
+                np.percentile(self.inference_times, 95) if len(self.inference_times) > 1 else inference_time_ms,
+                self.class_counts,
+            )
+            self._last_metrics_log = now

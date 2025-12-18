@@ -288,8 +288,22 @@ class AdvancedPricePredictionEngine:
     ) -> Dict[str, Any]:
         close_price = float(price_data['close'].iloc[-1])
         probabilities = adapter_result.get('probabilities', [0.33, 0.34, 0.33])
-        prob_bearish = float(probabilities[0]) if probabilities else 0.33
-        prob_bullish = float(probabilities[-1]) if probabilities else 0.33
+        if not isinstance(probabilities, (list, tuple, np.ndarray)) or len(probabilities) < 3:
+            logger.warning("Adapter probabilities malformed for %s; using fallback payload.", symbol)
+            return self._build_fallback_prediction(symbol, price_data)
+        probabilities = np.array(probabilities, dtype=float)
+        if not np.all(np.isfinite(probabilities)):
+            logger.warning("Non-finite adapter probabilities for %s; using fallback payload.", symbol)
+            return self._build_fallback_prediction(symbol, price_data)
+        prob_sum = probabilities.sum()
+        if prob_sum <= 0 or not np.isfinite(prob_sum):
+            logger.warning("Zero/invalid probability sum for %s; using fallback payload.", symbol)
+            return self._build_fallback_prediction(symbol, price_data)
+        if not 0.99 <= prob_sum <= 1.01:
+            probabilities = probabilities / (prob_sum + 1e-12)
+            logger.warning("Probabilities renormalized for %s (sum was %.4f).", symbol, prob_sum)
+        prob_bearish = float(probabilities[0]) if len(probabilities) > 0 else 0.33
+        prob_bullish = float(probabilities[-1]) if len(probabilities) > 0 else 0.33
         consensus = abs(prob_bullish - prob_bearish)
         forecast_pct = (prob_bullish - prob_bearish) * self.prediction_scale_pct
         uncertainty = max(1e-3, 1.0 - float(adapter_result.get('price_confidence', 0.5)))
@@ -364,7 +378,7 @@ class AdvancedPricePredictionEngine:
         if self.adapter and self.is_trained:
             try:
                 adapter_result = self.adapter.predict(feature_snapshot)
-                adapter_result['fallback'] = False
+                adapter_result['fallback'] = bool(adapter_result.get('fallback', False))
                 return self._build_prediction_payload(symbol, price_data, adapter_result)
             except Exception as exc:  # noqa: BLE001
                 logger.error("GEMMA adapter failed for %s: %s", symbol, exc, exc_info=True)
