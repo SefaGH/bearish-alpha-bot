@@ -201,6 +201,34 @@ signals:
         rsi_threshold: 48        # More aggressive threshold
 ```
 
+### MTF Confirmation (Optional)
+
+To enable 15m + 1h confirmation for adaptive_str:
+
+```yaml
+signals:
+  short_the_rip:
+    mtf_confirmation:
+      enabled: true
+      require_15m: false
+      require_1h: false
+      on_missing_15m: "skip"
+      on_missing_1h: "skip"
+```
+
+This adds a 15m overbought/extension check and a 1h bearish trend check. Missing data behavior is controlled by the `on_missing_*` settings.
+
+#### Minimum bar guard defaults
+
+Defaults used when `min_bars_*` are omitted (guard only runs when indicator columns are missing and fallback is planned):
+
+- `min_bars_rsi`: 20 (default)
+- `min_bars_ema21`: 30 (default)
+- `min_bars_ema50`: 100 (default)
+- `min_bars_ema200`: 250 (default)
+
+Insufficient bars -> fallback is not computed and `on_missing_*` is applied. When data is fully primed/injected these are usually satisfied; WS-only or partial priming can trigger the guard.
+
 ### Adjusting Duplicate Prevention
 
 More conservative (fewer signals):

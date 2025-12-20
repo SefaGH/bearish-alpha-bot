@@ -63,3 +63,9 @@ def test_balanced_portfolio_heat_uses_six_percent_default():
     assert cfg.risk_limits.max_portfolio_risk == pytest.approx(0.06, rel=1e-9)
     assert cfg.max_portfolio_risk_usd == pytest.approx(30.0, rel=1e-6)
     assert cfg.max_risk_per_trade_usd == pytest.approx(1.5, rel=1e-6)
+
+
+def test_min_stop_pct_string_coerces_to_float():
+    cfg = RiskConfiguration(custom_limits={'min_stop_pct': '0.5'})
+
+    assert cfg.risk_limits.min_stop_pct == pytest.approx(0.5)

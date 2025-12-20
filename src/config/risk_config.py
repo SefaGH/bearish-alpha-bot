@@ -188,6 +188,11 @@ class RiskConfiguration:
             processed_limits.get('min_stop_pct', 0.005),
             float
         )
+        processed_limits['min_stop_pct'] = self._safe_float_optional(
+            processed_limits.get('min_stop_pct'),
+            default=0.005,
+            field_name='risk.min_stop_pct',
+        )
         if processed_limits['min_stop_pct'] is not None and processed_limits['min_stop_pct'] > 1:
             # Normalize percent-style values (e.g., 0.5 -> 0.5%, 50 -> 50%)
             processed_limits['min_stop_pct'] = processed_limits['min_stop_pct'] / 100.0
@@ -198,9 +203,19 @@ class RiskConfiguration:
             custom_limits.get('max_position_notional_usd') if custom_limits else None,
             float
         )
+        explicit_max_notional = self._safe_float_optional(
+            explicit_max_notional,
+            default=None,
+            field_name='risk.max_position_notional_usd',
+        )
         computed_max_notional = None
         if custom_limits:
             computed_max_notional = custom_limits.get('computed_max_notional_usd') or custom_limits.get('max_notional_per_trade')
+        computed_max_notional = self._safe_float_optional(
+            computed_max_notional,
+            default=None,
+            field_name='risk.computed_max_notional_usd',
+        )
 
         max_notional_choice = None
         if explicit_max_notional is not None and explicit_max_notional > 0:
@@ -429,6 +444,24 @@ Portfolio Heat Cap: {self.risk_limits.max_portfolio_risk:.1%} = ${self.max_portf
                 return int(env_value)
             return str(env_value)
         return config_value
+
+    @staticmethod
+    def _safe_float_optional(value: Any, default: Optional[float], field_name: str) -> Optional[float]:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            logger.warning("Invalid %s value '%s'; using default %s", field_name, value, default)
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                logger.warning("Invalid %s value '%s'; using default %s", field_name, value, default)
+                return default
+        logger.warning("Invalid %s value '%s'; using default %s", field_name, value, default)
+        return default
     
     def _load_dynamic_rr_config(self, config_dict: Dict[str, Any]):
         """

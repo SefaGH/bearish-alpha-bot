@@ -350,6 +350,28 @@ signals:
     sl_atr_mult: 1.5                  # Override with: STRATEGY_STR_SL_ATR_MULT
     min_tp_pct: 0.010                 # Override with: STRATEGY_STR_MIN_TP_PCT
     max_sl_pct: 0.020                 # Override with: STRATEGY_STR_MAX_SL_PCT
+    # Optional MTF confirmation (15m + 1h)
+    mtf_confirmation:
+      enabled: true
+      require_15m: false
+      require_1h: false
+
+      rsi_15m_min: 62.0
+      min_15m_close_over_ema50_pct: 0.0015
+
+      require_1h_bearish_ema_stack: true
+      rsi_1h_max: 60.0
+
+      on_missing_15m: "skip"
+      on_missing_1h: "skip"
+      # Optional min bars guard (defaults used if omitted)
+      # defaults (if omitted): rsi=20, ema21=30, ema50=100, ema200=250
+      # guard only runs when indicator columns missing + fallback planned
+      # insufficient bars -> on_missing_* policy
+      min_bars_rsi: 20
+      min_bars_ema21: 30
+      min_bars_ema50: 100
+      min_bars_ema200: 250
     volatility_stop:
       enabled: true                   # Override with: STRATEGY_STR_VOL_STOP_ENABLED
       min_sl_pct: 0.0025              # Override with: STRATEGY_STR_VOL_STOP_MIN_SL

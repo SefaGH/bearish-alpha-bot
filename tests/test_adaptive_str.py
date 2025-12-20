@@ -1,3 +1,4 @@
+import copy
 import logging
 
 import pandas as pd
@@ -32,6 +33,35 @@ def base_config():
             'BTC/USDT': {'rsi_threshold': 60},
         }
     }
+
+
+@pytest.fixture
+def sample_df_30m():
+    return pd.DataFrame([
+        {
+            'close': 100.0,
+            'rsi': 75.0,
+            'atr': 1.0,
+            'ema_fast': 99.0,
+            'ema21': 98.0,
+            'ema50': 90.0,
+            'ema200': 110.0,
+            'volume': 1000.0,
+        }
+    ])
+
+
+@pytest.fixture
+def sample_df_1h_bearish():
+    return pd.DataFrame([
+        {
+            'close': 100.0,
+            'rsi': 55.0,
+            'ema21': 90.0,
+            'ema50': 100.0,
+            'ema200': 110.0,
+        }
+    ])
 
 
 def test_volatility_stop_tuning_scales_with_regime(base_config):
@@ -107,3 +137,154 @@ def test_signal_logs_volatility_stop_metadata(base_config, caplog):
     assert meta['volatility'] == 'low'
     assert meta['final_sl_pct'] < meta['base_sl_pct']
     assert any('[VolStop]' in record.message for record in caplog.records)
+
+
+def test_mtf_disabled_does_not_block(base_config, sample_df_30m, sample_df_1h_bearish):
+    strategy = AdaptiveShortTheRip(base_config)
+
+    signal = strategy.signal(
+        df_30m=sample_df_30m,
+        df_1h=sample_df_1h_bearish,
+        symbol='BTC/USDT',
+    )
+    assert signal is not None
+
+
+def test_mtf_missing_15m_skip_allows_signal(base_config, sample_df_30m, sample_df_1h_bearish):
+    cfg = copy.deepcopy(base_config)
+    cfg['mtf_confirmation'] = {
+        'enabled': True,
+        'require_15m': False,
+        'require_1h': False,
+        'on_missing_15m': 'skip',
+        'on_missing_1h': 'skip',
+    }
+    strategy = AdaptiveShortTheRip(cfg)
+
+    signal = strategy.signal(
+        df_30m=sample_df_30m,
+        df_1h=sample_df_1h_bearish,
+        symbol='BTC/USDT',
+    )
+    assert signal is not None
+    assert signal['features']['mtf_15m']['status'] == 'missing'
+    assert signal['features']['mtf_15m']['action'] == 'skip'
+
+
+def test_mtf_missing_15m_reject_blocks_signal(base_config, sample_df_30m, sample_df_1h_bearish):
+    cfg = copy.deepcopy(base_config)
+    cfg['mtf_confirmation'] = {
+        'enabled': True,
+        'require_15m': False,
+        'require_1h': False,
+        'on_missing_15m': 'reject',
+        'on_missing_1h': 'skip',
+    }
+    strategy = AdaptiveShortTheRip(cfg)
+
+    signal = strategy.signal(
+        df_30m=sample_df_30m,
+        df_1h=sample_df_1h_bearish,
+        symbol='BTC/USDT',
+    )
+    assert signal is None
+
+
+def test_mtf_missing_1h_reject_blocks_signal(base_config, sample_df_30m):
+    cfg = copy.deepcopy(base_config)
+    cfg['mtf_confirmation'] = {
+        'enabled': True,
+        'require_15m': False,
+        'require_1h': True,
+        'on_missing_15m': 'skip',
+        'on_missing_1h': 'reject',
+    }
+    strategy = AdaptiveShortTheRip(cfg)
+
+    signal = strategy.signal(
+        df_30m=sample_df_30m,
+        df_1h=None,
+        symbol='BTC/USDT',
+    )
+    assert signal is None
+
+
+def test_mtf_insufficient_bars_1h_reject_blocks_signal(base_config, sample_df_30m):
+    cfg = copy.deepcopy(base_config)
+    cfg['mtf_confirmation'] = {
+        'enabled': True,
+        'require_15m': False,
+        'require_1h': True,
+        'require_1h_bearish_ema_stack': True,
+        'rsi_1h_max': 60.0,
+        'on_missing_15m': 'skip',
+        'on_missing_1h': 'reject',
+    }
+    strategy = AdaptiveShortTheRip(cfg)
+
+    df_1h_short = pd.DataFrame({'close': [100.0] * 100})
+    signal = strategy.signal(
+        df_30m=sample_df_30m,
+        df_1h=df_1h_short,
+        symbol='BTC/USDT',
+    )
+    assert signal is None
+    assert strategy._mtf_telemetry['mtf_1h_fallback_attempted'] == 1
+    assert strategy._mtf_telemetry['mtf_1h_fallback_skipped_insufficient_bars'] == 1
+
+
+def test_mtf_insufficient_bars_15m_skip_allows_signal(base_config, sample_df_30m, sample_df_1h_bearish):
+    cfg = copy.deepcopy(base_config)
+    cfg['mtf_confirmation'] = {
+        'enabled': True,
+        'require_15m': False,
+        'require_1h': False,
+        'min_15m_close_over_ema50_pct': 0.002,
+        'on_missing_15m': 'skip',
+        'on_missing_1h': 'skip',
+    }
+    strategy = AdaptiveShortTheRip(cfg)
+
+    df_15m_short = pd.DataFrame({'close': [100.0] * 50})
+    signal = strategy.signal(
+        df_30m=sample_df_30m,
+        df_1h=sample_df_1h_bearish,
+        symbol='BTC/USDT',
+        market_data={'15m': df_15m_short},
+    )
+    assert signal is not None
+    assert strategy._mtf_telemetry['mtf_15m_fallback_attempted'] == 1
+    assert strategy._mtf_telemetry['mtf_15m_fallback_skipped_insufficient_bars'] == 1
+
+
+def test_mtf_fallback_cache_hit(base_config, sample_df_30m, sample_df_1h_bearish):
+    cfg = copy.deepcopy(base_config)
+    cfg['mtf_confirmation'] = {
+        'enabled': True,
+        'require_15m': False,
+        'require_1h': False,
+        'rsi_15m_min': 10.0,
+        'min_15m_close_over_ema50_pct': 0.0,
+        'on_missing_15m': 'skip',
+        'on_missing_1h': 'skip',
+    }
+    strategy = AdaptiveShortTheRip(cfg)
+
+    df_15m = pd.DataFrame({'close': [100.0 + i for i in range(30)]})
+    signal_1 = strategy.signal(
+        df_30m=sample_df_30m,
+        df_1h=sample_df_1h_bearish,
+        symbol='BTC/USDT',
+        market_data={'15m': df_15m},
+    )
+    signal_2 = strategy.signal(
+        df_30m=sample_df_30m,
+        df_1h=sample_df_1h_bearish,
+        symbol='BTC/USDT',
+        market_data={'15m': df_15m},
+    )
+    assert signal_1 is not None
+    assert signal_2 is not None
+    assert strategy._mtf_telemetry['mtf_15m_fallback_attempted'] == 2
+    assert strategy._mtf_telemetry['mtf_15m_fallback_computed'] == 1
+    assert strategy._mtf_telemetry['mtf_15m_cache_hit'] == 1

@@ -19,10 +19,12 @@ Ref: Issue #277
 """
 
 
+import ast
+import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import yaml
 
@@ -41,6 +43,7 @@ _config_instance: Optional[Dict[str, Any]] = None
 _config_signature: Optional[Tuple[str, Tuple[Tuple[str, Optional[str]]]]] = None
 _config_env_keys: Tuple[str, ...] = ()
 _config_path_cache: Optional[str] = None
+_MISSING = object()
 
 _TRADING_SYMBOL_PATTERN = re.compile(
     r'^[A-Z0-9]{2,10}/[A-Z0-9]{2,10}(:[A-Z0-9]{2,10})?$',
@@ -56,6 +59,114 @@ class LiveTradingConfiguration:
     CONFIG_FILE_PATH = 'config/config.example.yaml'
     ENV_OVERRIDE_PATTERN = re.compile(r'#\s*Override with:\s*(\w+)')
     _env_keys_snapshot: Tuple[str, ...] = ()
+    TYPE_COERCION_ALLOWLIST = (
+        'ml.reinforcement_learning.training_mode',
+        'signals.short_the_rip.mtf_confirmation.enabled',
+        'signals.short_the_rip.mtf_confirmation.require_15m',
+        'signals.short_the_rip.mtf_confirmation.require_1h',
+        'pyramiding.enabled',
+        'strategies.regime_routing.bullish.preferred_strategies',
+        'strategies.regime_routing.bearish.preferred_strategies',
+        'strategies.regime_routing.neutral.preferred_strategies',
+        'strategies.regime_routing.volatile.preferred_strategies',
+        'risk.min_stop_pct',
+        'risk.per_trade_risk_pct',
+        'risk.max_position_size_pct',
+        'risk.max_notional_pct_per_trade',
+        'risk.max_margin_pct_per_trade',
+        'risk.daily_loss_limit_pct',
+    )
+    TYPE_COERCION_ALLOWLIST_PREFIXES = (
+        'risk.',
+    )
+    TYPE_COERCION_JSON_ONLY = {
+        'volume_analyzer.buckets',
+    }
+    TYPE_COERCION_TYPE_OVERRIDES = {
+        'strategies.regime_routing.bullish.preferred_strategies': {'type': list, 'elem_type': str, 'json_only': False},
+        'strategies.regime_routing.bearish.preferred_strategies': {'type': list, 'elem_type': str, 'json_only': False},
+        'strategies.regime_routing.neutral.preferred_strategies': {'type': list, 'elem_type': str, 'json_only': False},
+        'strategies.regime_routing.volatile.preferred_strategies': {'type': list, 'elem_type': str, 'json_only': False},
+        'ml.features.volatility_windows': {'type': list, 'elem_type': int, 'json_only': False},
+        'ml.features.momentum_windows': {'type': list, 'elem_type': int, 'json_only': False},
+        'ml.price_prediction.timeframes': {'type': list, 'elem_type': str, 'json_only': False},
+        'ml.price_prediction.models': {'type': list, 'elem_type': str, 'json_only': False},
+        'ml.reinforcement_learning.ppo_lookback_windows': {'type': list, 'elem_type': int, 'json_only': False},
+    }
+    TYPE_VALIDATION_ALLOWLIST = TYPE_COERCION_ALLOWLIST
+    TYPE_VALIDATION_ALLOWLIST_PREFIXES = TYPE_COERCION_ALLOWLIST_PREFIXES
+    TYPE_VALIDATION_STRICT_ENV = 'CONFIG_STRICT_TYPE_CHECK'
+    OPERATIONAL_SCHEMA = {
+        'bingx_rest_debug': {
+            'type': bool,
+            'source': 'runtime',
+            'note': 'Enable BingX REST debug logging',
+        },
+        'ccxt_timeout_ms': {
+            'type': int,
+            'source': 'runtime',
+            'note': 'CCXT request timeout in milliseconds',
+        },
+        'debug_mode': {
+            'type': bool,
+            'source': 'runtime',
+            'note': 'Global debug logging toggle',
+        },
+        'exchanges': {
+            'type': list,
+            'elem_type': str,
+            'source': 'runtime',
+            'note': 'Comma-separated exchange list',
+        },
+        'log_level': {
+            'type': str,
+            'source': 'runtime',
+            'note': 'Logging level (e.g., INFO, DEBUG)',
+        },
+        'pythonpath': {
+            'type': str,
+            'source': 'runtime',
+            'note': 'Python module search path',
+        },
+        'pythonunbuffered': {
+            'type': int,
+            'source': 'runtime',
+            'note': 'Python unbuffered IO flag',
+        },
+        'telegram_chat_id': {
+            'type': int,
+            'source': 'runtime',
+            'note': 'Telegram chat ID',
+        },
+        'ticker_cache_ttl_s': {
+            'type': float,
+            'source': 'runtime',
+            'note': 'Ticker cache TTL in seconds',
+        },
+        'ticker_max_attempts': {
+            'type': int,
+            'source': 'runtime',
+            'note': 'Ticker retry max attempts',
+        },
+        'ticker_retry_base_delay_s': {
+            'type': float,
+            'source': 'runtime',
+            'note': 'Ticker retry base delay in seconds',
+        },
+        'trading_duration': {
+            'type': int,
+            'source': 'runtime',
+            'note': 'Trading duration in seconds',
+        },
+        'trading_mode': {
+            'type': str,
+            'source': 'runtime',
+            'note': 'Trading mode (paper/live)',
+        },
+    }
+    DEPRECATED_LEGACY_KEYS = {
+        'ml_rl_training_mode': 'ml.reinforcement_learning.training_mode',
+    }
 
     @classmethod
     def load(
@@ -117,6 +228,8 @@ class LiveTradingConfiguration:
     def __init__(self, config_path: Optional[str] = None) -> None:
         self.config_path = self._resolve_config_path(config_path)
         self._env_keys_snapshot = ()
+        self._appconfig_raw_keys: Tuple[str, ...] = ()
+        self._appconfig_normalized_paths: List[str] = []
 
     @staticmethod
     def _resolve_config_path(config_path: Optional[str]) -> str:
@@ -165,6 +278,15 @@ class LiveTradingConfiguration:
         merged = self._deep_merge(yaml_config, env_overrides)
         if appconfig_overrides:
             merged = self._deep_merge(merged, appconfig_overrides)
+
+        canonical_schema = self._build_type_schema(yaml_config)
+        operational_schema = self._build_operational_schema()
+        combined_schema = self._merge_operational_schema(canonical_schema, operational_schema)
+        self._warn_unknown_appconfig_keys(canonical_schema, operational_schema)
+        self._apply_schema_type_coercion(merged, combined_schema)
+        self._apply_heuristic_type_coercion(merged, combined_schema)
+        self._warn_deprecated_keys(merged)
+        self._validate_schema_types(merged, combined_schema)
         
         self._apply_universe_defaults(merged)
         self._normalize_risk_config(merged)
@@ -355,6 +477,584 @@ class LiveTradingConfiguration:
                 raise KeyError(key)
             result = result[key]
         return result
+
+    @classmethod
+    def _build_type_schema(cls, config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        schema: Dict[str, Dict[str, Any]] = {}
+
+        def walk(prefix: str, value: Any) -> None:
+            if not isinstance(value, dict):
+                return
+            for key, child in value.items():
+                path = f"{prefix}.{key}" if prefix else str(key)
+                meta: Dict[str, Any] = {'type': type(child), 'default': child}
+
+                if isinstance(child, str):
+                    structured = cls._parse_structured_value(child, path, warn=False)
+                    if isinstance(structured, list):
+                        meta['type'] = list
+                        meta['default'] = structured
+                        child = structured
+                    elif isinstance(structured, dict):
+                        meta['type'] = dict
+                        meta['default'] = structured
+                        child = structured
+
+                if isinstance(child, list):
+                    elem_type, json_only = cls._infer_list_meta(child)
+                    meta['elem_type'] = elem_type
+                    meta['json_only'] = json_only or path in cls.TYPE_COERCION_JSON_ONLY
+                if path in cls.TYPE_COERCION_TYPE_OVERRIDES:
+                    meta.update(cls.TYPE_COERCION_TYPE_OVERRIDES[path])
+                schema[path] = meta
+                walk(path, child)
+
+        walk('', config)
+        return schema
+
+    @classmethod
+    def _build_operational_schema(cls) -> Dict[str, Dict[str, Any]]:
+        schema: Dict[str, Dict[str, Any]] = {}
+        for key, meta in cls.OPERATIONAL_SCHEMA.items():
+            entry = {
+                'type': meta.get('type', str),
+                'default': None,
+                'source': meta.get('source', 'runtime'),
+                'note': meta.get('note', ''),
+            }
+            if meta.get('type') is list:
+                entry['elem_type'] = meta.get('elem_type', str)
+                entry['json_only'] = meta.get('json_only', False)
+            schema[key] = entry
+        return schema
+
+    @classmethod
+    def _merge_operational_schema(
+        cls,
+        canonical: Dict[str, Dict[str, Any]],
+        operational: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        combined = dict(canonical)
+        overlaps = set(canonical.keys()) & set(operational.keys())
+        if overlaps:
+            message = (
+                "Operational schema overlaps canonical keys: "
+                + ", ".join(sorted(overlaps))
+                + " (canonical wins)"
+            )
+            if cls._get_strict_mode():
+                raise ValueError(message)
+            logger.warning(message)
+
+        for key, meta in operational.items():
+            if key not in combined:
+                combined[key] = meta
+        return combined
+
+    @staticmethod
+    def _infer_list_meta(values: List[Any]) -> Tuple[Optional[type], bool]:
+        if not values:
+            return (None, False)
+
+        if all(isinstance(item, (list, dict)) for item in values):
+            return (None, True)
+
+        if all(isinstance(item, bool) for item in values):
+            return (bool, False)
+
+        if all(isinstance(item, int) and not isinstance(item, bool) for item in values):
+            return (int, False)
+
+        if all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in values):
+            return (float, False)
+
+        if all(isinstance(item, str) for item in values):
+            return (str, False)
+
+        return (None, False)
+
+    @classmethod
+    def _collect_allowlist_paths(
+        cls,
+        schema: Dict[str, Dict[str, Any]],
+        allowlist: Iterable[str],
+        prefixes: Iterable[str],
+        label: str,
+    ) -> List[str]:
+        selected: set = set()
+        missing: List[str] = []
+
+        for path in allowlist:
+            if path in schema:
+                selected.add(path)
+            else:
+                missing.append(path)
+
+        for prefix in prefixes:
+            normalized_prefix = prefix.rstrip('.')
+            matches = [
+                path
+                for path in schema.keys()
+                if path == normalized_prefix or path.startswith(prefix)
+            ]
+            if not matches:
+                logger.warning("%s allowlist prefix had no schema matches: %s", label, prefix)
+            else:
+                selected.update(matches)
+
+        if missing:
+            logger.warning(
+                "%s allowlist paths missing from schema: %s",
+                label,
+                ", ".join(sorted(missing)),
+            )
+
+        return sorted(selected, key=lambda path: (path.count('.'), path))
+
+    @classmethod
+    def _apply_type_coercion_allowlist(
+        cls,
+        config: Dict[str, Any],
+        schema: Dict[str, Dict[str, Any]],
+    ) -> None:
+        paths = cls._collect_allowlist_paths(
+            schema,
+            cls.TYPE_COERCION_ALLOWLIST,
+            cls.TYPE_COERCION_ALLOWLIST_PREFIXES,
+            "Type coercion",
+        )
+        for path in paths:
+            meta = schema.get(path)
+            if not meta:
+                continue
+
+            current_value = cls._get_nested_value(config, path.split('.'))
+            if current_value is _MISSING:
+                continue
+
+            coerced = cls._coerce_value(current_value, meta, path)
+            if coerced is not current_value:
+                cls._set_nested_value(config, path.split('.'), coerced)
+
+    @classmethod
+    def _apply_schema_type_coercion(
+        cls,
+        config: Dict[str, Any],
+        schema: Dict[str, Dict[str, Any]],
+    ) -> None:
+        for path in sorted(schema.keys(), key=lambda p: (p.count('.'), p)):
+            current_value = cls._get_nested_value(config, path.split('.'))
+            if current_value is _MISSING:
+                continue
+
+            meta = schema[path]
+            coerced = cls._coerce_value(current_value, meta, path)
+            if coerced is not current_value:
+                cls._set_nested_value(config, path.split('.'), coerced)
+
+    @classmethod
+    def _apply_heuristic_type_coercion(
+        cls,
+        config: Dict[str, Any],
+        schema: Dict[str, Dict[str, Any]],
+    ) -> None:
+        schema_paths = set(schema.keys())
+
+        def walk(node: Any, prefix: str) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    path = f"{prefix}.{key}" if prefix else str(key)
+                    if isinstance(value, dict):
+                        walk(value, path)
+                        continue
+                    if isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, dict):
+                                walk(item, path)
+                        continue
+                    if path in schema_paths:
+                        continue
+                    if isinstance(value, str):
+                        coerced = cls._heuristic_coerce_value(value, path)
+                        if coerced is not value:
+                            node[key] = coerced
+            elif isinstance(node, list):
+                for item in node:
+                    if isinstance(item, dict):
+                        walk(item, prefix)
+
+        walk(config, '')
+
+    @classmethod
+    def _coerce_value(cls, value: Any, meta: Dict[str, Any], path: str) -> Any:
+        if not isinstance(value, str):
+            return value
+
+        expected_type = meta.get('type')
+        raw_value = value
+
+        if expected_type is bool:
+            parsed = cls._parse_bool_value(raw_value)
+            if parsed is None:
+                logger.warning("Type coercion failed for %s: expected bool, got %r", path, raw_value)
+                return value
+            return parsed
+
+        if expected_type is int:
+            try:
+                return int(float(raw_value))
+            except (TypeError, ValueError):
+                logger.warning("Type coercion failed for %s: expected int, got %r", path, raw_value)
+                return value
+
+        if expected_type is float:
+            try:
+                return float(raw_value)
+            except (TypeError, ValueError):
+                logger.warning("Type coercion failed for %s: expected float, got %r", path, raw_value)
+                return value
+
+        if expected_type is list:
+            return cls._coerce_list_value(raw_value, meta, path)
+
+        if expected_type is dict:
+            return cls._coerce_dict_value(raw_value, path)
+
+        return value
+
+    @classmethod
+    def _coerce_list_value(cls, raw_value: str, meta: Dict[str, Any], path: str) -> Any:
+        trimmed = raw_value.strip()
+        if trimmed.startswith('[') or trimmed.startswith('{'):
+            parsed = cls._parse_structured_value(trimmed, path, warn=True)
+            if isinstance(parsed, list):
+                coerced = cls._coerce_list_elements(parsed, meta, path)
+                return coerced if coerced is not None else raw_value
+            if isinstance(parsed, dict):
+                logger.warning(
+                    "Type coercion failed for %s: expected list, got dict",
+                    path,
+                )
+            return raw_value
+
+        if meta.get('json_only'):
+            logger.warning("Type coercion skipped for %s: expected JSON list value", path)
+            return raw_value
+
+        parts = [part.strip() for part in trimmed.split(',') if part.strip()]
+        if not parts:
+            return []
+
+        coerced = cls._coerce_list_elements(parts, meta, path)
+        return coerced if coerced is not None else raw_value
+
+    @classmethod
+    def _coerce_list_elements(cls, values: List[Any], meta: Dict[str, Any], path: str) -> Optional[List[Any]]:
+        elem_type = meta.get('elem_type')
+        if elem_type in (int, float):
+            parsed_list: List[Union[int, float]] = []
+            for part in values:
+                try:
+                    if isinstance(part, bool):
+                        raise ValueError("bool is not a valid numeric")
+                    numeric = float(part)
+                    parsed_list.append(
+                        numeric if elem_type is float else int(numeric)
+                    )
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Type coercion failed for %s: invalid %s element %r",
+                        path,
+                        elem_type.__name__,
+                        part,
+                    )
+                    return None
+            return parsed_list
+
+        if elem_type is bool:
+            parsed_list: List[bool] = []
+            for part in values:
+                if isinstance(part, bool):
+                    parsed_list.append(part)
+                    continue
+                if not isinstance(part, str):
+                    logger.warning(
+                        "Type coercion failed for %s: invalid bool element %r",
+                        path,
+                        part,
+                    )
+                    return None
+                parsed = cls._parse_bool_value(part)
+                if parsed is None:
+                    logger.warning(
+                        "Type coercion failed for %s: invalid bool element %r",
+                        path,
+                        part,
+                    )
+                    return None
+                parsed_list.append(parsed)
+            return parsed_list
+
+        if elem_type is str:
+            return [str(part).strip() for part in values if str(part).strip()]
+
+        return values
+
+    @staticmethod
+    def _coerce_dict_value(raw_value: str, path: str) -> Any:
+        trimmed = raw_value.strip()
+        parsed = LiveTradingConfiguration._parse_structured_value(trimmed, path, warn=True)
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list):
+            logger.warning(
+                "Type coercion failed for %s: expected dict, got list",
+                path,
+            )
+            return raw_value
+        if trimmed.startswith('{') or trimmed.startswith('['):
+            return raw_value
+        logger.warning("Type coercion failed for %s: expected dict, got %r", path, raw_value)
+        return raw_value
+
+    @staticmethod
+    def _parse_structured_value(raw_value: str, path: str, *, warn: bool) -> Optional[Any]:
+        trimmed = raw_value.strip()
+        if not trimmed or not (trimmed.startswith('[') or trimmed.startswith('{')):
+            return None
+        try:
+            return json.loads(trimmed)
+        except json.JSONDecodeError:
+            pass
+        try:
+            parsed = ast.literal_eval(trimmed)
+        except (ValueError, SyntaxError):
+            if warn:
+                logger.warning("Type coercion failed for %s: invalid JSON/literal %r", path, raw_value)
+            return None
+        if isinstance(parsed, (list, dict)):
+            return parsed
+        if warn:
+            logger.warning(
+                "Type coercion failed for %s: literal parsed to %s",
+                path,
+                type(parsed).__name__,
+            )
+        return None
+
+    @classmethod
+    def _heuristic_coerce_value(cls, raw_value: str, path: str) -> Any:
+        trimmed = raw_value.strip()
+        if not trimmed:
+            return raw_value
+
+        parsed_bool = cls._parse_bool_value(trimmed)
+        if parsed_bool is not None:
+            return parsed_bool
+
+        parsed_int = cls._parse_int_value(trimmed)
+        if parsed_int is not None:
+            return parsed_int
+
+        parsed_float = cls._parse_float_value(trimmed)
+        if parsed_float is not None:
+            return parsed_float
+
+        structured = cls._parse_structured_value(trimmed, path, warn=False)
+        if isinstance(structured, (list, dict)):
+            return structured
+
+        if ',' in trimmed:
+            parts = [part.strip() for part in trimmed.split(',') if part.strip()]
+            if not parts:
+                return []
+            numeric_list = cls._coerce_numeric_list(parts)
+            if numeric_list is not None:
+                return numeric_list
+            return parts
+
+        return raw_value
+
+    @classmethod
+    def _coerce_numeric_list(cls, parts: List[str]) -> Optional[List[Union[int, float]]]:
+        numeric_parts: List[Union[int, float]] = []
+        has_float = False
+        for part in parts:
+            parsed_int = cls._parse_int_value(part)
+            if parsed_int is not None:
+                numeric_parts.append(parsed_int)
+                continue
+            parsed_float = cls._parse_float_value(part)
+            if parsed_float is not None:
+                numeric_parts.append(parsed_float)
+                has_float = True
+                continue
+            return None
+        if has_float:
+            return [float(value) for value in numeric_parts]
+        return numeric_parts
+
+    @staticmethod
+    def _parse_int_value(raw_value: str) -> Optional[int]:
+        if re.fullmatch(r'[+-]?\d+', raw_value):
+            try:
+                return int(raw_value)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    @staticmethod
+    def _parse_float_value(raw_value: str) -> Optional[float]:
+        if re.fullmatch(r'[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?', raw_value):
+            try:
+                return float(raw_value)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    @staticmethod
+    def _parse_bool_value(raw_value: str) -> Optional[bool]:
+        normalized = raw_value.strip().lower()
+        if normalized in ('true', '1', 'yes', 'y', 'on'):
+            return True
+        if normalized in ('false', '0', 'no', 'n', 'off'):
+            return False
+        return None
+
+    @classmethod
+    def _get_strict_mode(cls) -> bool:
+        strict_env = os.getenv(cls.TYPE_VALIDATION_STRICT_ENV)
+        if strict_env is None:
+            return False
+        parsed = cls._parse_bool_value(strict_env)
+        if parsed is None:
+            logger.warning(
+                "Invalid %s value '%s'; using warn-only mode.",
+                cls.TYPE_VALIDATION_STRICT_ENV,
+                strict_env,
+            )
+            return False
+        return parsed
+
+    @staticmethod
+    def _get_nested_value(config: Dict[str, Any], path: List[str]) -> Any:
+        current = config
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                return _MISSING
+            current = current[key]
+        return current
+
+    @staticmethod
+    def _set_nested_value(config: Dict[str, Any], path: List[str], value: Any) -> None:
+        current = config
+        for key in path[:-1]:
+            if key not in current or not isinstance(current[key], dict):
+                current[key] = {}
+            current = current[key]
+        current[path[-1]] = value
+
+    def _warn_unknown_appconfig_keys(
+        self,
+        canonical_schema: Dict[str, Dict[str, Any]],
+        operational_schema: Dict[str, Dict[str, Any]],
+    ) -> None:
+        if not self._appconfig_normalized_paths:
+            return
+
+        canonical_paths = set(canonical_schema.keys())
+        operational_paths = set(operational_schema.keys())
+        legacy_keys = set(self.DEPRECATED_LEGACY_KEYS.keys())
+        normalized = sorted(set(self._appconfig_normalized_paths))
+
+        known_runtime = [
+            path
+            for path in normalized
+            if path in operational_paths and path not in canonical_paths
+        ]
+        if known_runtime:
+            logger.info(
+                "AppConfig recognized runtime keys (%d): %s",
+                len(known_runtime),
+                ", ".join(sorted(known_runtime)),
+            )
+
+        unknown = [
+            path
+            for path in normalized
+            if path not in canonical_paths
+            and path not in operational_paths
+            and path not in legacy_keys
+        ]
+        if not unknown:
+            return
+
+        sample_size = 20
+        sample = unknown[:sample_size]
+        remainder = len(unknown) - len(sample)
+        suffix = f" (+{remainder} more)" if remainder > 0 else ""
+        message = (
+            f"AppConfig keys not in canonical or operational schema ({len(unknown)}): "
+            f"{', '.join(sample)}{suffix}"
+        )
+        if self._get_strict_mode():
+            raise ValueError(message)
+        logger.warning(message)
+
+    @classmethod
+    def _warn_deprecated_keys(cls, config: Dict[str, Any]) -> None:
+        for legacy_key, canonical in cls.DEPRECATED_LEGACY_KEYS.items():
+            if legacy_key in config:
+                logger.warning(
+                    "Deprecated config key '%s' detected; use '%s' instead.",
+                    legacy_key,
+                    canonical,
+                )
+
+    @classmethod
+    def _validate_schema_types(
+        cls,
+        config: Dict[str, Any],
+        schema: Dict[str, Dict[str, Any]],
+    ) -> None:
+        strict = cls._get_strict_mode()
+
+        for path in sorted(schema.keys(), key=lambda p: (p.count('.'), p)):
+            meta = schema.get(path)
+            if not meta:
+                continue
+
+            value = cls._get_nested_value(config, path.split('.'))
+            if value is _MISSING:
+                continue
+
+            expected = meta.get('type')
+            if expected is bool:
+                ok = isinstance(value, bool)
+            elif expected is int:
+                ok = isinstance(value, int) and not isinstance(value, bool)
+            elif expected is float:
+                ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+            elif expected is list:
+                ok = isinstance(value, list)
+            elif expected is dict:
+                ok = isinstance(value, dict)
+            elif expected is None:
+                ok = True
+            else:
+                ok = isinstance(value, expected)
+
+            if ok:
+                continue
+
+            expected_name = expected.__name__ if hasattr(expected, '__name__') else str(expected)
+            message = (
+                f"Type validation failed for {path}: expected {expected_name}, "
+                f"got {type(value).__name__} ({value!r})"
+            )
+            if strict:
+                raise ValueError(message)
+            logger.warning(message)
 
     @staticmethod
     def _is_trading_symbol(value: str) -> bool:
@@ -793,6 +1493,8 @@ class LiveTradingConfiguration:
                 
                 if app_config_dict:
                     logger.info(f"✅ Loaded {len(app_config_dict)} settings from App Configuration")
+                    self._appconfig_raw_keys = tuple(sorted(app_config_dict.keys()))
+                    self._appconfig_normalized_paths = self._normalize_appconfig_keys(self._appconfig_raw_keys)
                     nested_config = self._flatten_to_nested(app_config_dict)
                     logger.info(f"   Converted to nested structure")
                     return nested_config
@@ -811,8 +1513,8 @@ class LiveTradingConfiguration:
             )
             return {}
     
-    @staticmethod
-    def _flatten_to_nested(flat_dict: Dict[str, Any]) -> Dict[str, Any]:
+    @classmethod
+    def _flatten_to_nested(cls, flat_dict: Dict[str, Any]) -> Dict[str, Any]:
         """
         Convert flat dictionary keys to nested structure.
         
@@ -820,13 +1522,14 @@ class LiveTradingConfiguration:
             {'TRADING_MODE': 'paper', 'CAPITAL_USDT': '1000'}
             ->
             {'trading_mode': 'paper', 'capital_usdt': '1000'}
-            (keys lowercase to match config.example.yaml structure)
+            (keys lowercase to match config.example.yaml structure, symbol segments preserved)
         """
         nested: Dict[str, Any] = {}
 
         for key, value in flat_dict.items():
-            lowercase_key = key.lower()
-            parts = lowercase_key.split('.') if '.' in lowercase_key else [lowercase_key]
+            parts = cls._normalize_appconfig_key(key)
+            if not parts:
+                continue
 
             cursor = nested
             for segment in parts[:-1]:
@@ -836,6 +1539,43 @@ class LiveTradingConfiguration:
             cursor[parts[-1]] = value
 
         return nested
+
+    @classmethod
+    def _normalize_appconfig_keys(cls, keys: Iterable[str]) -> List[str]:
+        normalized: List[str] = []
+        for key in keys:
+            parts = cls._normalize_appconfig_key(key)
+            if parts:
+                normalized.append('.'.join(parts))
+        return normalized
+
+    @classmethod
+    def _normalize_appconfig_key(cls, key: str) -> List[str]:
+        parts = key.split('.') if '.' in key else [key]
+        normalized: List[str] = []
+        for segment in parts:
+            cleaned = segment.strip()
+            if not cleaned:
+                continue
+            normalized.append(cls._normalize_appconfig_segment(cleaned))
+        return normalized
+
+    @classmethod
+    def _normalize_appconfig_segment(cls, segment: str) -> str:
+        stripped = segment.strip().strip('"').strip("'")
+        if cls._is_symbol_segment(stripped):
+            return cls._normalize_symbol(stripped)
+        return stripped.lower()
+
+    @classmethod
+    def _is_symbol_segment(cls, segment: str) -> bool:
+        if not segment:
+            return False
+        if _TRADING_SYMBOL_PATTERN.match(segment):
+            return True
+        if _DERIVATIVE_SYMBOL_PATTERN.match(segment):
+            return True
+        return False
 
     @staticmethod
     def _coerce_int(value: Any, default: int, field_name: str, minimum: Optional[int] = None) -> int:

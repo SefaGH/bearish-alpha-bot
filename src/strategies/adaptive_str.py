@@ -5,8 +5,10 @@ Dynamically adjusts parameters based on market conditions.
 
 import pandas as pd
 import logging
+from collections import OrderedDict
 from typing import Optional, Dict, Tuple, ClassVar, Any
 from .short_the_rip import ShortTheRip
+from core.indicators import rsi as calc_rsi, ema as calc_ema
 
 # Default market regime for fallback
 DEFAULT_MARKET_REGIME = {
@@ -52,6 +54,14 @@ class AdaptiveShortTheRip(ShortTheRip):
             },
         },
     }
+
+    DEFAULT_MTF_MIN_BARS: ClassVar[Dict[str, int]] = {
+        'rsi': 20,
+        'ema21': 30,
+        'ema50': 100,
+        'ema200': 250,
+    }
+    MTF_CACHE_LIMIT: ClassVar[int] = 100
     
     def __init__(self, cfg: Dict, regime_analyzer=None):
         """
@@ -80,6 +90,18 @@ class AdaptiveShortTheRip(ShortTheRip):
         logger.info(f"[{self.strategy_name.upper()}] Minimum R/R Ratio initialized to: {self.min_rr_ratio}")
 
         self.volatility_stop_cfg = self._build_volatility_stop_cfg(self.strategy_config)
+        self._mtf_indicator_cache: OrderedDict[Tuple[Any, ...], Dict[str, pd.Series]] = OrderedDict()
+        self._mtf_cache_limit = self.MTF_CACHE_LIMIT
+        self._mtf_telemetry = {
+            'mtf_15m_fallback_attempted': 0,
+            'mtf_15m_fallback_skipped_insufficient_bars': 0,
+            'mtf_15m_fallback_computed': 0,
+            'mtf_15m_cache_hit': 0,
+            'mtf_1h_fallback_attempted': 0,
+            'mtf_1h_fallback_skipped_insufficient_bars': 0,
+            'mtf_1h_fallback_computed': 0,
+            'mtf_1h_cache_hit': 0,
+        }
 
     def _validate_input_data(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame, regime_data: Dict, symbol: str) -> tuple[bool, str]:
         """Gerekli tüm verilerin varlığını ve geçerliliğini kontrol eder."""
@@ -269,6 +291,375 @@ class AdaptiveShortTheRip(ShortTheRip):
             'final_sl_pct': tuned_sl_pct,
         }
         return tuned_sl_pct, metadata
+
+    def _resolve_mtf_missing_action(self, cfg: Dict, key: str, required: bool) -> str:
+        on_missing = str(cfg.get(key, 'skip')).strip().lower()
+        if on_missing not in ('skip', 'reject'):
+            on_missing = 'skip'
+        return 'reject' if required else on_missing
+
+    def _mtf_missing_result(self, action: str, reason: str, code: str, meta: Dict, required: bool) -> Tuple[bool, str, Dict]:
+        meta['status'] = 'missing'
+        meta['action'] = action
+        if required and action == 'reject':
+            reason = f"{reason} (required)"
+        else:
+            reason = f"{reason} (policy={action})"
+        if action == 'skip':
+            meta['skipped'] = True
+            return True, reason, meta
+        meta['code'] = code
+        return False, reason, meta
+
+    def _get_mtf_min_bars(self, cfg: Dict, key: str) -> int:
+        cfg_key = f"min_bars_{key}"
+        default = self.DEFAULT_MTF_MIN_BARS.get(key, 0)
+        try:
+            value = int(cfg.get(cfg_key, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(0, value)
+
+    def _mtf_min_bars_for_indicators(self, cfg: Dict, indicators: set) -> int:
+        min_bars = 0
+        for indicator in indicators:
+            min_bars = max(min_bars, self._get_mtf_min_bars(cfg, indicator))
+        return min_bars
+
+    def _get_df_last_timestamp(self, df: pd.DataFrame):
+        if df is None or df.empty:
+            return None
+        if 'timestamp' in df.columns:
+            return df['timestamp'].iloc[-1]
+        if df.index is not None and len(df.index) > 0:
+            return df.index[-1]
+        return None
+
+    def _inc_mtf_telemetry(self, key: str, amount: int = 1) -> None:
+        self._mtf_telemetry[key] = self._mtf_telemetry.get(key, 0) + amount
+
+    def _apply_mtf_indicator_fallback(
+        self,
+        df: pd.DataFrame,
+        *,
+        symbol: str,
+        timeframe: str,
+        need_rsi: bool = False,
+        ema_periods: Optional[list[int]] = None,
+    ) -> pd.DataFrame:
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            return df
+        if 'close' not in df.columns:
+            return df
+
+        ema_periods = ema_periods or []
+        required_cols = []
+        if need_rsi:
+            required_cols.append('rsi')
+        for period in ema_periods:
+            required_cols.append(f"ema{period}")
+        if not required_cols:
+            return df
+
+        last_ts = self._get_df_last_timestamp(df)
+        cache_key = (
+            symbol,
+            timeframe,
+            last_ts,
+            len(df),
+            14,
+            tuple(sorted(ema_periods)),
+        )
+
+        cached = self._mtf_indicator_cache.get(cache_key)
+        if cached:
+            self._inc_mtf_telemetry(f"mtf_{timeframe}_cache_hit")
+            self._mtf_indicator_cache.move_to_end(cache_key)
+            df_local = df.copy()
+            for col, series in cached.items():
+                if col not in df_local.columns:
+                    df_local[col] = series
+            logger.debug(
+                "[%s-MTF] %s %s fallback cache hit (len=%s, last_ts=%s)",
+                self.strategy_name.upper(),
+                symbol,
+                timeframe,
+                len(df),
+                last_ts,
+            )
+            return df_local
+
+        df_local = df.copy()
+        computed = {}
+        if need_rsi and 'rsi' not in df_local.columns:
+            df_local['rsi'] = calc_rsi(df_local['close'], period=14)
+            computed['rsi'] = df_local['rsi']
+        for period in ema_periods:
+            col = f"ema{period}"
+            if col not in df_local.columns:
+                df_local[col] = calc_ema(df_local['close'], period=period)
+                computed[col] = df_local[col]
+
+        if computed:
+            self._mtf_indicator_cache[cache_key] = computed
+            self._mtf_indicator_cache.move_to_end(cache_key)
+            while len(self._mtf_indicator_cache) > self._mtf_cache_limit:
+                self._mtf_indicator_cache.popitem(last=False)
+            self._inc_mtf_telemetry(f"mtf_{timeframe}_fallback_computed")
+            logger.debug(
+                "[%s-MTF] %s %s fallback computed (len=%s, last_ts=%s, cols=%s)",
+                self.strategy_name.upper(),
+                symbol,
+                timeframe,
+                len(df),
+                last_ts,
+                sorted(computed.keys()),
+            )
+
+        return df_local
+
+    def _mtf_confirm_15m(self, df_15m: pd.DataFrame, symbol: str, cfg: Dict) -> Tuple[bool, str, Dict]:
+        require_15m = bool(cfg.get('require_15m', False))
+        action = self._resolve_mtf_missing_action(cfg, 'on_missing_15m', require_15m)
+        meta = {
+            'timeframe': '15m',
+            'required': require_15m,
+            'on_missing': action,
+        }
+
+        if df_15m is None or not isinstance(df_15m, pd.DataFrame) or df_15m.empty:
+            return self._mtf_missing_result(action, 'missing_15m_data', 'mtf_15m_missing', meta, require_15m)
+
+        try:
+            rsi_min = float(cfg.get('rsi_15m_min', 62.0))
+        except (TypeError, ValueError):
+            rsi_min = 62.0
+
+        try:
+            min_ext_pct = float(cfg.get('min_15m_close_over_ema50_pct', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            min_ext_pct = 0.0
+
+        use_extension = min_ext_pct > 0.0
+        required_cols = ['close', 'rsi']
+        if use_extension:
+            required_cols.append('ema50')
+
+        missing_cols = [col for col in required_cols if col not in df_15m.columns]
+        if missing_cols:
+            fallback_indicators = set()
+            if 'rsi' in missing_cols:
+                fallback_indicators.add('rsi')
+            if 'ema50' in missing_cols:
+                fallback_indicators.add('ema50')
+
+            if 'close' in missing_cols or not fallback_indicators:
+                return self._mtf_missing_result(
+                    action,
+                    f"missing_15m_columns ({', '.join(missing_cols)})",
+                    'mtf_15m_missing',
+                    meta,
+                    require_15m,
+                )
+
+            self._inc_mtf_telemetry('mtf_15m_fallback_attempted')
+            min_required = self._mtf_min_bars_for_indicators(cfg, fallback_indicators)
+            if len(df_15m) < min_required:
+                self._inc_mtf_telemetry('mtf_15m_fallback_skipped_insufficient_bars')
+                meta['code'] = 'mtf_15m_insufficient_bars'
+                logger.info(
+                    "[%s-MTF] %s 15m fallback skipped (len=%s < min=%s)",
+                    self.strategy_name.upper(),
+                    symbol,
+                    len(df_15m),
+                    min_required,
+                )
+                return self._mtf_missing_result(
+                    action,
+                    f"insufficient_bars (len={len(df_15m)} < min={min_required})",
+                    'mtf_15m_insufficient_bars',
+                    meta,
+                    require_15m,
+                )
+
+            df_15m = self._apply_mtf_indicator_fallback(
+                df_15m,
+                symbol=symbol,
+                timeframe='15m',
+                need_rsi=('rsi' in missing_cols),
+                ema_periods=[50] if 'ema50' in missing_cols else [],
+            )
+
+            missing_cols = [col for col in required_cols if col not in df_15m.columns]
+            if missing_cols:
+                return self._mtf_missing_result(
+                    action,
+                    f"missing_15m_columns ({', '.join(missing_cols)})",
+                    'mtf_15m_missing',
+                    meta,
+                    require_15m,
+                )
+
+        df_valid = df_15m.dropna(subset=required_cols)
+        if df_valid.empty:
+            return self._mtf_missing_result(action, 'missing_15m_values', 'mtf_15m_missing', meta, require_15m)
+
+        last = df_valid.iloc[-1]
+        close = float(last['close'])
+        rsi_val = float(last['rsi'])
+        meta.update({
+            'rsi_15m': rsi_val,
+            'rsi_15m_min': rsi_min,
+            'close_15m': close,
+        })
+
+        if rsi_val < rsi_min:
+            meta['code'] = 'mtf_15m_rsi'
+            return False, f"rsi_15m_below_min (rsi={rsi_val:.2f}, min={rsi_min:.2f})", meta
+
+        if use_extension:
+            ema50 = float(last['ema50'])
+            if ema50 <= 0:
+                return self._mtf_missing_result(action, 'invalid_15m_ema50', 'mtf_15m_missing', meta, require_15m)
+            close_over = (close / ema50) - 1.0
+            meta.update({
+                'ema50_15m': ema50,
+                'close_over_ema50_pct': close_over,
+                'min_15m_close_over_ema50_pct': min_ext_pct,
+            })
+            if close < ema50 * (1.0 + min_ext_pct):
+                meta['code'] = 'mtf_15m_extension'
+                return False, (
+                    f"close_not_extended_over_ema50 (close={close:.2f}, ema50={ema50:.2f}, min_pct={min_ext_pct:.4f})"
+                ), meta
+
+        meta['status'] = 'passed'
+        return True, 'passed', meta
+
+    def _mtf_confirm_1h(self, df_1h: pd.DataFrame, symbol: str, cfg: Dict) -> Tuple[bool, str, Dict]:
+        require_1h = bool(cfg.get('require_1h', False))
+        action = self._resolve_mtf_missing_action(cfg, 'on_missing_1h', require_1h)
+        meta = {
+            'timeframe': '1h',
+            'required': require_1h,
+            'on_missing': action,
+        }
+
+        if df_1h is None or not isinstance(df_1h, pd.DataFrame) or df_1h.empty:
+            return self._mtf_missing_result(action, 'missing_1h_data', 'mtf_1h_missing', meta, require_1h)
+
+        require_ema_stack = bool(cfg.get('require_1h_bearish_ema_stack', True))
+        raw_rsi_max = cfg.get('rsi_1h_max', 60.0)
+        rsi_max = None
+        if raw_rsi_max is not None:
+            try:
+                rsi_max = float(raw_rsi_max)
+            except (TypeError, ValueError):
+                rsi_max = 60.0
+
+        required_cols = []
+        if require_ema_stack:
+            required_cols.extend(['ema21', 'ema50', 'ema200'])
+        if rsi_max is not None:
+            required_cols.append('rsi')
+
+        if required_cols:
+            missing_cols = [col for col in required_cols if col not in df_1h.columns]
+            if missing_cols:
+                fallback_indicators = set()
+                if 'rsi' in missing_cols:
+                    fallback_indicators.add('rsi')
+                if 'ema21' in missing_cols:
+                    fallback_indicators.add('ema21')
+                if 'ema50' in missing_cols:
+                    fallback_indicators.add('ema50')
+                if 'ema200' in missing_cols:
+                    fallback_indicators.add('ema200')
+
+                if 'close' in missing_cols or not fallback_indicators:
+                    return self._mtf_missing_result(
+                        action,
+                        f"missing_1h_columns ({', '.join(missing_cols)})",
+                        'mtf_1h_missing',
+                        meta,
+                        require_1h,
+                    )
+
+                self._inc_mtf_telemetry('mtf_1h_fallback_attempted')
+                min_required = self._mtf_min_bars_for_indicators(cfg, fallback_indicators)
+                if len(df_1h) < min_required:
+                    self._inc_mtf_telemetry('mtf_1h_fallback_skipped_insufficient_bars')
+                    meta['code'] = 'mtf_1h_insufficient_bars'
+                    logger.info(
+                        "[%s-MTF] %s 1h fallback skipped (len=%s < min=%s)",
+                        self.strategy_name.upper(),
+                        symbol,
+                        len(df_1h),
+                        min_required,
+                    )
+                    return self._mtf_missing_result(
+                        action,
+                        f"insufficient_bars (len={len(df_1h)} < min={min_required})",
+                        'mtf_1h_insufficient_bars',
+                        meta,
+                        require_1h,
+                    )
+
+                df_1h = self._apply_mtf_indicator_fallback(
+                    df_1h,
+                    symbol=symbol,
+                    timeframe='1h',
+                    need_rsi=('rsi' in missing_cols),
+                    ema_periods=[p for p in (21, 50, 200) if f"ema{p}" in missing_cols],
+                )
+
+                missing_cols = [col for col in required_cols if col not in df_1h.columns]
+                if missing_cols:
+                    return self._mtf_missing_result(
+                        action,
+                        f"missing_1h_columns ({', '.join(missing_cols)})",
+                        'mtf_1h_missing',
+                        meta,
+                        require_1h,
+                    )
+            df_valid = df_1h.dropna(subset=required_cols)
+        else:
+            df_valid = df_1h.dropna()
+
+        if df_valid.empty:
+            return self._mtf_missing_result(action, 'missing_1h_values', 'mtf_1h_missing', meta, require_1h)
+
+        last = df_valid.iloc[-1]
+
+        if require_ema_stack:
+            ema21 = float(last['ema21'])
+            ema50 = float(last['ema50'])
+            ema200 = float(last['ema200'])
+            ema_stack_ok = ema21 < ema50 <= ema200
+            meta.update({
+                'ema21_1h': ema21,
+                'ema50_1h': ema50,
+                'ema200_1h': ema200,
+                'ema_stack_ok': ema_stack_ok,
+            })
+            if not ema_stack_ok:
+                meta['code'] = 'mtf_1h_ema'
+                return False, (
+                    f"ema_stack_not_bearish (ema21={ema21:.2f}, ema50={ema50:.2f}, ema200={ema200:.2f})"
+                ), meta
+
+        if rsi_max is not None:
+            rsi_val = float(last['rsi'])
+            meta.update({
+                'rsi_1h': rsi_val,
+                'rsi_1h_max': rsi_max,
+            })
+            if rsi_val > rsi_max:
+                meta['code'] = 'mtf_1h_rsi'
+                return False, f"rsi_1h_above_max (rsi={rsi_val:.2f}, max={rsi_max:.2f})", meta
+
+        meta['status'] = 'passed'
+        return True, 'passed', meta
     
     def signal(self, df_30m: pd.DataFrame, 
                df_1h: pd.DataFrame = None,
@@ -408,6 +799,31 @@ class AdaptiveShortTheRip(ShortTheRip):
             else:
                 # Fallback if indicators missing (should be caught by validation, but safe guard)
                 logger.warning(f"⚠️ {log_prefix} Missing EMA50 or ATR for Rip Check. Skipping.")
+
+            # --- Optional Multi-Timeframe (MTF) Confirmation ---
+            mtf_cfg = self.strategy_config.get("mtf_confirmation", {}) or {}
+            if isinstance(mtf_cfg, dict) and mtf_cfg.get("enabled", False):
+                df_15m = None
+                if market_data:
+                    df_15m = market_data.get('15m')
+
+                df_1h_local = df_1h
+                if (df_1h_local is None or (hasattr(df_1h_local, 'empty') and df_1h_local.empty)) and market_data:
+                    df_1h_local = market_data.get("df_1h") or market_data.get("1h")
+
+                passed_15m, reason_15m, meta_15m = self._mtf_confirm_15m(df_15m, symbol_display, mtf_cfg)
+                signal.setdefault("features", {})["mtf_15m"] = meta_15m
+                if not passed_15m:
+                    code = meta_15m.get("code", "mtf_15m_block")
+                    logger.info(f"?? {log_prefix} No Signal: MTF-15m block: {reason_15m}. [code={code}]")
+                    return None
+
+                passed_1h, reason_1h, meta_1h = self._mtf_confirm_1h(df_1h_local, symbol_display, mtf_cfg)
+                signal.setdefault("features", {})["mtf_1h"] = meta_1h
+                if not passed_1h:
+                    code = meta_1h.get("code", "mtf_1h_block")
+                    logger.info(f"?? {log_prefix} No Signal: MTF-1h block: {reason_1h}. [code={code}]")
+                    return None
             
             logger.info(f"✅ {log_prefix} Base conditions met. Proceeding to ML & Risk checks.")
 

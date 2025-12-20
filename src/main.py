@@ -318,7 +318,15 @@ def run_once():
                     if not out_sig and s_cfg.get("short_the_rip", {}).get("enable", True):
                         adaptive_str = AdaptiveShortTheRip(s_cfg.get("short_the_rip"))
                         if len(df_30i) >= 50 and len(df_1hi) >= 50:
-                            out_sig = out_sig or adaptive_str.signal(df_30i, df_1hi, symbol=sym)
+                            market_data = None
+                            mtf_cfg = (s_cfg.get("short_the_rip", {}) or {}).get("mtf_confirmation", {}) or {}
+                            if mtf_cfg.get("enabled", False):
+                                df_15 = fetch_ohlcv(client, sym, "15m", limit=250)
+                                df_15i = ind_enrich(df_15, ind_cfg).dropna()
+                                if df_15i.empty:
+                                    df_15i = None
+                                market_data = {"15m": df_15i}
+                            out_sig = out_sig or adaptive_str.signal(df_30i, df_1hi, symbol=sym, market_data=market_data)
                             
                             # Monitor'e kaydet
                             if out_sig and out_sig.get('is_adaptive'):

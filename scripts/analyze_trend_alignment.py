@@ -1,19 +1,33 @@
 import argparse
 import re
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-import seaborn as sns
+import sys
 from datetime import datetime
 
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+try:
+    import seaborn as sns
+except ModuleNotFoundError:
+    sns = None
+
 # --- Görselleştirme Ayarları ---
-sns.set(style="darkgrid", context="talk")
+if sns:
+    sns.set(style="darkgrid", context="talk")
 plt.rcParams['figure.figsize'] = [16, 10]
 plt.rcParams['lines.linewidth'] = 1.5
 
 # Eğer grafik arayüzü hatası alırsan alttaki satırın yorumunu kaldır:
 # matplotlib.use('Agg') 
+
+def _configure_stdout() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(errors="replace")
+        except Exception:
+            pass
 
 class TrendAnalyzer:
     def __init__(self, log_file, symbol):
@@ -111,7 +125,7 @@ class TrendAnalyzer:
                 self.df.set_index('timestamp', inplace=True)
                 # Sadece sayısal kolonları resample et
                 numeric_cols = self.df.select_dtypes(include=[np.number]).columns
-                df_resampled = self.df[numeric_cols].resample('1T').ffill()
+                df_resampled = self.df[numeric_cols].resample('1min').ffill()
                 self.df = df_resampled.dropna().reset_index()
                 
                 print(f"✅ Successfully parsed {len(self.df)} data points (Resampled to 1-min intervals).")
@@ -236,6 +250,9 @@ class TrendAnalyzer:
         print(f"\n📈 Chart saved successfully to: {output_file}")
 
 def main():
+    _configure_stdout()
+    if sns is None:
+        print("seaborn not installed; continuing without seaborn styling.")
     parser = argparse.ArgumentParser(description="Comprehensive Trend Alignment Analysis Tool")
     parser.add_argument("--log-file", required=True, help="Path to the log file")
     parser.add_argument("--symbol", default="BTC", help="Symbol to filter")

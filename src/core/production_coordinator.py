@@ -401,6 +401,10 @@ class ProductionCoordinator:
             self.processed_symbols_count += 1
             logger.info(f"⚙️ [PROCESS] Processing symbol: {symbol}")
 
+            signals_config = self.config.get('signals', {}) or {}
+            mtf_cfg = (signals_config.get('short_the_rip', {}) or {}).get('mtf_confirmation', {}) or {}
+            mtf_enabled = bool(mtf_cfg.get('enabled', False))
+
             # 1. Veriyi Doğrudan ve Sadece WebSocket Collector'dan Al
             # Bu fonksiyon artık hem geçmiş (primed) hem de canlı veriyi içeren tam DataFrame'i döndürecek.
             df_30m = self._ws_fetch_df_with_fallback(symbol, '30m')
@@ -410,10 +414,13 @@ class ProductionCoordinator:
             # Diğer zaman dilimleri stratejiler tarafından direkt kullanılmıyor ama rejim analizi için alınabilir.
             df_1m = self._ws_fetch_df_with_fallback(symbol, '1m')
             df_5m = self._ws_fetch_df_with_fallback(symbol, '5m')
+            df_15m = self._ws_fetch_df_with_fallback(symbol, '15m') if mtf_enabled else None
 
             market_data = {
                 '1m': df_1m, '5m': df_5m, '30m': df_30m, '1h': df_1h, '4h': df_4h
             }
+            if mtf_enabled:
+                market_data['15m'] = df_15m
 
             # 2. Veri Doğrulama Logları
             if self.debug_logging:
@@ -572,6 +579,8 @@ class ProductionCoordinator:
             market_data = {
                 '1m': df_1m, '5m': df_5m, '30m': df_30m, '1h': df_1h, '4h': df_4h
             }
+            if mtf_enabled:
+                market_data['15m'] = df_15m
             
             # Bu log, verinin gerçekten enjekte edilip edilmediğini kanıtlar.
             # Stratejiye giden verinin kaç mum içerdiğini gösterir.
@@ -737,6 +746,10 @@ class ProductionCoordinator:
              return
         strategies_to_run = list(self.portfolio_manager.strategies.items())
 
+        signals_config = self.config.get('signals', {}) or {}
+        mtf_cfg = (signals_config.get('short_the_rip', {}) or {}).get('mtf_confirmation', {}) or {}
+        mtf_enabled = bool(mtf_cfg.get('enabled', False))
+
         processed_count = 0
         error_count = 0
 
@@ -747,6 +760,7 @@ class ProductionCoordinator:
             ml_context = None
             df_30m = None
             df_1h = None
+            df_15m = None
             
             try:
                 # 1. Get ML Context first
@@ -766,6 +780,8 @@ class ProductionCoordinator:
                 if self.market_data_pipeline:
                     df_30m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "30m")
                     df_1h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "1h")
+                    if mtf_enabled:
+                        df_15m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "15m")
                 else:
                     logger.error("❌ MarketDataPipeline is not available in ProductionCoordinator.")
                     error_count += 1
@@ -787,6 +803,14 @@ class ProductionCoordinator:
             processed_count += 1
             
             # --- STRATEGY EXECUTION AND SIGNAL FORWARDING STAGE ---
+            market_data = None
+            if mtf_enabled:
+                market_data = {
+                    '15m': df_15m,
+                    '30m': df_30m,
+                    '1h': df_1h,
+                }
+
             for strategy_name, strategy_instance in strategies_to_run:
                 try:
                     if not self.portfolio_manager.strategy_metadata.get(strategy_name, {}).get('active', False):
@@ -795,13 +819,20 @@ class ProductionCoordinator:
                     
                     if hasattr(strategy_instance, 'signal') and callable(getattr(strategy_instance, 'signal')):
                         # ✅ FIX: Pass the fresh ml_context directly to the strategy's 'signal' method
-                        signal = strategy_instance.signal(
-                            df_30m=df_30m,
-                            df_1h=df_1h,
-                            regime_data=ml_context, # Pass the entire context
-                            symbol=symbol,
-                            ml_context=ml_context  # Pass it again for explicit clarity
-                        )
+                        signal_kwargs = {
+                            'df_30m': df_30m,
+                            'df_1h': df_1h,
+                            'regime_data': ml_context,  # Pass the entire context
+                            'symbol': symbol,
+                            'ml_context': ml_context,  # Pass it again for explicit clarity
+                        }
+                        if market_data is not None:
+                            try:
+                                if 'market_data' in inspect.signature(strategy_instance.signal).parameters:
+                                    signal_kwargs['market_data'] = market_data
+                            except (TypeError, ValueError):
+                                pass
+                        signal = strategy_instance.signal(**signal_kwargs)
                         
                         if signal:
                             logger.info(f"💡 Signal generated by '{strategy_name}' for {symbol}. Forwarding to StrategyCoordinator.")
