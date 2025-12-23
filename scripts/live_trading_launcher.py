@@ -32,6 +32,7 @@ import argparse
 import time
 import inspect
 import json
+from datetime import datetime, timezone
 import signal
 import functools
 from datetime import datetime, timezone
@@ -602,9 +603,69 @@ class OptimizedWebSocketManager:
                         continue
                     for tf in tfs_sorted:
                         try:
+                            forming_ok = False
+
+                            # Prefer forming data (real-time) for fast verification
+                            collector = getattr(self.ws_manager, "collector", None)
+                            if collector and self.ws_manager.clients:
+                                ex_name = client_name  # use the client we just checked
+                                forming = collector.get_forming_ohlcv(ex_name, sym, tf)
+                                state = collector.get_state(ex_name, sym, tf) if hasattr(collector, "get_state") else {}
+                                if forming:
+                                    payload = {
+                                        "event": "collector_state",
+                                        "ts": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
+                                        "exchange": ex_name,
+                                        "symbol": sym,
+                                        "timeframe": tf,
+                                        "key": f"{collector._normalize_symbol(sym)}_{tf}",
+                                        "connected": health.get("connected"),
+                                        "listen": listen,
+                                        "subs": subs,
+                                        "ws_messages": msg_count,
+                                        "closed_len": state.get("closed_len"),
+                                        "last_closed_ot": state.get("last_closed_ts"),
+                                        "forming_ot": state.get("forming_ts"),
+                                        "gap_count": state.get("gap_count"),
+                                        "out_of_order_drops": state.get("out_of_order_drops"),
+                                        "backfill_count": state.get("backfill_count"),
+                                        "last_backfill_ts": state.get("last_backfill_ts"),
+                                        "backfill_cooldown_remaining_s": state.get("cooldown_remaining_s"),
+                                        "data_source": "ws",
+                                    }
+                                    logger.info(json.dumps(payload, separators=(",", ":")))
+                                    verified_symbols.add(sym)
+                                    forming_ok = True
+                                    break
+
+                            if forming_ok:
+                                break
+
+                            # Fallback to closed data check
                             data = self.ws_manager.get_latest_data(sym, tf)
                             if data and data.get('ohlcv'):
-                                logger.info(f"[WS-VERIFY] ✅ Collector data confirmed for {sym} [{tf}] (candles={len(data['ohlcv'])})")
+                                payload = {
+                                    "event": "collector_state",
+                                    "ts": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
+                                    "exchange": client_name,
+                                    "symbol": sym,
+                                    "timeframe": tf,
+                                    "key": f"{self.ws_manager.collector._normalize_symbol(sym)}_{tf}" if collector else f"{sym}_{tf}",
+                                    "connected": health.get("connected"),
+                                    "listen": listen,
+                                    "subs": subs,
+                                    "ws_messages": msg_count,
+                                    "closed_len": len(data.get("ohlcv", [])),
+                                    "last_closed_ot": data["ohlcv"][-1][0] if data.get("ohlcv") else None,
+                                    "forming_ot": None,
+                                    "gap_count": state.get("gap_count") if collector else None,
+                                    "out_of_order_drops": state.get("out_of_order_drops") if collector else None,
+                                    "backfill_count": state.get("backfill_count") if collector else None,
+                                    "last_backfill_ts": state.get("last_backfill_ts") if collector else None,
+                                    "backfill_cooldown_remaining_s": state.get("cooldown_remaining_s") if collector else None,
+                                    "data_source": "ws",
+                                }
+                                logger.info(json.dumps(payload, separators=(",", ":")))
                                 verified_symbols.add(sym)
                                 break
                         except Exception as e:

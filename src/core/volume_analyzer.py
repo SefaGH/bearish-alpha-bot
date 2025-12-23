@@ -293,6 +293,53 @@ class VolumeAnalyzer:
                     volumes.append(float(vol))
             return volumes
 
+    @staticmethod
+    def _extract_volume_series_with_ts(df: Any) -> (List[float], Optional[float]):
+        """Extract volume series and last timestamp (if available) from an OHLCV buffer."""
+        if df is None:
+            return [], None
+
+        last_ts: Optional[float] = None
+        try:
+            # Pandas DataFrame path
+            volumes = df["volume"].tolist()
+            ts_col = None
+            for col in ("timestamp", "ts", "time"):
+                if col in df.columns:
+                    ts_col = col
+                    break
+            if ts_col:
+                last_ts = float(df[ts_col].iloc[-1])
+            else:
+                try:
+                    idx = df.index
+                    if len(idx) > 0 and hasattr(idx[-1], "timestamp"):
+                        last_ts = float(idx[-1].timestamp())
+                except Exception:
+                    pass
+            return volumes, last_ts
+        except Exception:
+            volumes = []
+            ts_candidate = None
+            for row in df:
+                try:
+                    vol = getattr(row, "volume", row.get("volume"))
+                except Exception:
+                    vol = None
+                try:
+                    ts_candidate = getattr(row, "timestamp", None)
+                    if ts_candidate is None and isinstance(row, dict):
+                        ts_candidate = row.get("timestamp") or row.get("ts") or row.get("time")
+                except Exception:
+                    ts_candidate = None
+
+                if vol is not None:
+                    volumes.append(float(vol))
+                    if ts_candidate is not None:
+                        last_ts = float(ts_candidate)
+
+            return volumes, last_ts
+
     async def _compute_baseline(self, symbol: str, baseline_tf: str, lookback: int) -> Optional[float]:
         """Compute median volume baseline for given timeframe.
 
@@ -357,13 +404,21 @@ class VolumeAnalyzer:
         short_lb: int = int(cfg["short_lookback"])
         med_lb: int = int(cfg["medium_lookback"])
 
-        # Pull raw series first to measure availability for readiness logging
-        series_short = await self._get_volume_series(symbol, short_tf)
-        series_medium = await self._get_volume_series(symbol, medium_tf)
-        series_trade = await self._get_volume_series(symbol, trade_timeframe)
+        # Pull raw series (and last timestamps) to measure availability for readiness logging
+        df_short = await self._mdp.get_latest_ohlcv(symbol, short_tf)
+        df_medium = await self._mdp.get_latest_ohlcv(symbol, medium_tf)
+        df_trade = await self._mdp.get_latest_ohlcv(symbol, trade_timeframe)
 
-        short_baseline = statistics.median(series_short[-short_lb:]) if series_short else None
-        medium_baseline = statistics.median(series_medium[-med_lb:]) if series_medium else None
+        series_short, ts_short_last = self._extract_volume_series_with_ts(df_short)
+        series_medium, ts_medium_last = self._extract_volume_series_with_ts(df_medium)
+        series_trade, ts_trade_last = self._extract_volume_series_with_ts(df_trade)
+
+        # Baseline should exclude the latest (potentially forming) bar
+        short_closed = series_short[:-1] if len(series_short) > 1 else []
+        medium_closed = series_medium[:-1] if len(series_medium) > 1 else []
+
+        short_baseline = statistics.median(short_closed[-short_lb:]) if short_closed else None
+        medium_baseline = statistics.median(medium_closed[-med_lb:]) if medium_closed else None
         if short_baseline is None or medium_baseline is None:
             self._log_readiness(
                 symbol,
@@ -380,6 +435,8 @@ class VolumeAnalyzer:
             )
             return None
 
+        window_bars: int = int(cfg["window_bars"])
+
         tf_minutes = self._get_tf_minutes(trade_timeframe)
         if tf_minutes <= 0:
             return None
@@ -387,10 +444,9 @@ class VolumeAnalyzer:
         medium_tf_minutes = self._get_tf_minutes(medium_tf)
         if short_tf_minutes == 0 or medium_tf_minutes == 0:
             return None
-        short_baseline_scaled = short_baseline * (tf_minutes / short_tf_minutes)
-        medium_baseline_scaled = medium_baseline * (tf_minutes / medium_tf_minutes)
-
-        window_bars: int = int(cfg["window_bars"])
+        window_minutes = tf_minutes * window_bars
+        short_baseline_scaled = short_baseline * (window_minutes / short_tf_minutes)
+        medium_baseline_scaled = medium_baseline * (window_minutes / medium_tf_minutes)
         if not series_trade:
             self._log_readiness(
                 symbol,
@@ -413,10 +469,35 @@ class VolumeAnalyzer:
 
         min_r = float(cfg.get("min_ratio", 0.1))
         max_r = float(cfg.get("max_ratio", 10.0))
-        ratio_short = current_volume / short_baseline_scaled if short_baseline_scaled > 0 else 1.0
-        ratio_medium = current_volume / medium_baseline_scaled if medium_baseline_scaled > 0 else 1.0
-        ratio_short = max(min(ratio_short, max_r), min_r)
-        ratio_medium = max(min(ratio_medium, max_r), min_r)
+        raw_ratio_short = current_volume / short_baseline_scaled if short_baseline_scaled > 0 else 1.0
+        raw_ratio_medium = current_volume / medium_baseline_scaled if medium_baseline_scaled > 0 else 1.0
+        ratio_short = max(min(raw_ratio_short, max_r), min_r)
+        ratio_medium = max(min(raw_ratio_medium, max_r), min_r)
+
+        if raw_ratio_short >= max_r or raw_ratio_medium >= max_r:
+            self.logger.warning(
+                "VolumeAnalyzer ratio cap hit",
+                extra={
+                    "event": "volume_ratio_cap",
+                    "symbol": symbol,
+                    "ratio_short_raw": raw_ratio_short,
+                    "ratio_medium_raw": raw_ratio_medium,
+                    "ratio_short_clipped": ratio_short,
+                    "ratio_medium_clipped": ratio_medium,
+                    "current_volume": current_volume,
+                    "short_baseline_scaled": short_baseline_scaled,
+                    "medium_baseline_scaled": medium_baseline_scaled,
+                    "window_bars": window_bars,
+                    "max_ratio": max_r,
+                    "ratio_clip": {
+                        "short": raw_ratio_short >= max_r,
+                        "medium": raw_ratio_medium >= max_r,
+                        "raw_short": raw_ratio_short,
+                        "raw_medium": raw_ratio_medium,
+                        "cap": max_r,
+                    },
+                },
+            )
 
         w_short = float(cfg["weight_short"])
         w_med = float(cfg["weight_medium"])
@@ -460,6 +541,11 @@ class VolumeAnalyzer:
             bucket=bucket_name,
             last_updated_ts=as_of_ts or 0.0,
         )
+
+        # Baseline metadata for telemetry (not part of dataclass fields but attached dynamically)
+        ctx.baseline_short_last_bar_ts = ts_short_last
+        ctx.baseline_medium_last_bar_ts = ts_medium_last
+        ctx.baseline_calc_mode = "closed_only"  # last (forming) bar excluded from baseline
 
         self._log_readiness(
             symbol,

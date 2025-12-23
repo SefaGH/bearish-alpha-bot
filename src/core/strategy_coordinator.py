@@ -86,7 +86,8 @@ class PrioritySignalQueue:
         self._weights = {**default_weights, **provided_weights}
 
         self._condition = asyncio.Condition()
-        self._heap: List[Tuple[float, float, int, Dict[str, Any]]] = []
+        self._queue: List[Tuple[float, float, int, Dict[str, Any]]] = []
+        self._waiting_room: List[Tuple[float, Tuple[float, float, int, Dict[str, Any]]]] = []
         self._sequence = itertools.count()
         self._pending_by_symbol: Dict[str, Dict[str, int]] = defaultdict(lambda: {"total": 0, "scale_in": 0})
         self._logger = logger
@@ -99,7 +100,7 @@ class PrioritySignalQueue:
             'requeued': 0,
         }
 
-    async def put(self, payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    async def put(self, payload: Dict[str, Any], process_after: Optional[float] = None) -> Tuple[bool, Optional[str]]:
         symbol = self._extract_symbol(payload)
         intent = self._extract_intent(payload)
         async with self._condition:
@@ -140,23 +141,29 @@ class PrioritySignalQueue:
                             self._logger.warning(f"🚫 [QUEUE] {reason}")
                             return False, reason
 
-            now = time.time()
             meta = payload.setdefault('queue_meta', {})
             meta['enqueued_at'] = now
             meta['expiration'] = now + self._ttl
+            if process_after is not None:
+                meta['process_after'] = process_after
 
             priority_score = self._compute_priority(payload, now)
             entry = (-priority_score, meta['enqueued_at'], next(self._sequence), payload)
+            current_depth = len(self._queue) + len(self._waiting_room)
+            defer_signal = process_after is not None and process_after > now
 
-            if len(self._heap) >= self._max_depth:
-                replaced = self._maybe_replace_lowest(entry, priority_score)
+            if current_depth >= self._max_depth:
+                replaced = self._maybe_replace_lowest(entry, priority_score, process_after)
                 if not replaced:
                     self._stats['rejected_capacity'] += 1
                     reason = "Signal queue at capacity"
                     self._logger.warning(f"🚫 [QUEUE] {reason} (score={priority_score:.3f})")
                     return False, reason
             else:
-                heapq.heappush(self._heap, entry)
+                if defer_signal:
+                    self._waiting_room.append((process_after, entry))
+                else:
+                    heapq.heappush(self._queue, entry)
 
             if symbol:
                 self._pending_by_symbol[symbol]["total"] += 1
@@ -165,7 +172,7 @@ class PrioritySignalQueue:
             self._stats['accepted'] += 1
             self._condition.notify()
             self._logger.info(
-                f"📥 [QUEUE] Signal enqueued: symbol={symbol}, score={priority_score:.3f}, depth={len(self._heap)}"
+                f"📥 [QUEUE] Signal enqueued: symbol={symbol}, score={priority_score:.3f}, depth={len(self._queue) + len(self._waiting_room)}"
             )
             return True, None
 
@@ -179,10 +186,11 @@ class PrioritySignalQueue:
 
             while True:
                 self._purge_expired_locked()
+                self._check_waiting_room_locked()
                 self._refresh_priorities_locked()
 
-                if self._heap:
-                    entry = heapq.heappop(self._heap)
+                if self._queue:
+                    entry = heapq.heappop(self._queue)
                     payload = entry[3]
                     symbol = self._extract_symbol(payload)
                     if symbol:
@@ -206,7 +214,7 @@ class PrioritySignalQueue:
                     await asyncio.wait_for(self._condition.wait(), timeout=remaining)
 
     def qsize(self) -> int:
-        return len(self._heap)
+        return len(self._queue) + len(self._waiting_room)
 
     def get_stats(self) -> Dict[str, int]:
         return dict(self._stats)
@@ -222,7 +230,7 @@ class PrioritySignalQueue:
 
             priority_score = self._compute_priority(payload, now)
             entry = (-priority_score, meta['enqueued_at'], next(self._sequence), payload)
-            heapq.heappush(self._heap, entry)
+            heapq.heappush(self._queue, entry)
 
             if symbol:
                 self._pending_by_symbol[symbol]["total"] += 1
@@ -232,14 +240,41 @@ class PrioritySignalQueue:
             self._stats['requeued'] = self._stats.get('requeued', 0) + 1
             self._condition.notify()
 
-    def _maybe_replace_lowest(self, entry, new_score: float) -> bool:
-        if not self._heap:
-            heapq.heappush(self._heap, entry)
+    def _maybe_replace_lowest(self, entry, new_score: float, process_after: Optional[float]) -> bool:
+        if not self._queue and not self._waiting_room:
+            if process_after is not None and process_after > time.time():
+                self._waiting_room.append((process_after, entry))
+            else:
+                heapq.heappush(self._queue, entry)
             return True
 
-        lowest_index = max(range(len(self._heap)), key=lambda idx: self._heap[idx][0])
-        lowest_entry = self._heap[lowest_index]
-        lowest_score = -lowest_entry[0]
+        lowest_location = None
+        lowest_index = None
+        lowest_entry: Optional[Tuple[float, float, int, Dict[str, Any]]] = None
+        lowest_score: Optional[float] = None
+
+        if self._queue:
+            queue_lowest_index = max(range(len(self._queue)), key=lambda idx: self._queue[idx][0])
+            queue_lowest_entry = self._queue[queue_lowest_index]
+            queue_lowest_score = -queue_lowest_entry[0]
+            lowest_location = "queue"
+            lowest_index = queue_lowest_index
+            lowest_entry = queue_lowest_entry
+            lowest_score = queue_lowest_score
+
+        if self._waiting_room:
+            waiting_lowest_index = max(range(len(self._waiting_room)), key=lambda idx: self._waiting_room[idx][1][0])
+            waiting_lowest_entry = self._waiting_room[waiting_lowest_index][1]
+            waiting_lowest_score = -waiting_lowest_entry[0]
+            if lowest_score is None or waiting_lowest_score < lowest_score:
+                lowest_location = "waiting"
+                lowest_index = waiting_lowest_index
+                lowest_entry = waiting_lowest_entry
+                lowest_score = waiting_lowest_score
+
+        if lowest_score is None:
+            return False
+
         if new_score <= lowest_score:
             return False
 
@@ -251,54 +286,99 @@ class PrioritySignalQueue:
                 pending_counts["total"] -= 1
             if self._extract_intent(removed_payload) == INTENT_SCALE_IN and pending_counts["scale_in"] > 0:
                 pending_counts["scale_in"] -= 1
-        self._heap[lowest_index] = entry
-        heapq.heapify(self._heap)
+
+        if lowest_location == "queue" and lowest_index is not None:
+            self._queue.pop(lowest_index)
+            heapq.heapify(self._queue)
+        elif lowest_location == "waiting" and lowest_index is not None:
+            self._waiting_room.pop(lowest_index)
+
+        if process_after is not None and process_after > time.time():
+            self._waiting_room.append((process_after, entry))
+        else:
+            heapq.heappush(self._queue, entry)
+
         self._logger.info(
             f"♻️ [QUEUE] Replaced low-priority signal (score={lowest_score:.3f}) with higher score {new_score:.3f}"
         )
         return True
 
     def _purge_expired_locked(self) -> None:
-        if not self._heap:
-            return
-
         now = time.time()
-        kept: List[Tuple[float, float, int, Dict[str, Any]]] = []
         expired = 0
-        while self._heap:
-            entry = heapq.heappop(self._heap)
-            payload = entry[3]
-            expiration = payload.get('queue_meta', {}).get('expiration', now + 1)
-            if expiration < now:
-                expired += 1
-                symbol = self._extract_symbol(payload)
-                if symbol:
-                    counts = self._pending_by_symbol[symbol]
-                    if counts["total"] > 0:
-                        counts["total"] -= 1
-                    if self._extract_intent(payload) == INTENT_SCALE_IN and counts["scale_in"] > 0:
-                        counts["scale_in"] -= 1
-            else:
-                kept.append(entry)
 
-        for entry in kept:
-            heapq.heappush(self._heap, entry)
+        if self._queue:
+            kept: List[Tuple[float, float, int, Dict[str, Any]]] = []
+            while self._queue:
+                entry = heapq.heappop(self._queue)
+                payload = entry[3]
+                expiration = payload.get('queue_meta', {}).get('expiration', now + 1)
+                if expiration < now:
+                    expired += 1
+                    symbol = self._extract_symbol(payload)
+                    if symbol:
+                        counts = self._pending_by_symbol[symbol]
+                        if counts["total"] > 0:
+                            counts["total"] -= 1
+                        if self._extract_intent(payload) == INTENT_SCALE_IN and counts["scale_in"] > 0:
+                            counts["scale_in"] -= 1
+                else:
+                    kept.append(entry)
+
+            for entry in kept:
+                heapq.heappush(self._queue, entry)
+
+        if self._waiting_room:
+            kept_waiting: List[Tuple[float, Tuple[float, float, int, Dict[str, Any]]]] = []
+            for process_after, entry in self._waiting_room:
+                payload = entry[3]
+                expiration = payload.get('queue_meta', {}).get('expiration', now + 1)
+                if expiration < now:
+                    expired += 1
+                    symbol = self._extract_symbol(payload)
+                    if symbol:
+                        counts = self._pending_by_symbol[symbol]
+                        if counts["total"] > 0:
+                            counts["total"] -= 1
+                        if self._extract_intent(payload) == INTENT_SCALE_IN and counts["scale_in"] > 0:
+                            counts["scale_in"] -= 1
+                else:
+                    kept_waiting.append((process_after, entry))
+
+            self._waiting_room = kept_waiting
 
         if expired:
             self._stats['expired'] += expired
             self._logger.warning(f"⏳ [QUEUE] Dropped {expired} expired signals")
 
     def _refresh_priorities_locked(self) -> None:
-        if not self._heap:
+        if not self._queue:
             return
 
         now = time.time()
         refreshed = [
             (-self._compute_priority(entry[3], now), entry[1], entry[2], entry[3])
-            for entry in self._heap
+            for entry in self._queue
         ]
         heapq.heapify(refreshed)
-        self._heap = refreshed
+        self._queue = refreshed
+
+    def _check_waiting_room_locked(self) -> None:
+        if not self._waiting_room:
+            return
+
+        now = time.time()
+        remaining: List[Tuple[float, Tuple[float, float, int, Dict[str, Any]]]] = []
+
+        for process_after, entry in self._waiting_room:
+            if now >= process_after:
+                payload = entry[3]
+                payload.setdefault('queue_meta', {})['is_deferred'] = True
+                heapq.heappush(self._queue, entry)
+            else:
+                remaining.append((process_after, entry))
+
+        self._waiting_room = remaining
 
     def _compute_priority(self, payload: Dict[str, Any], current_ts: float) -> float:
         signal = payload.get('signal', {}) or {}
@@ -438,6 +518,8 @@ class StrategyCoordinator:
         self.last_signal_time = {}  # "symbol:strategy" -> timestamp
         self.last_signal_rsi = {}  # "symbol:strategy" -> last observed RSI
         self.signal_price_history = defaultdict(list)  # symbol -> [(timestamp, price), ...]
+        self._dca_last_signal_time = defaultdict(float)  # symbol -> ts
+        self._dca_recent_layers = defaultdict(dict)  # symbol -> {layer_index: ts}
         
         # Signal processing stats
         self.processing_stats = {
@@ -559,6 +641,8 @@ class StrategyCoordinator:
         """
         symbol = signal.get("symbol")
         side = str(signal.get("side", "")).lower()
+        scale_profile = (signal.get("scale_profile") or signal.get("dca_metadata", {}).get("profile"))
+        is_dca_signal = scale_profile == "dca"
 
         cfg_source = {}
         try:
@@ -588,6 +672,16 @@ class StrategyCoordinator:
             return (not side or pos_side == side) and pos_strategy == strategy_name.lower()
 
         candidate_exists = any(_matches(p) for p in open_positions if isinstance(p, dict))
+
+        # DCA signals should stay as scale_in regardless of pyramiding toggle (v1).
+        if is_dca_signal:
+            if not candidate_exists:
+                logger.info(
+                    "DCA intent requested but no open base position detected | sym=%s | strat=%s",
+                    symbol,
+                    strategy_name,
+                )
+            return INTENT_SCALE_IN
 
         if not pyramiding_enabled:
             if candidate_exists:
@@ -622,6 +716,9 @@ class StrategyCoordinator:
         import time
 
         intent = signal.get("intent", INTENT_ENTRY)
+        scale_profile = signal.get("scale_profile") or (signal.get("dca_metadata") or {}).get("profile")
+        if scale_profile == "dca":
+            return self._validate_duplicate_dca(signal, strategy_name)
 
         # Maintenance intents should not be blocked by duplicate logic
         if intent in MAINTENANCE_INTENTS:
@@ -891,6 +988,89 @@ class StrategyCoordinator:
             effective_min_price_change,
         )
         
+        return True, "OK"
+
+    def _validate_duplicate_dca(self, signal: Dict, strategy_name: str) -> Tuple[bool, str]:
+        """
+        DCA-specific duplicate prevention:
+        - Blocks replays of the same layer.
+        - Ensures adverse movement vs anchor.
+        - Applies DCA cooldown per symbol.
+        """
+        import time
+
+        symbol = signal.get("symbol")
+        dca_meta = signal.get("dca_metadata") or {}
+        layer_index_raw = dca_meta.get("layer_index")
+        try:
+            layer_index = int(layer_index_raw) if layer_index_raw is not None else 0
+        except (TypeError, ValueError):
+            layer_index = 0
+
+        dca_cfg = (self.config.get("dca") or {}) if isinstance(self.config, dict) else {}
+        strategy_cfg = dca_cfg.get("strategy", {}) if isinstance(dca_cfg, dict) else {}
+        cooldown_seconds = float(strategy_cfg.get("cooldown_seconds", 0) or 0)
+
+        # 1) Same layer already live?
+        try:
+            pm_positions = self.portfolio_manager.get_open_positions_for_symbol(symbol) if hasattr(self.portfolio_manager, "get_open_positions_for_symbol") else []
+        except Exception:
+            pm_positions = []
+        for pos in pm_positions or []:
+            meta = pos.get("dca_metadata") or {}
+            profile = pos.get("scale_profile") or meta.get("profile")
+            if profile == "dca":
+                try:
+                    pos_layer = int(meta.get("layer_index") or 0)
+                except (TypeError, ValueError):
+                    pos_layer = 0
+                if layer_index and pos_layer == layer_index:
+                    logger.warning(
+                        "[DUPLICATE-DCA] Rejecting duplicate layer | sym=%s | layer=%s",
+                        symbol,
+                        layer_index,
+                    )
+                    return False, "dca_layer_duplicate"
+
+        # 2) Rapid repeat guard for same layer
+        now = time.time()
+        recent_layers = self._dca_recent_layers.get(symbol) or {}
+        last_layer_ts = recent_layers.get(layer_index)
+        if last_layer_ts and cooldown_seconds > 0 and (now - last_layer_ts) < cooldown_seconds:
+            return False, "dca_layer_recent"
+
+        # 3) Adverse movement check (lightweight; RiskManager does full gating)
+        anchor_price = dca_meta.get("anchor_price")
+        entry_price = signal.get("entry") or signal.get("price") or signal.get("entry_price")
+        direction = (signal.get("side") or signal.get("direction") or "").lower()
+        price_drop_pct = None
+        try:
+            price_drop_pct = float(dca_meta.get("price_drop_pct")) if dca_meta.get("price_drop_pct") is not None else None
+        except (TypeError, ValueError):
+            price_drop_pct = None
+
+        if price_drop_pct is not None and price_drop_pct <= 0:
+            return False, "dca_not_adverse_enough"
+        if anchor_price and entry_price:
+            try:
+                anchor_val = float(anchor_price)
+                entry_val = float(entry_price)
+                if direction in ("long", "buy") and entry_val >= anchor_val:
+                    return False, "dca_not_adverse_enough"
+                if direction in ("short", "sell") and entry_val <= anchor_val:
+                    return False, "dca_not_adverse_enough"
+            except (TypeError, ValueError):
+                pass
+
+        # 4) Cooldown per symbol
+        last_ts = self._dca_last_signal_time.get(symbol, 0.0)
+        if cooldown_seconds > 0 and (now - last_ts) < cooldown_seconds:
+            return False, "dca_cooldown_not_passed"
+
+        self._dca_last_signal_time[symbol] = now
+        if layer_index:
+            self._dca_recent_layers[symbol][layer_index] = now
+
         return True, "OK"
     
     def get_duplicate_prevention_stats(self) -> Dict[str, Any]:
@@ -1363,6 +1543,12 @@ class StrategyCoordinator:
                     'volume_bucket': volume_bucket,
                     'volume_strength': enriched_signal.get('volume_strength', 0.0),
                     'volume_ctx_source': 'analyzer',
+                    'volume_ratio_short': enriched_signal.get('volume_ratio_short'),
+                    'volume_ratio_medium': enriched_signal.get('volume_ratio_medium'),
+                    'volume_ratio_combined': enriched_signal.get('volume_ratio_combined'),
+                    'current_window_volume': enriched_signal.get('volume_current_window'),
+                    'short_baseline_volume': enriched_signal.get('volume_short_baseline'),
+                    'medium_baseline_volume': enriched_signal.get('volume_medium_baseline'),
                     'central_bucket_decision': decision
                 }
                 logger.info(f"volume_decision_check {json.dumps(audit_payload)}")
@@ -1371,6 +1557,126 @@ class StrategyCoordinator:
                     self.processing_stats['rejected_signals'] += 1
                     logger.warning(f"🛡️  {log_prefix} REJECTED (Volume Gating): {rejection_reason}")
                     return {'status': 'rejected', 'reason': rejection_reason, 'stage': 'volume_gating'}
+
+            # --- Volume Policy Matrix (Phase 3) ---
+            def _calc_stop_pct(sig: Dict[str, Any]) -> Optional[float]:
+                try:
+                    entry_val = float(sig.get('entry') or 0.0)
+                    stop_val = float(sig.get('stop') or 0.0)
+                    if entry_val > 0 and stop_val > 0:
+                        return abs(entry_val - stop_val) / entry_val
+                except Exception:
+                    return None
+                return None
+
+            def _calc_rr(sig: Dict[str, Any]) -> Optional[float]:
+                try:
+                    entry_val = float(sig.get('entry') or 0.0)
+                    stop_val = float(sig.get('stop') or 0.0)
+                    target_val = float(sig.get('target') or sig.get('take_profit') or 0.0)
+                    if entry_val > 0 and stop_val > 0 and target_val > 0:
+                        risk_val = abs(entry_val - stop_val)
+                        if risk_val <= 0:
+                            return None
+                        side_val = (sig.get('side') or '').lower()
+                        if side_val in ['short', 'sell']:
+                            reward_val = entry_val - target_val
+                        else:
+                            reward_val = target_val - entry_val
+                        return abs(reward_val) / risk_val if reward_val is not None else None
+                except Exception:
+                    pass
+
+                try:
+                    rr_existing = float(sig.get('rr_ratio'))
+                    if rr_existing > 0:
+                        return rr_existing
+                except Exception:
+                    return None
+                return None
+
+            volume_bucket_label = (volume_bucket or "").upper()
+            volume_rank = get_bucket_rank(volume_bucket_label) if volume_bucket else None
+            normal_rank = get_bucket_rank('NORMAL')
+            is_low_bucket = volume_bucket_label == 'LOW'
+            is_deferred = bool((enriched_signal.get('queue_meta') or {}).get('is_deferred'))
+
+            TIGHT_STOP_THRESHOLD = 0.0015  # 0.15%
+            WIDE_STOP_THRESHOLD = 0.005  # 0.50%
+            RESCUE_MULTIPLIER = 0.25
+            LOW_LIMIT_MULTIPLIER = 0.35
+            DEFER_SECONDS = 300  # 1 bar
+
+            if volume_bucket:
+                # Check 1: Deferred signals returning from waiting room
+                if is_deferred:
+                    if volume_rank is not None and volume_rank >= normal_rank:
+                        logger.info(f"?? {log_prefix} Deferred signal resumed at {volume_bucket_label} volume (standard profile).")
+                    elif is_low_bucket:
+                        stop_pct = _calc_stop_pct(enriched_signal) or 0.0
+                        adjusted_pct = max(stop_pct, TIGHT_STOP_THRESHOLD)
+
+                        entry_val = float(enriched_signal.get('entry') or 0.0)
+                        if entry_val > 0 and stop_pct < TIGHT_STOP_THRESHOLD:
+                            side_val = (enriched_signal.get('side') or '').lower()
+                            if side_val in ['short', 'sell']:
+                                enriched_signal['stop'] = entry_val * (1 + adjusted_pct)
+                            else:
+                                enriched_signal['stop'] = entry_val * (1 - adjusted_pct)
+
+                        enriched_signal['stop_loss_pct'] = adjusted_pct
+                        enriched_signal['position_size_multiplier'] = RESCUE_MULTIPLIER
+                        enriched_signal['execution_params'] = {'type': 'LIMIT', 'post_only': True}
+
+                        new_rr = _calc_rr(enriched_signal)
+                        if new_rr is not None:
+                            enriched_signal['rr_ratio'] = new_rr
+                        if new_rr is None or new_rr < 3.0:
+                            self.processing_stats['rejected_signals'] += 1
+                            reason = f"Deferred low-volume check failed RR ({new_rr if new_rr is not None else 'n/a'})"
+                            logger.warning(f"???  {log_prefix} REJECTED (Rescue Recheck): {reason}")
+                            return {'status': 'rejected', 'reason': reason, 'stage': 'volume_policy'}
+                        logger.info(f"?? {log_prefix} Deferred signal passed rescue recheck (RR={new_rr:.2f}).")
+
+                # Check 2: New signals
+                elif volume_rank is not None:
+                    if volume_rank >= normal_rank:
+                        pass  # Standard profile, proceed
+                    elif is_low_bucket:
+                        stop_pct = _calc_stop_pct(enriched_signal)
+                        tight_stop = stop_pct is not None and stop_pct < TIGHT_STOP_THRESHOLD
+                        wide_stop = stop_pct is not None and stop_pct > WIDE_STOP_THRESHOLD
+
+                        if tight_stop:
+                            logger.info(f"⏳ {log_prefix} Deferring signal (Low Vol + Tight Stop < 0.15%)")
+                            deferred_signal_id = enriched_signal.get('signal_id') or self._generate_signal_id(strategy_name, enriched_signal)
+                            enriched_signal['signal_id'] = deferred_signal_id
+                            payload = {
+                                'signal_id': deferred_signal_id,
+                                'signal': enriched_signal,
+                                'risk_assessment': {},
+                                'routing': {}
+                            }
+                            queued, queue_reason = await self.signal_queue.put(payload, process_after=time.time() + DEFER_SECONDS)
+                            if not queued:
+                                self.processing_stats['rejected_signals'] += 1
+                                self.processing_stats['queue_rejections'] += 1
+                                return {'status': 'rejected', 'reason': queue_reason, 'stage': 'queue'}
+                            return {
+                                'status': 'deferred',
+                                'signal_id': deferred_signal_id,
+                                'reason': 'low_volume_tight_stop_deferred',
+                                'stage': 'volume_policy'
+                            }
+
+                        elif wide_stop:
+                            enriched_signal['execution_params'] = {'type': 'LIMIT', 'post_only': True}
+                            enriched_signal['position_size_multiplier'] = LOW_LIMIT_MULTIPLIER
+                            logger.info(f"?? {log_prefix} Applying LOW_WIDE_STOP_STRICT (mult={LOW_LIMIT_MULTIPLIER})")
+                        else:
+                            enriched_signal['execution_params'] = {'type': 'LIMIT', 'post_only': True}
+                            enriched_signal['position_size_multiplier'] = 0.50
+                            logger.info(f"?? {log_prefix} Applying LOW_NORMAL_STOP (mult=0.50)")
             
             # Adım 3: Duplikasyon ve Cooldown Kontrolü
             run_duplicate_early = not (pyramiding_enabled and intent == INTENT_SCALE_IN)
@@ -1915,7 +2221,7 @@ class StrategyCoordinator:
             return
 
         normalized_symbol = self._normalize_symbol_for_ppo(requested_symbol)
-        tail_overrides = self._build_ppo_state_overrides(normalized_symbol)
+        tail_overrides, overrides_meta = self._build_ppo_state_overrides(normalized_symbol)
         self._initialize_ppo_adapter_if_ready()
         adapter = getattr(self, 'ppo_adapter', None)
 
@@ -1927,6 +2233,7 @@ class StrategyCoordinator:
                     normalized_symbol,
                     position_fraction=tail_overrides.get('position_fraction'),
                     normalized_pv=tail_overrides.get('normalized_pv'),
+                    override_meta=overrides_meta,
                 )
                 
                 # Log if symbol was unsupported by adapter
@@ -2004,24 +2311,70 @@ class StrategyCoordinator:
         # 3. Run inference (Shadow Mode)
         try:
             normalized_symbol = self._normalize_symbol_for_ppo(symbol)
-            tail_overrides = self._build_ppo_state_overrides(normalized_symbol)
-            
+            tail_overrides, overrides_meta = self._build_ppo_state_overrides(normalized_symbol)
+
             score, metadata = await adapter.get_long_score(
                 normalized_symbol,
                 position_fraction=tail_overrides.get('position_fraction'),
                 normalized_pv=tail_overrides.get('normalized_pv'),
+                override_meta=overrides_meta,
             )
             
             # 4. Log result with specific tag for monitoring
             if metadata.get('reason') != 'unsupported_symbol':
                 action = "BUY" if score >= 0.5 else "HOLD"
                 logger.info(
-                    f"👀 [PPO-MONITOR] {symbol} | Score: {score:.4f} | Action: {action} | "
+                    f"👀 [PPO-MONITOR] {symbol} | Score(Raw): {score:.4f} | Action: {action} | "
                     f"Conf: {metadata.get('confidence', 0.0):.2f}"
                 )
                 
                 # Record telemetry
                 self._record_ppo_telemetry(score)
+                debug_meta = metadata.get("debug", {}) if isinstance(metadata, dict) else {}
+                override_info = debug_meta.get("override_meta") or overrides_meta or {}
+                logger.info(
+                    "[PPO-DEBUG] sym=%s tf=%s src=%s last_candle_ts=%s age_s=%s rows=%s "
+                    "state_hash=%s state_mean=%.4f state_std=%.4f state_min=%.4f state_max=%.4f "
+                    "feat_std=%.4f feat_min=%.4f feat_max=%.4f extra_std=%.4f tail_pf=%.3f tail_pv=%.3f "
+                    "tail_default=%s nan=%s inf=%s head3=%s tail3=%s action_int=%s "
+                    "p_flat=%.6f p_long=%.6f p_margin=%.6f conf_raw=%.6f entropy_raw=%.6f "
+                    "obs_norm_present=%s obs_clip_frac=%s z_abs_mean=%s z_abs_p99=%s "
+                    "override_ok=%s override_reason=%s",
+                    symbol,
+                    debug_meta.get("timeframe", "1h"),
+                    debug_meta.get("source", "unknown"),
+                    debug_meta.get("last_ts"),
+                    debug_meta.get("age_sec"),
+                    debug_meta.get("rows"),
+                    debug_meta.get("state_hash"),
+                    self._safe_float(debug_meta.get("state_mean")),
+                    self._safe_float(debug_meta.get("state_std")),
+                    self._safe_float(debug_meta.get("state_min")),
+                    self._safe_float(debug_meta.get("state_max")),
+                    self._safe_float(debug_meta.get("feat_std")),
+                    self._safe_float(debug_meta.get("feat_min")),
+                    self._safe_float(debug_meta.get("feat_max")),
+                    self._safe_float(debug_meta.get("extra_std")),
+                    self._safe_float(debug_meta.get("tail_pf")),
+                    self._safe_float(debug_meta.get("tail_pv")),
+                    bool(debug_meta.get("tail_default")),
+                    debug_meta.get("nan_count"),
+                    debug_meta.get("inf_count"),
+                    debug_meta.get("state_head3"),
+                    debug_meta.get("state_tail3"),
+                    debug_meta.get("action_int"),
+                    self._safe_float(debug_meta.get("p_flat")),
+                    self._safe_float(debug_meta.get("p_long")),
+                    self._safe_float(debug_meta.get("p_margin")),
+                    self._safe_float(debug_meta.get("conf_raw")),
+                    self._safe_float(debug_meta.get("entropy_raw")),
+                    bool(debug_meta.get("obs_norm_present")),
+                    debug_meta.get("obs_clip_frac"),
+                    debug_meta.get("z_abs_mean"),
+                    debug_meta.get("z_abs_p99"),
+                    bool(override_info.get("override_ok")),
+                    override_info.get("reason"),
+                )
             else:
                  # Log unsupported symbol at debug level
                  logger.debug(f"ℹ️ [PPO-MONITOR] Unsupported symbol: {symbol} (norm: {normalized_symbol})")
@@ -2039,16 +2392,30 @@ class StrategyCoordinator:
             normalized = normalized.split(':', 1)[0]
         return normalized
 
-    def _build_ppo_state_overrides(self, symbol: str) -> Dict[str, float]:
+    def _build_ppo_state_overrides(self, symbol: str) -> Tuple[Dict[str, float], Dict[str, Any]]:
         overrides: Dict[str, float] = {}
+        meta: Dict[str, Any] = {"override_ok": False, "reason": None}
         normalized_symbol = self._normalize_symbol_for_ppo(symbol)
-        pos_fraction = self._compute_symbol_position_fraction(normalized_symbol)
-        if pos_fraction is not None:
-            overrides['position_fraction'] = pos_fraction
-        normalized_pv = self._compute_normalized_equity()
-        if normalized_pv is not None:
-            overrides['normalized_pv'] = normalized_pv
-        return overrides
+        if not self.portfolio_manager or not hasattr(self.portfolio_manager, 'get_open_positions'):
+            meta["reason"] = "no_portfolio_manager"
+        else:
+            pos_fraction = self._compute_symbol_position_fraction(normalized_symbol)
+            if pos_fraction is not None:
+                overrides['position_fraction'] = pos_fraction
+            else:
+                meta["reason"] = meta.get("reason") or "position_fraction_missing"
+
+        if not self.portfolio_manager or not hasattr(self.portfolio_manager, 'get_current_equity'):
+            meta["reason"] = meta.get("reason") or "no_equity_provider"
+        else:
+            normalized_pv = self._compute_normalized_equity()
+            if normalized_pv is not None:
+                overrides['normalized_pv'] = normalized_pv
+            else:
+                meta["reason"] = meta.get("reason") or "normalized_pv_missing"
+        if overrides:
+            meta["override_ok"] = True
+        return overrides, meta
 
     def _compute_symbol_position_fraction(self, symbol: str) -> Optional[float]:
         if not self.portfolio_manager or not hasattr(self.portfolio_manager, 'get_open_positions'):
@@ -2602,6 +2969,12 @@ class StrategyCoordinator:
                 if vol_context:
                     enriched['volume_bucket'] = vol_context.bucket
                     enriched['volume_strength'] = vol_context.volume_strength
+                    enriched['volume_ratio_short'] = vol_context.ratio_short
+                    enriched['volume_ratio_medium'] = vol_context.ratio_medium
+                    enriched['volume_ratio_combined'] = vol_context.ratio_combined
+                    enriched['volume_short_baseline'] = vol_context.short_baseline_volume
+                    enriched['volume_medium_baseline'] = vol_context.medium_baseline_volume
+                    enriched['volume_current_window'] = vol_context.current_window_volume
                     
                     # Log volume context injection
                     logger.info(
@@ -2935,29 +3308,52 @@ class StrategyCoordinator:
             computed_by_analyzer = False
             volume_ctx_log = None
             if self.volume_analyzer and self._volume_analyzer_enabled:
-                ctx = await self.volume_analyzer.compute_context(
-                    symbol=symbol,
-                    trade_timeframe=trade_tf,
-                    as_of_ts=as_of_ts,
-                )
-                if ctx:
-                    volume_strength = float(ctx.volume_strength)
-                    volume_bucket = ctx.bucket
+                # Reuse existing volume context if present to avoid double computation
+                if all(
+                    key in signal
+                    for key in (
+                        "volume_strength",
+                        "volume_bucket",
+                        "volume_ratio_short",
+                        "volume_ratio_medium",
+                        "volume_ratio_combined",
+                    )
+                ):
+                    volume_strength = float(signal.get("volume_strength", volume_strength))
+                    volume_bucket = signal.get("volume_bucket", volume_bucket)
+                    volume_ctx_source = "cached"
                     computed_by_analyzer = True
-                    volume_ctx_source = "analyzer"
-                    volume_ctx_log = {
-                        "event": "volume_context",
-                        "timestamp": now_ts,
-                        "run_id": run_id,
-                        "symbol": symbol,
-                        "timeframe": trade_tf,
-                        "volume_bucket": ctx.bucket,
-                        "volume_strength": ctx.volume_strength,
-                        "ratio_short": ctx.ratio_short,
-                        "ratio_medium": ctx.ratio_medium,
-                        "ratio_combined": ctx.ratio_combined,
-                        "source": "analyzer",
-                    }
+                    volume_ctx_log = None  # already logged in first enrichment
+                else:
+                    ctx = await self.volume_analyzer.compute_context(
+                        symbol=symbol,
+                        trade_timeframe=trade_tf,
+                        as_of_ts=as_of_ts,
+                    )
+                    if ctx:
+                        volume_strength = float(ctx.volume_strength)
+                        volume_bucket = ctx.bucket
+                        computed_by_analyzer = True
+                        volume_ctx_source = "analyzer"
+                        volume_ctx_log = {
+                            "event": "volume_context",
+                            "timestamp": now_ts,
+                            "run_id": run_id,
+                            "symbol": symbol,
+                            "timeframe": trade_tf,
+                            "volume_bucket": ctx.bucket,
+                            "volume_strength": ctx.volume_strength,
+                            "ratio_short": ctx.ratio_short,
+                            "ratio_medium": ctx.ratio_medium,
+                            "ratio_combined": ctx.ratio_combined,
+                            "current_window_volume": ctx.current_window_volume,
+                            "short_baseline_volume": ctx.short_baseline_volume,
+                            "medium_baseline_volume": ctx.medium_baseline_volume,
+                            "baseline_short_last_bar_ts": getattr(ctx, "baseline_short_last_bar_ts", None),
+                            "baseline_medium_last_bar_ts": getattr(ctx, "baseline_medium_last_bar_ts", None),
+                            "baseline_calc_mode": getattr(ctx, "baseline_calc_mode", None),
+                            "source": "analyzer",
+                        }
 
             data = None
             if self.market_data_pipeline:
@@ -2975,7 +3371,7 @@ class StrategyCoordinator:
                     avg_vol = data['volume'].tail(20).mean()
                     volume_strength = min(recent_vol / avg_vol, VOLUME_NORMALIZATION_MAX) / VOLUME_NORMALIZATION_DIVISOR if avg_vol > 0 else volume_strength
             if volume_ctx_log:
-                logger.info(f"volume_context {volume_ctx_log}")
+                logger.info("volume_context %s", json.dumps(volume_ctx_log))
 
             logger.debug(
                 "✅ Market metrics: vol=%.2f bucket=%s, mom=%.2f (analyzer=%s)",

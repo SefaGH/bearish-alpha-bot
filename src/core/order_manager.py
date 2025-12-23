@@ -451,7 +451,7 @@ class SmartOrderManager:
                 'order_id': None
             }
     
-    async def _limit_order_execution(self, order_request: Dict, clients_to_use: Optional[Dict] = None) -> Dict[str, Any]:
+    async def _limit_order_execution(self, order_request: Dict, clients_to_use: Optional[Dict] = None, **kwargs) -> Dict[str, Any]:
         """
         Execute limit order with smart pricing.
         (UPDATED: Now uses MarketDataPipeline for market metadata retrieval)
@@ -461,6 +461,13 @@ class SmartOrderManager:
         amount = order_request.get('amount')
         exchange = order_request.get('exchange')
         log_prefix = f"[ORDER-EXEC/{exchange}/{symbol}]"
+        execution_params = {}
+        if kwargs:
+            execution_params = kwargs.get('execution_params') or {}
+        if not execution_params:
+            execution_params = order_request.get('execution_params') or {}
+        if execution_params.get('post_only') or execution_params.get('postOnly'):
+            self.logger.info("[PAPER] Processing POST_ONLY Limit Order request")
 
         try:
             clients = clients_to_use if clients_to_use is not None else self.exchange_clients

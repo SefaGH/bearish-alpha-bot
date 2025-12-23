@@ -10,6 +10,7 @@ import os
 from typing import Dict, List, Optional, Any, Tuple, Protocol
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from collections import defaultdict
 import numpy as np
 
 # Import RiskConfiguration and related dataclasses for type-safe configuration
@@ -195,6 +196,9 @@ class RiskManager:
         # Track resize attempts per logical position to avoid repeated retries
         self._resize_attempted_for_position: Dict[str, bool] = {}
 
+        # DCA bookkeeping
+        self._dca_last_symbol_trigger: Dict[str, float] = defaultdict(float)
+
         logger.info(f"RiskManager initialized (PHASE 3: Rules Engine)")
         logger.info(f"Risk configuration: {self.risk_config.to_dict()}")
         logger.info(f"Risk limits: {self.risk_limits}")
@@ -345,6 +349,13 @@ class RiskManager:
 
         limits = self.concurrent_limits
         active_positions: Optional[Dict[str, Dict[str, Any]]] = None
+        scale_profile = None
+        dca_meta = {}
+        if isinstance(signal, dict):
+            dca_meta = signal.get("dca_metadata") or {}
+            scale_profile = signal.get("scale_profile") or dca_meta.get("profile")
+        is_dca_signal = scale_profile == "dca"
+
         if hasattr(portfolio_manager, 'count_open_positions'):
             active_count = portfolio_manager.count_open_positions()
         else:
@@ -379,6 +390,31 @@ class RiskManager:
                 symbol or "UNKNOWN",
             )
             return True, "Bypassed for de-risking intent"
+
+        # DCA branch (mutually exclusive with trend pyramiding in v1)
+        if is_dca_signal and intent == INTENT_SCALE_IN:
+            if limits.max_open_positions and active_count >= limits.max_open_positions:
+                return False, f"Max open positions reached ({active_count}/{limits.max_open_positions})"
+            if active_positions is None and hasattr(portfolio_manager, 'get_open_positions'):
+                try:
+                    active_positions = portfolio_manager.get_open_positions() or {}
+                except Exception:
+                    active_positions = {}
+            ok_dca, dca_reason = self._check_dca_limits(
+                signal=signal,
+                portfolio_manager=portfolio_manager,
+                active_positions=active_positions or {},
+                pyramiding_cfg=pyramiding_cfg,
+                concurrent_limits=limits,
+            )
+            if not ok_dca:
+                return False, dca_reason
+
+            projected_heat = risk_metrics.get('portfolio_heat') if isinstance(risk_metrics, dict) else None
+            max_heat = limits.max_total_risk_pct
+            if projected_heat is not None and max_heat and projected_heat >= max_heat:
+                return False, f"Portfolio heat {projected_heat:.2%} exceeds limit {max_heat:.2%}"
+            return True, dca_reason or "OK (DCA)"
 
         if limits.max_open_positions and active_count >= limits.max_open_positions:
             return False, f"Max open positions reached ({active_count}/{limits.max_open_positions})"
@@ -622,6 +658,206 @@ class RiskManager:
             )
         return True, "OK (Dynamic Scaling Allowed)"
 
+    def _check_dca_limits(
+        self,
+        signal: Dict[str, Any],
+        portfolio_manager: Any,
+        active_positions: Dict[str, Dict[str, Any]],
+        pyramiding_cfg: Dict[str, Any],
+        concurrent_limits: ConcurrentRiskLimitsConfig,
+    ) -> Tuple[bool, str]:
+        """DCA-specific concurrent limit checks (mutually exclusive with trend in v1)."""
+        import time
+
+        dca_cfg = self._get_dca_cfg(portfolio_manager)
+        if not dca_cfg or not dca_cfg.get("enabled"):
+            return False, "dca_not_enabled"
+
+        strategy_cfg = dca_cfg.get("strategy", {}) if isinstance(dca_cfg, dict) else {}
+        risk_cfg = dca_cfg.get("risk_limits", {}) if isinstance(dca_cfg, dict) else {}
+        allow_mix = bool(risk_cfg.get("allow_concurrent_with_trend", False))
+        symbol = signal.get("symbol")
+
+        if not allow_mix and self._has_trend_pyramiding_position(symbol, active_positions):
+            return False, "dca_trend_mutually_exclusive"
+
+        max_layers_cfg = strategy_cfg.get("max_layers", 0)
+        try:
+            max_layers_cfg = int(max_layers_cfg)
+        except (TypeError, ValueError):
+            max_layers_cfg = 0
+        # max_layers includes the initial entry in the config; DCA layers are additional.
+        allowed_dca_layers = max(0, max_layers_cfg - 1) if max_layers_cfg else max_layers_cfg
+        current_dca_layers = self._count_dca_layers(active_positions, symbol)
+        if allowed_dca_layers and current_dca_layers >= allowed_dca_layers:
+            return False, f"dca_max_layers_reached:{allowed_dca_layers}"
+
+        if concurrent_limits.max_positions_per_symbol and symbol:
+            symbol_count = self._count_positions_for_symbol(active_positions, symbol)
+            max_symbol_slots = concurrent_limits.max_positions_per_symbol + (allowed_dca_layers or 0)
+            if symbol_count >= max_symbol_slots:
+                return False, f"dca_symbol_limit:{symbol_count}/{max_symbol_slots}"
+
+        equity = self._safe_get_equity(portfolio_manager)
+        portfolio_dca_heat = self._calculate_portfolio_dca_heat(active_positions, equity)
+        max_portfolio_heat = self._safe_float(risk_cfg.get("max_dca_portfolio_pct", 0.0), 0.0)
+        if max_portfolio_heat and portfolio_dca_heat > max_portfolio_heat:
+            return False, "dca_portfolio_heat_limit"
+
+        symbol_dca_heat = self._calculate_symbol_dca_heat(active_positions, symbol, equity)
+        max_symbol_heat = self._safe_float(risk_cfg.get("max_heat_per_symbol", 0.0), 0.0)
+        if max_symbol_heat and symbol_dca_heat > max_symbol_heat:
+            return False, "dca_symbol_heat_limit"
+
+        panic_cutoff = self._safe_float(risk_cfg.get("panic_cutoff_pct", 0.0), 0.0)
+        if panic_cutoff:
+            drawdown_pct = self._calculate_symbol_drawdown(signal, active_positions, symbol)
+            if drawdown_pct is not None and drawdown_pct > panic_cutoff:
+                return False, "dca_panic_cutoff_triggered"
+
+        cooldown_seconds = self._safe_float(strategy_cfg.get("cooldown_seconds", 0), 0.0)
+        if cooldown_seconds > 0 and not self._is_dca_cooldown_passed(symbol, cooldown_seconds):
+            return False, "dca_cooldown_not_passed"
+
+        self._dca_last_symbol_trigger[symbol or ""] = time.time()
+        return True, "OK (DCA)"
+
+    def _get_dca_cfg(self, portfolio_manager: Any) -> Dict[str, Any]:
+        if portfolio_manager and hasattr(portfolio_manager, "cfg"):
+            cfg = getattr(portfolio_manager, "cfg", {}) or {}
+            if isinstance(cfg, dict):
+                return cfg.get("dca", {}) or {}
+        return {}
+
+    def _is_dca_position(self, position: Dict[str, Any]) -> bool:
+        if not isinstance(position, dict):
+            return False
+        meta = position.get("dca_metadata") or {}
+        profile = position.get("scale_profile") or meta.get("profile")
+        return profile == "dca"
+
+    def _count_dca_layers(self, active_positions: Dict[str, Dict[str, Any]], symbol: Optional[str]) -> int:
+        if not isinstance(active_positions, dict) or not symbol:
+            return 0
+        layers = 0
+        for pos in active_positions.values():
+            if pos.get("symbol") != symbol:
+                continue
+            if self._is_dca_position(pos):
+                layers += 1
+        return layers
+
+    def _extract_position_notional(self, position: Dict[str, Any]) -> float:
+        if not position:
+            return 0.0
+        notional = position.get("notional") or position.get("position_notional")
+        if notional is None:
+            try:
+                entry = float(position.get("entry_price") or position.get("entry") or 0.0)
+                qty = float(position.get("amount") or position.get("size") or 0.0)
+                notional = entry * qty
+            except Exception:
+                notional = 0.0
+        try:
+            return float(notional or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _calculate_portfolio_dca_heat(self, active_positions: Dict[str, Dict[str, Any]], equity: float) -> float:
+        if equity is None or equity <= 0:
+            return 0.0
+        total = 0.0
+        for pos in (active_positions or {}).values():
+            if self._is_dca_position(pos):
+                total += self._extract_position_notional(pos)
+        return total / equity if equity else 0.0
+
+    def _calculate_symbol_dca_heat(
+        self,
+        active_positions: Dict[str, Dict[str, Any]],
+        symbol: Optional[str],
+        equity: float,
+    ) -> float:
+        if equity is None or equity <= 0 or not symbol:
+            return 0.0
+        total = 0.0
+        for pos in (active_positions or {}).values():
+            if pos.get("symbol") != symbol:
+                continue
+            if self._is_dca_position(pos):
+                total += self._extract_position_notional(pos)
+        return total / equity if equity else 0.0
+
+    def _calculate_symbol_drawdown(
+        self,
+        signal: Dict[str, Any],
+        active_positions: Dict[str, Dict[str, Any]],
+        symbol: Optional[str],
+    ) -> Optional[float]:
+        if not symbol:
+            return None
+        dca_meta = signal.get("dca_metadata") or {}
+        price_drop_pct = dca_meta.get("price_drop_pct")
+        try:
+            if price_drop_pct is not None:
+                drop = float(price_drop_pct)
+                return max(0.0, drop)
+        except (TypeError, ValueError):
+            pass
+
+        anchor_price = dca_meta.get("anchor_price")
+        current_price = signal.get("entry") or signal.get("price") or signal.get("entry_price")
+        direction = (signal.get("side") or "").lower()
+        try:
+            if anchor_price and current_price:
+                anchor_val = float(anchor_price)
+                current_val = float(current_price)
+                if anchor_val > 0:
+                    if direction in ("long", "buy"):
+                        return max(0.0, (anchor_val - current_val) / anchor_val)
+                    if direction in ("short", "sell"):
+                        return max(0.0, (current_val - anchor_val) / anchor_val)
+        except (TypeError, ValueError):
+            pass
+
+        # Fallback: use earliest position entry as anchor and latest price from positions
+        anchor = None
+        latest_price = None
+        for pos in (active_positions or {}).values():
+            if pos.get("symbol") != symbol:
+                continue
+            try:
+                if anchor is None:
+                    anchor = float(pos.get("entry_price") or pos.get("entry") or 0.0)
+                price_candidate = pos.get("current_price") or pos.get("entry_price")
+                if price_candidate is not None:
+                    latest_price = float(price_candidate)
+            except (TypeError, ValueError):
+                continue
+        if anchor and latest_price:
+            if direction in ("short", "sell"):
+                return max(0.0, (latest_price - anchor) / anchor)
+            return max(0.0, (anchor - latest_price) / anchor)
+        return None
+
+    def _has_trend_pyramiding_position(self, symbol: Optional[str], active_positions: Dict[str, Dict[str, Any]]) -> bool:
+        if not symbol or not isinstance(active_positions, dict):
+            return False
+        for pos in active_positions.values():
+            if pos.get("symbol") != symbol:
+                continue
+            if not self._is_dca_position(pos):
+                return True
+        return False
+
+    def _is_dca_cooldown_passed(self, symbol: Optional[str], cooldown_seconds: float) -> bool:
+        if not symbol or cooldown_seconds <= 0:
+            return True
+        import time
+        last_ts = self._dca_last_symbol_trigger.get(symbol, 0.0)
+        now = time.time()
+        return (now - last_ts) >= cooldown_seconds
+
     def can_open_new_position(
         self,
         signal: Dict,
@@ -822,6 +1058,13 @@ class RiskManager:
                 f"[RISK-ENGINE] Failed to get equity from portfolio_manager: {exc}; using fallback {self.portfolio_value}"
             )
             return float(self.portfolio_value)
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
     @staticmethod
     def _coerce_bool(val: Any) -> Optional[bool]:

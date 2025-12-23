@@ -27,6 +27,7 @@ class RLTradingEnvGym(gym.Env):
         raw_df: pd.DataFrame,
         config: Optional[Dict[str, Any]] = None,
         initial_balance: float = 10000.0,
+        observation_spec: Optional[Any] = None,
     ):
         super().__init__()
 
@@ -43,6 +44,7 @@ class RLTradingEnvGym(gym.Env):
             config=config or {},
             initial_balance=initial_balance,
             idle_cost=(config or {}).get("idle_cost", 0.0),
+            observation_spec=observation_spec,
         )
 
         self.state_dim = self._base_env.state_dim

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -11,7 +11,7 @@ import pandas as pd
 PRICE_COLUMNS = ["open", "high", "low", "close", "volume"]
 
 
-def load_npz_dataset(path: Path) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, str]]:
+def load_npz_dataset(path: Path, *, min_rows: Optional[int] = 500) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, str]]:
     """Load engineered features and prices from an npz archive."""
     if not path.exists():
         raise FileNotFoundError(f"Dataset not found: {path}")
@@ -39,8 +39,8 @@ def load_npz_dataset(path: Path) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, 
     features_df = features_df.replace([np.inf, -np.inf], np.nan).dropna()
     price_df = price_df.loc[features_df.index]
 
-    if len(features_df) < 500:
-        raise RuntimeError("Dataset must contain at least 500 aligned rows for meaningful RL runs")
+    if min_rows is not None and len(features_df) < min_rows:
+        raise RuntimeError(f"Dataset must contain at least {min_rows} aligned rows for meaningful RL runs")
 
     return (
         features_df.reset_index(drop=True),

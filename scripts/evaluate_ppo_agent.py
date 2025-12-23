@@ -14,10 +14,11 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -25,6 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.rl_dataset_utils import load_npz_dataset
 from src.ml.rl_trading_env_gym import RLTradingEnvGym
+from src.ml.ppo.observation_spec import load_spec, spec_from_feature_columns
 
 
 def configure_logging(level: str) -> None:
@@ -65,6 +67,11 @@ def main() -> None:
         help="Path to *_test.npz dataset.",
     )
     parser.add_argument(
+        "--obs-spec",
+        type=Path,
+        help="Optional ObservationSpec JSON. Defaults to model sidecar, then dataset sibling.",
+    )
+    parser.add_argument(
         "--output-summary",
         type=Path,
         default=Path("data/training/ppo_eval_summary.json"),
@@ -94,31 +101,67 @@ def main() -> None:
     }
     initial_balance = float(metadata.get("initial_balance", 10_000.0)) if isinstance(metadata, dict) else 10_000.0
 
-    env = RLTradingEnvGym(
-        features_df=features_df,
-        raw_df=price_df,
-        config=env_config,
-        initial_balance=initial_balance,
-    )
+    def _resolve_spec_path() -> Optional[Path]:
+        if args.obs_spec:
+            return args.obs_spec
+        candidates = [args.model.with_suffix(".obs_spec.json")]
+        stem = args.dataset.stem
+        for suffix in ("_train", "_test", "_val"):
+            if stem.endswith(suffix):
+                base = stem[: -len(suffix)]
+                candidates.append(args.dataset.parent / f"{base}.obs_spec.json")
+                break
+        for cand in candidates:
+            if cand.exists():
+                return cand
+        return None
+
+    spec_path = _resolve_spec_path()
+    if spec_path and spec_path.exists():
+        obs_spec = load_spec(spec_path)
+    else:
+        obs_spec = spec_from_feature_columns(features_df.columns)
+
+    def _env_fn():
+        return RLTradingEnvGym(
+            features_df=features_df,
+            raw_df=price_df,
+            config=env_config,
+            initial_balance=initial_balance,
+            observation_spec=obs_spec,
+        )
+
+    vec_env = DummyVecEnv([_env_fn])
+    vecnorm_path = args.model.with_suffix(".vecnormalize.pkl")
+    if vecnorm_path.exists():
+        logging.info("Loading VecNormalize stats from %s", vecnorm_path)
+        vec_env = VecNormalize.load(str(vecnorm_path), vec_env)
+        vec_env.training = False
+        vec_env.norm_reward = False
+    else:
+        logging.warning("VecNormalize stats not found; running evaluation without normalization.")
 
     logging.info("Loading PPO model from %s", args.model)
     model = PPO.load(str(args.model))
+    if vecnorm_path.exists():
+        model.set_env(vec_env)
 
-    obs, _ = env.reset()
+    obs = vec_env.reset()
     done = False
-    truncated = False
 
     equity_curve: List[float] = []
     rewards: List[float] = []
     actions: List[int] = []
 
-    while not (done or truncated):
+    while not done:
         action, _ = model.predict(obs, deterministic=True)
-        obs, reward, done, truncated, info = env.step(int(action))
+        obs, reward, done_array, info = vec_env.step([int(action)])
+        done = bool(done_array[0]) if isinstance(done_array, (list, np.ndarray)) else bool(done_array)
 
-        rewards.append(float(reward))
-        actions.append(int(action))
-        equity_curve.append(float(info.get("portfolio_value")))
+        rewards.append(float(reward[0] if isinstance(reward, (list, np.ndarray)) else reward))
+        actions.append(int(action[0]) if isinstance(action, (list, np.ndarray)) else int(action))
+        info_obj = info[0] if isinstance(info, (list, tuple)) else info
+        equity_curve.append(float(info_obj.get("portfolio_value")))
 
     equity_np = np.array(equity_curve, dtype=float)
     final_value = equity_np[-1] if equity_np.size > 0 else initial_balance

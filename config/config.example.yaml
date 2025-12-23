@@ -420,7 +420,7 @@ strategies:
       fallback_priority: 0.4          # Override with: REGIME_DEFAULT_FALLBACK
 
   adaptive_ob:
-    allow_low_volume: false         # Override with: STRATEGY_OB_ALLOW_LOW_VOLUME
+    allow_low_volume: true         # Override with: STRATEGY_OB_ALLOW_LOW_VOLUME
     volume_filters:
       enabled: true                 # Override with: STRATEGY_OB_VOLUME_FILTERS_ENABLED
       min_bucket: "NORMAL"          # Override with: STRATEGY_OB_VOLUME_FILTERS_MIN_BUCKET
@@ -429,7 +429,7 @@ strategies:
       volume_score_weight: 0.15     # Override with: STRATEGY_OB_VOLUME_FILTERS_WEIGHT
 
   adaptive_short_the_rip:
-    allow_low_volume: false         # Override with: STRATEGY_STR_ALLOW_LOW_VOLUME
+    allow_low_volume: true         # Override with: STRATEGY_STR_ALLOW_LOW_VOLUME
     volume_filters:
       enabled: true                 # Override with: STRATEGY_STR_VOLUME_FILTERS_ENABLED
       min_bucket: "NORMAL"          # Override with: STRATEGY_STR_VOLUME_FILTERS_MIN_BUCKET
@@ -456,6 +456,32 @@ pyramiding:
   min_scale_in_quality: 0.80          # Override with: PYRAMIDING_MIN_SCALE_IN_QUALITY (future use)
   min_scale_in_unrealized_pnl_pct: 0.005 # Override with: PYRAMIDING_MIN_SCALE_IN_PNL (future use)
   min_scale_in_distance_pct: 0.005    # Override with: PYRAMIDING_MIN_SCALE_IN_DISTANCE (future use)
+
+# ==============================================================================
+# DCA (Dollar-Cost Averaging) - v1 (disabled by default; paper-mode first)
+# ==============================================================================
+dca:
+  enabled: true                      # Override with: DCA_ENABLED
+
+  strategy:
+    max_layers: 3                     # initial entry + up to 2 DCA layers
+    step_pct: 0.015                   # adverse move per layer (1.5%)
+    step_scale: 1.0                   # constant step spacing in v1
+    position_weights: [1.0, 0.7, 0.5] # decreasing sizes; no martingale
+    min_volume_usdt: 10.0             # floor notional per DCA layer
+    cooldown_seconds: 600             # min spacing between DCA layers per symbol
+    spread_threshold_pct: 0.001       # block DCA when spread is too wide
+    volatility_threshold_pct: 0.02    # block DCA when volatility is elevated
+
+  risk_limits:
+    max_dca_portfolio_pct: 0.10       # cap total DCA exposure to 10% of equity
+    max_heat_per_symbol: 0.05         # cap symbol DCA exposure to 5% of equity
+    panic_cutoff_pct: 0.08            # block further DCA beyond ~8% drawdown from anchor
+    allow_concurrent_with_trend: false  # v1: DCA and trend pyramiding are mutually exclusive
+
+  exit:
+    mode: per_position                # v1: exits remain per position
+    shared_stop_loss: false           # stack-level SL/TP reserved for later phases
 
 # ==============================================================================
 # QUARANTINE SYSTEM
@@ -584,6 +610,12 @@ ml:
     ppo_position_bonus: 0.5           # Override with: ML_RL_PPO_POS_BONUS
     ppo_lookback_bars: 240            # Override with: ML_RL_PPO_LOOKBACK_BARS (candles fetched for PPO state)
     ppo_lookback_windows: [12, 24, 48, 96] # Override with: ML_RL_PPO_LOOKBACK_WINDOWS (summary windows for telemetry)
+    ppo_conf_threshold: 0.60          # Override with: ML_RL_PPO_CONF_THRESHOLD
+    ppo_min_margin: 0.0               # Override with: ML_RL_PPO_MIN_MARGIN (p_long - p_flat)
+    ppo_health_min_std: 0.001         # Override with: ML_RL_PPO_HEALTH_MIN_STD (std of p_long over window)
+    ppo_health_window: 30             # Override with: ML_RL_PPO_HEALTH_WINDOW
+    ppo_health_clip_frac_limit: 0.30  # Override with: ML_RL_PPO_HEALTH_CLIP_LIMIT
+    ppo_require_vecnorm: true         # Override with: ML_RL_PPO_REQUIRE_VECNORM
     
     # Training Mode Control
     # ============================================================================

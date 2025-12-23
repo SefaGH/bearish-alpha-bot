@@ -13,16 +13,18 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from src.ml.rl_trading_env_gym import RLTradingEnvGym
 from scripts.rl_dataset_utils import load_npz_dataset  # mevcut util
+from src.ml.ppo.observation_spec import spec_from_feature_columns, save_spec
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,6 +46,11 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="ppo_trading_agent",
         help="Base name for PPO model (without extension).",
+    )
+    parser.add_argument(
+        "--obs-spec",
+        type=Path,
+        help="Optional ObservationSpec JSON. If omitted, will try to infer from dataset directory.",
     )
     parser.add_argument(
         "--timesteps",
@@ -68,14 +75,14 @@ def configure_logging(level: str) -> None:
     )
 
 
-def make_env(features_df, price_df, metadata):
+def make_env(features_df, price_df, metadata, spec):
     env_config = {
         "fee_pct": metadata.get("fee_pct", 0.0006) if isinstance(metadata, dict) else 0.0006,
         "trade_penalty_alpha": 0.0,
         "idle_cost": 0.0,
         "reward_clip_enabled": True,
-        "reward_clip_min": -1.0,
-        "reward_clip_max": 1.0,
+        "reward_clip_min": -5.0,
+        "reward_clip_max": 5.0,
     }
     initial_balance = float(metadata.get("initial_balance", 10_000.0)) if isinstance(metadata, dict) else 10_000.0
     env = RLTradingEnvGym(
@@ -83,6 +90,7 @@ def make_env(features_df, price_df, metadata):
         raw_df=price_df,
         config=env_config,
         initial_balance=initial_balance,
+        observation_spec=spec,
     )
     return env
 
@@ -94,11 +102,41 @@ def main() -> None:
     logging.info("Loading dataset from %s", args.dataset)
     features_df, price_df, metadata = load_npz_dataset(args.dataset)
 
+    def _resolve_spec_path() -> Optional[Path]:
+        if args.obs_spec:
+            return args.obs_spec
+        candidates = [args.dataset.with_suffix(".obs_spec.json")]
+        stem = args.dataset.stem
+        for suffix in ("_train", "_test", "_val"):
+            if stem.endswith(suffix):
+                base = stem[: -len(suffix)]
+                candidates.append(args.dataset.parent / f"{base}.obs_spec.json")
+                break
+        for cand in candidates:
+            if cand.exists():
+                return cand
+        return None
+
+    spec_path = _resolve_spec_path()
+    if spec_path and spec_path.exists():
+        logging.info("Loading ObservationSpec from %s", spec_path)
+        from src.ml.ppo.observation_spec import load_spec
+
+        spec = load_spec(spec_path)
+    else:
+        spec = spec_from_feature_columns(features_df.columns)
+
     logging.info("Creating Gym-compatible trading environment...")
     def _env_fn():
-        return make_env(features_df, price_df, metadata)
+        return make_env(features_df, price_df, metadata, spec)
 
     vec_env = DummyVecEnv([_env_fn])
+    vec_env = VecNormalize(
+        vec_env,
+        norm_obs=True,
+        norm_reward=False,
+        clip_obs=10.0,
+    )
 
     logging.info("Initializing PPO agent...")
     model = PPO(
@@ -112,7 +150,7 @@ def main() -> None:
         batch_size=64,           # aynı kalabilir (1024'ün böleni)
         gamma=0.99,              # aynen
         gae_lambda=0.95,         # aynen
-        ent_coef=0.005,          # 0.001 → 0.005: biraz daha exploration
+        ent_coef=0.02,           # Match FinRL-Crypto ref to boost exploration
         vf_coef=0.5,             # aynen
         max_grad_norm=0.5,       # aynen
     )
@@ -122,8 +160,15 @@ def main() -> None:
 
     args.model_dir.mkdir(parents=True, exist_ok=True)
     model_path = args.model_dir / f"{args.model_name}.zip"
+    spec_path = args.model_dir / f"{args.model_name}.obs_spec.json"
     logging.info("Saving PPO model to %s", model_path)
     model.save(str(model_path))
+    save_spec(spec, spec_path)
+    logging.info("Saved observation spec to %s", spec_path)
+    # Save VecNormalize statistics
+    vecnorm_path = args.model_dir / f"{args.model_name}.vecnormalize.pkl"
+    vec_env.save(str(vecnorm_path))
+    logging.info("Saved VecNormalize stats to %s", vecnorm_path)
 
     logging.info("PPO training finished.")
 

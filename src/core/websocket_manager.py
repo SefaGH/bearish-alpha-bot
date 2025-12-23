@@ -32,6 +32,24 @@ class WebSocketManager:
         self._running = False
         
         self._data_collector = StreamDataCollector(config=self.config)
+        # Provide WS state provider to collector
+        def _ws_state_provider(ex_name: str):
+            client = self.clients.get(ex_name)
+            if not client or not hasattr(client, "bingx_ws"):
+                return {}
+            ws = client.bingx_ws
+            try:
+                connected = ws.is_connected()
+            except Exception:
+                connected = None
+            listen = "running" if getattr(ws, "_ws_thread", None) and ws._ws_thread.is_alive() else "stopped"
+            subs = len(getattr(ws, "subscriptions", {}) or {})
+            msgs = getattr(ws, "message_count", None)
+            return {"connected": connected, "listen": listen, "subs": subs, "ws_messages": msgs}
+
+        self._data_collector.set_ws_state_provider(_ws_state_provider)
+        # Start periodic state snapshots
+        self._data_collector.start_state_logger(interval=60)
         logger.info("StreamDataCollector initialized within WebSocketManager")
         
         exchanges = exchanges or {}

@@ -3,6 +3,14 @@ import numpy as np
 import pandas as pd
 from typing import Tuple, Dict, Any, Optional
 
+from src.ml.ppo.observation_spec import (
+    DEFAULT_EXTRA_FEATURE_NAMES,
+    ObservationSpec,
+    build_observation,
+    compute_price_extras,
+    spec_from_feature_columns,
+)
+
 logger = logging.getLogger(__name__)
 
 # Aksiyon Etiketleri: Hedef Pozisyon Oranları
@@ -24,6 +32,7 @@ class RLTradingEnv:
         config: Optional[Dict] = None,
         initial_balance: float = 10000.0,
         idle_cost: float = 0.0,
+        observation_spec: Optional[ObservationSpec] = None,
     ):
         if features_df.empty or raw_df.empty:
             raise ValueError("DataFrames cannot be empty.")
@@ -36,20 +45,25 @@ class RLTradingEnv:
         self.features_df = features_df
         self.raw_df = raw_df
         self.initial_balance = initial_balance
+        if observation_spec:
+            self.observation_spec = observation_spec
+        else:
+            extra_names = DEFAULT_EXTRA_FEATURE_NAMES if len(features_df.columns) == 82 else []
+            self.observation_spec = spec_from_feature_columns(features_df.columns, extra_feature_names=extra_names)
 
         config = config or {}
         self.fee = config.get("fee_pct", 0.0006)
 
         # State: features + [position_fraction, normalized_pv]
-        self.state_dim = len(features_df.columns) + 2
+        self.state_dim = self.observation_spec.obs_dim
         self.action_dim = 2  # 0: flat, 1: full long
 
         self.position_fraction: float = 0.0
 
-        # Reward clip/scale
+        # Reward clip/scale (relaxed range for hybrid reward)
         self.reward_clip_enabled = config.get("reward_clip_enabled", True)
-        self.reward_clip_min = config.get("reward_clip_min", -1.0)
-        self.reward_clip_max = config.get("reward_clip_max", 1.0)
+        self.reward_clip_min = config.get("reward_clip_min", -5.0)
+        self.reward_clip_max = config.get("reward_clip_max", 5.0)
         self.reward_scale = config.get("reward_scale", 1.0)
 
         # Trade penalty / idle cost = 0 (benchmark-based reward ile gereksiz)
@@ -89,10 +103,7 @@ class RLTradingEnv:
         return self.balance + (self.position * price)
 
     def _get_state(self) -> np.ndarray:
-        market_state = self.features_df.iloc[self._current_step].values.astype(
-            np.float32
-        )
-
+        feature_row = self.features_df.iloc[self._current_step]
         current_price = float(self.raw_df["close"].iloc[self._current_step])
         portfolio_value = self._get_portfolio_value(current_price)
 
@@ -102,11 +113,38 @@ class RLTradingEnv:
             else 0.0
         )
 
-        portfolio_state = np.array(
-            [self.position_fraction, normalized_pv], dtype=np.float32
+        tail = {
+            "position_fraction": self.position_fraction,
+            "normalized_pv": normalized_pv,
+        }
+        extra_values = {}
+        if getattr(self.observation_spec, "extra_feature_names", None):
+            extra_arr = compute_price_extras(self.raw_df.iloc[: self._current_step + 1])
+            extra_values = {
+                name: float(extra_arr[i]) for i, name in enumerate(self.observation_spec.extra_feature_names)
+            }
+        return build_observation(
+            self.observation_spec,
+            feature_row,
+            tail_values=tail,
+            extra_values=extra_values,
         )
 
-        return np.concatenate([market_state, portfolio_state])
+    def _calculate_reward_legacy(self, bot_log_ret: float, bench_log_ret: float) -> float:
+        """Previous reward: purely benchmark-relative."""
+        return bot_log_ret - bench_log_ret
+
+    def _calculate_reward(self, action: int, bot_log_ret: float, bench_log_ret: float) -> float:
+        """
+        Hybrid reward:
+        - Absolute profit dominates (70%)
+        - Benchmark-relative term keeps buy&hold as a reference (30%)
+        - Idle penalty discourages staying flat forever
+        """
+        idle_penalty = -0.00005 if int(action) == 0 else 0.0
+        absolute_profit = 0.7 * bot_log_ret
+        benchmark_relative = 0.3 * (bot_log_ret - bench_log_ret)
+        return absolute_profit + benchmark_relative + idle_penalty
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         if self.done:
@@ -158,7 +196,7 @@ class RLTradingEnv:
         self.bench_pv = self.bench_position * current_price
         new_bench_pv = self.bench_pv
 
-        # 6) Reward = bot log-return - benchmark log-return
+        # 6) Reward components
         if prev_bot_pv > 0 and new_bot_pv > 0:
             bot_log_ret = float(np.log(new_bot_pv / prev_bot_pv))
         else:
@@ -169,10 +207,8 @@ class RLTradingEnv:
         else:
             bench_log_ret = 0.0
 
-        base_reward = bot_log_ret - bench_log_ret
-
         self.total_pnl = new_bot_pv - self.initial_balance
-        reward = base_reward
+        reward = self._calculate_reward(action, bot_log_ret, bench_log_ret)
 
         # Stop-out: bot PV çok düşerse epizodu bitir
         if new_bot_pv < self.initial_balance * 0.5:

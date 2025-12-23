@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 from datetime import datetime, timezone
 from enum import Enum
 from src.core.signal_intents import INTENT_ENTRY, INTENT_FORCE_SWAP, INTENT_REVERSE
+from .dca_watcher import DCAWatcher
 
 from core.logger import get_current_run_id
 
@@ -175,6 +176,9 @@ class LiveTradingEngine:
             'consecutive_ws_failures': 0
         }
 
+        # DCA watcher (initialized lazily)
+        self.dca_watcher: Optional[DCAWatcher] = None
+
         # Validate universe configuration
         if 'universe' not in self.config or not self.config['universe']:
             logger.warning("⚠️ No universe config found, using defaults")
@@ -264,6 +268,7 @@ class LiveTradingEngine:
             
             # Transition the engine state before background loops execute so they observe RUNNING.
             self.state = EngineState.RUNNING
+            self._initialize_dca_watcher()
 
             # Start signal processing
             signal_task = asyncio.create_task(self._signal_processing_loop())
@@ -295,6 +300,11 @@ class LiveTradingEngine:
 
             # Yield control so newly created tasks can progress before we return.
             await asyncio.sleep(0)
+
+            if self.dca_watcher and self.strategy_coordinator:
+                dca_task = asyncio.create_task(self._dca_watch_loop())
+                self.tasks.append(dca_task)
+                logger.info("  ? DCA watcher loop started")
             
             logger.info("\n" + "="*70)
             logger.info("✓ LIVE TRADING ENGINE STARTED SUCCESSFULLY")
@@ -842,7 +852,28 @@ class LiveTradingEngine:
             logger.info("Signal processing loop cancelled")
         except Exception as e:
             logger.error(f"Fatal error in signal processing loop: {e}", exc_info=True)
-    
+
+    async def _dca_watch_loop(self):
+        """Background loop to emit DCA scale-in signals via the coordinator."""
+        if not self.dca_watcher or not self.strategy_coordinator:
+            return
+        poll = getattr(self.dca_watcher, "poll_interval", 15.0) or 15.0
+        try:
+            while self.state == EngineState.RUNNING:
+                try:
+                    signals = await self.dca_watcher.run_once()
+                    for sig in signals or []:
+                        await self.strategy_coordinator.process_strategy_signal("dca_watcher", sig)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error("[DCA] Watch loop error: %s", exc, exc_info=True)
+                await asyncio.sleep(poll)
+        except asyncio.CancelledError:
+            logger.info("[DCA] Watch loop cancelled")
+        except Exception as exc:
+            logger.error("[DCA] Watch loop terminated: %s", exc, exc_info=True)
+
     async def _strategy_coordinator_bridge_loop(self):
         """
         Bridge task to transfer signals from StrategyCoordinator queue to LiveTradingEngine queue.
@@ -1361,6 +1392,28 @@ class LiveTradingEngine:
                 return {'success': True}
         except Exception as e:
             return {'success': False, 'reason': str(e)}
+
+    def _initialize_dca_watcher(self) -> None:
+        """Initialize DCA watcher if enabled (disabled by default)."""
+        try:
+            dca_cfg = self.config.get('dca') if isinstance(self.config, dict) else {}
+            if not dca_cfg or not dca_cfg.get('enabled', False):
+                logger.info("[DCA] Watcher disabled by config.")
+                return
+            if not self.position_manager:
+                logger.info("[DCA] PositionManager missing; watcher not started.")
+                return
+            self.dca_watcher = DCAWatcher(
+                cfg=self.config,
+                position_manager=self.position_manager,
+                market_data_pipeline=self.market_data_pipeline,
+                portfolio_manager=self.portfolio_manager,
+                logger=logger,
+            )
+            logger.info("[DCA] Watcher initialized (enabled).")
+        except Exception as exc:
+            logger.error("[DCA] Failed to initialize watcher: %s", exc, exc_info=True)
+            self.dca_watcher = None
     
     def get_engine_status(self) -> Dict[str, Any]:
         """Get current engine status with enhanced metrics."""

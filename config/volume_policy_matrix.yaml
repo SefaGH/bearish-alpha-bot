@@ -1,0 +1,102 @@
+# /mnt/data/volume_policy_matrix.yaml
+volume_policy:
+  enabled: true
+
+  bucket_reliability_guard:
+    enabled: true
+    lookback_events: 100
+    single_bucket_share_gte: 0.95
+    strength_std_lte: 0.005
+    fallback_mode: SAFE_LOW
+
+  microstructure_defaults:
+    max_spread_bps: 5
+    min_depth_usd_within_10bps: 500000
+    max_expected_slippage_bps: 5
+
+  risk_multipliers:
+    LOW: { position_size_multiplier: 0.50, stop_loss_multiplier: 1.30, take_profit_multiplier: 0.90 }
+    NORMAL: { position_size_multiplier: 1.00, stop_loss_multiplier: 1.00, take_profit_multiplier: 1.00 }
+    HIGH: { position_size_multiplier: 1.10, stop_loss_multiplier: 1.10, take_profit_multiplier: 1.00 }
+    EXTREME: { position_size_multiplier: 0.75, stop_loss_multiplier: 1.50, take_profit_multiplier: 0.80 }
+
+  quality_gates:
+    rr_min_normal: 2.0
+    rr_min_low: 2.5
+    rr_min_low_after_adjust: 3.0
+    rl_conf_min_low: 0.75
+    regime_conf_min_low: 0.20
+
+  stop_bands:
+    tight_stop_abs_pct_lt: 0.15
+    wide_stop_abs_pct_gt: 0.50
+
+  execution:
+    NORMAL: { order_type: HYBRID, post_only: false }
+    LOW: { order_type: LIMIT, post_only: true, time_in_force: GTC }
+
+  matrix:
+    - id: EXTREME_SAFE
+      when: { volume_bucket: EXTREME }
+      action: ACCEPT
+      apply: { bucket: EXTREME, microstructure: true, execution_profile: LOW }
+
+    - id: HIGH_STANDARD
+      when: { volume_bucket: HIGH }
+      action: ACCEPT
+      apply: { bucket: HIGH, microstructure: false, execution_profile: NORMAL }
+
+    - id: NORMAL_STANDARD
+      when: { volume_bucket: NORMAL }
+      action: ACCEPT
+      apply: { bucket: NORMAL, microstructure: false, execution_profile: NORMAL }
+      gates: { rr_gte: ${volume_policy.quality_gates.rr_min_normal} }
+
+    - id: LOW_WIDE_STOP_STRICT
+      when:
+        volume_bucket: LOW
+        stop_abs_pct_gt: ${volume_policy.stop_bands.wide_stop_abs_pct_gt}
+      action: ACCEPT_IF
+      apply: { bucket: LOW, microstructure: true, execution_profile: LOW }
+      gates: { rr_gte: ${volume_policy.quality_gates.rr_min_low}, rl_conf_gte: 0.85 }
+
+    - id: LOW_NORMAL_STOP
+      when:
+        volume_bucket: LOW
+        stop_abs_pct_between: [${volume_policy.stop_bands.tight_stop_abs_pct_lt}, ${volume_policy.stop_bands.wide_stop_abs_pct_gt}]
+      action: ACCEPT_IF
+      apply: { bucket: LOW, microstructure: true, execution_profile: LOW }
+      gates: { rr_gte: ${volume_policy.quality_gates.rr_min_low} }
+
+    - id: LOW_TIGHT_STOP_DEFER_RECHECK
+      when:
+        volume_bucket: LOW
+        stop_abs_pct_lt: ${volume_policy.stop_bands.tight_stop_abs_pct_lt}
+      action: DEFER
+      defer:
+        bars: 1
+        recheck: [volume_bucket, microstructure]
+      on_recheck:
+        - when: { volume_bucket_at_least: NORMAL }
+          action: ACCEPT
+          apply: { bucket: NORMAL, microstructure: false, execution_profile: NORMAL }
+
+        - when: { volume_bucket: LOW }
+          action: ACCEPT_IF_ADJUSTED
+          adjust:
+            stop_floor_abs_pct: ${volume_policy.stop_bands.tight_stop_abs_pct_lt}
+            stop_loss_multiplier: ${volume_policy.risk_multipliers.LOW.stop_loss_multiplier}
+            take_profit_multiplier: ${volume_policy.risk_multipliers.LOW.take_profit_multiplier}
+          apply:
+            bucket: LOW
+            microstructure: true
+            execution_profile: LOW
+            position_size_multiplier_override: 0.25
+          gates:
+            rr_after_adjust_gte: ${volume_policy.quality_gates.rr_min_low_after_adjust}
+            rl_conf_gte: ${volume_policy.quality_gates.rl_conf_min_low}
+            regime_conf_gte: ${volume_policy.quality_gates.regime_conf_min_low}
+
+    - id: DEFAULT_REJECT
+      when: {}
+      action: REJECT

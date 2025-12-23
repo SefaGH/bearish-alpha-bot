@@ -545,6 +545,8 @@ class AdvancedPositionManager:
             # Create position record
             entry_meta = self._extract_entry_metadata(signal)
             strategy_name = signal.get('strategy_name') or signal.get('strategy') or 'unknown'
+            dca_metadata = signal.get('dca_metadata') if isinstance(signal.get('dca_metadata'), dict) else {}
+            scale_profile = signal.get('scale_profile') or dca_metadata.get('profile')
             risk_per_unit = abs(entry_price - stop_loss)
             risk_usd = risk_per_unit * amount if amount and amount > 0 else 0.0
             opened_at = datetime.now(timezone.utc)
@@ -596,6 +598,8 @@ class AdvancedPositionManager:
                 'ml_position_modifier': entry_meta.get('ml_position_modifier'),
                 'quality_score': entry_meta.get('quality_score'),
                 'exit_reason': None,
+                'scale_profile': scale_profile,
+                'dca_metadata': dca_metadata or None,
                 'volume_bucket_at_entry': signal.get('volume_bucket'),
                 'volume_strength_at_entry': signal.get('volume_strength'),
                 'volume_ctx_source': signal.get('volume_ctx_source'),

@@ -75,6 +75,17 @@
             ],
             "console": "integratedTerminal",
             "justMyCode": true
+        },
+        {
+            "name": "6. Analyze PPO IQ (Active Log)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/diagnostics/analyze_ppo_iq.py",
+            "args": [
+                "${file}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
         }
     ]
 }

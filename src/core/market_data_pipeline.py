@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from .ccxt_client import CcxtClient
 from .indicators import add_indicators
+from .data_validator import TIMEFRAME_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,12 @@ class MarketDataPipeline:
     
     # Extra candles buffer for indicator warmup to ensure sufficient historical data
     INDICATOR_WARMUP_BUFFER = 50
+
+    # Safety margin (ms) used when determining if the last candle is closed
+    SAFETY_MARGIN_MS = 2000
+
+    # Extra fetch buffer to compensate for dropping the trailing forming candle
+    FETCH_SAFETY_BUFFER = 5
     
     def __init__(self, exchanges: Dict[str, CcxtClient], config: Dict[str, Any] = None, websocket_manager: Optional[Any] = None):
         """
@@ -56,6 +63,9 @@ class MarketDataPipeline:
         self.exchanges = exchanges
         self.config = config or {}
         self.websocket_manager = websocket_manager
+        # Provide backfill handler to collector if available
+        if self.websocket_manager and getattr(self.websocket_manager, "collector", None) and hasattr(self.websocket_manager.collector, "set_backfill_handler"):
+            self.websocket_manager.collector.set_backfill_handler(self._backfill_handler)
         
         # Data storage: {exchange: {symbol: {timeframe: DataFrame}}}
         self.data_streams = defaultdict(lambda: defaultdict(dict))
@@ -81,6 +91,80 @@ class MarketDataPipeline:
         
         logger.info(f"🔄 MarketDataPipeline initialized with {len(exchanges)} exchanges: {list(exchanges.keys())}")
     
+    def _filter_closed_dataframe(self, df: pd.DataFrame, timeframe: str, context: str = "") -> pd.DataFrame:
+        """
+        Drop the last candle if it is still forming based on timeframe duration and safety margin.
+        """
+        if df is None or df.empty:
+            return df
+
+        interval_sec = TIMEFRAME_SECONDS.get(timeframe)
+        if interval_sec is None:
+            return df
+
+        interval_ms = interval_sec * 1000
+        now_ms = int(time.time() * 1000)
+        last_open_ms = int(df.index[-1].timestamp() * 1000)
+
+        if last_open_ms + interval_ms > (now_ms - self.SAFETY_MARGIN_MS):
+            trimmed = df.iloc[:-1]
+            logger.info(
+                f"[CLOSED-ONLY]{context} Dropped trailing forming candle for {timeframe} "
+                f"(last_open={last_open_ms}, now_ms={now_ms}, interval_ms={interval_ms})"
+            )
+            return trimmed
+
+        return df
+
+    async def fetch_missing_candles(self, symbol: str, timeframe: str, start_ts: int, end_ts: int, exchange: str = None) -> List[List[float]]:
+        """
+        Fetch missing candles from REST within the specified range [start_ts, end_ts].
+        Returns list of OHLCV arrays with timestamp in ms.
+        """
+        if start_ts > end_ts:
+            return []
+
+        exchange = exchange or (next(iter(self.exchanges.keys())) if self.exchanges else None)
+        if not exchange or exchange not in self.exchanges:
+            logger.warning(f"[BACKFILL] No valid exchange available for backfill {symbol}")
+            return []
+
+        client = self.exchanges[exchange]
+        interval_ms = TIMEFRAME_SECONDS.get(timeframe, 0) * 1000
+        if interval_ms <= 0:
+            logger.warning(f"[BACKFILL] Unknown timeframe {timeframe}, skipping.")
+            return []
+
+        # Calculate minimal limit to cover range, add small buffer
+        bars_needed = int((end_ts - start_ts) // interval_ms) + 2
+        try:
+            ohlcv_df = await client.ohlcv(symbol, timeframe, limit=bars_needed + 2, add_indicators=False)
+            if ohlcv_df is None or ohlcv_df.empty:
+                logger.warning(f"[BACKFILL] Empty response for {symbol} {timeframe}")
+                return []
+
+            # Filter by timestamp range (ms)
+            ts_ms = (ohlcv_df.index.view("int64") // 1_000_000)
+            mask = (ts_ms >= start_ts) & (ts_ms <= end_ts)
+            filtered = ohlcv_df.loc[mask]
+            if filtered.empty:
+                return []
+
+            candles = []
+            for idx, row in filtered.iterrows():
+                ts = int(idx.timestamp() * 1000)
+                candles.append([ts, float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"]), float(row["volume"])])
+            return candles
+        except Exception as e:
+            logger.warning(f"[BACKFILL] Fetch failed for {symbol} {timeframe}: {e}")
+            return []
+
+    async def _backfill_handler(self, exchange: str, symbol: str, timeframe: str, start_ts: int, end_ts: int, gap_bars: int) -> List[List[float]]:
+        """
+        Adapter passed to StreamDataCollector to fetch missing candles safely.
+        """
+        return await self.fetch_missing_candles(symbol, timeframe, start_ts, end_ts, exchange=exchange)
+
     async def get_market_metadata(self, symbol: str, exchange_id: str) -> Dict[str, Any]:
         """
         Get market metadata (precision, limits, etc.) for a given symbol on an exchange.
@@ -261,7 +345,11 @@ class MarketDataPipeline:
         
         tasks = []
         # We need enough data for indicators like EMA(200)
-        limit = self.config.get('indicators', {}).get('ema_slow', 200) + self.INDICATOR_WARMUP_BUFFER
+        limit = (
+            self.config.get('indicators', {}).get('ema_slow', 200)
+            + self.INDICATOR_WARMUP_BUFFER
+            + self.FETCH_SAFETY_BUFFER
+        )
 
         for symbol in symbols:
             for timeframe in timeframes:
@@ -293,11 +381,16 @@ class MarketDataPipeline:
             ohlcv_data = await client.ohlcv(symbol, timeframe, limit)
             
             if ohlcv_data is None or ohlcv_data.empty:
-                logger.warning(f"⚠️ [PRIME] Empty data for {symbol} {timeframe} from {exchange_name}")
+                logger.warning(f"[PRIME] Empty data for {symbol} {timeframe} from {exchange_name}")
                 self.failed_requests += 1
                 return False
     
-            df = ohlcv_data
+            df = self._filter_closed_dataframe(ohlcv_data, timeframe, context="[PRIME]")
+            if df is None or df.empty:
+                logger.warning(f"[PRIME] No closed candles available after filtering for {symbol} {timeframe}")
+                self.failed_requests += 1
+                return False
+
             df = add_indicators(df, self.config.get('indicators'))
         
             logger.info(f"✅ [PRIME] Loaded {len(df)} historical candles for {exchange_name} {symbol} {timeframe}")
@@ -406,11 +499,15 @@ class MarketDataPipeline:
                     
                     # --- DEĞİŞİKLİK 3: Güvenli DataFrame kontrolü senkron fonksiyona da eklendi ---
                     if ohlcv_data is None or ohlcv_data.empty:
-                        logger.warning(f"⚠️ Empty data for {symbol} {timeframe} from {exchange_name}")
+                        logger.warning(f"[SYNC] Empty data for {symbol} {timeframe} from {exchange_name}")
                         self.failed_requests += 1
                         break
 
-                    df = ohlcv_data
+                    df = self._filter_closed_dataframe(ohlcv_data, timeframe, context="[SYNC]")
+                    if df is None or df.empty:
+                        logger.warning(f"[SYNC] No closed candles available after filtering for {symbol} {timeframe}")
+                        self.failed_requests += 1
+                        break
                     
                     # Add indicators
                     df = add_indicators(df, self.config.get('indicators'))
@@ -483,9 +580,16 @@ class MarketDataPipeline:
         pass
     
     # ------------------- DÜZELTİLMİŞ METOT -------------------
+    async def get_candles(self, symbol: str, timeframe: str, exchange: str = None) -> Optional[pd.DataFrame]:
+        """
+        Return closed-only OHLCV candles for a symbol/timeframe.
+        This is an alias to get_latest_ohlcv to make intent explicit.
+        """
+        return await self.get_latest_ohlcv(symbol, timeframe, exchange)
+
     async def get_latest_ohlcv(self, symbol: str, timeframe: str, exchange: str = None) -> Optional[pd.DataFrame]:
         """
-        Get latest OHLCV data with a robust WebSocket-first approach.
+        Get latest CLOSED OHLCV data with a robust WebSocket-first approach.
         (GÜNCELLENDİ: WebSocket verisini doğru işler ve REST fallback'i sadece gerektiğinde kullanır.)
 
         Priority:
@@ -505,7 +609,11 @@ class MarketDataPipeline:
                 
                 # Get required number of candles for indicators
                 # Adding buffer to ensure sufficient data for indicator calculations
-                limit = self.config.get('indicators', {}).get('ema_slow', 200) + self.INDICATOR_WARMUP_BUFFER
+                limit = (
+                    self.config.get('indicators', {}).get('ema_slow', 200)
+                    + self.INDICATOR_WARMUP_BUFFER
+                    + self.FETCH_SAFETY_BUFFER
+                )
                 
                 # WebSocket collector'dan ham OHLCV listesini al
                 ohlcv_list = self.websocket_manager.collector.get_latest_ohlcv(
@@ -521,9 +629,22 @@ class MarketDataPipeline:
                     df = self._ohlcv_to_dataframe(ohlcv_list)
                     
                     if df is not None and not df.empty:
-                        logger.debug(f"✅ Retrieved {len(df)} candles from WebSocket for {symbol} {timeframe}")
+                        logger.debug(f"[WS] Retrieved {len(df)} CLOSED candles for {symbol} {timeframe}")
+                        state = None
+                        if hasattr(self.websocket_manager.collector, "get_state"):
+                            state = self.websocket_manager.collector.get_state(ws_exchange, symbol, timeframe)
+                            logger.debug(
+                                f"[WS-STATE] last_closed_ts={state.get('last_closed_ts')} "
+                                f"forming_ts={state.get('forming_ts')} gap_count={state.get('gap_count')}"
+                            )
                         # İndikatörleri ekle ve hemen döndür. REST API'ye gitme.
                         df = add_indicators(df, self.config.get('indicators'))
+                        df.attrs["ohlcv_source"] = "ws"
+                        df.attrs["retrieved_at"] = datetime.now(timezone.utc).isoformat()
+                        if state:
+                            df.attrs["last_closed_ts"] = state.get("last_closed_ts")
+                            df.attrs["forming_ts"] = state.get("forming_ts")
+                            df.attrs["gap_count"] = state.get("gap_count")
                         return df
                 else:
                     logger.debug(f"⚠️ WebSocket collector returned empty or invalid data for {symbol} {timeframe}")
@@ -548,18 +669,29 @@ class MarketDataPipeline:
             client = self.exchanges[exchange]
             
             # Gerekli mum sayısını belirle
-            limit = self.config.get('indicators', {}).get('ema_slow', 200) + self.INDICATOR_WARMUP_BUFFER
+            limit = (
+                self.config.get('indicators', {}).get('ema_slow', 200)
+                + self.INDICATOR_WARMUP_BUFFER
+                + self.FETCH_SAFETY_BUFFER
+            )
 
             # REST API'yi çağır (zaten async)
             ohlcv_df = await client.ohlcv(symbol, timeframe, limit, add_indicators=False)
             
             if ohlcv_df is None or ohlcv_df.empty:
-                logger.warning(f"⚠️ REST API returned empty data for {symbol} {timeframe}")
+                logger.warning(f"[REST] REST API returned empty data for {symbol} {timeframe}")
+                return None
+            
+            ohlcv_df = self._filter_closed_dataframe(ohlcv_df, timeframe, context="[REST]")
+            if ohlcv_df is None or ohlcv_df.empty:
+                logger.warning(f"[REST] No closed candles available after filtering for {symbol} {timeframe}")
                 return None
             
             # İndikatörleri ekle
             df = add_indicators(ohlcv_df, self.config.get('indicators'))
-            logger.info(f"✅ Retrieved {len(df)} candles from REST API for {symbol} {timeframe}")
+            df.attrs["ohlcv_source"] = "rest"
+            df.attrs["retrieved_at"] = datetime.now(timezone.utc).isoformat()
+            logger.info(f"[REST] Retrieved {len(df)} candles from REST API for {symbol} {timeframe}")
             return df
                 
         except Exception as e:
@@ -647,26 +779,43 @@ class MarketDataPipeline:
             # Extract price from response
             if ohlcv_data is not None:
                 if isinstance(ohlcv_data, pd.DataFrame) and not ohlcv_data.empty:
-                    price = float(ohlcv_data['close'].iloc[-1])
+                    filtered = self._filter_closed_dataframe(ohlcv_data, timeframe, context="[REST-PRICE]")
+                    if filtered is None or filtered.empty:
+                        logger.warning(f"[REST-PRICE] No closed candle available after filtering for {symbol} {timeframe}")
+                        return None
+                    price = float(filtered['close'].iloc[-1])
                     if price > 0:
-                        logger.debug(f"✅ Price for {symbol} from REST API: ${price:.2f}")
+                        logger.debug(f"[REST-PRICE] Price for {symbol}: ${price:.2f}")
                         return price
                 elif isinstance(ohlcv_data, list) and len(ohlcv_data) > 0:
                     # Handle raw OHLCV list format
-                    latest_candle = ohlcv_data[-1]
-                    if isinstance(latest_candle, list) and len(latest_candle) >= 5:
-                        price = float(latest_candle[4])
+                    df_fallback = self._ohlcv_to_dataframe(ohlcv_data)
+                    df_fallback = self._filter_closed_dataframe(df_fallback, timeframe, context="[REST-PRICE]")
+                    if df_fallback is not None and not df_fallback.empty:
+                        price = float(df_fallback['close'].iloc[-1])
                         if price > 0:
-                            logger.debug(f"✅ Price for {symbol} from REST API: ${price:.2f}")
+                            logger.debug(f"[REST-PRICE] Price for {symbol}: ${price:.2f}")
                             return price
             
             logger.warning(f"⚠️ REST API returned no valid price data for {symbol}")
             return None
             
         except Exception as e:
-            logger.error(f"❌ REST API price fetch failed for {symbol}: {e}")
+            logger.error(f"[REST-PRICE] REST API price fetch failed for {symbol}: {e}")
             return None
     
+    def get_realtime_price(self, symbol: str, timeframe: str = '1m', exchange: str = None) -> Optional[float]:
+        """
+        Return the current forming candle price (real-time) without affecting indicator stability.
+        """
+        if self.websocket_manager and getattr(self.websocket_manager, "collector", None):
+            ws_exchange = exchange if exchange else (next(iter(self.exchanges.keys())) if self.exchanges else self.DEFAULT_EXCHANGE)
+            forming = self.websocket_manager.collector.get_forming_ohlcv(ws_exchange, symbol, timeframe)
+            if forming and isinstance(forming, list) and len(forming) >= 5:
+                price = float(forming[4])
+                if price > 0:
+                    return price
+        return None
     def _get_best_data_source(self, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
         """
         Get data from the best available exchange source.

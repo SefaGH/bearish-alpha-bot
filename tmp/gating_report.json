@@ -1,0 +1,37 @@
+{
+  "dataset": "data\\training\\BTC_USDT_USDT_1h_liveparity_test.npz",
+  "model": "artifacts\\ppo\\ppo_trading_agent.zip",
+  "spec": "artifacts\\ppo\\ppo_trading_agent.obs_spec.json",
+  "baseline_mode": "always_long",
+  "thresholds": {
+    "conf": 0.6,
+    "min_margin": 0.0
+  },
+  "p_long": {
+    "min": 1.4112096380358707e-07,
+    "max": 0.8945724368095398,
+    "mean": 0.008807462242409955,
+    "std": 0.04952739486160732
+  },
+  "vetoes": 899,
+  "veto_on_losing_trades": 458,
+  "veto_rate": 0.9988888888888889,
+  "baseline": {
+    "total_return": -0.21510925330001474,
+    "max_drawdown": -0.25483933535915165,
+    "trades": 1,
+    "win_rate": 0.0,
+    "avg_trade_pnl": 0.0,
+    "exposure": 1.0,
+    "fees_paid": 5.999999999999999
+  },
+  "gated": {
+    "total_return": -0.008736343047232698,
+    "max_drawdown": -0.00873634304723273,
+    "trades": 2,
+    "win_rate": 1.0,
+    "avg_trade_pnl": 9912.636569527673,
+    "exposure": 0.0011111111111111111,
+    "fees_paid": 11.95115263329658
+  }
+}
