@@ -31,7 +31,7 @@ class IndicatorValidator:
     (GÜNCELLENDİ: Artık doğrudan StreamDataCollector ile çalışır ve tüm ML doğrulama metotlarını içerir)
     """
     
-    REQUIRED_CANDLES = 250  # İndikatörler için gereken minimum mum sayısı
+    REQUIRED_CANDLES = 2100  # İndikatörler için gereken minimum mum sayısı
     
     def __init__(self, collector: StreamDataCollector, rest_client: Any = None, config: Dict[str, Any] = None):
         """

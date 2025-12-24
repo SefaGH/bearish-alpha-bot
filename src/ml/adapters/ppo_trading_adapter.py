@@ -516,16 +516,16 @@ class PPOTradingAdapter:
         try:
             query_symbol = self._symbol_alias_map.get(symbol, symbol)
             df = await self.market_data_pipeline.get_latest_ohlcv(
-                query_symbol, self.STATE_TIMEFRAME
+                query_symbol, self.STATE_TIMEFRAME, limit=2000
             )
             if (df is None or df.empty) and query_symbol != symbol:
                 canonical_symbol = self._symbol_alias_map.get(symbol, symbol)
                 df = await self.market_data_pipeline.get_latest_ohlcv(
-                    canonical_symbol, self.STATE_TIMEFRAME
+                    canonical_symbol, self.STATE_TIMEFRAME, limit=2000
                 )
                 if (df is None or df.empty) and canonical_symbol != symbol:
                     df = await self.market_data_pipeline.get_latest_ohlcv(
-                        symbol, self.STATE_TIMEFRAME
+                        symbol, self.STATE_TIMEFRAME, limit=2000
                     )
             if df is None or df.empty:
                 logger.debug("PPO adapter received empty dataframe for %s", symbol)

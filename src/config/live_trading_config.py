@@ -43,6 +43,7 @@ _config_instance: Optional[Dict[str, Any]] = None
 _config_signature: Optional[Tuple[str, Tuple[Tuple[str, Optional[str]]]]] = None
 _config_env_keys: Tuple[str, ...] = ()
 _config_path_cache: Optional[str] = None
+_last_logged_signature: Optional[Tuple[str, Tuple[Tuple[str, Optional[str]]]]] = None
 _MISSING = object()
 
 _TRADING_SYMBOL_PATTERN = re.compile(
@@ -133,6 +134,11 @@ class LiveTradingConfiguration:
             'source': 'runtime',
             'note': 'Python unbuffered IO flag',
         },
+        'strategy_shadow_eval': {
+            'type': int,
+            'source': 'runtime',
+            'note': 'Enable shadow evaluation logging (1=on, 0=off)',
+        },
         'telegram_chat_id': {
             'type': int,
             'source': 'runtime',
@@ -196,9 +202,6 @@ class LiveTradingConfiguration:
             current_signature = cls._build_signature_from_keys(resolved_path, _config_env_keys)
             if current_signature == _config_signature:
                 logger.debug("Returning cached configuration instance (env unchanged).")
-                if log_summary:
-                    # Maintain backward compatibility by logging summary once per caller request.
-                    cls(resolved_path)._log_config_summary(_config_instance)
                 return _config_instance
 
         logger.info("=" * 70)
@@ -214,7 +217,10 @@ class LiveTradingConfiguration:
             _config_signature = cls._build_signature_from_keys(resolved_path, _config_env_keys)
 
             if log_summary:
-                instance._log_config_summary(config)
+                global _last_logged_signature
+                if _last_logged_signature != _config_signature:
+                    instance._log_config_summary(config)
+                    _last_logged_signature = _config_signature
 
             return config
         except Exception as e:
@@ -238,11 +244,12 @@ class LiveTradingConfiguration:
 
     @classmethod
     def reset_cache(cls) -> None:
-        global _config_instance, _config_signature, _config_env_keys, _config_path_cache
+        global _config_instance, _config_signature, _config_env_keys, _config_path_cache, _last_logged_signature
         _config_instance = None
         _config_signature = None
         _config_env_keys = ()
         _config_path_cache = None
+        _last_logged_signature = None
 
     @staticmethod
     def _build_signature_from_keys(

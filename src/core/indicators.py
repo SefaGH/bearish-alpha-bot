@@ -3,7 +3,7 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
 REQUIRED_COLS = ("open", "high", "low", "close")
 
@@ -40,6 +40,35 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     alpha = 1.0 / max(int(period), 1)
     return tr.ewm(alpha=alpha, adjust=False, min_periods=period).mean()
 
+
+def _directional_movements(high: pd.Series, low: pd.Series) -> Tuple[pd.Series, pd.Series]:
+    """Compute positive/negative directional movement components."""
+    up_move = high.diff()
+    down_move = low.shift(1) - low
+    plus_dm = up_move.where((up_move > 0) & (up_move > down_move), 0.0)
+    minus_dm = down_move.where((down_move > 0) & (down_move > up_move), 0.0)
+    return plus_dm, minus_dm
+
+
+def adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Average Directional Index for basic trend strength filtering."""
+    _require_ohlcv_columns(df)
+    period = max(int(period), 1)
+
+    tr = true_range(df["high"], df["low"], df["close"])
+    plus_dm, minus_dm = _directional_movements(df["high"], df["low"])
+
+    tr_smoothed = tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    plus_dm_smoothed = plus_dm.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    minus_dm_smoothed = minus_dm.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+
+    plus_di = 100 * (plus_dm_smoothed / tr_smoothed.replace(0, np.nan))
+    minus_di = 100 * (minus_dm_smoothed / tr_smoothed.replace(0, np.nan))
+
+    dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    adx_series = (dx * 100).ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    return adx_series.replace([np.inf, -np.inf], np.nan)
+
 def ema(series: pd.Series, period: int) -> pd.Series:
     period = max(int(period), 1)
     return series.ewm(span=period, adjust=False, min_periods=period).mean()
@@ -50,6 +79,9 @@ DEFAULTS = {
     "ema_fast": 21,
     "ema_mid": 50,
     "ema_slow": 200,
+    "vwap_lookback": 1440,
+    "vwap_band_multiplier": 2.0,
+    "adx_period": 14,
 }
 
 def add_indicators(df: pd.DataFrame, cfg: Dict[str, Any] | None = None) -> pd.DataFrame:
@@ -75,6 +107,33 @@ def add_indicators(df: pd.DataFrame, cfg: Dict[str, Any] | None = None) -> pd.Da
     out["ema_mid"]  = out["ema50"]
     out["ema_slow"] = out["ema200"]
 
+    # VWAP (rolling) + bands
+    try:
+        lookback = max(int(c.get("vwap_lookback", DEFAULTS["vwap_lookback"])), 1)
+    except Exception:
+        lookback = DEFAULTS["vwap_lookback"]
+
+    typical_price = (out["high"] + out["low"] + out["close"]) / 3.0
+    vp = typical_price * out["volume"]
+    total_vp = vp.rolling(window=lookback, min_periods=lookback // 2).sum()
+    total_vol = out["volume"].rolling(window=lookback, min_periods=lookback // 2).sum()
+    vwap = total_vp / total_vol.replace(0, np.nan)
+    out["vwap"] = vwap
+
+    try:
+        band_mult = float(c.get("vwap_band_multiplier", DEFAULTS["vwap_band_multiplier"]))
+    except Exception:
+        band_mult = DEFAULTS["vwap_band_multiplier"]
+
+    vwap_std = out["close"].rolling(window=lookback, min_periods=lookback // 2).std()
+    out["vwap_std"] = vwap_std
+    out["vwap_upper"] = vwap + (vwap_std * band_mult)
+    out["vwap_lower"] = vwap - (vwap_std * band_mult)
+
+    # ADX trend strength
+    out["adx"] = adx(out, period=int(c.get("adx_period", DEFAULTS["adx_period"])))
+
     cols = ["rsi", "atr", "ema21", "ema50", "ema200", "ema_fast", "ema_mid", "ema_slow"]
+    cols += ["vwap", "vwap_std", "vwap_upper", "vwap_lower", "adx"]
     out[cols] = out[cols].replace([np.inf, -np.inf], np.nan)
     return out

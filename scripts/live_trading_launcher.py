@@ -63,6 +63,7 @@ from ml.strategy_integration import AIEnhancedStrategyAdapter
 from ml.strategy_optimizer import StrategyOptimizer
 from strategies.adaptive_ob import AdaptiveOversoldBounce
 from strategies.adaptive_str import AdaptiveShortTheRip
+from strategies.mean_reversion import VWAPMeanReversion
 from core.indicator_validator import IndicatorValidator
 
 # Debug modu ortam değişkenine göre log seviyesini ayarla
@@ -1664,6 +1665,21 @@ class LiveTradingLauncher:
                 self.strategies['adaptive_str'] = AdaptiveShortTheRip(adaptive_str_config, regime_analyzer)
                 logger.info(f"✓ Adaptive Short The Rip strategy initialized")
                 logger.info(f"  - STR Config: { {k: v for k, v in adaptive_str_config.items() if k != 'enable'} }")
+
+            # VWAP Mean Reversion (strategies section)
+            strategies_config = self.config.get('strategies', {}) if isinstance(self.config, dict) else {}
+            mr_config = strategies_config.get('mean_reversion', {})
+            if mr_config.get('enabled', False):
+                try:
+                    logger.info("Initializing VWAP Mean Reversion strategy...")
+                    mr_strategy = VWAPMeanReversion(mr_config)
+                    if self.coordinator and getattr(self.coordinator, "market_data_pipeline", None):
+                        mr_strategy.set_market_data_pipeline(self.coordinator.market_data_pipeline)
+                    self.strategies['mean_reversion'] = mr_strategy
+                    logger.info(f"✓ VWAP Mean Reversion strategy initialized")
+                    logger.info(f"  - MR Config: { {k: v for k, v in mr_config.items() if k != 'enabled'} }")
+                except Exception as e:
+                    logger.error(f"Failed to initialize VWAP Mean Reversion: {e}", exc_info=True)
     
             if not self.strategies:
                 logger.warning("⚠️ No strategies enabled!")

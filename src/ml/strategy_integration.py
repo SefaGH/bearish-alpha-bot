@@ -116,7 +116,7 @@ class AIEnhancedStrategyAdapter:
             if self.regime_predictor is not None and market_data_pipeline is not None:
                 try:
                     price_data = await market_data_pipeline.get_latest_ohlcv(
-                        symbol, timeframe="1h"
+                        symbol, timeframe="1h", limit=2000
                     )
                     if price_data is not None and not getattr(price_data, "empty", True):
                         # NOTE: predict_regime_transition expected (symbol, price_data)
@@ -576,7 +576,7 @@ class MLStrategyIntegrationManager:
         else:
             try:
                 price_data = await self.market_data_pipeline.get_latest_ohlcv(
-                    symbol=symbol, timeframe=horizon, exchange=None
+                    symbol=symbol, timeframe=horizon, exchange=None, limit=2000
                 )
             except Exception as e:  # noqa: BLE001
                 context["reason"] = f"OHLCV data fetch error: {e}"

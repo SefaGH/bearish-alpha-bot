@@ -344,12 +344,14 @@ class MarketDataPipeline:
             logger.warning("[PRIME] WebSocket collector not ready after 10s timeout - proceeding without WebSocket injection")
         
         tasks = []
-        # We need enough data for indicators like EMA(200)
+        # We need enough data for indicators like EMA(200) and VWAP (target at least 2 days of 1m bars ~2880+)
         limit = (
             self.config.get('indicators', {}).get('ema_slow', 200)
             + self.INDICATOR_WARMUP_BUFFER
             + self.FETCH_SAFETY_BUFFER
         )
+        # Raise the floor to ensure sufficient post-warmup history for signal generation
+        required_limit = max(limit, 3000)
 
         for symbol in symbols:
             for timeframe in timeframes:
@@ -361,7 +363,7 @@ class MarketDataPipeline:
                     continue
                 
                 client = self.exchanges[exchange_name]
-                tasks.append(self._fetch_and_store_async(client, exchange_name, symbol, timeframe, limit))
+                tasks.append(self._fetch_and_store_async(client, exchange_name, symbol, timeframe, required_limit))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
@@ -377,15 +379,40 @@ class MarketDataPipeline:
         try:
             self.total_requests += 1
             
-            # Fetch OHLCV data
-            ohlcv_data = await client.ohlcv(symbol, timeframe, limit)
-            
-            if ohlcv_data is None or ohlcv_data.empty:
+            # Paginated fetch to accumulate required_limit candles
+            timeframe_ms = TIMEFRAME_SECONDS.get(timeframe, 60) * 1000
+            chunk_size = 250
+            all_chunks = []
+            collected = 0
+            # Start from (now - required_limit * interval)
+            start_since = int(time.time() * 1000) - (limit * timeframe_ms)
+            current_since = start_since
+
+            while collected < limit:
+                remaining = limit - collected
+                chunk_limit = min(chunk_size, remaining)
+                chunk_df = await client.ohlcv(symbol, timeframe, chunk_limit, add_indicators=False, since=current_since)
+                if chunk_df is None or chunk_df.empty:
+                    break
+                all_chunks.append(chunk_df)
+                collected += len(chunk_df)
+                last_ts_ms = int(chunk_df.index[-1].timestamp() * 1000)
+                next_since = last_ts_ms + timeframe_ms
+                if next_since <= current_since:
+                    break
+                current_since = next_since
+
+            if not all_chunks:
                 logger.warning(f"[PRIME] Empty data for {symbol} {timeframe} from {exchange_name}")
                 self.failed_requests += 1
                 return False
-    
-            df = self._filter_closed_dataframe(ohlcv_data, timeframe, context="[PRIME]")
+
+            df = pd.concat(all_chunks).sort_index()
+            df = df[~df.index.duplicated(keep='last')]
+            if len(df) > limit:
+                df = df.tail(limit)
+
+            df = self._filter_closed_dataframe(df, timeframe, context="[PRIME]")
             if df is None or df.empty:
                 logger.warning(f"[PRIME] No closed candles available after filtering for {symbol} {timeframe}")
                 self.failed_requests += 1
@@ -580,14 +607,14 @@ class MarketDataPipeline:
         pass
     
     # ------------------- DÜZELTİLMİŞ METOT -------------------
-    async def get_candles(self, symbol: str, timeframe: str, exchange: str = None) -> Optional[pd.DataFrame]:
+    async def get_candles(self, symbol: str, timeframe: str, exchange: str = None, limit: int = None) -> Optional[pd.DataFrame]:
         """
         Return closed-only OHLCV candles for a symbol/timeframe.
         This is an alias to get_latest_ohlcv to make intent explicit.
         """
-        return await self.get_latest_ohlcv(symbol, timeframe, exchange)
+        return await self.get_latest_ohlcv(symbol, timeframe, exchange, limit=limit)
 
-    async def get_latest_ohlcv(self, symbol: str, timeframe: str, exchange: str = None) -> Optional[pd.DataFrame]:
+    async def get_latest_ohlcv(self, symbol: str, timeframe: str, exchange: str = None, limit: int = None) -> Optional[pd.DataFrame]:
         """
         Get latest CLOSED OHLCV data with a robust WebSocket-first approach.
         (GÜNCELLENDİ: WebSocket verisini doğru işler ve REST fallback'i sadece gerektiğinde kullanır.)
@@ -600,6 +627,7 @@ class MarketDataPipeline:
         Technical indicators are added consistently before returning.
         """
         df = None
+        limit_override = limit
         
         # STEP 1: Try WebSocket first (real-time data)
         if self.websocket_manager and self.websocket_manager.collector:
@@ -609,7 +637,7 @@ class MarketDataPipeline:
                 
                 # Get required number of candles for indicators
                 # Adding buffer to ensure sufficient data for indicator calculations
-                limit = (
+                limit_ws = limit_override or (
                     self.config.get('indicators', {}).get('ema_slow', 200)
                     + self.INDICATOR_WARMUP_BUFFER
                     + self.FETCH_SAFETY_BUFFER
@@ -620,7 +648,7 @@ class MarketDataPipeline:
                     exchange=ws_exchange,
                     symbol=symbol,
                     timeframe=timeframe,
-                    limit=limit
+                    limit=limit_ws
                 )
                 
                 # Gelen verinin doğru formatta olduğunu doğrula
@@ -669,14 +697,14 @@ class MarketDataPipeline:
             client = self.exchanges[exchange]
             
             # Gerekli mum sayısını belirle
-            limit = (
+            limit_rest = limit_override or (
                 self.config.get('indicators', {}).get('ema_slow', 200)
                 + self.INDICATOR_WARMUP_BUFFER
                 + self.FETCH_SAFETY_BUFFER
             )
 
             # REST API'yi çağır (zaten async)
-            ohlcv_df = await client.ohlcv(symbol, timeframe, limit, add_indicators=False)
+            ohlcv_df = await client.ohlcv(symbol, timeframe, limit_rest, add_indicators=False)
             
             if ohlcv_df is None or ohlcv_df.empty:
                 logger.warning(f"[REST] REST API returned empty data for {symbol} {timeframe}")

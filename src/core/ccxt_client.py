@@ -137,7 +137,7 @@ class CcxtClient:
         self.symbols = list(symbols)
         logger.info(f"[{self.name}] Will only work with {len(symbols)} symbols (no market load)")
 
-    async def ohlcv(self, symbol: str, timeframe: str, limit: int = 500, add_indicators: bool = False) -> Optional[pd.DataFrame]:
+    async def ohlcv(self, symbol: str, timeframe: str, limit: int = 500, add_indicators: bool = False, since: Optional[int] = None) -> Optional[pd.DataFrame]:
         """
         Asenkron olarak OHLCV verilerini çeker ve isteğe bağlı olarak teknik indikatörleri ekler.
         """
@@ -152,7 +152,7 @@ class CcxtClient:
                 # Senkron CCXT çağrısını asenkron hale getir
                 data = await loop.run_in_executor(
                     None, 
-                    lambda: self.ex.fetch_ohlcv(native_symbol, timeframe=timeframe, limit=limit)
+                    lambda: self.ex.fetch_ohlcv(native_symbol, timeframe=timeframe, limit=limit, since=since)
                 )
 
                 if not data:

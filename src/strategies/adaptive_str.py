@@ -9,6 +9,12 @@ from collections import OrderedDict
 from typing import Optional, Dict, Tuple, ClassVar, Any
 from .short_the_rip import ShortTheRip
 from core.indicators import rsi as calc_rsi, ema as calc_ema
+from core.strategy_shadow_eval import (
+    shadow_enabled,
+    extract_last_closed_ts_ms,
+    extract_df_meta,
+    emit_shadow_log,
+)
 
 # Default market regime for fallback
 DEFAULT_MARKET_REGIME = {
@@ -88,6 +94,9 @@ class AdaptiveShortTheRip(ShortTheRip):
         # `super()` çağrısı `self.strategy_config`'i oluşturduğu için artık bunu güvenle kullanabiliriz.
         self.min_rr_ratio = self.strategy_config.get('min_rr_ratio', 1.2)
         logger.info(f"[{self.strategy_name.upper()}] Minimum R/R Ratio initialized to: {self.min_rr_ratio}")
+        if not hasattr(self, "signal"):
+            self.signal = self._default_signal_wrapper  # type: ignore
+        assert callable(getattr(self, "signal", None)), f"{self.strategy_name}: signal method not callable"
 
         self.volatility_stop_cfg = self._build_volatility_stop_cfg(self.strategy_config)
         self._mtf_indicator_cache: OrderedDict[Tuple[Any, ...], Dict[str, pd.Series]] = OrderedDict()
@@ -682,9 +691,19 @@ class AdaptiveShortTheRip(ShortTheRip):
             return None
 
         try:
-            last30 = df_30m.dropna().iloc[-1]
+            if self.debug_logging:
+                logger.debug(f"{log_prefix} Data sufficiency check: total_rows={len(df_30m)}")
+            last30 = df_30m.iloc[-1]
+            required_cols = ['close', 'rsi', 'atr', 'ema_fast', 'ema21', 'ema50', 'ema200']
+            missing = [c for c in required_cols if c not in last30.index]
+            if missing:
+                logger.warning(f"{log_prefix} Missing required columns in latest row: {missing}")
+                return None
+            if any(pd.isna(last30[c]) for c in required_cols):
+                logger.info(f"{log_prefix} Latest row has NaN in required columns; skipping this tick.")
+                return None
         except IndexError:
-            logger.info(f"🚫 {log_prefix} No Signal: Insufficient 30m data to generate a signal.")
+            logger.info(f"🚫 {log_prefix} No Signal: Insufficient 30m data to generate a signal (IndexError).")
             return None
 
         if regime_data is None:
@@ -704,6 +723,11 @@ class AdaptiveShortTheRip(ShortTheRip):
             
             close_price = float(last30['close'])
             rsi_val = float(last30['rsi'])
+            atr_value = float(last30.get('atr', close_price * 0.02))
+            ema21 = float(last30.get('ema21', 0))
+            ema50 = float(last30.get('ema50', 0))
+            ema200 = float(last30.get('ema200', 0))
+            long_ema_value = ema50
             
             market_regime = {
                 'trend': regime_data.get('trend', 'neutral'),
@@ -738,6 +762,58 @@ class AdaptiveShortTheRip(ShortTheRip):
                         f"ℹ️ {log_prefix} RSI threshold steady at {adaptive_rsi_threshold:.2f} (trend={market_regime['trend']}, momentum={market_regime['momentum']})."
                     )
 
+            volatility_regime = market_regime.get('volatility', 'normal')
+            rip_atr_multiplier = 1.0
+            if volatility_regime == 'high':
+                rip_atr_multiplier = 1.5
+            elif volatility_regime == 'low':
+                rip_atr_multiplier = 0.75
+
+            rip_threshold_value = None
+            rip_delta_value = None
+            rip_pass_shadow = None
+            if ema50 > 0 and atr_value > 0:
+                rip_threshold_value = ema50 + (atr_value * rip_atr_multiplier)
+                rip_delta_value = close_price - rip_threshold_value
+                rip_pass_shadow = close_price >= rip_threshold_value
+
+            timeframe = "30m"
+            last_closed_ts_ms = extract_last_closed_ts_ms(df_30m)
+            df_meta = extract_df_meta(df_30m)
+
+            def _shadow_str(decision: str, fail_reason: str = "", extra: Optional[Dict] = None) -> None:
+                if not shadow_enabled():
+                    return
+                try:
+                    payload = {
+                        "event": "strategy_shadow_eval",
+                        "strategy": "adaptive_str",
+                        "symbol": symbol_display,
+                        "timeframe": timeframe,
+                        "last_closed_ts": last_closed_ts_ms,
+                        **df_meta,
+                        "close": close_price,
+                        "rsi": rsi_val,
+                        "rsi_threshold": adaptive_rsi_threshold,
+                        "rsi_delta": rsi_val - adaptive_rsi_threshold if adaptive_rsi_threshold is not None else None,
+                        "ema21": ema21,
+                        "ema50": ema50,
+                        "ema200": ema200,
+                        "atr": atr_value,
+                        "rip_vol_mult": rip_atr_multiplier,
+                        "rip_threshold": rip_threshold_value,
+                        "rip_delta": rip_delta_value,
+                        "rip_pass_shadow": rip_pass_shadow,
+                        "volatility": volatility_regime,
+                        "decision": decision,
+                        "fail_reason": fail_reason,
+                    }
+                    if extra:
+                        payload.update(extra)
+                    emit_shadow_log(logger, payload, "adaptive_str", symbol_display, timeframe, last_closed_ts_ms)
+                except Exception:
+                    return
+
             # --- Core Signal Condition Checks with Tracing ---
             if self.debug_logging:
                 # Calculate EMA alignment for debug log
@@ -759,35 +835,27 @@ class AdaptiveShortTheRip(ShortTheRip):
             # 1. RSI Condition Check
             if rsi_val < adaptive_rsi_threshold:
                 logger.info(f"🚫 {log_prefix} No Signal: RSI ({rsi_val:.2f}) is below the threshold ({adaptive_rsi_threshold:.2f}).")
+                _shadow_str("no_signal_rsi", "rsi_below_threshold")
                 return None
 
             # 2. Dynamic Rip Check (Replaces strict EMA alignment)
             # "Rip" is defined as price extending significantly above a Long-Term EMA
             
             # Get Long-Term EMA (using EMA 50 as proxy for trend baseline)
-            long_ema_value = float(last30.get('ema50', 0))
-            atr_value = float(last30.get('atr', 0))
-            
-            if long_ema_value > 0 and atr_value > 0:
-                # Determine ATR Multiplier based on volatility
-                volatility_regime = market_regime.get('volatility', 'normal')
-                
-                if volatility_regime == 'high':
-                    atr_multiplier = 1.5  # High vol: require more aggressive extension
-                elif volatility_regime == 'low':
-                    atr_multiplier = 0.75 # Low vol: smaller extension is enough
-                else:
-                    atr_multiplier = 1.0  # Normal
-                
-                # Calculate Rip Threshold
-                rip_value = atr_value * atr_multiplier
-                required_price_threshold = long_ema_value + rip_value
+            if long_ema_value > 0 and atr_value > 0 and rip_threshold_value is not None:
+                rip_value = atr_value * rip_atr_multiplier
+                required_price_threshold = rip_threshold_value
                 
                 if close_price < required_price_threshold:
                     logger.info(
                         f"🚫 {log_prefix} No Signal: Rip Check Failed. Price ${close_price:,.2f} "
                         f"is not above EMA50+Rip (${required_price_threshold:,.2f}). "
                         f"(EMA50=${long_ema_value:,.2f}, Rip=${rip_value:,.2f}, Vol={volatility_regime})"
+                    )
+                    _shadow_str(
+                        "no_signal_rip",
+                        "rip_check_failed",
+                        {"rip_pass": rip_pass_shadow},
                     )
                     return None
                 else:
@@ -799,6 +867,10 @@ class AdaptiveShortTheRip(ShortTheRip):
             else:
                 # Fallback if indicators missing (should be caught by validation, but safe guard)
                 logger.warning(f"⚠️ {log_prefix} Missing EMA50 or ATR for Rip Check. Skipping.")
+
+            mtf_skipped = False
+            mtf_meta_15m = None
+            mtf_meta_1h = None
 
             # --- Optional Multi-Timeframe (MTF) Confirmation ---
             mtf_cfg = self.strategy_config.get("mtf_confirmation", {}) or {}
@@ -812,17 +884,36 @@ class AdaptiveShortTheRip(ShortTheRip):
                     df_1h_local = market_data.get("df_1h") or market_data.get("1h")
 
                 passed_15m, reason_15m, meta_15m = self._mtf_confirm_15m(df_15m, symbol_display, mtf_cfg)
+                mtf_meta_15m = meta_15m
                 signal.setdefault("features", {})["mtf_15m"] = meta_15m
+                if meta_15m and meta_15m.get("action") == "skip":
+                    mtf_skipped = True
                 if not passed_15m:
                     code = meta_15m.get("code", "mtf_15m_block")
                     logger.info(f"?? {log_prefix} No Signal: MTF-15m block: {reason_15m}. [code={code}]")
+                    _shadow_str(
+                        "no_signal_mtf",
+                        "mtf_15m_block",
+                        {"mtf_15m": meta_15m},
+                    )
                     return None
 
                 passed_1h, reason_1h, meta_1h = self._mtf_confirm_1h(df_1h_local, symbol_display, mtf_cfg)
+                mtf_meta_1h = meta_1h
                 signal.setdefault("features", {})["mtf_1h"] = meta_1h
+                if meta_1h and meta_1h.get("action") == "skip":
+                    mtf_skipped = True
                 if not passed_1h:
                     code = meta_1h.get("code", "mtf_1h_block")
                     logger.info(f"?? {log_prefix} No Signal: MTF-1h block: {reason_1h}. [code={code}]")
+                    _shadow_str(
+                        "no_signal_mtf",
+                        "mtf_1h_block",
+                        {
+                            "mtf_15m": meta_15m,
+                            "mtf_1h": meta_1h,
+                        },
+                    )
                     return None
             
             logger.info(f"✅ {log_prefix} Base conditions met. Proceeding to ML & Risk checks.")
@@ -839,10 +930,26 @@ class AdaptiveShortTheRip(ShortTheRip):
                 
                 if ml_context.get('regime_prediction') == 'bullish' and ml_context.get('regime_confidence', 0) > 0.7:
                     logger.info(f"🚫 {log_prefix} No Signal: ML VETO - Strong bullish regime detected (confidence: {ml_context.get('regime_confidence', 0):.2%}).")
+                    _shadow_str(
+                        "no_signal_ml",
+                        "ml_veto",
+                        {
+                            "ml_regime": ml_context.get('regime_prediction'),
+                            "ml_confidence": ml_context.get('regime_confidence'),
+                        },
+                    )
                     return None
                 
                 if ml_context.get('price_direction') == 'up' and ml_context.get('price_confidence', 0) > 0.7:
                     logger.info(f"🚫 {log_prefix} No Signal: ML VETO - Strong price up prediction (confidence: {ml_context.get('price_confidence', 0):.2%}).")
+                    _shadow_str(
+                        "no_signal_ml",
+                        "ml_veto",
+                        {
+                            "ml_price_direction": ml_context.get('price_direction'),
+                            "ml_price_confidence": ml_context.get('price_confidence'),
+                        },
+                    )
                     return None
                 
                 if (ml_context.get('regime_prediction') == 'bearish') or (ml_context.get('price_direction') == 'down'):
@@ -856,8 +963,7 @@ class AdaptiveShortTheRip(ShortTheRip):
             volatility = regime_data.get('volatility', 'normal')
             position_mult = self.calculate_dynamic_position_size(volatility) * position_size_modifier
             
-            entry_price = float(last30['close'])
-            atr_value = float(last30.get('atr', entry_price * 0.02))
+            entry_price = close_price
             atr_pct = (atr_value / entry_price) if entry_price else 0.0
             
             # 🔥 GÜNCELLEME: Config okumaları artık tutarlı bir şekilde `self.strategy_config` üzerinden yapılıyor.
@@ -928,6 +1034,18 @@ class AdaptiveShortTheRip(ShortTheRip):
             # 🔥 GÜNCELLEME: R/R kontrolü artık __init__ içinde ayarlanan `self.min_rr_ratio` özelliğini kullanıyor.
             if rr_ratio < self.min_rr_ratio:
                 logger.info(f"🚫 {log_prefix} No Signal: Calculated R/R Ratio ({rr_ratio:.2f}) is below the minimum required ({self.min_rr_ratio}).")
+                _shadow_str(
+                    "no_signal_rr",
+                    "rr_below_min",
+                    {
+                        "rr_ratio": rr_ratio,
+                        "min_rr_required": self.min_rr_ratio,
+                        "entry": entry_price,
+                        "stop": stop_price,
+                        "target": target_price,
+                        "volatility_stop_meta": volatility_stop_meta,
+                    },
+                )
                 return None
 
             # --- Signal Generation ---
@@ -951,6 +1069,19 @@ class AdaptiveShortTheRip(ShortTheRip):
             if ml_enhanced:
                 signal['ml_consensus'] = ml_context.get('consensus_score')
                 signal['ml_position_modifier'] = position_size_modifier
+
+            decision_to_log = "mtf_skipped" if mtf_skipped else "pass"
+            _shadow_str(
+                decision_to_log,
+                "mtf_policy_skip" if mtf_skipped else "",
+                {
+                    "rr_ratio": rr_ratio,
+                    "min_rr_required": self.min_rr_ratio,
+                    "volatility_stop_meta": volatility_stop_meta,
+                    "mtf_15m": mtf_meta_15m,
+                    "mtf_1h": mtf_meta_1h,
+                },
+            )
             
             return signal
             

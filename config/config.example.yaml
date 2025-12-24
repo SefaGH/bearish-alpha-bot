@@ -437,6 +437,15 @@ strategies:
       use_volume_strength_in_score: true  # Override with: STRATEGY_STR_VOLUME_FILTERS_USE_STRENGTH
       volume_score_weight: 0.15     # Override with: STRATEGY_STR_VOLUME_FILTERS_WEIGHT
 
+  mean_reversion:
+    enabled: true
+    timeframe: "1m"           # VWAP calculation window
+    signal_timeframe: "5m"    # Decision timeframe
+    vwap_lookback: 1440       # Rolling 24h (1m bars)
+    band_multiplier: 2.0
+    adx_threshold: 30
+    allocation_pct: 0.20
+
 # ==============================================================================
 # POSITION EXIT MANAGEMENT
 # ==============================================================================

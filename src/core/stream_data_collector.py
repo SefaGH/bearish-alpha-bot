@@ -30,6 +30,8 @@ class StreamDataCollector:
         resolved_buffer_size = buffer_size
         if config:
             resolved_buffer_size = config.get('websocket', {}).get('buffer_size', buffer_size)
+        # Ensure the buffer is large enough to hold primed history (e.g., ~3000) plus headroom
+        resolved_buffer_size = max(resolved_buffer_size, 3500)
         
         ws_config = config.get('websocket', {}) if config else {}
         self.throttle_interval_ms = ws_config.get('throttle_interval_ms', 250)

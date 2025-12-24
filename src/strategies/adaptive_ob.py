@@ -8,6 +8,12 @@ import logging
 import math
 from typing import Optional, Dict
 from .oversold_bounce import OversoldBounce
+from core.strategy_shadow_eval import (
+    shadow_enabled,
+    extract_last_closed_ts_ms,
+    extract_df_meta,
+    emit_shadow_log,
+)
 
 # Default market regime for fallback
 DEFAULT_MARKET_REGIME = {
@@ -58,12 +64,18 @@ class AdaptiveOversoldBounce(OversoldBounce):
         # `super()` çağrısı `self.strategy_config`'i oluşturduğu için artık bunu güvenle kullanabiliriz.
         self.min_rr_ratio = self.strategy_config.get('min_rr_ratio', 1.2)
         logger.info(f"[{self.strategy_name.upper()}] Minimum R/R Ratio initialized to: {self.min_rr_ratio}")
+        # Interface guard
+        if not hasattr(self, "signal"):
+            self.signal = self._default_signal_wrapper  # type: ignore
+        assert callable(getattr(self, "signal", None)), f"{self.strategy_name}: signal method not callable"
 
     def _validate_input_data(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame, regime_data: Dict, symbol: str) -> tuple[bool, str]:
         """Gerekli tüm verilerin varlığını ve geçerliliğini kontrol eder."""
         # 1. Ana DataFrame Kontrolü
         if df_30m is None or df_30m.empty:
             return False, "Input data 'df_30m' is missing or empty."
+        if self.debug_logging:
+            logger.debug(f"[{self.strategy_name.upper()}] Validation data lengths: total_rows={len(df_30m)}")
             
         # 2. Zorunlu Sütunların Kontrolü
         required_cols = ['close', 'rsi', 'atr', 'ema_fast']
@@ -201,9 +213,20 @@ class AdaptiveOversoldBounce(OversoldBounce):
             return None
         
         try:
-            last = df_30m.dropna().iloc[-1]
+            if self.debug_logging:
+                logger.debug(f"{log_prefix} Data sufficiency check: total_rows={len(df_30m)}")
+            last = df_30m.iloc[-1]
+            # Only guard on NaNs in the row being used
+            required_cols = ['close', 'rsi', 'atr', 'ema_fast']
+            missing = [c for c in required_cols if c not in last.index]
+            if missing:
+                logger.warning(f"{log_prefix} Missing required columns in latest row: {missing}")
+                return None
+            if any(pd.isna(last[c]) for c in required_cols):
+                logger.info(f"{log_prefix} Latest row has NaN in required columns; skipping this tick.")
+                return None
         except IndexError:
-            logger.info(f"🚫 {log_prefix} No Signal: Insufficient 30m data to generate a signal.")
+            logger.info(f"🚫 {log_prefix} No Signal: Insufficient 30m data to generate a signal (IndexError).")
             return None
         
         if regime_data is None:
@@ -219,6 +242,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
             rsi_val = float(last['rsi'])
             ema_fast = float(last.get('ema_fast', 0))
             ema_mid = float(last.get('ema_mid', 0))
+            atr_value = float(last.get('atr', close_price * 0.02))
+            volume_val = float(last['volume']) if 'volume' in last.index else None
             
             market_regime = {
                 'trend': regime_data.get('trend', 'neutral'),
@@ -250,6 +275,39 @@ class AdaptiveOversoldBounce(OversoldBounce):
             # Volume logic centralized in StrategyCoordinator (Issue #450)
             # Legacy volume confirmation removed.
 
+            timeframe = "30m"
+            last_closed_ts_ms = extract_last_closed_ts_ms(df_30m)
+            df_meta = extract_df_meta(df_30m)
+
+            def _shadow_ob(decision: str, fail_reason: str = "", extra: Optional[Dict] = None) -> None:
+                if not shadow_enabled():
+                    return
+                try:
+                    payload = {
+                        "event": "strategy_shadow_eval",
+                        "strategy": "adaptive_ob",
+                        "symbol": symbol_display,
+                        "timeframe": timeframe,
+                        "last_closed_ts": last_closed_ts_ms,
+                        **df_meta,
+                        "close": close_price,
+                        "rsi": rsi_val,
+                        "rsi_threshold": adaptive_rsi_threshold,
+                        "rsi_delta": rsi_val - adaptive_rsi_threshold if adaptive_rsi_threshold is not None else None,
+                        "ema_fast": ema_fast,
+                        "ema_mid": ema_mid,
+                        "atr": atr_value,
+                        "trend_penalty_applied": trend_bias_active,
+                        "trend_penalty": ema_trend_penalty,
+                        "decision": decision,
+                        "fail_reason": fail_reason,
+                    }
+                    if extra:
+                        payload.update(extra)
+                    emit_shadow_log(logger, payload, "adaptive_ob", symbol_display, timeframe, last_closed_ts_ms)
+                except Exception:
+                    return
+
             # --- Core Signal Condition Checks with Tracing ---
             if self.debug_logging:
                 logger.info(f"🔍 {log_prefix} Checking conditions...")
@@ -260,16 +318,27 @@ class AdaptiveOversoldBounce(OversoldBounce):
             # 1. RSI Condition Check
             if rsi_val > adaptive_rsi_threshold:
                 logger.info(f"🚫 {log_prefix} No Signal: RSI ({rsi_val:.2f}) is above the threshold ({adaptive_rsi_threshold:.2f}).")
+                _shadow_ob("no_signal_rsi", "rsi_above_threshold")
                 return None
 
             # 2. Price vs. EMA Condition Check
             if ema_fast > 0 and close_price >= ema_fast:
                 logger.info(f"🚫 {log_prefix} No Signal: Price (${close_price:,.2f}) is not below the fast EMA (${ema_fast:,.2f}).")
+                _shadow_ob(
+                    "no_signal_price_vs_ema",
+                    "price_not_below_ema_fast",
+                    {"price_vs_ema_fast": close_price - ema_fast},
+                )
                 return None
 
             # 3. Volume Check (basic data sanity)
             if 'volume' in last.index and float(last['volume']) <= 0:
                 logger.info(f"🚫 {log_prefix} No Signal: Volume is zero or negative.")
+                _shadow_ob(
+                    "no_signal_volume",
+                    "non_positive_volume",
+                    {"volume": volume_val},
+                )
                 return None
             
             logger.info(f"✅ {log_prefix} Base conditions met. Proceeding to ML & Risk checks.")
@@ -284,10 +353,26 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 
                 if ml_context.get('regime_prediction') == 'bearish' and ml_context.get('regime_confidence', 0) > 0.7:
                     logger.info(f"🚫 {log_prefix} No Signal: ML VETO - Strong bearish regime detected (confidence: {ml_context.get('regime_confidence', 0):.2%}).")
+                    _shadow_ob(
+                        "no_signal_ml",
+                        "ml_veto",
+                        {
+                            "ml_regime": ml_context.get('regime_prediction'),
+                            "ml_confidence": ml_context.get('regime_confidence'),
+                        },
+                    )
                     return None
                 
                 if ml_context.get('price_direction') == 'down' and ml_context.get('price_confidence', 0) > 0.7:
                     logger.info(f"🚫 {log_prefix} No Signal: ML VETO - Strong price down prediction (confidence: {ml_context.get('price_confidence', 0):.2%}).")
+                    _shadow_ob(
+                        "no_signal_ml",
+                        "ml_veto",
+                        {
+                            "ml_price_direction": ml_context.get('price_direction'),
+                            "ml_price_confidence": ml_context.get('price_confidence'),
+                        },
+                    )
                     return None
                 
                 if (ml_context.get('regime_prediction') == 'bullish') or (ml_context.get('price_direction') == 'up'):
@@ -302,7 +387,6 @@ class AdaptiveOversoldBounce(OversoldBounce):
             position_mult = self.calculate_dynamic_position_size(volatility) * position_size_modifier
             
             entry_price = float(last['close'])
-            atr_value = float(last.get('atr', entry_price * 0.02))
             
             # 🔥 GÜNCELLEME: Config okumaları artık tutarlı bir şekilde `self.strategy_config` üzerinden yapılıyor.
             tp_atr_mult = float(self.strategy_config.get("tp_atr_mult", 2.5))
@@ -366,6 +450,17 @@ class AdaptiveOversoldBounce(OversoldBounce):
             # 🔥 GÜNCELLEME: R/R kontrolü artık __init__ içinde ayarlanan `self.min_rr_ratio` özelliğini kullanıyor.
             if rr_ratio < self.min_rr_ratio:
                 logger.info(f"🚫 {log_prefix} No Signal: Calculated R/R Ratio ({rr_ratio:.2f}) is below the minimum required ({self.min_rr_ratio}).")
+                _shadow_ob(
+                    "no_signal_rr",
+                    "rr_below_min",
+                    {
+                        "rr_ratio": rr_ratio,
+                        "min_rr_required": self.min_rr_ratio,
+                        "entry": entry_price,
+                        "stop": stop_price,
+                        "target": target_price,
+                    },
+                )
                 return None
 
             # --- Signal Generation ---
@@ -395,6 +490,16 @@ class AdaptiveOversoldBounce(OversoldBounce):
             if ml_enhanced:
                 signal['ml_consensus'] = ml_context.get('consensus_score')
                 signal['ml_position_modifier'] = position_size_modifier
+
+            _shadow_ob(
+                "pass",
+                "",
+                {
+                    "rr_ratio": rr_ratio,
+                    "min_rr_required": self.min_rr_ratio,
+                    "position_multiplier": position_mult,
+                },
+            )
             
             return signal
             

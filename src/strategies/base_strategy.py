@@ -11,10 +11,22 @@ class BaseStrategy(ABC):
         self.strategy_name = strategy_name
         self.strategy_config = config
         self.market_data_pipeline = None # Can be injected later
+        # Interface guard
+        if not hasattr(self, "signal"):
+            # Bind default signal wrapper
+            self.signal = self._default_signal_wrapper  # type: ignore
+        assert hasattr(self, "signal"), f"{self.__class__.__name__} must expose a 'signal' method"
 
     def set_market_data_pipeline(self, pipeline: Any):
         """Inject the market data pipeline for data access."""
         self.market_data_pipeline = pipeline
+
+    async def _default_signal_wrapper(self, *args, **kwargs):
+        """
+        Default signal wrapper to satisfy coordinator interface.
+        Delegates to generate_signal; subclasses may override.
+        """
+        return await self.generate_signal(*args, **kwargs)
 
     @abstractmethod
     async def generate_signal(self, symbol: str, ml_context: Optional[Dict] = None) -> Optional[Dict]:

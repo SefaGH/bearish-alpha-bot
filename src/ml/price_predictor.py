@@ -257,6 +257,7 @@ class AdvancedPricePredictionEngine:
                 symbol=symbol,
                 timeframe=timeframe,
                 exchange=None,
+                limit=2000,
             )
             if df is None or getattr(df, 'empty', True):
                 logger.warning("⚠️ No OHLCV data for %s (%s timeframe).", symbol, timeframe)
