@@ -10,6 +10,7 @@ import logging
 import time
 import pandas as pd
 from collections import defaultdict
+from collections import Counter
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
 
@@ -89,8 +90,226 @@ class MarketDataPipeline:
         # Pipeline state
         self.is_running = False
         self._trigger_diag_last_log: Dict[str, float] = {}
+        # Optional hybrid mode state machine (disabled by default)
+        self._hybrid_state: Dict[str, Dict[str, Any]] = {}
+
+        # One-time hybrid configuration observability (log once)
+        self._hybrid_cfg_logged: bool = False
+
+        # Hybrid fallback metrics (counts by reason, per state_key)
+        self._hybrid_fallback_counts: Dict[str, Counter] = {}
+        self._hybrid_total_calls: Dict[str, int] = {}
+        self._hybrid_metrics_last_log_ts: Dict[str, float] = {}
+        self._hybrid_pivot_grace_last_log_ts: Dict[str, float] = {}
+        self._hybrid_last_inject_ts_ms: Dict[str, int] = {}
+
+        # Optional cleanup guardrail for long-running processes with dynamic universes.
+        self._hybrid_last_seen_ts: Dict[str, float] = {}
+        self._hybrid_cleanup_last_run_ts: float = 0.0
+
+        # One-time (per source) state_key sample log for runtime verification.
+        self._hybrid_sample_key_logged_sources: set[str] = set()
         
         logger.info(f"🔄 MarketDataPipeline initialized with {len(exchanges)} exchanges: {list(exchanges.keys())}")
+
+        # Log effective hybrid settings once at startup for easy correlation with runtime behavior.
+        try:
+            ws_cfg = self.config.get('websocket', {}) if isinstance(self.config, dict) else {}
+            forming_update_stale_ms = int(ws_cfg.get('forming_update_stale_ms', 15000))
+            pivot_enabled = bool(ws_cfg.get('hybrid_pivot_grace_enabled', True))
+            pivot_grace_ms_default = int(ws_cfg.get('hybrid_pivot_grace_ms', 90000))
+            pivot_by_tf = ws_cfg.get('hybrid_pivot_grace_ms_by_tf')
+            pivot_accept_prev_bucket = bool(ws_cfg.get('pivot_grace_accept_prev_bucket', False))
+            metrics_interval_sec = float(ws_cfg.get('hybrid_fallback_metrics_interval_sec', 300))
+            sm_enabled = bool(ws_cfg.get('hybrid_state_machine_enabled', False))
+            sm_failures = int(ws_cfg.get('hybrid_failures_before_cooldown', 3))
+            sm_cooldown_ms = int(ws_cfg.get('hybrid_cooldown_ms', 60000))
+            logger.info(
+                "[HYBRID-STARTUP] "
+                f"forming_update_stale_ms={forming_update_stale_ms} "
+                f"pivot_grace_enabled={pivot_enabled} pivot_grace_ms_default={pivot_grace_ms_default} "
+                f"pivot_grace_ms_by_tf={'set' if isinstance(pivot_by_tf, dict) else 'none'} "
+                f"pivot_grace_accept_prev_bucket={pivot_accept_prev_bucket} "
+                f"hybrid_fallback_metrics_interval_sec={metrics_interval_sec} "
+                f"hybrid_metrics_interval_s={metrics_interval_sec} "
+                f"hybrid_state_machine_enabled={sm_enabled} "
+                f"hybrid_failures_before_cooldown={sm_failures} hybrid_cooldown_ms={sm_cooldown_ms}"
+            )
+            self._hybrid_cfg_logged = True
+        except Exception:
+            # Never block startup on observability
+            pass
+
+    def _canonical_exchange_id(self, exchange: Optional[str]) -> str:
+        """Return a stable canonical exchange id for state keys.
+
+        Goal: avoid metrics/state splitting due to alias/case differences.
+        Preference: underlying ccxt exchange client's .id (lowercased).
+        """
+        if not exchange:
+            exchange = self.DEFAULT_EXCHANGE
+
+        # Try direct match by config key.
+        client = None
+        if isinstance(self.exchanges, dict):
+            client = self.exchanges.get(exchange)
+
+        # Try case-insensitive match by key.
+        if client is None and isinstance(self.exchanges, dict):
+            ex_lower = str(exchange).lower()
+            for k, v in self.exchanges.items():
+                if str(k).lower() == ex_lower:
+                    client = v
+                    break
+
+        candidate = None
+        if client is not None:
+            candidate = getattr(client, 'id', None) or getattr(client, 'name', None)
+        if not candidate:
+            candidate = exchange
+        return str(candidate).lower()
+
+    def _hybrid_state_key(self, exchange: str, symbol: str, timeframe: str) -> str:
+        # Keep this stable and explicit to avoid confusion in logs/metrics.
+        return f"{exchange}:{symbol}:{timeframe}"
+
+    def _maybe_cleanup_hybrid_state(self, now_ts: float) -> None:
+        """Evict per-state-key hybrid metrics state that hasn't been seen recently."""
+        try:
+            ws_cfg = self.config.get('websocket', {}) if isinstance(self.config, dict) else {}
+            enabled = bool(ws_cfg.get('hybrid_state_cleanup_enabled', False))
+            if not enabled:
+                return
+
+            ttl_s = float(ws_cfg.get('hybrid_state_cleanup_ttl_s', 86400))
+            interval_s = float(ws_cfg.get('hybrid_state_cleanup_interval_s', 600))
+            if ttl_s <= 0:
+                return
+            if interval_s <= 0:
+                interval_s = 600
+
+            if (now_ts - float(self._hybrid_cleanup_last_run_ts or 0.0)) < interval_s:
+                return
+
+            self._hybrid_cleanup_last_run_ts = now_ts
+
+            cutoff = now_ts - ttl_s
+            to_evict: List[str] = []
+            for k, last_seen in list(self._hybrid_last_seen_ts.items()):
+                try:
+                    if float(last_seen or 0.0) < cutoff:
+                        to_evict.append(k)
+                except Exception:
+                    continue
+
+            if not to_evict:
+                return
+
+            for k in to_evict:
+                self._hybrid_last_seen_ts.pop(k, None)
+                self._hybrid_fallback_counts.pop(k, None)
+                self._hybrid_total_calls.pop(k, None)
+                self._hybrid_metrics_last_log_ts.pop(k, None)
+                self._hybrid_pivot_grace_last_log_ts.pop(k, None)
+                self._hybrid_last_inject_ts_ms.pop(k, None)
+                self._hybrid_state.pop(k, None)
+
+            logger.info(
+                f"[HYBRID-CLEANUP] evicted={len(to_evict)} ttl_s={ttl_s:.0f} interval_s={interval_s:.0f}"
+            )
+        except Exception:
+            return
+
+    def _maybe_log_state_key_sample(
+        self,
+        *,
+        source: str,
+        raw_exchange: str,
+        canonical_exchange_id: str,
+        symbol: str,
+        timeframe: str,
+        state_key: str,
+    ) -> None:
+        try:
+            if not logger.isEnabledFor(logging.DEBUG):
+                return
+            if source in self._hybrid_sample_key_logged_sources:
+                return
+            logger.debug(
+                "[HYBRID-KEY-SAMPLE] "
+                f"source={source} raw_exchange={raw_exchange} canonical_exchange_id={canonical_exchange_id} "
+                f"symbol={symbol} tf={timeframe} state_key={state_key}"
+            )
+            self._hybrid_sample_key_logged_sources.add(source)
+        except Exception:
+            return
+
+    def _record_hybrid_metrics(
+        self,
+        *,
+        state_key: str,
+        fallback_reason: Optional[str],
+        timeframe: str,
+        symbol: str,
+        inject_ts_ms: Optional[int] = None,
+    ) -> None:
+        """Monotonic counters + periodic log for hybrid evaluation health."""
+        try:
+            now_ts = time.time()
+
+            # Track last-seen and optionally run cleanup.
+            self._hybrid_last_seen_ts[state_key] = now_ts
+            self._maybe_cleanup_hybrid_state(now_ts)
+
+            reason_key = "none" if fallback_reason is None else str(fallback_reason)
+
+            bucket = self._hybrid_fallback_counts.get(state_key)
+            if bucket is None:
+                bucket = Counter()
+                self._hybrid_fallback_counts[state_key] = bucket
+            bucket[reason_key] += 1
+
+            self._hybrid_total_calls[state_key] = int(self._hybrid_total_calls.get(state_key, 0) or 0) + 1
+
+            if inject_ts_ms is not None:
+                self._hybrid_last_inject_ts_ms[state_key] = int(inject_ts_ms)
+
+            # Rate-limited explanation for pivot grace (normal state)
+            if reason_key == "pivot_grace_prev_bucket":
+                last_ts = float(self._hybrid_pivot_grace_last_log_ts.get(state_key, 0.0) or 0.0)
+                if (now_ts - last_ts) >= 300.0:
+                    logger.info(
+                        f"[HYBRID-PIVOT-GRACE] symbol={symbol} tf={timeframe} "
+                        "previous bucket still updating within grace window; using closed-only for safety"
+                    )
+                    self._hybrid_pivot_grace_last_log_ts[state_key] = now_ts
+
+            # Periodic metrics summary
+            ws_cfg = self.config.get('websocket', {}) if isinstance(self.config, dict) else {}
+            interval_sec = float(ws_cfg.get('hybrid_fallback_metrics_interval_sec', 300))
+            if interval_sec > 0:
+                last_ts = float(self._hybrid_metrics_last_log_ts.get(state_key, 0.0) or 0.0)
+                if (now_ts - last_ts) >= interval_sec:
+                    uptime_s = max(0.0, (datetime.now(timezone.utc) - self.start_time).total_seconds())
+                    last_inject_ts_ms = int(self._hybrid_last_inject_ts_ms.get(state_key, 0) or 0)
+                    last_inject_age_s: Optional[float] = None
+                    if last_inject_ts_ms > 0:
+                        try:
+                            last_inject_age_s = max(0.0, (int(time.time() * 1000) - last_inject_ts_ms) / 1000.0)
+                        except Exception:
+                            last_inject_age_s = None
+
+                    logger.info(
+                        f"[HYBRID-METRICS] {state_key} "
+                        f"total_calls={self._hybrid_total_calls.get(state_key, 0)} "
+                        f"uptime_s={uptime_s:.0f} "
+                        f"last_inject_ts_ms={last_inject_ts_ms} "
+                        f"last_inject_age_s={(f'{last_inject_age_s:.1f}' if last_inject_age_s is not None else 'none')} "
+                        f"counts={dict(bucket)}"
+                    )
+                    self._hybrid_metrics_last_log_ts[state_key] = now_ts
+        except Exception:
+            return
     
     def _filter_closed_dataframe(self, df: pd.DataFrame, timeframe: str, context: str = "") -> pd.DataFrame:
         """
@@ -629,14 +848,15 @@ class MarketDataPipeline:
         """
         df = None
         limit_override = limit
-        merge_action = "closed_only"
-        fallback_reason = None
+        merge_action = "none"
+        fallback_reason: Optional[str] = None
         
         # STEP 1: Try WebSocket first (real-time data)
         if self.websocket_manager and self.websocket_manager.collector:
             try:
                 # Determine which exchange to use
                 ws_exchange = exchange if exchange else (next(iter(self.exchanges.keys())) if self.exchanges else self.DEFAULT_EXCHANGE)
+                canonical_exchange_id = self._canonical_exchange_id(ws_exchange)
                 
                 # Get required number of candles for indicators
                 # Adding buffer to ensure sufficient data for indicator calculations
@@ -666,7 +886,8 @@ class MarketDataPipeline:
                             state = self.websocket_manager.collector.get_state(ws_exchange, symbol, timeframe)
                             logger.debug(
                                 f"[WS-STATE] last_closed_ts={state.get('last_closed_ts')} "
-                                f"forming_ts={state.get('forming_ts')} gap_count={state.get('gap_count')}"
+                                f"forming_ts={state.get('forming_ts')} forming_last_update_ts={state.get('forming_last_update_ts')} "
+                                f"gap_count={state.get('gap_count')}"
                             )
                         # İndikatörleri ekle ve hemen döndür. REST API'ye gitme.
                         closed_df = add_indicators(closed_df, self.config.get('indicators'))
@@ -676,16 +897,98 @@ class MarketDataPipeline:
                         if state:
                             closed_df.attrs["last_closed_ts"] = state.get("last_closed_ts")
                             closed_df.attrs["forming_ts"] = state.get("forming_ts")
+                            closed_df.attrs["forming_last_update_ts"] = state.get("forming_last_update_ts")
                             closed_df.attrs["gap_count"] = state.get("gap_count")
+
+                            # Pre-compute pivot/bucket observability even if hybrid merge is skipped.
+                            try:
+                                interval_sec = TIMEFRAME_SECONDS.get(timeframe)
+                                if interval_sec:
+                                    interval_ms = int(interval_sec) * 1000
+                                    now_ms = int(time.time() * 1000)
+                                    expected_open = (now_ms // interval_ms) * interval_ms
+                                    forming_ot = state.get("forming_ts")
+                                    if forming_ot is not None:
+                                        closed_df.attrs["forming_open_time"] = int(forming_ot)
+                                        closed_df.attrs["expected_open"] = int(expected_open)
+                                        closed_df.attrs["bucket_delta_ms"] = int(expected_open - int(forming_ot))
+                                    ws_cfg_tmp = self.config.get('websocket', {}) if isinstance(self.config, dict) else {}
+                                    pivot_grace_ms = int(ws_cfg_tmp.get('hybrid_pivot_grace_ms', 90000))
+                                    by_tf = ws_cfg_tmp.get('hybrid_pivot_grace_ms_by_tf')
+                                    if isinstance(by_tf, dict) and timeframe in by_tf:
+                                        try:
+                                            pivot_grace_ms = int(by_tf.get(timeframe))
+                                        except Exception:
+                                            pass
+                                    closed_df.attrs["pivot_grace_ms"] = pivot_grace_ms
+                            except Exception:
+                                pass
+
+                        # Optional hybrid state machine (disabled by default): can force closed-only
+                        # for a cooldown window after repeated hybrid failures.
+                        ws_cfg = self.config.get('websocket', {}) if isinstance(self.config, dict) else {}
+                        sm_enabled = bool(ws_cfg.get('hybrid_state_machine_enabled', False))
+                        sm_failures = int(ws_cfg.get('hybrid_failures_before_cooldown', 3))
+                        sm_cooldown_ms = int(ws_cfg.get('hybrid_cooldown_ms', 60000))
+                        state_key = self._hybrid_state_key(canonical_exchange_id, symbol, timeframe)
+                        now_ms = int(time.time() * 1000)
+
+                        if include_forming and sm_enabled:
+                            slot = self._hybrid_state.get(state_key) or {"fail_count": 0, "cooldown_until_ms": 0}
+                            cooldown_until = int(slot.get("cooldown_until_ms", 0) or 0)
+                            if cooldown_until and now_ms < cooldown_until:
+                                include_forming = False
+                                merge_action = "none"
+                                fallback_reason = "hybrid_cooldown"
 
                         if include_forming:
                             closed_df, merge_action, fallback_reason = self._merge_forming_candle(
-                                closed_df, ws_exchange, symbol, timeframe
+                                closed_df,
+                                ws_exchange,
+                                symbol,
+                                timeframe,
+                                forming_last_update_ts=(state.get("forming_last_update_ts") if state else None),
                             )
+
+                        if sm_enabled:
+                            slot = self._hybrid_state.get(state_key) or {"fail_count": 0, "cooldown_until_ms": 0}
+                            # Don't count "hybrid_cooldown" as a failure; it's the result of the state machine.
+                            if fallback_reason and fallback_reason != "hybrid_cooldown":
+                                slot["fail_count"] = int(slot.get("fail_count", 0) or 0) + 1
+                                if sm_failures > 0 and slot["fail_count"] >= sm_failures and sm_cooldown_ms > 0:
+                                    slot["cooldown_until_ms"] = now_ms + sm_cooldown_ms
+                                    slot["fail_count"] = 0
+                            elif not fallback_reason:
+                                slot["fail_count"] = 0
+                                slot["cooldown_until_ms"] = 0
+                            self._hybrid_state[state_key] = slot
                         df = closed_df
-                        df.attrs["merge_action"] = merge_action
-                        if fallback_reason:
-                            df.attrs["fallback_reason"] = fallback_reason
+                        # Unified hybrid attrs (always present for deterministic observability)
+                        df.attrs["merge_action"] = merge_action or "none"
+                        # IMPORTANT: store None (not the string 'none') when no fallback applies.
+                        prev_reason = df.attrs.get("fallback_reason")
+                        if isinstance(prev_reason, str) and prev_reason.strip().lower() in ("none", ""):
+                            prev_reason = None
+                        df.attrs["fallback_reason"] = (fallback_reason or None) if (fallback_reason or None) else prev_reason
+                        df.attrs["includes_forming"] = bool(df.attrs.get("includes_forming", False))
+
+                        # Hybrid metrics: increment every successful WS-returning call.
+                        state_key = self._hybrid_state_key(canonical_exchange_id, symbol, timeframe)
+                        self._maybe_log_state_key_sample(
+                            source="ws",
+                            raw_exchange=str(ws_exchange),
+                            canonical_exchange_id=canonical_exchange_id,
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            state_key=state_key,
+                        )
+                        self._record_hybrid_metrics(
+                            state_key=state_key,
+                            fallback_reason=df.attrs.get("fallback_reason"),
+                            timeframe=timeframe,
+                            symbol=symbol,
+                        )
+
                         return df
                 else:
                     logger.debug(f"⚠️ WebSocket collector returned empty or invalid data for {symbol} {timeframe}")
@@ -708,6 +1011,7 @@ class MarketDataPipeline:
                 return None
             
             client = self.exchanges[exchange]
+            canonical_exchange_id = self._canonical_exchange_id(exchange)
             
             # Gerekli mum sayısını belirle
             limit_rest = limit_override or (
@@ -734,7 +1038,28 @@ class MarketDataPipeline:
             df.attrs["retrieved_at"] = datetime.now(timezone.utc).isoformat()
             df.attrs["includes_forming"] = False
             df.attrs["merge_action"] = "rest_closed_only"
+            df.attrs["fallback_reason"] = df.attrs.get("fallback_reason", None)
             logger.info(f"[REST] Retrieved {len(df)} candles from REST API for {symbol} {timeframe}")
+
+            # Hybrid metrics: also count REST returns so totals are monotonic even if WS is unavailable.
+            try:
+                state_key = self._hybrid_state_key(canonical_exchange_id, symbol, timeframe)
+                self._maybe_log_state_key_sample(
+                    source="rest",
+                    raw_exchange=str(exchange),
+                    canonical_exchange_id=canonical_exchange_id,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    state_key=state_key,
+                )
+                self._record_hybrid_metrics(
+                    state_key=state_key,
+                    fallback_reason=df.attrs.get("fallback_reason"),
+                    timeframe=timeframe,
+                    symbol=symbol,
+                )
+            except Exception:
+                pass
             return df
                 
         except Exception as e:
@@ -748,64 +1073,231 @@ class MarketDataPipeline:
         exchange: str,
         symbol: str,
         timeframe: str,
+        forming_last_update_ts: Optional[int] = None,
     ) -> tuple[pd.DataFrame, str, Optional[str]]:
-        """Append/replace closed_df with forming candle while keeping volatility from closed bars."""
-        merge_action = "closed_only"
-        fallback_reason = None
+        """Append/replace closed_df with forming candle while keeping volatility from closed bars.
+
+        Hybrid policy notes:
+        - Pivot/bucket policy is evaluated first (single source of truth).
+        - Forming update-age staleness is evaluated only when bucket_delta==0.
+        - Replace ordering is reachable: duplicate last-open is handled before step mismatch.
+        """
+        merge_action = "none"
+        fallback_reason: Optional[str] = None
+
+        # Used only for metrics observability (when available).
+        state_key = None
+        try:
+            canonical_exchange_id = self._canonical_exchange_id(exchange)
+            state_key = self._hybrid_state_key(canonical_exchange_id, symbol, timeframe)
+        except Exception:
+            state_key = None
 
         interval_ms = TIMEFRAME_SECONDS.get(timeframe)
         if interval_ms:
             interval_ms *= 1000
         if not interval_ms:
-            return closed_df, merge_action, "unknown_timeframe"
+            closed_df.attrs["includes_forming"] = False
+            closed_df.attrs["merge_action"] = "none"
+            closed_df.attrs["fallback_reason"] = "unknown_timeframe"
+            return closed_df, "none", "unknown_timeframe"
 
         forming = self.websocket_manager.collector.get_forming_ohlcv(exchange, symbol, timeframe)
         if not forming:
-            return closed_df, "skipped", "no_forming"
+            closed_df.attrs["includes_forming"] = False
+            closed_df.attrs["merge_action"] = "none"
+            closed_df.attrs["fallback_reason"] = "no_forming"
+            return closed_df, "none", "no_forming"
 
         try:
             forming_open_ms = int(forming[0])
         except Exception:
             logger.warning(f"[HYBRID-INJECT] Invalid forming payload for {symbol} {timeframe}: {forming}")
-            return closed_df, "fallback", "invalid_forming_payload"
+            closed_df.attrs["includes_forming"] = False
+            closed_df.attrs["merge_action"] = "none"
+            closed_df.attrs["fallback_reason"] = "invalid_forming_payload"
+            return closed_df, "none", "invalid_forming_payload"
 
         last_open_ms = int(closed_df.index[-1].timestamp() * 1000)
         df_len_before = len(closed_df)
 
-        # Bucket alignment and step checks
-        if forming_open_ms % interval_ms != 0:
-            fallback_reason = "bucket_misaligned"
-            logger.warning(
-                f"[HYBRID-INJECT] Fallback due to bucket misalignment | {symbol} {timeframe} forming_ot={forming_open_ms} interval_ms={interval_ms}"
-            )
-            return closed_df, "fallback", fallback_reason
+        # --- Unified hybrid observability (attrs) ---
+        now_ms = int(time.time() * 1000)
+        expected_open = (now_ms // interval_ms) * interval_ms
+        bucket_delta_ms = int(expected_open - forming_open_ms)
 
+        ws_config = self.config.get('websocket', {}) if isinstance(self.config, dict) else {}
+        pivot_enabled = bool(ws_config.get('hybrid_pivot_grace_enabled', True))
+        pivot_grace_ms = int(ws_config.get('hybrid_pivot_grace_ms', 90000))
+        by_tf = ws_config.get('hybrid_pivot_grace_ms_by_tf')
+        if isinstance(by_tf, dict) and timeframe in by_tf:
+            try:
+                pivot_grace_ms = int(by_tf.get(timeframe))
+            except Exception:
+                pass
+
+        forming_update_age_ms: Optional[int] = None
+        try:
+            if forming_last_update_ts is not None:
+                forming_update_age_ms = now_ms - int(forming_last_update_ts)
+        except Exception:
+            forming_update_age_ms = None
+
+        closed_df.attrs["forming_open_time"] = forming_open_ms
+        closed_df.attrs["forming_last_update_ts"] = forming_last_update_ts
+        closed_df.attrs["forming_update_age_ms"] = forming_update_age_ms
+        closed_df.attrs["expected_open"] = expected_open
+        closed_df.attrs["bucket_delta_ms"] = bucket_delta_ms
+        closed_df.attrs["pivot_grace_ms"] = pivot_grace_ms
+
+        # --- Pivot-grace policy (single source of truth) ---
+        # bucket_delta==0: healthy bucket (eligible to proceed)
+        # bucket_delta==tf: 1 bucket behind -> grace window downgrade (closed-only) or pivot-stale
+        # else: hard reject
+        accepted_prev_bucket = False
+
+        if bucket_delta_ms == interval_ms:
+            within_grace = bool(pivot_enabled and now_ms <= (expected_open + max(pivot_grace_ms, 0)))
+            accept_prev_bucket = bool(ws_config.get('pivot_grace_accept_prev_bucket', False))
+
+            # Conservative default: within grace still downgrades to closed-only for determinism.
+            # Opt-in: accept prev-bucket forming updates within grace if they are fresh.
+            if within_grace and accept_prev_bucket:
+                # Only accept if the update age is known and within staleness threshold.
+                forming_update_stale_ms = int(ws_config.get('forming_update_stale_ms', 15000))
+                age_ok = (
+                    forming_update_age_ms is not None
+                    and forming_update_stale_ms > 0
+                    and int(forming_update_age_ms) <= int(forming_update_stale_ms)
+                )
+                if age_ok:
+                    logger.info(
+                        f"[HYBRID-INJECT] Pivot grace ACCEPT prev bucket | symbol={symbol} tf={timeframe} "
+                        f"expected_open={expected_open} forming_ot={forming_open_ms} bucket_delta_ms={bucket_delta_ms} "
+                        f"pivot_grace_ms={pivot_grace_ms} forming_update_age_ms={forming_update_age_ms}"
+                    )
+                    accepted_prev_bucket = True
+                    # Proceed with merge logic below (treat as acceptable)
+                else:
+                    fallback_reason = "pivot_grace_prev_bucket"
+                    logger.info(
+                        f"[HYBRID-INJECT] Pivot grace downgrade | symbol={symbol} tf={timeframe} "
+                        f"expected_open={expected_open} forming_ot={forming_open_ms} bucket_delta_ms={bucket_delta_ms} "
+                        f"pivot_grace_ms={pivot_grace_ms} forming_update_age_ms={forming_update_age_ms} "
+                        "explain=previous bucket still updating within grace window; using closed-only for safety"
+                    )
+                    closed_df.attrs["includes_forming"] = False
+                    closed_df.attrs["merge_action"] = "none"
+                    closed_df.attrs["fallback_reason"] = fallback_reason
+                    if state_key:
+                        self._hybrid_last_inject_ts_ms[state_key] = int(now_ms)
+                    return closed_df, "none", fallback_reason
+            else:
+                if within_grace:
+                    fallback_reason = "pivot_grace_prev_bucket"
+                    logger.info(
+                        f"[HYBRID-INJECT] Pivot grace downgrade | symbol={symbol} tf={timeframe} "
+                        f"expected_open={expected_open} forming_ot={forming_open_ms} bucket_delta_ms={bucket_delta_ms} "
+                        f"pivot_grace_ms={pivot_grace_ms} forming_update_age_ms={forming_update_age_ms} "
+                        "explain=previous bucket still updating within grace window; using closed-only for safety"
+                    )
+                else:
+                    fallback_reason = "pivot_stale_prev_bucket"
+                    logger.warning(
+                        f"[HYBRID-INJECT] Pivot stale (prev bucket) | symbol={symbol} tf={timeframe} "
+                        f"expected_open={expected_open} forming_ot={forming_open_ms} bucket_delta_ms={bucket_delta_ms} "
+                        f"pivot_grace_ms={pivot_grace_ms} forming_update_age_ms={forming_update_age_ms}"
+                    )
+
+                closed_df.attrs["includes_forming"] = False
+                closed_df.attrs["merge_action"] = "none"
+                closed_df.attrs["fallback_reason"] = fallback_reason
+                if state_key:
+                    self._hybrid_last_inject_ts_ms[state_key] = int(now_ms)
+                return closed_df, "none", fallback_reason
+
+        if bucket_delta_ms != 0 and not accepted_prev_bucket:
+            # forming in the future or too old or misaligned
+            if bucket_delta_ms < 0:
+                fallback_reason = "forming_future_bucket"
+            elif bucket_delta_ms > interval_ms:
+                fallback_reason = "forming_too_old"
+            else:
+                fallback_reason = "bucket_misaligned"
+            logger.warning(
+                f"[HYBRID-INJECT] Fallback due to bucket delta | symbol={symbol} tf={timeframe} "
+                f"expected_open={expected_open} forming_ot={forming_open_ms} bucket_delta_ms={bucket_delta_ms} "
+                f"pivot_grace_ms={pivot_grace_ms} forming_update_age_ms={forming_update_age_ms} reason={fallback_reason}"
+            )
+            closed_df.attrs["includes_forming"] = False
+            closed_df.attrs["merge_action"] = "none"
+            closed_df.attrs["fallback_reason"] = fallback_reason
+            if state_key:
+                self._hybrid_last_inject_ts_ms[state_key] = int(now_ms)
+            return closed_df, "none", fallback_reason
+
+        # Centralized staleness: require that the forming candle has been updated recently (bucket_delta==0 only).
+        forming_update_stale_ms = int(ws_config.get('forming_update_stale_ms', 15000))
+        if forming_update_stale_ms > 0:
+            last_update_ms: Optional[int]
+            try:
+                last_update_ms = int(forming_last_update_ts) if forming_last_update_ts is not None else None
+            except Exception:
+                last_update_ms = None
+
+            if last_update_ms is None:
+                fallback_reason = "forming_update_unknown"
+                logger.warning(
+                    f"[HYBRID-INJECT] Fallback due to unknown forming update timestamp | symbol={symbol} tf={timeframe} "
+                    f"expected_open={expected_open} forming_ot={forming_open_ms}"
+                )
+                closed_df.attrs["includes_forming"] = False
+                closed_df.attrs["merge_action"] = "none"
+                closed_df.attrs["fallback_reason"] = fallback_reason
+                if state_key:
+                    self._hybrid_last_inject_ts_ms[state_key] = int(now_ms)
+                return closed_df, "none", fallback_reason
+
+            age_ms = now_ms - last_update_ms
+            closed_df.attrs["forming_update_age_ms"] = age_ms
+            if age_ms > forming_update_stale_ms:
+                fallback_reason = "forming_update_stale"
+                logger.warning(
+                    f"[HYBRID-INJECT] Fallback due to stale forming updates | symbol={symbol} tf={timeframe} "
+                    f"expected_open={expected_open} forming_ot={forming_open_ms} age_ms={age_ms} stale_ms={forming_update_stale_ms}"
+                )
+                closed_df.attrs["includes_forming"] = False
+                closed_df.attrs["merge_action"] = "none"
+                closed_df.attrs["fallback_reason"] = fallback_reason
+                if state_key:
+                    self._hybrid_last_inject_ts_ms[state_key] = int(now_ms)
+                return closed_df, "none", fallback_reason
+
+        # Replace/append ordering (reachable): duplicate handled before step mismatch.
         expected_next = last_open_ms + interval_ms
-        if forming_open_ms != expected_next:
-            fallback_reason = "step_mismatch"
-            logger.warning(
-                f"[HYBRID-INJECT] Fallback due to step mismatch | {symbol} {timeframe} last_closed_ot={last_open_ms} forming_ot={forming_open_ms} expected={expected_next}"
-            )
-            return closed_df, "fallback", fallback_reason
-
-        if forming_open_ms < last_open_ms:
-            fallback_reason = "out_of_order"
-            logger.warning(
-                f"[HYBRID-INJECT] Fallback due to out-of-order forming | {symbol} {timeframe} forming_ot={forming_open_ms} last_ot={last_open_ms}"
-            )
-            return closed_df, "fallback", fallback_reason
-
         forming_df = self._ohlcv_to_dataframe([forming])
 
         if forming_open_ms == last_open_ms:
-            merge_action = "replaced"
+            merge_action = "replaced_last"
             base_df = closed_df.iloc[:-1]
-            logger.warning(
-                f"[HYBRID-INJECT] Forming candle leaked into closed buffer, replacing last row | {symbol} {timeframe} ot={forming_open_ms}"
+            logger.info(
+                f"[HYBRID-INJECT] Replacing last row (dedupe) | symbol={symbol} tf={timeframe} ot={forming_open_ms}"
             )
-        else:
+        elif forming_open_ms == expected_next:
             merge_action = "appended"
             base_df = closed_df
+        else:
+            fallback_reason = "step_mismatch"
+            logger.warning(
+                f"[HYBRID-INJECT] Fallback due to step mismatch | symbol={symbol} tf={timeframe} "
+                f"last_closed_ot={last_open_ms} forming_ot={forming_open_ms} expected_next={expected_next}"
+            )
+            closed_df.attrs["includes_forming"] = False
+            closed_df.attrs["merge_action"] = "none"
+            closed_df.attrs["fallback_reason"] = fallback_reason
+            if state_key:
+                self._hybrid_last_inject_ts_ms[state_key] = int(now_ms)
+            return closed_df, "none", fallback_reason
 
         merged = pd.concat([base_df, forming_df])
         merged = merged[~merged.index.duplicated(keep="last")]
@@ -815,7 +1307,10 @@ class MarketDataPipeline:
             logger.warning(
                 f"[HYBRID-INJECT] Fallback due to non-monotonic index | {symbol} {timeframe}"
             )
-            return closed_df, "fallback", fallback_reason
+            closed_df.attrs["includes_forming"] = False
+            closed_df.attrs["merge_action"] = "none"
+            closed_df.attrs["fallback_reason"] = fallback_reason
+            return closed_df, "none", fallback_reason
 
         # Recompute live RSI including forming candle; keep other indicators from closed bars.
         merged["rsi"] = rsi(merged["close"])
@@ -832,11 +1327,17 @@ class MarketDataPipeline:
         merged.attrs["forming_ts"] = forming_open_ms
         merged.attrs["merge_action"] = merge_action
         merged.attrs["forming_source"] = "ws"
+        # IMPORTANT: store None (not the string 'none') when no fallback applies.
+        merged.attrs["fallback_reason"] = None
+
+        if state_key:
+            self._hybrid_last_inject_ts_ms[state_key] = int(now_ms)
 
         logger.info(
             f"[HYBRID-INJECT] symbol={symbol} tf={timeframe} last_closed_ot={last_open_ms} "
-            f"forming_ot={forming_open_ms} len_before={df_len_before} len_after={len(merged)} "
-            f"merge_action={merge_action} fallback_reason={fallback_reason or 'none'}"
+            f"forming_ot={forming_open_ms} expected_open={expected_open} bucket_delta_ms={bucket_delta_ms} "
+            f"forming_update_age_ms={forming_update_age_ms} pivot_grace_ms={pivot_grace_ms} "
+            f"len_before={df_len_before} len_after={len(merged)} merge_action={merge_action} fallback_reason=none"
         )
 
         return merged, merge_action, fallback_reason

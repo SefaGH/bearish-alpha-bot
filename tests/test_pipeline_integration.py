@@ -9,6 +9,7 @@ import time
 from unittest.mock import Mock, patch
 import pytest
 import asyncio
+import pandas as pd
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -39,8 +40,11 @@ async def test_pipeline_async_methods():
             1000 + i             # volume
         ])
     sample_data.reverse()  # Oldest first
-    mock_client.ohlcv.return_value = sample_data
-    mock_client.fetch_ohlcv_bulk.return_value = sample_data
+    df = pd.DataFrame(sample_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df.set_index('timestamp', inplace=True)
+    mock_client.ohlcv.return_value = df
+    mock_client.fetch_ohlcv_bulk.return_value = df
     
     # Create pipeline
     exchanges = {'test': mock_client}

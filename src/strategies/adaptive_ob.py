@@ -224,14 +224,24 @@ class AdaptiveOversoldBounce(OversoldBounce):
             return None
         
         try:
-            includes_forming = bool(df_30m.attrs.get("includes_forming"))
+            includes_forming = bool(df_30m.attrs.get("includes_forming", False))
             forming_open_ms_attr = df_30m.attrs.get("forming_ts")
+
+            fallback_reason = df_30m.attrs.get("fallback_reason", None)
+            # Backwards-compat: older pipeline versions stored the string "none".
+            if isinstance(fallback_reason, str) and fallback_reason.strip().lower() in ("none", ""):
+                fallback_reason = None
+
+            forming_last_update_ts = df_30m.attrs.get("forming_last_update_ts")
+            forming_update_age_ms = df_30m.attrs.get("forming_update_age_ms")
+
             df_closed = df_30m
+            df_used = df_30m
             forming_row = None
-            fallback_reason = None
+            forming_open_ms = None
+            used_forming = False
             rsi_source = "closed"
             trigger_price_source = "closed_close"
-            timeframe_ms = TIMEFRAME_SECONDS.get("30m", 0) * 1000
 
             if includes_forming and len(df_30m) >= 2:
                 df_closed = df_30m.iloc[:-1]
@@ -240,32 +250,27 @@ class AdaptiveOversoldBounce(OversoldBounce):
                     forming_open_ms = int(forming_open_ms_attr or int(forming_row.name.timestamp() * 1000))
                 except Exception:
                     forming_open_ms = None
-
-                now_ms = int(time.time() * 1000)
-                expected_bucket = (now_ms // timeframe_ms) * timeframe_ms if timeframe_ms else None
-                if (
-                    not forming_open_ms
-                    or expected_bucket is None
-                    or forming_open_ms != expected_bucket
-                    or not (0 <= now_ms - forming_open_ms < timeframe_ms)
-                ):
-                    fallback_reason = "stale_forming"
-                    includes_forming = False
-                    forming_row = None
-                    df_closed = df_30m
-                    forming_open_ms = None
-                else:
-                    rsi_source = "live"
-                    trigger_price_source = "forming_close"
             else:
                 includes_forming = False
                 forming_open_ms = None
                 df_closed = df_30m
 
+            # Strategy should only *use* forming data when it exists AND pipeline indicates no fallback.
+            used_forming = bool(includes_forming and fallback_reason is None)
+            if used_forming:
+                df_used = df_30m
+                rsi_source = "live"
+                trigger_price_source = "forming_close"
+            else:
+                df_used = df_closed
+                rsi_source = "closed"
+                trigger_price_source = "closed_close"
+
             if self.debug_logging:
                 logger.debug(f"{log_prefix} Data sufficiency check: total_rows={len(df_closed)}")
 
             try:
+                # Always use the last CLOSED candle for indicator context (EMA/ATR/etc).
                 trend_row = df_closed.iloc[-1]
             except IndexError:
                 logger.info(f"🚫 {log_prefix} No Signal: Insufficient 30m data to generate a signal (IndexError).")
@@ -288,8 +293,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 logger.warning(f"🚫 {log_prefix} No Signal: 'close' column missing in the latest data.")
                 return None
 
-            if includes_forming:
-                rsi_series = rsi(df_30m['close'])
+            if used_forming:
+                rsi_series = rsi(df_used['close'])
             elif 'rsi' in df_closed.columns:
                 rsi_series = df_closed['rsi']
             else:
@@ -315,14 +320,26 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 'volatility': regime_data.get('volatility', 'normal')
             }
 
-            if fallback_reason:
-                logger.warning(f"{log_prefix} Hybrid fallback: {fallback_reason}. Reverting to closed-only data.")
+            # Hardening (Issue #454):
+            # - Never log "Hybrid fallback: none"
+            # - Only emit "reverting to closed-only" when we explicitly chose NOT to use forming
+            #   AND the pipeline provided a real fallback reason.
+            if (not used_forming) and (fallback_reason is not None):
+                if fallback_reason == "pivot_grace_prev_bucket":
+                    logger.info(
+                        f"{log_prefix} Hybrid downgrade: pivot_grace_prev_bucket. "
+                        "Previous bucket still updating within grace window; using closed-only for safety."
+                    )
+                else:
+                    logger.warning(
+                        f"{log_prefix} Hybrid fallback: {fallback_reason}. Reverting to closed-only data."
+                    )
 
             trigger_cfg_source = str(self.base_cfg.get("adaptive_ob_trigger_price_source", "mid")).lower()
             resolved_trigger_source = trigger_cfg_source
             trigger_fallback_chain = "none"
             trigger_price = forming_price
-            if includes_forming:
+            if used_forming:
                 if self.market_data_pipeline:
                     trigger_price, resolved_trigger_source, trigger_fallback_chain = self.market_data_pipeline.get_live_trigger_price(
                         symbol=symbol_display,
@@ -346,8 +363,10 @@ class AdaptiveOversoldBounce(OversoldBounce):
             if includes_forming or self.debug_logging:
                 logger.info(
                     f"{log_prefix} Hybrid meta | includes_forming={includes_forming} "
+                    f"used_forming={used_forming} "
                     f"forming_open_time={forming_open_ms} rsi_source={rsi_source} "
-                    f"trigger_price_source={resolved_trigger_source} fallback_reason={fallback_reason} "
+                    f"trigger_price_source={resolved_trigger_source} fallback_reason={(fallback_reason if fallback_reason is not None else 'none')} "
+                    f"forming_last_update_ts={forming_last_update_ts} forming_update_age_ms={forming_update_age_ms} "
                     f"fallback_chain={trigger_fallback_chain} trigger_price={trigger_price_log}"
                 )
 
@@ -409,7 +428,10 @@ class AdaptiveOversoldBounce(OversoldBounce):
                         "ema_mid": ema_mid,
                         "atr": atr_value,
                         "includes_forming": includes_forming,
+                        "used_forming": used_forming,
                         "forming_open_time": forming_open_ms,
+                        "forming_last_update_ts": forming_last_update_ts,
+                        "forming_update_age_ms": forming_update_age_ms,
                         "rsi_source": rsi_source,
                         "trigger_price_source": trigger_price_source,
                         "fallback_reason": fallback_reason,

@@ -223,6 +223,33 @@ websocket:
   fallback_threshold: 3               # Override with: WEBSOCKET_FALLBACK_THRESHOLD
   buffer_size: 300                    # Override with: WEBSOCKET_BUFFER_SIZE
   ticker_stale_ms: 5000               # Override with: WEBSOCKET_TICKER_STALE_MS
+  forming_update_stale_ms: 15000       # (Hybrid) Max age of last forming tick before forcing closed-only
+  hybrid_pivot_grace_enabled: true     # (Hybrid) Allow 1-bucket-behind forming briefly at TF boundary (closed-only downgrade)
+  hybrid_pivot_grace_ms: 90000         # (Hybrid) Grace window after expected_open before treating 1-bucket-behind as stale
+  # pivot_grace_accept_prev_bucket:
+  #   false (default): conservative/deterministic. If forming appears to belong to the previous bucket (bucket_delta_ms==interval_ms)
+  #   and we're within the grace window, we downgrade to closed-only with fallback_reason=pivot_grace_prev_bucket.
+  #   true (opt-in): more responsive but less deterministic. Within grace, accept prev-bucket forming updates only if fresh
+  #   (forming_update_age_ms <= forming_update_stale_ms). This can revise the most recent candle briefly.
+  pivot_grace_accept_prev_bucket: false
+  # hybrid_pivot_grace_ms_by_tf:       # (Hybrid) Optional per-timeframe override (values are milliseconds)
+  #   30m: 90000
+  #   15m: 60000
+  hybrid_state_machine_enabled: false  # (Hybrid) Enable cooldown after repeated hybrid failures
+  hybrid_failures_before_cooldown: 3   # (Hybrid) Failures before cooldown activates
+  hybrid_cooldown_ms: 60000            # (Hybrid) Cooldown duration forcing closed-only
+  hybrid_fallback_metrics_interval_sec: 300  # (Hybrid) Periodic per-symbol/timeframe counts by fallback_reason
+
+  # (Hybrid) Optional cleanup guardrail for long-running bots with dynamic universes.
+  # NOTE: YAML indentation is STRICT (spaces only). These keys must be 2-space siblings under `websocket:`.
+  # Correct block:
+  # websocket:
+  #   hybrid_state_cleanup_enabled: false
+  #   hybrid_state_cleanup_ttl_s: 86400
+  #   hybrid_state_cleanup_interval_s: 600
+  hybrid_state_cleanup_enabled: false
+  hybrid_state_cleanup_ttl_s: 86400          # e.g. 21600 (6h) or 86400 (24h)
+  hybrid_state_cleanup_interval_s: 600       # cleanup cadence
   trigger_diag_interval_sec: 60       # Override with: WEBSOCKET_TRIGGER_DIAG_INTERVAL_SEC
   max_streams_per_exchange:
     bingx: 10                         # Override with: WS_MAX_STREAMS_BINGX

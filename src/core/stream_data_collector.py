@@ -45,6 +45,8 @@ class StreamDataCollector:
         # Telemetry
         self._last_closed_ts: Dict[str, Dict[str, Optional[int]]] = {}
         self._forming_ts: Dict[str, Dict[str, Optional[int]]] = {}
+        # Wall-clock time of last observed forming update (ms since epoch)
+        self._forming_last_update_ts: Dict[str, Dict[str, Optional[int]]] = {}
         self._gap_count: Dict[str, Dict[str, int]] = {}
         self._last_backfill_ts: Dict[str, Dict[str, float]] = {}
         self._lock = threading.Lock()
@@ -133,6 +135,7 @@ class StreamDataCollector:
         self._forming_data.setdefault(exchange, {})
         self._last_closed_ts.setdefault(exchange, {})
         self._forming_ts.setdefault(exchange, {})
+        self._forming_last_update_ts.setdefault(exchange, {})
         self._gap_count.setdefault(exchange, {})
         self._last_backfill_ts.setdefault(exchange, {})
         self._out_of_order_drops.setdefault(exchange, {})
@@ -143,6 +146,8 @@ class StreamDataCollector:
             self._gap_count[exchange][key] = 0
         if key not in self._forming_ts[exchange]:
             self._forming_ts[exchange][key] = None
+        if key not in self._forming_last_update_ts[exchange]:
+            self._forming_last_update_ts[exchange][key] = None
         if key not in self._last_closed_ts[exchange]:
             self._last_closed_ts[exchange][key] = None
         if key not in self._last_backfill_ts[exchange]:
@@ -155,6 +160,7 @@ class StreamDataCollector:
     def _set_forming(self, exchange: str, key: str, candle: List[float]):
         """Initialize or replace the forming candle."""
         self._ensure_structs(exchange, key)
+        now_ms = int(time.time() * 1000)
         self._forming_data[exchange][key] = {
             "open_time": int(candle[0]),
             "open": float(candle[1]),
@@ -164,6 +170,7 @@ class StreamDataCollector:
             "volume": float(candle[5]),
         }
         self._forming_ts[exchange][key] = int(candle[0])
+        self._forming_last_update_ts[exchange][key] = now_ms
 
     def _commit_forming(self, exchange: str, symbol: str, timeframe: str, key: str, next_open_time: int, interval_ms: Optional[int]):
         """Commit current forming candle into closed buffer and perform gap checks/backfill."""
@@ -249,6 +256,7 @@ class StreamDataCollector:
 
         # Same candle (forming update)
         if open_time == current_open:
+            now_ms = int(time.time() * 1000)
             updated = {
                 "open_time": current_open,
                 "open": current_forming["open"],
@@ -259,6 +267,7 @@ class StreamDataCollector:
             }
             self._forming_data[exchange][key] = updated
             self._forming_ts[exchange][key] = current_open
+            self._forming_last_update_ts[exchange][key] = now_ms
             return
 
         # Pivot to next candle -> commit previous forming
@@ -384,6 +393,7 @@ class StreamDataCollector:
         self._forming_data.clear()
         self._last_closed_ts.clear()
         self._forming_ts.clear()
+        self._forming_last_update_ts.clear()
         self._gap_count.clear()
         self._last_backfill_ts.clear()
         self._out_of_order_drops.clear()
@@ -440,6 +450,7 @@ class StreamDataCollector:
             self._closed_data[exchange][key] = deque(ohlcv_list, maxlen=self.buffer_size)
             self._last_closed_ts[exchange][key] = ohlcv_list[-1][0]
             self._forming_ts[exchange][key] = None
+            self._forming_last_update_ts[exchange][key] = None
             # Do not set gap_count here; it is accumulated during runtime
             
             logger.info(f"[PRIME] Primed CLOSED buffer with {len(ohlcv_list)} candles for {exchange} {key}. Buffer size: {len(self._closed_data[exchange][key])}")
@@ -457,6 +468,7 @@ class StreamDataCollector:
         return {
             "last_closed_ts": self._last_closed_ts.get(exchange, {}).get(key),
             "forming_ts": self._forming_ts.get(exchange, {}).get(key),
+            "forming_last_update_ts": self._forming_last_update_ts.get(exchange, {}).get(key),
             "gap_count": self._gap_count.get(exchange, {}).get(key, 0),
             "closed_len": len(self._closed_data.get(exchange, {}).get(key, [])),
             "backfill_count": self._backfill_count.get(exchange, {}).get(key, 0),
