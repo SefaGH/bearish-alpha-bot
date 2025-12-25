@@ -747,6 +747,12 @@ class ProductionCoordinator:
              logger.error("❌ PortfolioManager or strategies not initialized. Cannot process loop.")
              return
         strategies_to_run = list(self.portfolio_manager.strategies.items())
+        hybrid_allowlist = {"adaptive_ob"}
+        hybrid_strategies = {
+            name
+            for name, instance in strategies_to_run
+            if (name in hybrid_allowlist) or (getattr(instance, "strategy_name", "") in hybrid_allowlist)
+        }
 
         signals_config = self.config.get('signals', {}) or {}
         mtf_cfg = (signals_config.get('short_the_rip', {}) or {}).get('mtf_confirmation', {}) or {}
@@ -761,6 +767,8 @@ class ProductionCoordinator:
             # --- DATA FETCHING STAGE ---
             ml_context = None
             df_30m = None
+            df_30m_closed = None
+            df_30m_hybrid = None
             df_1h = None
             df_15m = None
             
@@ -780,7 +788,21 @@ class ProductionCoordinator:
 
                 # 2. Get indicator data directly from MarketDataPipeline
                 if self.market_data_pipeline:
-                    df_30m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "30m")
+                    df_30m_closed = await self.market_data_pipeline.get_latest_ohlcv(
+                        symbol, "30m", include_forming=False
+                    )
+                    if hybrid_strategies:
+                        df_30m_hybrid = await self.market_data_pipeline.get_latest_ohlcv(
+                            symbol, "30m", include_forming=True
+                        )
+                    # Default view for downstream logging
+                    df_30m = (
+                        df_30m_hybrid
+                        if df_30m_hybrid is not None and not df_30m_hybrid.empty
+                        else df_30m_closed
+                    )
+                    if df_30m is None or df_30m.empty:
+                        raise RuntimeError("30m OHLCV unavailable: both hybrid and closed are empty/None")
                     df_1h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "1h")
                     if mtf_enabled:
                         df_15m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "15m")
@@ -821,8 +843,12 @@ class ProductionCoordinator:
                     
                     if hasattr(strategy_instance, 'signal') and callable(getattr(strategy_instance, 'signal')):
                         # ✅ FIX: Pass the fresh ml_context directly to the strategy's 'signal' method
+                        strategy_df_30m = df_30m_closed
+                        if hybrid_strategies and (strategy_name in hybrid_strategies) and df_30m_hybrid is not None:
+                            strategy_df_30m = df_30m_hybrid
+
                         signal_kwargs = {
-                            'df_30m': df_30m,
+                            'df_30m': strategy_df_30m,
                             'df_1h': df_1h,
                             'regime_data': ml_context,  # Pass the entire context
                             'symbol': symbol,
@@ -831,7 +857,9 @@ class ProductionCoordinator:
                         if market_data is not None:
                             try:
                                 if 'market_data' in inspect.signature(strategy_instance.signal).parameters:
-                                    signal_kwargs['market_data'] = market_data
+                                    strategy_market_data = dict(market_data)
+                                    strategy_market_data['30m'] = strategy_df_30m
+                                    signal_kwargs['market_data'] = strategy_market_data
                             except (TypeError, ValueError):
                                 pass
                         result = strategy_instance.signal(**signal_kwargs)

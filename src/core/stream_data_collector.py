@@ -66,6 +66,7 @@ class StreamDataCollector:
 
         self.ticker_data: Dict[str, Dict[str, deque]] = {}
         self._last_update_cache: Dict[str, float] = {}
+        self._ticker_log_state: Dict[str, float] = {}
         
         logger.info(f"StreamDataCollector initialized with buffer_size={self.buffer_size} and throttle_interval={self.throttle_interval_ms}ms")
 
@@ -289,18 +290,21 @@ class StreamDataCollector:
 
     async def ticker_callback(self, exchange: str, symbol: str, ticker: Dict):
         """Callback to collect ticker data."""
-        if exchange not in self.ticker_data:
-            self.ticker_data[exchange] = {}
-        
-        if symbol not in self.ticker_data[exchange]:
-            self.ticker_data[exchange][symbol] = deque(maxlen=self.buffer_size)
-        
-        self.ticker_data[exchange][symbol].append({
+        normalized_symbol = self._normalize_symbol(symbol)
+        exchange_bucket = self.ticker_data.setdefault(exchange, {})
+        buffer = exchange_bucket.setdefault(normalized_symbol, deque(maxlen=self.buffer_size))
+
+        buffer.append({
             'timestamp': datetime.now(timezone.utc),
             'data': ticker
         })
-        
-        logger.debug(f"Collected ticker: {exchange} {symbol} (buffer: {len(self.ticker_data[exchange][symbol])})")
+
+        cache_key = f"{exchange}:{normalized_symbol}"
+        now_ms = time.time() * 1000
+        last_log_ms = self._ticker_log_state.get(cache_key, 0)
+        if (now_ms - last_log_ms) >= self.throttle_interval_ms:
+            logger.debug(f"Collected ticker: {exchange} {normalized_symbol} (buffer: {len(buffer)})")
+            self._ticker_log_state[cache_key] = now_ms
     
     def get_latest_ohlcv(self, exchange: str, symbol: str, timeframe: str, limit: Optional[int] = None) -> Optional[List[List]]:
         """
@@ -355,12 +359,24 @@ class StreamDataCollector:
             forming["volume"],
         ]
 
+    def get_latest_ticker_sample(self, exchange: str, symbol: str) -> Optional[Dict[str, Any]]:
+        """Return the latest ticker entry containing timestamp and payload."""
+        exchange_bucket = self.ticker_data.get(exchange)
+        if not exchange_bucket:
+            return None
+
+        normalized_symbol = self._normalize_symbol(symbol)
+        buffer = exchange_bucket.get(normalized_symbol)
+        if not buffer:
+            return None
+        return buffer[-1]
+
     def get_latest_ticker(self, exchange: str, symbol: str) -> Optional[Dict]:
-        """Get the latest ticker data for a symbol."""
-        if exchange in self.ticker_data and symbol in self.ticker_data[exchange]:
-            buffer = self.ticker_data[exchange][symbol]
-            return buffer[-1]['data'] if buffer else None
-        return None
+        """Get the latest ticker payload for a symbol (backwards compatible)."""
+        sample = self.get_latest_ticker_sample(exchange, symbol)
+        if not sample:
+            return None
+        return sample.get('data')
     
     def clear(self):
         """Clear all collected data."""
@@ -373,6 +389,7 @@ class StreamDataCollector:
         self._out_of_order_drops.clear()
         self._backfill_count.clear()
         self.ticker_data.clear()
+        self._ticker_log_state.clear()
         logger.info("StreamDataCollector cleared")
     
     def prime_buffer_with_dataframe(self, exchange: str, symbol: str, timeframe: str, df):

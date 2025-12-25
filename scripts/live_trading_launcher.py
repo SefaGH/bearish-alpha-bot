@@ -415,8 +415,20 @@ class OptimizedWebSocketManager:
                 )
                 tasks.extend(ohlcv_tasks)
 
-            stream_count[exchange_name] = len(exchange_symbols) * len(timeframes)
-            logger.info(f"[WS-OPT] {exchange_name}: Subscribed to {len(exchange_symbols)} symbols across {len(timeframes)} TFs (limit={max_streams})")
+            ticker_tasks = await self.ws_manager.stream_tickers(
+                symbols_per_exchange=symbols_per_exchange,
+                callback=None,
+                max_iterations=None
+            )
+            tasks.extend(ticker_tasks)
+
+            ohlcv_stream_total = len(exchange_symbols) * len(timeframes)
+            ticker_stream_total = len(exchange_symbols)
+            stream_count[exchange_name] = ohlcv_stream_total + ticker_stream_total
+            logger.info(
+                f"[WS-OPT] {exchange_name}: Subscribed to {len(exchange_symbols)} symbols across {len(timeframes)} TFs "
+                f"(OHLCV streams={ohlcv_stream_total}, ticker streams={ticker_stream_total}, limit={max_streams})"
+            )
 
         logger.info(f"[WS-OPT] Total streams: {sum(stream_count.values())}")
         return tasks

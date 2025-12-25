@@ -296,7 +296,9 @@ class LiveTradingConfiguration:
         self._validate_schema_types(merged, combined_schema)
         
         self._apply_universe_defaults(merged)
+        self._apply_trigger_price_defaults(merged)
         self._normalize_risk_config(merged)
+        self._apply_websocket_defaults(merged)
         return merged
 
     def _load_yaml_and_map_env_vars(self) -> Tuple[Dict[str, Any], Dict[str, List[str]]]:
@@ -1168,6 +1170,16 @@ class LiveTradingConfiguration:
             cleaned = DEFAULT_SYMBOLS.copy()
         universe['fixed_symbols'] = cleaned
 
+    def _apply_trigger_price_defaults(self, config: Dict[str, Any]) -> None:
+        """Ensure trigger price defaults are set even when omitted from YAML/env."""
+        trigger_cfg = config.setdefault('trigger_price', {})
+        trigger_cfg.setdefault('source', 'mid')
+        trigger_cfg.setdefault('diag_interval_sec', 60)
+
+        strategies_cfg = config.setdefault('strategies', {})
+        adaptive_cfg = strategies_cfg.setdefault('adaptive_ob', {})
+        adaptive_cfg.setdefault('adaptive_ob_trigger_price_source', trigger_cfg.get('source', 'mid'))
+
     def _filter_valid_symbols(self, symbols: Union[str, List[str], None]) -> List[str]:
         if symbols is None:
             return []
@@ -1289,6 +1301,12 @@ class LiveTradingConfiguration:
         risk_section['volatility_sizing'] = self._normalize_volatility_sizing(volatility_cfg)
 
         config['risk'] = risk_section
+
+    def _apply_websocket_defaults(self, config: Dict[str, Any]) -> None:
+        """Ensure websocket diagnostic defaults exist for trigger price resolution."""
+        ws_cfg = config.setdefault('websocket', {})
+        ws_cfg.setdefault('ticker_stale_ms', 5000)
+        ws_cfg.setdefault('trigger_diag_interval_sec', 60)
 
     @staticmethod
     def _normalize_percent_value(value: Any, field_name: str) -> Optional[float]:

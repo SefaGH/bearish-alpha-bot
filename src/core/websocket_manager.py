@@ -8,6 +8,7 @@ Date: 2025-10-29
 """
 
 import asyncio
+import inspect
 import logging
 from typing import Dict, List, Any, Optional, Callable
 from datetime import datetime, timezone
@@ -118,6 +119,23 @@ class WebSocketManager:
         """Streams ticker data by delegating to the client's `watch_ticker_loop`."""
         self._running = True
         tasks = []
+        user_is_coro = inspect.iscoroutinefunction(callback) if callback else False
+
+        def _compose_callback(exchange_label: str) -> Optional[Callable[[str, Dict[str, Any]], Any]]:
+            collector_cb = getattr(self._data_collector, "ticker_callback", None)
+            if not collector_cb and not callback:
+                return None
+
+            async def _combined(symbol: str, ticker_payload: Dict[str, Any]):
+                if collector_cb:
+                    await collector_cb(exchange_label, symbol, ticker_payload)
+                if callback:
+                    if user_is_coro:
+                        await callback(symbol, ticker_payload)
+                    else:
+                        callback(symbol, ticker_payload)
+
+            return _combined
         
         for exchange_name, symbols in symbols_per_exchange.items():
             client = self.clients.get(exchange_name.lower())
@@ -125,13 +143,14 @@ class WebSocketManager:
                 logger.warning(f"Exchange '{exchange_name}' not initialized, skipping.")
                 continue
 
+            exchange_callback = _compose_callback(exchange_name.lower())
             for symbol in symbols:
                 task = asyncio.create_task(
-                    client.watch_ticker_loop(symbol, callback, max_iterations)
+                    client.watch_ticker_loop(symbol, exchange_callback, max_iterations)
                 )
                 tasks.append(task)
                 self._tasks.append(task)
-                logger.info(f"Created Ticker stream task: {exchange_name} {symbol}")
+                logger.info(f"[WS-INIT] Created Ticker stream task: {exchange_name} {symbol}")
         
         logger.info(f"Created {len(tasks)} Ticker stream tasks.")
         return tasks

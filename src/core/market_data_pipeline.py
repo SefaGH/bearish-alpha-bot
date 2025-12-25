@@ -14,7 +14,7 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
 
 from .ccxt_client import CcxtClient
-from .indicators import add_indicators
+from .indicators import add_indicators, rsi
 from .data_validator import TIMEFRAME_SECONDS
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,7 @@ class MarketDataPipeline:
         
         # Pipeline state
         self.is_running = False
+        self._trigger_diag_last_log: Dict[str, float] = {}
         
         logger.info(f"🔄 MarketDataPipeline initialized with {len(exchanges)} exchanges: {list(exchanges.keys())}")
     
@@ -607,14 +608,14 @@ class MarketDataPipeline:
         pass
     
     # ------------------- DÜZELTİLMİŞ METOT -------------------
-    async def get_candles(self, symbol: str, timeframe: str, exchange: str = None, limit: int = None) -> Optional[pd.DataFrame]:
+    async def get_candles(self, symbol: str, timeframe: str, exchange: str = None, limit: int = None, include_forming: bool = False) -> Optional[pd.DataFrame]:
         """
         Return closed-only OHLCV candles for a symbol/timeframe.
         This is an alias to get_latest_ohlcv to make intent explicit.
         """
-        return await self.get_latest_ohlcv(symbol, timeframe, exchange, limit=limit)
+        return await self.get_latest_ohlcv(symbol, timeframe, exchange, limit=limit, include_forming=include_forming)
 
-    async def get_latest_ohlcv(self, symbol: str, timeframe: str, exchange: str = None, limit: int = None) -> Optional[pd.DataFrame]:
+    async def get_latest_ohlcv(self, symbol: str, timeframe: str, exchange: str = None, limit: int = None, include_forming: bool = False) -> Optional[pd.DataFrame]:
         """
         Get latest CLOSED OHLCV data with a robust WebSocket-first approach.
         (GÜNCELLENDİ: WebSocket verisini doğru işler ve REST fallback'i sadece gerektiğinde kullanır.)
@@ -628,6 +629,8 @@ class MarketDataPipeline:
         """
         df = None
         limit_override = limit
+        merge_action = "closed_only"
+        fallback_reason = None
         
         # STEP 1: Try WebSocket first (real-time data)
         if self.websocket_manager and self.websocket_manager.collector:
@@ -650,14 +653,14 @@ class MarketDataPipeline:
                     timeframe=timeframe,
                     limit=limit_ws
                 )
-                
+
                 # Gelen verinin doğru formatta olduğunu doğrula
                 if ohlcv_list and isinstance(ohlcv_list, list) and len(ohlcv_list) > 0:
                     # Ham OHLCV listesini DataFrame'e çevir
-                    df = self._ohlcv_to_dataframe(ohlcv_list)
+                    closed_df = self._ohlcv_to_dataframe(ohlcv_list)
                     
-                    if df is not None and not df.empty:
-                        logger.debug(f"[WS] Retrieved {len(df)} CLOSED candles for {symbol} {timeframe}")
+                    if closed_df is not None and not closed_df.empty:
+                        logger.debug(f"[WS] Retrieved {len(closed_df)} CLOSED candles for {symbol} {timeframe}")
                         state = None
                         if hasattr(self.websocket_manager.collector, "get_state"):
                             state = self.websocket_manager.collector.get_state(ws_exchange, symbol, timeframe)
@@ -666,13 +669,23 @@ class MarketDataPipeline:
                                 f"forming_ts={state.get('forming_ts')} gap_count={state.get('gap_count')}"
                             )
                         # İndikatörleri ekle ve hemen döndür. REST API'ye gitme.
-                        df = add_indicators(df, self.config.get('indicators'))
-                        df.attrs["ohlcv_source"] = "ws"
-                        df.attrs["retrieved_at"] = datetime.now(timezone.utc).isoformat()
+                        closed_df = add_indicators(closed_df, self.config.get('indicators'))
+                        closed_df.attrs.setdefault("includes_forming", False)
+                        closed_df.attrs["ohlcv_source"] = "ws"
+                        closed_df.attrs["retrieved_at"] = datetime.now(timezone.utc).isoformat()
                         if state:
-                            df.attrs["last_closed_ts"] = state.get("last_closed_ts")
-                            df.attrs["forming_ts"] = state.get("forming_ts")
-                            df.attrs["gap_count"] = state.get("gap_count")
+                            closed_df.attrs["last_closed_ts"] = state.get("last_closed_ts")
+                            closed_df.attrs["forming_ts"] = state.get("forming_ts")
+                            closed_df.attrs["gap_count"] = state.get("gap_count")
+
+                        if include_forming:
+                            closed_df, merge_action, fallback_reason = self._merge_forming_candle(
+                                closed_df, ws_exchange, symbol, timeframe
+                            )
+                        df = closed_df
+                        df.attrs["merge_action"] = merge_action
+                        if fallback_reason:
+                            df.attrs["fallback_reason"] = fallback_reason
                         return df
                 else:
                     logger.debug(f"⚠️ WebSocket collector returned empty or invalid data for {symbol} {timeframe}")
@@ -719,6 +732,8 @@ class MarketDataPipeline:
             df = add_indicators(ohlcv_df, self.config.get('indicators'))
             df.attrs["ohlcv_source"] = "rest"
             df.attrs["retrieved_at"] = datetime.now(timezone.utc).isoformat()
+            df.attrs["includes_forming"] = False
+            df.attrs["merge_action"] = "rest_closed_only"
             logger.info(f"[REST] Retrieved {len(df)} candles from REST API for {symbol} {timeframe}")
             return df
                 
@@ -726,6 +741,314 @@ class MarketDataPipeline:
             logger.error(f"❌ REST API fallback failed for {symbol} {timeframe}: {e}", exc_info=True)
             return None
     # ------------------- DÜZELTME SONU -------------------
+
+    def _merge_forming_candle(
+        self,
+        closed_df: pd.DataFrame,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+    ) -> tuple[pd.DataFrame, str, Optional[str]]:
+        """Append/replace closed_df with forming candle while keeping volatility from closed bars."""
+        merge_action = "closed_only"
+        fallback_reason = None
+
+        interval_ms = TIMEFRAME_SECONDS.get(timeframe)
+        if interval_ms:
+            interval_ms *= 1000
+        if not interval_ms:
+            return closed_df, merge_action, "unknown_timeframe"
+
+        forming = self.websocket_manager.collector.get_forming_ohlcv(exchange, symbol, timeframe)
+        if not forming:
+            return closed_df, "skipped", "no_forming"
+
+        try:
+            forming_open_ms = int(forming[0])
+        except Exception:
+            logger.warning(f"[HYBRID-INJECT] Invalid forming payload for {symbol} {timeframe}: {forming}")
+            return closed_df, "fallback", "invalid_forming_payload"
+
+        last_open_ms = int(closed_df.index[-1].timestamp() * 1000)
+        df_len_before = len(closed_df)
+
+        # Bucket alignment and step checks
+        if forming_open_ms % interval_ms != 0:
+            fallback_reason = "bucket_misaligned"
+            logger.warning(
+                f"[HYBRID-INJECT] Fallback due to bucket misalignment | {symbol} {timeframe} forming_ot={forming_open_ms} interval_ms={interval_ms}"
+            )
+            return closed_df, "fallback", fallback_reason
+
+        expected_next = last_open_ms + interval_ms
+        if forming_open_ms != expected_next:
+            fallback_reason = "step_mismatch"
+            logger.warning(
+                f"[HYBRID-INJECT] Fallback due to step mismatch | {symbol} {timeframe} last_closed_ot={last_open_ms} forming_ot={forming_open_ms} expected={expected_next}"
+            )
+            return closed_df, "fallback", fallback_reason
+
+        if forming_open_ms < last_open_ms:
+            fallback_reason = "out_of_order"
+            logger.warning(
+                f"[HYBRID-INJECT] Fallback due to out-of-order forming | {symbol} {timeframe} forming_ot={forming_open_ms} last_ot={last_open_ms}"
+            )
+            return closed_df, "fallback", fallback_reason
+
+        forming_df = self._ohlcv_to_dataframe([forming])
+
+        if forming_open_ms == last_open_ms:
+            merge_action = "replaced"
+            base_df = closed_df.iloc[:-1]
+            logger.warning(
+                f"[HYBRID-INJECT] Forming candle leaked into closed buffer, replacing last row | {symbol} {timeframe} ot={forming_open_ms}"
+            )
+        else:
+            merge_action = "appended"
+            base_df = closed_df
+
+        merged = pd.concat([base_df, forming_df])
+        merged = merged[~merged.index.duplicated(keep="last")]
+
+        if not merged.index.is_monotonic_increasing:
+            fallback_reason = "non_monotonic"
+            logger.warning(
+                f"[HYBRID-INJECT] Fallback due to non-monotonic index | {symbol} {timeframe}"
+            )
+            return closed_df, "fallback", fallback_reason
+
+        # Recompute live RSI including forming candle; keep other indicators from closed bars.
+        merged["rsi"] = rsi(merged["close"])
+        indicator_cols = [
+            c
+            for c in closed_df.columns
+            if c not in ["open", "high", "low", "close", "volume", "rsi"]
+        ]
+        for col in indicator_cols:
+            merged[col] = merged[col].ffill()
+
+        merged.attrs.update(closed_df.attrs)
+        merged.attrs["includes_forming"] = True
+        merged.attrs["forming_ts"] = forming_open_ms
+        merged.attrs["merge_action"] = merge_action
+        merged.attrs["forming_source"] = "ws"
+
+        logger.info(
+            f"[HYBRID-INJECT] symbol={symbol} tf={timeframe} last_closed_ot={last_open_ms} "
+            f"forming_ot={forming_open_ms} len_before={df_len_before} len_after={len(merged)} "
+            f"merge_action={merge_action} fallback_reason={fallback_reason or 'none'}"
+        )
+
+        return merged, merge_action, fallback_reason
+
+    def get_live_trigger_price(
+        self,
+        symbol: str,
+        timeframe: str,
+        source: str = "mid",
+        exchange: Optional[str] = None,
+        forming_close: Optional[float] = None,
+    ) -> tuple[Optional[float], str, str]:
+        """Return preferred trigger price with safe fallbacks (mark→mid→forming_close)."""
+        if not self.websocket_manager or not getattr(self.websocket_manager, "collector", None):
+            return forming_close, "forming_close", "no_ws"
+
+        ws_exchange = exchange or (next(iter(self.exchanges.keys())) if self.exchanges else self.DEFAULT_EXCHANGE)
+        ws_config = self.config.get('websocket', {}) if isinstance(self.config, dict) else {}
+        ticker_stale_ms = int(ws_config.get('ticker_stale_ms', 5000))
+        diag_interval = max(1, int(ws_config.get('trigger_diag_interval_sec', 60)))
+
+        collector = getattr(self.websocket_manager, "collector", None)
+        ticker_sample = collector.get_latest_ticker_sample(ws_exchange, symbol) if collector else None
+        ticker = ticker_sample.get('data') if ticker_sample else None
+        sample_ts = ticker_sample.get('timestamp') if ticker_sample else None
+
+        now_dt = datetime.now(timezone.utc)
+        ticker_age_ms: Optional[float] = None
+        if sample_ts:
+            try:
+                ticker_age_ms = max(0.0, (now_dt - sample_ts).total_seconds() * 1000)
+            except Exception:
+                ticker_age_ms = None
+
+        reason_tags: List[str] = []
+        if ticker is None:
+            reason_tags.append("ticker_none")
+        elif ticker_age_ms is not None and ticker_age_ms > ticker_stale_ms:
+            reason_tags.append("ticker_stale")
+
+        fallback_chain: List[str] = []
+
+        def _add_reason(tag: str) -> None:
+            if tag not in fallback_chain:
+                fallback_chain.append(tag)
+
+        def _extract_mark(t: Dict[str, Any]) -> Optional[float]:
+            keys = ["markPrice", "mark_price", "mark", "indexPrice", "lastPrice"]
+            for k in keys:
+                if t and k in t:
+                    try:
+                        val = float(t[k])
+                        if val > 0:
+                            return val
+                    except Exception:
+                        continue
+            return None
+
+        def _extract_bid_ask(t: Dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
+            if not t:
+                return None, None
+            bid_keys = ["bestBid", "bid", "bidPrice", "best_bid", "B"]
+            ask_keys = ["bestAsk", "ask", "askPrice", "best_ask", "A"]
+            bid = ask = None
+            for k in bid_keys:
+                if k in t:
+                    try:
+                        bid = float(t[k])
+                        break
+                    except Exception:
+                        continue
+            for k in ask_keys:
+                if k in t:
+                    try:
+                        ask = float(t[k])
+                        break
+                    except Exception:
+                        continue
+            if (bid is None or bid <= 0) and isinstance(t.get("bids"), list) and t["bids"]:
+                try:
+                    first_bid = t["bids"][0]
+                    bid = float(first_bid[0] if isinstance(first_bid, (list, tuple)) else first_bid)
+                except Exception:
+                    bid = None
+            if (ask is None or ask <= 0) and isinstance(t.get("asks"), list) and t["asks"]:
+                try:
+                    first_ask = t["asks"][0]
+                    ask = float(first_ask[0] if isinstance(first_ask, (list, tuple)) else first_ask)
+                except Exception:
+                    ask = None
+            if bid is not None and bid <= 0:
+                bid = None
+            if ask is not None and ask <= 0:
+                ask = None
+            return bid, ask
+
+        def _compute_mid(bid: Optional[float], ask: Optional[float]) -> Optional[float]:
+            if bid is not None and ask is not None:
+                return (bid + ask) / 2.0
+            return None
+
+        def _extract_last(t: Dict[str, Any]) -> Optional[float]:
+            keys = ["last", "close", "c", "price", "lastPrice"]
+            for k in keys:
+                if t and k in t:
+                    try:
+                        val = float(t[k])
+                        if val > 0:
+                            return val
+                    except Exception:
+                        continue
+            return None
+
+        mark_price = _extract_mark(ticker)
+        bid_price, ask_price = _extract_bid_ask(ticker)
+        mid_price = _compute_mid(bid_price, ask_price)
+        last_price = _extract_last(ticker)
+
+        resolved_source = source
+        price = None
+
+        if source == "mark":
+            if mark_price is not None:
+                price = mark_price
+                resolved_source = "mark"
+            else:
+                _add_reason("mark_missing")
+                if mid_price is not None:
+                    price = mid_price
+                    resolved_source = "mid"
+                else:
+                    _add_reason("mid_missing")
+                    if last_price is not None:
+                        price = last_price
+                        resolved_source = "last"
+                    else:
+                        _add_reason("last_missing")
+                        price = forming_close
+                        resolved_source = "forming_close"
+        elif source == "mid":
+            if mid_price is not None:
+                price = mid_price
+                resolved_source = "mid"
+            else:
+                _add_reason("mid_missing")
+                if mark_price is not None:
+                    price = mark_price
+                    resolved_source = "mark"
+                elif last_price is not None:
+                    _add_reason("mark_missing")
+                    price = last_price
+                    resolved_source = "last"
+                else:
+                    _add_reason("mark_missing")
+                    _add_reason("last_missing")
+                    price = forming_close
+                    resolved_source = "forming_close"
+        elif source == "last":
+            if last_price is not None:
+                price = last_price
+                resolved_source = "last"
+            elif mark_price is not None:
+                _add_reason("last_missing")
+                price = mark_price
+                resolved_source = "mark"
+            elif mid_price is not None:
+                _add_reason("last_missing")
+                _add_reason("mark_missing")
+                price = mid_price
+                resolved_source = "mid"
+            else:
+                _add_reason("last_missing")
+                _add_reason("mark_missing")
+                _add_reason("mid_missing")
+                price = forming_close
+                resolved_source = "forming_close"
+        else:
+            price = forming_close
+            resolved_source = "forming_close"
+
+        if fallback_chain:
+            reason_tags.extend(fallback_chain)
+        if resolved_source == "forming_close":
+            reason_tags.append("fallback_forming_close")
+
+        diag_key = f"{ws_exchange}:{symbol}"
+        now_ts = time.time()
+        last_diag = self._trigger_diag_last_log.get(diag_key, 0.0)
+        if (now_ts - last_diag) >= diag_interval:
+            reason_repr = f"[{','.join(reason_tags)}]" if reason_tags else "[none]"
+
+            def _fmt(val: Optional[float]) -> Optional[str]:
+                return None if val is None else f"{val:.2f}"
+
+            logger.info(
+                "[TRIGGER-DIAG] exchange=%s symbol=%s requested_source=%s resolved_source=%s mark=%s bid=%s ask=%s last=%s ticker_age_ms=%s reason_tags=%s",
+                ws_exchange,
+                symbol,
+                source,
+                resolved_source,
+                _fmt(mark_price),
+                _fmt(bid_price),
+                _fmt(ask_price),
+                _fmt(last_price),
+                int(ticker_age_ms) if ticker_age_ms is not None else None,
+                reason_repr,
+            )
+            self._trigger_diag_last_log[diag_key] = now_ts
+
+        fallback_str = "->".join(fallback_chain) if fallback_chain else "none"
+        return price, resolved_source, fallback_str
+
 
     async def get_latest_price(self, symbol: str, timeframe: str = '1m', exchange: str = None) -> Optional[float]:
         """

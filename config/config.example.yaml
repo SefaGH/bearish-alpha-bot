@@ -222,6 +222,8 @@ websocket:
   max_data_age: 60                    # Override with: WEBSOCKET_MAX_DATA_AGE
   fallback_threshold: 3               # Override with: WEBSOCKET_FALLBACK_THRESHOLD
   buffer_size: 300                    # Override with: WEBSOCKET_BUFFER_SIZE
+  ticker_stale_ms: 5000               # Override with: WEBSOCKET_TICKER_STALE_MS
+  trigger_diag_interval_sec: 60       # Override with: WEBSOCKET_TRIGGER_DIAG_INTERVAL_SEC
   max_streams_per_exchange:
     bingx: 10                         # Override with: WS_MAX_STREAMS_BINGX
     binance: 20                       # Override with: WS_MAX_STREAMS_BINANCE
@@ -230,6 +232,11 @@ websocket:
   stream_timeframes: "1m,5m,15m,30m,1h,4h" # Override with: WS_STREAM_TIMEFRAMES
   reconnect_delay: 5                  # Override with: WS_RECONNECT_DELAY
   max_reconnect_attempts: 3           # Override with: WS_MAX_RECONNECT_ATTEMPTS
+
+# Preferred trigger price source for live price resolution
+trigger_price:
+  source: mid                         # Override with: TRIGGER_PRICE_SOURCE (mark|mid|last)
+  diag_interval_sec: 60               # Override with: TRIGGER_PRICE_DIAG_INTERVAL_SEC
 
 # ==============================================================================
 # TRADING UNIVERSE
@@ -427,6 +434,11 @@ strategies:
       high_volume_min_bucket: "HIGH" # Override with: STRATEGY_OB_VOLUME_FILTERS_HIGH_VOL_MIN_BUCKET
       use_volume_strength_in_score: true  # Override with: STRATEGY_OB_VOLUME_FILTERS_USE_STRENGTH
       volume_score_weight: 0.15     # Override with: STRATEGY_OB_VOLUME_FILTERS_WEIGHT
+    adaptive_ob_persistency_mode: "time"           # Options: time, bar_low_and_close, off
+    adaptive_ob_persistency_seconds: 5              # Time-based dwell for RSI condition
+    adaptive_ob_persistency_min_samples: 2          # Minimum ticks meeting condition
+    adaptive_ob_trigger_price_source: "mid"        # mid -> mark -> forming_close fallback
+    adaptive_ob_wick_closeness_k: 0.25              # Normalized closeness to low (bar_low_and_close)
 
   adaptive_short_the_rip:
     allow_low_volume: true         # Override with: STRATEGY_STR_ALLOW_LOW_VOLUME
