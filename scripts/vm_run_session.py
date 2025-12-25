@@ -12,6 +12,7 @@ def build_docker_command(
     data_host: str | None = None,
     detach: bool = True,
     restart_policy: str | None = "no",
+    extra_env: list[str] | None = None,
 ) -> list[str]:
     cmd: list[str] = [
         "sudo",
@@ -28,6 +29,11 @@ def build_docker_command(
         "--env-file",
         env_file,
     ])
+
+    # All -e KEY=VAL overrides after --env-file
+    if extra_env:
+        for env_pair in extra_env:
+            cmd.extend(["-e", env_pair])
 
     if restart_policy and restart_policy != "no":
         cmd.extend(["--restart", restart_policy])
@@ -86,13 +92,90 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Docker restart policy; defaults to no auto-restart",
     )
     parser.add_argument(
+        "--force-recreate",
+        default="true",
+        help="If true, stop/rm existing container before run (default: true)",
+    )
+    parser.add_argument(
         "--just-print",
         action="store_true",
         help="Print the docker commands instead of executing them",
     )
+    # New flags for env override
+    parser.add_argument(
+        "--debug-mode",
+        type=str,
+        help="Override DEBUG_MODE env (true/false/1/0/yes/no)",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        help="Override LOG_LEVEL env (DEBUG/INFO/WARNING/ERROR/CRITICAL)",
+    )
+    parser.add_argument(
+        "--env",
+        action="append",
+        help="Extra env KEY=VAL (repeatable)",
+        default=[],
+    )
 
     return parser.parse_args(argv)
 
+
+def normalize_bool(val: str) -> str:
+    s = str(val).strip().lower()
+    if s in ("true", "1", "yes"): return "true"
+    if s in ("false", "0", "no"): return "false"
+    raise ValueError(f"Invalid boolean value for --debug-mode: {val}")
+
+
+def normalize_bool_flag(val: str, flag_name: str) -> bool:
+    s = str(val).strip().lower()
+    if s in ("true", "1", "yes"):
+        return True
+    if s in ("false", "0", "no"):
+        return False
+    raise ValueError(f"Invalid boolean value for {flag_name}: {val}")
+
+
+def container_exists(name: str) -> bool:
+    result = subprocess.run(
+        ["sudo", "docker", "ps", "-a", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False
+    names = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    return name in names
+
+
+def container_running(name: str) -> bool:
+    result = subprocess.run(
+        [
+            "sudo",
+            "docker",
+            "ps",
+            "--filter",
+            f"name=^{name}$",
+            "--filter",
+            "status=running",
+            "--format",
+            "{{.Names}}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False
+    return any(line.strip() == name for line in result.stdout.splitlines())
+
+def validate_log_level(val: str) -> str:
+    allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+    s = str(val).strip().upper()
+    if s in allowed:
+        return s
+    raise ValueError(f"Invalid log level for --log-level: {val}")
 
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
@@ -116,9 +199,55 @@ def main(argv: list[str] | None = None) -> int:
     logs_host = None if args.no_volumes else args.logs_host
     data_host = None if args.no_volumes else args.data_host
 
+    # Build extra_env list
+    extra_env = []
+    # Generic envs first
+    for env_str in args.env:
+        if not env_str or "=" not in env_str:
+            print(f"❌ Invalid --env format: {env_str}", file=sys.stderr)
+            return 2
+        k, v = env_str.split("=", 1)
+        if not k or not v:
+            print(f"❌ Invalid --env format: {env_str}", file=sys.stderr)
+            return 2
+        extra_env.append(f"{k}={v}")
+
+    # Specific flags override generic envs if duplicate
+    if args.debug_mode is not None:
+        try:
+            debug_val = normalize_bool(args.debug_mode)
+        except Exception as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 2
+        # Remove any previous DEBUG_MODE
+        extra_env = [e for e in extra_env if not e.startswith("DEBUG_MODE=")]
+        extra_env.append(f"DEBUG_MODE={debug_val}")
+
+    if args.log_level is not None:
+        try:
+            log_level_val = validate_log_level(args.log_level)
+        except Exception as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 2
+        # Remove any previous LOG_LEVEL
+        extra_env = [e for e in extra_env if not e.startswith("LOG_LEVEL=")]
+        extra_env.append(f"LOG_LEVEL={log_level_val}")
+
+    try:
+        force_recreate = normalize_bool_flag(args.force_recreate, "--force-recreate")
+    except Exception as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 2
+
+    exists = container_exists(name)
+    running = container_running(name)
+
+    if not force_recreate and running:
+        print(f"ℹ️  Container '{name}' is already running; skipping recreate/start.")
+
+    pull_cmd = ["sudo", "docker", "pull", image]
     stop_cmd = ["sudo", "docker", "stop", name]
     rm_cmd = ["sudo", "docker", "rm", name]
-    pull_cmd = ["sudo", "docker", "pull", image]
     run_cmd = build_docker_command(
         image=image,
         env_file=env_file,
@@ -126,14 +255,25 @@ def main(argv: list[str] | None = None) -> int:
         logs_host=logs_host,
         data_host=data_host,
         restart_policy=args.restart_policy,
+        extra_env=extra_env,
     )
 
-    commands = [
-        ("Stopping existing container (if any)", stop_cmd),
-        ("Removing existing container (if any)", rm_cmd),
-        ("Pulling image", pull_cmd),
-        ("Starting container", run_cmd),
-    ]
+    commands: list[tuple[str, list[str]]] = []
+    if force_recreate:
+        commands.extend([
+            ("Stopping existing container (if any)", stop_cmd),
+            ("Removing existing container (if any)", rm_cmd),
+        ])
+    else:
+        # If container exists but isn't running, remove it so docker run can succeed
+        if exists and not running:
+            commands.append(("Removing existing container (not running)", rm_cmd))
+
+    commands.append(("Pulling image", pull_cmd))
+
+    # Only start if forcing recreate OR container isn't already running
+    if force_recreate or not running:
+        commands.append(("Starting container", run_cmd))
 
     for description, cmd in commands:
         print(f"\n=== {description} ===")

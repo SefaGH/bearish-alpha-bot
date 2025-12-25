@@ -1,0 +1,938 @@
+{
+  "id": "/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/TradeBot/providers/Microsoft.Logic/workflows/bearish-bot-stop-core",
+  "identity": {
+    "principalId": "2fe71d92-14ab-408b-ac6e-61d63a1899f7",
+    "tenantId": "f52d191d-6ba4-4217-a625-3a0696356c9f",
+    "type": "SystemAssigned"
+  },
+  "location": "westeurope",
+  "name": "bearish-bot-stop-core",
+  "properties": {
+    "accessEndpoint": "https://prod-211.westeurope.logic.azure.com:443/workflows/d291eb860ee741218123f1658e3dd3b5",
+    "changedTime": "2025-12-17T18:11:13.2985312Z",
+    "createdTime": "2025-12-15T17:08:55.9313137Z",
+    "definition": {
+      "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+      "actions": {
+        "Acquire_Lock": {
+          "inputs": {
+            "authentication": {
+              "audience": "https://storage.azure.com/",
+              "type": "ManagedServiceIdentity"
+            },
+            "headers": {
+              "x-ms-date": "@{formatDateTime(utcNow(),'r')}",
+              "x-ms-lease-action": "acquire",
+              "x-ms-lease-duration": "60",
+              "x-ms-version": "2019-02-02"
+            },
+            "method": "PUT",
+            "uri": "https://bearishstorage.blob.core.windows.net/locks/runcommand.lock?comp=lease"
+          },
+          "runAfter": {
+            "Validate_And_Default_Inputs": [
+              "Succeeded"
+            ]
+          },
+          "type": "Http"
+        },
+        "Critical_Section": {
+          "actions": {
+            "If_Running_Stop_Container": {
+              "actions": {
+                "Until_Stop_Container": {
+                  "actions": {
+                    "Compose_StatusCode_Stop": {
+                      "inputs": "@int(coalesce(actions('Stop_Container')?['outputs']?['statusCode'], 0))",
+                      "runAfter": {
+                        "Stop_Container": [
+                          "Succeeded",
+                          "Failed"
+                        ]
+                      },
+                      "type": "Compose"
+                    },
+                    "If_Conflict_Delay_Stop": {
+                      "actions": {
+                        "Delay_Stop": {
+                          "inputs": {
+                            "interval": {
+                              "count": 10,
+                              "unit": "Second"
+                            }
+                          },
+                          "type": "Wait"
+                        }
+                      },
+                      "else": {
+                        "actions": {}
+                      },
+                      "expression": {
+                        "and": [
+                          {
+                            "equals": [
+                              "@outputs('Compose_StatusCode_Stop')",
+                              409
+                            ]
+                          }
+                        ]
+                      },
+                      "runAfter": {
+                        "Compose_StatusCode_Stop": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "If"
+                    },
+                    "Stop_Container": {
+                      "inputs": {
+                        "authentication": {
+                          "audience": "https://management.azure.com",
+                          "type": "ManagedServiceIdentity"
+                        },
+                        "body": {
+                          "commandId": "RunShellScript",
+                          "script": [
+                            "set -e",
+                            "NAME=\"@{parameters('containerName')}\"",
+                            "TIMEOUT=\"@{string(outputs('Validate_And_Default_Inputs')['timeoutSeconds'])}\"",
+                            "",
+                            "# 1. FLAG OLUSTUR (Parent App icin)",
+                            "echo \"MANUAL_STOP_REQUESTED\" | sudo tee /tmp/bearish_bot_manual_stop.flag > /dev/null",
+                            "sudo chmod 777 /tmp/bearish_bot_manual_stop.flag",
+                            "",
+                            "echo \"=== GRACEFUL STOP PROCEDURE ===\"",
+                            "echo \"Checking for live_trading_launcher.py inside container $NAME...\"",
+                            "",
+                            "# 2. PID BUL VE SIGTERM GONDER",
+                            "LAUNCHER_PID=\"$(sudo docker top \"$NAME\" -eo pid,args 2>/dev/null | awk '/live_trading_launcher\\.py/ {print $1; exit}')\"",
+                            "echo \"LauncherPID=$LAUNCHER_PID\"",
+                            "",
+                            "if [ -n \"$LAUNCHER_PID\" ]; then",
+                            "  echo \"Found launcher PID=$LAUNCHER_PID. Sending SIGTERM (Graceful Stop)...\"",
+                            "  sudo kill -TERM \"$LAUNCHER_PID\" || true",
+                            "  ",
+                            "  echo \"Waiting up to $TIMEOUT seconds for launcher to exit...\"",
+                            "  elapsed=0",
+                            "  while [ $elapsed -lt \"$TIMEOUT\" ]; do",
+                            "    if ! sudo docker top \"$NAME\" -eo pid,args 2>/dev/null | grep -q 'live_trading_launcher\\.py'; then",
+                            "      echo \"Launcher process exited gracefully after ${elapsed}s.\"",
+                            "      break",
+                            "    fi",
+                            "    sleep 2",
+                            "    elapsed=$((elapsed+2))",
+                            "  done",
+                            "else",
+                            "  echo \"Launcher PID not found via docker top. Process might have already exited.\"",
+                            "fi",
+                            "",
+                            "# 3. DOCKER STOP (GUVENLIK AGI)",
+                            "echo \"=== STOP_CORE: docker stop finalizer ===\"",
+                            "echo \"Finalizing container stop (timeout=10s)...\"",
+                            "sudo docker stop -t 10 \"$NAME\" || true",
+                            "",
+                            "# 4. DURUMU RAPORLA",
+                            "echo \"Diagnostics:\"",
+                            "sudo docker inspect -f 'Status={{.State.Status}} ExitCode={{.State.ExitCode}} FinishedAt={{.State.FinishedAt}}' \"$NAME\" 2>/dev/null || true"
+                          ]
+                        },
+                        "headers": {
+                          "Content-Type": "application/json"
+                        },
+                        "method": "POST",
+                        "retryPolicy": {
+                          "type": "none"
+                        },
+                        "uri": "@concat('https://management.azure.com/subscriptions/', parameters('subscriptionId'), '/resourceGroups/', parameters('vmResourceGroup'), '/providers/Microsoft.Compute/virtualMachines/', parameters('vmName'), '/runCommand?api-version=2024-07-01')"
+                      },
+                      "limit": {
+                        "timeout": "PT2M"
+                      },
+                      "type": "Http"
+                    }
+                  },
+                  "expression": "@not(equals(outputs('Compose_StatusCode_Stop'), 409))",
+                  "limit": {
+                    "count": 10,
+                    "timeout": "PT5M"
+                  },
+                  "runAfter": {
+                    "Wait_Before_Stop": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Until"
+                },
+                "Wait_Before_Stop": {
+                  "inputs": {
+                    "interval": {
+                      "count": 5,
+                      "unit": "Second"
+                    }
+                  },
+                  "type": "Wait"
+                }
+              },
+              "else": {
+                "actions": {}
+              },
+              "expression": {
+                "equals": [
+                  "@toLower(outputs('Parse_Container_Status'))",
+                  "running"
+                ]
+              },
+              "runAfter": {
+                "Parse_Container_Status": [
+                  "Succeeded"
+                ]
+              },
+              "type": "If"
+            },
+            "Parse_Container_Status": {
+              "inputs": "@if(equals(outputs('Check_Container_Status')?['statusCode'], 200), trim(split(split(body('Check_Container_Status')?['value']?[0]?['message'], '[stdout]')[1], '[stderr]')[0]), 'error')",
+              "runAfter": {
+                "Until_Check_Container_Status": [
+                  "Succeeded",
+                  "Failed",
+                  "TimedOut"
+                ]
+              },
+              "type": "Compose"
+            },
+            "Parse_Final_Status": {
+              "inputs": "@if(equals(outputs('Verify_Final_Status')?['statusCode'], 200), trim(split(split(body('Verify_Final_Status')?['value']?[0]?['message'], '[stdout]')[1], '[stderr]')[0]), 'error')",
+              "runAfter": {
+                "Until_Verify_Final_Status": [
+                  "Succeeded",
+                  "Failed",
+                  "TimedOut"
+                ]
+              },
+              "type": "Compose"
+            },
+            "Return_Result": {
+              "inputs": {
+                "body": {
+                  "correlationId": "@outputs('Validate_And_Default_Inputs')['correlationId']",
+                  "finalContainerStatus": "@outputs('Parse_Final_Status')",
+                  "initialContainerStatus": "@outputs('Parse_Container_Status')",
+                  "reason": "@outputs('Validate_And_Default_Inputs')['reason']",
+                  "requestedBy": "@outputs('Validate_And_Default_Inputs')['requestedBy']",
+                  "status": "ok",
+                  "timeoutSeconds": "@outputs('Validate_And_Default_Inputs')['timeoutSeconds']",
+                  "timestamp": "@utcNow()"
+                },
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "statusCode": 200
+              },
+              "kind": "Http",
+              "runAfter": {
+                "Send_Stop_Email": [
+                  "Succeeded",
+                  "Failed",
+                  "Skipped"
+                ]
+              },
+              "type": "Response"
+            },
+            "Send_Stop_Email": {
+              "inputs": {
+                "body": {
+                  "content": {
+                    "html": "@concat('Correlation: ', outputs('Validate_And_Default_Inputs')['correlationId'], '<br/>Reason: ', outputs('Validate_And_Default_Inputs')['reason'], '<br/>InitialStatus: ', outputs('Parse_Container_Status'), '<br/>FinalStatus: ', outputs('Parse_Final_Status'), '<br/>Time: ', utcNow())",
+                    "subject": "@concat(' Bearish Bot: Stop Requested (', outputs('Validate_And_Default_Inputs')['requestedBy'], ') - Final: ', outputs('Parse_Final_Status'))"
+                  },
+                  "importance": "High",
+                  "recipients": {
+                    "to": [
+                      {
+                        "address": "@parameters('notification_recipient_email')"
+                      }
+                    ]
+                  },
+                  "senderAddress": "@parameters('sender_email_address')"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['acsemail']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/emails:sendGAVersion",
+                "queries": {
+                  "api-version": "2023-03-31"
+                }
+              },
+              "runAfter": {
+                "Parse_Final_Status": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ApiConnection"
+            },
+            "Until_Check_Container_Status": {
+              "actions": {
+                "Check_Container_Status": {
+                  "inputs": {
+                    "authentication": {
+                      "audience": "https://management.azure.com",
+                      "type": "ManagedServiceIdentity"
+                    },
+                    "body": {
+                      "commandId": "RunShellScript",
+                      "script": [
+                        "set -e",
+                        "NAME=\"@{parameters('containerName')}\"",
+                        "status=$(sudo docker inspect -f '{{.State.Status}}' \"$NAME\" 2>/dev/null || echo 'not_found')",
+                        "if [ \"$status\" = \"running\" ]; then",
+                        "  echo \"running\"",
+                        "else",
+                        "  echo \"$status\"",
+                        "fi"
+                      ]
+                    },
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "method": "POST",
+                    "retryPolicy": {
+                      "type": "none"
+                    },
+                    "uri": "@concat('https://management.azure.com/subscriptions/', parameters('subscriptionId'), '/resourceGroups/', parameters('vmResourceGroup'), '/providers/Microsoft.Compute/virtualMachines/', parameters('vmName'), '/runCommand?api-version=2024-07-01')"
+                  },
+                  "limit": {
+                    "timeout": "PT2M"
+                  },
+                  "type": "Http"
+                },
+                "Compose_StatusCode_Check": {
+                  "inputs": "@int(coalesce(actions('Check_Container_Status')?['outputs']?['statusCode'], 0))",
+                  "runAfter": {
+                    "Check_Container_Status": [
+                      "Succeeded",
+                      "Failed"
+                    ]
+                  },
+                  "type": "Compose"
+                },
+                "If_Conflict_Delay_Check": {
+                  "actions": {
+                    "Delay_Check": {
+                      "inputs": {
+                        "interval": {
+                          "count": 10,
+                          "unit": "Second"
+                        }
+                      },
+                      "type": "Wait"
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  },
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@outputs('Compose_StatusCode_Check')",
+                          409
+                        ]
+                      }
+                    ]
+                  },
+                  "runAfter": {
+                    "Compose_StatusCode_Check": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If"
+                }
+              },
+              "expression": "@not(equals(outputs('Compose_StatusCode_Check'), 409))",
+              "limit": {
+                "count": 10,
+                "timeout": "PT5M"
+              },
+              "type": "Until"
+            },
+            "Until_Verify_Final_Status": {
+              "actions": {
+                "Compose_StatusCode_Verify": {
+                  "inputs": "@int(coalesce(actions('Verify_Final_Status')?['outputs']?['statusCode'], 0))",
+                  "runAfter": {
+                    "Verify_Final_Status": [
+                      "Succeeded",
+                      "Failed"
+                    ]
+                  },
+                  "type": "Compose"
+                },
+                "If_Conflict_Delay_Verify": {
+                  "actions": {
+                    "Delay_Verify": {
+                      "inputs": {
+                        "interval": {
+                          "count": 10,
+                          "unit": "Second"
+                        }
+                      },
+                      "type": "Wait"
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  },
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@outputs('Compose_StatusCode_Verify')",
+                          409
+                        ]
+                      }
+                    ]
+                  },
+                  "runAfter": {
+                    "Compose_StatusCode_Verify": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If"
+                },
+                "Verify_Final_Status": {
+                  "inputs": {
+                    "authentication": {
+                      "audience": "https://management.azure.com",
+                      "type": "ManagedServiceIdentity"
+                    },
+                    "body": {
+                      "commandId": "RunShellScript",
+                      "script": [
+                        "set -e",
+                        "NAME=\"@{parameters('containerName')}\"",
+                        "status=$(sudo docker inspect -f '{{.State.Status}}' \"$NAME\" 2>/dev/null || echo 'not_found')",
+                        "echo \"$status\""
+                      ]
+                    },
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "method": "POST",
+                    "retryPolicy": {
+                      "type": "none"
+                    },
+                    "uri": "@concat('https://management.azure.com/subscriptions/', parameters('subscriptionId'), '/resourceGroups/', parameters('vmResourceGroup'), '/providers/Microsoft.Compute/virtualMachines/', parameters('vmName'), '/runCommand?api-version=2024-07-01')"
+                  },
+                  "limit": {
+                    "timeout": "PT2M"
+                  },
+                  "type": "Http"
+                }
+              },
+              "expression": "@not(equals(outputs('Compose_StatusCode_Verify'), 409))",
+              "limit": {
+                "count": 10,
+                "timeout": "PT5M"
+              },
+              "runAfter": {
+                "Wait_Before_Verify": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Until"
+            },
+            "Wait_Before_Verify": {
+              "inputs": {
+                "interval": {
+                  "count": 10,
+                  "unit": "Second"
+                }
+              },
+              "runAfter": {
+                "If_Running_Stop_Container": [
+                  "Succeeded",
+                  "Skipped",
+                  "Failed",
+                  "TimedOut"
+                ]
+              },
+              "type": "Wait"
+            }
+          },
+          "runAfter": {
+            "Acquire_Lock": [
+              "Succeeded"
+            ]
+          },
+          "type": "Scope"
+        },
+        "Release_Lock": {
+          "inputs": {
+            "authentication": {
+              "audience": "https://storage.azure.com/",
+              "type": "ManagedServiceIdentity"
+            },
+            "headers": {
+              "x-ms-date": "@{formatDateTime(utcNow(),'r')}",
+              "x-ms-lease-action": "release",
+              "x-ms-lease-id": "@{outputs('Acquire_Lock')['headers']['x-ms-lease-id']}",
+              "x-ms-version": "2019-02-02"
+            },
+            "method": "PUT",
+            "uri": "https://bearishstorage.blob.core.windows.net/locks/runcommand.lock?comp=lease"
+          },
+          "runAfter": {
+            "Critical_Section": [
+              "Succeeded",
+              "Failed",
+              "Skipped",
+              "TimedOut"
+            ]
+          },
+          "type": "Http"
+        },
+        "Validate_And_Default_Inputs": {
+          "inputs": {
+            "correlationId": "@coalesce(triggerBody()?['correlationId'], workflow().run.name)",
+            "reason": "@coalesce(triggerBody()?['reason'], 'manual_stop')",
+            "requestedBy": "@coalesce(triggerBody()?['requestedBy'], 'unknown')",
+            "timeoutSeconds": "@coalesce(triggerBody()?['timeoutSeconds'], parameters('defaultStopTimeoutSeconds'))"
+          },
+          "runAfter": {},
+          "type": "Compose"
+        }
+      },
+      "contentVersion": "1.0.0.0",
+      "parameters": {
+        "$connections": {
+          "defaultValue": {},
+          "type": "Object"
+        },
+        "containerName": {
+          "type": "String"
+        },
+        "defaultStopTimeoutSeconds": {
+          "type": "Int"
+        },
+        "notification_recipient_email": {
+          "type": "String"
+        },
+        "sender_email_address": {
+          "type": "String"
+        },
+        "subscriptionId": {
+          "type": "String"
+        },
+        "vmName": {
+          "type": "String"
+        },
+        "vmResourceGroup": {
+          "type": "String"
+        }
+      },
+      "triggers": {
+        "manual": {
+          "inputs": {
+            "schema": {
+              "properties": {
+                "correlationId": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "requestedBy": {
+                  "type": "string"
+                },
+                "timeoutSeconds": {
+                  "maximum": 180,
+                  "minimum": 30,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "kind": "Http",
+          "type": "Request"
+        }
+      }
+    },
+    "endpointsConfiguration": {
+      "connector": {
+        "outgoingIpAddresses": [
+          {
+            "address": "52.174.88.118"
+          },
+          {
+            "address": "40.91.208.65"
+          },
+          {
+            "address": "13.69.64.208/28"
+          },
+          {
+            "address": "13.69.71.192/27"
+          },
+          {
+            "address": "13.93.36.78"
+          },
+          {
+            "address": "20.86.93.32/27"
+          },
+          {
+            "address": "20.86.93.64/28"
+          },
+          {
+            "address": "20.126.243.151"
+          },
+          {
+            "address": "20.126.241.238"
+          },
+          {
+            "address": "20.103.132.139"
+          },
+          {
+            "address": "20.103.131.1"
+          }
+        ]
+      },
+      "workflow": {
+        "accessEndpointIpAddresses": [
+          {
+            "address": "98.64.193.78"
+          },
+          {
+            "address": "98.64.194.143"
+          },
+          {
+            "address": "98.64.198.223"
+          },
+          {
+            "address": "98.64.198.203"
+          },
+          {
+            "address": "98.64.208.186"
+          },
+          {
+            "address": "98.64.209.52"
+          },
+          {
+            "address": "172.211.196.189"
+          },
+          {
+            "address": "172.211.195.251"
+          },
+          {
+            "address": "98.64.154.66"
+          },
+          {
+            "address": "98.64.156.81"
+          },
+          {
+            "address": "98.64.156.180"
+          },
+          {
+            "address": "98.64.156.68"
+          },
+          {
+            "address": "20.238.229.165"
+          },
+          {
+            "address": "20.8.128.2"
+          },
+          {
+            "address": "20.238.230.113"
+          },
+          {
+            "address": "108.141.139.111"
+          },
+          {
+            "address": "108.142.111.162"
+          },
+          {
+            "address": "108.142.111.174"
+          },
+          {
+            "address": "108.142.111.178"
+          },
+          {
+            "address": "108.142.111.183"
+          },
+          {
+            "address": "108.142.111.152"
+          },
+          {
+            "address": "108.142.111.156"
+          },
+          {
+            "address": "108.142.111.179"
+          },
+          {
+            "address": "108.142.111.169"
+          },
+          {
+            "address": "98.64.203.30"
+          },
+          {
+            "address": "98.64.156.172"
+          },
+          {
+            "address": "20.56.202.157"
+          },
+          {
+            "address": "20.56.203.30"
+          },
+          {
+            "address": "57.153.19.33"
+          },
+          {
+            "address": "57.153.59.202"
+          },
+          {
+            "address": "108.141.95.140"
+          },
+          {
+            "address": "20.61.147.216"
+          },
+          {
+            "address": "57.153.83.52"
+          },
+          {
+            "address": "57.153.38.174"
+          },
+          {
+            "address": "57.153.3.13"
+          },
+          {
+            "address": "57.153.1.223"
+          },
+          {
+            "address": "108.142.29.55"
+          },
+          {
+            "address": "108.142.31.220"
+          },
+          {
+            "address": "108.142.31.202"
+          },
+          {
+            "address": "20.61.153.22"
+          },
+          {
+            "address": "57.153.7.252"
+          },
+          {
+            "address": "108.141.83.61"
+          },
+          {
+            "address": "57.153.7.252"
+          },
+          {
+            "address": "108.141.83.61"
+          }
+        ],
+        "outgoingIpAddresses": [
+          {
+            "address": "20.103.17.247"
+          },
+          {
+            "address": "20.103.16.47"
+          },
+          {
+            "address": "20.103.57.29"
+          },
+          {
+            "address": "20.101.174.23"
+          },
+          {
+            "address": "20.93.235.107"
+          },
+          {
+            "address": "20.76.174.72"
+          },
+          {
+            "address": "20.82.87.16"
+          },
+          {
+            "address": "20.103.91.39"
+          },
+          {
+            "address": "20.76.161.156"
+          },
+          {
+            "address": "98.64.193.64"
+          },
+          {
+            "address": "98.64.194.135"
+          },
+          {
+            "address": "98.64.198.219"
+          },
+          {
+            "address": "98.64.198.194"
+          },
+          {
+            "address": "98.64.208.46"
+          },
+          {
+            "address": "98.64.209.43"
+          },
+          {
+            "address": "172.211.196.188"
+          },
+          {
+            "address": "172.211.195.181"
+          },
+          {
+            "address": "98.64.157.37"
+          },
+          {
+            "address": "98.64.156.69"
+          },
+          {
+            "address": "98.64.156.152"
+          },
+          {
+            "address": "98.64.156.62"
+          },
+          {
+            "address": "20.238.229.108"
+          },
+          {
+            "address": "108.141.139.225"
+          },
+          {
+            "address": "20.238.230.87"
+          },
+          {
+            "address": "108.141.139.80"
+          },
+          {
+            "address": "108.142.111.161"
+          },
+          {
+            "address": "108.142.111.173"
+          },
+          {
+            "address": "108.142.111.175"
+          },
+          {
+            "address": "108.142.111.182"
+          },
+          {
+            "address": "108.142.111.151"
+          },
+          {
+            "address": "108.142.111.155"
+          },
+          {
+            "address": "108.142.111.157"
+          },
+          {
+            "address": "108.142.111.167"
+          },
+          {
+            "address": "98.64.203.5"
+          },
+          {
+            "address": "98.64.156.150"
+          },
+          {
+            "address": "20.56.202.134"
+          },
+          {
+            "address": "20.56.202.244"
+          },
+          {
+            "address": "57.153.19.27"
+          },
+          {
+            "address": "57.153.59.193"
+          },
+          {
+            "address": "108.141.95.129"
+          },
+          {
+            "address": "20.61.147.200"
+          },
+          {
+            "address": "57.153.83.40"
+          },
+          {
+            "address": "57.153.38.60"
+          },
+          {
+            "address": "57.153.2.162"
+          },
+          {
+            "address": "57.153.1.215"
+          },
+          {
+            "address": "108.142.24.182"
+          },
+          {
+            "address": "108.142.31.170"
+          },
+          {
+            "address": "108.142.31.143"
+          },
+          {
+            "address": "20.61.152.226"
+          },
+          {
+            "address": "57.153.7.245"
+          },
+          {
+            "address": "108.141.83.46"
+          },
+          {
+            "address": "57.153.7.245"
+          },
+          {
+            "address": "108.141.83.46"
+          }
+        ]
+      }
+    },
+    "parameters": {
+      "$connections": {
+        "value": {
+          "acsemail": {
+            "connectionId": "/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/resourceGroups/TradeBot/providers/Microsoft.Web/connections/acsemail",
+            "connectionName": "acsemail",
+            "connectionProperties": {},
+            "id": "/subscriptions/74ab10ba-c96d-449e-97cb-ee4f9c0de714/providers/Microsoft.Web/locations/westeurope/managedApis/acsemail"
+          }
+        }
+      },
+      "containerName": {
+        "value": "bearish-bot"
+      },
+      "defaultStopTimeoutSeconds": {
+        "value": 90
+      },
+      "notification_recipient_email": {
+        "value": "sefaasar@hotmail.com"
+      },
+      "sender_email_address": {
+        "value": "DoNotReply@dedf8228-9b97-4d99-a4a8-12ea32134c1c.azurecomm.net"
+      },
+      "subscriptionId": {
+        "value": "74ab10ba-c96d-449e-97cb-ee4f9c0de714"
+      },
+      "vmName": {
+        "value": "BearishAlphaBot-VM-01"
+      },
+      "vmResourceGroup": {
+        "value": "TradeBot"
+      }
+    },
+    "provisioningState": "Succeeded",
+    "state": "Enabled",
+    "version": "08584356118122066055"
+  },
+  "type": "Microsoft.Logic/workflows"
+}

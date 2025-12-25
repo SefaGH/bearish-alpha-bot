@@ -260,16 +260,7 @@
         },
         "body": {
           "properties": {
-            "parameters": {
-              "durationMinutes": "@outputs('Validate_Parameters')['durationMinutes']",
-              "forceRestart": "@outputs('Validate_Parameters')['forceRestart']",
-              "idempotencyToken": "@variables('IdempotencyToken')",
-              "imageTag": "@outputs('Validate_Parameters')['imageTag']",
-              "keyVaultName": "@outputs('Validate_Parameters')['keyVaultName']",
-              "kvSecretNames": "@outputs('Validate_Parameters')['kvSecretNames']",
-              "resourceGroup": "TradeBot",
-              "vmName": "BearishAlphaBot-VM-01"
-            },
+            "parameters": "@union(union(createObject('durationMinutes', outputs('Validate_Parameters')['durationMinutes'], 'forceRestart', outputs('Validate_Parameters')['forceRestart'], 'idempotencyToken', variables('IdempotencyToken'), 'imageTag', outputs('Validate_Parameters')['imageTag'], 'keyVaultName', outputs('Validate_Parameters')['keyVaultName'], 'kvSecretNames', outputs('Validate_Parameters')['kvSecretNames'], 'resourceGroup', 'TradeBot', 'vmName', 'BearishAlphaBot-VM-01'), if(not(empty(string(outputs('Validate_Parameters')['debugMode']))), createObject('debugMode', string(outputs('Validate_Parameters')['debugMode'])), json('{}'))), if(not(empty(string(outputs('Validate_Parameters')['logLevel']))), createObject('logLevel', string(outputs('Validate_Parameters')['logLevel'])), json('{}')))",
             "runbook": {
               "name": "Start-BearishBot-Enhanced"
             }
@@ -290,11 +281,13 @@
     },
     "Validate_Parameters": {
       "inputs": {
+        "debugMode": "@triggerBody()?['debugMode']",
         "durationMinutes": "@coalesce(triggerBody()?['durationMinutes'], 60)",
         "forceRestart": "@coalesce(triggerBody()?['forceRestart'], false)",
         "imageTag": "@coalesce(triggerBody()?['imageTag'], 'vm-vmboot-12')",
         "keyVaultName": "@coalesce(triggerBody()?['keyVaultName'], 'bearish-kv')",
-        "kvSecretNames": "@coalesce(triggerBody()?['kvSecretNames'], 'BINGX-KEY,BINGX-SECRET,TELEGRAM-BOT-TOKEN')"
+        "kvSecretNames": "@coalesce(triggerBody()?['kvSecretNames'], 'BINGX-KEY,BINGX-SECRET,TELEGRAM-BOT-TOKEN')",
+        "logLevel": "@triggerBody()?['logLevel']"
       },
       "runAfter": {
         "Condition_Check_Running_Jobs": [

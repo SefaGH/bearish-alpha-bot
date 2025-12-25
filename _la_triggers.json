@@ -1,0 +1,32 @@
+{
+  "manual": {
+    "inputs": {
+      "schema": {
+        "properties": {
+          "durationMinutes": {
+            "description": "Trading session duration in minutes",
+            "maximum": 420,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "forceRestart": {
+            "default": false,
+            "description": "Force restart even if bot is already running",
+            "type": "boolean"
+          },
+          "imageTag": {
+            "default": "vm-vmboot-12",
+            "description": "Docker image tag to use",
+            "type": "string"
+          }
+        },
+        "required": [
+          "durationMinutes"
+        ],
+        "type": "object"
+      }
+    },
+    "kind": "Http",
+    "type": "Request"
+  }
+}

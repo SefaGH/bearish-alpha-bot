@@ -487,12 +487,7 @@
             },
             "body": {
               "properties": {
-                "parameters": {
-                  "durationMinutes": "@outputs('Validate_Parameters')['durationMinutes']",
-                  "forceRestart": "@outputs('Validate_Parameters')['forceRestart']",
-                  "idempotencyToken": "@variables('IdempotencyToken')",
-                  "imageTag": "@outputs('Validate_Parameters')['imageTag']"
-                },
+                "parameters": "@union(union(createObject('durationMinutes', outputs('Validate_Parameters')['durationMinutes'], 'forceRestart', outputs('Validate_Parameters')['forceRestart'], 'idempotencyToken', variables('IdempotencyToken'), 'imageTag', outputs('Validate_Parameters')['imageTag']), if(not(empty(string(outputs('Validate_Parameters')['debugMode']))), createObject('debugMode', string(outputs('Validate_Parameters')['debugMode'])), json('{}'))), if(not(empty(string(outputs('Validate_Parameters')['logLevel']))), createObject('logLevel', string(outputs('Validate_Parameters')['logLevel'])), json('{}')))",
                 "runbook": {
                   "name": "Start-BearishBot-Enhanced"
                 }
@@ -589,9 +584,11 @@
         },
         "Validate_Parameters": {
           "inputs": {
+            "debugMode": "@triggerBody()?['debugMode']",
             "durationMinutes": "@coalesce(triggerBody()?['durationMinutes'], 60)",
             "forceRestart": "@coalesce(triggerBody()?['forceRestart'], false)",
-            "imageTag": "@coalesce(triggerBody()?['imageTag'], 'vm-vmboot-12')"
+            "imageTag": "@coalesce(triggerBody()?['imageTag'], 'vm-vmboot-12')",
+            "logLevel": "@triggerBody()?['logLevel']"
           },
           "runAfter": {
             "Get_LogUploader_Key": [
