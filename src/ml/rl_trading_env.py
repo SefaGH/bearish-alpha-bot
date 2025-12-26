@@ -10,6 +10,7 @@ from src.ml.ppo.observation_spec import (
     compute_price_extras,
     spec_from_feature_columns,
 )
+from src.ml.ppo.deterministic_scaler import DeterministicScaler
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class RLTradingEnv:
         else:
             extra_names = DEFAULT_EXTRA_FEATURE_NAMES if len(features_df.columns) == 82 else []
             self.observation_spec = spec_from_feature_columns(features_df.columns, extra_feature_names=extra_names)
+        self._scaler = DeterministicScaler(spec=self.observation_spec, log_every=0)
 
         config = config or {}
         self.fee = config.get("fee_pct", 0.0006)
@@ -123,6 +125,12 @@ class RLTradingEnv:
             extra_values = {
                 name: float(extra_arr[i]) for i, name in enumerate(self.observation_spec.extra_feature_names)
             }
+        row_dict = feature_row.to_dict()
+        row_dict.update(extra_values)
+        row_dict.update(tail)
+        close_price = float(current_price)
+        if self._scaler:
+            return self._scaler.transform(row_dict, close_price)
         return build_observation(
             self.observation_spec,
             feature_row,

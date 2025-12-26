@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -26,63 +27,112 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.rl_dataset_utils import load_npz_dataset
+def _load_price_df_with_ts(npz_path: Path) -> pd.DataFrame:
+    with np.load(npz_path, allow_pickle=True) as data:
+        prices = data["prices"]
+        price_columns = data["price_columns"].tolist()
+        timestamps = pd.to_datetime(data["timestamps"])
+    pdf = pd.DataFrame(prices, columns=price_columns)
+    pdf["timestamp"] = timestamps
+    return pdf.set_index("timestamp").sort_index()
+
+
+def _load_full_price_history_from_sibling_splits(dataset_path: Path) -> pd.DataFrame:
+    """
+    If dataset is a split like <base>_{train|val|test}.npz, load sibling split prices
+    and concatenate to reconstruct full history. Fallback: return this dataset's price_df.
+    """
+    features_df, price_df, _ = load_npz_dataset(dataset_path, min_rows=None)
+    name = dataset_path.name
+    suffixes = ["_train.npz", "_val.npz", "_test.npz"]
+    base = None
+    for s in suffixes:
+        if name.endswith(s):
+            base = name[: -len(s)]
+            break
+    if base is None:
+        return price_df
+
+    paths = [dataset_path.parent / f"{base}{s}" for s in suffixes]
+    if not all(p.exists() for p in paths):
+        return price_df
+
+    parts = []
+    for p in paths:
+        parts.append(_load_price_df_with_ts(p))
+
+    full = pd.concat(parts, axis=0)
+    full = full[~full.index.duplicated(keep="first")]
+    full = full.sort_index()
+    return full
+from src.config.live_trading_config import LiveTradingConfiguration
 from src.ml.feature_engineering import FeatureEngineeringPipeline
-from src.ml.adapters.ppo_trading_adapter import PPOTradingAdapter
-from src.ml.ppo.observation_spec import load_spec, spec_from_feature_columns, build_observation
+from src.ml.ppo.deterministic_scaler import DeterministicScaler
+from src.ml.ppo.observation_spec import (
+    compute_price_extras,
+    load_spec,
+)
+
+TAIL_DEFAULTS: Dict[str, float] = {"position_fraction": 0.0, "normalized_pv": 1.0}
+EXTRA_LOOKBACK_BARS = 256  # parity/debug amaçlı; adapter lookback'ine yakın tutulur
 
 
-EXTRA_FEATURE_NAMES: List[str] = [
-    "extra_ret_1",
-    "extra_ret_3",
-    "extra_range_norm",
-    "extra_vol_10",
-    "extra_trend_ema_ratio",
-]
-TAIL_NAMES: List[str] = ["position_fraction", "normalized_pv"]
+def _extras_for_index(price_df: pd.DataFrame, idx: int, extra_names: List[str]) -> Dict[str, float]:
+    if not extra_names:
+        return {}
+    window = price_df.iloc[: idx + 1].tail(EXTRA_LOOKBACK_BARS)
+    arr = compute_price_extras(window)
+    try:
+        if getattr(arr, "ndim", 1) > 1:
+            arr = arr[-1]
+    except Exception:
+        pass
+    return {name: float(arr[i]) for i, name in enumerate(extra_names)}
 
 
-def build_training_obs(features_df: pd.DataFrame, idx: int, spec: Optional[Any]) -> Tuple[np.ndarray, List[str]]:
-    if spec is None:
-        row = features_df.iloc[idx].to_numpy(dtype=np.float32)
-        tail = np.array([0.0, 1.0], dtype=np.float32)
-        obs = np.concatenate([row, tail]).astype(np.float32)
-        names = list(features_df.columns) + TAIL_NAMES
-        return obs, names
-    tail_values = {"position_fraction": 0.0, "normalized_pv": 1.0}
-    extra_values = {name: 0.0 for name in spec.extra_feature_names}
-    obs = build_observation(spec, features_df.iloc[idx], extra_values=extra_values, tail_values=tail_values)
-    names = list(spec.feature_names) + list(spec.extra_feature_names) + list(spec.tail_names)
-    return obs, names
+def build_training_obs(
+    features_df: pd.DataFrame,
+    price_df: pd.DataFrame,
+    idx: int,
+    spec: Any,
+    scaler: DeterministicScaler,
+    *,
+    price_idx: Optional[int] = None,
+) -> Tuple[np.ndarray, List[str]]:
+    series = features_df.iloc[idx]
+    row_dict = {name: float(series.get(name, 0.0)) for name in spec.feature_names}
+    missing = [name for name in spec.feature_names if name not in series]
+    if missing:
+        logging.warning("Training obs missing %d features; filling 0.0: %s", len(missing), missing[:5])
+    price_row_idx = idx if price_idx is None else price_idx
+    row_dict.update(_extras_for_index(price_df, price_row_idx, list(spec.extra_feature_names or [])))
+    row_dict.update(TAIL_DEFAULTS)
+    close_price = float(price_df.iloc[price_row_idx]["close"])
+    obs = scaler.transform(row_dict, close_price).astype(np.float32)
+    return obs, list(scaler.feature_names)
 
 
-def build_live_obs(price_df: pd.DataFrame, feature_pipeline: FeatureEngineeringPipeline, idx: int, spec: Optional[Any]) -> Tuple[np.ndarray, List[str]]:
+def build_live_obs(
+    price_df: pd.DataFrame,
+    feature_pipeline: FeatureEngineeringPipeline,
+    idx: int,
+    spec: Any,
+    scaler: DeterministicScaler,
+) -> Tuple[np.ndarray, List[str]]:
     features_df = feature_pipeline.extract_features(price_df, mode="price")
     if features_df is None or features_df.empty:
         raise RuntimeError("FeatureEngineeringPipeline returned empty features for live obs.")
     features_df = features_df.iloc[: len(price_df)]
     latest_row = features_df.iloc[idx]
-    if spec is None:
-        extra_values = {name: 0.0 for name in EXTRA_FEATURE_NAMES}
-        tail_values = {"position_fraction": 0.0, "normalized_pv": 1.0}
-        obs = build_observation(
-            spec_from_feature_columns(features_df.columns, extra_feature_names=EXTRA_FEATURE_NAMES),
-            latest_row,
-            extra_values=extra_values,
-            tail_values=tail_values,
-        )
-        names = list(features_df.columns) + EXTRA_FEATURE_NAMES + TAIL_NAMES
-        return obs, names
-
-    extra_values: Dict[str, float] = {name: 0.0 for name in spec.extra_feature_names}
-    tail_values = {"position_fraction": 0.0, "normalized_pv": 1.0}
-    obs = build_observation(
-        spec,
-        latest_row,
-        extra_values=extra_values,
-        tail_values=tail_values,
-    )
-    names = list(spec.feature_names) + list(spec.extra_feature_names) + list(spec.tail_names)
-    return obs, names
+    row_dict = {name: float(latest_row.get(name, 0.0)) for name in spec.feature_names}
+    missing = [name for name in spec.feature_names if name not in latest_row]
+    if missing:
+        logging.warning("Live obs missing %d features; filling 0.0: %s", len(missing), missing[:5])
+    row_dict.update(_extras_for_index(price_df, idx, list(spec.extra_feature_names or [])))
+    row_dict.update(TAIL_DEFAULTS)
+    close_price = float(price_df.iloc[idx]["close"])
+    obs = scaler.transform(row_dict, close_price).astype(np.float32)
+    return obs, list(scaler.feature_names)
 
 
 def align_for_model(vec: np.ndarray, target_dim: int) -> np.ndarray:
@@ -135,17 +185,41 @@ def main() -> None:
     parser.add_argument("--model", type=Path, required=True, help="Path to ppo_trading_agent.zip")
     parser.add_argument("--dataset", type=Path, required=True, help="Path to *_train/test npz dataset")
     parser.add_argument("--index", type=int, default=-1, help="Row index to inspect (default: last)")
+    parser.add_argument("--config", type=Path, default=Path("config/config.example.yaml"), help="Config path for FeatureEngineeringPipeline.")
     args = parser.parse_args()
 
     features_df, price_df, _ = load_npz_dataset(args.dataset, min_rows=None)
     idx = args.index if args.index >= 0 else len(features_df) - 1
-    feature_pipe = FeatureEngineeringPipeline()
+
+    # Reconstruct full history for cumulative indicators (e.g., OBV)
+    price_df_full = _load_full_price_history_from_sibling_splits(args.dataset)
+
+    # Map split-index -> full-history index by timestamp
+    with np.load(args.dataset, allow_pickle=True) as data:
+        ts_split = pd.to_datetime(data["timestamps"])
+    ts = ts_split[idx]
+    if ts not in price_df_full.index:
+        raise SystemExit(f"Timestamp {ts} not found in reconstructed full price history.")
+    idx_full = int(price_df_full.index.get_loc(ts))
+
+    cfg = LiveTradingConfiguration.load(config_path=args.config, log_summary=False)
+    feature_pipe = FeatureEngineeringPipeline(config=cfg)
 
     spec_path = args.model.with_suffix(".obs_spec.json")
-    spec = load_spec(spec_path) if spec_path.exists() else None
+    if not spec_path.exists():
+        raise SystemExit(f"Missing spec sidecar: {spec_path}")
+    spec = load_spec(spec_path)
+    scaler = DeterministicScaler(spec_path)
 
-    training_obs, training_names = build_training_obs(features_df, idx, spec)
-    live_obs, live_names = build_live_obs(price_df, feature_pipe, idx, spec)
+    training_obs, training_names = build_training_obs(
+        features_df,
+        price_df_full,
+        idx,
+        spec,
+        scaler,
+        price_idx=idx_full,
+    )
+    live_obs, live_names = build_live_obs(price_df_full, feature_pipe, idx_full, spec, scaler)
 
     model = PPO.load(str(args.model))
     target_dim = int(model.observation_space.shape[0])

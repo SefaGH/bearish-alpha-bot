@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -31,10 +31,12 @@ from src.ml.feature_engineering import FeatureEngineeringPipeline  # noqa: E402
 from src.ml.ppo.observation_spec import (  # noqa: E402
     DEFAULT_EXTRA_FEATURE_NAMES,
     ObservationSpec,
+    compute_price_extras,
     load_spec,
     save_spec,
     spec_from_feature_columns,
 )
+from src.ml.ppo.deterministic_scaler import DeterministicScaler  # noqa: E402
 
 PRICE_COLUMNS = ["open", "high", "low", "close", "volume"]
 
@@ -71,6 +73,7 @@ def parse_args() -> argparse.Namespace:
     out.add_argument("--val-ratio", type=float, default=0.15, help="Validation split ratio.")
     out.add_argument("--min-split", type=int, default=512, help="Minimum rows per split.")
     out.add_argument("--validate-dataset", type=Path, help="Validate an existing dataset against --spec and exit.")
+    out.add_argument("--emit-scaled", action="store_true", help="Also emit *_scaled.npz splits with DeterministicScaler applied (debug-only).")
     out.add_argument("--log-level", default="INFO", help="Logging level.")
     return parser.parse_args()
 
@@ -170,8 +173,6 @@ def build_features(price_df: pd.DataFrame, config_path: str) -> Tuple[pd.DataFra
         raise RuntimeError("No overlapping timestamps between features and price data")
     feats = feats.loc[aligned_index]
     prices_aligned = price_df.loc[aligned_index]
-    feats = feats.reset_index(drop=True)
-    prices_aligned = prices_aligned.reset_index(drop=True)
     return feats, prices_aligned
 
 
@@ -244,6 +245,7 @@ def main() -> None:
     if len(price_df) < args.min_rows:
         raise RuntimeError(f"Need at least {args.min_rows} price rows (got {len(price_df)})")
 
+    price_df_full = price_df.copy()
     features_df, price_df = build_features(price_df, args.config)
     if len(features_df) < args.min_rows:
         raise RuntimeError(f"Only {len(features_df)} usable rows after feature engineering; fetch more data")
@@ -267,6 +269,22 @@ def main() -> None:
     save_spec(spec, spec_path)
     logging.info("Saved ObservationSpec to %s (obs_dim=%d)", spec_path, spec.obs_dim)
 
+    scaler = None
+    try:
+        scaler = DeterministicScaler(spec_path)
+        sample_row = aligned_features.iloc[-1].to_dict()
+        extra_arr = compute_price_extras(price_df)
+        extra_values = {
+            name: float(extra_arr[i]) for i, name in enumerate(spec.extra_feature_names or [])
+        }
+        sample_row.update(extra_values)
+        sample_row.update({"position_fraction": 0.0, "normalized_pv": 1.0})
+        close_price = float(price_df["close"].iloc[-1])
+        scaled_vec = scaler.transform(sample_row, close_price)
+        logging.info("DeterministicScaler sanity check ok (dim=%d)", scaled_vec.shape[0])
+    except Exception as exc:
+        logging.error("DeterministicScaler sanity check failed: %s", exc)
+
     timestamps = price_df.index
     features_np = aligned_features.to_numpy(dtype=np.float32)
     prices_np = price_df[PRICE_COLUMNS].to_numpy(dtype=np.float32)
@@ -284,6 +302,38 @@ def main() -> None:
             meta.get("timeframe", args.timeframe),
             args.overwrite,
         )
+
+        if args.emit_scaled:
+            if scaler is None:
+                raise RuntimeError("emit-scaled requested but scaler init failed.")
+            scaled_rows: List[np.ndarray] = []
+            ts_index = timestamps[split]
+            for ts in ts_index:
+                window = price_df_full.loc[:ts].tail(256)
+                extra_arr = compute_price_extras(window)
+                try:
+                    if getattr(extra_arr, "ndim", 1) > 1:
+                        extra_arr = extra_arr[-1]
+                except Exception:
+                    pass
+                extra_values = {name: float(extra_arr[i]) for i, name in enumerate(spec.extra_feature_names or [])}
+                row = aligned_features.loc[ts].to_dict()
+                row.update(extra_values)
+                row.update({"position_fraction": 0.0, "normalized_pv": 1.0})
+                close_price = float(window["close"].iloc[-1])
+                scaled_rows.append(scaler.transform(row, close_price).astype(np.float32))
+            target_scaled = output_dir / f"{base_name}_{split_name}_scaled.npz"
+            save_npz(
+                target_scaled,
+                np.vstack(scaled_rows),
+                prices_np[split],
+                list(scaler.feature_names),
+                PRICE_COLUMNS,
+                ts_index,
+                meta.get("symbol", args.symbol),
+                meta.get("timeframe", args.timeframe),
+                args.overwrite,
+            )
 
     metadata = {
         "symbol": meta.get("symbol", args.symbol),

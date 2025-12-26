@@ -36,6 +36,7 @@ from src.ml.ppo.observation_spec import (
     load_spec as load_obs_spec,
     spec_from_feature_columns,
 )
+from src.ml.ppo.deterministic_scaler import DeterministicScaler
 from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ class PPOAdapterConfig:
     min_margin: float = 0.0
     health_min_std: float = 1e-3
     health_window: int = 30
-    health_clip_frac_limit: float = 1.0
+    health_clip_frac_limit: float = 0.1
     require_vecnorm: bool = True
 
     @classmethod
@@ -150,7 +151,10 @@ class PPOAdapterConfig:
             min_margin=float(rl_cfg.get("ppo_min_margin", 0.0)),
             health_min_std=float(rl_cfg.get("ppo_health_min_std", 1e-3)),
             health_window=health_window,
-            health_clip_frac_limit=float(rl_cfg.get("ppo_health_clip_frac_limit", 0.3)),
+            # Allow env override; otherwise use config; default is strict (0.1).
+            health_clip_frac_limit=float(
+                os.getenv("PPO_HEALTH_CLIP_FRAC_LIMIT", rl_cfg.get("ppo_health_clip_frac_limit", 0.1))
+            ),
             require_vecnorm=bool(rl_cfg.get("ppo_require_vecnorm", True)),
         )
 
@@ -182,6 +186,7 @@ class PPOTradingAdapter:
         self._last_state_metadata: Dict[str, Any] = {}
         self._spec: Optional[ObservationSpec] = None
         self._vecnorm: Optional[VecNormalize] = None
+        self._scaler: Optional[DeterministicScaler] = None
         self._p_long_history: List[float] = []
         self._clip_history: List[float] = []
 
@@ -274,6 +279,107 @@ class PPOTradingAdapter:
         )
         if state is None:
             return self.cfg.fallback_score, {"reason": "missing_state", "state_meta": state_meta}
+
+        # ------------------------------------------------------------------
+        # PRE-INFERENCE FAST GUARD (fail-closed) + OBS DUMP
+        # - Skip inference if VecNormalize is required but missing.
+        # - Skip inference if single-sample clip fraction is above limit.
+        # - When triggered: log state summary + top offender features, dump obs (if enabled),
+        #   and avoid polluting p_long_history.
+        # ------------------------------------------------------------------
+        fast_reasons: List[str] = []
+        fast_stats: Dict[str, Any] = {}
+
+        if self.cfg.require_vecnorm and not self._vecnorm:
+            fast_reasons.append("vecnorm_missing")
+
+        # Prefer obs_clip_frac computed in _build_state metadata if present.
+        obs_clip_frac_val: Optional[float] = None
+        if isinstance(state_meta, dict):
+            try:
+                raw_val = state_meta.get("obs_clip_frac")
+                obs_clip_frac_val = None if raw_val is None else float(raw_val)
+            except Exception:
+                obs_clip_frac_val = None
+
+        # If metadata clip is missing, estimate a conservative instant clip fraction on returned state:
+        # - With VecNormalize: estimate boundary hits near clip_obs.
+        # - Without VecNormalize: use |state| > 10 heuristic.
+        if obs_clip_frac_val is None:
+            try:
+                if self._vecnorm and float(getattr(self._vecnorm, "clip_obs", 0.0) or 0.0) > 0.0:
+                    clip_val = float(getattr(self._vecnorm, "clip_obs"))
+                    obs_clip_frac_val = float(np.mean(np.abs(state) >= (clip_val - 1e-6)))
+                else:
+                    obs_clip_frac_val = float(np.mean(np.abs(state) > 10.0))
+            except Exception:
+                obs_clip_frac_val = None
+
+        if obs_clip_frac_val is not None:
+            fast_stats["clip_instant"] = float(obs_clip_frac_val)
+            if float(obs_clip_frac_val) > float(self.cfg.health_clip_frac_limit):
+                fast_reasons.append("obs_clip_high_instant")
+
+        if fast_reasons:
+            # Build offenders: top-K abs dims with feature names (best-effort).
+            offenders: List[Dict[str, Any]] = []
+            try:
+                feat_names = (
+                    list(self._spec.feature_names)
+                    + list(self._spec.extra_feature_names)
+                    + list(self._spec.tail_names)
+                ) if self._spec else []
+                if feat_names and len(feat_names) == int(state.shape[0]):
+                    k = int(os.getenv("PPO_FAST_GUARD_TOPK", "8") or 8)
+                    k = max(1, min(k, len(feat_names)))
+                    idx = np.argsort(np.abs(state))[-k:][::-1]
+                    offenders = [{"name": feat_names[i], "value": float(state[i])} for i in idx]
+            except Exception:
+                offenders = []
+
+            # Add quick state summary (best-effort)
+            state_summary = (state_meta or {}).get("state_summary", {}) if isinstance(state_meta, dict) else {}
+            if isinstance(state_summary, dict):
+                fast_stats.update(
+                    {
+                        "state_min": state_summary.get("state_min"),
+                        "state_max": state_summary.get("state_max"),
+                        "state_std": state_summary.get("state_std"),
+                        "z_abs_p99": (state_meta or {}).get("z_abs_p99") if isinstance(state_meta, dict) else None,
+                    }
+                )
+
+            logger.warning(
+                "🛡️ PPO FAST GUARD active for %s: %s | stats=%s | offenders=%s | returning NEUTRAL (%.2f) w/o inference",
+                symbol_norm,
+                fast_reasons,
+                fast_stats,
+                offenders[:3],  # keep log compact; full list goes to dump
+                float(self.cfg.fallback_score),
+            )
+
+            # Record only clip metric (do NOT record p_long).
+            try:
+                self._record_health_metrics(None, obs_clip_frac_val)
+            except Exception:
+                pass
+
+            fast_meta: Dict[str, Any] = {
+                "symbol": symbol_norm,
+                "reason": "health_guard_fast",
+                "action": "GUARD_FALLBACK",
+                "p_long": float(self.cfg.fallback_score),
+                "health_ok": False,
+                "health_reasons": fast_reasons,
+                "health_stats": fast_stats,
+                "rr_multiplier": 1.0,
+                "position_multiplier": 1.0,
+                "top_abs_features": offenders,
+                "state_meta": state_meta,
+            }
+            # OBS DUMP (only if PPO_DUMP_OBS is set)
+            self._maybe_dump_obs(symbol_norm, state, fast_meta)
+            return float(self.cfg.fallback_score), fast_meta
 
         try:
             try:
@@ -389,9 +495,20 @@ class PPOTradingAdapter:
             if not health_ok:
                 logger.warning("🚨 HEALTH GUARD TRIGGERED! Reasons: %s | Stats: %s", health_reasons, health_stats)
                 metadata.setdefault("reason", "health_guard")
+                # Fail-closed: neutralize PPO influence and return immediately.
+                metadata["guard_active"] = True
                 metadata["guarded_score"] = final_score
-                decision = "GUARD_FALLBACK"
-                metadata["action"] = decision
+                metadata["rr_multiplier"] = 1.0
+                metadata["position_multiplier"] = 1.0
+                neutral = float(self.cfg.fallback_score)
+                metadata["p_long_raw"] = metadata.get("p_long")
+                metadata["p_flat_raw"] = metadata.get("p_flat")
+                metadata["p_long"] = neutral
+                metadata["p_flat"] = 1.0 - neutral
+                metadata["action"] = "GUARD_NEUTRAL"
+                self._maybe_dump_obs(symbol, state, metadata)
+                return neutral, metadata
+
             self._maybe_dump_obs(symbol, state, metadata)
 
             if action_int == 1 and decision == "WEAK_LONG_IGNORED":
@@ -431,6 +548,13 @@ class PPOTradingAdapter:
                     except Exception as exc:
                         self._load_error = f"spec_load_failed: {exc}"
                         logger.error("❌ Failed to load PPO observation spec: %s", exc)
+                        return
+                    try:
+                        self._scaler = DeterministicScaler(spec_path)
+                        logger.info("✅ Loaded DeterministicScaler from %s", spec_path)
+                    except Exception as exc:
+                        self._load_error = f"scaler_init_failed: {exc}"
+                        logger.error("❌ Failed to initialize DeterministicScaler: %s", exc)
                         return
                 vecnorm_path = model_path.with_suffix(".vecnormalize.pkl")
                 if vecnorm_path.exists():
@@ -490,7 +614,9 @@ class PPOTradingAdapter:
                         )
                         return
                     if not self._spec:
-                        logger.warning("⚠️ PPO observation spec missing alongside model; will derive at runtime.")
+                        self._load_error = "obs_spec_missing"
+                        logger.error("❌ PPO observation spec missing alongside model; deterministic scaling requires spec.")
+                        return
                 except Exception as exc:  # pragma: no cover - inspection safety
                     logger.warning("Failed to inspect PPO observation_space: %s", exc)
                     self._expected_obs_dim = None
@@ -597,6 +723,26 @@ class PPOTradingAdapter:
             tail_array, tail_meta, tail_values = self._compose_tail_state(position_fraction, normalized_pv)
             tail_meta["override_meta"] = override_meta or {}
 
+            # Raw feature snapshot (debugging): build once, reuse for scaler + offenders
+            row_dict = latest_row.to_dict()
+            row_dict.update(extra_values)
+            row_dict.update(tail_values)
+            close_price = float(df["close"].iloc[-1])
+            raw_offenders_top: List[Dict[str, Any]] = []
+            try:
+                items = []
+                for fname in list(self._spec.feature_names) + list(self._spec.extra_feature_names):
+                    if fname not in row_dict:
+                        continue
+                    v = float(row_dict[fname])
+                    if not math.isfinite(v):
+                        continue
+                    items.append((abs(v), fname, v))
+                items.sort(reverse=True)
+                raw_offenders_top = [{"name": n, "value": v} for _, n, v in items[:8]]
+            except Exception:
+                raw_offenders_top = []
+
             try:
                 state = build_observation(
                     self._spec,
@@ -607,6 +753,13 @@ class PPOTradingAdapter:
             except Exception as exc:
                 logger.error("PPO observation build failed: %s", exc)
                 return None, {"reason": "obs_build_failed", "error": str(exc), "ohlcv": ohlcv_meta}
+
+            if self._scaler:
+                try:
+                    state = self._scaler.transform(row_dict, close_price)
+                except Exception as exc:
+                    logger.error("PPO deterministic scaling failed: %s", exc)
+                    return None, {"reason": "deterministic_scaling_failed", "error": str(exc), "ohlcv": ohlcv_meta}
 
             pre_norm_summary = self._summarize_state(
                 state,
@@ -619,17 +772,43 @@ class PPOTradingAdapter:
             obs_clip_frac = None
             z_abs_mean = None
             z_abs_p99 = None
+            obs_norm_applied = False
+            obs_norm_error: Optional[str] = None
+
+            # Clip metric in scaled space (pre-vecnorm). Prefer vecnorm clip_obs if available, else 10.0.
+            clip_ref = 10.0
+            try:
+                if self._vecnorm and getattr(self._vecnorm, "clip_obs", None):
+                    clip_ref = float(self._vecnorm.clip_obs)
+                obs_clip_frac = float(np.mean(np.abs(state) > clip_ref))
+            except Exception:
+                obs_clip_frac = None
 
             if self._vecnorm:
                 try:
                     obs_tensor = np.array([state], dtype=np.float32)
                     normed = self._vecnorm.normalize_obs(obs_tensor.copy())
-                    if hasattr(self._vecnorm, "clip_obs") and self._vecnorm.clip_obs:
-                        clip_val = float(self._vecnorm.clip_obs)
-                        clipped = np.clip(obs_tensor, -clip_val, clip_val)
-                        obs_clip_frac = float(np.mean(obs_tensor != clipped))
                     state = normed[0]
+                    obs_norm_applied = True
+
+                    # Compute z stats in VecNormalize space; clip fraction already computed in scaled space.
+                    clip_val = float(getattr(self._vecnorm, "clip_obs", 0.0) or 0.0)
                     abs_vals = np.abs(state)
+                    if clip_val > 0:
+                        z_raw = None
+                        try:
+                            rms = getattr(self._vecnorm, "obs_rms", None)
+                            eps = float(getattr(self._vecnorm, "epsilon", 1e-8))
+                            if rms is not None and hasattr(rms, "mean") and hasattr(rms, "var"):
+                                mean = np.asarray(rms.mean, dtype=np.float32)
+                                var = np.asarray(rms.var, dtype=np.float32)
+                                z_raw = (obs_tensor - mean) / np.sqrt(var + eps)
+                        except Exception:
+                            z_raw = None
+
+                        if z_raw is not None:
+                            abs_vals = np.abs(z_raw[0])
+
                     z_abs_mean = float(np.mean(abs_vals))
                     z_abs_p99 = float(np.quantile(abs_vals, 0.99))
                     post_norm_summary = self._summarize_state(
@@ -640,6 +819,16 @@ class PPOTradingAdapter:
                     )
                 except Exception as exc:
                     logger.warning("VecNormalize normalization failed: %s", exc)
+                    obs_norm_error = str(exc)
+
+            # If VecNormalize is absent/failed, still produce z stats in scaled space for guard/telemetry.
+            if not self._vecnorm or not obs_norm_applied:
+                try:
+                    abs_vals = np.abs(state)
+                    z_abs_mean = float(np.mean(abs_vals))
+                    z_abs_p99 = float(np.quantile(abs_vals, 0.99))
+                except Exception:
+                    pass
 
             state_summary = post_norm_summary or pre_norm_summary
 
@@ -651,7 +840,12 @@ class PPOTradingAdapter:
                     "pre_norm_summary": pre_norm_summary,
                     "post_norm_summary": post_norm_summary,
                     "obs_norm_present": bool(self._vecnorm),
+                    "obs_norm_applied": bool(obs_norm_applied),
+                    "obs_norm_error": obs_norm_error,
                     "obs_clip_frac": obs_clip_frac,
+                    "clip_ref": clip_ref,
+                    "close_price": close_price,
+                    "raw_offenders_top": raw_offenders_top,
                     "z_abs_mean": z_abs_mean,
                     "z_abs_p99": z_abs_p99,
                     "feature_len": int(len(self._spec.feature_names)),
@@ -667,43 +861,6 @@ class PPOTradingAdapter:
 
     def supported_symbols(self) -> Iterable[str]:
         return self.cfg.symbols
-
-    def _align_state_dim(self, state: np.ndarray) -> np.ndarray:
-        """
-        Align the state vector to the PPO model's expected observation dimension.
-
-        - Eğer modelden observation dim alınamadıysa, state aynen döner.
-        - Eğer state daha kısa ise: sonuna 0.0 ile pad edilir.
-        - Eğer state daha uzun ise: sonundan truncate edilir (safety).
-        """
-        if self._expected_obs_dim is None:
-            return state.astype(np.float32)
-
-        current_dim = int(state.shape[0])
-        expected_dim = int(self._expected_obs_dim)
-
-        if current_dim == expected_dim:
-            return state.astype(np.float32)
-
-        if current_dim > expected_dim:
-            logger.warning(
-                "PPO state dim (%d) > expected_obs_dim (%d). Truncating extra features.",
-                current_dim,
-                expected_dim,
-            )
-            return state[:expected_dim].astype(np.float32)
-
-        # current_dim < expected_dim → pad gerekiyor (normalde olmamalı)
-        missing = expected_dim - current_dim
-        logger.warning(
-            "PPO state dim (%d) < expected_obs_dim (%d). Padding %d dummy features.",
-            current_dim,
-            expected_dim,
-            missing,
-        )
-        pad_values = np.zeros(missing, dtype=np.float32)
-        padded = np.concatenate([state, pad_values])
-        return padded.astype(np.float32)
 
     def _summarize_state(
         self,
