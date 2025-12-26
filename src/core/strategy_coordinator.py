@@ -1743,20 +1743,6 @@ class StrategyCoordinator:
                 'signal': enriched_signal, 'risk_assessment': risk_assessment,
                 'routing': routing_result, 'timestamp': datetime.now(timezone.utc), 'status': 'active'
             }
-            
-            # --- TELEMETRİ: Sinyal kuyruğa eklenirken (DÜZELTİLDİ) ---
-            display_notional = risk_assessment.get('notional')
-            if display_notional is None:
-                try:
-                    display_notional = float(risk_assessment.get('position_size', 0) or 0) * float(enriched_signal.get('entry') or 0)
-                except Exception:
-                    display_notional = 0.0
-
-            logger.info(
-                f"✅ {log_prefix} ENQUEUED. Side: {enriched_signal.get('side')}, "
-                f"Entry: ${enriched_signal.get('entry'):.2f}, SL: ${enriched_signal.get('stop'):.2f}, TP: ${enriched_signal.get('target'):.2f}, "
-                f"Size: ${display_notional:.2f}"
-            )
 
             # Adım 8: Sinyali Yürütme Kuyruğuna Ekle
             queued, queue_reason = await self.signal_queue.put({
@@ -1769,7 +1755,31 @@ class StrategyCoordinator:
             if not queued:
                 self.processing_stats['rejected_signals'] += 1
                 self.processing_stats['queue_rejections'] += 1
+                # Keep active registry aligned with true queue outcome
+                self.active_signals.pop(signal_id, None)
+                logger.info(
+                    "🚫 %s REJECTED | reason=%s | symbol=%s strategy=%s side=%s tf=%s signal_id=%s prio=%s",
+                    log_prefix,
+                    queue_reason or "queue_rejected",
+                    enriched_signal.get('symbol'),
+                    strategy_name,
+                    enriched_signal.get('side'),
+                    enriched_signal.get('timeframe', '5m'),
+                    signal_id,
+                    enriched_signal.get('priority'),
+                )
                 return {'status': 'rejected', 'reason': queue_reason, 'stage': 'queue'}
+
+            logger.info(
+                "✅ %s ENQUEUED | symbol=%s strategy=%s side=%s tf=%s signal_id=%s prio=%s",
+                log_prefix,
+                enriched_signal.get('symbol'),
+                strategy_name,
+                enriched_signal.get('side'),
+                enriched_signal.get('timeframe', '5m'),
+                signal_id,
+                enriched_signal.get('priority'),
+            )
             
             self.processing_stats['accepted_signals'] += 1
             self._add_signal_history_entry({
