@@ -64,6 +64,7 @@ Bu rehber, PPO tabanlı trading ajanını yeniden eğitmek, değerlendirmek ve c
 
 ## 6) Operasyonel Notlar
 - Çevrim içi/Shadow modda `[PPO-INIT]` ve `[PPO-DEBUG]` loglarıyla yükleme ve dağılımı doğrulayın: `obs_norm_present=True`, makul `obs_clip_frac`, değişen `p_long`.
+- **Runtime toggles (PPO):** `ppo_include_forming` ile forming candle dahil/harici kontrolü yapılır (varsayılan: closed-only). Cache hit log sıklığı `PPO_CACHE_LOG_INTERVAL_SEC` env değişkeniyle yönetilir (varsayılan: 300s).
 - Downtrend verilerinde kısa satış desteği yok; flat kalmak beklenen davranış olabilir. Bullish rejim testi için yükseliş dönemli dataset veya artırılmış idle_penalty kullanarak aksiyon çeşitliliği gözlenebilir.
 
 Bu playbook, Balanced Model eğitim akışını kalıcı hale getirmek ve yeni geliştiricilerin aynı süreci güvenle tekrarlamasını sağlamak için hazırlanmıştır. Model davranışı değiştiğinde veya yeni veri rejimleri eklendiğinde metrik eşiklerini güncelleyin ve değerlendirme/taşıma adımlarını yeniden çalıştırın.

@@ -19,6 +19,7 @@ import logging
 import math
 import hashlib
 import os
+import time
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -190,6 +191,14 @@ class PPOTradingAdapter:
         self._p_long_history: List[float] = []
         self._clip_history: List[float] = []
         self._last_health_bar_id: Optional[Any] = None  # candle-aware health sampling
+        self._decision_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._cache_lock = asyncio.Lock()
+        self._cache_log_last: Dict[Tuple[str, str], float] = {}
+        self._cache_log_interval_sec = float(os.getenv("PPO_CACHE_LOG_INTERVAL_SEC", "300") or 300)
+        self._include_forming = bool((rl_config or {}).get("ppo_include_forming", False))
+
+        self.STATE_TIMEFRAME = str(self.cfg.timeframe or "1h").strip()
+        self.cfg.timeframe = self.STATE_TIMEFRAME
 
         for raw_symbol in self.cfg.symbols:
             normalized = self._normalize_symbol(raw_symbol)
@@ -205,14 +214,21 @@ class PPOTradingAdapter:
             list(self.cfg.symbols),
             list(self._normalized_symbols),
         )
-
-        if self.cfg.timeframe.lower() != self.STATE_TIMEFRAME:
-            logger.warning(
-                "PPO adapter forcing timeframe to %s (config requested %s)",
-                self.STATE_TIMEFRAME,
-                self.cfg.timeframe,
-            )
-            self.cfg.timeframe = self.STATE_TIMEFRAME
+        logger.info(
+            "ℹ️ [PPO-INIT] timeframe=%s lookback_bars=%d lookback_windows=%s health_window=%d "
+            "health_min_std=%.6f health_clip_frac_limit=%.4f conf_threshold=%.2f min_margin=%.3f "
+            "require_vecnorm=%s include_forming=%s",
+            self.STATE_TIMEFRAME,
+            self.cfg.lookback_bars,
+            list(self.cfg.lookback_windows),
+            self.cfg.health_window,
+            self.cfg.health_min_std,
+            self.cfg.health_clip_frac_limit,
+            self.cfg.conf_threshold,
+            self.cfg.min_margin,
+            self.cfg.require_vecnorm,
+            self._include_forming,
+        )
 
     @property
     def is_ready(self) -> bool:
@@ -240,6 +256,60 @@ class PPOTradingAdapter:
         sym = self._normalize_symbol(symbol)
         return sym in self._normalized_symbols
 
+    def _cache_key(self, symbol_norm: str) -> Tuple[str, str]:
+        return (symbol_norm, self.STATE_TIMEFRAME)
+
+    @staticmethod
+    def _clone_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        cloned = dict(metadata or {})
+        debug = cloned.get("debug")
+        if isinstance(debug, dict):
+            cloned["debug"] = dict(debug)
+        return cloned
+
+    async def _store_cache_entry(
+        self,
+        cache_key: Tuple[str, str],
+        *,
+        score: float,
+        metadata: Dict[str, Any],
+        last_candle_ts: Optional[str],
+        state_hash: Optional[str],
+    ) -> None:
+        if not last_candle_ts:
+            return
+        entry = {
+            "score": float(score),
+            "metadata": self._clone_metadata(metadata),
+            "last_candle_ts": last_candle_ts,
+            "state_hash": state_hash,
+            "timestamp": time.time(),
+        }
+        async with self._cache_lock:
+            self._decision_cache[cache_key] = entry
+
+    async def _maybe_log_cache_hit(
+        self,
+        cache_key: Tuple[str, str],
+        *,
+        symbol: str,
+        last_candle_ts: Optional[str],
+        cache_age_sec: Optional[float],
+    ) -> None:
+        now = time.time()
+        async with self._cache_lock:
+            last_log = float(self._cache_log_last.get(cache_key, 0.0) or 0.0)
+            if (now - last_log) < self._cache_log_interval_sec:
+                return
+            self._cache_log_last[cache_key] = now
+        logger.info(
+            "🔁 [PPO-CACHE] hit sym=%s tf=%s last_candle_ts=%s age_s=%.1f",
+            symbol,
+            self.STATE_TIMEFRAME,
+            last_candle_ts,
+            float(cache_age_sec or 0.0),
+        )
+
     async def get_long_score(
         self,
         symbol: str,
@@ -253,6 +323,11 @@ class PPOTradingAdapter:
         Sniper mode: require high-confidence BUYs before surfacing LONG.
         """
         symbol_norm = self._normalize_symbol(symbol)
+        def _float_or(value: Any, default: float = 0.0) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
         if not self.cfg.enabled:
             return self.cfg.fallback_score, {
                 "reason": "disabled",
@@ -278,15 +353,43 @@ class PPOTradingAdapter:
             normalized_pv=normalized_pv,
             override_meta=override_meta,
         )
+        ohlcv = state_meta.get("ohlcv", {}) if isinstance(state_meta, dict) else {}
+        last_ts = None
+        try:
+            last_ts = ohlcv.get("last_ts") or ohlcv.get("last_closed_ts")
+        except Exception:
+            last_ts = None
+        bar_id = last_ts
+
+        cache_key = self._cache_key(symbol_norm)
+        cache_entry = None
+        async with self._cache_lock:
+            cache_entry = self._decision_cache.get(cache_key)
+        prev_last_ts = None
+        if cache_entry:
+            prev_last_ts = cache_entry.get("last_candle_ts")
+        if cache_entry and last_ts and last_ts == cache_entry.get("last_candle_ts"):
+            cached_score = float(cache_entry.get("score", self.cfg.fallback_score))
+            cached_meta = self._clone_metadata(cache_entry.get("metadata", {}))
+            cached_meta["cache_hit"] = True
+            cached_meta["cache_age_sec"] = float(time.time() - float(cache_entry.get("timestamp", time.time())))
+            cached_meta["cache_last_ts"] = last_ts
+            debug_meta = cached_meta.get("debug")
+            if isinstance(debug_meta, dict):
+                debug_meta["cache_hit"] = True
+                debug_meta["cache_age_sec"] = cached_meta["cache_age_sec"]
+                debug_meta["last_ts"] = debug_meta.get("last_ts") or last_ts
+                debug_meta["prev_last_ts"] = debug_meta.get("prev_last_ts") or prev_last_ts
+            await self._maybe_log_cache_hit(
+                cache_key,
+                symbol=symbol_norm,
+                last_candle_ts=last_ts,
+                cache_age_sec=cached_meta["cache_age_sec"],
+            )
+            return cached_score, cached_meta
+
         if state is None:
             return self.cfg.fallback_score, {"reason": "missing_state", "state_meta": state_meta}
-
-        bar_id = None
-        try:
-            ohlcv = state_meta.get("ohlcv", {}) if isinstance(state_meta, dict) else {}
-            bar_id = ohlcv.get("last_ts")
-        except Exception:
-            bar_id = None
 
         # ------------------------------------------------------------------
         # PRE-INFERENCE FAST GUARD (fail-closed) + OBS DUMP
@@ -368,9 +471,53 @@ class PPOTradingAdapter:
 
             # Record only clip metric (do NOT record p_long).
             try:
-                self._record_health_metrics(None, obs_clip_frac_val)
+                self._record_health_metrics(None, obs_clip_frac_val, bar_id=bar_id)
             except Exception:
                 pass
+
+            state_summary = (state_meta or {}).get("state_summary", {}) if isinstance(state_meta, dict) else {}
+            debug_meta = {
+                "timeframe": ohlcv.get("timeframe", self.STATE_TIMEFRAME),
+                "source": ohlcv.get("source", "unknown"),
+                "last_ts": last_ts,
+                "prev_last_ts": prev_last_ts,
+                "age_sec": ohlcv.get("age_sec"),
+                "rows": ohlcv.get("rows"),
+                "state_hash": state_summary.get("state_hash"),
+                "state_mean": state_summary.get("state_mean"),
+                "state_std": state_summary.get("state_std"),
+                "state_min": state_summary.get("state_min"),
+                "state_max": state_summary.get("state_max"),
+                "feat_std": state_summary.get("feat_std"),
+                "feat_min": state_summary.get("feat_min"),
+                "feat_max": state_summary.get("feat_max"),
+                "extra_std": state_summary.get("extra_std"),
+                "tail_pf": state_summary.get("tail_pf"),
+                "tail_pv": state_summary.get("tail_pv"),
+                "tail_default": state_summary.get("tail_default"),
+                "nan_count": state_summary.get("nan_count"),
+                "inf_count": state_summary.get("inf_count"),
+                "state_head3": state_summary.get("state_head3"),
+                "state_tail3": state_summary.get("state_tail3"),
+                "action_int": -1,
+                "p_flat": 1.0 - float(self.cfg.fallback_score),
+                "p_long": float(self.cfg.fallback_score),
+                "p_margin": 0.0,
+                "conf_raw": float(self.cfg.fallback_score),
+                "entropy_raw": 0.0,
+                "vecnorm_loaded": bool(self._vecnorm),
+                "obs_norm_present": bool((state_meta or {}).get("obs_norm_present")),
+                "obs_norm_applied": bool((state_meta or {}).get("obs_norm_applied")),
+                "obs_clip_frac": _float_or(obs_clip_frac_val),
+                "z_abs_mean": _float_or((state_meta or {}).get("z_abs_mean")),
+                "z_abs_p99": _float_or((state_meta or {}).get("z_abs_p99")),
+                "clip_mean": _float_or(fast_stats.get("clip_instant", obs_clip_frac_val)),
+                "health_ok": False,
+                "health_reasons": fast_reasons,
+                "p_long_std": _float_or(fast_stats.get("p_long_std")),
+                "cache_hit": False,
+                "cache_age_sec": 0.0,
+            }
 
             fast_meta: Dict[str, Any] = {
                 "symbol": symbol_norm,
@@ -384,9 +531,19 @@ class PPOTradingAdapter:
                 "position_multiplier": 1.0,
                 "top_abs_features": offenders,
                 "state_meta": state_meta,
+                "debug": debug_meta,
+                "cache_hit": False,
+                "cache_age_sec": 0.0,
             }
             # OBS DUMP (only if PPO_DUMP_OBS is set)
             self._maybe_dump_obs(symbol_norm, state, fast_meta)
+            await self._store_cache_entry(
+                cache_key,
+                score=float(self.cfg.fallback_score),
+                metadata=fast_meta,
+                last_candle_ts=last_ts,
+                state_hash=state_summary.get("state_hash"),
+            )
             return float(self.cfg.fallback_score), fast_meta
 
         try:
@@ -462,6 +619,7 @@ class PPOTradingAdapter:
                     "timeframe": ohlcv_meta.get("timeframe", self.STATE_TIMEFRAME),
                     "source": ohlcv_meta.get("source", "unknown"),
                     "last_ts": ohlcv_meta.get("last_ts"),
+                    "prev_last_ts": prev_last_ts,
                     "age_sec": ohlcv_meta.get("age_sec"),
                     "rows": ohlcv_meta.get("rows"),
                     "state_hash": state_summary.get("state_hash"),
@@ -486,6 +644,14 @@ class PPOTradingAdapter:
                     "p_margin": p_margin,
                     "conf_raw": confidence,
                     "entropy_raw": metadata.get("entropy_raw"),
+                    "vecnorm_loaded": bool(self._vecnorm),
+                    "obs_norm_present": bool((state_meta or {}).get("obs_norm_present")),
+                    "obs_norm_applied": bool((state_meta or {}).get("obs_norm_applied")),
+                    "obs_clip_frac": _float_or((state_meta or {}).get("obs_clip_frac")),
+                    "z_abs_mean": _float_or((state_meta or {}).get("z_abs_mean")),
+                    "z_abs_p99": _float_or((state_meta or {}).get("z_abs_p99")),
+                    "cache_hit": False,
+                    "cache_age_sec": 0.0,
                 }
             )
             override_block = (state_meta or {}).get("tail_meta", {}).get("override_meta", {}) if 'state_meta' in locals() else {}
@@ -500,6 +666,16 @@ class PPOTradingAdapter:
             metadata["health_reasons"] = health_reasons
             if health_stats:
                 metadata["health_stats"] = health_stats
+            metadata["cache_hit"] = False
+            metadata["cache_age_sec"] = 0.0
+            if isinstance(debug_meta, dict):
+                clip_mean_val = _float_or(
+                    (health_stats or {}).get("clip_mean", (state_meta or {}).get("obs_clip_frac"))
+                )
+                debug_meta["health_ok"] = health_ok
+                debug_meta["health_reasons"] = health_reasons
+                debug_meta["p_long_std"] = _float_or((health_stats or {}).get("p_long_std"))
+                debug_meta["clip_mean"] = clip_mean_val
             if not health_ok:
                 logger.warning("🚨 HEALTH GUARD TRIGGERED! Reasons: %s | Stats: %s", health_reasons, health_stats)
                 metadata.setdefault("reason", "health_guard")
@@ -515,6 +691,13 @@ class PPOTradingAdapter:
                 metadata["p_flat"] = 1.0 - neutral
                 metadata["action"] = "GUARD_NEUTRAL"
                 self._maybe_dump_obs(symbol, state, metadata)
+                await self._store_cache_entry(
+                    cache_key,
+                    score=neutral,
+                    metadata=metadata,
+                    last_candle_ts=last_ts,
+                    state_hash=debug_meta.get("state_hash") if isinstance(debug_meta, dict) else None,
+                )
                 return neutral, metadata
 
             self._maybe_dump_obs(symbol, state, metadata)
@@ -527,6 +710,13 @@ class PPOTradingAdapter:
                     CONFIDENCE_THRESHOLD,
                 )
 
+            await self._store_cache_entry(
+                cache_key,
+                score=final_score,
+                metadata=metadata,
+                last_candle_ts=last_ts,
+                state_hash=debug_meta.get("state_hash") if isinstance(debug_meta, dict) else None,
+            )
             return final_score, metadata
         except Exception as exc:  # pragma: no cover - safety net
             logger.warning("PPO prediction failed for %s: %s", symbol_norm, exc)
@@ -650,16 +840,16 @@ class PPOTradingAdapter:
         try:
             query_symbol = self._symbol_alias_map.get(symbol, symbol)
             df = await self.market_data_pipeline.get_latest_ohlcv(
-                query_symbol, self.STATE_TIMEFRAME, limit=2000
+                query_symbol, self.STATE_TIMEFRAME, limit=2000, include_forming=self._include_forming
             )
             if (df is None or df.empty) and query_symbol != symbol:
                 canonical_symbol = self._symbol_alias_map.get(symbol, symbol)
                 df = await self.market_data_pipeline.get_latest_ohlcv(
-                    canonical_symbol, self.STATE_TIMEFRAME, limit=2000
+                    canonical_symbol, self.STATE_TIMEFRAME, limit=2000, include_forming=self._include_forming
                 )
                 if (df is None or df.empty) and canonical_symbol != symbol:
                     df = await self.market_data_pipeline.get_latest_ohlcv(
-                        symbol, self.STATE_TIMEFRAME, limit=2000
+                        symbol, self.STATE_TIMEFRAME, limit=2000, include_forming=self._include_forming
                     )
             if df is None or df.empty:
                 logger.debug("PPO adapter received empty dataframe for %s", symbol)
@@ -911,14 +1101,13 @@ class PPOTradingAdapter:
         bar_id: Optional[Any] = None,
     ) -> None:
         window = max(2, self.cfg.health_window)
+        if bar_id is None or bar_id == self._last_health_bar_id:
+            return
+        self._last_health_bar_id = bar_id
         if p_long is not None:
-            if bar_id is not None and bar_id == self._last_health_bar_id:
-                pass
-            else:
-                self._last_health_bar_id = bar_id
-                self._p_long_history.append(float(p_long))
-                if len(self._p_long_history) > window:
-                    self._p_long_history = self._p_long_history[-window:]
+            self._p_long_history.append(float(p_long))
+            if len(self._p_long_history) > window:
+                self._p_long_history = self._p_long_history[-window:]
         if obs_clip_frac is not None:
             self._clip_history.append(float(obs_clip_frac))
             if len(self._clip_history) > window:

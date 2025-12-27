@@ -2329,6 +2329,9 @@ class StrategyCoordinator:
                 normalized_pv=tail_overrides.get('normalized_pv'),
                 override_meta=overrides_meta,
             )
+
+            if metadata.get("cache_hit"):
+                return
             
             # 4. Log result with specific tag for monitoring
             if metadata.get('reason') != 'unsupported_symbol':
@@ -2343,17 +2346,19 @@ class StrategyCoordinator:
                 debug_meta = metadata.get("debug", {}) if isinstance(metadata, dict) else {}
                 override_info = debug_meta.get("override_meta") or overrides_meta or {}
                 logger.info(
-                    "[PPO-DEBUG] sym=%s tf=%s src=%s last_candle_ts=%s age_s=%s rows=%s "
+                    "[PPO-DEBUG] sym=%s tf=%s src=%s last_candle_ts=%s prev_last_candle_ts=%s age_s=%s rows=%s "
                     "state_hash=%s state_mean=%.4f state_std=%.4f state_min=%.4f state_max=%.4f "
                     "feat_std=%.4f feat_min=%.4f feat_max=%.4f extra_std=%.4f tail_pf=%.3f tail_pv=%.3f "
                     "tail_default=%s nan=%s inf=%s head3=%s tail3=%s action_int=%s "
                     "p_flat=%.6f p_long=%.6f p_margin=%.6f conf_raw=%.6f entropy_raw=%.6f "
-                    "obs_norm_present=%s obs_clip_frac=%s z_abs_mean=%s z_abs_p99=%s "
-                    "override_ok=%s override_reason=%s",
+                    "health_ok=%s health_reasons=%s p_long_std=%.6f "
+                    "obs_norm_present=%s vecnorm_loaded=%s obs_norm_applied=%s obs_clip_frac=%.6f clip_mean=%.6f "
+                    "z_abs_mean=%.6f z_abs_p99=%.6f cache_hit=%s override_ok=%s override_reason=%s",
                     symbol,
                     debug_meta.get("timeframe", "1h"),
                     debug_meta.get("source", "unknown"),
                     debug_meta.get("last_ts"),
+                    debug_meta.get("prev_last_ts"),
                     debug_meta.get("age_sec"),
                     debug_meta.get("rows"),
                     debug_meta.get("state_hash"),
@@ -2378,10 +2383,17 @@ class StrategyCoordinator:
                     self._safe_float(debug_meta.get("p_margin")),
                     self._safe_float(debug_meta.get("conf_raw")),
                     self._safe_float(debug_meta.get("entropy_raw")),
+                    bool(debug_meta.get("health_ok")),
+                    debug_meta.get("health_reasons"),
+                    self._safe_float(debug_meta.get("p_long_std")),
                     bool(debug_meta.get("obs_norm_present")),
-                    debug_meta.get("obs_clip_frac"),
-                    debug_meta.get("z_abs_mean"),
-                    debug_meta.get("z_abs_p99"),
+                    bool(debug_meta.get("vecnorm_loaded")),
+                    bool(debug_meta.get("obs_norm_applied")),
+                    self._safe_float(debug_meta.get("obs_clip_frac")),
+                    self._safe_float(debug_meta.get("clip_mean")),
+                    self._safe_float(debug_meta.get("z_abs_mean")),
+                    self._safe_float(debug_meta.get("z_abs_p99")),
+                    bool(debug_meta.get("cache_hit")),
                     bool(override_info.get("override_ok")),
                     override_info.get("reason"),
                 )
