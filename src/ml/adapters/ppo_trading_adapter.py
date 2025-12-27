@@ -189,6 +189,7 @@ class PPOTradingAdapter:
         self._scaler: Optional[DeterministicScaler] = None
         self._p_long_history: List[float] = []
         self._clip_history: List[float] = []
+        self._last_health_bar_id: Optional[Any] = None  # candle-aware health sampling
 
         for raw_symbol in self.cfg.symbols:
             normalized = self._normalize_symbol(raw_symbol)
@@ -279,6 +280,13 @@ class PPOTradingAdapter:
         )
         if state is None:
             return self.cfg.fallback_score, {"reason": "missing_state", "state_meta": state_meta}
+
+        bar_id = None
+        try:
+            ohlcv = state_meta.get("ohlcv", {}) if isinstance(state_meta, dict) else {}
+            bar_id = ohlcv.get("last_ts")
+        except Exception:
+            bar_id = None
 
         # ------------------------------------------------------------------
         # PRE-INFERENCE FAST GUARD (fail-closed) + OBS DUMP
@@ -486,7 +494,7 @@ class PPOTradingAdapter:
             if tail_meta:
                 metadata["tail_meta"] = tail_meta
             obs_clip_frac_val = (state_meta or {}).get("obs_clip_frac")
-            self._record_health_metrics(p_long, obs_clip_frac_val)
+            self._record_health_metrics(p_long, obs_clip_frac_val, bar_id=bar_id)
             health_ok, health_reasons, health_stats = self._evaluate_health(obs_clip_frac_val)
             metadata["health_ok"] = health_ok
             metadata["health_reasons"] = health_reasons
@@ -895,12 +903,22 @@ class PPOTradingAdapter:
             summary["state_std"] = summary.get("state_std", 0.0)
         return summary
 
-    def _record_health_metrics(self, p_long: Optional[float], obs_clip_frac: Optional[float]) -> None:
+    def _record_health_metrics(
+        self,
+        p_long: Optional[float],
+        obs_clip_frac: Optional[float],
+        *,
+        bar_id: Optional[Any] = None,
+    ) -> None:
         window = max(2, self.cfg.health_window)
         if p_long is not None:
-            self._p_long_history.append(float(p_long))
-            if len(self._p_long_history) > window:
-                self._p_long_history = self._p_long_history[-window:]
+            if bar_id is not None and bar_id == self._last_health_bar_id:
+                pass
+            else:
+                self._last_health_bar_id = bar_id
+                self._p_long_history.append(float(p_long))
+                if len(self._p_long_history) > window:
+                    self._p_long_history = self._p_long_history[-window:]
         if obs_clip_frac is not None:
             self._clip_history.append(float(obs_clip_frac))
             if len(self._clip_history) > window:
