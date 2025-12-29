@@ -8,6 +8,7 @@ import logging
 from collections import OrderedDict
 from typing import Optional, Dict, Tuple, ClassVar, Any
 from .short_the_rip import ShortTheRip
+from config.mtf_policy import MtfConfirmationConfig, MtfTimeframePolicy, MtfMinBars
 from core.indicators import rsi as calc_rsi, ema as calc_ema
 from core.strategy_shadow_eval import (
     shadow_enabled,
@@ -111,6 +112,12 @@ class AdaptiveShortTheRip(ShortTheRip):
             'mtf_1h_fallback_computed': 0,
             'mtf_1h_cache_hit': 0,
         }
+        self._mtf_policy: Optional[MtfConfirmationConfig] = None
+        mtf_effective = self.strategy_config.get("mtf_confirmation_effective")
+        if isinstance(mtf_effective, MtfConfirmationConfig):
+            self._mtf_policy = mtf_effective
+        elif isinstance(self.strategy_config.get("mtf_confirmation"), MtfConfirmationConfig):
+            self._mtf_policy = self.strategy_config.get("mtf_confirmation")
 
     def _validate_input_data(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame, regime_data: Dict, symbol: str) -> tuple[bool, str]:
         """Gerekli tüm verilerin varlığını ve geçerliliğini kontrol eder."""
@@ -301,39 +308,22 @@ class AdaptiveShortTheRip(ShortTheRip):
         }
         return tuned_sl_pct, metadata
 
-    def _resolve_mtf_missing_action(self, cfg: Dict, key: str, required: bool) -> str:
-        on_missing = str(cfg.get(key, 'skip')).strip().lower()
-        if on_missing not in ('skip', 'reject'):
-            on_missing = 'skip'
-        return 'reject' if required else on_missing
-
-    def _mtf_missing_result(self, action: str, reason: str, code: str, meta: Dict, required: bool) -> Tuple[bool, str, Dict]:
+    def _mtf_missing_result(self, action: str, reason: str, code: str, meta: Dict) -> Tuple[bool, str, Dict]:
         meta['status'] = 'missing'
         meta['action'] = action
-        if required and action == 'reject':
-            reason = f"{reason} (required)"
-        else:
-            reason = f"{reason} (policy={action})"
+        reason = f"{reason} (policy={action})"
         if action == 'skip':
             meta['skipped'] = True
             return True, reason, meta
         meta['code'] = code
         return False, reason, meta
 
-    def _get_mtf_min_bars(self, cfg: Dict, key: str) -> int:
-        cfg_key = f"min_bars_{key}"
-        default = self.DEFAULT_MTF_MIN_BARS.get(key, 0)
-        try:
-            value = int(cfg.get(cfg_key, default))
-        except (TypeError, ValueError):
-            value = default
-        return max(0, value)
-
-    def _mtf_min_bars_for_indicators(self, cfg: Dict, indicators: set) -> int:
-        min_bars = 0
+    def _mtf_min_bars_for_indicators(self, min_bars: MtfMinBars, indicators: set) -> int:
+        min_bars_map = min_bars.as_dict()
+        min_required = 0
         for indicator in indicators:
-            min_bars = max(min_bars, self._get_mtf_min_bars(cfg, indicator))
-        return min_bars
+            min_required = max(min_required, min_bars_map.get(indicator, 0))
+        return min_required
 
     def _get_df_last_timestamp(self, df: pd.DataFrame):
         if df is None or df.empty:
@@ -427,27 +417,27 @@ class AdaptiveShortTheRip(ShortTheRip):
 
         return df_local
 
-    def _mtf_confirm_15m(self, df_15m: pd.DataFrame, symbol: str, cfg: Dict) -> Tuple[bool, str, Dict]:
-        require_15m = bool(cfg.get('require_15m', False))
-        action = self._resolve_mtf_missing_action(cfg, 'on_missing_15m', require_15m)
+    def _mtf_confirm_15m(
+        self,
+        df_15m: pd.DataFrame,
+        symbol: str,
+        policy: MtfTimeframePolicy,
+        min_bars: MtfMinBars,
+    ) -> Tuple[bool, str, Dict]:
+        action = policy.missing_policy
         meta = {
             'timeframe': '15m',
-            'required': require_15m,
-            'on_missing': action,
+            'mode': policy.mode,
+            'on_missing': policy.on_missing,
+            'missing_policy': action,
+            'missing_is_fatal': policy.missing_is_fatal,
         }
 
         if df_15m is None or not isinstance(df_15m, pd.DataFrame) or df_15m.empty:
-            return self._mtf_missing_result(action, 'missing_15m_data', 'mtf_15m_missing', meta, require_15m)
+            return self._mtf_missing_result(action, 'missing_15m_data', 'mtf_15m_missing', meta)
 
-        try:
-            rsi_min = float(cfg.get('rsi_15m_min', 62.0))
-        except (TypeError, ValueError):
-            rsi_min = 62.0
-
-        try:
-            min_ext_pct = float(cfg.get('min_15m_close_over_ema50_pct', 0.0) or 0.0)
-        except (TypeError, ValueError):
-            min_ext_pct = 0.0
+        rsi_min = policy.rsi_min
+        min_ext_pct = policy.min_close_over_ema50_pct
 
         use_extension = min_ext_pct > 0.0
         required_cols = ['close', 'rsi']
@@ -468,11 +458,10 @@ class AdaptiveShortTheRip(ShortTheRip):
                     f"missing_15m_columns ({', '.join(missing_cols)})",
                     'mtf_15m_missing',
                     meta,
-                    require_15m,
                 )
 
             self._inc_mtf_telemetry('mtf_15m_fallback_attempted')
-            min_required = self._mtf_min_bars_for_indicators(cfg, fallback_indicators)
+            min_required = self._mtf_min_bars_for_indicators(min_bars, fallback_indicators)
             if len(df_15m) < min_required:
                 self._inc_mtf_telemetry('mtf_15m_fallback_skipped_insufficient_bars')
                 meta['code'] = 'mtf_15m_insufficient_bars'
@@ -488,7 +477,6 @@ class AdaptiveShortTheRip(ShortTheRip):
                     f"insufficient_bars (len={len(df_15m)} < min={min_required})",
                     'mtf_15m_insufficient_bars',
                     meta,
-                    require_15m,
                 )
 
             df_15m = self._apply_mtf_indicator_fallback(
@@ -506,12 +494,11 @@ class AdaptiveShortTheRip(ShortTheRip):
                     f"missing_15m_columns ({', '.join(missing_cols)})",
                     'mtf_15m_missing',
                     meta,
-                    require_15m,
                 )
 
         df_valid = df_15m.dropna(subset=required_cols)
         if df_valid.empty:
-            return self._mtf_missing_result(action, 'missing_15m_values', 'mtf_15m_missing', meta, require_15m)
+            return self._mtf_missing_result(action, 'missing_15m_values', 'mtf_15m_missing', meta)
 
         last = df_valid.iloc[-1]
         close = float(last['close'])
@@ -523,13 +510,14 @@ class AdaptiveShortTheRip(ShortTheRip):
         })
 
         if rsi_val < rsi_min:
+            meta['status'] = 'failed'
             meta['code'] = 'mtf_15m_rsi'
             return False, f"rsi_15m_below_min (rsi={rsi_val:.2f}, min={rsi_min:.2f})", meta
 
         if use_extension:
             ema50 = float(last['ema50'])
             if ema50 <= 0:
-                return self._mtf_missing_result(action, 'invalid_15m_ema50', 'mtf_15m_missing', meta, require_15m)
+                return self._mtf_missing_result(action, 'invalid_15m_ema50', 'mtf_15m_missing', meta)
             close_over = (close / ema50) - 1.0
             meta.update({
                 'ema50_15m': ema50,
@@ -537,6 +525,7 @@ class AdaptiveShortTheRip(ShortTheRip):
                 'min_15m_close_over_ema50_pct': min_ext_pct,
             })
             if close < ema50 * (1.0 + min_ext_pct):
+                meta['status'] = 'failed'
                 meta['code'] = 'mtf_15m_extension'
                 return False, (
                     f"close_not_extended_over_ema50 (close={close:.2f}, ema50={ema50:.2f}, min_pct={min_ext_pct:.4f})"
@@ -545,26 +534,27 @@ class AdaptiveShortTheRip(ShortTheRip):
         meta['status'] = 'passed'
         return True, 'passed', meta
 
-    def _mtf_confirm_1h(self, df_1h: pd.DataFrame, symbol: str, cfg: Dict) -> Tuple[bool, str, Dict]:
-        require_1h = bool(cfg.get('require_1h', False))
-        action = self._resolve_mtf_missing_action(cfg, 'on_missing_1h', require_1h)
+    def _mtf_confirm_1h(
+        self,
+        df_1h: pd.DataFrame,
+        symbol: str,
+        policy: MtfTimeframePolicy,
+        min_bars: MtfMinBars,
+    ) -> Tuple[bool, str, Dict]:
+        action = policy.missing_policy
         meta = {
             'timeframe': '1h',
-            'required': require_1h,
-            'on_missing': action,
+            'mode': policy.mode,
+            'on_missing': policy.on_missing,
+            'missing_policy': action,
+            'missing_is_fatal': policy.missing_is_fatal,
         }
 
         if df_1h is None or not isinstance(df_1h, pd.DataFrame) or df_1h.empty:
-            return self._mtf_missing_result(action, 'missing_1h_data', 'mtf_1h_missing', meta, require_1h)
+            return self._mtf_missing_result(action, 'missing_1h_data', 'mtf_1h_missing', meta)
 
-        require_ema_stack = bool(cfg.get('require_1h_bearish_ema_stack', True))
-        raw_rsi_max = cfg.get('rsi_1h_max', 60.0)
-        rsi_max = None
-        if raw_rsi_max is not None:
-            try:
-                rsi_max = float(raw_rsi_max)
-            except (TypeError, ValueError):
-                rsi_max = 60.0
+        require_ema_stack = policy.require_bearish_ema_stack
+        rsi_max = policy.rsi_max
 
         required_cols = []
         if require_ema_stack:
@@ -591,11 +581,10 @@ class AdaptiveShortTheRip(ShortTheRip):
                         f"missing_1h_columns ({', '.join(missing_cols)})",
                         'mtf_1h_missing',
                         meta,
-                        require_1h,
                     )
 
                 self._inc_mtf_telemetry('mtf_1h_fallback_attempted')
-                min_required = self._mtf_min_bars_for_indicators(cfg, fallback_indicators)
+                min_required = self._mtf_min_bars_for_indicators(min_bars, fallback_indicators)
                 if len(df_1h) < min_required:
                     self._inc_mtf_telemetry('mtf_1h_fallback_skipped_insufficient_bars')
                     meta['code'] = 'mtf_1h_insufficient_bars'
@@ -611,7 +600,6 @@ class AdaptiveShortTheRip(ShortTheRip):
                         f"insufficient_bars (len={len(df_1h)} < min={min_required})",
                         'mtf_1h_insufficient_bars',
                         meta,
-                        require_1h,
                     )
 
                 df_1h = self._apply_mtf_indicator_fallback(
@@ -629,14 +617,13 @@ class AdaptiveShortTheRip(ShortTheRip):
                         f"missing_1h_columns ({', '.join(missing_cols)})",
                         'mtf_1h_missing',
                         meta,
-                        require_1h,
                     )
             df_valid = df_1h.dropna(subset=required_cols)
         else:
             df_valid = df_1h.dropna()
 
         if df_valid.empty:
-            return self._mtf_missing_result(action, 'missing_1h_values', 'mtf_1h_missing', meta, require_1h)
+            return self._mtf_missing_result(action, 'missing_1h_values', 'mtf_1h_missing', meta)
 
         last = df_valid.iloc[-1]
 
@@ -652,6 +639,7 @@ class AdaptiveShortTheRip(ShortTheRip):
                 'ema_stack_ok': ema_stack_ok,
             })
             if not ema_stack_ok:
+                meta['status'] = 'failed'
                 meta['code'] = 'mtf_1h_ema'
                 return False, (
                     f"ema_stack_not_bearish (ema21={ema21:.2f}, ema50={ema50:.2f}, ema200={ema200:.2f})"
@@ -664,6 +652,7 @@ class AdaptiveShortTheRip(ShortTheRip):
                 'rsi_1h_max': rsi_max,
             })
             if rsi_val > rsi_max:
+                meta['status'] = 'failed'
                 meta['code'] = 'mtf_1h_rsi'
                 return False, f"rsi_1h_above_max (rsi={rsi_val:.2f}, max={rsi_max:.2f})", meta
 
@@ -873,48 +862,93 @@ class AdaptiveShortTheRip(ShortTheRip):
             mtf_meta_1h = None
 
             # --- Optional Multi-Timeframe (MTF) Confirmation ---
-            mtf_cfg = self.strategy_config.get("mtf_confirmation", {}) or {}
-            if isinstance(mtf_cfg, dict) and mtf_cfg.get("enabled", False):
+            mtf_policy = self._mtf_policy
+            if isinstance(mtf_policy, MtfConfirmationConfig):
+                tf_15m = mtf_policy.tf_15m
+                tf_1h = mtf_policy.tf_1h
+
                 df_15m = None
-                if market_data:
+                if market_data and tf_15m.mode != "off":
                     df_15m = market_data.get('15m')
 
                 df_1h_local = df_1h
-                if (df_1h_local is None or (hasattr(df_1h_local, 'empty') and df_1h_local.empty)) and market_data:
+                if (
+                    tf_1h.mode != "off"
+                    and (df_1h_local is None or (hasattr(df_1h_local, 'empty') and df_1h_local.empty))
+                    and market_data
+                ):
                     df_1h_local = market_data.get("df_1h") or market_data.get("1h")
 
-                passed_15m, reason_15m, meta_15m = self._mtf_confirm_15m(df_15m, symbol_display, mtf_cfg)
-                mtf_meta_15m = meta_15m
-                signal.setdefault("features", {})["mtf_15m"] = meta_15m
-                if meta_15m and meta_15m.get("action") == "skip":
+                if tf_15m.mode == "off":
+                    mtf_meta_15m = {"timeframe": "15m", "mode": "off", "status": "skipped"}
+                    signal.setdefault("features", {})["mtf_15m"] = mtf_meta_15m
+                    logger.info(f"ℹ️ {log_prefix} MTF-15m skipped (mode=off).")
                     mtf_skipped = True
-                if not passed_15m:
-                    code = meta_15m.get("code", "mtf_15m_block")
-                    logger.info(f"?? {log_prefix} No Signal: MTF-15m block: {reason_15m}. [code={code}]")
-                    _shadow_str(
-                        "no_signal_mtf",
-                        "mtf_15m_block",
-                        {"mtf_15m": meta_15m},
+                else:
+                    passed_15m, reason_15m, meta_15m = self._mtf_confirm_15m(
+                        df_15m,
+                        symbol_display,
+                        tf_15m,
+                        mtf_policy.min_bars,
                     )
-                    return None
+                    mtf_meta_15m = meta_15m
+                    signal.setdefault("features", {})["mtf_15m"] = meta_15m
+                    if meta_15m and meta_15m.get("action") == "skip":
+                        mtf_skipped = True
+                    if not passed_15m:
+                        code = meta_15m.get("code", "mtf_15m_block")
+                        failure_kind = "missing-data" if meta_15m.get("status") == "missing" else "threshold"
+                        if tf_15m.mode == "hard":
+                            logger.info(
+                                f"🚫 {log_prefix} No Signal: MTF-15m veto ({failure_kind}): {reason_15m}. [code={code}]"
+                            )
+                            _shadow_str(
+                                "no_signal_mtf",
+                                "mtf_15m_block",
+                                {"mtf_15m": meta_15m},
+                            )
+                            return None
+                        meta_15m["soft_fail"] = True
+                        logger.info(
+                            f"⚠️ {log_prefix} MTF-15m soft-fail ({failure_kind}): {reason_15m}. [code={code}]"
+                        )
 
-                passed_1h, reason_1h, meta_1h = self._mtf_confirm_1h(df_1h_local, symbol_display, mtf_cfg)
-                mtf_meta_1h = meta_1h
-                signal.setdefault("features", {})["mtf_1h"] = meta_1h
-                if meta_1h and meta_1h.get("action") == "skip":
+                if tf_1h.mode == "off":
+                    mtf_meta_1h = {"timeframe": "1h", "mode": "off", "status": "skipped"}
+                    signal.setdefault("features", {})["mtf_1h"] = mtf_meta_1h
+                    logger.info(f"ℹ️ {log_prefix} MTF-1h skipped (mode=off).")
                     mtf_skipped = True
-                if not passed_1h:
-                    code = meta_1h.get("code", "mtf_1h_block")
-                    logger.info(f"?? {log_prefix} No Signal: MTF-1h block: {reason_1h}. [code={code}]")
-                    _shadow_str(
-                        "no_signal_mtf",
-                        "mtf_1h_block",
-                        {
-                            "mtf_15m": meta_15m,
-                            "mtf_1h": meta_1h,
-                        },
+                else:
+                    passed_1h, reason_1h, meta_1h = self._mtf_confirm_1h(
+                        df_1h_local,
+                        symbol_display,
+                        tf_1h,
+                        mtf_policy.min_bars,
                     )
-                    return None
+                    mtf_meta_1h = meta_1h
+                    signal.setdefault("features", {})["mtf_1h"] = meta_1h
+                    if meta_1h and meta_1h.get("action") == "skip":
+                        mtf_skipped = True
+                    if not passed_1h:
+                        code = meta_1h.get("code", "mtf_1h_block")
+                        failure_kind = "missing-data" if meta_1h.get("status") == "missing" else "threshold"
+                        if tf_1h.mode == "hard":
+                            logger.info(
+                                f"🚫 {log_prefix} No Signal: MTF-1h veto ({failure_kind}): {reason_1h}. [code={code}]"
+                            )
+                            _shadow_str(
+                                "no_signal_mtf",
+                                "mtf_1h_block",
+                                {
+                                    "mtf_15m": mtf_meta_15m,
+                                    "mtf_1h": meta_1h,
+                                },
+                            )
+                            return None
+                        meta_1h["soft_fail"] = True
+                        logger.info(
+                            f"⚠️ {log_prefix} MTF-1h soft-fail ({failure_kind}): {reason_1h}. [code={code}]"
+                        )
             
             logger.info(f"✅ {log_prefix} Base conditions met. Proceeding to ML & Risk checks.")
 

@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from strategies.adaptive_str import AdaptiveShortTheRip
+from config.mtf_policy import build_str_mtf_config
 
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,32 @@ def sample_df_1h_bearish():
             'ema200': 110.0,
         }
     ])
+
+
+def _default_mtf_cfg():
+    return {
+        "enabled": True,
+        "15m_mode": "hard",
+        "1h_mode": "hard",
+        "missing_15m_is_fatal": False,
+        "missing_1h_is_fatal": False,
+        "on_missing_15m": "skip",
+        "on_missing_1h": "skip",
+        "rsi_15m_min": 62.0,
+        "min_15m_close_over_ema50_pct": 0.0,
+        "require_1h_bearish_ema_stack": True,
+        "rsi_1h_max": 60.0,
+        "min_bars_rsi": 20,
+        "min_bars_ema21": 30,
+        "min_bars_ema50": 100,
+        "min_bars_ema200": 250,
+    }
+
+
+def _build_mtf_policy(**overrides):
+    cfg = _default_mtf_cfg()
+    cfg.update(overrides)
+    return build_str_mtf_config(cfg)
 
 
 def test_volatility_stop_tuning_scales_with_regime(base_config):
@@ -140,7 +167,9 @@ def test_signal_logs_volatility_stop_metadata(base_config, caplog):
 
 
 def test_mtf_disabled_does_not_block(base_config, sample_df_30m, sample_df_1h_bearish):
-    strategy = AdaptiveShortTheRip(base_config)
+    cfg = copy.deepcopy(base_config)
+    cfg["mtf_confirmation_effective"] = _build_mtf_policy(**{"15m_mode": "off", "1h_mode": "off"})
+    strategy = AdaptiveShortTheRip(cfg)
 
     signal = strategy.signal(
         df_30m=sample_df_30m,
@@ -148,17 +177,63 @@ def test_mtf_disabled_does_not_block(base_config, sample_df_30m, sample_df_1h_be
         symbol='BTC/USDT',
     )
     assert signal is not None
+    assert signal["features"]["mtf_15m"]["status"] == "skipped"
+    assert signal["features"]["mtf_1h"]["status"] == "skipped"
+
+
+def test_mtf_15m_hard_vetoes_signal(base_config, sample_df_30m, sample_df_1h_bearish):
+    cfg = copy.deepcopy(base_config)
+    cfg["mtf_confirmation_effective"] = _build_mtf_policy(
+        **{
+            "15m_mode": "hard",
+            "1h_mode": "off",
+            "rsi_15m_min": 70.0,
+        }
+    )
+    strategy = AdaptiveShortTheRip(cfg)
+
+    df_15m = pd.DataFrame([{"close": 100.0, "rsi": 50.0}])
+    signal = strategy.signal(
+        df_30m=sample_df_30m,
+        df_1h=sample_df_1h_bearish,
+        symbol='BTC/USDT',
+        market_data={"15m": df_15m},
+    )
+    assert signal is None
+
+
+def test_mtf_15m_soft_allows_signal(base_config, sample_df_30m, sample_df_1h_bearish):
+    cfg = copy.deepcopy(base_config)
+    cfg["mtf_confirmation_effective"] = _build_mtf_policy(
+        **{
+            "15m_mode": "soft",
+            "1h_mode": "off",
+            "rsi_15m_min": 70.0,
+        }
+    )
+    strategy = AdaptiveShortTheRip(cfg)
+
+    df_15m = pd.DataFrame([{"close": 100.0, "rsi": 50.0}])
+    signal = strategy.signal(
+        df_30m=sample_df_30m,
+        df_1h=sample_df_1h_bearish,
+        symbol='BTC/USDT',
+        market_data={"15m": df_15m},
+    )
+    assert signal is not None
+    assert signal["features"]["mtf_15m"]["soft_fail"] is True
 
 
 def test_mtf_missing_15m_skip_allows_signal(base_config, sample_df_30m, sample_df_1h_bearish):
     cfg = copy.deepcopy(base_config)
-    cfg['mtf_confirmation'] = {
-        'enabled': True,
-        'require_15m': False,
-        'require_1h': False,
-        'on_missing_15m': 'skip',
-        'on_missing_1h': 'skip',
-    }
+    cfg["mtf_confirmation_effective"] = _build_mtf_policy(
+        **{
+            "15m_mode": "hard",
+            "1h_mode": "hard",
+            "missing_15m_is_fatal": False,
+            "on_missing_15m": "skip",
+        }
+    )
     strategy = AdaptiveShortTheRip(cfg)
 
     signal = strategy.signal(
@@ -173,13 +248,14 @@ def test_mtf_missing_15m_skip_allows_signal(base_config, sample_df_30m, sample_d
 
 def test_mtf_missing_15m_reject_blocks_signal(base_config, sample_df_30m, sample_df_1h_bearish):
     cfg = copy.deepcopy(base_config)
-    cfg['mtf_confirmation'] = {
-        'enabled': True,
-        'require_15m': False,
-        'require_1h': False,
-        'on_missing_15m': 'reject',
-        'on_missing_1h': 'skip',
-    }
+    cfg["mtf_confirmation_effective"] = _build_mtf_policy(
+        **{
+            "15m_mode": "hard",
+            "1h_mode": "hard",
+            "missing_15m_is_fatal": True,
+            "on_missing_15m": "reject",
+        }
+    )
     strategy = AdaptiveShortTheRip(cfg)
 
     signal = strategy.signal(
@@ -192,13 +268,14 @@ def test_mtf_missing_15m_reject_blocks_signal(base_config, sample_df_30m, sample
 
 def test_mtf_missing_1h_reject_blocks_signal(base_config, sample_df_30m):
     cfg = copy.deepcopy(base_config)
-    cfg['mtf_confirmation'] = {
-        'enabled': True,
-        'require_15m': False,
-        'require_1h': True,
-        'on_missing_15m': 'skip',
-        'on_missing_1h': 'reject',
-    }
+    cfg["mtf_confirmation_effective"] = _build_mtf_policy(
+        **{
+            "15m_mode": "hard",
+            "1h_mode": "hard",
+            "missing_1h_is_fatal": True,
+            "on_missing_1h": "reject",
+        }
+    )
     strategy = AdaptiveShortTheRip(cfg)
 
     signal = strategy.signal(
@@ -211,15 +288,14 @@ def test_mtf_missing_1h_reject_blocks_signal(base_config, sample_df_30m):
 
 def test_mtf_insufficient_bars_1h_reject_blocks_signal(base_config, sample_df_30m):
     cfg = copy.deepcopy(base_config)
-    cfg['mtf_confirmation'] = {
-        'enabled': True,
-        'require_15m': False,
-        'require_1h': True,
-        'require_1h_bearish_ema_stack': True,
-        'rsi_1h_max': 60.0,
-        'on_missing_15m': 'skip',
-        'on_missing_1h': 'reject',
-    }
+    cfg["mtf_confirmation_effective"] = _build_mtf_policy(
+        **{
+            "15m_mode": "hard",
+            "1h_mode": "hard",
+            "missing_1h_is_fatal": True,
+            "on_missing_1h": "reject",
+        }
+    )
     strategy = AdaptiveShortTheRip(cfg)
 
     df_1h_short = pd.DataFrame({'close': [100.0] * 100})
@@ -235,14 +311,15 @@ def test_mtf_insufficient_bars_1h_reject_blocks_signal(base_config, sample_df_30
 
 def test_mtf_insufficient_bars_15m_skip_allows_signal(base_config, sample_df_30m, sample_df_1h_bearish):
     cfg = copy.deepcopy(base_config)
-    cfg['mtf_confirmation'] = {
-        'enabled': True,
-        'require_15m': False,
-        'require_1h': False,
-        'min_15m_close_over_ema50_pct': 0.002,
-        'on_missing_15m': 'skip',
-        'on_missing_1h': 'skip',
-    }
+    cfg["mtf_confirmation_effective"] = _build_mtf_policy(
+        **{
+            "15m_mode": "hard",
+            "1h_mode": "hard",
+            "min_15m_close_over_ema50_pct": 0.002,
+            "missing_15m_is_fatal": False,
+            "on_missing_15m": "skip",
+        }
+    )
     strategy = AdaptiveShortTheRip(cfg)
 
     df_15m_short = pd.DataFrame({'close': [100.0] * 50})
@@ -259,15 +336,16 @@ def test_mtf_insufficient_bars_15m_skip_allows_signal(base_config, sample_df_30m
 
 def test_mtf_fallback_cache_hit(base_config, sample_df_30m, sample_df_1h_bearish):
     cfg = copy.deepcopy(base_config)
-    cfg['mtf_confirmation'] = {
-        'enabled': True,
-        'require_15m': False,
-        'require_1h': False,
-        'rsi_15m_min': 10.0,
-        'min_15m_close_over_ema50_pct': 0.0,
-        'on_missing_15m': 'skip',
-        'on_missing_1h': 'skip',
-    }
+    cfg["mtf_confirmation_effective"] = _build_mtf_policy(
+        **{
+            "15m_mode": "hard",
+            "1h_mode": "hard",
+            "rsi_15m_min": 10.0,
+            "min_15m_close_over_ema50_pct": 0.0,
+            "missing_15m_is_fatal": False,
+            "on_missing_15m": "skip",
+        }
+    )
     strategy = AdaptiveShortTheRip(cfg)
 
     df_15m = pd.DataFrame({'close': [100.0 + i for i in range(30)]})

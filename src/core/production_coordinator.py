@@ -404,7 +404,9 @@ class ProductionCoordinator:
 
             signals_config = self.config.get('signals', {}) or {}
             mtf_cfg = (signals_config.get('short_the_rip', {}) or {}).get('mtf_confirmation', {}) or {}
-            mtf_enabled = bool(mtf_cfg.get('enabled', False))
+            mode_15m_raw = mtf_cfg.get("15m_mode")
+            mode_15m = mode_15m_raw.strip().lower() if isinstance(mode_15m_raw, str) else "off"
+            mtf_15m_enabled = mode_15m != "off"
 
             # 1. Veriyi Doğrudan ve Sadece WebSocket Collector'dan Al
             # Bu fonksiyon artık hem geçmiş (primed) hem de canlı veriyi içeren tam DataFrame'i döndürecek.
@@ -415,12 +417,12 @@ class ProductionCoordinator:
             # Diğer zaman dilimleri stratejiler tarafından direkt kullanılmıyor ama rejim analizi için alınabilir.
             df_1m = self._ws_fetch_df_with_fallback(symbol, '1m')
             df_5m = self._ws_fetch_df_with_fallback(symbol, '5m')
-            df_15m = self._ws_fetch_df_with_fallback(symbol, '15m') if mtf_enabled else None
+            df_15m = self._ws_fetch_df_with_fallback(symbol, '15m') if mtf_15m_enabled else None
 
             market_data = {
                 '1m': df_1m, '5m': df_5m, '30m': df_30m, '1h': df_1h, '4h': df_4h
             }
-            if mtf_enabled:
+            if mtf_15m_enabled:
                 market_data['15m'] = df_15m
 
             # 2. Veri Doğrulama Logları
@@ -580,7 +582,7 @@ class ProductionCoordinator:
             market_data = {
                 '1m': df_1m, '5m': df_5m, '30m': df_30m, '1h': df_1h, '4h': df_4h
             }
-            if mtf_enabled:
+            if mtf_15m_enabled:
                 market_data['15m'] = df_15m
             
             # Bu log, verinin gerçekten enjekte edilip edilmediğini kanıtlar.
@@ -756,7 +758,12 @@ class ProductionCoordinator:
 
         signals_config = self.config.get('signals', {}) or {}
         mtf_cfg = (signals_config.get('short_the_rip', {}) or {}).get('mtf_confirmation', {}) or {}
-        mtf_enabled = bool(mtf_cfg.get('enabled', False))
+        mode_15m_raw = mtf_cfg.get("15m_mode")
+        mode_15m = mode_15m_raw.strip().lower() if isinstance(mode_15m_raw, str) else "off"
+        mtf_15m_enabled = mode_15m != "off"
+        mode_1h_raw = mtf_cfg.get("1h_mode")
+        mode_1h = mode_1h_raw.strip().lower() if isinstance(mode_1h_raw, str) else "off"
+        mtf_any_enabled = mtf_15m_enabled or mode_1h != "off"
 
         processed_count = 0
         error_count = 0
@@ -804,7 +811,7 @@ class ProductionCoordinator:
                     if df_30m is None or df_30m.empty:
                         raise RuntimeError("30m OHLCV unavailable: both hybrid and closed are empty/None")
                     df_1h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "1h")
-                    if mtf_enabled:
+                    if mtf_15m_enabled:
                         df_15m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "15m")
                 else:
                     logger.error("❌ MarketDataPipeline is not available in ProductionCoordinator.")
@@ -828,7 +835,7 @@ class ProductionCoordinator:
             
             # --- STRATEGY EXECUTION AND SIGNAL FORWARDING STAGE ---
             market_data = None
-            if mtf_enabled:
+            if mtf_any_enabled:
                 market_data = {
                     '15m': df_15m,
                     '30m': df_30m,

@@ -1677,6 +1677,9 @@ class LiveTradingLauncher:
                 self.strategies['adaptive_str'] = AdaptiveShortTheRip(adaptive_str_config, regime_analyzer)
                 logger.info(f"✓ Adaptive Short The Rip strategy initialized")
                 logger.info(f"  - STR Config: { {k: v for k, v in adaptive_str_config.items() if k != 'enable'} }")
+                mtf_summary = (adaptive_str_config.get("mtf_confirmation", {}) or {}).get("mtf_policy_summary")
+                if mtf_summary:
+                    logger.info(f"  - STR MTF policy: {mtf_summary}")
 
             # VWAP Mean Reversion (strategies section)
             strategies_config = self.config.get('strategies', {}) if isinstance(self.config, dict) else {}

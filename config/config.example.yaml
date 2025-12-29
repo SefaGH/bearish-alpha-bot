@@ -386,7 +386,18 @@ signals:
     max_sl_pct: 0.020                 # Override with: STRATEGY_STR_MAX_SL_PCT
     # Optional MTF confirmation (15m + 1h)
     mtf_confirmation:
+      # Legacy toggle (deprecated; use 15m_mode/1h_mode)
       enabled: true
+
+      # Explicit per-timeframe modes: off | soft | hard
+      15m_mode: "soft"
+      1h_mode: "hard"
+
+      # Missing-data policy (renamed; replaces require_*)
+      missing_15m_is_fatal: false
+      missing_1h_is_fatal: true
+
+      # Legacy missing-data flags (deprecated; use missing_*_is_fatal)
       require_15m: false
       require_1h: false
 
@@ -397,7 +408,7 @@ signals:
       rsi_1h_max: 60.0
 
       on_missing_15m: "skip"
-      on_missing_1h: "skip"
+      on_missing_1h: "reject"
       # Optional min bars guard (defaults used if omitted)
       # defaults (if omitted): rsi=20, ema21=30, ema50=100, ema200=250
       # guard only runs when indicator columns missing + fallback planned

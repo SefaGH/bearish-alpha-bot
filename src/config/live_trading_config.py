@@ -27,6 +27,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import yaml
+from .mtf_policy import build_str_mtf_config
 
 # Azure App Configuration imports (optional, graceful fallback if not available)
 try:
@@ -299,6 +300,7 @@ class LiveTradingConfiguration:
         self._apply_trigger_price_defaults(merged)
         self._normalize_risk_config(merged)
         self._apply_websocket_defaults(merged)
+        self._normalize_str_mtf_config(merged)
         return merged
 
     def _load_yaml_and_map_env_vars(self) -> Tuple[Dict[str, Any], Dict[str, List[str]]]:
@@ -1020,6 +1022,29 @@ class LiveTradingConfiguration:
                     canonical,
                 )
 
+    def _normalize_str_mtf_config(self, config: Dict[str, Any]) -> None:
+        signals_cfg = config.get("signals", {})
+        if not isinstance(signals_cfg, dict):
+            return
+        str_cfg = signals_cfg.get("short_the_rip", {})
+        if not isinstance(str_cfg, dict):
+            return
+        mtf_cfg = str_cfg.get("mtf_confirmation")
+        if mtf_cfg is None:
+            return
+        if not isinstance(mtf_cfg, dict):
+            raise ValueError("signals.short_the_rip.mtf_confirmation must be a dict.")
+
+        mtf_policy = build_str_mtf_config(mtf_cfg, strict=self._get_strict_mode(), log=logger)
+        str_cfg["mtf_confirmation_effective"] = mtf_policy
+        mtf_cfg["15m_mode"] = mtf_policy.tf_15m.mode
+        mtf_cfg["1h_mode"] = mtf_policy.tf_1h.mode
+        mtf_cfg["missing_15m_is_fatal"] = mtf_policy.tf_15m.missing_is_fatal
+        mtf_cfg["missing_1h_is_fatal"] = mtf_policy.tf_1h.missing_is_fatal
+        mtf_cfg["on_missing_15m"] = mtf_policy.tf_15m.on_missing
+        mtf_cfg["on_missing_1h"] = mtf_policy.tf_1h.on_missing
+        mtf_cfg["mtf_policy_summary"] = mtf_policy.summary
+
     @classmethod
     def _validate_schema_types(
         cls,
@@ -1678,6 +1703,14 @@ class LiveTradingConfiguration:
         ):
             max_notional_usd = get_nested(config, ['risk', 'computed_max_notional_usd'], 0.0)
         logger.info(f"   Max Notional Per Trade: {max_notional_usd:.2f} USDT")
+
+        mtf_summary = get_nested(
+            config,
+            ["signals", "short_the_rip", "mtf_confirmation", "mtf_policy_summary"],
+            None,
+        )
+        if mtf_summary:
+            logger.info(f"STR MTF policy: {mtf_summary}")
 
         # Pyramiding summary
         logger.info("Pyramiding Settings:")

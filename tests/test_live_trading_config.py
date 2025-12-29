@@ -53,6 +53,13 @@ def _set_path(config, dotted_path, value):
     cursor[parts[-1]] = value
 
 
+def _base_mtf_cfg():
+    base_config = yaml.safe_load(
+        Path("config/config.example.yaml").read_text(encoding="utf-8")
+    )
+    return copy.deepcopy(base_config["signals"]["short_the_rip"]["mtf_confirmation"])
+
+
 def test_allowlist_type_coercion_handles_appconfig_strings():
     base_config = yaml.safe_load(
         Path("config/config.example.yaml").read_text(encoding="utf-8")
@@ -104,6 +111,76 @@ def test_schema_type_coercion_casts_rr_dynamic_values():
     assert cfg["risk"]["rr_dynamic"]["base_target_rr"] == pytest.approx(2.5)
     assert cfg["risk"]["rr_dynamic"]["enabled"] is False
     assert cfg["signals"]["short_the_rip"]["mtf_confirmation"]["require_15m"] is False
+
+
+def test_mtf_policy_defaults_to_hard_when_enabled():
+    mtf_cfg = _base_mtf_cfg()
+    mtf_cfg.pop("15m_mode", None)
+    mtf_cfg.pop("1h_mode", None)
+    mtf_cfg["enabled"] = True
+
+    cfg = {"signals": {"short_the_rip": {"mtf_confirmation": mtf_cfg}}}
+    LiveTradingConfiguration()._normalize_str_mtf_config(cfg)
+
+    policy = cfg["signals"]["short_the_rip"]["mtf_confirmation_effective"]
+    assert policy.tf_15m.mode == "hard"
+    assert policy.tf_1h.mode == "hard"
+
+
+def test_mtf_policy_disabled_forces_modes_off():
+    mtf_cfg = _base_mtf_cfg()
+    mtf_cfg["enabled"] = False
+    mtf_cfg["15m_mode"] = "hard"
+    mtf_cfg["1h_mode"] = "soft"
+
+    cfg = {"signals": {"short_the_rip": {"mtf_confirmation": mtf_cfg}}}
+    LiveTradingConfiguration()._normalize_str_mtf_config(cfg)
+
+    policy = cfg["signals"]["short_the_rip"]["mtf_confirmation_effective"]
+    assert policy.tf_15m.mode == "off"
+    assert policy.tf_1h.mode == "off"
+
+
+def test_mtf_policy_rejects_null_threshold():
+    mtf_cfg = _base_mtf_cfg()
+    mtf_cfg["rsi_15m_min"] = None
+
+    cfg = {"signals": {"short_the_rip": {"mtf_confirmation": mtf_cfg}}}
+    with pytest.raises(ValueError):
+        LiveTradingConfiguration()._normalize_str_mtf_config(cfg)
+
+
+def test_mtf_policy_rejects_invalid_mode():
+    mtf_cfg = _base_mtf_cfg()
+    mtf_cfg["15m_mode"] = "maybe"
+
+    cfg = {"signals": {"short_the_rip": {"mtf_confirmation": mtf_cfg}}}
+    with pytest.raises(ValueError):
+        LiveTradingConfiguration()._normalize_str_mtf_config(cfg)
+
+
+def test_mtf_policy_rejects_invalid_on_missing():
+    mtf_cfg = _base_mtf_cfg()
+    mtf_cfg["on_missing_15m"] = "nope"
+
+    cfg = {"signals": {"short_the_rip": {"mtf_confirmation": mtf_cfg}}}
+    with pytest.raises(ValueError):
+        LiveTradingConfiguration()._normalize_str_mtf_config(cfg)
+
+
+def test_mtf_bool_string_coercion_prevents_truthy():
+    base_config = yaml.safe_load(
+        Path("config/config.example.yaml").read_text(encoding="utf-8")
+    )
+    cfg = copy.deepcopy(base_config)
+    _set_path(cfg, "signals.short_the_rip.mtf_confirmation.missing_15m_is_fatal", "false")
+
+    schema = LiveTradingConfiguration._build_type_schema(base_config)
+    LiveTradingConfiguration._apply_schema_type_coercion(cfg, schema)
+    LiveTradingConfiguration()._normalize_str_mtf_config(cfg)
+
+    policy = cfg["signals"]["short_the_rip"]["mtf_confirmation_effective"]
+    assert policy.tf_15m.missing_is_fatal is False
 
 
 def test_appconfig_symbol_segment_preserves_case():

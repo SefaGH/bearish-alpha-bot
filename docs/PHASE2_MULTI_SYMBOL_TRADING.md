@@ -209,14 +209,26 @@ To enable 15m + 1h confirmation for adaptive_str:
 signals:
   short_the_rip:
     mtf_confirmation:
+      # Legacy toggle (deprecated; use modes)
       enabled: true
-      require_15m: false
-      require_1h: false
+
+      # Explicit per-timeframe modes: off | soft | hard
+      15m_mode: "hard"
+      1h_mode: "hard"
+
+      # Missing-data policy (renamed; replaces require_*)
+      missing_15m_is_fatal: false
+      missing_1h_is_fatal: false
       on_missing_15m: "skip"
       on_missing_1h: "skip"
 ```
 
-This adds a 15m overbought/extension check and a 1h bearish trend check. Missing data behavior is controlled by the `on_missing_*` settings.
+This adds a 15m overbought/extension check and a 1h bearish trend check. Missing data behavior is controlled by the `on_missing_*` settings and the `missing_*_is_fatal` flags (missing-data only; thresholds veto only in hard mode).
+
+Notes:
+- `soft` mode evaluates checks and logs soft-fail reasons without vetoing signals.
+- `off` mode skips the timeframe entirely.
+- `null` is invalid for threshold fields; use mode=off or explicit numeric values instead.
 
 #### Minimum bar guard defaults
 

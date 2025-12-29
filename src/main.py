@@ -320,7 +320,9 @@ def run_once():
                         if len(df_30i) >= 50 and len(df_1hi) >= 50:
                             market_data = None
                             mtf_cfg = (s_cfg.get("short_the_rip", {}) or {}).get("mtf_confirmation", {}) or {}
-                            if mtf_cfg.get("enabled", False):
+                            mode_15m_raw = mtf_cfg.get("15m_mode")
+                            mode_15m = mode_15m_raw.strip().lower() if isinstance(mode_15m_raw, str) else "off"
+                            if mode_15m != "off":
                                 df_15 = fetch_ohlcv(client, sym, "15m", limit=250)
                                 df_15i = ind_enrich(df_15, ind_cfg).dropna()
                                 if df_15i.empty:
