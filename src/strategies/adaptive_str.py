@@ -90,6 +90,7 @@ class AdaptiveShortTheRip(ShortTheRip):
         self.regime_analyzer = regime_analyzer
         self.base_cfg = cfg.copy()
         self.debug_logging = self.base_cfg.get('debug', {}).get('strategy_logging', False)
+        self._last_hybrid_meta_state = None
         
         # Minimum R/R oranını başlangıçta, bir kez olmak üzere config'den oku.
         # `super()` çağrısı `self.strategy_config`'i oluşturduğu için artık bunu güvenle kullanabiliriz.
@@ -673,16 +674,40 @@ class AdaptiveShortTheRip(ShortTheRip):
         log_prefix = f"[{self.strategy_name.upper()}/{symbol_display}]"
         # Volume logic centralized in StrategyCoordinator (Issue #450)
 
+        df_30m_closed = market_data.get("30m_closed") if market_data else None
+        df_30m_hybrid = market_data.get("30m_hybrid") if market_data else None
+        hybrid_df_provided = df_30m_hybrid is not None
+        if df_30m_closed is None:
+            df_30m_closed = df_30m
+        if df_30m_hybrid is None:
+            df_30m_hybrid = df_30m
+
+        df_hybrid_attrs = getattr(df_30m_hybrid, "attrs", {}) or {}
+        includes_forming = bool(df_hybrid_attrs.get("includes_forming", False))
+        fallback_reason = df_hybrid_attrs.get("fallback_reason", None)
+        if isinstance(fallback_reason, str) and fallback_reason.strip().lower() in ("none", ""):
+            fallback_reason = None
+        merge_action = df_hybrid_attrs.get("merge_action", "none")
+        forming_ts = df_hybrid_attrs.get("forming_ts")
+        forming_last_update_ts = df_hybrid_attrs.get("forming_last_update_ts")
+        forming_update_age_ms = df_hybrid_attrs.get("forming_update_age_ms")
+
+        used_forming = bool(includes_forming and fallback_reason is None)
+        df_eval = df_30m_hybrid if used_forming else df_30m_closed
+        rsi_source = "live" if used_forming else "closed"
+        trigger_price_source = "forming_close" if used_forming else "closed_close"
+        eval_source = "hybrid" if used_forming else "closed"
+
         # --- Data Validation Step ---
-        validation_passed, reason = self._validate_input_data(df_30m, df_1h, regime_data, symbol_display)
+        validation_passed, reason = self._validate_input_data(df_eval, df_1h, regime_data, symbol_display)
         if not validation_passed:
             logger.info(f"🚫 {log_prefix} No Signal: {reason}")
             return None
 
         try:
             if self.debug_logging:
-                logger.debug(f"{log_prefix} Data sufficiency check: total_rows={len(df_30m)}")
-            last30 = df_30m.iloc[-1]
+                logger.debug(f"{log_prefix} Data sufficiency check: total_rows={len(df_eval)}")
+            last30 = df_eval.iloc[-1]
             required_cols = ['close', 'rsi', 'atr', 'ema_fast', 'ema21', 'ema50', 'ema200']
             missing = [c for c in required_cols if c not in last30.index]
             if missing:
@@ -723,6 +748,31 @@ class AdaptiveShortTheRip(ShortTheRip):
                 'momentum': regime_data.get('momentum', 'sideways'),
                 'volatility': regime_data.get('volatility', 'normal')
             }
+
+            used_row_ts = None
+            try:
+                if "timestamp" in last30:
+                    used_row_ts = last30.get("timestamp")
+                if used_row_ts is None and hasattr(df_eval, "index") and len(df_eval.index) > 0:
+                    idx = df_eval.index[-1]
+                    used_row_ts = idx.isoformat() if hasattr(idx, "isoformat") else str(idx)
+            except Exception:
+                used_row_ts = None
+
+            meta_state = (includes_forming, fallback_reason, merge_action)
+            should_log_hybrid_meta = used_forming or (meta_state != self._last_hybrid_meta_state)
+            if should_log_hybrid_meta:
+                entry_log = f"{close_price:.2f}" if close_price is not None else "None"
+                rsi_log = f"{rsi_val:.2f}" if rsi_val is not None else "None"
+                logger.info(
+                    f"{log_prefix} Hybrid meta | includes_forming={includes_forming} "
+                    f"used_forming={used_forming} fallback_reason={(fallback_reason if fallback_reason is not None else 'none')} "
+                    f"merge_action={merge_action} rsi_source={rsi_source} trigger_price_source={trigger_price_source} "
+                    f"used_row_ts={used_row_ts} forming_ts={forming_ts} "
+                    f"forming_last_update_ts={forming_last_update_ts} forming_update_age_ms={forming_update_age_ms} "
+                    f"entry={entry_log} rsi={rsi_log}"
+                )
+                self._last_hybrid_meta_state = meta_state
             
             # --- Adaptive Threshold Calculation ---
             adaptive_rsi_threshold = self.get_symbol_specific_threshold(symbol_display)
@@ -767,8 +817,8 @@ class AdaptiveShortTheRip(ShortTheRip):
                 rip_pass_shadow = close_price >= rip_threshold_value
 
             timeframe = "30m"
-            last_closed_ts_ms = extract_last_closed_ts_ms(df_30m)
-            df_meta = extract_df_meta(df_30m)
+            last_closed_ts_ms = extract_last_closed_ts_ms(df_eval)
+            df_meta = extract_df_meta(df_eval)
 
             def _shadow_str(decision: str, fail_reason: str = "", extra: Optional[Dict] = None) -> None:
                 if not shadow_enabled():
@@ -1120,18 +1170,14 @@ class AdaptiveShortTheRip(ShortTheRip):
             return signal
             
         except Exception as e:
-            logger.error(f"💥 {log_prefix} Critical error during signal generation: {e}", exc_info=True)
-            # Fallback logic remains unchanged
-            try:
-                if hasattr(super(), 'signal'):
-                    base_signal = super().signal(df_30m, df_1h)
-                    if base_signal:
-                        base_signal.update({'strategy_type': 'base_fallback', 'fallback_reason': str(e), 'symbol': symbol})
-                        logger.warning(f"⚠️ {log_prefix} Fallback to base strategy successful.")
-                        return base_signal
-            except Exception as fallback_error:
-                logger.error(f"💥 {log_prefix} Fallback to base strategy also failed: {fallback_error}")
-                
+            logger.error(
+                f"?? {log_prefix} Critical error during signal generation: {e} | "
+                f"eval_source={eval_source} includes_forming={includes_forming} "
+                f"used_forming={used_forming} fallback_reason={(fallback_reason if fallback_reason is not None else 'none')} "
+                f"merge_action={merge_action}",
+                exc_info=True
+            )
+
         return None
     
     def get_strategy_state(self) -> Dict:

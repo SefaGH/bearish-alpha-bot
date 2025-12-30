@@ -420,7 +420,13 @@ class ProductionCoordinator:
             df_15m = self._ws_fetch_df_with_fallback(symbol, '15m') if mtf_15m_enabled else None
 
             market_data = {
-                '1m': df_1m, '5m': df_5m, '30m': df_30m, '1h': df_1h, '4h': df_4h
+                '1m': df_1m,
+                '5m': df_5m,
+                '30m': df_30m,
+                '30m_closed': df_30m,
+                '30m_hybrid': df_30m,
+                '1h': df_1h,
+                '4h': df_4h,
             }
             if mtf_15m_enabled:
                 market_data['15m'] = df_15m
@@ -580,7 +586,13 @@ class ProductionCoordinator:
             
             # ===== CREATE & VALIDATE MARKET_DATA DICTIONARY FOR STRATEGIES =====
             market_data = {
-                '1m': df_1m, '5m': df_5m, '30m': df_30m, '1h': df_1h, '4h': df_4h
+                '1m': df_1m,
+                '5m': df_5m,
+                '30m': df_30m,
+                '30m_closed': df_30m,
+                '30m_hybrid': df_30m,
+                '1h': df_1h,
+                '4h': df_4h,
             }
             if mtf_15m_enabled:
                 market_data['15m'] = df_15m
@@ -749,7 +761,7 @@ class ProductionCoordinator:
              logger.error("❌ PortfolioManager or strategies not initialized. Cannot process loop.")
              return
         strategies_to_run = list(self.portfolio_manager.strategies.items())
-        hybrid_allowlist = {"adaptive_ob"}
+        hybrid_allowlist = {"adaptive_ob", "adaptive_str"}
         hybrid_strategies = {
             name
             for name, instance in strategies_to_run
@@ -834,13 +846,14 @@ class ProductionCoordinator:
             processed_count += 1
             
             # --- STRATEGY EXECUTION AND SIGNAL FORWARDING STAGE ---
-            market_data = None
-            if mtf_any_enabled:
-                market_data = {
-                    '15m': df_15m,
-                    '30m': df_30m,
-                    '1h': df_1h,
-                }
+            market_data = {
+                '30m': df_30m,
+                '30m_closed': df_30m_closed,
+                '30m_hybrid': df_30m_hybrid,
+                '1h': df_1h,
+            }
+            if mtf_15m_enabled:
+                market_data['15m'] = df_15m
 
             for strategy_name, strategy_instance in strategies_to_run:
                 try:

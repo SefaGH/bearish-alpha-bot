@@ -434,11 +434,11 @@ signals:
           max_sl_pct: 0.025           # Override with: STRATEGY_STR_VOL_HIGH_MAX_SL
     symbols:
       "BTC/USDT:USDT":
-        rsi_threshold: 50             # Override with: RSI_THRESHOLD_BTC
+        rsi_threshold: 45             # Override with: RSI_THRESHOLD_BTC
       "ETH/USDT:USDT":
-        rsi_threshold: 50             # Override with: RSI_THRESHOLD_ETH
+        rsi_threshold: 45             # Override with: RSI_THRESHOLD_ETH
       "SOL/USDT:USDT":
-        rsi_threshold: 50             # Override with: RSI_THRESHOLD_SOL
+        rsi_threshold: 45             # Override with: RSI_THRESHOLD_SOL
 
 # ==============================================================================
 # STRATEGY ROUTING (Regime-aware)
