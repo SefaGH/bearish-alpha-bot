@@ -577,6 +577,8 @@ class AdvancedPositionManager:
                 'realized_pnl': 0.0,
                 'trailing_stop_enabled': False,
                 'trailing_stop_distance': 0.02,
+                'trailing_stop_activation_threshold': 0.0,
+                'trailing_stop_activated': False,
                 'highest_price': entry_price if side == 'long' else entry_price,
                 'lowest_price': entry_price if side == 'short' else entry_price,
                 'max_adverse_excursion': 0.0,
@@ -705,19 +707,25 @@ class AdvancedPositionManager:
                     position['max_favorable_excursion_pct'] = pnl_pct
             
             # Update highest/lowest price for trailing stop
-            if side in ['long', 'buy']:
+            is_long = side in self.LONG_SIDES
+            if is_long:
                 if position['current_price'] > position['highest_price']:
                     position['highest_price'] = position['current_price']
-                    # Update trailing stop if enabled
-                    if position['trailing_stop_enabled']:
-                        trailing_distance = position['trailing_stop_distance']
-                        position['stop_loss'] = position['highest_price'] * (1 - trailing_distance)
             else:  # short
                 if position['current_price'] < position['lowest_price']:
                     position['lowest_price'] = position['current_price']
-                    if position['trailing_stop_enabled']:
-                        trailing_distance = position['trailing_stop_distance']
-                        position['stop_loss'] = position['lowest_price'] * (1 + trailing_distance)
+
+            if position.get('trailing_stop_enabled'):
+                trailing_distance = position.get('trailing_stop_distance', 0.02)
+                if self._is_trailing_stop_active(position, position['current_price'], entry_price, is_long):
+                    if is_long:
+                        trailing_stop_level = position['highest_price'] * (1 - trailing_distance)
+                        if trailing_stop_level > position['stop_loss']:
+                            position['stop_loss'] = trailing_stop_level
+                    else:
+                        trailing_stop_level = position['lowest_price'] * (1 + trailing_distance)
+                        if trailing_stop_level < position['stop_loss']:
+                            position['stop_loss'] = trailing_stop_level
             
             # Record P&L snapshot
             self.pnl_tracker[position_id].append({
@@ -1063,6 +1071,23 @@ class AdvancedPositionManager:
         duration = (current_time - opened_at).total_seconds()
         
         return duration >= max_duration
+
+    def _is_trailing_stop_active(self, position: Dict, current_price: float, entry_price: float, is_long: bool) -> bool:
+        activation_threshold = self._safe_float(position.get('trailing_stop_activation_threshold'), 0.0)
+        if activation_threshold is None:
+            activation_threshold = 0.0
+        if activation_threshold <= 0:
+            position['trailing_stop_activated'] = True
+            return True
+        if position.get('trailing_stop_activated'):
+            return True
+        if entry_price <= 0 or current_price <= 0:
+            return False
+        activation_price = entry_price * (1 + activation_threshold) if is_long else entry_price * (1 - activation_threshold)
+        if (is_long and current_price >= activation_price) or (not is_long and current_price <= activation_price):
+            position['trailing_stop_activated'] = True
+            return True
+        return False
     
     async def manage_position_exits(self, position_id: str) -> Dict[str, Any]:
         """
@@ -1088,6 +1113,7 @@ class AdvancedPositionManager:
             stop_loss = position.get('stop_loss', 0)
             take_profit = position.get('take_profit', 0)
             entry_price = position.get('entry_price', 0)
+            is_long = side in self.LONG_SIDES
             
             # Check stop loss
             if side in ['long', 'buy']:
@@ -1148,50 +1174,48 @@ class AdvancedPositionManager:
             # Check trailing stop (if enabled)
             if position.get('trailing_stop_enabled', False):
                 trailing_distance = position.get('trailing_stop_distance', 0.02)  # 2% default
-                highest_price = position.get('highest_price', entry_price)
-                
-                # Update highest price if current price is higher (for long positions)
-                if side in ['long', 'buy']:
+                if is_long:
+                    highest_price = position.get('highest_price', entry_price)
                     if current_price > highest_price:
                         position['highest_price'] = current_price
                         highest_price = current_price
-                    
-                    # Calculate trailing stop level
+
                     trailing_stop_level = highest_price * (1 - trailing_distance)
-                    
-                    if current_price <= trailing_stop_level:
-                        logger.info(
-                            f"📉 [TRAILING-STOP-HIT] {position_id}\n"
-                            f"   Highest Price: ${highest_price:.2f}\n"
-                            f"   Current Price: ${current_price:.2f}\n"
-                            f"   Trailing Stop: ${trailing_stop_level:.2f}"
-                        )
-                        return {
-                            'should_exit': True,
-                            'exit_reason': 'trailing_stop',
-                            'exit_price': current_price
-                        }
+
+                    if self._is_trailing_stop_active(position, current_price, entry_price, True):
+                        if current_price <= trailing_stop_level:
+                            logger.info(
+                                f"📉 [TRAILING-STOP-HIT] {position_id}\n"
+                                f"   Highest Price: ${highest_price:.2f}\n"
+                                f"   Current Price: ${current_price:.2f}\n"
+                                f"   Trailing Stop: ${trailing_stop_level:.2f}"
+                            )
+                            return {
+                                'should_exit': True,
+                                'exit_reason': 'trailing_stop',
+                                'exit_price': current_price
+                            }
                 else:  # short position
-                    # For short, track lowest price
                     lowest_price = position.get('lowest_price', entry_price)
                     if current_price < lowest_price:
                         position['lowest_price'] = current_price
                         lowest_price = current_price
-                    
+
                     trailing_stop_level = lowest_price * (1 + trailing_distance)
-                    
-                    if current_price >= trailing_stop_level:
-                        logger.info(
-                            f"📈 [TRAILING-STOP-HIT] {position_id}\n"
-                            f"   Lowest Price: ${lowest_price:.2f}\n"
-                            f"   Current Price: ${current_price:.2f}\n"
-                            f"   Trailing Stop: ${trailing_stop_level:.2f}"
-                        )
-                        return {
-                            'should_exit': True,
-                            'exit_reason': 'trailing_stop',
-                            'exit_price': current_price
-                        }
+
+                    if self._is_trailing_stop_active(position, current_price, entry_price, False):
+                        if current_price >= trailing_stop_level:
+                            logger.info(
+                                f"📈 [TRAILING-STOP-HIT] {position_id}\n"
+                                f"   Lowest Price: ${lowest_price:.2f}\n"
+                                f"   Current Price: ${current_price:.2f}\n"
+                                f"   Trailing Stop: ${trailing_stop_level:.2f}"
+                            )
+                            return {
+                                'should_exit': True,
+                                'exit_reason': 'trailing_stop',
+                                'exit_price': current_price
+                            }
             
             return {'should_exit': False, 'reason': 'No exit conditions met'}
         
@@ -1274,13 +1298,19 @@ class AdvancedPositionManager:
             logger.error(f"Error calculating position metrics: {e}")
             return {'success': False, 'reason': str(e)}
     
-    def enable_trailing_stop(self, position_id: str, trailing_distance: float = 0.02) -> Dict[str, Any]:
+    def enable_trailing_stop(
+        self,
+        position_id: str,
+        trailing_distance: float = 0.02,
+        activation_threshold: float = 0.0
+    ) -> Dict[str, Any]:
         """
         Enable trailing stop-loss for a position.
         
         Args:
             position_id: Position identifier
             trailing_distance: Trailing distance as decimal (e.g., 0.02 for 2%)
+            activation_threshold: Profit threshold before trailing activates (e.g., 0.003 for 0.3%)
             
         Returns:
             Operation result
@@ -1290,10 +1320,20 @@ class AdvancedPositionManager:
                 return {'success': False, 'reason': 'Position not found'}
             
             position = self.positions[position_id]
+            normalized_distance = self._safe_float(trailing_distance, 0.02) or 0.02
+            normalized_threshold = self._safe_float(activation_threshold, 0.0) or 0.0
+            if normalized_threshold < 0:
+                normalized_threshold = 0.0
+
             position['trailing_stop_enabled'] = True
-            position['trailing_stop_distance'] = trailing_distance
+            position['trailing_stop_distance'] = normalized_distance
+            position['trailing_stop_activation_threshold'] = normalized_threshold
+            position['trailing_stop_activated'] = normalized_threshold <= 0
             
-            logger.info(f"Trailing stop enabled for {position_id} with {trailing_distance*100:.1f}% distance")
+            logger.info(
+                f"Trailing stop enabled for {position_id} with {normalized_distance*100:.1f}% distance "
+                f"(activation: {normalized_threshold*100:.2f}%)"
+            )
             
             return {'success': True, 'position_id': position_id}
             

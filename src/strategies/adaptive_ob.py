@@ -79,6 +79,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
         self._dyn_last_fast_status_log_ts: Dict[Tuple[str, str], float] = {}
         self._dyn_last_fast_status_snapshot: Dict[Tuple[str, str], Tuple[bool, bool, bool]] = {}
         self._dyn_last_seen_ts: Dict[str, int] = {}
+        self._trend_penalty_state_by_symbol: Dict[str, bool] = {}
 
         # Minimum R/R oranını başlangıçta, bir kez olmak üzere config'den oku.
         # `super()` çağrısı `self.strategy_config`'i oluşturduğu için artık bunu güvenle kullanabiliriz.
@@ -742,7 +743,35 @@ class AdaptiveOversoldBounce(OversoldBounce):
             # Trend confirmation: if market is in a strong downswing (ema_fast < ema_mid), demand deeper RSI
             ema_trend_penalty = float(self.strategy_config.get('trend_confirmation_rsi_penalty', 5.0))
             min_adaptive_rsi = float(self.strategy_config.get('trend_confirmation_min_rsi', 8.0))
+            ema_gap_pct_min = float(self.strategy_config.get('trend_confirmation_ema_gap_pct_min', 0.0) or 0.0)
+            gap_on_raw = self.strategy_config.get('trend_confirmation_ema_gap_pct_on', None)
+            gap_off_raw = self.strategy_config.get('trend_confirmation_ema_gap_pct_off', None)
+            gap_on = None
+            gap_off = None
+            if gap_on_raw is not None:
+                try:
+                    gap_on = float(gap_on_raw)
+                except Exception:
+                    gap_on = None
+            if gap_off_raw is not None:
+                try:
+                    gap_off = float(gap_off_raw)
+                except Exception:
+                    gap_off = None
+            use_hysteresis = (gap_on is not None) or (gap_off is not None)
+            if use_hysteresis and gap_on is None:
+                gap_on = gap_off
+            if use_hysteresis and gap_off is None:
+                gap_off = gap_on
+            if use_hysteresis and gap_on is not None and gap_off is not None and gap_off > gap_on:
+                gap_off = gap_on
+            ema_gap_pct = None
+            if ema_mid > 0:
+                ema_gap_pct = (ema_mid - ema_fast) / ema_mid
             trend_bias_active = False
+            prev_active = self._trend_penalty_state_by_symbol.get(symbol_display, False)
+            active = prev_active
+            reason = None
             if ema_fast > 0 and ema_mid > 0 and ema_fast < ema_mid and extreme_bypass_active:
                 try:
                     extreme_bypass_meta["trend_penalty_skipped"] = True
@@ -752,15 +781,76 @@ class AdaptiveOversoldBounce(OversoldBounce):
                     "[OB-EXTREME-BYPASS] %s skipping trend RSI penalty (ema_fast < ema_mid)",
                     log_prefix,
                 )
-            if ema_fast > 0 and ema_mid > 0 and ema_fast < ema_mid and (not extreme_bypass_active):
+            if extreme_bypass_active:
+                active = False
+                if prev_active:
+                    reason = "turned_off_extreme_bypass"
+            elif not (ema_fast > 0 and ema_mid > 0):
+                active = False
+                if prev_active:
+                    reason = "ema_mid_zero"
+            elif not (ema_fast < ema_mid):
+                active = False
+                if prev_active:
+                    reason = "turned_off_ema_not_below_mid"
+            elif ema_gap_pct is None:
+                active = False
+                if prev_active:
+                    reason = "ema_mid_zero"
+            else:
+                if use_hysteresis:
+                    if (not prev_active) and (ema_gap_pct >= gap_on):
+                        active = True
+                        reason = "turned_on_gap_ge_on"
+                    elif prev_active and (ema_gap_pct <= gap_off):
+                        active = False
+                        reason = "turned_off_gap_le_off"
+                    else:
+                        active = prev_active
+                else:
+                    active = ema_gap_pct >= ema_gap_pct_min
+                    if (not prev_active) and active:
+                        reason = "turned_on_gap_ge_min"
+                    elif prev_active and (not active):
+                        reason = "turned_off_gap_below_min"
+
+            base_threshold = adaptive_rsi_threshold
+            if active:
                 new_threshold = max(min_adaptive_rsi, adaptive_rsi_threshold - ema_trend_penalty)
                 if new_threshold != adaptive_rsi_threshold:
-                    logger.info(
+                    logger.debug(
                         f"⚠️ {log_prefix} Trend confirmation active: EMA fast ${ema_fast:,.2f} below EMA mid ${ema_mid:,.2f}."
                         f" Adjusting RSI threshold {adaptive_rsi_threshold:.2f} → {new_threshold:.2f}."
                     )
                     adaptive_rsi_threshold = new_threshold
                     trend_bias_active = True
+
+            if active != prev_active:
+                self._trend_penalty_state_by_symbol[symbol_display] = active
+                if reason is None:
+                    reason = "state_change"
+                ema_gap_pct_log = f"{ema_gap_pct:.6f}" if ema_gap_pct is not None else "na"
+                gap_on_log = f"{gap_on:.6f}" if gap_on is not None else "na"
+                gap_off_log = f"{gap_off:.6f}" if gap_off is not None else "na"
+                logger.info(
+                    "Trend penalty state | symbol=%s | active=%s | reason=%s | ema_fast=%.5f | ema_mid=%.5f | "
+                    "ema_gap_pct=%s | gap_min=%.6f | gap_on=%s | gap_off=%s | base_thr=%.2f | "
+                    "effective_thr=%.2f | extreme_bypass=%s",
+                    symbol_display,
+                    active,
+                    reason,
+                    ema_fast,
+                    ema_mid,
+                    ema_gap_pct_log,
+                    ema_gap_pct_min,
+                    gap_on_log,
+                    gap_off_log,
+                    base_threshold,
+                    adaptive_rsi_threshold,
+                    extreme_bypass_active,
+                )
+            else:
+                self._trend_penalty_state_by_symbol[symbol_display] = active
 
             # Volume logic centralized in StrategyCoordinator (Issue #450)
             # Legacy volume confirmation removed.

@@ -686,6 +686,23 @@ class LiveTradingEngine:
                 }
             
             position_id = position_result['position_id']
+            position = position_result.get('position')
+            if position:
+                trailing_cfg = self.config.get('position_management', {}).get('trailing_stop', {})
+                if trailing_cfg.get('trailing_stop_enabled', False):
+                    trailing_distance = float(trailing_cfg.get('trailing_stop_distance', 0.02) or 0.02)
+                    activation_threshold = float(trailing_cfg.get('activation_threshold', 0.0) or 0.0)
+                    enable_result = self.position_manager.enable_trailing_stop(
+                        position_id,
+                        trailing_distance,
+                        activation_threshold=activation_threshold
+                    )
+                    if not enable_result.get('success'):
+                        logger.warning(
+                            "Trailing stop enable failed for %s: %s",
+                            position_id,
+                            enable_result.get('reason')
+                        )
             logger.info(f"  ✓ Position opened: {position_id}")
             
             # Store in active positions

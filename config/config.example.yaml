@@ -376,6 +376,9 @@ signals:
     sl_atr_mult: 1.2                  # Override with: STRATEGY_OB_SL_ATR_MULT
     min_tp_pct: 0.008                 # Override with: STRATEGY_OB_MIN_TP_PCT
     max_sl_pct: 0.015                 # Override with: STRATEGY_OB_MAX_SL_PCT
+    trend_confirmation_ema_gap_pct_min: 0.0020 # EMA gap minimum for trend RSI penalty (0.0020 = 0.20%)
+    trend_confirmation_ema_gap_pct_on: 0.0020  # Optional hysteresis on-threshold (0.20%)
+    trend_confirmation_ema_gap_pct_off: 0.0015 # Optional hysteresis off-threshold (0.15%)
     # Extreme bypass (panic mode) - skips trend RSI penalty + allows ML veto bypass
     extreme_bypass:
       enabled: true                  # Override with: STRATEGY_OB_EXTREME_BYPASS_ENABLED
@@ -560,6 +563,10 @@ position_management:
     check_frequency: 5                # Override with: EXIT_CHECK_FREQUENCY
   time_based_exit:
     max_position_duration: 3600       # Override with: MAX_POSITION_DURATION
+  trailing_stop:
+    trailing_stop_enabled: true      # Override with: TRAILING_STOP_ENABLED
+    trailing_stop_distance: 0.002     # Override with: TRAILING_STOP_DISTANCE
+    activation_threshold: 0.003       # Override with: TRAILING_STOP_ACTIVATION_THRESHOLD
 
 # ==============================================================================
 # PYRAMIDING (Shadow mode by default)
