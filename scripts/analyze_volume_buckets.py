@@ -3,11 +3,12 @@ Comprehensive Volume Analysis Script for Trading Bot Logs.
 
 Features:
 1. TRADE ANALYSIS: Analyzes TRADE_CLOSED events by volume bucket (Original feature).
-2. THRESHOLD ANALYSIS: Scans 'volume_context' events to analyze the distribution of volume ratios.
-3. RECOMMENDATIONS: Suggests new volume thresholds based on actual market data percentiles.
+2. THRESHOLD ANALYSIS: Scans `volume_decision_check` and `TRADE_CLOSED` events to analyze the distribution of volume_strength.
+3. RECOMMENDATIONS: Suggests new volume thresholds based on actual market data percentiles (when data exists).
 
 Usage:
     python analyze_volume_buckets.py --log-file live_trading_20251218.log
+    python analyze_volume_buckets.py --log-dir logs
 """
 
 import argparse
@@ -22,7 +23,28 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # --- Constants ---
 TRADE_EVENT_NAME = "TRADE_CLOSED"
 VOLUME_CONTEXT_EVENTS = {"volume_context", "volume_decision_check"}
-VOLUME_RATIO_KEYS = ("ratio_combined", "volume_strength", "ratio")
+# VolumeAnalyzer buckets are derived from `volume_strength` (0..1). In logs we may see:
+# - `volume_decision_check` events (signal-time audit)
+# - `TRADE_CLOSED` events (trade record, carries *_at_entry fields)
+# - legacy keys (`ratio_combined`) or renamed keys (`volume_ratio_combined`)
+VOLUME_STRENGTH_KEYS = (
+    "volume_strength",
+    "volume_strength_at_entry",
+    "volume_score",
+    "volume_component",
+)
+VOLUME_RATIO_KEYS = (
+    "volume_ratio_combined",
+    "ratio_combined",
+    "ratio",
+)
+VOLUME_BUCKET_KEYS = (
+    "volume_bucket",
+    "volume_bucket_at_entry",
+    "bucket",
+)
+
+DEFAULT_SIGMOID_ALPHA = 1.2  # matches `src/core/volume_analyzer.py` default
 
 # --- Helper Functions ---
 
@@ -54,11 +76,13 @@ def _extract_json(line: str) -> Optional[Dict[str, Any]]:
             pass
             
     # Attempt to parse python dict string (common in some loggers: {'key': 'val'})
-    if "volume_context" in line and brace_idx != -1:
+    # Only runs after JSON parsing fails; uses literal_eval (safe subset).
+    if brace_idx != -1:
         try:
             candidate = line[brace_idx:]
-            # Safe evaluation of python literal structures
-            return ast.literal_eval(candidate)
+            obj = ast.literal_eval(candidate)
+            if isinstance(obj, dict):
+                return obj
         except (ValueError, SyntaxError):
             pass
 
@@ -76,37 +100,68 @@ def _iter_log_files(log_dir: Optional[Path], log_file: Optional[Path]) -> List[P
     if log_file:
         files.append(log_file)
     if log_dir:
-        for pattern in ("*.log", "*.jsonl"):
+        for pattern in ("*.log", "*.jsonl", "*.txt"):
             files.extend(sorted(log_dir.glob(pattern)))
     return files
 
 # --- Analysis Logic ---
 
+def _sigmoid_volume_strength(ratio_combined: float, alpha: float = DEFAULT_SIGMOID_ALPHA) -> float:
+    # matches: 1 / (1 + exp(-alpha * (ratio - 1.0)))
+    x = alpha * (ratio_combined - 1.0)
+    return float(1.0 / (1.0 + np.exp(-x)))
+
+def _extract_volume_sample(payload: Dict[str, Any]) -> Tuple[Optional[float], Optional[str], str]:
+    """
+    Returns (volume_strength, bucket, source_label).
+    Prefers true `volume_strength`; can derive from `*_ratio_combined` if needed.
+    """
+    event = str(payload.get("event") or "")
+
+    bucket: Optional[str] = None
+    for key in VOLUME_BUCKET_KEYS:
+        val = payload.get(key)
+        if isinstance(val, str) and val.strip():
+            bucket = val.strip()
+            break
+
+    for key in VOLUME_STRENGTH_KEYS:
+        strength = _as_float(payload.get(key))
+        if strength is not None:
+            return strength, bucket, (event or f"key:{key}")
+
+    for key in VOLUME_RATIO_KEYS:
+        ratio = _as_float(payload.get(key))
+        if ratio is not None:
+            return _sigmoid_volume_strength(ratio), bucket, (event or f"key:{key}")
+
+    return None, bucket, (event or "unknown")
+
 def analyze_volume_thresholds(files: Iterable[Path]) -> Dict[str, Any]:
-    """Scans logs for volume_context events and calculates SMART distribution stats."""
+    """Scans logs for volume-related events and calculates distribution stats for volume_strength."""
     ratios = []
     buckets = []
+    source_counts: Dict[str, int] = {}
+    files_scanned = 0
     
     for file_path in files:
         try:
+            files_scanned += 1
             with file_path.open("r", encoding="utf-8", errors="ignore") as f:
                 for line in f:
-                    if not any(tag in line for tag in VOLUME_CONTEXT_EVENTS):
+                    # Fast pre-filter: most lines are plain text.
+                    if "{" not in line:
+                        continue
+                    lower = line.lower()
+                    if ("volume" not in lower) and (TRADE_EVENT_NAME not in line):
                         continue
                     payload = _extract_json(line)
                     if not payload:
                         continue
-                    event = payload.get("event")
-                    if event not in VOLUME_CONTEXT_EVENTS:
-                        continue
-                    ratio = None
-                    for key in VOLUME_RATIO_KEYS:
-                        ratio = _as_float(payload.get(key))
-                        if ratio is not None:
-                            break
-                    bucket = payload.get("volume_bucket")
-                    if ratio is not None:
-                        ratios.append(ratio)
+                    strength, bucket, source = _extract_volume_sample(payload)
+                    if strength is not None:
+                        ratios.append(strength)
+                        source_counts[source] = source_counts.get(source, 0) + 1
                     if bucket:
                         buckets.append(bucket)
         except Exception as e:
@@ -114,7 +169,19 @@ def analyze_volume_thresholds(files: Iterable[Path]) -> Dict[str, Any]:
             continue
 
     if not ratios:
-        return {"error": "No volume_context or volume_decision_check data found in logs."}
+        # Avoid emitting an `"error"` key because upstream tooling often treats it as a hard failure.
+        return {
+            "status": "no_data",
+            "message": (
+                "No volume decision samples found. This usually means the run produced no trade signals "
+                "(so `volume_decision_check` was never logged) and no `TRADE_CLOSED` events exist in the file(s)."
+            ),
+            "files_scanned": files_scanned,
+            "source_counts": source_counts,
+            "count": 0,
+            "current_bucket_distribution": {},
+            "recommended_thresholds": None,
+        }
 
     # Calculate Statistics
     data = np.array(ratios)
@@ -148,12 +215,14 @@ def analyze_volume_thresholds(files: Iterable[Path]) -> Dict[str, Any]:
         
     # Eğer hesaplanan High Max, mutlak Max'a eşitse, Extreme için küçücük bir pay bırak
     if high_max >= max_val:
-         high_max = round(max_val - 0.1, 2)
+         high_max = round(max(max_val - 0.1, 0.0), 2)
 
     # Bucket Distribution
-    bucket_counts = {b: buckets.count(b) for b in set(buckets)}
+    bucket_dist: Dict[str, float] = {}
     total_buckets = len(buckets)
-    bucket_dist = {b: (count / total_buckets * 100) for b, count in bucket_counts.items()}
+    if total_buckets:
+        bucket_counts = {b: buckets.count(b) for b in set(buckets)}
+        bucket_dist = {b: (count / total_buckets * 100) for b, count in bucket_counts.items()}
 
     recommended_thresholds = {
         "LOW_MAX": low_max,
@@ -163,12 +232,15 @@ def analyze_volume_thresholds(files: Iterable[Path]) -> Dict[str, Any]:
     }
 
     return {
+        "status": "ok",
         "count": len(data),
         "mean": float(np.mean(data)),
         "max": max_val,
         "percentiles": {"p25": p25, "p50": p50, "p75": p75, "p90": p90},
         "current_bucket_distribution": bucket_dist,
-        "recommended_thresholds": recommended_thresholds
+        "recommended_thresholds": recommended_thresholds,
+        "source_counts": source_counts,
+        "files_scanned": files_scanned,
     }
 
 def load_trades_from_files(files: Iterable[Path], run_id: Optional[str] = None, timeframe: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -313,7 +385,7 @@ def main() -> None:
         print(json.dumps(final_report, indent=2))
         
     # Console Summary for the User
-    if "error" not in volume_report:
+    if volume_report.get("status") == "ok":
         print("\n" + "="*60)
         print("📊 VOLUME THRESHOLD ANALYSIS SUMMARY")
         print("="*60)
@@ -326,6 +398,14 @@ def main() -> None:
         print(f"   NORMAL  : {rec['LOW_MAX']} - {rec['NORMAL_MAX']}")
         print(f"   HIGH    : {rec['NORMAL_MAX']} - {rec['HIGH_MAX']}")
         print(f"   EXTREME : > {rec['EXTREME_MIN']}")
+        print("="*60)
+    elif volume_report.get("status") == "no_data":
+        print("\n" + "="*60)
+        print("?? VOLUME THRESHOLD ANALYSIS SUMMARY")
+        print("="*60)
+        print("No volume samples found in the provided log(s).")
+        print(f"Files scanned: {volume_report.get('files_scanned', 0)}")
+        print(f"Source counts: {json.dumps(volume_report.get('source_counts', {}), indent=2)}")
         print("="*60)
 
 if __name__ == "__main__":

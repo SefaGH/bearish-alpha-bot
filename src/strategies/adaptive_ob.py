@@ -3,11 +3,12 @@ Adaptive OversoldBounce strategy with market regime awareness.
 Dynamically adjusts parameters based on market conditions.
 """
 
+import json
 import pandas as pd
 import logging
 import math
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from .oversold_bounce import OversoldBounce
 from core.strategy_shadow_eval import (
     shadow_enabled,
@@ -71,6 +72,13 @@ class AdaptiveOversoldBounce(OversoldBounce):
             "min_samples": 2,
             "wick_closeness_k": 0.25,
         }
+        # Dynamic RSI Phase 0 shadow state (per-symbol)
+        self._dyn_state_by_symbol: Dict[str, str] = {}
+        self._dyn_armed_until_ms_by_symbol: Dict[str, int] = {}
+        self._dyn_cooldown_until_ms_by_symbol: Dict[str, int] = {}
+        self._dyn_last_fast_status_log_ts: Dict[Tuple[str, str], float] = {}
+        self._dyn_last_fast_status_snapshot: Dict[Tuple[str, str], Tuple[bool, bool, bool]] = {}
+        self._dyn_last_seen_ts: Dict[str, int] = {}
 
         # Minimum R/R oranını başlangıçta, bir kez olmak üzere config'den oku.
         # `super()` çağrısı `self.strategy_config`'i oluşturduğu için artık bunu güvenle kullanabiliriz.
@@ -80,6 +88,222 @@ class AdaptiveOversoldBounce(OversoldBounce):
         if not hasattr(self, "signal"):
             self.signal = self._default_signal_wrapper  # type: ignore
         assert callable(getattr(self, "signal", None)), f"{self.strategy_name}: signal method not callable"
+
+    def _update_dyn_shadow(
+        self,
+        symbol: str,
+        df_30m: pd.DataFrame,
+        now_ms: int,
+        slow_fallback_reason: Optional[str],
+    ) -> None:
+        """Phase 0 shadow telemetry for dynamic RSI gate (no decision impact)."""
+        try:
+            cfg = self.base_cfg.get("dynamic_rsi_gate") or {}
+            if not isinstance(cfg, dict) or not cfg.get("enabled", False):
+                return
+
+            log_cfg = cfg.get("logging", {}) or {}
+            if not isinstance(log_cfg, dict):
+                log_cfg = {}
+            mode = str(log_cfg.get("mode", "state_changes")).lower()
+            if mode == "off":
+                return
+
+            pipeline = getattr(self, "market_data_pipeline", None)
+            ws_manager = getattr(pipeline, "websocket_manager", None) if pipeline else None
+            collector = getattr(ws_manager, "collector", None) if ws_manager else None
+            if collector is None:
+                return
+
+            gate = float(cfg.get("compute_fast_only_if_rsi_slow_within", 0.0) or 0.0)
+            if gate > 0:
+                rsi_val = None
+                try:
+                    if df_30m is not None and not df_30m.empty:
+                        includes_forming = bool(getattr(df_30m, "attrs", {}).get("includes_forming", False))
+                        row = df_30m.iloc[-2] if includes_forming and len(df_30m) >= 2 else df_30m.iloc[-1]
+                        if "rsi" in row:
+                            rsi_val = float(row["rsi"])
+                except Exception:
+                    rsi_val = None
+                if rsi_val is not None:
+                    base = float(self.base_cfg.get("adaptive_rsi_base", 32.0))
+                    if abs(rsi_val - base) > gate:
+                        return
+
+            exchange = str(cfg.get("exchange", "bingx") or "bingx").lower()
+            fast_tfs = cfg.get("fast_timeframes", ["1m", "5m"])
+            if isinstance(fast_tfs, str):
+                fast_tfs = [x.strip() for x in fast_tfs.split(",") if x.strip()]
+            elif isinstance(fast_tfs, (list, tuple)):
+                fast_tfs = [str(x).strip() for x in fast_tfs if str(x).strip()]
+            else:
+                fast_tfs = ["1m", "5m"]
+            if not fast_tfs:
+                return
+
+            min_bars_fast = int(cfg.get("min_bars_fast", 50) or 0)
+            shock_cfg = cfg.get("shock", {}) or {}
+            lookback_bars = int(shock_cfg.get("lookback_bars", 5) or 0)
+            price_move_pct = float(shock_cfg.get("price_move_pct", 0.0) or 0.0)
+            arm_threshold = float(shock_cfg.get("arm_score_threshold", 1.0) or 1.0)
+
+            armed_cfg = cfg.get("armed", {}) or {}
+            ttl_s = int(armed_cfg.get("ttl_s", 0) or 0)
+            max_ttl_s = int(armed_cfg.get("max_ttl_s", ttl_s) or ttl_s)
+            cooldown_s = int(armed_cfg.get("cooldown_s", 0) or 0)
+            rearm_policy = str(armed_cfg.get("rearm_policy", "extend")).lower()
+
+            throttle_s = float(log_cfg.get("throttle_s", 60) or 60.0)
+            limit_small = max(min_bars_fast, lookback_bars + 1, 60)
+
+            best_shock_score = None
+            best_tf = None
+
+            for tf in fast_tfs:
+                ohlcv_list = collector.get_latest_ohlcv(
+                    exchange=exchange,
+                    symbol=symbol,
+                    timeframe=tf,
+                    limit=limit_small,
+                )
+                closed_len = len(ohlcv_list) if ohlcv_list else 0
+                has_data = closed_len > 0
+                sufficient = closed_len >= min_bars_fast if min_bars_fast > 0 else has_data
+
+                state = {}
+                if hasattr(collector, "get_state"):
+                    try:
+                        state = collector.get_state(exchange, symbol, tf) or {}
+                    except Exception:
+                        state = {}
+
+                last_closed_ts = state.get("last_closed_ts")
+                forming_last_update_ts = state.get("forming_last_update_ts")
+                gap_count = state.get("gap_count")
+                out_of_order = state.get("out_of_order_drops")
+
+                tf_sec = TIMEFRAME_SECONDS.get(tf)
+                tf_ms = int(tf_sec * 1000) if tf_sec else 0
+                since_last_close_ms = None
+                if last_closed_ts is not None and tf_ms > 0:
+                    try:
+                        since_last_close_ms = max(0, int(now_ms - (int(last_closed_ts) + tf_ms)))
+                    except Exception:
+                        since_last_close_ms = None
+                since_last_kline_update_ms = None
+                if forming_last_update_ts is not None:
+                    try:
+                        since_last_kline_update_ms = max(0, int(now_ms - int(forming_last_update_ts)))
+                    except Exception:
+                        since_last_kline_update_ms = None
+                update_known = forming_last_update_ts is not None
+
+                snap_key = (symbol, tf)
+                snapshot = (has_data, bool(sufficient), update_known)
+                prev_snapshot = self._dyn_last_fast_status_snapshot.get(snap_key)
+                status_changed = snapshot != prev_snapshot
+
+                now_ts = time.time()
+                last_log = self._dyn_last_fast_status_log_ts.get(snap_key, 0.0)
+                should_log = status_changed or ((now_ts - last_log) >= throttle_s)
+                if should_log:
+                    payload = {
+                        "event": "ob_dyn_fast_data_status",
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "tf": tf,
+                        "closed_len": closed_len,
+                        "last_closed_ts": last_closed_ts,
+                        "since_last_close_ms": since_last_close_ms,
+                        "since_last_kline_update_ms": since_last_kline_update_ms,
+                        "last_kline_update_ts": forming_last_update_ts,
+                        "gap_count": gap_count,
+                        "out_of_order_drops": out_of_order,
+                    }
+                    logger.info(json.dumps(payload, separators=(",", ":")))
+                    self._dyn_last_fast_status_log_ts[snap_key] = now_ts
+                    self._dyn_last_fast_status_snapshot[snap_key] = snapshot
+
+                if best_shock_score is None and has_data and sufficient and update_known:
+                    if (
+                        ohlcv_list
+                        and lookback_bars > 0
+                        and len(ohlcv_list) >= (lookback_bars + 1)
+                        and price_move_pct > 0
+                    ):
+                        shock_score = 0.0
+                        try:
+                            base = float(ohlcv_list[-(lookback_bars + 1)][4])
+                            last = float(ohlcv_list[-1][4])
+                            if base != 0:
+                                move_pct = abs((last - base) / base)
+                                shock_score = max(0.0, min(move_pct / price_move_pct, 1.0))
+                        except Exception:
+                            shock_score = 0.0
+                        best_shock_score = shock_score
+                        best_tf = tf
+
+            state = self._dyn_state_by_symbol.get(symbol, "DISARMED")
+            armed_until = int(self._dyn_armed_until_ms_by_symbol.get(symbol, 0) or 0)
+            cooldown_until = int(self._dyn_cooldown_until_ms_by_symbol.get(symbol, 0) or 0)
+            new_state = state
+            reason = "none"
+
+            ttl_ms = max(ttl_s, 0) * 1000
+            max_ttl_ms = max(max_ttl_s, ttl_s, 0) * 1000
+            cooldown_ms = max(cooldown_s, 0) * 1000
+
+            shock_score = best_shock_score if best_shock_score is not None else 0.0
+            shock_ready = best_shock_score is not None and shock_score >= arm_threshold
+
+            if state == "DISARMED":
+                if shock_ready:
+                    new_state = "ARMED"
+                    armed_until = now_ms + ttl_ms
+                    reason = f"shock_{best_tf}" if best_tf else "shock"
+            elif state == "ARMED":
+                if armed_until and now_ms >= armed_until:
+                    new_state = "COOLDOWN"
+                    cooldown_until = now_ms + cooldown_ms
+                    reason = "ttl_expired"
+                elif shock_ready:
+                    if rearm_policy == "extend":
+                        target = now_ms + ttl_ms
+                        max_target = now_ms + max_ttl_ms
+                        armed_until = min(max(armed_until, target), max_target)
+                    elif rearm_policy == "reset":
+                        armed_until = min(now_ms + ttl_ms, now_ms + max_ttl_ms)
+                    elif rearm_policy == "ignore":
+                        pass
+            elif state == "COOLDOWN":
+                if cooldown_until and now_ms >= cooldown_until:
+                    new_state = "DISARMED"
+                    reason = "cooldown_complete"
+
+            self._dyn_state_by_symbol[symbol] = new_state
+            self._dyn_armed_until_ms_by_symbol[symbol] = armed_until
+            self._dyn_cooldown_until_ms_by_symbol[symbol] = cooldown_until
+            self._dyn_last_seen_ts[symbol] = now_ms
+
+            if new_state != state:
+                ttl_left_s = max(0, int((armed_until - now_ms) / 1000)) if armed_until else 0
+                cooldown_left_s = max(0, int((cooldown_until - now_ms) / 1000)) if cooldown_until else 0
+                payload = {
+                    "event": "ob_dyn_armed_state_change",
+                    "symbol": symbol,
+                    "state_from": state,
+                    "state_to": new_state,
+                    "reason": reason,
+                    "ttl_left": ttl_left_s,
+                    "cooldown_left": cooldown_left_s,
+                    "shock_score": shock_score if best_shock_score is not None else None,
+                    "policy": "closed_only",
+                    "slow_fallback_reason": slow_fallback_reason,
+                }
+                logger.info(json.dumps(payload, separators=(",", ":")))
+        except Exception:
+            return
 
     def _validate_input_data(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame, regime_data: Dict, symbol: str) -> tuple[bool, str]:
         """Gerekli tüm verilerin varlığını ve geçerliliğini kontrol eder."""
@@ -203,6 +427,124 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 return float(symbol_cfg['rsi_threshold'])
         
         return None
+
+    def _check_extreme_bypass(
+        self,
+        *,
+        symbol: str,
+        close_price: float,
+        atr_value: float,
+        market_data: Optional[Dict[str, Any]],
+    ) -> tuple[bool, Dict[str, Any]]:
+        """
+        Extreme bypass (panic mode) for Adaptive OB.
+
+        Used to:
+        - skip trend penalty that tightens RSI threshold (ema_fast < ema_mid)
+        - bypass ML veto returns during flash-crash / high-volatility moves
+
+        Config (signals.oversold_bounce.extreme_bypass):
+          enabled: bool
+          triggers:
+            price_drop_15m_pct: float   # percent, e.g. 0.8 == 0.8%
+            rsi_15m_below: float        # RSI threshold
+            min_atr_pct: float          # ATR/price, e.g. 0.006 == 0.6%
+        """
+        cfg = self.strategy_config if isinstance(self.strategy_config, dict) else {}
+        bypass_cfg = cfg.get("extreme_bypass", {})
+        if not isinstance(bypass_cfg, dict):
+            return False, {}
+
+        if not bool(bypass_cfg.get("enabled", False)):
+            return False, {}
+
+        triggers = bypass_cfg.get("triggers", {})
+        if not isinstance(triggers, dict):
+            triggers = {}
+
+        def _float(value: Any, default: float) -> float:
+            try:
+                return float(value)
+            except Exception:
+                return float(default)
+
+        price_drop_15m_pct = _float(triggers.get("price_drop_15m_pct", 0.0), 0.0)
+        rsi_15m_below = _float(triggers.get("rsi_15m_below", 0.0), 0.0)
+        min_atr_pct = _float(triggers.get("min_atr_pct", 0.0), 0.0)
+
+        if rsi_15m_below and not (0.0 <= rsi_15m_below <= 100.0):
+            logger.warning("[OB-BYPASS] Invalid rsi_15m_below=%s for %s", rsi_15m_below, symbol)
+            return False, {}
+
+        atr_pct = None
+        try:
+            atr_pct = (float(atr_value) / float(close_price)) if close_price else None
+        except Exception:
+            atr_pct = None
+
+        df_15m = None
+        if isinstance(market_data, dict):
+            df_15m = market_data.get("15m")
+            if df_15m is None:
+                df_15m = market_data.get("df_15m")
+
+        prev_close_15m = None
+        last_close_15m = None
+        price_drop_calc = None
+        rsi_15m = None
+
+        if isinstance(df_15m, pd.DataFrame) and not df_15m.empty and "close" in df_15m.columns:
+            try:
+                closes = df_15m["close"].astype(float)
+                if len(closes) >= 2:
+                    prev_close_15m = float(closes.iloc[-2])
+                    last_close_15m = float(closes.iloc[-1])
+            except Exception:
+                prev_close_15m = None
+                last_close_15m = None
+
+            try:
+                if "rsi" in df_15m.columns:
+                    rsi_15m = float(df_15m["rsi"].iloc[-1])
+                else:
+                    rsi_15m = float(rsi(df_15m["close"]).iloc[-1])
+            except Exception:
+                rsi_15m = None
+
+        if prev_close_15m is not None and prev_close_15m > 0 and last_close_15m is not None:
+            price_drop_calc = ((prev_close_15m - last_close_15m) / prev_close_15m) * 100.0
+
+        price_drop_ok = True
+        if price_drop_15m_pct > 0:
+            price_drop_ok = price_drop_calc is not None and price_drop_calc >= price_drop_15m_pct
+
+        rsi_ok = True
+        if rsi_15m_below > 0:
+            rsi_ok = rsi_15m is not None and rsi_15m <= rsi_15m_below
+
+        atr_ok = True
+        if min_atr_pct > 0:
+            atr_ok = atr_pct is not None and atr_pct >= min_atr_pct
+
+        triggered = bool(price_drop_ok and rsi_ok and atr_ok)
+        meta = {
+            "enabled": True,
+            "symbol": symbol,
+            "price_drop_15m_pct": price_drop_calc,
+            "rsi_15m": rsi_15m,
+            "atr_pct": atr_pct,
+            "thresholds": {
+                "price_drop_15m_pct": price_drop_15m_pct,
+                "rsi_15m_below": rsi_15m_below,
+                "min_atr_pct": min_atr_pct,
+            },
+            "inputs": {
+                "prev_close_15m": prev_close_15m,
+                "last_close_15m": last_close_15m,
+            },
+        }
+
+        return triggered, meta
     
     def signal(self, df_30m: pd.DataFrame, 
                df_1h: pd.DataFrame = None,
@@ -234,6 +576,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
 
             forming_last_update_ts = df_30m.attrs.get("forming_last_update_ts")
             forming_update_age_ms = df_30m.attrs.get("forming_update_age_ms")
+            now_ms = int(time.time() * 1000)
+            self._update_dyn_shadow(symbol_display, df_30m, now_ms, fallback_reason)
 
             df_closed = df_30m
             df_used = df_30m
@@ -388,11 +732,27 @@ class AdaptiveOversoldBounce(OversoldBounce):
             else:
                 adaptive_rsi_threshold = self.get_adaptive_rsi_threshold(market_regime)
 
+            extreme_bypass_active, extreme_bypass_meta = self._check_extreme_bypass(
+                symbol=symbol_display,
+                close_price=close_price,
+                atr_value=atr_value,
+                market_data=market_data,
+            )
+
             # Trend confirmation: if market is in a strong downswing (ema_fast < ema_mid), demand deeper RSI
             ema_trend_penalty = float(self.strategy_config.get('trend_confirmation_rsi_penalty', 5.0))
             min_adaptive_rsi = float(self.strategy_config.get('trend_confirmation_min_rsi', 8.0))
             trend_bias_active = False
-            if ema_fast > 0 and ema_mid > 0 and ema_fast < ema_mid:
+            if ema_fast > 0 and ema_mid > 0 and ema_fast < ema_mid and extreme_bypass_active:
+                try:
+                    extreme_bypass_meta["trend_penalty_skipped"] = True
+                except Exception:
+                    pass
+                logger.warning(
+                    "[OB-EXTREME-BYPASS] %s skipping trend RSI penalty (ema_fast < ema_mid)",
+                    log_prefix,
+                )
+            if ema_fast > 0 and ema_mid > 0 and ema_fast < ema_mid and (not extreme_bypass_active):
                 new_threshold = max(min_adaptive_rsi, adaptive_rsi_threshold - ema_trend_penalty)
                 if new_threshold != adaptive_rsi_threshold:
                     logger.info(
@@ -547,8 +907,42 @@ class AdaptiveOversoldBounce(OversoldBounce):
 
             if ml_context and ml_context.get('is_healthy', False) and ml_context.get('regime_confidence', 0) >= MIN_ML_CONFIDENCE_THRESHOLD:
                 ml_enhanced = True
-                
-                if ml_context.get('regime_prediction') == 'bearish' and ml_context.get('regime_confidence', 0) > 0.7:
+
+                if (
+                    extreme_bypass_active
+                    and ml_context.get('regime_prediction') == 'bearish'
+                    and ml_context.get('regime_confidence', 0) > 0.7
+                ):
+                    try:
+                        extreme_bypass_meta["ml_veto_bypassed"] = True
+                        extreme_bypass_meta["ml_veto_reason"] = "bearish_regime"
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "[OB-EXTREME-BYPASS] %s bypassing ML veto (bearish regime)",
+                        log_prefix,
+                    )
+
+                if (
+                    extreme_bypass_active
+                    and ml_context.get('price_direction') == 'down'
+                    and ml_context.get('price_confidence', 0) > 0.7
+                ):
+                    try:
+                        extreme_bypass_meta["ml_veto_bypassed"] = True
+                        extreme_bypass_meta["ml_veto_reason"] = "price_direction_down"
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "[OB-EXTREME-BYPASS] %s bypassing ML veto (price_direction=down)",
+                        log_prefix,
+                    )
+                 
+                if (
+                    ml_context.get('regime_prediction') == 'bearish'
+                    and ml_context.get('regime_confidence', 0) > 0.7
+                    and (not extreme_bypass_active)
+                ):
                     logger.info(f"🚫 {log_prefix} No Signal: ML VETO - Strong bearish regime detected (confidence: {ml_context.get('regime_confidence', 0):.2%}).")
                     _shadow_ob(
                         "no_signal_ml",
@@ -560,7 +954,11 @@ class AdaptiveOversoldBounce(OversoldBounce):
                     )
                     return None
                 
-                if ml_context.get('price_direction') == 'down' and ml_context.get('price_confidence', 0) > 0.7:
+                if (
+                    ml_context.get('price_direction') == 'down'
+                    and ml_context.get('price_confidence', 0) > 0.7
+                    and (not extreme_bypass_active)
+                ):
                     logger.info(f"🚫 {log_prefix} No Signal: ML VETO - Strong price down prediction (confidence: {ml_context.get('price_confidence', 0):.2%}).")
                     _shadow_ob(
                         "no_signal_ml",
@@ -671,6 +1069,11 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 "ml_enhanced": ml_enhanced, "strategy_type": 'adaptive',
                 "strategy_min_rr": self.min_rr_ratio,  # NEW: Strategy's own minimum R/R
             }
+
+            if extreme_bypass_active:
+                signal["extreme_bypass"] = True
+                signal["extreme_bypass_meta"] = extreme_bypass_meta
+                signal.setdefault("features", {})["extreme_bypass"] = extreme_bypass_meta
 
             # Expose RSI telemetry so downstream duplicate logic can react dynamically
             signal["rsi"] = float(rsi_val)

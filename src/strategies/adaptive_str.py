@@ -659,6 +659,126 @@ class AdaptiveShortTheRip(ShortTheRip):
 
         meta['status'] = 'passed'
         return True, 'passed', meta
+
+    def _check_extreme_bypass_mtf_hard_veto(
+        self,
+        *,
+        signal: Dict[str, Any],
+        df_eval: pd.DataFrame,
+        close_price: float,
+        atr_value: float,
+        rsi_value: float,
+        timeframe: str,
+        failure_kind: str,
+    ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+        """
+        Optional (opt-in) bypass for MTF hard veto.
+
+        Note: The existing coordinator-level "extreme bypass" (signals.bypass.*)
+        runs *after* a strategy returns a signal. If the strategy returns `None`
+        due to an MTF hard veto, downstream bypass logic is unreachable.
+        """
+        if failure_kind == "missing-data":
+            return False, None, {}
+
+        mtf_cfg = self.strategy_config.get("mtf_confirmation")
+        if not isinstance(mtf_cfg, dict):
+            mtf_cfg = self.base_cfg.get("mtf_confirmation")
+        if not isinstance(mtf_cfg, dict):
+            return False, None, {}
+
+        bypass_cfg = mtf_cfg.get("extreme_bypass", {})
+        if not isinstance(bypass_cfg, dict):
+            return False, None, {}
+
+        if not bool(bypass_cfg.get("enabled", False)):
+            return False, None, {}
+
+        def _as_float(value: Any, default: float) -> float:
+            try:
+                return float(value)
+            except Exception:
+                return float(default)
+
+        min_directional_move_pct = _as_float(bypass_cfg.get("min_directional_move_pct", 0.0), 0.0)
+        min_abs_move_pct = _as_float(bypass_cfg.get("min_abs_move_pct", 0.0), 0.0)
+        min_atr_pct = _as_float(bypass_cfg.get("min_atr_pct", 0.0), 0.0)
+        rsi_oversold_threshold = _as_float(bypass_cfg.get("rsi_oversold_threshold", 0.0), 0.0)
+        rsi_overbought_threshold = _as_float(bypass_cfg.get("rsi_overbought_threshold", 0.0), 0.0)
+
+        side = (signal.get("side") or "").lower()
+
+        prev_close = None
+        try:
+            if df_eval is not None and hasattr(df_eval, "__len__") and len(df_eval) >= 2 and "close" in df_eval.columns:
+                prev_close = float(df_eval["close"].iloc[-2])
+        except Exception:
+            prev_close = None
+
+        move_pct = None
+        abs_move_pct = None
+        directional_move_pct = None
+        if prev_close is not None and prev_close > 0:
+            try:
+                move_pct = (close_price - prev_close) / prev_close
+                abs_move_pct = abs(move_pct)
+                if side in ("sell", "short"):
+                    directional_move_pct = move_pct
+                elif side in ("buy", "long"):
+                    directional_move_pct = -move_pct
+            except Exception:
+                move_pct = None
+                abs_move_pct = None
+                directional_move_pct = None
+
+        atr_pct = None
+        try:
+            atr_pct = (atr_value / close_price) if close_price else None
+        except Exception:
+            atr_pct = None
+
+        triggered = False
+        reason = None
+
+        if side in ("buy", "long") and rsi_oversold_threshold > 0 and rsi_value <= rsi_oversold_threshold:
+            triggered = True
+            reason = f"rsi_oversold:{rsi_value:.2f}<={rsi_oversold_threshold:.2f}"
+        elif side in ("sell", "short") and rsi_overbought_threshold > 0 and rsi_value >= rsi_overbought_threshold:
+            triggered = True
+            reason = f"rsi_overbought:{rsi_value:.2f}>={rsi_overbought_threshold:.2f}"
+        elif (
+            min_directional_move_pct > 0
+            and directional_move_pct is not None
+            and directional_move_pct >= min_directional_move_pct
+        ):
+            triggered = True
+            reason = f"directional_move_pct:{directional_move_pct:.4f}>={min_directional_move_pct:.4f}"
+        elif min_abs_move_pct > 0 and abs_move_pct is not None and abs_move_pct >= min_abs_move_pct:
+            triggered = True
+            reason = f"abs_move_pct:{abs_move_pct:.4f}>={min_abs_move_pct:.4f}"
+        elif min_atr_pct > 0 and atr_pct is not None and atr_pct >= min_atr_pct:
+            triggered = True
+            reason = f"atr_pct:{atr_pct:.4f}>={min_atr_pct:.4f}"
+
+        meta = {
+            "timeframe": timeframe,
+            "side": side,
+            "rsi": float(rsi_value),
+            "prev_close": prev_close,
+            "close": float(close_price),
+            "move_pct": move_pct,
+            "atr": float(atr_value),
+            "atr_pct": atr_pct,
+            "thresholds": {
+                "min_directional_move_pct": min_directional_move_pct,
+                "min_abs_move_pct": min_abs_move_pct,
+                "min_atr_pct": min_atr_pct,
+                "rsi_oversold_threshold": rsi_oversold_threshold,
+                "rsi_overbought_threshold": rsi_overbought_threshold,
+            },
+        }
+
+        return triggered, reason, meta
     
     def signal(self, df_30m: pd.DataFrame, 
                df_1h: pd.DataFrame = None,
@@ -945,6 +1065,29 @@ class AdaptiveShortTheRip(ShortTheRip):
                     signal.setdefault("features", {})["mtf_15m"] = meta_15m
                     if meta_15m and meta_15m.get("action") == "skip":
                         mtf_skipped = True
+                    if (not passed_15m) and tf_15m.mode == "hard":
+                        bypassed, bypass_reason, bypass_meta = self._check_extreme_bypass_mtf_hard_veto(
+                            signal=signal,
+                            df_eval=df_eval,
+                            close_price=close_price,
+                            atr_value=atr_value,
+                            rsi_value=rsi_val,
+                            timeframe="15m",
+                            failure_kind=(
+                                "missing-data" if meta_15m.get("status") == "missing" else "threshold"
+                            ),
+                        )
+                        if bypassed:
+                            passed_15m = True
+                            meta_15m["bypass"] = True
+                            meta_15m["bypass_reason"] = bypass_reason
+                            meta_15m["bypass_meta"] = bypass_meta
+                            logger.warning(
+                                "🚨 %s MTF-15m hard veto BYPASSED | code=%s | bypass=%s",
+                                log_prefix,
+                                meta_15m.get("code", "mtf_15m_block"),
+                                bypass_reason,
+                            )
                     if not passed_15m:
                         code = meta_15m.get("code", "mtf_15m_block")
                         failure_kind = "missing-data" if meta_15m.get("status") == "missing" else "threshold"
@@ -979,6 +1122,29 @@ class AdaptiveShortTheRip(ShortTheRip):
                     signal.setdefault("features", {})["mtf_1h"] = meta_1h
                     if meta_1h and meta_1h.get("action") == "skip":
                         mtf_skipped = True
+                    if (not passed_1h) and tf_1h.mode == "hard":
+                        bypassed, bypass_reason, bypass_meta = self._check_extreme_bypass_mtf_hard_veto(
+                            signal=signal,
+                            df_eval=df_eval,
+                            close_price=close_price,
+                            atr_value=atr_value,
+                            rsi_value=rsi_val,
+                            timeframe="1h",
+                            failure_kind=(
+                                "missing-data" if meta_1h.get("status") == "missing" else "threshold"
+                            ),
+                        )
+                        if bypassed:
+                            passed_1h = True
+                            meta_1h["bypass"] = True
+                            meta_1h["bypass_reason"] = bypass_reason
+                            meta_1h["bypass_meta"] = bypass_meta
+                            logger.warning(
+                                "🚨 %s MTF-1h hard veto BYPASSED | code=%s | bypass=%s",
+                                log_prefix,
+                                meta_1h.get("code", "mtf_1h_block"),
+                                bypass_reason,
+                            )
                     if not passed_1h:
                         code = meta_1h.get("code", "mtf_1h_block")
                         failure_kind = "missing-data" if meta_1h.get("status") == "missing" else "threshold"

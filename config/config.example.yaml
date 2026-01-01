@@ -341,6 +341,11 @@ signals:
     rsi_oversold_threshold: 12        # Override with: SIGNAL_BYPASS_RSI_OVERSOLD (BUY signals when RSI < this)
     rsi_overbought_threshold: 88      # Override with: SIGNAL_BYPASS_RSI_OVERBOUGHT (SELL signals when RSI > this)
     force_swap_enabled: true          # Override with: SIGNAL_FORCE_SWAP_ENABLED (swap weakest position when slots are full)
+
+  # Stop-and-Reverse (auto reversal)
+  # If enabled and an opposite signal arrives while a position is open on the same symbol,
+  # the signal can be tagged as intent=reverse so the engine closes then reopens atomically.
+  allow_auto_reversal: true          # Override with: SIGNAL_ALLOW_AUTO_REVERSAL
   
   duplicate_prevention:
     min_price_change_pct: 0.0005      # Override with: DUPLICATE_PREVENTION_THRESHOLD
@@ -371,6 +376,42 @@ signals:
     sl_atr_mult: 1.2                  # Override with: STRATEGY_OB_SL_ATR_MULT
     min_tp_pct: 0.008                 # Override with: STRATEGY_OB_MIN_TP_PCT
     max_sl_pct: 0.015                 # Override with: STRATEGY_OB_MAX_SL_PCT
+    # Extreme bypass (panic mode) - skips trend RSI penalty + allows ML veto bypass
+    extreme_bypass:
+      enabled: true                  # Override with: STRATEGY_OB_EXTREME_BYPASS_ENABLED
+      triggers:
+        # Percent drop over last 15m bar (0.8 == 0.8%)
+        price_drop_15m_pct: 0.8       # Override with: STRATEGY_OB_EXTREME_BYPASS_PRICE_DROP_15M_PCT
+        # RSI threshold on 15m data
+        rsi_15m_below: 30.0           # Override with: STRATEGY_OB_EXTREME_BYPASS_RSI_15M_BELOW
+        # Volatility proxy (ATR/price), e.g. 0.006 == 0.6%
+        min_atr_pct: 0.006            # Override with: STRATEGY_OB_EXTREME_BYPASS_MIN_ATR_PCT
+    dynamic_rsi_gate:
+      enabled: true                 # Default-off kill switch
+
+      exchange: "bingx"              # Collector exchange key (lower-case)
+      fast_timeframes: ["1m", "5m"]  # In priority order
+      candle_policy: "closed_only"   # Must remain closed_only in Phase 0
+      min_bars_fast: 50              # Guardrail
+      rsi_fast_period: 14            # Stored for future phases
+
+      shock:
+        lookback_bars: 5
+        price_move_pct: 0.006        # Absolute move over lookback (closed-only)
+        arm_score_threshold: 0.60    # Score threshold to enter ARMED (0..1)
+
+      armed:
+        ttl_s: 600
+        max_ttl_s: 900
+        rearm_policy: "extend"       # extend | reset | ignore
+        cooldown_s: 180
+
+      compute_fast_only_if_rsi_slow_within: 6.0   # Perf gate (optional)
+      on_missing_fast_data: "fallback_to_slow"    # fallback_to_slow | disable (Phase 0 informational only)
+
+      logging:
+        mode: "state_changes"        # off | state_changes | decisions (Phase 0 supports off/state_changes)
+        throttle_s: 60               # FAST_DATA_STATUS throttle window
   short_the_rip:
     enable: true                      # Override with: STRATEGY_STR_ENABLED
     ignore_regime: false              # Override with: STRATEGY_STR_IGNORE_REGIME
@@ -409,6 +450,20 @@ signals:
 
       on_missing_15m: "skip"
       on_missing_1h: "reject"
+      # Optional extreme bypass for MTF hard veto (panic mode).
+      # If enabled and an MTF hard veto occurs due to *threshold* (not missing-data),
+      # Adaptive STR can continue by marking the MTF meta as bypassed.
+      extreme_bypass:
+        enabled: true                 # Override with: STRATEGY_STR_MTF_EXTREME_BYPASS_ENABLED
+        # Directional move in signal direction (sell -> up move, buy -> down move)
+        min_directional_move_pct: 0.004  # Override with: STRATEGY_STR_MTF_EXTREME_BYPASS_MIN_DIR_MOVE_PCT
+        # Absolute move magnitude (either direction)
+        min_abs_move_pct: 0.008        # Override with: STRATEGY_STR_MTF_EXTREME_BYPASS_MIN_ABS_MOVE_PCT
+        # Volatility proxy (ATR/price)
+        min_atr_pct: 0.006             # Override with: STRATEGY_STR_MTF_EXTREME_BYPASS_MIN_ATR_PCT
+        # RSI triggers (optional; set to 0 to disable)
+        rsi_oversold_threshold: 25.0    # Override with: STRATEGY_STR_MTF_EXTREME_BYPASS_RSI_OVERSOLD
+        rsi_overbought_threshold: 75.0  # Override with: STRATEGY_STR_MTF_EXTREME_BYPASS_RSI_OVERBOUGHT
       # Optional min bars guard (defaults used if omitted)
       # defaults (if omitted): rsi=20, ema21=30, ema50=100, ema200=250
       # guard only runs when indicator columns missing + fallback planned
@@ -694,7 +749,7 @@ ml:
     #   - Agent uses pre-trained weights without learning
     #   - Use for: Live trading
     # ============================================================================
-    training_mode: true               # Override: ML_RL_TRAINING_MODE (false → true for training)
+    training_mode: false               # Override: ML_RL_TRAINING_MODE (false → true for training)
 
     # Davranış Ayarları
     hold_confidence_threshold: 0.60   # Override: ML_RL_HOLD_CONFIDENCE_THRESHOLD

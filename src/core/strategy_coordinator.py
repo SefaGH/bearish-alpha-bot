@@ -1485,7 +1485,71 @@ class StrategyCoordinator:
             
             # Adım 2: Sinyali Zenginleştir
             enriched_signal = await self._enrich_signal(strategy_name, signal)
-            
+
+            # --- Stop-and-Reverse (Auto Reversal) ---
+            # If enabled and we already have an open position for this symbol on the
+            # opposite side, tag this signal as INTENT_REVERSE so execution can
+            # close then reopen atomically. This also ensures risk gating treats
+            # the operation as de-risking (bypasses concurrent limits).
+            try:
+                signals_cfg = cfg_source.get("signals", {}) if isinstance(cfg_source, dict) else {}
+                allow_auto_reversal = bool(
+                    signals_cfg.get("allow_auto_reversal", False) if isinstance(signals_cfg, dict) else False
+                )
+                if allow_auto_reversal and intent == INTENT_ENTRY:
+                    incoming_side = str(enriched_signal.get("side", "")).lower()
+                    incoming_symbol = enriched_signal.get("symbol") or symbol
+                    open_positions_for_symbol: List[Dict[str, Any]] = []
+
+                    pm = getattr(self, "portfolio_manager", None)
+                    if pm is not None and hasattr(pm, "get_open_positions_for_symbol") and incoming_symbol:
+                        try:
+                            open_positions_for_symbol = pm.get_open_positions_for_symbol(incoming_symbol) or []
+                        except Exception:
+                            open_positions_for_symbol = []
+                    elif pm is not None and hasattr(pm, "get_open_positions") and incoming_symbol:
+                        try:
+                            positions_dict = pm.get_open_positions() or {}
+                            open_positions_for_symbol = [
+                                dict(pos, position_id=pid)
+                                for pid, pos in (positions_dict or {}).items()
+                                if isinstance(pos, dict) and pos.get("symbol") == incoming_symbol
+                            ]
+                        except Exception:
+                            open_positions_for_symbol = []
+
+                    reverse_target = None
+                    for pos in open_positions_for_symbol:
+                        if not isinstance(pos, dict):
+                            continue
+                        pos_side = str(pos.get("side", "")).lower()
+                        if incoming_side and pos_side and self._are_sides_opposite(incoming_side, pos_side):
+                            reverse_target = pos
+                            break
+
+                    reverse_from_position_id = None
+                    if isinstance(reverse_target, dict):
+                        reverse_from_position_id = (
+                            reverse_target.get("position_id")
+                            or reverse_target.get("id")
+                            or reverse_target.get("positionId")
+                        )
+
+                    if reverse_from_position_id:
+                        enriched_signal["intent"] = INTENT_REVERSE
+                        enriched_signal["reverse_from_position_id"] = reverse_from_position_id
+                        enriched_signal.setdefault("meta", {})["auto_reversal"] = True
+                        logger.info(
+                            "[AUTO-REVERSE] Tagged reverse intent | sym=%s | %s -> %s | close_position_id=%s",
+                            incoming_symbol,
+                            str(reverse_target.get("side", "")).lower() if isinstance(reverse_target, dict) else "n/a",
+                            incoming_side,
+                            reverse_from_position_id,
+                        )
+                        intent = INTENT_REVERSE
+            except Exception as exc:
+                logger.warning("[AUTO-REVERSE] Failed to evaluate auto reversal: %s", exc)
+             
             # --- Volume Gating (Issue #450) ---
             strat_cfg = self.config.get('strategies', {}).get(strategy_name, {})
             vol_filters = strat_cfg.get('volume_filters', {})
