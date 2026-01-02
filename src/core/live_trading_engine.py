@@ -1227,14 +1227,92 @@ class LiveTradingEngine:
                             continue
 
                         entry_price = position.get('entry_price', 0)
-                        
-                        current_price = await self._get_current_price(symbol)
-                        
-                        if current_price is None or current_price <= 0:
+                        exchange = position.get('exchange')
+                        if exchange == 'unknown':
+                            exchange = None
+
+                        closed_price = await self._get_current_price(symbol)
+
+                        trigger_price = None
+                        trigger_source = 'unknown'
+                        trigger_fallback = 'none'
+                        trigger_age_ms = None
+
+                        if self.market_data_pipeline:
+                            trigger_cfg = self.config.get('trigger_price', {}) if isinstance(self.config, dict) else {}
+                            trigger_source_cfg = trigger_cfg.get('source', 'mid') or 'mid'
+                            trigger_price, trigger_source, trigger_fallback = self.market_data_pipeline.get_live_trigger_price(
+                                symbol,
+                                timeframe='1m',
+                                source=trigger_source_cfg,
+                                exchange=exchange,
+                                forming_close=closed_price
+                            )
+
+                            ws_exchange = exchange or (
+                                next(iter(self.market_data_pipeline.exchanges.keys()))
+                                if self.market_data_pipeline.exchanges else None
+                            )
+                            collector = self.market_data_pipeline.websocket_manager.collector \
+                                if self.market_data_pipeline.websocket_manager else None
+                            if collector and ws_exchange:
+                                sample = collector.get_latest_ticker_sample(ws_exchange, symbol)
+                                if sample and sample.get('timestamp'):
+                                    try:
+                                        trigger_age_ms = max(
+                                            0.0,
+                                            (datetime.now(timezone.utc) - sample['timestamp']).total_seconds() * 1000
+                                        )
+                                    except Exception:
+                                        trigger_age_ms = None
+
+                        exit_price = trigger_price
+                        trigger_source_final = trigger_source
+                        trigger_fallback_final = trigger_fallback
+                        fallback_reason = None
+
+                        if exit_price is None or exit_price <= 0:
+                            fallback_reason = 'trigger_price_missing'
+                        else:
+                            ticker_stale_ms = int(
+                                (self.config.get('websocket', {}).get('ticker_stale_ms', 5000) or 5000)
+                                if isinstance(self.config, dict) else 5000
+                            )
+                            if trigger_age_ms is not None and trigger_age_ms > ticker_stale_ms:
+                                fallback_reason = 'trigger_price_stale'
+                            if trigger_source == 'forming_close':
+                                fallback_reason = fallback_reason or 'trigger_price_fallback_forming_close'
+
+                        if fallback_reason:
+                            if closed_price is None or closed_price <= 0:
+                                logger.warning(
+                                    f"Invalid or unavailable price for {symbol}, skipping P&L update for position {position_id} "
+                                    f"(fallback_reason={fallback_reason})."
+                                )
+                                continue
+                            exit_price = closed_price
+                            trigger_source_final = 'closed_close_fallback'
+                            if not trigger_fallback_final or trigger_fallback_final == 'none':
+                                trigger_fallback_final = fallback_reason
+                            logger.warning(
+                                f"[EXIT-PRICE-FALLBACK] {position_id} {symbol} "
+                                f"reason={fallback_reason} closed_price=${closed_price:.2f}"
+                            )
+
+                        if exit_price is None or exit_price <= 0:
                             logger.warning(f"Invalid or unavailable price for {symbol}, skipping P&L update for position {position_id}.")
                             continue
-                        
-                        pnl_result = await self.position_manager.monitor_position_pnl(position_id, current_price)
+
+                        position['exit_price'] = exit_price
+                        position['closed_price'] = closed_price
+                        position['trigger_price_source'] = trigger_source_final
+                        position['trigger_price_fallback'] = trigger_fallback_final
+                        position['trigger_price_ts_or_age_ms'] = (
+                            int(trigger_age_ms) if trigger_age_ms is not None else None
+                        )
+                        position['current_price'] = exit_price
+
+                        pnl_result = await self.position_manager.monitor_position_pnl(position_id, exit_price)
                         
                         if pnl_result.get('success'):
                             unrealized_pnl = pnl_result.get('unrealized_pnl', 0)
@@ -1242,9 +1320,27 @@ class LiveTradingEngine:
                             
                             logger.info(
                                 f"💰 [P&L-UPDATE] {position_id} | {symbol} | Entry: ${entry_price:.2f}, "
-                                f"Current: ${current_price:.2f} | P&L: ${unrealized_pnl:.2f} ({pnl_pct:+.2f}%)"
+                                f"Current: ${exit_price:.2f} | P&L: ${unrealized_pnl:.2f} ({pnl_pct:+.2f}%)"
                             )
                             total_unrealized_pnl += unrealized_pnl
+
+                        exit_health_interval_s = 30
+                        now_ts = time.time()
+                        last_exit_health_log_ts = position.get('last_exit_health_log_ts', 0.0) or 0.0
+                        if (now_ts - last_exit_health_log_ts) >= exit_health_interval_s:
+                            trailing_enabled = bool(position.get('trailing_stop_enabled', False))
+                            trailing_active = bool(position.get('trailing_stop_activated', False))
+                            stop_loss = position.get('stop_loss', 0) or 0
+                            take_profit = position.get('take_profit', 0) or 0
+                            logger.info(
+                                f"[EXIT-HEALTH] {position_id} symbol={symbol} side={position.get('side')} "
+                                f"exit_price={exit_price:.4f} trigger_source={trigger_source_final} "
+                                f"fallback_chain={trigger_fallback_final} closed_price={closed_price} "
+                                f"stop={stop_loss:.4f} tp={take_profit:.4f} "
+                                f"trailing_enabled={trailing_enabled} trailing_active={trailing_active} "
+                                f"poll_interval_s={interval} trigger_age_ms={position.get('trigger_price_ts_or_age_ms')}"
+                            )
+                            position['last_exit_health_log_ts'] = now_ts
                         
                         exit_check = await self.position_manager.manage_position_exits(position_id)
                         

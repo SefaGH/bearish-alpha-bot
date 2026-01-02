@@ -1726,6 +1726,32 @@ class LiveTradingConfiguration:
             f"   Queue max pending scale_in per symbol: "
             f"{get_nested(config, ['risk', 'queue', 'max_pending_scale_in_per_symbol'], 'N/A')}"
         )
+
+        # Position management / exits
+        logger.info("Position Management:")
+        exit_enabled = get_nested(config, ['position_management', 'exit_monitoring', 'enabled'], True)
+        exit_frequency = get_nested(config, ['position_management', 'exit_monitoring', 'check_frequency'], 'N/A')
+        logger.info(f"   Exit monitoring enabled: {exit_enabled} | check_frequency: {exit_frequency}")
+        logger.info("   Exit monitor poll interval (engine): 10s")
+        logger.info(
+            "   Exit guardrails eps: "
+            f"{get_nested(config, ['position_management', 'exit_guardrails', 'eps'], 0.0)}"
+        )
+        logger.info(
+            "   Trailing stop: "
+            f"enabled={get_nested(config, ['position_management', 'trailing_stop', 'trailing_stop_enabled'], 'N/A')} "
+            f"distance={get_nested(config, ['position_management', 'trailing_stop', 'trailing_stop_distance'], 'N/A')} "
+            f"activation_threshold={get_nested(config, ['position_management', 'trailing_stop', 'activation_threshold'], 'N/A')} "
+            f"min_trail_step_bps={get_nested(config, ['position_management', 'trailing_stop', 'min_trail_step_bps'], 0)} "
+            f"min_trail_update_interval_s={get_nested(config, ['position_management', 'trailing_stop', 'min_trail_update_interval_s'], 0)}"
+        )
+        logger.info(
+            "   Trigger price: "
+            f"source={get_nested(config, ['trigger_price', 'source'], 'mid')} "
+            f"diag_interval_sec={get_nested(config, ['trigger_price', 'diag_interval_sec'], 'N/A')} "
+            f"ticker_stale_ms={get_nested(config, ['websocket', 'ticker_stale_ms'], 'N/A')} "
+            f"trigger_diag_interval_sec={get_nested(config, ['websocket', 'trigger_diag_interval_sec'], 'N/A')}"
+        )
         
         logger.info("="*70)
 

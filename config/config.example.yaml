@@ -490,13 +490,13 @@ signals:
           atr_scale: 1.15             # Override with: STRATEGY_STR_VOL_HIGH_ATR_SCALE
           min_sl_pct: 0.003           # Override with: STRATEGY_STR_VOL_HIGH_MIN_SL
           max_sl_pct: 0.025           # Override with: STRATEGY_STR_VOL_HIGH_MAX_SL
-    symbols:
-      "BTC/USDT:USDT":
-        rsi_threshold: 45             # Override with: RSI_THRESHOLD_BTC
-      "ETH/USDT:USDT":
-        rsi_threshold: 45             # Override with: RSI_THRESHOLD_ETH
-      "SOL/USDT:USDT":
-        rsi_threshold: 45             # Override with: RSI_THRESHOLD_SOL
+    #symbols:
+      #"BTC/USDT:USDT":
+        #rsi_threshold: 45             # Override with: RSI_THRESHOLD_BTC
+      #"ETH/USDT:USDT":
+        #rsi_threshold: 45             # Override with: RSI_THRESHOLD_ETH
+      #"SOL/USDT:USDT":
+        #rsi_threshold: 45             # Override with: RSI_THRESHOLD_SOL
 
 # ==============================================================================
 # STRATEGY ROUTING (Regime-aware)
@@ -551,7 +551,7 @@ strategies:
     signal_timeframe: "5m"    # Decision timeframe
     vwap_lookback: 1440       # Rolling 24h (1m bars)
     band_multiplier: 2.0
-    adx_threshold: 30
+    adx_threshold: 25
     allocation_pct: 0.20
 
 # ==============================================================================
@@ -563,10 +563,14 @@ position_management:
     check_frequency: 5                # Override with: EXIT_CHECK_FREQUENCY
   time_based_exit:
     max_position_duration: 3600       # Override with: MAX_POSITION_DURATION
+  exit_guardrails:
+    eps: 0.0                          # Override with: EXIT_GUARDRAIL_EPS
   trailing_stop:
     trailing_stop_enabled: true      # Override with: TRAILING_STOP_ENABLED
     trailing_stop_distance: 0.002     # Override with: TRAILING_STOP_DISTANCE
     activation_threshold: 0.003       # Override with: TRAILING_STOP_ACTIVATION_THRESHOLD
+    min_trail_step_bps: 0             # Override with: TRAILING_STOP_MIN_STEP_BPS
+    min_trail_update_interval_s: 0    # Override with: TRAILING_STOP_MIN_UPDATE_INTERVAL_S
 
 # ==============================================================================
 # PYRAMIDING (Shadow mode by default)

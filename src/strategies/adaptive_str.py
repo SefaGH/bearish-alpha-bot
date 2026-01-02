@@ -921,6 +921,35 @@ class AdaptiveShortTheRip(ShortTheRip):
                         f"ℹ️ {log_prefix} RSI threshold steady at {adaptive_rsi_threshold:.2f} (trend={market_regime['trend']}, momentum={market_regime['momentum']})."
                     )
 
+            # -------------------------------------------------------------------------
+            # CUSTOM TREND VETO (Step 2 Implementation)
+            # Purpose: In strong uptrends (Price > EMA50 and ADX > 25),
+            # force the RSI threshold to a minimum of 75.0 to prevent premature shorts.
+            # -------------------------------------------------------------------------
+            try:
+                # Safely fetch ADX (returns None if missing)
+                adx_val = float(last30.get("adx")) if last30 is not None and "adx" in last30 else None
+            except Exception:
+                adx_val = None
+
+            # 'ema50' variable is assumed to be defined earlier in the method
+            ema_long = ema50 
+
+            if (
+                adx_val is not None             # Data exists
+                and not pd.isna(adx_val)        # Not NaN
+                and ema_long and ema_long > 0   # EMA is valid
+                and close_price > ema_long      # Bullish Structure
+                and adx_val > 25.0              # Strong Trend Strength
+                and adaptive_rsi_threshold < 75.0 # Current threshold is too low
+            ):
+                # Log the intervention for transparency
+                # Using module-level logger directly for visibility
+                logger.info(f"{symbol_display} Trend Veto Triggered: Raising RSI Threshold from {adaptive_rsi_threshold:.1f} to 75.0 (Price > EMA50 & ADX {adx_val:.1f} > 25)")
+
+                adaptive_rsi_threshold = 75.0
+            # -------------------------------------------------------------------------
+
             volatility_regime = market_regime.get('volatility', 'normal')
             rip_atr_multiplier = 1.0
             if volatility_regime == 'high':

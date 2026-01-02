@@ -903,6 +903,39 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 logger.info(f"  - Price: ${trigger_price:,.2f}, RSI: {rsi_val:.2f}, EMA Fast: ${ema_fast:,.2f}, EMA Mid: ${ema_mid:,.2f}")
                 logger.info(f"  - RSI Threshold: {adaptive_rsi_threshold:.2f}")
 
+            # -------------------------------------------------------------------------
+            # CUSTOM DOWNTREND VETO (Safety Patch)
+            # Purpose: In strong downtrends (Price < EMA50 and ADX > 30),
+            # force the RSI threshold down to a maximum of 25.0.
+            # This prevents buying "mild dips" during a crash.
+            # -------------------------------------------------------------------------
+            try:
+                # Safely fetch ADX from trend_row (returns None if missing)
+                # trend_row is available in local scope
+                adx_val = float(trend_row.get("adx")) if trend_row is not None and "adx" in trend_row else None
+            except Exception:
+                adx_val = None
+
+            # 'ema_mid' is the alias for EMA50 in this file
+            ema_long = ema_mid 
+
+            # Use close_price as reference
+            price_ref = close_price
+
+            if (
+                adx_val is not None             # Data exists
+                and not pd.isna(adx_val)        # Not NaN
+                and ema_long and ema_long > 0   # EMA is valid
+                and price_ref < ema_long        # Bearish Structure (Price below EMA)
+                and adx_val > 30.0              # Strong Trend Strength
+                and adaptive_rsi_threshold > 25.0 # Current threshold is too generous (high)
+            ):
+                # Log the intervention using module-level logger
+                logger.info(f"{symbol_display} Downtrend Veto: lowering RSI threshold {adaptive_rsi_threshold:.1f} -> 25.0 (Price < EMA50 & ADX {adx_val:.1f} > 30)")
+
+                adaptive_rsi_threshold = 25.0
+            # -------------------------------------------------------------------------
+
             # 1. RSI Condition Check
             if rsi_val > adaptive_rsi_threshold:
                 logger.info(f"🚫 {log_prefix} No Signal: RSI ({rsi_val:.2f}) is above the threshold ({adaptive_rsi_threshold:.2f}).")
