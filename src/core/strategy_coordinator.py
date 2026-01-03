@@ -7,11 +7,12 @@ import asyncio
 import heapq
 import itertools
 import logging
+import threading
 import time
 import json
 from dataclasses import asdict
 from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 from enum import Enum
 from pathlib import Path
@@ -21,6 +22,7 @@ from copy import deepcopy
 
 from src.quality.quality_calculator import compute_quality
 from core.volume_analyzer import VolumeAnalyzer
+from src.safety.trend_guard import TrendGuard
 from src.core.interfaces import PositionSizingProtocol
 from src.utils.volume_utils import get_bucket_rank
 from core.logger import get_current_run_id
@@ -481,6 +483,10 @@ class StrategyCoordinator:
         if not self.volume_analyzer and self.market_data_pipeline and self._volume_analyzer_enabled:
             self.volume_analyzer = VolumeAnalyzer(self.market_data_pipeline, va_cfg or {})
 
+        tg_cfg = self.config.get("trend_guard", {}) if isinstance(self.config, dict) else {}
+        tg_enabled = bool(tg_cfg.get("enabled", False)) if isinstance(tg_cfg, dict) else False
+        self.trend_guard = TrendGuard(tg_cfg) if tg_enabled else None
+
         strategies_cfg = self.config.get('strategies', {}) or {}
         self.regime_routing_rules = strategies_cfg.get('regime_routing', {}) or {}
         self.regime_route_stats = {
@@ -520,6 +526,10 @@ class StrategyCoordinator:
         self.signal_price_history = defaultdict(list)  # symbol -> [(timestamp, price), ...]
         self._dca_last_signal_time = defaultdict(float)  # symbol -> ts
         self._dca_recent_layers = defaultdict(dict)  # symbol -> {layer_index: ts}
+
+        # Strategy+symbol cooldowns (non-blocking deferral replacement)
+        self._strategy_cooldowns: Dict[str, datetime] = {}
+        self._strategy_cooldowns_lock = threading.Lock()
         
         # Signal processing stats
         self.processing_stats = {
@@ -591,6 +601,34 @@ class StrategyCoordinator:
             self._initialize_gemma()
     
         logger.info("StrategyCoordinator initialized (market_data_pipeline=%s)", bool(self.market_data_pipeline))
+
+    def _set_strategy_cooldown(self, strategy_name: str, symbol: str, duration_seconds: float) -> None:
+        """Activate a cooldown for a specific strategy+symbol pair."""
+        if not strategy_name or not symbol:
+            return
+        try:
+            duration = max(0.0, float(duration_seconds))
+        except (TypeError, ValueError):
+            duration = 0.0
+        expiry_time = datetime.now(timezone.utc) + timedelta(seconds=duration)
+        key = f"{strategy_name}:{symbol}"
+        with self._strategy_cooldowns_lock:
+            self._strategy_cooldowns[key] = expiry_time
+
+    def _is_strategy_in_cooldown(self, strategy_name: str, symbol: str) -> bool:
+        """Return True if strategy+symbol is in cooldown; auto-cleans expired keys."""
+        if not strategy_name or not symbol:
+            return False
+        now = datetime.now(timezone.utc)
+        key = f"{strategy_name}:{symbol}"
+        with self._strategy_cooldowns_lock:
+            expiry_time = self._strategy_cooldowns.get(key)
+            if expiry_time is None:
+                return False
+            if now < expiry_time:
+                return True
+            self._strategy_cooldowns.pop(key, None)
+            return False
     
     def _initialize_gemma(self):
         """Initialize GEMMA adapter with manifest configuration."""
@@ -1456,6 +1494,8 @@ class StrategyCoordinator:
         """
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
+            if symbol and symbol != 'UNKNOWN' and self._is_strategy_in_cooldown(strategy_name, symbol):
+                return {'status': 'dropped', 'reason': 'cooldown_active', 'stage': 'cooldown'}
             log_prefix = f"[{strategy_name.upper()}/{symbol}]"
 
             # Default all signals to entry intent unless explicitly provided
@@ -1549,6 +1589,45 @@ class StrategyCoordinator:
                         intent = INTENT_REVERSE
             except Exception as exc:
                 logger.warning("[AUTO-REVERSE] Failed to evaluate auto reversal: %s", exc)
+
+            # --- TrendGuard Veto (Fast Trend Validation) ---
+            if self.trend_guard and intent in (INTENT_ENTRY, INTENT_REENTRY, INTENT_REVERSE):
+                try:
+                    if self.trend_guard.should_check(strategy_name, enriched_signal):
+                        guard_tf = self.trend_guard.resolve_timeframe(enriched_signal)
+                        guard_df = None
+                        if self.market_data_pipeline:
+                            guard_df = await self.market_data_pipeline.get_latest_ohlcv(symbol, guard_tf)
+                        if guard_df is not None and not guard_df.empty:
+                            guard_result = self.trend_guard.check_veto(
+                                symbol=symbol,
+                                side=enriched_signal.get("side"),
+                                current_candle=None,
+                                dataframe=guard_df,
+                                timeframe=guard_tf,
+                            )
+                            enriched_signal.setdefault("meta", {})["trend_guard"] = guard_result.meta_data
+                            if guard_result.is_vetoed:
+                                self.processing_stats['rejected_signals'] += 1
+                                logger.warning(
+                                    "??  [%s/%s] REJECTED (TrendGuard): %s",
+                                    strategy_name.upper(),
+                                    symbol,
+                                    guard_result.reason,
+                                )
+                                return {
+                                    'status': 'rejected',
+                                    'reason': guard_result.reason,
+                                    'stage': 'trend_guard',
+                                }
+                        else:
+                            logger.debug(
+                                "[TREND-GUARD] No data for %s %s; skipping guard",
+                                symbol,
+                                guard_tf,
+                            )
+                except Exception as exc:
+                    logger.warning("[TREND-GUARD] Evaluation failed: %s", exc)
              
             # --- Volume Gating (Issue #450) ---
             strat_cfg = self.config.get('strategies', {}).get(strategy_name, {})
@@ -1669,7 +1748,7 @@ class StrategyCoordinator:
             WIDE_STOP_THRESHOLD = 0.005  # 0.50%
             RESCUE_MULTIPLIER = 0.25
             LOW_LIMIT_MULTIPLIER = 0.35
-            DEFER_SECONDS = 300  # 1 bar
+            COOLDOWN_SECONDS = 300  # 1 bar
 
             if volume_bucket:
                 # Check 1: Deferred signals returning from waiting room
@@ -1712,26 +1791,13 @@ class StrategyCoordinator:
                         wide_stop = stop_pct is not None and stop_pct > WIDE_STOP_THRESHOLD
 
                         if tight_stop:
-                            logger.info(f"⏳ {log_prefix} Deferring signal (Low Vol + Tight Stop < 0.15%)")
-                            deferred_signal_id = enriched_signal.get('signal_id') or self._generate_signal_id(strategy_name, enriched_signal)
-                            enriched_signal['signal_id'] = deferred_signal_id
-                            payload = {
-                                'signal_id': deferred_signal_id,
-                                'signal': enriched_signal,
-                                'risk_assessment': {},
-                                'routing': {}
-                            }
-                            queued, queue_reason = await self.signal_queue.put(payload, process_after=time.time() + DEFER_SECONDS)
-                            if not queued:
-                                self.processing_stats['rejected_signals'] += 1
-                                self.processing_stats['queue_rejections'] += 1
-                                return {'status': 'rejected', 'reason': queue_reason, 'stage': 'queue'}
-                            return {
-                                'status': 'deferred',
-                                'signal_id': deferred_signal_id,
-                                'reason': 'low_volume_tight_stop_deferred',
-                                'stage': 'volume_policy'
-                            }
+                            self._set_strategy_cooldown(strategy_name, symbol, duration_seconds=COOLDOWN_SECONDS)
+                            logger.warning(
+                                f"{log_prefix} Signal DROPPED due to Low Volatility. "
+                                f"Cooldown activated for {COOLDOWN_SECONDS}s on {strategy_name}:{symbol}"
+                            )
+                            self.processing_stats['rejected_signals'] += 1
+                            return {'status': 'dropped', 'reason': 'cooldown_activated', 'stage': 'volume_policy'}
 
                         elif wide_stop:
                             enriched_signal['execution_params'] = {'type': 'LIMIT', 'post_only': True}

@@ -164,20 +164,50 @@ class VWAPMeanReversion(BaseStrategy):
 
         atr_val = float(last_sig["atr"]) if "atr" in last_sig.index else None
 
-        long_cond = price < vwap_lower and adx_val < self.adx_threshold
-        short_cond = price > vwap_upper and adx_val < self.adx_threshold
+        in_band = vwap_lower <= price <= vwap_upper
+        adx_ok = adx_val < self.adx_threshold
 
-        if not (long_cond or short_cond):
-            logger.info(f"[MeanReversion] Price within bands for {symbol}. "
-                        f"px={price:.4f}, lower={vwap_lower:.4f}, upper={vwap_upper:.4f}, adx={adx_val:.1f}")
+        if in_band:
+            logger.info(
+                f"[MeanReversion] Price within bands for {symbol}. "
+                f"px={price:.4f}, lower={vwap_lower:.4f}, upper={vwap_upper:.4f}, "
+                f"adx={adx_val:.1f}, adx_th={self.adx_threshold:.1f}"
+            )
             return None
 
-        side = "buy" if long_cond else "sell"
-        reason = (
-            f"VWAP MR long (px {price:.4f} < lower {vwap_lower:.4f}, ADX {adx_val:.1f} < {self.adx_threshold})"
-            if long_cond
-            else f"VWAP MR short (px {price:.4f} > upper {vwap_upper:.4f}, ADX {adx_val:.1f} < {self.adx_threshold})"
-        )
+        if not adx_ok:
+            if price > vwap_upper:
+                breach = "above_upper"
+            elif price < vwap_lower:
+                breach = "below_lower"
+            else:
+                breach = "outside"
+            logger.info(
+                f"[MeanReversion] Price outside bands but ADX veto for {symbol}. "
+                f"breach={breach}, px={price:.4f}, lower={vwap_lower:.4f}, upper={vwap_upper:.4f}, "
+                f"adx={adx_val:.1f}, adx_th={self.adx_threshold:.1f}"
+            )
+            return None
+
+        if price < vwap_lower:
+            side = "buy"
+            reason = (
+                f"VWAP MR long (px {price:.4f} < lower {vwap_lower:.4f}, "
+                f"ADX {adx_val:.1f} < {self.adx_threshold})"
+            )
+        elif price > vwap_upper:
+            side = "sell"
+            reason = (
+                f"VWAP MR short (px {price:.4f} > upper {vwap_upper:.4f}, "
+                f"ADX {adx_val:.1f} < {self.adx_threshold})"
+            )
+        else:
+            logger.info(
+                f"[MeanReversion] Price within bands for {symbol}. "
+                f"px={price:.4f}, lower={vwap_lower:.4f}, upper={vwap_upper:.4f}, "
+                f"adx={adx_val:.1f}, adx_th={self.adx_threshold:.1f}"
+            )
+            return None
 
         stop = None
         if atr_val and not math.isnan(atr_val):

@@ -404,7 +404,71 @@ class LiveTradingEngine:
             except (TypeError, ValueError):
                 engine_multiplier = 1.0
             combined_multiplier = ppo_multiplier * engine_multiplier
-            
+
+            # ---------------------------------------------------------------------
+            # Price SSOT (Single Source of Truth):
+            # - Execution price is determined upstream (signal) and can optionally
+            #   include a slippage/limit buffer BEFORE any risk calculations.
+            # - OrderManager must not fetch its own ticker price for limit pricing.
+            # ---------------------------------------------------------------------
+            execution_params = signal.get('execution_params') if isinstance(signal.get('execution_params'), dict) else {}
+            side_norm = str(signal.get('side', '') or '').lower()
+            order_type_hint = (
+                execution_params.get('type')
+                or execution_params.get('order_type')
+                or self.config.get('trading', {}).get('order_type', 'limit')
+            )
+            order_type_norm = str(order_type_hint or 'limit').lower()
+            if order_type_norm == 'limit':
+                # Keep legacy behavior (0.1% maker offset) but apply it BEFORE risk sizing/validation.
+                cfg_trading = self.config.get('trading', {}) if isinstance(self.config, dict) else {}
+                raw_offset = (
+                    execution_params.get('slippage_buffer')
+                    or execution_params.get('price_offset')
+                    or cfg_trading.get('slippage_buffer')
+                    or cfg_trading.get('limit_price_offset')
+                    or 0.001
+                )
+                try:
+                    price_offset = float(raw_offset or 0.0)
+                except (TypeError, ValueError):
+                    price_offset = 0.001
+                if price_offset < 0:
+                    price_offset = 0.0
+
+                if not signal.get('_execution_price_locked'):
+                    try:
+                        base_entry = float(signal.get('entry') or 0.0)
+                    except (TypeError, ValueError):
+                        base_entry = 0.0
+                    if base_entry > 0:
+                        adjusted_entry = (
+                            base_entry * (1 - price_offset)
+                            if side_norm in ('buy', 'long')
+                            else base_entry * (1 + price_offset)
+                        )
+                        delta = adjusted_entry - base_entry
+
+                        signal.setdefault('entry_raw', base_entry)
+                        signal['entry'] = adjusted_entry
+                        signal['limit_price'] = adjusted_entry
+                        signal['execution_price'] = adjusted_entry
+                        signal['execution_price_offset'] = price_offset
+                        signal['_execution_price_locked'] = True
+
+                        # Keep stop/target distances consistent with the new entry for risk/RR.
+                        for k in ('stop', 'stop_loss', 'target', 'take_profit'):
+                            if k not in signal:
+                                continue
+                            try:
+                                val = float(signal.get(k) or 0.0)
+                            except (TypeError, ValueError):
+                                continue
+                            if val > 0:
+                                shifted = val + delta
+                                if shifted > 0:
+                                    signal[k] = shifted
+             
             # [EXECUTION START] Log signal execution start
             logger.info(f"[EXECUTION-START] Processing signal for {symbol}")
             
@@ -421,6 +485,16 @@ class LiveTradingEngine:
             logger.info(f"  Side: {signal.get('side', 'unknown').upper()}")
             logger.info(f"  Entry: ${signal.get('entry', 0):.2f}")
             logger.info(f"  Reason: {signal.get('reason', 'N/A')}")
+            if signal.get('entry_raw') and signal.get('execution_price_offset') is not None:
+                try:
+                    logger.info(
+                        "  Execution pricing: base=%.2f offset=%.3f%% limit=%.2f",
+                        float(signal.get('entry_raw')),
+                        float(signal.get('execution_price_offset')) * 100.0,
+                        float(signal.get('entry')),
+                    )
+                except Exception:
+                    pass
 
             if any(abs(val - 1.0) > 1e-6 for val in (combined_multiplier, ppo_multiplier, engine_multiplier)):
                 logger.info(
@@ -443,6 +517,19 @@ class LiveTradingEngine:
             if planner_active:
                 signal['planner_active'] = True
             # Planner invariant (RISK_SIZE_PLANNER_ENABLED=true): execution uses planner_planned_notional/qty (or risk_assessment.metrics.final_*), skips multipliers, and passes the already-capped notional into validate_new_position so PositionSizeRule cannot see a larger value than the planner cap.
+
+            # If planner provides a notional budget, convert it into units using the (possibly adjusted) entry price
+            # so the executed notional matches the planner cap (and risk sees the same entry).
+            if planner_active and signal.get('notional'):
+                try:
+                    planned_notional = float(signal.get('notional'))
+                    planned_entry = float(signal.get('entry') or 0.0)
+                    if planned_notional > 0 and planned_entry > 0:
+                        planned_qty = planned_notional / planned_entry
+                        signal['position_size'] = planned_qty
+                        signal['amount'] = planned_qty
+                except (TypeError, ValueError):
+                    pass
 
             # Step 1: Determine portfolio allocation (planner-aware)
             strategy_name = signal.get('strategy', 'default')
@@ -583,7 +670,10 @@ class LiveTradingEngine:
                 'side': signal.get('side', 'buy'),
                 'amount': position_size,
                 'exchange': exchange,
-                'signal': signal
+                'signal': signal,
+                # SSOT limit price (pre-risk, pre-validation) – OrderManager must not re-fetch ticker to price limits.
+                'limit_price': signal.get('limit_price') or signal.get('execution_price') or signal.get('entry'),
+                'execution_params': execution_params,
             }
             
             # Reverse intent handling: if this signal is marked as a

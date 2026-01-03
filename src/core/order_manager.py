@@ -482,20 +482,27 @@ class SmartOrderManager:
                 self.logger.error(f"🛡️  {log_prefix} REJECTED (MarketMetadata): {e}")
                 return {'success': False, 'reason': f"REJECT:MARKET_METADATA - {error_msg}", 'order_id': None}
             
-            # Get current price from exchange
+            # SSOT pricing: limit price must be provided by the caller (signal/engine).
+            # OrderManager must NOT fetch ticker prices to determine limit price (prevents risk/execution drift).
+            signal = order_request.get('signal') if isinstance(order_request.get('signal'), dict) else {}
+            raw_limit = (
+                order_request.get('limit_price')
+                or signal.get('limit_price')
+                or signal.get('execution_price')
+                or signal.get('entry')
+            )
             try:
-                ticker = client.ticker(symbol)
-            except Exception as e:
-                if _is_transient_ccxt_error(e):
-                    self.logger.warning(f"[WARN] {log_prefix} Ticker fetch failed (transient): {e}")
-                    return {'success': False, 'reason': str(e), 'order_id': None}
-                raise
+                limit_price = float(raw_limit or 0.0)
+            except (TypeError, ValueError):
+                limit_price = 0.0
+            if limit_price <= 0:
+                return {'success': False, 'reason': 'REJECT:MISSING_LIMIT_PRICE', 'order_id': None}
 
-            market_price = float(ticker.get('last', 0))
-            
-            # Calculate optimal limit price
-            price_offset = 0.001
-            limit_price = market_price * (1 - price_offset) if side in ['buy', 'long'] else market_price * (1 + price_offset)
+            ref_price = signal.get('entry_raw') or signal.get('entry')
+            try:
+                reference_price = float(ref_price or 0.0)
+            except (TypeError, ValueError):
+                reference_price = 0.0
             
             # --- 🔥 YENİ EKLENEN TELEMETRİ VE ÖN KONTROL ADIMI 🔥 ---
             notional_value = amount * limit_price
@@ -533,8 +540,11 @@ class SmartOrderManager:
             order['avg_fill_price'] = limit_price
             order['filled_at'] = datetime.now(timezone.utc)
             
-            slippage = abs(limit_price - market_price) / market_price
+            slippage = 0.0
+            if reference_price > 0:
+                slippage = abs(limit_price - reference_price) / reference_price
             order['slippage'] = slippage
+            order['expected_price'] = reference_price if reference_price > 0 else limit_price
             
             self.active_orders[order_id] = order
             

@@ -499,6 +499,32 @@ signals:
         #rsi_threshold: 45             # Override with: RSI_THRESHOLD_SOL
 
 # ==============================================================================
+# FAST TREND VALIDATION (TrendGuard Veto)
+# ==============================================================================
+trend_guard:
+  enabled: true
+  default_timeframe: "5m"
+  lookback_bars: 500
+  min_history_bars: 200
+  update_every_bars: 25
+  update_every_seconds: 300
+  bb_period: 20
+  bb_std: 2.0
+  bbw_squeeze_quantile: 0.20
+  bbw_expand_quantile: 0.80
+  bbw_expand_lookback: 20
+  squeeze_lookback: 20
+  slope_ema_period: 50
+  slope_lookback: 5
+  slope_quantile: 0.85
+  slope_use_atr: true
+  slope_atr_period: 14
+  min_body_ratio: 0.0
+  apply_to_strategies: ["mean_reversion", "adaptive_str"]
+  apply_to_signal_types: []
+  allow_missing_signal_type: true
+
+# ==============================================================================
 # STRATEGY ROUTING (Regime-aware)
 # ==============================================================================
 strategies:

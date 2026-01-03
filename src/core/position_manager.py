@@ -896,9 +896,14 @@ class AdvancedPositionManager:
             amount = position['amount']
             side = position['side']
             symbol = position.get('symbol', 'UNKNOWN')
-            
+             
             realized_pnl = calculate_realized_pnl(side, entry_price, exit_price, amount)
-            
+
+            # "Stop in profit" normalization: if a stop-loss exit realizes profit, treat it as a trailing stop
+            # so it is counted under Trailing Stop in session reporting.
+            if exit_reason == ExitReason.STOP_LOSS.value and realized_pnl > 0:
+                exit_reason = ExitReason.TRAILING_STOP.value
+             
             position['realized_pnl'] = realized_pnl
             position['exit_price'] = exit_price
             position['exit_reason'] = exit_reason
@@ -1225,6 +1230,37 @@ class AdvancedPositionManager:
                     f"   highest={highest_price:.2f} lowest={lowest_price:.2f} entry={entry_price:.2f} price={current_price:.2f}"
                 )
             
+            # If trailing-stop is enabled, evaluate it BEFORE the generic stop-loss check so we can
+            # classify the exit as `trailing_stop` (and have it counted correctly in summaries).
+            if trailing_enabled:
+                trailing_distance = self._safe_float(position.get('trailing_stop_distance'), 0.02) or 0.02
+                if trailing_distance < 0:
+                    trailing_distance = 0.0
+                if is_long:
+                    highest_price = position.get('highest_price', entry_price)
+                    if current_price > highest_price:
+                        position['highest_price'] = current_price
+                        highest_price = current_price
+                    trailing_stop_level = highest_price * (1 - trailing_distance)
+                    if self._is_trailing_stop_active(position, current_price, entry_price, True) and current_price <= trailing_stop_level:
+                        return {
+                            'should_exit': True,
+                            'exit_reason': ExitReason.TRAILING_STOP.value,
+                            'exit_price': current_price
+                        }
+                else:  # short position
+                    lowest_price = position.get('lowest_price', entry_price)
+                    if current_price < lowest_price:
+                        position['lowest_price'] = current_price
+                        lowest_price = current_price
+                    trailing_stop_level = lowest_price * (1 + trailing_distance)
+                    if self._is_trailing_stop_active(position, current_price, entry_price, False) and current_price >= trailing_stop_level:
+                        return {
+                            'should_exit': True,
+                            'exit_reason': ExitReason.TRAILING_STOP.value,
+                            'exit_price': current_price
+                        }
+
             # Check stop loss
             if side in ['long', 'buy']:
                 stop_threshold = stop_loss * (1 - eps) if stop_loss > 0 else stop_loss
@@ -1238,7 +1274,7 @@ class AdvancedPositionManager:
                     )
                     return {
                         'should_exit': True,
-                        'exit_reason': 'stop_loss',
+                        'exit_reason': ExitReason.STOP_LOSS.value,
                         'exit_price': current_price
                     }
             else:  # short
@@ -1253,7 +1289,7 @@ class AdvancedPositionManager:
                     )
                     return {
                         'should_exit': True,
-                        'exit_reason': 'stop_loss',
+                        'exit_reason': ExitReason.STOP_LOSS.value,
                         'exit_price': current_price
                     }
             
@@ -1268,7 +1304,7 @@ class AdvancedPositionManager:
                     )
                     return {
                         'should_exit': True,
-                        'exit_reason': 'take_profit',
+                        'exit_reason': ExitReason.TAKE_PROFIT.value,
                         'exit_price': current_price
                     }
             else:  # short
@@ -1281,13 +1317,15 @@ class AdvancedPositionManager:
                     )
                     return {
                         'should_exit': True,
-                        'exit_reason': 'take_profit',
+                        'exit_reason': ExitReason.TAKE_PROFIT.value,
                         'exit_price': current_price
                     }
             
             # Check trailing stop (if enabled)
             if position.get('trailing_stop_enabled', False):
-                trailing_distance = position.get('trailing_stop_distance', 0.02)  # 2% default
+                trailing_distance = self._safe_float(position.get('trailing_stop_distance'), 0.02) or 0.02
+                if trailing_distance < 0:
+                    trailing_distance = 0.0
                 if is_long:
                     highest_price = position.get('highest_price', entry_price)
                     if current_price > highest_price:
@@ -1306,7 +1344,7 @@ class AdvancedPositionManager:
                             )
                             return {
                                 'should_exit': True,
-                                'exit_reason': 'trailing_stop',
+                                'exit_reason': ExitReason.TRAILING_STOP.value,
                                 'exit_price': current_price
                             }
                 else:  # short position
@@ -1327,7 +1365,7 @@ class AdvancedPositionManager:
                             )
                             return {
                                 'should_exit': True,
-                                'exit_reason': 'trailing_stop',
+                                'exit_reason': ExitReason.TRAILING_STOP.value,
                                 'exit_price': current_price
                             }
             
