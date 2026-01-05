@@ -86,6 +86,46 @@
             ],
             "console": "integratedTerminal",
             "justMyCode": true
+        },
+        {
+            "name": "7. Health Summary (Active Log)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/diagnostics/health_summary.py",
+            "args": [
+                "${file}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "8. Until Next Pivot (Active Log)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/diagnostics/until_next_pivot.py",
+            "args": [
+                "--symbol",
+                "${input:untilNextPivotSymbol}",
+                "--tfs",
+                "${input:untilNextPivotTfs}",
+                "${file}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ],
+    "inputs": [
+        {
+            "id": "untilNextPivotSymbol",
+            "type": "promptString",
+            "description": "Symbol (log içindeki symbol ile aynı olmalı)",
+            "default": "BTC/USDT:USDT"
+        },
+        {
+            "id": "untilNextPivotTfs",
+            "type": "promptString",
+            "description": "Timeframes (virgülle ayır)",
+            "default": "1h,4h"
         }
     ]
 }

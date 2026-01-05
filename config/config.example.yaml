@@ -525,6 +525,34 @@ trend_guard:
   allow_missing_signal_type: true
 
 # ==============================================================================
+# EXECUTION PROFILES (Per-strategy execution overrides)
+# ==============================================================================
+# Resolution precedence:
+# 1) Signal overrides (signal.execution / trailing_stop_config / dca_config)
+# 2) Strategy execution_profile (strategies.<name>.execution_profile)
+# 3) Global fallbacks (position_management.trailing_stop, dca.strategy)
+execution_profiles:
+  # Tight scalping defaults (matches global trailing_stop + dca defaults below)
+  scalp_tight:
+    trailing_stop:
+      enabled: true
+      delta_pct: 0.002                # 0.2%
+      activation_threshold_pct: 0.003  # 0.3%
+    dca:
+      enabled: true
+      max_layers: 3
+      step_pct: 0.015
+
+  # Loose trend-following defaults (example; used by future TrendPullback)
+  trend_loose:
+    trailing_stop:
+      enabled: true
+      delta_pct: 0.01                 # 1.0%
+      activation_threshold_pct: 0.01   # 1.0%
+    dca:
+      enabled: false
+
+# ==============================================================================
 # STRATEGY ROUTING (Regime-aware)
 # ==============================================================================
 strategies:
@@ -573,6 +601,7 @@ strategies:
 
   mean_reversion:
     enabled: true
+    execution_profile: "scalp_tight"
     timeframe: "1m"           # VWAP calculation window
     signal_timeframe: "5m"    # Decision timeframe
     vwap_lookback: 1440       # Rolling 24h (1m bars)

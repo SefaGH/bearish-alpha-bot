@@ -124,6 +124,17 @@ class DCAWatcher:
         positions: List[Dict[str, Any]],
         state: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
+        # Per-strategy/profile gating: allow DCA only when enabled for the base strategy.
+        try:
+            base_positions = [p for p in positions if not self._is_dca_position(p)]
+            if base_positions:
+                base = sorted(base_positions, key=lambda p: p.get("entry_time") or p.get("opened_at") or 0)[0]
+                if not self._is_dca_enabled_for_base_position(base):
+                    return None
+        except Exception:
+            # Never block DCA on gating errors; fall back to legacy behavior.
+            pass
+
         strategy_cfg = self.dca_cfg.get("strategy", {}) if isinstance(self.dca_cfg, dict) else {}
         max_layers_cfg = strategy_cfg.get("max_layers", 0)
         try:
@@ -170,6 +181,55 @@ class DCAWatcher:
             state=state,
             positions=positions,
         )
+
+    def _is_dca_enabled_for_base_position(self, base_position: Dict[str, Any]) -> bool:
+        """
+        Decide whether DCA is enabled for this base position's strategy/profile.
+
+        Resolution order:
+          1) Per-position execution override: base_position["execution"]["dca"]["enabled"]
+          2) Strategy execution profile: cfg.strategies[base_strategy].execution_profile -> cfg.execution_profiles[profile].dca.enabled
+          3) Fallback: global DCA watcher enable (already checked by self.enabled)
+        """
+        if not isinstance(base_position, dict):
+            return True
+
+        execution_cfg = base_position.get("execution")
+        if isinstance(execution_cfg, dict):
+            dca_cfg = execution_cfg.get("dca")
+            if isinstance(dca_cfg, dict) and "enabled" in dca_cfg:
+                try:
+                    return bool(dca_cfg.get("enabled"))
+                except Exception:
+                    pass
+
+        base_strategy = (
+            base_position.get("strategy_name")
+            or base_position.get("strategy")
+            or base_position.get("base_strategy")
+            or "unknown"
+        )
+        if not base_strategy or base_strategy == "unknown":
+            return True
+
+        strategies_cfg = self.cfg.get("strategies", {}) if isinstance(self.cfg, dict) else {}
+        strat_cfg = strategies_cfg.get(base_strategy, {}) if isinstance(strategies_cfg, dict) else {}
+        profile_name = None
+        if isinstance(strat_cfg, dict):
+            profile_name = strat_cfg.get("execution_profile") or strat_cfg.get("executionProfile")
+        if not profile_name:
+            return True
+
+        profiles = self.cfg.get("execution_profiles", {}) if isinstance(self.cfg, dict) else {}
+        profile_cfg = profiles.get(profile_name, {}) if isinstance(profiles, dict) else {}
+        dca_profile = profile_cfg.get("dca") if isinstance(profile_cfg, dict) else None
+        if isinstance(dca_profile, dict) and "enabled" in dca_profile:
+            try:
+                return bool(dca_profile.get("enabled"))
+            except Exception:
+                return True
+
+        return True
 
     def _create_dca_signal(
         self,

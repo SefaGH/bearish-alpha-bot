@@ -268,6 +268,26 @@ class LiveTradingEngine:
             
             # Transition the engine state before background loops execute so they observe RUNNING.
             self.state = EngineState.RUNNING
+
+            # Restore open positions from snapshot before loops start (restart safety)
+            if self.position_manager and hasattr(self.position_manager, "restore_positions_from_snapshot"):
+                try:
+                    restore_result = await self.position_manager.restore_positions_from_snapshot(
+                        exchange_clients=(self.exchange_clients if self.mode == TradingMode.LIVE else None),
+                        reconcile_with_exchange=(self.mode == TradingMode.LIVE),
+                    )
+                    # Seed engine active_positions so monitoring loop tracks restored positions.
+                    restored_positions = getattr(self.position_manager, "positions", {}) or {}
+                    for pid, pos in restored_positions.items():
+                        self.active_positions.setdefault(pid, pos)
+                    logger.info(
+                        "[SNAPSHOT] restore_result=%s active_positions_seeded=%s",
+                        restore_result,
+                        len(restored_positions),
+                    )
+                except Exception as exc:
+                    logger.error("[SNAPSHOT] Restore failed: %s", exc, exc_info=True)
+
             self._initialize_dca_watcher()
 
             # Start signal processing
@@ -377,6 +397,128 @@ class LiveTradingEngine:
                 'success': False,
                 'reason': str(e)
             }
+
+    def _resolve_execution_config(self, signal: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Resolve per-position execution config using precedence:
+          Signal Overrides > Strategy Profile (config) > Global Defaults
+
+        Backward compatible:
+          - If new keys are missing, uses existing global trailing/DCA config.
+          - Accepts legacy override aliases: trailing_stop_config, dca_config.
+        """
+        cfg = self.config if isinstance(self.config, dict) else {}
+
+        def _as_dict(value: Any) -> Dict[str, Any]:
+            return value if isinstance(value, dict) else {}
+
+        def _safe_float(value: Any, default: float) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _safe_int(value: Any, default: int) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        # --- Global defaults (fallback) ---
+        trailing_global = _as_dict(_as_dict(cfg.get("position_management")).get("trailing_stop"))
+        global_trailing_enabled = bool(trailing_global.get("trailing_stop_enabled", False))
+        global_delta = _safe_float(trailing_global.get("trailing_stop_distance", 0.02), 0.02)
+        global_activation = _safe_float(trailing_global.get("activation_threshold", 0.0), 0.0)
+
+        dca_global = _as_dict(cfg.get("dca"))
+        dca_strategy = _as_dict(dca_global.get("strategy"))
+        global_dca_enabled = bool(dca_global.get("enabled", False))
+        global_dca_max_layers = _safe_int(dca_strategy.get("max_layers", 0), 0)
+        global_dca_step_pct = _safe_float(dca_strategy.get("step_pct", 0.0), 0.0)
+
+        resolved: Dict[str, Any] = {
+            "profile": None,
+            "trailing_stop": {
+                "enabled": global_trailing_enabled,
+                "delta_pct": max(0.0, global_delta),
+                "activation_threshold_pct": max(0.0, global_activation),
+            },
+            "dca": {
+                "enabled": global_dca_enabled,
+                "max_layers": max(0, global_dca_max_layers),
+                "step_pct": max(0.0, global_dca_step_pct),
+            },
+        }
+
+        # --- Strategy profile (config) ---
+        strategy_name = (signal.get("strategy_name") or signal.get("strategy") or "").strip()
+        strat_cfg = _as_dict(_as_dict(cfg.get("strategies")).get(strategy_name))
+        profile_name = (strat_cfg.get("execution_profile") or "").strip() if strat_cfg else ""
+
+        if profile_name:
+            profiles = _as_dict(cfg.get("execution_profiles"))
+            profile_cfg = _as_dict(profiles.get(profile_name))
+            if profile_cfg:
+                resolved["profile"] = profile_name
+                profile_ts = _as_dict(profile_cfg.get("trailing_stop"))
+                if profile_ts:
+                    if "enabled" in profile_ts:
+                        resolved["trailing_stop"]["enabled"] = bool(profile_ts.get("enabled"))
+                    if "delta_pct" in profile_ts:
+                        resolved["trailing_stop"]["delta_pct"] = max(0.0, _safe_float(profile_ts.get("delta_pct"), resolved["trailing_stop"]["delta_pct"]))
+                    if "activation_threshold_pct" in profile_ts:
+                        resolved["trailing_stop"]["activation_threshold_pct"] = max(0.0, _safe_float(profile_ts.get("activation_threshold_pct"), resolved["trailing_stop"]["activation_threshold_pct"]))
+
+                profile_dca = _as_dict(profile_cfg.get("dca"))
+                if profile_dca:
+                    if "enabled" in profile_dca:
+                        resolved["dca"]["enabled"] = bool(profile_dca.get("enabled"))
+                    if "max_layers" in profile_dca:
+                        resolved["dca"]["max_layers"] = max(0, _safe_int(profile_dca.get("max_layers"), resolved["dca"]["max_layers"]))
+                    if "step_pct" in profile_dca:
+                        resolved["dca"]["step_pct"] = max(0.0, _safe_float(profile_dca.get("step_pct"), resolved["dca"]["step_pct"]))
+
+        # --- Signal overrides (highest precedence) ---
+        overrides = _as_dict(signal.get("execution"))
+
+        # Legacy alias support
+        if isinstance(signal.get("trailing_stop_config"), dict):
+            overrides = {**overrides, "trailing_stop": {**_as_dict(overrides.get("trailing_stop")), **_as_dict(signal.get("trailing_stop_config"))}}
+        if isinstance(signal.get("dca_config"), dict):
+            overrides = {**overrides, "dca": {**_as_dict(overrides.get("dca")), **_as_dict(signal.get("dca_config"))}}
+
+        ts_override = _as_dict(overrides.get("trailing_stop"))
+        if ts_override:
+            if "enabled" in ts_override:
+                resolved["trailing_stop"]["enabled"] = bool(ts_override.get("enabled"))
+            if "delta_pct" in ts_override:
+                resolved["trailing_stop"]["delta_pct"] = max(0.0, _safe_float(ts_override.get("delta_pct"), resolved["trailing_stop"]["delta_pct"]))
+            # Support activation_threshold as alias for activation_threshold_pct
+            if "activation_threshold_pct" in ts_override:
+                resolved["trailing_stop"]["activation_threshold_pct"] = max(0.0, _safe_float(ts_override.get("activation_threshold_pct"), resolved["trailing_stop"]["activation_threshold_pct"]))
+            elif "activation_threshold" in ts_override:
+                resolved["trailing_stop"]["activation_threshold_pct"] = max(0.0, _safe_float(ts_override.get("activation_threshold"), resolved["trailing_stop"]["activation_threshold_pct"]))
+            elif "activation_price" in ts_override:
+                # Best-effort conversion using signal entry price (fill may differ; this is still useful in paper mode).
+                entry = _safe_float(signal.get("entry"), 0.0)
+                activation_price = _safe_float(ts_override.get("activation_price"), 0.0)
+                side = str(signal.get("side") or "").lower()
+                if entry > 0 and activation_price > 0:
+                    if side in ("sell", "short"):
+                        resolved["trailing_stop"]["activation_threshold_pct"] = max(0.0, (entry - activation_price) / entry)
+                    else:
+                        resolved["trailing_stop"]["activation_threshold_pct"] = max(0.0, (activation_price - entry) / entry)
+
+        dca_override = _as_dict(overrides.get("dca"))
+        if dca_override:
+            if "enabled" in dca_override:
+                resolved["dca"]["enabled"] = bool(dca_override.get("enabled"))
+            if "max_layers" in dca_override:
+                resolved["dca"]["max_layers"] = max(0, _safe_int(dca_override.get("max_layers"), resolved["dca"]["max_layers"]))
+            if "step_pct" in dca_override:
+                resolved["dca"]["step_pct"] = max(0.0, _safe_float(dca_override.get("step_pct"), resolved["dca"]["step_pct"]))
+
+        return resolved
     
     async def execute_signal(self, signal: Dict, allocation_size: Optional[float] = None) -> Dict[str, Any]:
         """Execute trading signal with full pipeline integration."""
@@ -384,6 +526,9 @@ class LiveTradingEngine:
             symbol = signal.get('symbol', 'UNKNOWN')
             signal_id = signal.get('signal_id')
             intent = signal.get('intent', INTENT_ENTRY)
+
+            # Resolve per-position execution config (Signal Overrides > Strategy Profile > Global Defaults)
+            execution_cfg = self._resolve_execution_config(signal)
 
             sizing_meta = signal.get('sizing_meta') or {}
             risk_assessment_payload = signal.get('risk_assessment')
@@ -777,21 +922,42 @@ class LiveTradingEngine:
             
             position_id = position_result['position_id']
             position = position_result.get('position')
-            if position:
-                trailing_cfg = self.config.get('position_management', {}).get('trailing_stop', {})
-                if trailing_cfg.get('trailing_stop_enabled', False):
-                    trailing_distance = float(trailing_cfg.get('trailing_stop_distance', 0.02) or 0.02)
-                    activation_threshold = float(trailing_cfg.get('activation_threshold', 0.0) or 0.0)
-                    enable_result = self.position_manager.enable_trailing_stop(
-                        position_id,
-                        trailing_distance,
-                        activation_threshold=activation_threshold
-                    )
-                    if not enable_result.get('success'):
+
+            # Persist resolved execution settings on the position for restart safety + DCA gating.
+            if position_id and self.position_manager and hasattr(self.position_manager, "attach_execution_config"):
+                try:
+                    self.position_manager.attach_execution_config(position_id, execution_cfg)
+                except Exception as exc:
+                    logger.warning("Execution config attach failed for %s: %s", position_id, exc)
+
+            # Apply trailing-stop settings per-position (Signal/Profile override > Global fallback).
+            if position and isinstance(execution_cfg, dict):
+                ts_cfg = execution_cfg.get("trailing_stop") if isinstance(execution_cfg.get("trailing_stop"), dict) else {}
+                if ts_cfg.get("enabled", False):
+                    trailing_distance = float(ts_cfg.get("delta_pct", 0.02) or 0.02)
+                    activation_threshold = float(ts_cfg.get("activation_threshold_pct", 0.0) or 0.0)
+                    try:
+                        if hasattr(self.position_manager, "configure_trailing_stop"):
+                            enable_result = self.position_manager.configure_trailing_stop(
+                                position_id,
+                                enabled=True,
+                                delta_pct=trailing_distance,
+                                activation_threshold_pct=activation_threshold,
+                            )
+                        else:
+                            enable_result = self.position_manager.enable_trailing_stop(
+                                position_id,
+                                trailing_distance,
+                                activation_threshold=activation_threshold
+                            )
+                    except Exception as exc:
+                        enable_result = {"success": False, "reason": str(exc)}
+
+                    if not enable_result.get("success"):
                         logger.warning(
                             "Trailing stop enable failed for %s: %s",
                             position_id,
-                            enable_result.get('reason')
+                            enable_result.get("reason")
                         )
             logger.info(f"  ✓ Position opened: {position_id}")
             

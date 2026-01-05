@@ -7,6 +7,8 @@ import asyncio
 import json
 import logging
 import os
+import shutil
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -67,6 +69,154 @@ def _read_float_env(name: str, default: float) -> float:
 _SHUTDOWN_CLOSE_MAX_ATTEMPTS = max(1, _read_int_env("POSITION_CLOSE_RETRY_LIMIT", 2))
 _SHUTDOWN_CLOSE_BACKOFF = max(0.0, _read_float_env("POSITION_CLOSE_RETRY_BACKOFF", 2.0))
 
+
+class PositionStateStore:
+    """
+    File-backed snapshot store for open positions.
+
+    CRITICAL: Uses atomic write to prevent corruption on crashes:
+      - write to positions_snapshot.tmp
+      - flush + fsync
+      - os.replace -> positions_snapshot.json
+
+    The store is intentionally minimal (open positions only) and JSON-only.
+    """
+
+    SNAPSHOT_VERSION = 1
+
+    def __init__(self, snapshot_path: Path, logger: Optional[logging.Logger] = None) -> None:
+        self.snapshot_path = Path(snapshot_path)
+        self.tmp_path = self.snapshot_path.with_suffix(".tmp")
+        self.backup_path = self.snapshot_path.with_suffix(".bak.json")
+        self._logger = logger or logging.getLogger(__name__)
+
+    def load(self) -> Dict[str, Any]:
+        """Load snapshot file; returns an empty payload if missing/corrupt."""
+        if not self.snapshot_path.exists():
+            return {"version": self.SNAPSHOT_VERSION, "positions": {}}
+
+        try:
+            with self.snapshot_path.open("r", encoding="utf-8") as stream:
+                payload = json.load(stream)
+            if not isinstance(payload, dict):
+                raise ValueError("snapshot payload not a dict")
+            version = payload.get("version", self.SNAPSHOT_VERSION)
+            positions = payload.get("positions", {})
+            if not isinstance(positions, dict):
+                positions = {}
+            return {"version": version, "positions": positions}
+        except Exception as exc:
+            self._logger.warning("Failed to load positions snapshot (%s): %s", self.snapshot_path, exc)
+            return {"version": self.SNAPSHOT_VERSION, "positions": {}}
+
+    def save(self, positions: Dict[str, Dict[str, Any]]) -> bool:
+        """Persist open positions snapshot with atomic replace semantics."""
+        try:
+            self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            self._logger.warning("Failed to create snapshot directory %s: %s", self.snapshot_path.parent, exc)
+            return False
+
+        payload = {
+            "version": self.SNAPSHOT_VERSION,
+            "saved_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "positions": {str(pid): self._jsonify(pos) for pid, pos in (positions or {}).items()},
+        }
+
+        data = None
+        try:
+            data = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        except Exception as exc:
+            self._logger.warning("Failed to serialize positions snapshot payload: %s", exc)
+            return False
+
+        # Best-effort backup of the last known-good snapshot.
+        if self.snapshot_path.exists():
+            try:
+                shutil.copyfile(self.snapshot_path, self.backup_path)
+            except Exception:
+                pass
+
+        # Primary atomic write: deterministic tmp filename (positions_snapshot.tmp).
+        try:
+            self._atomic_write(self.tmp_path, self.snapshot_path, data)
+            return True
+        except Exception as exc:
+            # Fallback: unique tmp file in same directory (still atomic replace).
+            self._logger.warning("Primary snapshot atomic write failed (%s): %s", self.tmp_path, exc)
+            tmp_name = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    delete=False,
+                    dir=str(self.snapshot_path.parent),
+                    prefix=self.snapshot_path.stem + ".",
+                    suffix=".tmp",
+                ) as tmp_stream:
+                    tmp_stream.write(data)
+                    tmp_stream.flush()
+                    os.fsync(tmp_stream.fileno())
+                    tmp_name = tmp_stream.name
+                os.replace(tmp_name, self.snapshot_path)
+                return True
+            except Exception as exc2:
+                self._logger.error("Fallback snapshot write failed: %s", exc2, exc_info=True)
+                try:
+                    if tmp_name and os.path.exists(tmp_name):
+                        os.remove(tmp_name)
+                except Exception:
+                    pass
+                return False
+
+    @staticmethod
+    def _atomic_write(tmp_path: Path, final_path: Path, data: str) -> None:
+        tmp_path = Path(tmp_path)
+        final_path = Path(final_path)
+        tmp_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with tmp_path.open("w", encoding="utf-8") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(tmp_path, final_path)
+        finally:
+            # If replace failed, try to clean up the tmp file (best effort).
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    @classmethod
+    def _jsonify(cls, obj: Any) -> Any:
+        """Best-effort conversion of common runtime objects to JSON-safe values."""
+        if obj is None:
+            return None
+        if isinstance(obj, (str, int, float, bool)):
+            return obj
+        if isinstance(obj, datetime):
+            return obj.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        if isinstance(obj, Enum):
+            return obj.value
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, dict):
+            out: Dict[str, Any] = {}
+            for k, v in obj.items():
+                try:
+                    key = str(k)
+                except Exception:
+                    key = repr(k)
+                out[key] = cls._jsonify(v)
+            return out
+        if isinstance(obj, (list, tuple, set)):
+            return [cls._jsonify(v) for v in obj]
+        # Fallback: stringify unknown objects (keeps snapshot writes robust).
+        try:
+            return str(obj)
+        except Exception:
+            return repr(obj)
 
 class PositionStatus(Enum):
     """Position status enumeration."""
@@ -211,6 +361,16 @@ class AdvancedPositionManager:
         self.trade_history_dir = self.repo_root / 'logs'
         self.trade_history_path = self.trade_history_dir / 'trade_history.jsonl'
         self._ensure_trade_history_path()
+
+        # Position snapshot persistence (open positions only)
+        self.state_store = PositionStateStore(self.repo_root / "data" / "positions_snapshot.json", logger=logger)
+        self._last_snapshot_save_ts: float = 0.0
+        try:
+            self._snapshot_throttle_s = float(os.getenv("POSITIONS_SNAPSHOT_THROTTLE_S", 5.0) or 5.0)
+        except (TypeError, ValueError):
+            self._snapshot_throttle_s = 5.0
+        if self._snapshot_throttle_s < 0:
+            self._snapshot_throttle_s = 0.0
         
         # Monitoring state
         self.monitoring_active = False
@@ -227,6 +387,349 @@ class AdvancedPositionManager:
             self.trade_history_path.touch(exist_ok=True)
         except Exception as exc:
             logger.warning("Failed to prepare trade history file: %s", exc)
+
+    def _save_positions_snapshot(self, force: bool = False) -> bool:
+        """Persist the open positions snapshot (throttled unless force=True)."""
+        if not getattr(self, "state_store", None):
+            return False
+        now = time.time()
+        throttle = float(getattr(self, "_snapshot_throttle_s", 0.0) or 0.0)
+        if not force and throttle > 0 and (now - float(getattr(self, "_last_snapshot_save_ts", 0.0) or 0.0)) < throttle:
+            return False
+        ok = False
+        try:
+            ok = bool(self.state_store.save(self.positions))
+        except Exception as exc:
+            logger.warning("Positions snapshot save failed: %s", exc)
+            ok = False
+        if ok:
+            self._last_snapshot_save_ts = now
+        return ok
+
+    async def restore_positions_from_snapshot(
+        self,
+        *,
+        exchange_clients: Optional[Dict[str, Any]] = None,
+        reconcile_with_exchange: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Restore open positions from local snapshot.
+
+        Backward compatible:
+        - If snapshot is missing/corrupt, does nothing.
+
+        Optional (LIVE mode only):
+        - If reconcile_with_exchange=True, removes snapshot positions that are not open on the exchange.
+        """
+        results = {
+            "restored": 0,
+            "skipped": 0,
+            "stale_removed": 0,
+            "errors": [],
+        }
+        store = getattr(self, "state_store", None)
+        if not store:
+            return results
+
+        payload = store.load()
+        raw_positions = payload.get("positions", {}) if isinstance(payload, dict) else {}
+        if not isinstance(raw_positions, dict) or not raw_positions:
+            return results
+
+        restored_positions: Dict[str, Dict[str, Any]] = {}
+        for key, raw in raw_positions.items():
+            if not isinstance(raw, dict):
+                results["skipped"] += 1
+                continue
+            position_id = raw.get("position_id") or key
+            if not position_id:
+                results["skipped"] += 1
+                continue
+
+            try:
+                normalized = self._normalize_restored_position(dict(raw), position_id=str(position_id))
+            except Exception as exc:
+                results["errors"].append(f"normalize_failed:{position_id}:{exc}")
+                results["skipped"] += 1
+                continue
+
+            restored_positions[str(position_id)] = normalized
+
+        if not restored_positions:
+            return results
+
+        # Install restored positions into in-memory stores and register with risk/portfolio for gating.
+        for pid, position in restored_positions.items():
+            self.positions[pid] = position
+            if pid not in self.pnl_tracker:
+                entry_price = float(position.get("entry_price") or 0.0)
+                current_price = float(position.get("current_price") or entry_price or 0.0)
+                self.pnl_tracker[pid] = [{
+                    "timestamp": datetime.now(timezone.utc),
+                    "price": current_price,
+                    "unrealized_pnl": 0.0,
+                    "pnl_pct": 0.0,
+                }]
+
+            try:
+                if getattr(self, "risk_manager", None) and hasattr(self.risk_manager, "register_position"):
+                    self.risk_manager.register_position(pid, dict(position))
+            except Exception as exc:
+                results["errors"].append(f"risk_register_failed:{pid}:{exc}")
+
+            try:
+                if getattr(self, "portfolio_manager", None) and hasattr(self.portfolio_manager, "register_position"):
+                    self.portfolio_manager.register_position(pid, dict(position))
+            except Exception as exc:
+                results["errors"].append(f"portfolio_register_failed:{pid}:{exc}")
+
+            results["restored"] += 1
+
+        if reconcile_with_exchange and exchange_clients:
+            try:
+                reconcile = await self._reconcile_snapshot_with_exchange(exchange_clients)
+                results["stale_removed"] = reconcile.get("stale_removed", 0)
+            except Exception as exc:
+                results["errors"].append(f"reconcile_failed:{exc}")
+
+        # Persist snapshot after restore/reconcile (keeps disk in sync with memory).
+        self._save_positions_snapshot(force=True)
+        logger.info(
+            "Positions restored from snapshot: restored=%s skipped=%s stale_removed=%s",
+            results["restored"],
+            results["skipped"],
+            results["stale_removed"],
+        )
+        return results
+
+    def _normalize_restored_position(self, position: Dict[str, Any], *, position_id: str) -> Dict[str, Any]:
+        """Ensure restored positions contain required defaults and types."""
+        position.setdefault("position_id", position_id)
+        position.setdefault("status", PositionStatus.OPEN.value)
+
+        # Datetime restoration (best-effort)
+        opened_at = position.get("opened_at")
+        if isinstance(opened_at, str):
+            parsed = self._parse_datetime(opened_at)
+            if parsed:
+                position["opened_at"] = parsed
+        elif opened_at is None:
+            entry_iso = position.get("entry_time_iso") or position.get("opened_at_iso")
+            if isinstance(entry_iso, str):
+                parsed = self._parse_datetime(entry_iso)
+                if parsed:
+                    position["opened_at"] = parsed
+
+        entry_price = self._safe_float(position.get("entry_price"), 0.0) or 0.0
+        current_price = self._safe_float(position.get("current_price"), entry_price) or entry_price
+        position["entry_price"] = entry_price
+        position["current_price"] = current_price
+
+        # Trailing defaults (fields consumed by monitor_position_pnl + exit checks)
+        position.setdefault("trailing_stop_enabled", False)
+        position.setdefault("trailing_stop_distance", 0.02)
+        position.setdefault("trailing_stop_activation_threshold", 0.0)
+        position.setdefault("trailing_stop_activated", False)
+
+        # Price excursion defaults
+        position.setdefault("highest_price", current_price or entry_price)
+        position.setdefault("lowest_price", current_price or entry_price)
+        position.setdefault("max_adverse_excursion", 0.0)
+        position.setdefault("max_favorable_excursion", 0.0)
+
+        # Exit levels defaults (best-effort; unknown restored positions may not have these)
+        position.setdefault("stop_loss", 0.0)
+        position.setdefault("take_profit", 0.0)
+
+        # Keep execution config (per-position) if present
+        execution_cfg = position.get("execution")
+        if execution_cfg is not None and not isinstance(execution_cfg, dict):
+            position.pop("execution", None)
+
+        return position
+
+    @staticmethod
+    def _parse_datetime(value: str) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            # Handle Zulu suffix
+            normalized = value.replace("Z", "+00:00") if isinstance(value, str) else value
+            return datetime.fromisoformat(normalized)
+        except Exception:
+            return None
+
+    async def _reconcile_snapshot_with_exchange(self, exchange_clients: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        LIVE-mode reconciliation:
+        - If a restored snapshot position is not found on the exchange, remove it from local tracking.
+
+        IMPORTANT: This does NOT adjust equity/PnL (unknown realized outcome).
+        """
+        if not self.positions:
+            return {"stale_removed": 0}
+        if not exchange_clients or not isinstance(exchange_clients, dict):
+            return {"stale_removed": 0}
+
+        exchange_view = await self._fetch_exchange_open_positions(exchange_clients)
+        if not exchange_view.get("ok"):
+            return {"stale_removed": 0, "error": exchange_view.get("error")}
+
+        open_index = exchange_view.get("index") or {}
+        stale_removed = 0
+
+        for position_id, position in list(self.positions.items()):
+            exchange = str(position.get("exchange") or "").lower()
+            symbol_raw = str(position.get("symbol") or "")
+            raw_side = str(position.get("side") or "").lower()
+            amount = self._safe_float(position.get("amount"), 0.0) or 0.0
+
+            if not exchange or not symbol_raw or amount <= 0:
+                continue
+
+            # Normalize common symbol/side formats to reduce false "stale" removals.
+            symbol_variants = {symbol_raw}
+            try:
+                sym_norm = symbol_raw.replace("-", "/")
+                symbol_variants.add(sym_norm)
+                if ":" in sym_norm:
+                    symbol_variants.add(sym_norm.split(":", 1)[0])
+                if "USDT" in sym_norm and ":" not in sym_norm and "/" in sym_norm:
+                    symbol_variants.add(sym_norm + ":USDT")
+                # Handle compact symbols like BTCUSDT -> BTC/USDT(:USDT)
+                if "/" not in sym_norm and sym_norm.endswith("USDT") and len(sym_norm) > 4:
+                    base = sym_norm[:-4]
+                    symbol_variants.add(f"{base}/USDT")
+                    symbol_variants.add(f"{base}/USDT:USDT")
+            except Exception:
+                symbol_variants = {symbol_raw}
+
+            side_norm = raw_side
+            if raw_side in self.LONG_SIDES:
+                side_norm = "long"
+            elif raw_side in self.SHORT_SIDES:
+                side_norm = "short"
+            side_variants = {s for s in {raw_side, side_norm} if s}
+
+            matched = False
+            for sym in symbol_variants:
+                if not sym:
+                    continue
+                for side in side_variants:
+                    key = (exchange, sym, side)
+                    candidates = open_index.get(key) or []
+                    if self._match_amount(amount, candidates):
+                        matched = True
+                        break
+                if matched:
+                    break
+
+            if matched:
+                continue
+
+            self._archive_missing_exchange_position(position_id, reason="reconciled_missing_exchange")
+            stale_removed += 1
+
+        if stale_removed:
+            self._save_positions_snapshot(force=True)
+
+        return {"stale_removed": stale_removed}
+
+    async def _fetch_exchange_open_positions(self, exchange_clients: Dict[str, Any]) -> Dict[str, Any]:
+        """Build a lightweight index of open positions from exchanges for reconciliation."""
+        index: Dict[Tuple[str, str, str], List[float]] = {}
+        try:
+            for ex_name, client in exchange_clients.items():
+                ex = str(ex_name or "").lower()
+                if not client:
+                    continue
+
+                if ex == "bingx" and hasattr(client, "get_bingx_positions"):
+                    response = await asyncio.to_thread(client.get_bingx_positions)
+                    data = response.get("data", []) if isinstance(response, dict) else []
+                    for pos_data in data or []:
+                        try:
+                            raw_symbol = pos_data.get("symbol")
+                            amt = float(pos_data.get("positionAmt", 0))
+                            if not raw_symbol or amt == 0:
+                                continue
+                            symbol = raw_symbol.replace("-", "/")
+                            if "USDT" in symbol and ":" not in symbol:
+                                symbol += ":USDT"
+                            side = "long" if amt > 0 else "short"
+                            key = (ex, symbol, side)
+                            index.setdefault(key, []).append(abs(float(amt)))
+                        except Exception:
+                            continue
+                    continue
+
+                if hasattr(client, "fetch_positions"):
+                    positions = await asyncio.to_thread(client.fetch_positions)
+                    for pos in positions or []:
+                        try:
+                            symbol = pos.get("symbol")
+                            if not symbol:
+                                continue
+                            amt = pos.get("contracts", pos.get("amount", 0))
+                            amt = float(amt or 0)
+                            if amt == 0:
+                                continue
+                            side = (pos.get("side") or "").lower()
+                            if side not in ("long", "short"):
+                                side = "long" if amt > 0 else "short"
+                            key = (ex, str(symbol), side)
+                            index.setdefault(key, []).append(abs(float(amt)))
+                        except Exception:
+                            continue
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "index": {}}
+
+        return {"ok": True, "index": index}
+
+    @staticmethod
+    def _match_amount(local_amount: float, candidates: List[float], rel_tol: float = 0.05, abs_tol: float = 1e-12) -> bool:
+        if local_amount <= 0:
+            return False
+        for cand in candidates or []:
+            try:
+                cand_val = float(cand)
+            except (TypeError, ValueError):
+                continue
+            if cand_val <= 0:
+                continue
+            if abs(local_amount - cand_val) <= max(abs_tol, local_amount * rel_tol):
+                return True
+        return False
+
+    def _archive_missing_exchange_position(self, position_id: str, reason: str) -> None:
+        """Remove a stale position without affecting portfolio equity (unknown realized PnL)."""
+        position = self.positions.pop(position_id, None)
+        if not position:
+            return
+
+        try:
+            position["status"] = PositionStatus.CLOSED.value
+            position["closed_at"] = datetime.now(timezone.utc)
+            position["exit_reason"] = reason
+            position.setdefault("realized_pnl", 0.0)
+            self.closed_positions.append(position)
+        except Exception:
+            pass
+
+        try:
+            if getattr(self, "risk_manager", None) and hasattr(self.risk_manager, "active_positions"):
+                self.risk_manager.active_positions.pop(position_id, None)
+        except Exception:
+            pass
+
+        try:
+            if getattr(self, "portfolio_manager", None) and hasattr(self.portfolio_manager, "active_positions"):
+                self.portfolio_manager.active_positions.pop(position_id, None)
+        except Exception:
+            pass
+
+        self.pnl_tracker.pop(position_id, None)
+        logger.warning("Archived stale position missing on exchange: %s (%s)", position_id, reason)
 
     def set_dispatch_notifier(self, notifier: Optional[Callable[[], Awaitable[Any]]]) -> None:
         """Register async callback that wakes the coordinator dispatch loop."""
@@ -640,6 +1143,9 @@ class AdvancedPositionManager:
             
             logger.info(f"Position opened: {position_id} - {symbol} {side} {amount} @ {entry_price:.4f}")
             logger.info(f"  Stop-loss: {stop_loss:.4f}, Take-profit: {take_profit:.4f}")
+
+            # Persist snapshot for restart safety (open positions only)
+            self._save_positions_snapshot(force=True)
             
             return {
                 'success': True,
@@ -715,6 +1221,7 @@ class AdvancedPositionManager:
                 if position['current_price'] < position['lowest_price']:
                     position['lowest_price'] = position['current_price']
 
+            stop_updated = False
             if position.get('trailing_stop_enabled'):
                 trailing_distance = self._safe_float(position.get('trailing_stop_distance'), 0.02) or 0.02
                 was_active = bool(position.get('trailing_stop_activated', False))
@@ -760,6 +1267,7 @@ class AdvancedPositionManager:
                                 old_stop = position['stop_loss']
                                 position['stop_loss'] = trailing_stop_level
                                 position['last_trail_update_ts'] = now_ts
+                                stop_updated = True
                                 trail_log_interval_s = 30
                                 last_log_ts = position.get('last_trail_log_ts', 0.0) or 0.0
                                 if (now_ts - last_log_ts) >= trail_log_interval_s:
@@ -793,6 +1301,7 @@ class AdvancedPositionManager:
                                 old_stop = position['stop_loss']
                                 position['stop_loss'] = trailing_stop_level
                                 position['last_trail_update_ts'] = now_ts
+                                stop_updated = True
                                 trail_log_interval_s = 30
                                 last_log_ts = position.get('last_trail_log_ts', 0.0) or 0.0
                                 if (now_ts - last_log_ts) >= trail_log_interval_s:
@@ -811,6 +1320,10 @@ class AdvancedPositionManager:
                                         position['current_price']
                                     )
                                     position['last_trail_log_ts'] = now_ts
+
+            # Persist snapshot only when stop-loss was updated by trailing logic (throttled).
+            if stop_updated:
+                self._save_positions_snapshot(force=False)
             
             # Record P&L snapshot
             self.pnl_tracker[position_id].append({
@@ -931,6 +1444,9 @@ class AdvancedPositionManager:
             # Move to closed positions
             self.closed_positions.append(position)
             del self.positions[position_id]
+
+            # Persist snapshot removal for restart safety
+            self._save_positions_snapshot(force=True)
             
             # ===== RL FEEDBACK LOOP (NEW) =====
             # Provide feedback to RL agent if available
@@ -1467,31 +1983,88 @@ class AdvancedPositionManager:
         Returns:
             Operation result
         """
+        return self.configure_trailing_stop(
+            position_id,
+            enabled=True,
+            delta_pct=trailing_distance,
+            activation_threshold_pct=activation_threshold,
+        )
+
+    def attach_execution_config(self, position_id: str, config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Attach resolved per-position execution configuration and persist snapshot.
+
+        Expected shape (best-effort):
+          {
+            "profile": str|None,
+            "trailing_stop": {"enabled": bool, "delta_pct": float, "activation_threshold_pct": float},
+            "dca": {"enabled": bool, ...}
+          }
+        """
         try:
             if position_id not in self.positions:
-                return {'success': False, 'reason': 'Position not found'}
-            
+                return {"success": False, "reason": "Position not found"}
+            if not isinstance(config, dict):
+                return {"success": False, "reason": "Execution config must be a dict"}
+
             position = self.positions[position_id]
-            normalized_distance = self._safe_float(trailing_distance, 0.02) or 0.02
-            normalized_threshold = self._safe_float(activation_threshold, 0.0) or 0.0
+            position["execution"] = dict(config)
+            self._save_positions_snapshot(force=True)
+            return {"success": True, "position_id": position_id}
+        except Exception as exc:
+            logger.error("Error attaching execution config: %s", exc, exc_info=True)
+            return {"success": False, "reason": str(exc)}
+
+    def configure_trailing_stop(
+        self,
+        position_id: str,
+        *,
+        enabled: bool,
+        delta_pct: float,
+        activation_threshold_pct: float = 0.0,
+    ) -> Dict[str, Any]:
+        """
+        Configure trailing stop-loss for a position and persist snapshot.
+
+        Args:
+            position_id: Position identifier
+            enabled: Enable/disable trailing stop
+            delta_pct: Trailing distance as decimal (e.g., 0.02 for 2%)
+            activation_threshold_pct: Profit threshold before trailing activates (e.g., 0.003 for 0.3%)
+        """
+        try:
+            if position_id not in self.positions:
+                return {"success": False, "reason": "Position not found"}
+
+            position = self.positions[position_id]
+            enabled_flag = bool(enabled)
+            normalized_distance = self._safe_float(delta_pct, 0.02) or 0.02
+            normalized_threshold = self._safe_float(activation_threshold_pct, 0.0) or 0.0
+            if normalized_distance < 0:
+                normalized_distance = 0.0
             if normalized_threshold < 0:
                 normalized_threshold = 0.0
 
-            position['trailing_stop_enabled'] = True
-            position['trailing_stop_distance'] = normalized_distance
-            position['trailing_stop_activation_threshold'] = normalized_threshold
-            position['trailing_stop_activated'] = normalized_threshold <= 0
-            
-            logger.info(
-                f"Trailing stop enabled for {position_id} with {normalized_distance*100:.1f}% distance "
-                f"(activation: {normalized_threshold*100:.2f}%)"
-            )
-            
-            return {'success': True, 'position_id': position_id}
-            
-        except Exception as e:
-            logger.error(f"Error enabling trailing stop: {e}")
-            return {'success': False, 'reason': str(e)}
+            position["trailing_stop_enabled"] = enabled_flag
+            position["trailing_stop_distance"] = normalized_distance
+            position["trailing_stop_activation_threshold"] = normalized_threshold
+            position["trailing_stop_activated"] = bool(enabled_flag and normalized_threshold <= 0)
+
+            if enabled_flag:
+                logger.info(
+                    "Trailing stop configured for %s: enabled=true dist=%.4f activation=%.4f",
+                    position_id,
+                    normalized_distance,
+                    normalized_threshold,
+                )
+            else:
+                logger.info("Trailing stop configured for %s: enabled=false", position_id)
+
+            self._save_positions_snapshot(force=True)
+            return {"success": True, "position_id": position_id}
+        except Exception as exc:
+            logger.error("Error configuring trailing stop: %s", exc, exc_info=True)
+            return {"success": False, "reason": str(exc)}
     
     def get_all_positions(self) -> Dict[str, Any]:
         """Get all active positions."""
