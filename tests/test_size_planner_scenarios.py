@@ -167,10 +167,43 @@ def test_heat_cap_exhausted():
         max_portfolio_risk_usd=10.0,
         current_open_risk_usd=9.0,
         position_size_policy="clip",
+        stop_pct=0.5,
     )
     assert res.capped_by_heat is True
     assert res.below_min_notional is True
     assert res.reason == "portfolio_heat_exhausted"
+
+
+def test_heat_cap_converts_risk_to_notional():
+    cfg = RiskConfiguration(
+        custom_limits={
+            'equity_usd': 40.0,
+            'max_position_size': 1.0,
+            'position_size_policy': 'clip',
+            'min_notional_threshold': 5.0,
+            'min_stop_pct': 0.005,
+        }
+    )
+    rm = RiskManager(portfolio_value=40.0, risk_config=cfg, rules=[])
+
+    res = rm.plan_position_size(
+        raw_notional=10.0,
+        symbol="BTC/USDT",
+        equity=40.0,
+        price=100.0,
+        available_balance=40.0,
+        leverage=1,
+        risk_limits=rm.risk_limits,
+        min_notional_threshold=5.0,
+        max_portfolio_risk_usd=2.4,
+        current_open_risk_usd=0.0,
+        position_size_policy="clip",
+        stop_pct=0.005,
+    )
+
+    assert math.isclose(res.planned_notional, 10.0)
+    assert res.capped_by_heat is False
+    assert res.reason != "portfolio_heat_exhausted"
 
 
 def test_heat_cap_allows_single_balanced_trade():

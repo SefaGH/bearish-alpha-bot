@@ -36,6 +36,8 @@ def build_mode_args() -> list[str]:
         mode_args.append("--paper")
         log.info("Running in PAPER mode (default for VM)")
     else:
+        # live_trading_launcher.py defaults to paper unless --live is explicitly passed.
+        mode_args.append("--live")
         log.info("Running in LIVE mode (TRADING_MODE=live)")
 
     if debug_mode:

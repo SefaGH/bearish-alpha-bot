@@ -272,9 +272,9 @@ universe:
   prefetch:
     enabled: true                     # Override with: UNIVERSE_PREFETCH_ENABLED
     startup_candle_count: 500         # Override with: UNIVERSE_STARTUP_CANDLE_COUNT
-  fixed_symbols: "BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT" # Override with: TRADING_SYMBOLS
+  fixed_symbols: "BTC/USDT:USDT"      # Override with: TRADING_SYMBOLS
   auto_select: false                  # Override with: UNIVERSE_AUTO_SELECT
-  priority_order: "BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT" # Override with: TRADING_SYMBOLS_PRIORITY
+  priority_order: "BTC/USDT:USDT"     # Override with: TRADING_SYMBOLS_PRIORITY
 
 # ==============================================================================
 # TECHNICAL INDICATORS
@@ -285,6 +285,9 @@ indicators:
   ema_fast: 21                        # Override with: INDICATOR_EMA_FAST
   ema_mid: 50                         # Override with: INDICATOR_EMA_MID
   ema_slow: 200                       # Override with: INDICATOR_EMA_SLOW
+  vwap_lookback: 1440                 # Override with: INDICATOR_VWAP_LOOKBACK (bars in that timeframe)
+  vwap_band_multiplier: 2.0           # Override with: INDICATOR_VWAP_BAND_MULTIPLIER
+  adx_period: 14                      # Override with: INDICATOR_ADX_PERIOD
 
 # ============================================================================== 
 # VALIDATOR
@@ -490,13 +493,9 @@ signals:
           atr_scale: 1.15             # Override with: STRATEGY_STR_VOL_HIGH_ATR_SCALE
           min_sl_pct: 0.003           # Override with: STRATEGY_STR_VOL_HIGH_MIN_SL
           max_sl_pct: 0.025           # Override with: STRATEGY_STR_VOL_HIGH_MAX_SL
-    #symbols:
-      #"BTC/USDT:USDT":
-        #rsi_threshold: 45             # Override with: RSI_THRESHOLD_BTC
-      #"ETH/USDT:USDT":
-        #rsi_threshold: 45             # Override with: RSI_THRESHOLD_ETH
-      #"SOL/USDT:USDT":
-        #rsi_threshold: 45             # Override with: RSI_THRESHOLD_SOL
+    symbols:
+      "BTC/USDT:USDT":
+        rsi_threshold: 55             # Override with: RSI_THRESHOLD_BTC
 
 # ==============================================================================
 # FAST TREND VALIDATION (TrendGuard Veto)
@@ -608,6 +607,27 @@ strategies:
     band_multiplier: 2.0
     adx_threshold: 25
     allocation_pct: 0.20
+    dynamic_controller:
+      enabled: true
+      target_outside_pct: 0.10
+      abs_z_window: 500
+      warmup_samples: 50
+      update_interval_sec: 300
+      min_m_change: 0.05
+      m_min: 1.5
+      m_max: 3.0
+      log_every_update: true
+      freeze_on_trend: true
+      adx_freeze_threshold: 25
+      dynamic_lookback:
+        enabled: false
+        # NOTE: lookback_* values are bars in the VWAP timeframe (not minutes).
+        lookback_static: 1440
+        lookback_min: 120
+        lookback_max: 1440
+        atr_squeeze_pct: 0.0015
+        atr_expand_pct: 0.0040
+        atr_hysteresis_pct: 0.0002
 
 # ==============================================================================
 # POSITION EXIT MANAGEMENT

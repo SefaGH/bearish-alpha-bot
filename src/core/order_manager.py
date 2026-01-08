@@ -12,6 +12,16 @@ from typing import Dict, List, Optional, Any, Callable, TYPE_CHECKING
 from datetime import datetime, timezone
 from enum import Enum
 
+from .execution_env import (
+    get_bingx_env,
+    get_execution_backend,
+    get_trading_mode,
+    is_vst_fullbot_canary_enabled,
+    is_vst_fullbot_canary_force_market,
+    is_real_execution_enabled,
+    require_explicit_bingx_env_if_real_execution,
+)
+
 if TYPE_CHECKING:
     from .market_data_pipeline import MarketDataPipeline
 
@@ -56,6 +66,39 @@ def _log_rest_debug(context: str, exc: Exception) -> None:
             debug_payload["response_type"] = str(type(raw_body))
 
     logger.error("REST DEBUG :: %s", debug_payload)
+
+
+def _sanitize_ccxt_order(order: Any) -> Dict[str, Any]:
+    if not isinstance(order, dict):
+        return {"type": str(type(order))}
+
+    keep_keys = (
+        "id",
+        "clientOrderId",
+        "symbol",
+        "type",
+        "side",
+        "status",
+        "timestamp",
+        "datetime",
+        "amount",
+        "filled",
+        "remaining",
+        "price",
+        "average",
+        "cost",
+        "reduceOnly",
+    )
+    out: Dict[str, Any] = {k: order.get(k) for k in keep_keys if k in order}
+
+    info = order.get("info")
+    if isinstance(info, dict):
+        items = list(info.items())[:25]
+        out["info"] = {k: v for k, v in items}
+    elif info is not None:
+        out["info"] = str(info)[:500]
+
+    return out
 
 
 def _is_transient_ccxt_error(exc: Exception) -> bool:
@@ -215,6 +258,14 @@ class SmartOrderManager:
                     'order_id': None
                 }
             
+            # VST full-bot canary safety: enforce market-only execution.
+            # This avoids accidental LIMIT placement (and Stage-1 rejects LIMIT in real execution anyway).
+            if is_vst_fullbot_canary_enabled() and is_real_execution_enabled():
+                requested = str(execution_algo or "").lower().strip()
+                if requested != "market" and is_vst_fullbot_canary_force_market():
+                    logger.warning("[VST-FULLBOT-CANARY] Forcing MARKET execution (requested=%s)", execution_algo)
+                    execution_algo = "market"
+
             # Select execution algorithm
             exec_func = self.execution_algorithms.get(execution_algo, self._limit_order_execution)
             
@@ -305,9 +356,24 @@ class SmartOrderManager:
             
             # Cancel order on exchange
             logger.info(f"Cancelling order {order_id} on {exchange}")
-            
-            # Note: Actual cancellation would call client.cancel_order()
-            # For now, we mark it as cancelled
+
+            if is_real_execution_enabled():
+                symbol = order.get("symbol")
+                try:
+                    resp = client.cancel_order(order_id, symbol, params={})
+                    logger.info(f"🟢 [REAL EXECUTION] Cancel response: {resp}")
+                except Exception as exc:
+                    msg = str(exc).lower()
+                    idempotent = any(x in msg for x in ["already canceled", "already cancelled", "already closed", "not found", "does not exist"])
+                    order_not_found_types = tuple(
+                        t for t in (getattr(ccxt, "OrderNotFound", None), getattr(ccxt, "InvalidOrder", None))
+                        if isinstance(t, type)
+                    )
+                    order_not_found = bool(order_not_found_types) and isinstance(exc, order_not_found_types)
+                    if not (idempotent or order_not_found):
+                        return {'success': False, 'reason': str(exc)}
+
+            # Update local state
             order['status'] = OrderStatus.CANCELLED.value
             order['cancelled_at'] = datetime.now(timezone.utc)
             
@@ -382,7 +448,19 @@ class SmartOrderManager:
             side = order_request['side']
             amount = order_request['amount']
             exchange = order_request['exchange']
-            
+
+            normalized_side = str(side).lower().strip()
+            if normalized_side == "long":
+                normalized_side = "buy"
+            elif normalized_side == "short":
+                normalized_side = "sell"
+
+            ccxt_params = {}
+            if isinstance(order_request.get("params"), dict):
+                ccxt_params.update(order_request["params"])
+            if isinstance(order_request.get("execution_params"), dict):
+                ccxt_params.update(order_request["execution_params"])
+             
             # CRITICAL: Use clients_to_use if provided
             clients = clients_to_use if clients_to_use is not None else self.exchange_clients
             client = clients[exchange]
@@ -391,8 +469,93 @@ class SmartOrderManager:
             ticker = client.ticker(symbol)
             expected_price = float(ticker.get('last', 0))
             
-            logger.info(f"Executing market order: {symbol} {side} {amount} @ ~{expected_price}")
-            
+            trading_mode = get_trading_mode()
+            execution_backend = get_execution_backend()
+
+            logger.info(
+                f"Executing market order: {symbol} {normalized_side} {amount} @ ~{expected_price} "
+                f"(TRADING_MODE={trading_mode}, EXECUTION_BACKEND={execution_backend})"
+            )
+
+            if is_real_execution_enabled():
+                require_explicit_bingx_env_if_real_execution()
+                bingx_env = get_bingx_env()
+
+                try:
+                    client.load_markets()
+                except Exception as exc:
+                    logger.warning(f"[REAL EXECUTION] load_markets failed (continuing): {exc}")
+
+                if getattr(client, "name", None) == "bingx" and bingx_env == "vst":
+                    client.ensure_bingx_hedge_mode(symbol, require_hedged=True)
+
+                logger.warning(f"🟢 [REAL EXECUTION] Submitting MARKET order via CCXT ({exchange})")
+
+                exchange_order = client.create_order(
+                    symbol=symbol,
+                    side=normalized_side,
+                    type_="market",
+                    amount=amount,
+                    price=None,
+                    params=ccxt_params or {},
+                )
+                logger.info("🟢 [REAL EXECUTION] Exchange order (sanitized): %s", _sanitize_ccxt_order(exchange_order))
+
+                exchange_order_id = exchange_order.get("id") or exchange_order.get("orderId")
+                avg_fill_price = exchange_order.get("average") or exchange_order.get("price")
+                filled_amount = exchange_order.get("filled") or exchange_order.get("amount") or amount
+
+                try:
+                    avg_fill_price = float(avg_fill_price or 0)
+                except Exception:
+                    avg_fill_price = 0.0
+                try:
+                    filled_amount = float(filled_amount or 0)
+                except Exception:
+                    filled_amount = float(amount or 0)
+
+                slippage = 0.0
+                if expected_price and avg_fill_price:
+                    slippage = abs(avg_fill_price - expected_price) / expected_price
+
+                self.execution_stats['total_slippage'] += slippage
+
+                order = {
+                    'order_id': exchange_order_id,
+                    'symbol': symbol,
+                    'side': normalized_side,
+                    'amount': amount,
+                    'type': 'market',
+                    'exchange': exchange,
+                    'expected_price': expected_price,
+                    'status': (exchange_order.get("status") or OrderStatus.FILLED.value),
+                    'created_at': datetime.now(timezone.utc),
+                    'filled_amount': filled_amount,
+                    'avg_fill_price': avg_fill_price or expected_price,
+                    'filled_at': datetime.now(timezone.utc),
+                    'slippage': slippage,
+                    'ccxt_params': ccxt_params,
+                    'exchange_order': exchange_order,
+                }
+
+                # Store for cancellation/audit (even if filled)
+                if exchange_order_id:
+                    self.active_orders[exchange_order_id] = order
+
+                logger.info(
+                    f"🟢 [REAL EXECUTION] Market order result: id={exchange_order_id} "
+                    f"avg={order['avg_fill_price']:.4f} filled={filled_amount} slippage={slippage*100:.3f}%"
+                )
+
+                return {
+                    'success': bool(exchange_order_id),
+                    'order_id': exchange_order_id,
+                    'filled_amount': filled_amount,
+                    'avg_price': order['avg_fill_price'],
+                    'slippage': slippage,
+                    'order': order,
+                }
+             
             # Generate order ID
             order_id = f"order_{int(time.time() * 1000)}"
             
@@ -400,7 +563,7 @@ class SmartOrderManager:
             order = {
                 'order_id': order_id,
                 'symbol': symbol,
-                'side': side,
+                'side': normalized_side,
                 'amount': amount,
                 'type': 'market',
                 'exchange': exchange,
@@ -414,7 +577,7 @@ class SmartOrderManager:
             # result = client.create_order(symbol, side=side, type_='market', amount=amount)
             
             # Simulate execution
-            execution_price = expected_price * (1.0001 if side == 'buy' else 0.9999)
+            execution_price = expected_price * (1.0001 if normalized_side == 'buy' else 0.9999)
             
             order['status'] = OrderStatus.FILLED.value
             order['filled_amount'] = amount
@@ -430,8 +593,8 @@ class SmartOrderManager:
             # Store order
             self.active_orders[order_id] = order
             
-            logger.info(f"Market order filled: {order_id} @ {execution_price:.4f} (slippage: {slippage*100:.3f}%)")
-            
+            logger.info(f"🟡 [SIMULATED] Market order filled: {order_id} @ {execution_price:.4f} (slippage: {slippage*100:.3f}%)")
+             
             return {
                 'success': True,
                 'order_id': order_id,
@@ -468,6 +631,10 @@ class SmartOrderManager:
             execution_params = order_request.get('execution_params') or {}
         if execution_params.get('post_only') or execution_params.get('postOnly'):
             self.logger.info("[PAPER] Processing POST_ONLY Limit Order request")
+
+        if is_real_execution_enabled():
+            self.logger.error(f"🛑 {log_prefix} REJECTED: limit orders not supported with EXECUTION_BACKEND=ccxt (Stage-1)")
+            return {'success': False, 'reason': 'REJECT:LIMIT_NOT_SUPPORTED_REAL_EXECUTION', 'order_id': None}
 
         try:
             clients = clients_to_use if clients_to_use is not None else self.exchange_clients

@@ -1,0 +1,559 @@
+from __future__ import annotations
+
+import json
+import logging
+import math
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Deque, Dict, Optional
+
+import numpy as np
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class MRControllerDecision:
+    enabled: bool
+    updated: bool
+    band_multiplier: float
+    lookback: int
+    vwap: float
+    vwap_std: float
+    lower: float
+    upper: float
+    z: Optional[float]
+    abs_z: Optional[float]
+    target_outside_pct: float
+    current_outside_pct: Optional[float]
+    adx: Optional[float]
+    atr: Optional[float]
+    atr_pct: Optional[float]
+    reason: str
+
+
+@dataclass
+class _SymbolState:
+    abs_z_hist: Deque[float]
+    last_update_ts: Optional[datetime]
+    last_band_multiplier: float
+    last_lookback: int
+    last_vol_state: Optional[str]
+    last_vwap_calc_key: Optional[tuple[int, int, Any]]
+    last_vwap_calc_vwap: Optional[float]
+    last_vwap_calc_std: Optional[float]
+
+
+class DynamicMRController:
+    """
+    Per-strategy, per-symbol controller that derives an effective VWAP band width
+    (and optionally lookback) without mutating shared pipeline configuration.
+    """
+
+    def __init__(
+        self,
+        cfg: Optional[Dict[str, Any]],
+        *,
+        static_band_multiplier: float,
+        static_lookback: int,
+    ) -> None:
+        self._cfg = dict(cfg) if isinstance(cfg, dict) else {}
+        self._static_band_multiplier = float(static_band_multiplier)
+        self._static_lookback = int(static_lookback)
+
+        self._enabled = bool(self._cfg.get("enabled", False))
+        self._target_outside_pct = float(self._cfg.get("target_outside_pct", 0.10))
+        self._abs_z_window = int(self._cfg.get("abs_z_window", 500))
+        self._warmup_samples = int(self._cfg.get("warmup_samples", 50))
+        self._update_interval_sec = float(self._cfg.get("update_interval_sec", 300))
+        self._min_m_change = float(self._cfg.get("min_m_change", 0.05))
+        self._m_min = float(self._cfg.get("m_min", 1.0))
+        self._m_max = float(self._cfg.get("m_max", 2.5))
+        self._log_every_update = bool(self._cfg.get("log_every_update", True))
+
+        self._freeze_on_trend = bool(self._cfg.get("freeze_on_trend", True))
+        self._adx_freeze_threshold = float(self._cfg.get("adx_freeze_threshold", 25.0))
+
+        lookback_cfg = self._cfg.get("dynamic_lookback", {}) if isinstance(self._cfg.get("dynamic_lookback"), dict) else {}
+        self._dyn_lookback_enabled = bool(lookback_cfg.get("enabled", False))
+        self._lookback_static = int(lookback_cfg.get("lookback_static", self._static_lookback))
+        self._lookback_min = int(lookback_cfg.get("lookback_min", 120))
+        self._lookback_max = int(lookback_cfg.get("lookback_max", self._static_lookback))
+        self._atr_squeeze_pct = float(lookback_cfg.get("atr_squeeze_pct", 0.0015))
+        self._atr_expand_pct = float(lookback_cfg.get("atr_expand_pct", 0.0040))
+        self._atr_hysteresis_pct = float(lookback_cfg.get("atr_hysteresis_pct", 0.0002))
+
+        self._state_by_symbol: Dict[str, _SymbolState] = {}
+
+        max_lookback = max(self._lookback_static, self._lookback_min, self._lookback_max, self._static_lookback)
+        if max_lookback > 1000:
+            logger.warning(
+                f"[MRController] High Lookback detected (L={max_lookback}). Note that L is in BARS, not minutes."
+            )
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def evaluate(
+        self,
+        *,
+        symbol: str,
+        ts: datetime,
+        price: float,
+        vwap: float,
+        vwap_std: Optional[float],
+        adx: Optional[float],
+        atr: Optional[float],
+        df_vwap: Optional[pd.DataFrame] = None,
+        is_forming_candle: Optional[bool] = None,
+    ) -> MRControllerDecision:
+        if is_forming_candle is None and df_vwap is not None:
+            try:
+                attrs = getattr(df_vwap, "attrs", None)
+                if isinstance(attrs, dict):
+                    is_forming_candle = bool(attrs.get("includes_forming", False))
+                else:
+                    is_forming_candle = False
+            except Exception:
+                is_forming_candle = False
+        if is_forming_candle is None:
+            is_forming_candle = False
+
+        if not self._enabled:
+            return self._static_decision(
+                ts=ts,
+                price=price,
+                vwap=vwap,
+                vwap_std=vwap_std,
+                adx=adx,
+                atr=atr,
+                reason="disabled",
+            )
+
+        state = self._state_by_symbol.get(symbol)
+        if state is None:
+            state = _SymbolState(
+                abs_z_hist=deque(maxlen=max(self._abs_z_window, 1)),
+                last_update_ts=None,
+                last_band_multiplier=float(self._static_band_multiplier),
+                last_lookback=int(self._lookback_static),
+                last_vol_state=None,
+                last_vwap_calc_key=None,
+                last_vwap_calc_vwap=None,
+                last_vwap_calc_std=None,
+            )
+            self._state_by_symbol[symbol] = state
+
+        m_prev = float(state.last_band_multiplier or self._static_band_multiplier)
+        lookback_prev = int(state.last_lookback or self._lookback_static)
+        vol_state_prev = state.last_vol_state
+
+        z = None
+        abs_z = None
+        if vwap_std is not None and vwap_std > 0 and all(map(math.isfinite, (price, vwap, vwap_std))):
+            z = (price - vwap) / vwap_std
+            abs_z = abs(z)
+            if math.isfinite(abs_z):
+                state.abs_z_hist.append(float(abs_z))
+
+        if self._freeze_on_trend and adx is not None and math.isfinite(adx) and adx >= self._adx_freeze_threshold:
+            return self._decision_from_state(
+                state=state,
+                ts=ts,
+                price=price,
+                vwap=vwap,
+                vwap_std=vwap_std,
+                adx=adx,
+                atr=atr,
+                z=z,
+                abs_z=abs_z,
+                updated=False,
+                reason="freeze_on_trend",
+                df_vwap=df_vwap,
+            )
+
+        if (
+            state.last_update_ts is not None
+            and self._update_interval_sec > 0
+            and (ts - state.last_update_ts).total_seconds() < self._update_interval_sec
+        ):
+            return self._decision_from_state(
+                state=state,
+                ts=ts,
+                price=price,
+                vwap=vwap,
+                vwap_std=vwap_std,
+                adx=adx,
+                atr=atr,
+                z=z,
+                abs_z=abs_z,
+                updated=False,
+                reason="update_interval",
+                df_vwap=df_vwap,
+            )
+
+        m_eff = self._compute_band_multiplier(state)
+        lookback_eff, vol_state, atr_pct = self._compute_lookback(
+            prev_state=state.last_vol_state,
+            price=price,
+            atr=atr,
+        )
+
+        vwap_eff = vwap
+        std_eff = vwap_std if vwap_std is not None else float("nan")
+        if self._dyn_lookback_enabled and df_vwap is not None:
+            vwap_candidate, std_candidate = self._compute_vwap_and_std_cached(state, df_vwap, lookback_eff)
+            if vwap_candidate is not None and std_candidate is not None:
+                vwap_eff = vwap_candidate
+                std_eff = std_candidate
+
+        if not math.isfinite(std_eff) or std_eff <= 0 or not math.isfinite(vwap_eff):
+            return self._decision_from_state(
+                state=state,
+                ts=ts,
+                price=price,
+                vwap=vwap,
+                vwap_std=vwap_std,
+                adx=adx,
+                atr=atr,
+                z=z,
+                abs_z=abs_z,
+                updated=False,
+                reason="std_unavailable",
+                df_vwap=df_vwap,
+            )
+
+        lower = vwap_eff - (m_eff * std_eff)
+        upper = vwap_eff + (m_eff * std_eff)
+        outside_pct = self._current_outside_pct(state.abs_z_hist, m_eff)
+
+        state.last_update_ts = ts
+        state.last_band_multiplier = m_eff
+        state.last_lookback = lookback_eff
+        state.last_vol_state = vol_state
+
+        decision = MRControllerDecision(
+            enabled=True,
+            updated=True,
+            band_multiplier=m_eff,
+            lookback=lookback_eff,
+            vwap=float(vwap_eff),
+            vwap_std=float(std_eff),
+            lower=float(lower),
+            upper=float(upper),
+            z=z,
+            abs_z=abs_z,
+            target_outside_pct=float(self._target_outside_pct),
+            current_outside_pct=outside_pct,
+            adx=adx,
+            atr=atr,
+            atr_pct=atr_pct,
+            reason="updated",
+        )
+
+        if self._log_every_update:
+            payload = {
+                "event": "mr_controller_decision",
+                "symbol": symbol,
+                "ts_utc": self._to_utc_iso(ts),
+                "params": {
+                    "band_multiplier_prev": m_prev,
+                    "band_multiplier_new": decision.band_multiplier,
+                    "lookback_prev": lookback_prev,
+                    "lookback_new": decision.lookback,
+                    "vol_state_prev": vol_state_prev,
+                    "vol_state_new": vol_state,
+                    "update_interval_sec": self._update_interval_sec,
+                },
+                "inputs": {
+                    "px": price,
+                    "vwap": decision.vwap,
+                    "vwap_std": decision.vwap_std,
+                    "adx": adx,
+                    "atr": atr,
+                    "atr_pct": atr_pct,
+                    "is_forming_candle": bool(is_forming_candle),
+                },
+                "derived": {
+                    "z": decision.z,
+                    "abs_z": decision.abs_z,
+                    "target_outside_pct": decision.target_outside_pct,
+                    "current_outside_pct": decision.current_outside_pct,
+                    "achieved_outside_rate": decision.current_outside_pct,
+                    "outside_rate_window_size": len(state.abs_z_hist),
+                    "abs_z_hist_len": len(state.abs_z_hist),
+                    "lower": decision.lower,
+                    "upper": decision.upper,
+                },
+                "reason": decision.reason,
+            }
+            logger.info(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+
+        return decision
+
+    def _static_decision(
+        self,
+        *,
+        ts: datetime,
+        price: float,
+        vwap: float,
+        vwap_std: Optional[float],
+        adx: Optional[float],
+        atr: Optional[float],
+        reason: str,
+    ) -> MRControllerDecision:
+        std = float(vwap_std) if vwap_std is not None else float("nan")
+        if not math.isfinite(std) or std <= 0:
+            std = float("nan")
+        lower = float("nan")
+        upper = float("nan")
+        z = None
+        abs_z = None
+        if math.isfinite(std) and std > 0 and all(map(math.isfinite, (price, vwap))):
+            lower = vwap - (self._static_band_multiplier * std)
+            upper = vwap + (self._static_band_multiplier * std)
+            z = (price - vwap) / std
+            abs_z = abs(z)
+        return MRControllerDecision(
+            enabled=False,
+            updated=False,
+            band_multiplier=float(self._static_band_multiplier),
+            lookback=int(self._static_lookback),
+            vwap=float(vwap),
+            vwap_std=float(std),
+            lower=float(lower),
+            upper=float(upper),
+            z=z,
+            abs_z=abs_z,
+            target_outside_pct=float(self._target_outside_pct),
+            current_outside_pct=None,
+            adx=adx,
+            atr=atr,
+            atr_pct=(atr / price if atr is not None and price else None),
+            reason=reason,
+        )
+
+    def _decision_from_state(
+        self,
+        *,
+        state: _SymbolState,
+        ts: datetime,
+        price: float,
+        vwap: float,
+        vwap_std: Optional[float],
+        adx: Optional[float],
+        atr: Optional[float],
+        z: Optional[float],
+        abs_z: Optional[float],
+        updated: bool,
+        reason: str,
+        df_vwap: Optional[pd.DataFrame],
+    ) -> MRControllerDecision:
+        lookback_eff = int(state.last_lookback or self._lookback_static)
+        m_eff = float(state.last_band_multiplier or self._static_band_multiplier)
+
+        atr_pct = None
+        if atr is not None and price and math.isfinite(atr) and math.isfinite(price) and price > 0:
+            atr_pct = float(atr / price)
+
+        vwap_eff = float(vwap)
+        std_eff = float(vwap_std) if vwap_std is not None else float("nan")
+        if self._dyn_lookback_enabled and df_vwap is not None:
+            vwap_candidate, std_candidate = self._compute_vwap_and_std_cached(state, df_vwap, lookback_eff)
+            if vwap_candidate is not None and std_candidate is not None:
+                vwap_eff = float(vwap_candidate)
+                std_eff = float(std_candidate)
+
+        lower = float("nan")
+        upper = float("nan")
+        if math.isfinite(vwap_eff) and math.isfinite(std_eff) and std_eff > 0:
+            lower = vwap_eff - (m_eff * std_eff)
+            upper = vwap_eff + (m_eff * std_eff)
+
+        outside_pct = self._current_outside_pct(state.abs_z_hist, m_eff)
+        return MRControllerDecision(
+            enabled=True,
+            updated=updated,
+            band_multiplier=m_eff,
+            lookback=lookback_eff,
+            vwap=vwap_eff,
+            vwap_std=std_eff,
+            lower=lower,
+            upper=upper,
+            z=z,
+            abs_z=abs_z,
+            target_outside_pct=float(self._target_outside_pct),
+            current_outside_pct=outside_pct,
+            adx=adx,
+            atr=atr,
+            atr_pct=atr_pct,
+            reason=reason,
+        )
+
+    def _compute_band_multiplier(self, state: _SymbolState) -> float:
+        m_prev = float(state.last_band_multiplier or self._static_band_multiplier)
+
+        if len(state.abs_z_hist) < max(self._warmup_samples, 1):
+            return m_prev
+
+        target = float(self._target_outside_pct)
+        if not math.isfinite(target) or target <= 0 or target >= 0.5:
+            target = 0.10
+
+        q = 1.0 - target
+        hist = np.asarray(list(state.abs_z_hist), dtype=float)
+        if hist.size == 0:
+            return m_prev
+
+        m_raw = float(np.quantile(hist, q))
+        if not math.isfinite(m_raw):
+            return m_prev
+
+        m_clamped = min(max(m_raw, self._m_min), self._m_max)
+        if abs(m_clamped - m_prev) < self._min_m_change:
+            return m_prev
+        return float(m_clamped)
+
+    def _compute_lookback(self, *, prev_state: Optional[str], price: float, atr: Optional[float]) -> tuple[int, Optional[str], Optional[float]]:
+        if not self._dyn_lookback_enabled:
+            return (int(self._lookback_static), prev_state, None)
+
+        if atr is None or not price or not math.isfinite(atr) or not math.isfinite(price) or price <= 0:
+            return (int(self._lookback_static), prev_state, None)
+
+        atr_pct = float(atr / price)
+        low = float(self._atr_squeeze_pct)
+        high = float(self._atr_expand_pct)
+        h = float(self._atr_hysteresis_pct)
+
+        state = prev_state or "normal"
+        if state == "squeeze":
+            if atr_pct > low + h:
+                state = "normal"
+        elif state == "high":
+            if atr_pct < high - h:
+                state = "normal"
+        else:
+            if atr_pct < low - h:
+                state = "squeeze"
+            elif atr_pct > high + h:
+                state = "high"
+
+        if state == "squeeze":
+            lookback = self._lookback_min
+        elif state == "high":
+            lookback = self._lookback_max
+        else:
+            lookback = self._lookback_static
+
+        lookback = int(max(min(lookback, self._lookback_max), self._lookback_min))
+        return (lookback, state, atr_pct)
+
+    @staticmethod
+    def _compute_vwap_and_std(df: pd.DataFrame, lookback: int) -> tuple[Optional[float], Optional[float]]:
+        # Design Note: Using rolling_std(close) to match upstream pipeline behavior,
+        # rather than deviation-from-VWAP (classic VWAP bands).
+        lookback = int(max(lookback, 1))
+        required = ("high", "low", "close", "volume")
+        if any(col not in df.columns for col in required):
+            return (None, None)
+
+        min_periods = max(0, lookback // 2)
+        tail = df.tail(lookback).loc[:, list(required)]
+
+        try:
+            high = pd.to_numeric(tail["high"], errors="coerce").to_numpy(dtype=float, copy=False)
+            low = pd.to_numeric(tail["low"], errors="coerce").to_numpy(dtype=float, copy=False)
+            close = pd.to_numeric(tail["close"], errors="coerce").to_numpy(dtype=float, copy=False)
+            volume = pd.to_numeric(tail["volume"], errors="coerce").to_numpy(dtype=float, copy=False)
+        except Exception:
+            return (None, None)
+
+        # Mirror pandas rolling behavior: skip NaNs but enforce min_periods separately per series.
+        volume_isfinite = np.isfinite(volume)
+        close_isfinite = np.isfinite(close)
+
+        typical = (high + low + close) / 3.0
+        vp = typical * volume
+        vp_isfinite = np.isfinite(vp)
+
+        if min_periods > 0:
+            if int(np.count_nonzero(volume_isfinite)) < min_periods:
+                return (None, None)
+            if int(np.count_nonzero(vp_isfinite)) < min_periods:
+                return (None, None)
+
+        vol_sum = float(np.nansum(volume))
+        if not math.isfinite(vol_sum) or vol_sum <= 0:
+            return (None, None)
+
+        vp_sum = float(np.nansum(vp))
+        vwap = vp_sum / vol_sum
+
+        # pandas Series.rolling(...).std() uses ddof=1; require at least max(min_periods, 2) samples.
+        min_std_samples = max(min_periods, 2)
+        if int(np.count_nonzero(close_isfinite)) < min_std_samples:
+            return (None, None)
+
+        std = float(np.nanstd(close, ddof=1))
+        if not math.isfinite(vwap) or not math.isfinite(std):
+            return (None, None)
+
+        return (float(vwap), float(std))
+
+    def _compute_vwap_and_std_cached(
+        self,
+        state: _SymbolState,
+        df: pd.DataFrame,
+        lookback: int,
+    ) -> tuple[Optional[float], Optional[float]]:
+        try:
+            last = df.iloc[-1]
+            close_last = pd.to_numeric(last.get("close"), errors="coerce")
+            vol_last = pd.to_numeric(last.get("volume"), errors="coerce")
+            close_key = float(close_last) if close_last is not None and math.isfinite(float(close_last)) else None
+            vol_key = float(vol_last) if vol_last is not None and math.isfinite(float(vol_last)) else None
+            # Reduce cache flapping due to microscopic floating-point noise.
+            if close_key is not None:
+                close_key = round(close_key, 5)
+            if vol_key is not None:
+                vol_key = round(vol_key, 2)
+            # Cache key includes last row values so forming-candle updates invalidate the cache.
+            key = (int(lookback), int(len(df)), df.index[-1], close_key, vol_key)
+        except Exception:
+            key = None
+
+        if (
+            key is not None
+            and state.last_vwap_calc_key == key
+            and state.last_vwap_calc_vwap is not None
+            and state.last_vwap_calc_std is not None
+        ):
+            return (state.last_vwap_calc_vwap, state.last_vwap_calc_std)
+
+        vwap_candidate, std_candidate = self._compute_vwap_and_std(df, lookback)
+        if key is not None and vwap_candidate is not None and std_candidate is not None:
+            state.last_vwap_calc_key = key
+            state.last_vwap_calc_vwap = float(vwap_candidate)
+            state.last_vwap_calc_std = float(std_candidate)
+        return (vwap_candidate, std_candidate)
+
+    @staticmethod
+    def _current_outside_pct(hist: Deque[float], m_eff: float) -> Optional[float]:
+        if not hist:
+            return None
+        try:
+            m = float(m_eff)
+        except Exception:
+            return None
+        count = sum(1 for x in hist if float(x) > m)
+        return float(count / len(hist))
+
+    @staticmethod
+    def _to_utc_iso(ts: datetime) -> str:
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(timezone.utc).isoformat()

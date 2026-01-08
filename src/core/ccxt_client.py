@@ -13,6 +13,7 @@ import random
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from .bingx_authenticator import BingXAuthenticator
+from .execution_env import get_bingx_env, is_real_execution_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,51 @@ class CcxtClient:
         self.ex = ex_cls(params)
         self.exchange = self.ex
         self.name = ex_name
+
+        self.bingx_env = None
+        self._bingx_rest_base_url = None
+
+        if self.name == "bingx":
+            self.bingx_env = get_bingx_env()
+            self._bingx_position_mode = None
+            self._bingx_is_hedged = None
+            self._bingx_position_mode_checked_at = None
+
+            if self.bingx_env == "vst":
+                try:
+                    set_sandbox = getattr(self.ex, "set_sandbox_mode", None)
+                    if not callable(set_sandbox):
+                        raise RuntimeError("CCXT BingX exchange is missing set_sandbox_mode()")
+                    set_sandbox(True)
+                except Exception as exc:
+                    raise RuntimeError(f"BINGX_ENV=vst requested but failed to enable CCXT sandbox mode: {exc}") from exc
+
+            self._bingx_rest_base_url = (
+                "https://open-api-vst.bingx.com" if self.bingx_env == "vst" else "https://open-api.bingx.com"
+            )
+
+            if self.bingx_env == "vst":
+                swap_url = str(((getattr(self.ex, "urls", None) or {}).get("api") or {}).get("swap") or "")
+                if "open-api-vst" not in swap_url:
+                    raise RuntimeError(
+                        "BINGX_ENV=vst requested but CCXT sandbox URL does not look like VST. "
+                        f"exchange.urls.api.swap={swap_url!r}"
+                    )
+                if "open-api-vst" not in (self._bingx_rest_base_url or ""):
+                    raise RuntimeError(
+                        "BINGX_ENV=vst requested but REST base URL does not look like VST. "
+                        f"rest_base_url={self._bingx_rest_base_url!r}"
+                    )
+
+            logger.info(
+                "[BINGX-ENV] env=%s ccxt_sandbox=%s rest_base_url=%s",
+                self.bingx_env,
+                bool(getattr(self.ex, "sandbox", False) or self.bingx_env == "vst"),
+                self._bingx_rest_base_url,
+            )
+
+            if self.bingx_env == "vst" and is_real_execution_enabled():
+                logger.warning("[BINGX-ENV] VST enabled with real execution; hedge mode will be enforced at first order.")
 
         # Ticker resilience configuration
         try:
@@ -146,13 +192,24 @@ class CcxtClient:
         
         for attempt in range(3):
             try:
+                effective_limit = limit
+                if self.name == "bingx":
+                    try:
+                        effective_limit = int(effective_limit)
+                        if effective_limit > 1440:
+                            effective_limit = 1440
+                    except Exception:
+                        effective_limit = limit
+
                 native_symbol = self._get_bingx_native_symbol(symbol)
-                logger.debug(f"Fetching OHLCV for {native_symbol} ({symbol}) {timeframe} limit={limit} (attempt {attempt + 1}/3)")
+                logger.debug(
+                    f"Fetching OHLCV for {native_symbol} ({symbol}) {timeframe} limit={effective_limit} (attempt {attempt + 1}/3)"
+                )
                 
                 # Senkron CCXT çağrısını asenkron hale getir
                 data = await loop.run_in_executor(
                     None, 
-                    lambda: self.ex.fetch_ohlcv(native_symbol, timeframe=timeframe, limit=limit, since=since)
+                    lambda: self.ex.fetch_ohlcv(native_symbol, timeframe=timeframe, limit=effective_limit, since=since)
                 )
 
                 if not data:
@@ -491,6 +548,66 @@ class CcxtClient:
         native_symbol = self._get_bingx_native_symbol(symbol)
         return self.ex.create_order(native_symbol, type_, side, amount, price, params or {})
 
+    def cancel_order(self, order_id: str, symbol: Optional[str] = None, params: dict = None) -> Dict[str, Any]:
+        """Cancel an order by id (best-effort wrapper around ccxt.cancel_order)."""
+        cancel_symbol = None
+        if symbol:
+            cancel_symbol = self._get_bingx_native_symbol(symbol) if self.name == "bingx" else symbol
+        return self.ex.cancel_order(order_id, cancel_symbol, params or {})
+
+    def create_trailing_percent_order(
+        self,
+        symbol: str,
+        type_: str,
+        side: str,
+        amount: float,
+        price: float = None,
+        trailing_percent: float = None,
+        trigger_price: float = None,
+        params: dict = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a trailing stop order using CCXT's unified create_trailing_percent_order().
+
+        Note: CCXT expects trailing_percent in percent units (e.g., 0.2 for 0.2%),
+        and maps it to exchange-native `priceRate` where applicable.
+        """
+        native_symbol = self._get_bingx_native_symbol(symbol)
+        create_fn = getattr(self.ex, "create_trailing_percent_order", None)
+        if not callable(create_fn):
+            raise RuntimeError(f"{self.name} CCXT adapter does not support create_trailing_percent_order()")
+        return create_fn(native_symbol, type_, side, amount, price, trailing_percent, trigger_price, params or {})
+
+    def ensure_bingx_hedge_mode(self, symbol: str, require_hedged: bool = False) -> Optional[bool]:
+        """
+        Best-effort: fetch and cache BingX position mode (hedged vs one-way).
+
+        If require_hedged=True and the account is not hedged, raises RuntimeError.
+        """
+        if self.name != "bingx":
+            return None
+
+        if self._bingx_is_hedged is not None:
+            if require_hedged and not self._bingx_is_hedged:
+                raise RuntimeError("BingX hedge mode required but account is not hedged (cached).")
+            return self._bingx_is_hedged
+
+        try:
+            position_mode = self.ex.fetch_position_mode(symbol)
+            hedged = bool(position_mode.get("hedged"))
+            self._bingx_position_mode = position_mode
+            self._bingx_is_hedged = hedged
+            self._bingx_position_mode_checked_at = datetime.utcnow().isoformat() + "Z"
+            logger.info("[BINGX-POSITION-MODE] hedged=%s", hedged)
+            if require_hedged and not hedged:
+                raise RuntimeError("BingX hedge mode required but account is not hedged.")
+            return hedged
+        except Exception as exc:
+            logger.warning("[BINGX-POSITION-MODE] fetch failed: %s", exc)
+            if require_hedged:
+                raise RuntimeError(f"Unable to verify BingX hedge mode: {exc}") from exc
+            return None
+
     def fetch_ohlcv_bulk(self, symbol: str, timeframe: str, target_limit: int) -> List[List]:
         """
         Ultimate bulk OHLCV fetching with server sync + dynamic symbols.
@@ -587,7 +704,8 @@ class CcxtClient:
     def _get_bingx_server_time(self) -> int:
         """Get official BingX server timestamp with local fallback."""
         try:
-            url = "https://open-api.bingx.com/openApi/swap/v2/server/time"
+            base_url = self._bingx_rest_base_url or "https://open-api.bingx.com"
+            url = f"{base_url}/openApi/swap/v2/server/time"
             response = requests.get(url, timeout=DEFAULT_TIMEOUT)
             response.raise_for_status()
             
@@ -669,7 +787,8 @@ class CcxtClient:
             
         try:
             # BingX public endpoint - authentication gerekmez
-            url = "https://open-api.bingx.com/openApi/swap/v2/quote/contracts"
+            base_url = self._bingx_rest_base_url or "https://open-api.bingx.com"
+            url = f"{base_url}/openApi/swap/v2/quote/contracts"
             response = requests.get(url, timeout=DEFAULT_TIMEOUT)
             response.raise_for_status()
             
@@ -819,7 +938,8 @@ class CcxtClient:
             raise ValueError("BingX authenticator not configured")
         
         auth_data = self.bingx_auth.prepare_authenticated_request(params)
-        url = f"https://open-api.bingx.com{endpoint}"
+        base_url = self._bingx_rest_base_url or "https://open-api.bingx.com"
+        url = f"{base_url}{endpoint}"
         
         max_retries = 3
         for attempt in range(max_retries):

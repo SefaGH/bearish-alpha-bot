@@ -301,6 +301,7 @@ class LiveTradingConfiguration:
         self._normalize_risk_config(merged)
         self._apply_websocket_defaults(merged)
         self._normalize_str_mtf_config(merged)
+        self._normalize_mean_reversion_dynamic_controller_config(merged)
         return merged
 
     def _load_yaml_and_map_env_vars(self) -> Tuple[Dict[str, Any], Dict[str, List[str]]]:
@@ -1044,6 +1045,159 @@ class LiveTradingConfiguration:
         mtf_cfg["on_missing_15m"] = mtf_policy.tf_15m.on_missing
         mtf_cfg["on_missing_1h"] = mtf_policy.tf_1h.on_missing
         mtf_cfg["mtf_policy_summary"] = mtf_policy.summary
+
+    def _normalize_mean_reversion_dynamic_controller_config(self, config: Dict[str, Any]) -> None:
+        strategies_cfg = config.get("strategies")
+        if not isinstance(strategies_cfg, dict):
+            return
+
+        mr_cfg = strategies_cfg.get("mean_reversion")
+        if not isinstance(mr_cfg, dict):
+            return
+
+        controller_cfg = mr_cfg.get("dynamic_controller")
+        if controller_cfg is None:
+            return
+
+        if not isinstance(controller_cfg, dict):
+            logger.warning(
+                "strategies.mean_reversion.dynamic_controller must be a dict. Disabling controller."
+            )
+            mr_cfg["dynamic_controller"] = {"enabled": False}
+            return
+
+        controller_cfg["enabled"] = bool(controller_cfg.get("enabled", False))
+
+        target = self._coerce_float(
+            controller_cfg.get("target_outside_pct", 0.10),
+            0.10,
+            "strategies.mean_reversion.dynamic_controller.target_outside_pct",
+            minimum=0.0,
+        )
+        if target <= 0.0 or target >= 0.5:
+            logger.warning(
+                "strategies.mean_reversion.dynamic_controller.target_outside_pct out of bounds. Resetting to 0.10."
+            )
+            target = 0.10
+        controller_cfg["target_outside_pct"] = target
+
+        abs_z_window = self._coerce_int(
+            controller_cfg.get("abs_z_window", 500),
+            500,
+            "strategies.mean_reversion.dynamic_controller.abs_z_window",
+            minimum=1,
+        )
+        warmup_samples = self._coerce_int(
+            controller_cfg.get("warmup_samples", 50),
+            50,
+            "strategies.mean_reversion.dynamic_controller.warmup_samples",
+            minimum=1,
+        )
+        if warmup_samples > abs_z_window:
+            logger.warning(
+                "strategies.mean_reversion.dynamic_controller.warmup_samples exceeds abs_z_window. "
+                "Clamping warmup_samples to abs_z_window."
+            )
+            warmup_samples = abs_z_window
+        controller_cfg["abs_z_window"] = abs_z_window
+        controller_cfg["warmup_samples"] = warmup_samples
+
+        controller_cfg["update_interval_sec"] = self._coerce_float(
+            controller_cfg.get("update_interval_sec", 300),
+            300,
+            "strategies.mean_reversion.dynamic_controller.update_interval_sec",
+            minimum=0.0,
+        )
+        controller_cfg["min_m_change"] = self._coerce_float(
+            controller_cfg.get("min_m_change", 0.05),
+            0.05,
+            "strategies.mean_reversion.dynamic_controller.min_m_change",
+            minimum=0.0,
+        )
+        controller_cfg["log_every_update"] = bool(controller_cfg.get("log_every_update", True))
+        controller_cfg["freeze_on_trend"] = bool(controller_cfg.get("freeze_on_trend", True))
+        controller_cfg["adx_freeze_threshold"] = self._coerce_float(
+            controller_cfg.get("adx_freeze_threshold", mr_cfg.get("adx_threshold", 25)),
+            float(mr_cfg.get("adx_threshold", 25) or 25),
+            "strategies.mean_reversion.dynamic_controller.adx_freeze_threshold",
+            minimum=0.0,
+        )
+
+        m_min = self._coerce_float(
+            controller_cfg.get("m_min", 1.0),
+            1.0,
+            "strategies.mean_reversion.dynamic_controller.m_min",
+            minimum=0.0,
+        )
+        m_max = self._coerce_float(
+            controller_cfg.get("m_max", 2.5),
+            2.5,
+            "strategies.mean_reversion.dynamic_controller.m_max",
+            minimum=0.0,
+        )
+        if m_max < m_min:
+            logger.warning(
+                "strategies.mean_reversion.dynamic_controller.m_max < m_min. Swapping values."
+            )
+            m_min, m_max = m_max, m_min
+        controller_cfg["m_min"] = m_min
+        controller_cfg["m_max"] = m_max
+
+        lookback_base = mr_cfg.get("vwap_lookback", 1440)
+        try:
+            lookback_base = int(lookback_base)
+        except Exception:
+            lookback_base = 1440
+
+        dyn_lb_cfg = controller_cfg.get("dynamic_lookback", {})
+        if dyn_lb_cfg is None:
+            dyn_lb_cfg = {}
+        if not isinstance(dyn_lb_cfg, dict):
+            logger.warning(
+                "strategies.mean_reversion.dynamic_controller.dynamic_lookback must be a dict. Disabling lookback control."
+            )
+            dyn_lb_cfg = {"enabled": False}
+
+        dyn_lb_cfg["enabled"] = bool(dyn_lb_cfg.get("enabled", False))
+        dyn_lb_cfg["lookback_min"] = self._coerce_int(
+            dyn_lb_cfg.get("lookback_min", 120),
+            120,
+            "strategies.mean_reversion.dynamic_controller.dynamic_lookback.lookback_min",
+            minimum=1,
+        )
+        dyn_lb_cfg["lookback_max"] = self._coerce_int(
+            dyn_lb_cfg.get("lookback_max", lookback_base),
+            lookback_base,
+            "strategies.mean_reversion.dynamic_controller.dynamic_lookback.lookback_max",
+            minimum=int(dyn_lb_cfg["lookback_min"]),
+        )
+        dyn_lb_cfg["lookback_static"] = self._coerce_int(
+            dyn_lb_cfg.get("lookback_static", lookback_base),
+            lookback_base,
+            "strategies.mean_reversion.dynamic_controller.dynamic_lookback.lookback_static",
+            minimum=int(dyn_lb_cfg["lookback_min"]),
+        )
+        dyn_lb_cfg["atr_squeeze_pct"] = self._coerce_float(
+            dyn_lb_cfg.get("atr_squeeze_pct", 0.0015),
+            0.0015,
+            "strategies.mean_reversion.dynamic_controller.dynamic_lookback.atr_squeeze_pct",
+            minimum=0.0,
+        )
+        dyn_lb_cfg["atr_expand_pct"] = self._coerce_float(
+            dyn_lb_cfg.get("atr_expand_pct", 0.0040),
+            0.0040,
+            "strategies.mean_reversion.dynamic_controller.dynamic_lookback.atr_expand_pct",
+            minimum=0.0,
+        )
+        dyn_lb_cfg["atr_hysteresis_pct"] = self._coerce_float(
+            dyn_lb_cfg.get("atr_hysteresis_pct", 0.0002),
+            0.0002,
+            "strategies.mean_reversion.dynamic_controller.dynamic_lookback.atr_hysteresis_pct",
+            minimum=0.0,
+        )
+
+        controller_cfg["dynamic_lookback"] = dyn_lb_cfg
+        mr_cfg["dynamic_controller"] = controller_cfg
 
     @classmethod
     def _validate_schema_types(

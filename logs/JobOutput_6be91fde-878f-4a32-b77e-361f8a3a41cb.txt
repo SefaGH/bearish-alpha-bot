@@ -1,0 +1,518 @@
+08.01.2026 00:44:53 - Output: ╔════════════════════════════════════════════════════════╗
+08.01.2026 00:44:53 - Output: ║   BEARISH BOT - ASYNC STARTUP (FIRE & FORGET)          ║
+08.01.2026 00:44:53 - Output: ╚════════════════════════════════════════════════════════╝
+08.01.2026 00:44:54 - Output: Mode: Asynchronous (Logic App will monitor the running bot)
+08.01.2026 00:44:54 - Output: Parameters:
+08.01.2026 00:44:54 - Output:   VM: BearishAlphaBot-VM-01 (TradeBot)
+08.01.2026 00:44:54 - Output:   Image: manual-20260107-v2
+08.01.2026 00:44:54 - Output:   Duration: 360 min
+08.01.2026 00:44:54 - Output: 
+08.01.2026 00:44:54 - Output: [1/6] Authenticating...
+08.01.2026 00:44:59 - Verbose: Loading module from path 'C:\AzAt\Modules\11.2.0\Az.Accounts\2.15.0\Microsoft.Azure.PowerShell.Cmdlets.Accounts.dll'.
+08.01.2026 00:45:00 - Verbose: Importing cmdlet 'Register-AzModule'.
+08.01.2026 00:45:01 - Verbose: Importing cmdlet 'Clear-AzConfig'.
+08.01.2026 00:45:01 - Verbose: Importing cmdlet 'Export-AzConfig'.
+08.01.2026 00:45:01 - Verbose: Importing cmdlet 'Get-AzConfig'.
+08.01.2026 00:45:01 - Verbose: Importing cmdlet 'Import-AzConfig'.
+08.01.2026 00:45:01 - Verbose: Importing cmdlet 'Update-AzConfig'.
+08.01.2026 00:45:01 - Verbose: Importing cmdlet 'Connect-AzAccount'.
+08.01.2026 00:45:01 - Verbose: Importing cmdlet 'Disconnect-AzAccount'.
+08.01.2026 00:45:01 - Verbose: Importing cmdlet 'Get-AzContext'.
+08.01.2026 00:45:01 - Verbose: Importing cmdlet 'Import-AzContext'.
+08.01.2026 00:45:01 - Verbose: Importing cmdlet 'Save-AzContext'.
+08.01.2026 00:45:01 - Verbose: Importing cmdlet 'Set-AzContext'.
+08.01.2026 00:45:01 - Verbose: Importing cmdlet 'Disable-AzDataCollection'.
+08.01.2026 00:45:02 - Verbose: Importing cmdlet 'Enable-AzDataCollection'.
+08.01.2026 00:45:02 - Verbose: Importing cmdlet 'Add-AzEnvironment'.
+08.01.2026 00:45:02 - Verbose: Importing cmdlet 'Get-AzEnvironment'.
+08.01.2026 00:45:02 - Verbose: Importing cmdlet 'Remove-AzEnvironment'.
+08.01.2026 00:45:02 - Verbose: Importing cmdlet 'Set-AzEnvironment'.
+08.01.2026 00:45:02 - Verbose: Importing cmdlet 'Send-Feedback'.
+08.01.2026 00:45:02 - Verbose: Importing cmdlet 'Get-AzSubscription'.
+08.01.2026 00:45:02 - Verbose: Importing cmdlet 'Get-AzTenant'.
+08.01.2026 00:45:03 - Verbose: Importing cmdlet 'Get-AzAccessToken'.
+08.01.2026 00:45:03 - Verbose: Importing cmdlet 'Uninstall-AzureRm'.
+08.01.2026 00:45:03 - Verbose: Importing cmdlet 'Invoke-AzRestMethod'.
+08.01.2026 00:45:03 - Verbose: Importing cmdlet 'Open-AzSurveyLink'.
+08.01.2026 00:45:03 - Verbose: Importing cmdlet 'Resolve-AzError'.
+08.01.2026 00:45:03 - Verbose: Importing cmdlet 'Clear-AzDefault'.
+08.01.2026 00:45:03 - Verbose: Importing cmdlet 'Get-AzDefault'.
+08.01.2026 00:45:03 - Verbose: Importing cmdlet 'Set-AzDefault'.
+08.01.2026 00:45:03 - Verbose: Importing cmdlet 'Disable-AzureRmAlias'.
+08.01.2026 00:45:04 - Verbose: Importing cmdlet 'Enable-AzureRmAlias'.
+08.01.2026 00:45:04 - Verbose: Importing cmdlet 'Disable-AzContextAutosave'.
+08.01.2026 00:45:04 - Verbose: Importing cmdlet 'Enable-AzContextAutosave'.
+08.01.2026 00:45:04 - Verbose: Importing cmdlet 'Get-AzContextAutosaveSetting'.
+08.01.2026 00:45:04 - Verbose: Importing cmdlet 'Clear-AzContext'.
+08.01.2026 00:45:04 - Verbose: Importing cmdlet 'Remove-AzContext'.
+08.01.2026 00:45:04 - Verbose: Importing cmdlet 'Rename-AzContext'.
+08.01.2026 00:45:04 - Verbose: Importing cmdlet 'Select-AzContext'.
+08.01.2026 00:45:04 - Verbose: Importing alias 'Set-AzConfig'.
+08.01.2026 00:45:04 - Verbose: Importing alias 'Login-AzAccount'.
+08.01.2026 00:45:04 - Verbose: Importing alias 'Login-AzureRmAccount'.
+08.01.2026 00:45:05 - Verbose: Importing alias 'Add-AzAccount'.
+08.01.2026 00:45:05 - Verbose: Importing alias 'Logout-AzAccount'.
+08.01.2026 00:45:05 - Verbose: Importing alias 'Logout-AzureRmAccount'.
+08.01.2026 00:45:05 - Verbose: Importing alias 'Remove-AzAccount'.
+08.01.2026 00:45:05 - Verbose: Importing alias 'Save-AzProfile'.
+08.01.2026 00:45:05 - Verbose: Importing alias 'Select-AzSubscription'.
+08.01.2026 00:45:05 - Verbose: Importing alias 'Get-AzureRmDomain'.
+08.01.2026 00:45:05 - Verbose: Importing alias 'Get-AzDomain'.
+08.01.2026 00:45:05 - Verbose: Importing alias 'Invoke-AzRest'.
+08.01.2026 00:45:05 - Verbose: Importing alias 'Resolve-Error'.
+08.01.2026 00:45:06 - Progress: Preparing modules for first use.
+08.01.2026 00:45:13 - Output:       ℹ️ Using provided image tag: manual-20260107-v2
+08.01.2026 00:45:13 - Output: [2/6] Checking VM status...
+08.01.2026 00:45:14 - Verbose: Loading module from path 'C:\AzAt\Modules\11.2.0\Az.Compute\7.1.1\Compute.Autorest\bin\Az.Compute.private.dll'.
+08.01.2026 00:45:14 - Verbose: Importing cmdlet 'Export-CmdletSurface'.
+08.01.2026 00:45:15 - Verbose: Importing cmdlet 'Export-ExampleStub'.
+08.01.2026 00:45:15 - Verbose: Importing cmdlet 'Export-FormatPs1xml'.
+08.01.2026 00:45:15 - Verbose: Importing cmdlet 'Export-HelpMarkdown'.
+08.01.2026 00:45:15 - Verbose: Importing cmdlet 'Export-ModelSurface'.
+08.01.2026 00:45:15 - Verbose: Importing cmdlet 'Export-ProxyCmdlet'.
+08.01.2026 00:45:15 - Verbose: Importing cmdlet 'Export-Psd1'.
+08.01.2026 00:45:15 - Verbose: Importing cmdlet 'Export-TestStub'.
+08.01.2026 00:45:15 - Verbose: Importing cmdlet 'Get-CommonParameter'.
+08.01.2026 00:45:15 - Verbose: Importing cmdlet 'Get-ModuleGuid'.
+08.01.2026 00:45:15 - Verbose: Importing cmdlet 'Get-ScriptCmdlet'.
+08.01.2026 00:45:15 - Verbose: Importing cmdlet 'Get-AzGalleryApplicationVersion_Get'.
+08.01.2026 00:45:16 - Verbose: Importing cmdlet 'Get-AzGalleryApplicationVersion_GetViaIdentity'.
+08.01.2026 00:45:16 - Verbose: Importing cmdlet 'Get-AzGalleryApplicationVersion_List'.
+08.01.2026 00:45:16 - Verbose: Importing cmdlet 'Get-AzGalleryApplication_Get'.
+08.01.2026 00:45:16 - Verbose: Importing cmdlet 'Get-AzGalleryApplication_GetViaIdentity'.
+08.01.2026 00:45:16 - Verbose: Importing cmdlet 'Get-AzGalleryApplication_List'.
+08.01.2026 00:45:16 - Verbose: Importing cmdlet 'New-AzGalleryApplicationVersion_CreateExpanded'.
+08.01.2026 00:45:16 - Verbose: Importing cmdlet 'New-AzGalleryApplication_CreateExpanded'.
+08.01.2026 00:45:16 - Verbose: Importing cmdlet 'Remove-AzGalleryApplicationVersion_Delete'.
+08.01.2026 00:45:16 - Verbose: Importing cmdlet 'Remove-AzGalleryApplicationVersion_DeleteViaIdentity'.
+08.01.2026 00:45:17 - Verbose: Importing cmdlet 'Remove-AzGalleryApplication_Delete'.
+08.01.2026 00:45:17 - Verbose: Importing cmdlet 'Remove-AzGalleryApplication_DeleteViaIdentity'.
+08.01.2026 00:45:17 - Verbose: Importing cmdlet 'Remove-AzVMRunCommand_Delete'.
+08.01.2026 00:45:17 - Verbose: Importing cmdlet 'Remove-AzVMRunCommand_DeleteViaIdentity'.
+08.01.2026 00:45:17 - Verbose: Importing cmdlet 'Remove-AzVmssVMRunCommand_Delete'.
+08.01.2026 00:45:17 - Verbose: Importing cmdlet 'Remove-AzVmssVMRunCommand_DeleteViaIdentity'.
+08.01.2026 00:45:17 - Verbose: Importing cmdlet 'Set-AzVMRunCommand_UpdateExpanded'.
+08.01.2026 00:45:17 - Verbose: Importing cmdlet 'Set-AzVmssVMRunCommand_UpdateExpanded'.
+08.01.2026 00:45:17 - Verbose: Importing cmdlet 'Update-AzGalleryApplicationVersion_UpdateExpanded'.
+08.01.2026 00:45:18 - Verbose: Importing cmdlet 'Update-AzGalleryApplicationVersion_UpdateViaIdentityExpanded'.
+08.01.2026 00:45:18 - Verbose: Importing cmdlet 'Update-AzGalleryApplication_UpdateExpanded'.
+08.01.2026 00:45:18 - Verbose: Importing cmdlet 'Update-AzGalleryApplication_UpdateViaIdentityExpanded'.
+08.01.2026 00:45:18 - Verbose: Loading module from path 'C:\AzAt\Modules\11.2.0\Az.Compute\7.1.1\Compute.Autorest\custom\Az.Compute.custom.psm1'.
+08.01.2026 00:45:18 - Verbose: Importing cmdlet 'Export-CmdletSurface'.
+08.01.2026 00:45:18 - Verbose: Importing cmdlet 'Export-ExampleStub'.
+08.01.2026 00:45:18 - Verbose: Importing cmdlet 'Export-FormatPs1xml'.
+08.01.2026 00:45:19 - Verbose: Importing cmdlet 'Export-HelpMarkdown'.
+08.01.2026 00:45:19 - Verbose: Importing cmdlet 'Export-ModelSurface'.
+08.01.2026 00:45:19 - Verbose: Importing cmdlet 'Export-ProxyCmdlet'.
+08.01.2026 00:45:19 - Verbose: Importing cmdlet 'Export-Psd1'.
+08.01.2026 00:45:19 - Verbose: Importing cmdlet 'Export-TestStub'.
+08.01.2026 00:45:19 - Verbose: Importing cmdlet 'Get-CommonParameter'.
+08.01.2026 00:45:20 - Verbose: Importing cmdlet 'Get-ModuleGuid'.
+08.01.2026 00:45:20 - Verbose: Importing cmdlet 'Get-ScriptCmdlet'.
+08.01.2026 00:45:20 - Verbose: Importing cmdlet 'Get-AzGalleryApplicationVersion_Get'.
+08.01.2026 00:45:20 - Verbose: Importing cmdlet 'Get-AzGalleryApplicationVersion_GetViaIdentity'.
+08.01.2026 00:45:20 - Verbose: Importing cmdlet 'Get-AzGalleryApplicationVersion_List'.
+08.01.2026 00:45:20 - Verbose: Importing cmdlet 'Get-AzGalleryApplication_Get'.
+08.01.2026 00:45:20 - Verbose: Importing cmdlet 'Get-AzGalleryApplication_GetViaIdentity'.
+08.01.2026 00:45:20 - Verbose: Importing cmdlet 'Get-AzGalleryApplication_List'.
+08.01.2026 00:45:20 - Verbose: Importing cmdlet 'New-AzGalleryApplicationVersion_CreateExpanded'.
+08.01.2026 00:45:20 - Verbose: Importing cmdlet 'New-AzGalleryApplication_CreateExpanded'.
+08.01.2026 00:45:20 - Verbose: Importing cmdlet 'Remove-AzGalleryApplicationVersion_Delete'.
+08.01.2026 00:45:21 - Verbose: Importing cmdlet 'Remove-AzGalleryApplicationVersion_DeleteViaIdentity'.
+08.01.2026 00:45:21 - Verbose: Importing cmdlet 'Remove-AzGalleryApplication_Delete'.
+08.01.2026 00:45:21 - Verbose: Importing cmdlet 'Remove-AzGalleryApplication_DeleteViaIdentity'.
+08.01.2026 00:45:21 - Verbose: Importing cmdlet 'Remove-AzVMRunCommand_Delete'.
+08.01.2026 00:45:21 - Verbose: Importing cmdlet 'Remove-AzVMRunCommand_DeleteViaIdentity'.
+08.01.2026 00:45:21 - Verbose: Importing cmdlet 'Remove-AzVmssVMRunCommand_Delete'.
+08.01.2026 00:45:21 - Verbose: Importing cmdlet 'Remove-AzVmssVMRunCommand_DeleteViaIdentity'.
+08.01.2026 00:45:21 - Verbose: Importing cmdlet 'Set-AzVMRunCommand_UpdateExpanded'.
+08.01.2026 00:45:21 - Verbose: Importing cmdlet 'Set-AzVmssVMRunCommand_UpdateExpanded'.
+08.01.2026 00:45:21 - Verbose: Importing cmdlet 'Update-AzGalleryApplicationVersion_UpdateExpanded'.
+08.01.2026 00:45:22 - Verbose: Importing cmdlet 'Update-AzGalleryApplicationVersion_UpdateViaIdentityExpanded'.
+08.01.2026 00:45:22 - Verbose: Importing cmdlet 'Update-AzGalleryApplication_UpdateExpanded'.
+08.01.2026 00:45:22 - Verbose: Importing cmdlet 'Update-AzGalleryApplication_UpdateViaIdentityExpanded'.
+08.01.2026 00:45:22 - Verbose: Loading module from path 'C:\AzAt\Modules\11.2.0\Az.Compute\7.1.1\Compute.Autorest\internal\Az.Compute.internal.psm1'.
+08.01.2026 00:45:22 - Verbose: Importing cmdlet 'Export-CmdletSurface'.
+08.01.2026 00:45:22 - Verbose: Importing cmdlet 'Export-ExampleStub'.
+08.01.2026 00:45:22 - Verbose: Importing cmdlet 'Export-FormatPs1xml'.
+08.01.2026 00:45:22 - Verbose: Importing cmdlet 'Export-HelpMarkdown'.
+08.01.2026 00:45:22 - Verbose: Importing cmdlet 'Export-ModelSurface'.
+08.01.2026 00:45:22 - Verbose: Importing cmdlet 'Export-ProxyCmdlet'.
+08.01.2026 00:45:23 - Verbose: Importing cmdlet 'Export-Psd1'.
+08.01.2026 00:45:23 - Verbose: Importing cmdlet 'Export-TestStub'.
+08.01.2026 00:45:23 - Verbose: Importing cmdlet 'Get-CommonParameter'.
+08.01.2026 00:45:23 - Verbose: Importing cmdlet 'Get-ModuleGuid'.
+08.01.2026 00:45:23 - Verbose: Importing cmdlet 'Get-ScriptCmdlet'.
+08.01.2026 00:45:23 - Verbose: Importing cmdlet 'Get-AzGalleryApplicationVersion_Get'.
+08.01.2026 00:45:23 - Verbose: Importing cmdlet 'Get-AzGalleryApplicationVersion_GetViaIdentity'.
+08.01.2026 00:45:23 - Verbose: Importing cmdlet 'Get-AzGalleryApplicationVersion_List'.
+08.01.2026 00:45:23 - Verbose: Importing cmdlet 'Get-AzGalleryApplication_Get'.
+08.01.2026 00:45:23 - Verbose: Importing cmdlet 'Get-AzGalleryApplication_GetViaIdentity'.
+08.01.2026 00:45:23 - Verbose: Importing cmdlet 'Get-AzGalleryApplication_List'.
+08.01.2026 00:45:23 - Verbose: Importing cmdlet 'New-AzGalleryApplicationVersion_CreateExpanded'.
+08.01.2026 00:45:23 - Verbose: Importing cmdlet 'New-AzGalleryApplication_CreateExpanded'.
+08.01.2026 00:45:24 - Verbose: Importing cmdlet 'Remove-AzGalleryApplicationVersion_Delete'.
+08.01.2026 00:45:24 - Verbose: Importing cmdlet 'Remove-AzGalleryApplicationVersion_DeleteViaIdentity'.
+08.01.2026 00:45:24 - Verbose: Importing cmdlet 'Remove-AzGalleryApplication_Delete'.
+08.01.2026 00:45:24 - Verbose: Importing cmdlet 'Remove-AzGalleryApplication_DeleteViaIdentity'.
+08.01.2026 00:45:24 - Verbose: Importing cmdlet 'Remove-AzVMRunCommand_Delete'.
+08.01.2026 00:45:24 - Verbose: Importing cmdlet 'Remove-AzVMRunCommand_DeleteViaIdentity'.
+08.01.2026 00:45:24 - Verbose: Importing cmdlet 'Remove-AzVmssVMRunCommand_Delete'.
+08.01.2026 00:45:24 - Verbose: Importing cmdlet 'Remove-AzVmssVMRunCommand_DeleteViaIdentity'.
+08.01.2026 00:45:24 - Verbose: Importing cmdlet 'Set-AzVMRunCommand_UpdateExpanded'.
+08.01.2026 00:45:24 - Verbose: Importing cmdlet 'Set-AzVmssVMRunCommand_UpdateExpanded'.
+08.01.2026 00:45:25 - Verbose: Importing cmdlet 'Update-AzGalleryApplicationVersion_UpdateExpanded'.
+08.01.2026 00:45:25 - Verbose: Importing cmdlet 'Update-AzGalleryApplicationVersion_UpdateViaIdentityExpanded'.
+08.01.2026 00:45:25 - Verbose: Importing cmdlet 'Update-AzGalleryApplication_UpdateExpanded'.
+08.01.2026 00:45:25 - Verbose: Importing cmdlet 'Update-AzGalleryApplication_UpdateViaIdentityExpanded'.
+08.01.2026 00:45:26 - Verbose: Exporting function 'New-AzGalleryApplicationVersion'.
+08.01.2026 00:45:26 - Verbose: Exporting function 'New-AzGalleryApplication'.
+08.01.2026 00:45:26 - Verbose: Exporting function 'Update-AzGalleryApplicationVersion'.
+08.01.2026 00:45:26 - Verbose: Importing function 'New-AzGalleryApplication'.
+08.01.2026 00:45:26 - Verbose: Importing function 'New-AzGalleryApplicationVersion'.
+08.01.2026 00:45:26 - Verbose: Importing function 'Update-AzGalleryApplicationVersion'.
+08.01.2026 00:45:27 - Verbose: Exporting function 'New-AzGalleryApplication'.
+08.01.2026 00:45:27 - Verbose: Exporting function 'New-AzGalleryApplicationVersion'.
+08.01.2026 00:45:27 - Verbose: Exporting function 'Update-AzGalleryApplicationVersion'.
+08.01.2026 00:45:27 - Verbose: Exporting function 'Set-AzVMRunCommand_ScriptLocalPath'.
+08.01.2026 00:45:27 - Verbose: Exporting function 'Set-AzVmssVMRunCommand_ScriptLocalPath'.
+08.01.2026 00:45:27 - Verbose: Importing function 'New-AzGalleryApplication'.
+08.01.2026 00:45:27 - Verbose: Importing function 'New-AzGalleryApplicationVersion'.
+08.01.2026 00:45:27 - Verbose: Importing function 'Set-AzVMRunCommand_ScriptLocalPath'.
+08.01.2026 00:45:28 - Verbose: Importing function 'Set-AzVmssVMRunCommand_ScriptLocalPath'.
+08.01.2026 00:45:28 - Verbose: Importing function 'Update-AzGalleryApplicationVersion'.
+08.01.2026 00:45:28 - Verbose: Exporting function 'New-AzGalleryApplication'.
+08.01.2026 00:45:28 - Verbose: Exporting function 'New-AzGalleryApplicationVersion'.
+08.01.2026 00:45:28 - Verbose: Exporting function 'Update-AzGalleryApplicationVersion'.
+08.01.2026 00:45:30 - Verbose: Exporting function 'Get-AzGalleryApplicationVersion'.
+08.01.2026 00:45:31 - Verbose: Exporting function 'Get-AzGalleryApplication'.
+08.01.2026 00:45:31 - Verbose: Exporting function 'Remove-AzGalleryApplicationVersion'.
+08.01.2026 00:45:31 - Verbose: Exporting function 'Remove-AzGalleryApplication'.
+08.01.2026 00:45:31 - Verbose: Exporting function 'Remove-AzVMRunCommand'.
+08.01.2026 00:45:31 - Verbose: Exporting function 'Remove-AzVmssVMRunCommand'.
+08.01.2026 00:45:31 - Verbose: Exporting function 'Set-AzVMRunCommand'.
+08.01.2026 00:45:31 - Verbose: Exporting function 'Set-AzVmssVMRunCommand'.
+08.01.2026 00:45:31 - Verbose: Exporting function 'Update-AzGalleryApplication'.
+08.01.2026 00:45:32 - Verbose: Unable to load one or more of the requested types. Retrieve the LoaderExceptions property for more information.
+08.01.2026 00:45:32 - Verbose: Loading module from path 'C:\AzAt\Modules\11.2.0\Az.Compute\7.1.1\Microsoft.Azure.PowerShell.Cmdlets.Compute.dll'.
+08.01.2026 00:45:32 - Verbose: Importing cmdlet 'Get-AzAvailabilitySet'.
+08.01.2026 00:45:32 - Verbose: Importing cmdlet 'New-AzAvailabilitySet'.
+08.01.2026 00:45:32 - Verbose: Importing cmdlet 'Remove-AzAvailabilitySet'.
+08.01.2026 00:45:32 - Verbose: Importing cmdlet 'Update-AzAvailabilitySet'.
+08.01.2026 00:45:33 - Verbose: Importing cmdlet 'Get-AzVMExtensionImage'.
+08.01.2026 00:45:33 - Verbose: Importing cmdlet 'Get-AzVMExtensionImageType'.
+08.01.2026 00:45:33 - Verbose: Importing cmdlet 'Get-AzVMADDomainExtension'.
+08.01.2026 00:45:33 - Verbose: Importing cmdlet 'Set-AzVMADDomainExtension'.
+08.01.2026 00:45:33 - Verbose: Importing cmdlet 'Get-AzVMAEMExtension'.
+08.01.2026 00:45:33 - Verbose: Importing cmdlet 'Remove-AzVMAEMExtension'.
+08.01.2026 00:45:33 - Verbose: Importing cmdlet 'Set-AzVMAEMExtension'.
+08.01.2026 00:45:33 - Verbose: Importing cmdlet 'Test-AzVMAEMExtension'.
+08.01.2026 00:45:33 - Verbose: Importing cmdlet 'Set-AzVMBginfoExtension'.
+08.01.2026 00:45:34 - Verbose: Importing cmdlet 'Get-AzVMCustomScriptExtension'.
+08.01.2026 00:45:34 - Verbose: Importing cmdlet 'Remove-AzVMCustomScriptExtension'.
+08.01.2026 00:45:34 - Verbose: Importing cmdlet 'Set-AzVMCustomScriptExtension'.
+08.01.2026 00:45:34 - Verbose: Importing cmdlet 'Get-AzVMDiagnosticsExtension'.
+08.01.2026 00:45:34 - Verbose: Importing cmdlet 'Remove-AzVMDiagnosticsExtension'.
+08.01.2026 00:45:34 - Verbose: Importing cmdlet 'Remove-AzVmssDiagnosticsExtension'.
+08.01.2026 00:45:34 - Verbose: Importing cmdlet 'Set-AzVMDiagnosticsExtension'.
+08.01.2026 00:45:34 - Verbose: Importing cmdlet 'Get-AzVMExtension'.
+08.01.2026 00:45:34 - Verbose: Importing cmdlet 'Remove-AzVMExtension'.
+08.01.2026 00:45:35 - Verbose: Importing cmdlet 'Set-AzVMExtension'.
+08.01.2026 00:45:35 - Verbose: Importing cmdlet 'Get-AzVMSqlServerExtension'.
+08.01.2026 00:45:35 - Verbose: Importing cmdlet 'New-AzVMSqlServerAutoBackupConfig'.
+08.01.2026 00:45:35 - Verbose: Importing cmdlet 'New-AzVMSqlServerAutoPatchingConfig'.
+08.01.2026 00:45:35 - Verbose: Importing cmdlet 'New-AzVMSqlServerKeyVaultCredentialConfig'.
+08.01.2026 00:45:35 - Verbose: Importing cmdlet 'Remove-AzVMSqlServerExtension'.
+08.01.2026 00:45:35 - Verbose: Importing cmdlet 'Set-AzVMSqlServerExtension'.
+08.01.2026 00:45:35 - Verbose: Importing cmdlet 'Get-AzVMAccessExtension'.
+08.01.2026 00:45:35 - Verbose: Importing cmdlet 'Remove-AzVMAccessExtension'.
+08.01.2026 00:45:36 - Verbose: Importing cmdlet 'Set-AzVMAccessExtension'.
+08.01.2026 00:45:36 - Verbose: Importing cmdlet 'Set-AzDiskSecurityProfile'.
+08.01.2026 00:45:36 - Verbose: Importing cmdlet 'Get-AzVMImage'.
+08.01.2026 00:45:36 - Verbose: Importing cmdlet 'Get-AzVMImageOffer'.
+08.01.2026 00:45:36 - Verbose: Importing cmdlet 'Get-AzVMImagePublisher'.
+08.01.2026 00:45:36 - Verbose: Importing cmdlet 'Get-AzVMImageSku'.
+08.01.2026 00:45:36 - Verbose: Importing cmdlet 'Get-AzRemoteDesktopFile'.
+08.01.2026 00:45:36 - Verbose: Importing cmdlet 'Get-AzVMUsage'.
+08.01.2026 00:45:36 - Verbose: Importing cmdlet 'Get-AzVMSize'.
+08.01.2026 00:45:36 - Verbose: Importing cmdlet 'Restart-AzVM'.
+08.01.2026 00:45:37 - Verbose: Importing cmdlet 'Save-AzVMImage'.
+08.01.2026 00:45:37 - Verbose: Importing cmdlet 'Set-AzVM'.
+08.01.2026 00:45:37 - Verbose: Importing cmdlet 'Start-AzVM'.
+08.01.2026 00:45:37 - Verbose: Importing cmdlet 'Stop-AzVM'.
+08.01.2026 00:45:37 - Verbose: Importing cmdlet 'Add-AzVMAdditionalUnattendContent'.
+08.01.2026 00:45:37 - Verbose: Importing cmdlet 'Add-AzVMDataDisk'.
+08.01.2026 00:45:37 - Verbose: Importing cmdlet 'Add-AzVMNetworkInterface'.
+08.01.2026 00:45:37 - Verbose: Importing cmdlet 'Add-AzVMSecret'.
+08.01.2026 00:45:37 - Verbose: Importing cmdlet 'Add-AzVMSshPublicKey'.
+08.01.2026 00:45:37 - Verbose: Importing cmdlet 'New-AzVMConfig'.
+08.01.2026 00:45:38 - Verbose: Importing cmdlet 'New-AzVMDataDisk'.
+08.01.2026 00:45:38 - Verbose: Importing cmdlet 'Remove-AzVMDataDisk'.
+08.01.2026 00:45:38 - Verbose: Importing cmdlet 'Remove-AzVMNetworkInterface'.
+08.01.2026 00:45:38 - Verbose: Importing cmdlet 'Remove-AzVMSecret'.
+08.01.2026 00:45:38 - Verbose: Importing cmdlet 'Set-AzVMBootDiagnostic'.
+08.01.2026 00:45:38 - Verbose: Importing cmdlet 'Set-AzVMDataDisk'.
+08.01.2026 00:45:38 - Verbose: Importing cmdlet 'Set-AzVMOperatingSystem'.
+08.01.2026 00:45:38 - Verbose: Importing cmdlet 'Set-AzVMOSDisk'.
+08.01.2026 00:45:38 - Verbose: Importing cmdlet 'Set-AzVMPlan'.
+08.01.2026 00:45:38 - Verbose: Importing cmdlet 'Set-AzVMSecurityProfile'.
+08.01.2026 00:45:38 - Verbose: Importing cmdlet 'Set-AzVMSourceImage'.
+08.01.2026 00:45:39 - Verbose: Importing cmdlet 'Set-AzVMUefi'.
+08.01.2026 00:45:39 - Verbose: Importing cmdlet 'Get-AzVMBootDiagnosticsData'.
+08.01.2026 00:45:39 - Verbose: Importing cmdlet 'Get-AzVM'.
+08.01.2026 00:45:39 - Verbose: Importing cmdlet 'New-AzVM'.
+08.01.2026 00:45:39 - Verbose: Importing cmdlet 'Remove-AzVM'.
+08.01.2026 00:45:39 - Verbose: Importing cmdlet 'Update-AzVM'.
+08.01.2026 00:45:39 - Verbose: Importing cmdlet 'Add-AzVhd'.
+08.01.2026 00:45:39 - Verbose: Importing cmdlet 'Save-AzVhd'.
+08.01.2026 00:45:39 - Verbose: Importing cmdlet 'New-AzDiskPurchasePlanConfig'.
+08.01.2026 00:45:39 - Verbose: Importing cmdlet 'Get-AzVMDscExtension'.
+08.01.2026 00:45:40 - Verbose: Importing cmdlet 'Get-AzVMDscExtensionStatus'.
+08.01.2026 00:45:40 - Verbose: Importing cmdlet 'Publish-AzVMDscConfiguration'.
+08.01.2026 00:45:40 - Verbose: Importing cmdlet 'Remove-AzVMDscExtension'.
+08.01.2026 00:45:40 - Verbose: Importing cmdlet 'Set-AzVMDscExtension'.
+08.01.2026 00:45:40 - Verbose: Importing cmdlet 'Add-AzVmssDiagnosticsExtension'.
+08.01.2026 00:45:40 - Verbose: Importing cmdlet 'Get-AzVMChefExtension'.
+08.01.2026 00:45:40 - Verbose: Importing cmdlet 'Remove-AzVMChefExtension'.
+08.01.2026 00:45:40 - Verbose: Importing cmdlet 'Set-AzVMChefExtension'.
+08.01.2026 00:45:40 - Verbose: Importing cmdlet 'Remove-AzVMBackup'.
+08.01.2026 00:45:40 - Verbose: Importing cmdlet 'Disable-AzVMDiskEncryption'.
+08.01.2026 00:45:40 - Verbose: Importing cmdlet 'Get-AzVMDiskEncryptionStatus'.
+08.01.2026 00:45:40 - Verbose: Importing cmdlet 'Remove-AzVMDiskEncryptionExtension'.
+08.01.2026 00:45:41 - Verbose: Importing cmdlet 'Set-AzVMDiskEncryptionExtension'.
+08.01.2026 00:45:41 - Verbose: Importing cmdlet 'Set-AzVMBackupExtension'.
+08.01.2026 00:45:41 - Verbose: Importing cmdlet 'Disable-AzVmssDiskEncryption'.
+08.01.2026 00:45:41 - Verbose: Importing cmdlet 'Get-AzVmssDiskEncryption'.
+08.01.2026 00:45:41 - Verbose: Importing cmdlet 'Get-AzVmssVMDiskEncryption'.
+08.01.2026 00:45:41 - Verbose: Importing cmdlet 'Set-AzVmssDiskEncryptionExtension'.
+08.01.2026 00:45:41 - Verbose: Importing cmdlet 'Get-AzDiskAccess'.
+08.01.2026 00:45:41 - Verbose: Importing cmdlet 'New-AzDiskAccess'.
+08.01.2026 00:45:41 - Verbose: Importing cmdlet 'Remove-AzDiskAccess'.
+08.01.2026 00:45:41 - Verbose: Importing cmdlet 'Get-AzCapacityReservation'.
+08.01.2026 00:45:42 - Verbose: Importing cmdlet 'Get-AzCapacityReservationGroup'.
+08.01.2026 00:45:42 - Verbose: Importing cmdlet 'New-AzCapacityReservation'.
+08.01.2026 00:45:42 - Verbose: Importing cmdlet 'New-AzCapacityReservationGroup'.
+08.01.2026 00:45:42 - Verbose: Importing cmdlet 'Remove-AzCapacityReservation'.
+08.01.2026 00:45:42 - Verbose: Importing cmdlet 'Remove-AzCapacityReservationGroup'.
+08.01.2026 00:45:42 - Verbose: Importing cmdlet 'Update-AzCapacityReservation'.
+08.01.2026 00:45:42 - Verbose: Importing cmdlet 'Update-AzCapacityReservationGroup'.
+08.01.2026 00:45:42 - Verbose: Importing cmdlet 'New-AzHostGroup'.
+08.01.2026 00:45:42 - Verbose: Importing cmdlet 'Remove-AzHostGroup'.
+08.01.2026 00:45:42 - Verbose: Importing cmdlet 'Get-AzHostGroup'.
+08.01.2026 00:45:43 - Verbose: Importing cmdlet 'New-AzHost'.
+08.01.2026 00:45:43 - Verbose: Importing cmdlet 'Remove-AzHost'.
+08.01.2026 00:45:43 - Verbose: Importing cmdlet 'Get-AzHost'.
+08.01.2026 00:45:43 - Verbose: Importing cmdlet 'Restart-AzHost'.
+08.01.2026 00:45:43 - Verbose: Importing cmdlet 'Get-AzHostSize'.
+08.01.2026 00:45:43 - Verbose: Importing cmdlet 'Update-AzHost'.
+08.01.2026 00:45:43 - Verbose: Importing cmdlet 'New-AzDiskEncryptionSetConfig'.
+08.01.2026 00:45:43 - Verbose: Importing cmdlet 'New-AzDiskEncryptionSet'.
+08.01.2026 00:45:43 - Verbose: Importing cmdlet 'Remove-AzDiskEncryptionSet'.
+08.01.2026 00:45:43 - Verbose: Importing cmdlet 'Get-AzDiskEncryptionSet'.
+08.01.2026 00:45:44 - Verbose: Importing cmdlet 'Update-AzDiskEncryptionSet'.
+08.01.2026 00:45:44 - Verbose: Importing cmdlet 'New-AzDiskConfig'.
+08.01.2026 00:45:44 - Verbose: Importing cmdlet 'New-AzDiskUpdateConfig'.
+08.01.2026 00:45:44 - Verbose: Importing cmdlet 'Set-AzDiskDiskEncryptionKey'.
+08.01.2026 00:45:44 - Verbose: Importing cmdlet 'Set-AzDiskImageReference'.
+08.01.2026 00:45:44 - Verbose: Importing cmdlet 'Set-AzDiskKeyEncryptionKey'.
+08.01.2026 00:45:44 - Verbose: Importing cmdlet 'Set-AzDiskUpdateDiskEncryptionKey'.
+08.01.2026 00:45:44 - Verbose: Importing cmdlet 'Set-AzDiskUpdateKeyEncryptionKey'.
+08.01.2026 00:45:44 - Verbose: Importing cmdlet 'New-AzDisk'.
+08.01.2026 00:45:44 - Verbose: Importing cmdlet 'Remove-AzDisk'.
+08.01.2026 00:45:44 - Verbose: Importing cmdlet 'Get-AzDisk'.
+08.01.2026 00:45:44 - Verbose: Importing cmdlet 'Grant-AzDiskAccess'.
+08.01.2026 00:45:45 - Verbose: Importing cmdlet 'Revoke-AzDiskAccess'.
+08.01.2026 00:45:45 - Verbose: Importing cmdlet 'Update-AzDisk'.
+08.01.2026 00:45:45 - Verbose: Importing cmdlet 'Get-AzDiskEncryptionSetAssociatedResource'.
+08.01.2026 00:45:45 - Verbose: Importing cmdlet 'New-AzGalleryImageVersion'.
+08.01.2026 00:45:45 - Verbose: Importing cmdlet 'Update-AzGalleryImageVersion'.
+08.01.2026 00:45:45 - Verbose: Importing cmdlet 'Remove-AzGalleryImageVersion'.
+08.01.2026 00:45:45 - Verbose: Importing cmdlet 'Get-AzGalleryImageVersion'.
+08.01.2026 00:45:45 - Verbose: Importing cmdlet 'New-AzGalleryImageDefinition'.
+08.01.2026 00:45:45 - Verbose: Importing cmdlet 'Update-AzGalleryImageDefinition'.
+08.01.2026 00:45:45 - Verbose: Importing cmdlet 'Remove-AzGalleryImageDefinition'.
+08.01.2026 00:45:46 - Verbose: Importing cmdlet 'Get-AzGalleryImageDefinition'.
+08.01.2026 00:45:46 - Verbose: Importing cmdlet 'Add-AzVmGalleryApplication'.
+08.01.2026 00:45:46 - Verbose: Importing cmdlet 'Add-AzVmssGalleryApplication'.
+08.01.2026 00:45:46 - Verbose: Importing cmdlet 'New-AzGallery'.
+08.01.2026 00:45:46 - Verbose: Importing cmdlet 'Update-AzGallery'.
+08.01.2026 00:45:46 - Verbose: Importing cmdlet 'Remove-AzGallery'.
+08.01.2026 00:45:46 - Verbose: Importing cmdlet 'Get-AzGallery'.
+08.01.2026 00:45:46 - Verbose: Importing cmdlet 'New-AzVmGalleryApplication'.
+08.01.2026 00:45:46 - Verbose: Importing cmdlet 'New-AzVmssGalleryApplication'.
+08.01.2026 00:45:46 - Verbose: Importing cmdlet 'Remove-AzVmGalleryApplication'.
+08.01.2026 00:45:46 - Verbose: Importing cmdlet 'Remove-AzVmssGalleryApplication'.
+08.01.2026 00:45:47 - Verbose: Importing cmdlet 'Add-AzImageDataDisk'.
+08.01.2026 00:45:47 - Verbose: Importing cmdlet 'New-AzImageConfig'.
+08.01.2026 00:45:47 - Verbose: Importing cmdlet 'Remove-AzImageDataDisk'.
+08.01.2026 00:45:47 - Verbose: Importing cmdlet 'Set-AzImageOsDisk'.
+08.01.2026 00:45:47 - Verbose: Importing cmdlet 'New-AzImage'.
+08.01.2026 00:45:47 - Verbose: Importing cmdlet 'Update-AzImage'.
+08.01.2026 00:45:47 - Verbose: Importing cmdlet 'Remove-AzImage'.
+08.01.2026 00:45:47 - Verbose: Importing cmdlet 'Get-AzImage'.
+08.01.2026 00:45:47 - Verbose: Importing cmdlet 'Export-AzLogAnalyticRequestRateByInterval'.
+08.01.2026 00:45:47 - Verbose: Importing cmdlet 'Export-AzLogAnalyticThrottledRequest'.
+08.01.2026 00:45:47 - Verbose: Importing cmdlet 'New-AzProximityPlacementGroup'.
+08.01.2026 00:45:47 - Verbose: Importing cmdlet 'Remove-AzProximityPlacementGroup'.
+08.01.2026 00:45:48 - Verbose: Importing cmdlet 'Get-AzProximityPlacementGroup'.
+08.01.2026 00:45:48 - Verbose: Importing cmdlet 'Get-AzComputeResourceSku'.
+08.01.2026 00:45:48 - Verbose: Importing cmdlet 'New-AzSnapshotConfig'.
+08.01.2026 00:45:48 - Verbose: Importing cmdlet 'New-AzSnapshotUpdateConfig'.
+08.01.2026 00:45:48 - Verbose: Importing cmdlet 'Set-AzSnapshotDiskEncryptionKey'.
+08.01.2026 00:45:48 - Verbose: Importing cmdlet 'Set-AzSnapshotImageReference'.
+08.01.2026 00:45:48 - Verbose: Importing cmdlet 'Set-AzSnapshotKeyEncryptionKey'.
+08.01.2026 00:45:48 - Verbose: Importing cmdlet 'Set-AzSnapshotUpdateDiskEncryptionKey'.
+08.01.2026 00:45:48 - Verbose: Importing cmdlet 'Set-AzSnapshotUpdateKeyEncryptionKey'.
+08.01.2026 00:45:48 - Verbose: Importing cmdlet 'New-AzSnapshot'.
+08.01.2026 00:45:48 - Verbose: Importing cmdlet 'Remove-AzSnapshot'.
+08.01.2026 00:45:48 - Verbose: Importing cmdlet 'Get-AzSnapshot'.
+08.01.2026 00:45:48 - Verbose: Importing cmdlet 'Grant-AzSnapshotAccess'.
+08.01.2026 00:45:49 - Verbose: Importing cmdlet 'Revoke-AzSnapshotAccess'.
+08.01.2026 00:45:49 - Verbose: Importing cmdlet 'Update-AzSnapshot'.
+08.01.2026 00:45:49 - Verbose: Importing cmdlet 'Get-AzVMRunCommandDocument'.
+08.01.2026 00:45:49 - Verbose: Importing cmdlet 'Stop-AzVmssRollingUpgrade'.
+08.01.2026 00:45:49 - Verbose: Importing cmdlet 'Get-AzVmssRollingUpgrade'.
+08.01.2026 00:45:49 - Verbose: Importing cmdlet 'Start-AzVmssRollingOSUpgrade'.
+08.01.2026 00:45:49 - Verbose: Importing cmdlet 'Get-AzVmssVM'.
+08.01.2026 00:45:49 - Verbose: Importing cmdlet 'Set-AzVmssVM'.
+08.01.2026 00:45:49 - Verbose: Importing cmdlet 'Invoke-AzVmssVMRunCommand'.
+08.01.2026 00:45:49 - Verbose: Importing cmdlet 'Update-AzVmssVM'.
+08.01.2026 00:45:49 - Verbose: Importing cmdlet 'Add-AzVmssAdditionalUnattendContent'.
+08.01.2026 00:45:50 - Verbose: Importing cmdlet 'Add-AzVmssDataDisk'.
+08.01.2026 00:45:50 - Verbose: Importing cmdlet 'Add-AzVmssExtension'.
+08.01.2026 00:45:50 - Verbose: Importing cmdlet 'Add-AzVmssNetworkInterfaceConfiguration'.
+08.01.2026 00:45:50 - Verbose: Importing cmdlet 'Add-AzVmssSecret'.
+08.01.2026 00:45:50 - Verbose: Importing cmdlet 'Add-AzVmssSshPublicKey'.
+08.01.2026 00:45:50 - Verbose: Importing cmdlet 'Add-AzVmssWinRMListener'.
+08.01.2026 00:45:50 - Verbose: Importing cmdlet 'New-AzVmssConfig'.
+08.01.2026 00:45:50 - Verbose: Importing cmdlet 'New-AzVmssIpConfig'.
+08.01.2026 00:45:50 - Verbose: Importing cmdlet 'New-AzVmssIpTagConfig'.
+08.01.2026 00:45:50 - Verbose: Importing cmdlet 'New-AzVmssVaultCertificateConfig'.
+08.01.2026 00:45:50 - Verbose: Importing cmdlet 'Remove-AzVmssDataDisk'.
+08.01.2026 00:45:51 - Verbose: Importing cmdlet 'Remove-AzVmssExtension'.
+08.01.2026 00:45:51 - Verbose: Importing cmdlet 'Remove-AzVmssNetworkInterfaceConfiguration'.
+08.01.2026 00:45:51 - Verbose: Importing cmdlet 'Set-AzVmssBootDiagnostic'.
+08.01.2026 00:45:51 - Verbose: Importing cmdlet 'Set-AzVmssOsProfile'.
+08.01.2026 00:45:51 - Verbose: Importing cmdlet 'Set-AzVmssRollingUpgradePolicy'.
+08.01.2026 00:45:51 - Verbose: Importing cmdlet 'Set-AzVmssSecurityProfile'.
+08.01.2026 00:45:51 - Verbose: Importing cmdlet 'Set-AzVmssStorageProfile'.
+08.01.2026 00:45:51 - Verbose: Importing cmdlet 'Set-AzVmssUefi'.
+08.01.2026 00:45:51 - Verbose: Importing cmdlet 'New-AzVmss'.
+08.01.2026 00:45:51 - Verbose: Importing cmdlet 'Stop-AzVmss'.
+08.01.2026 00:45:52 - Verbose: Importing cmdlet 'Remove-AzVmss'.
+08.01.2026 00:45:52 - Verbose: Importing cmdlet 'Repair-AzVmssServiceFabricUpdateDomain'.
+08.01.2026 00:45:52 - Verbose: Importing cmdlet 'Get-AzVmss'.
+08.01.2026 00:45:52 - Verbose: Importing cmdlet 'Get-AzVmssSku'.
+08.01.2026 00:45:52 - Verbose: Importing cmdlet 'Set-AzVmss'.
+08.01.2026 00:45:52 - Verbose: Importing cmdlet 'Restart-AzVmss'.
+08.01.2026 00:45:52 - Verbose: Importing cmdlet 'Set-AzVmssOrchestrationServiceState'.
+08.01.2026 00:45:52 - Verbose: Importing cmdlet 'Start-AzVmss'.
+08.01.2026 00:45:52 - Verbose: Importing cmdlet 'Update-AzVmssInstance'.
+08.01.2026 00:45:52 - Verbose: Importing cmdlet 'Update-AzVmss'.
+08.01.2026 00:45:52 - Verbose: Importing cmdlet 'Invoke-AzVMInstallPatch'.
+08.01.2026 00:45:53 - Verbose: Importing cmdlet 'Invoke-AzVMPatchAssessment'.
+08.01.2026 00:45:53 - Verbose: Importing cmdlet 'ConvertTo-AzVMManagedDisk'.
+08.01.2026 00:45:53 - Verbose: Importing cmdlet 'Invoke-AzVMReimage'.
+08.01.2026 00:45:53 - Verbose: Importing cmdlet 'Invoke-AzVMRunCommand'.
+08.01.2026 00:45:53 - Verbose: Importing cmdlet 'Add-AzVmssVMDataDisk'.
+08.01.2026 00:45:53 - Verbose: Importing cmdlet 'Add-AzVmssRunCommand'.
+08.01.2026 00:45:53 - Verbose: Importing cmdlet 'Remove-AzVmssVMDataDisk'.
+08.01.2026 00:45:53 - Verbose: Importing cmdlet 'Remove-AzVmssRunCommand'.
+08.01.2026 00:45:53 - Verbose: Importing cmdlet 'Start-AzVmssRollingExtensionUpgrade'.
+08.01.2026 00:45:53 - Verbose: Importing cmdlet 'Get-AzRestorePoint'.
+08.01.2026 00:45:53 - Verbose: Importing cmdlet 'Get-AzRestorePointCollection'.
+08.01.2026 00:45:53 - Verbose: Importing cmdlet 'New-AzRestorePoint'.
+08.01.2026 00:45:54 - Verbose: Importing cmdlet 'New-AzRestorePointCollection'.
+08.01.2026 00:45:54 - Verbose: Importing cmdlet 'Remove-AzRestorePoint'.
+08.01.2026 00:45:54 - Verbose: Importing cmdlet 'Remove-AzRestorePointCollection'.
+08.01.2026 00:45:54 - Verbose: Importing cmdlet 'Update-AzRestorePointCollection'.
+08.01.2026 00:45:54 - Verbose: Importing cmdlet 'Get-AzSshKey'.
+08.01.2026 00:45:54 - Verbose: Importing cmdlet 'New-AzSshKey'.
+08.01.2026 00:45:54 - Verbose: Importing cmdlet 'Remove-AzSshKey'.
+08.01.2026 00:45:54 - Verbose: Importing cmdlet 'Update-AzSshKey'.
+08.01.2026 00:45:54 - Verbose: Importing cmdlet 'Get-AzVMRunCommand'.
+08.01.2026 00:45:54 - Verbose: Importing cmdlet 'Get-AzVmssVMRunCommand'.
+08.01.2026 00:45:54 - Verbose: Importing alias 'Get-AzVmssDiskEncryptionStatus'.
+08.01.2026 00:45:54 - Verbose: Importing alias 'Get-AzVmssVMDiskEncryptionStatus'.
+08.01.2026 00:45:55 - Verbose: Importing alias 'Repair-AzVmssServiceFabricUD'.
+08.01.2026 00:45:55 - Verbose: Importing alias 'Invoke-AzVMPatchAssess'.
+08.01.2026 00:45:55 - Verbose: Importing alias 'Invoke-AzVMAssessPatch'.
+08.01.2026 00:45:55 - Progress: Preparing modules for first use.
+08.01.2026 00:45:57 - Warning: You're using Az.Compute version 7.1.1. The latest version of Az.Compute is 11.1.0. Upgrade your Az modules using the following commands:
+  Update-PSResource Az.* -WhatIf    -- Simulate updating your Az modules.
+  Update-PSResource Az.*            -- Update your Az modules.
+08.01.2026 00:45:57 - Output: Run config: debugMode=false logLevel=INFO forceRestart=True
+08.01.2026 00:45:57 - Output: Routing: targetEnv=prod => BINGX_ENV=prod (single API key; base URL routing only)
+08.01.2026 00:45:57 - Output: Override requested => container recreate enforced
+08.01.2026 00:45:58 - Output: [3/6] Preparing startup script...
+08.01.2026 00:45:58 - Output: vm_run_session flags: debugMode=false logLevel=INFO --force-recreate true
+08.01.2026 00:45:58 - Output: [5/6] Sending command to VM...
+08.01.2026 00:49:34 - Output: [6/6] Analyzing result...
+08.01.2026 00:49:35 - Output: 
+08.01.2026 00:49:35 - Output: --- VM OUTPUT ---
+08.01.2026 00:49:35 - Output: Enable succeeded: 
+[stdout]
+=== BOT INITIALIZATION ===
+Date: Wed Jan  7 21:46:10 UTC 2026
+1. Cleaning Docker system...
+Deleted Containers:
+1ea747f5cd4b06673d564493b900cfbd2ef9c2d044d0c2387674ff9223915d37
+
+Deleted Images:
+untagged: bearishalphabot.azurecr.io/bearish-bot:manual-20260107-v2
+deleted: sha256:2a846c8d91add6afae510c63c158f0b2002009137aecbcb675d7100c1dcaecce
+deleted: sha256:59e899cbbaf551636251261b1241d694746a07eda72dbb0c346f3f53d16d4330
+deleted: sha256:970e3a7b261f019d70fd27b4f1a714d1d0cd5ee13b03de1a138dcbe05db2892f
+
+Total reclaimed space: 4.984GB
+1b. Removing stale stop flags...
+2. Force recreate: true
+3. Updating duration in env file...
+3b. Ensuring Azure App Configuration environment variables...
+   ✓ App Configuration environment variables configured
+4. Launching bot container...
+   Wrapper supports new flags: 1
+✓ Environment file verified: /home/azureuser/bearish-bot.env
+
+=== Stopping existing container (if any) ===
+  sudo docker stop bearish-bot
+  ℹ️  Container not found (expected, continuing...)
+
+=== Removing existing container (if any) ===
+  sudo docker rm bearish-bot
+  ℹ️  Container not found (expected, continuing...)
+
+=== Pulling image ===
+  sudo docker pull bearishalphabot.azurecr.io/bearish-bot:manual-20260107-v2
+
+=== Starting container ===
+  sudo docker run -d --name bearish-bot --env-file /home/azureuser/bearish-bot.env -e BINGX_ENV=prod -e DEBUG_MODE=false -e LOG_LEVEL=INFO -v /mnt/bearish/logs:/app/logs -v /mnt/bearish/data:/app/data bearishalphabot.azurecr.io/bearish-bot:manual-20260107-v2
+5. Verifying startup health (10s wait)...
+✅ SUCCESS: Bot container is UP and RUNNING.
+   Container ID: 2cfff77f0e52
+--- ENV OVERRIDE DIAGNOSTICS ---
+BINGX_ENV=prod
+DEBUG_MODE=false
+LOG_LEVEL=INFO
+DEBUG_MODE=false
+LOG_LEVEL=INFO
+BINGX_ENV=prod
+DEBUG_MODE=false
+LOG_LEVEL=INFO
+BINGX_ENV=prod
+NO DEBUG lines
+--- ROUTING CONFIRMATION (best-effort) ---
+Expected BINGX_ENV=prod
+?? WARNING: Missing or mismatched [BINGX-ENV] line in log (expected env=prod).
+?? WARNING: Missing or mismatched [MODE-BANNER] line in log (expected BINGX_ENV=prod).
+?? WARNING: Routing confirmation failed. Verify container logs with: docker logs --tail 200 bearish-bot
+
+[stderr]
+
+08.01.2026 00:49:35 - Output: -----------------
+08.01.2026 00:49:35 - Output: 
+08.01.2026 00:49:35 - Output: ╔════════════════════════════════════════════════════════╗
+08.01.2026 00:49:35 - Output: ║             ✅ RUNBOOK COMPLETED SUCCESSFULLY          ║
+08.01.2026 00:49:35 - Output: ╚════════════════════════════════════════════════════════╝
+08.01.2026 00:49:35 - Output: Bot is running in background.
+08.01.2026 00:49:35 - Output: Logic App will now start polling the container status.

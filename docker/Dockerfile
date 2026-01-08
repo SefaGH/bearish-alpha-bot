@@ -26,11 +26,11 @@ ENV PYTHONUNBUFFERED=1 \
 # Working directory
 WORKDIR /app
 
-# Install system dependencies (if needed)
-# RUN apt-get update && apt-get install -y \
-#     build-essential \
-#     git \
-#     && rm -rf /var/lib/apt/lists/*
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency files
 COPY requirements.txt ./
@@ -60,8 +60,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # EXPOSE 8080
 
 # Default command (can be overridden)
-# Use live_trading_launcher.py (not src/main.py)
-CMD ["python", "-u", "scripts/live_trading_launcher.py", "--paper", "--duration", "300"]
+# Use vm_boot.py to translate env vars (TRADING_MODE/TRADING_DURATION/DEBUG_MODE)
+# into launcher flags (--paper/--live/--duration) so Docker runs behave like VM runs.
+CMD ["python", "-u", "vm_boot.py"]
 
 # ============================================================================
 # Build & Run Instructions
@@ -73,10 +74,10 @@ CMD ["python", "-u", "scripts/live_trading_launcher.py", "--paper", "--duration"
 #   docker run -e BINGX_KEY=xxx -e BINGX_SECRET=yyy bearish-alpha-bot:latest
 #
 # Run (live mode):
-#   docker run -e TRADING_MODE=live -e BINGX_KEY=xxx -e BINGX_SECRET=yyy bearish-alpha-bot:latest
+#   docker run -e TRADING_MODE=live -e EXECUTION_BACKEND=ccxt -e BINGX_ENV=prod -e BINGX_KEY=xxx -e BINGX_SECRET=yyy bearish-alpha-bot:latest
 #
 # Run with custom duration:
-#   docker run bearish-alpha-bot:latest python -u scripts/live_trading_launcher.py --paper --duration 600
+#   docker run -e TRADING_DURATION=600 bearish-alpha-bot:latest
 #
 # View logs:
 #   docker logs -f <container_id>

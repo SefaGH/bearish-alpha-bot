@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -17,6 +18,7 @@ import math
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from core.logger import get_current_run_id
+from core.execution_env import is_real_execution_enabled, require_explicit_bingx_env_if_real_execution
 
 # Triple-fallback import strategy for maximum compatibility:
 # 1. Direct utils import (when src/ is on sys.path)
@@ -59,6 +61,29 @@ def _read_int_env(name: str, default: int) -> int:
         return default
 
 
+def _extract_bingx_error_code(message: str) -> Optional[int]:
+    if not message:
+        return None
+    match = re.search(r'"code"\s*:\s*(\d+)', message)
+    if match:
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return None
+    match = re.search(r"\bcode\s*[:=]\s*(\d+)\b", message, flags=re.IGNORECASE)
+    if match:
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _env_flag(name: str) -> bool:
+    value = os.getenv(name, "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _read_float_env(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, default))
@@ -68,6 +93,9 @@ def _read_float_env(name: str, default: float) -> float:
 
 _SHUTDOWN_CLOSE_MAX_ATTEMPTS = max(1, _read_int_env("POSITION_CLOSE_RETRY_LIMIT", 2))
 _SHUTDOWN_CLOSE_BACKOFF = max(0.0, _read_float_env("POSITION_CLOSE_RETRY_BACKOFF", 2.0))
+
+_BINGX_NATIVE_EXIT_RECONCILE_INTERVAL_S = max(1.0, _read_float_env("BINGX_NATIVE_EXIT_RECONCILE_INTERVAL_S", 10.0))
+_BINGX_NATIVE_ORDER_SYNC_INTERVAL_S = max(1.0, _read_float_env("BINGX_NATIVE_ORDER_SYNC_INTERVAL_S", 30.0))
 
 
 class PositionStateStore:
@@ -967,7 +995,12 @@ class AdvancedPositionManager:
 
                     if execution_result and execution_result.get('success'):
                         exit_price = execution_result.get('avg_price')
-                        await self.close_position(position_id, exit_price, exit_reason=reason)
+                        await self.close_position(
+                            position_id,
+                            exit_price,
+                            exit_reason=reason,
+                            exit_order_id=execution_result.get("order_id"),
+                        )
                         closed_count += 1
                         attempt_success = True
                         break
@@ -1058,6 +1091,8 @@ class AdvancedPositionManager:
                 'position_id': position_id,
                 'trade_id': self._generate_trade_id(),
                 'run_id': run_id,
+                'entry_order_id': execution_result.get('order_id'),
+                'exit_order_id': None,
                 'symbol': symbol,
                 'side': side,
                 'timeframe': timeframe,
@@ -1082,6 +1117,20 @@ class AdvancedPositionManager:
                 'trailing_stop_distance': 0.02,
                 'trailing_stop_activation_threshold': 0.0,
                 'trailing_stop_activated': False,
+                'native_hard_stop_order_id': None,
+                'native_hard_stop_stop_price': None,
+                'native_hard_stop_qty': None,
+                'native_hard_stop_working_type': None,
+                'native_hard_stop_position_side': None,
+                'native_hard_stop_reduce_only_requested': None,
+                'native_trailing_stop_order_id': None,
+                'native_trailing_stop_trailing_percent': None,
+                'native_trailing_stop_qty': None,
+                'native_trailing_stop_working_type': None,
+                'native_trailing_stop_position_side': None,
+                'native_trailing_stop_reduce_only_requested': None,
+                'native_exit_reconcile_last_ts': 0.0,
+                'native_order_sync_last_ts': 0.0,
                 'highest_price': entry_price if side == 'long' else entry_price,
                 'lowest_price': entry_price if side == 'short' else entry_price,
                 'max_adverse_excursion': 0.0,
@@ -1146,7 +1195,18 @@ class AdvancedPositionManager:
 
             # Persist snapshot for restart safety (open positions only)
             self._save_positions_snapshot(force=True)
-            
+
+            # Stage-2 (feature-flagged): place exchange-native hard stop on entry (BingX swap).
+            try:
+                await self._maybe_place_bingx_native_hard_stop(position_id)
+            except Exception as exc:
+                logger.error(
+                    "[BINGX-NATIVE] hard stop placement failed for %s: %s",
+                    position_id,
+                    exc,
+                    exc_info=True,
+                )
+             
             return {
                 'success': True,
                 'position_id': position_id,
@@ -1160,7 +1220,502 @@ class AdvancedPositionManager:
                 'reason': str(e),
                 'position_id': None
             }
-    
+
+    def _get_exchange_clients(self) -> Dict[str, Any]:
+        clients = None
+        if getattr(self, "portfolio_manager", None) is not None:
+            clients = getattr(self.portfolio_manager, "exchange_clients", None)
+        if not clients and getattr(self, "order_manager", None) is not None:
+            clients = getattr(self.order_manager, "exchange_clients", None)
+        return clients if isinstance(clients, dict) else {}
+
+    def _get_exchange_client(self, exchange: str) -> Optional[Any]:
+        exchange_key = str(exchange or "").lower()
+        clients = self._get_exchange_clients()
+        return clients.get(exchange_key) if clients else None
+
+    def _bingx_position_side(self, side: str) -> Optional[str]:
+        raw = str(side or "").lower().strip()
+        if raw in self.LONG_SIDES:
+            return "LONG"
+        if raw in self.SHORT_SIDES:
+            return "SHORT"
+        return None
+
+    def _bingx_close_side(self, side: str) -> Optional[str]:
+        pos_side = self._bingx_position_side(side)
+        if pos_side == "LONG":
+            return "sell"
+        if pos_side == "SHORT":
+            return "buy"
+        return None
+
+    async def _maybe_place_bingx_native_hard_stop(self, position_id: str) -> None:
+        if not _env_flag("BINGX_NATIVE_HARD_STOP_ENABLED"):
+            return
+        if not is_real_execution_enabled():
+            return
+
+        require_explicit_bingx_env_if_real_execution()
+
+        position = self.positions.get(position_id)
+        if not position:
+            return
+
+        exchange = str(position.get("exchange") or "").lower()
+        if exchange != "bingx":
+            return
+
+        if position.get("native_hard_stop_order_id"):
+            return
+
+        def _mark_failed(reason: str, exc: Optional[BaseException] = None, *, details: Optional[Dict[str, Any]] = None) -> None:
+            message = str(exc) if exc else ""
+            error_code = _extract_bingx_error_code(message)
+            now_iso = self._isoformat_z(datetime.now(timezone.utc))
+
+            position["native_hard_stop_place_failed"] = True
+            position["native_hard_stop_place_failed_reason"] = reason
+            position["native_hard_stop_place_failed_error_code"] = error_code
+            position["native_hard_stop_place_failed_at"] = now_iso
+
+            payload: Dict[str, Any] = {
+                "event": "NATIVE_HARD_STOP_PLACE_FAILED",
+                "timestamp": now_iso,
+                "position_id": position.get("position_id") or position_id,
+                "trade_id": position.get("trade_id"),
+                "symbol": position.get("symbol"),
+                "side": position.get("side"),
+                "exchange": exchange,
+                "reason": reason,
+                "error_code": error_code,
+                "error": (message[:500] if message else None),
+                "details": details or {},
+            }
+
+            try:
+                logger.error("NATIVE_HARD_STOP_PLACE_FAILED %s", json.dumps(payload))
+            except Exception:
+                logger.error("NATIVE_HARD_STOP_PLACE_FAILED (unserializable payload) reason=%s err=%s", reason, message[:200])
+
+            try:
+                self._save_positions_snapshot(force=True)
+            except Exception:
+                pass
+
+        symbol = str(position.get("symbol") or "")
+        if not symbol:
+            _mark_failed("missing_symbol")
+            return
+
+        side = position.get("side") or "long"
+        position_side = self._bingx_position_side(side)
+        close_side = self._bingx_close_side(side)
+        if not position_side or not close_side:
+            _mark_failed("invalid_position_side", details={"side": side})
+            return
+
+        qty = self._safe_float(position.get("amount"), 0.0) or 0.0
+        if qty <= 0:
+            _mark_failed("invalid_qty", details={"qty": qty})
+            return
+
+        stop_price = (
+            self._safe_float(position.get("native_hard_stop_stop_price"))
+            or self._safe_float(position.get("stop_loss"))
+            or 0.0
+        )
+        if stop_price <= 0:
+            _mark_failed("missing_stop_price", details={"stop_price": stop_price})
+            return
+
+        client = self._get_exchange_client("bingx")
+        if not client:
+            _mark_failed("missing_exchange_client")
+            return
+
+        try:
+            await asyncio.to_thread(client.ensure_bingx_hedge_mode, symbol, True)
+        except Exception as exc:
+            _mark_failed("hedge_mode_check_failed", exc)
+            return
+
+        params = {
+            "stopLossPrice": stop_price,
+            "workingType": "MARK_PRICE",
+            "positionSide": position_side,
+            "reduceOnly": True,  # best-effort; BingX may ignore in hedge mode
+        }
+
+        position["native_hard_stop_reduce_only_requested"] = True
+        position["native_hard_stop_working_type"] = "MARK_PRICE"
+        position["native_hard_stop_position_side"] = position_side
+        position["native_hard_stop_qty"] = qty
+        position["native_hard_stop_stop_price"] = stop_price
+
+        logger.info(
+            "[BINGX-NATIVE] HARD_STOP placing %s %s qty=%.8f stop=%.4f workingType=MARK_PRICE positionSide=%s",
+            symbol,
+            close_side,
+            qty,
+            stop_price,
+            position_side,
+        )
+
+        try:
+            order = await asyncio.to_thread(
+                client.create_order,
+                symbol=symbol,
+                side=close_side,
+                type_="market",
+                amount=qty,
+                price=None,
+                params=params,
+            )
+        except Exception as exc:
+            _mark_failed(
+                "create_order_failed",
+                exc,
+                details={
+                    "symbol": symbol,
+                    "close_side": close_side,
+                    "qty": qty,
+                    "stop_price": stop_price,
+                    "workingType": "MARK_PRICE",
+                    "positionSide": position_side,
+                    "reduceOnly_requested": True,
+                },
+            )
+            return
+
+        order_id = (order or {}).get("id") or (order or {}).get("orderId")
+        if not order_id:
+            _mark_failed(
+                "missing_order_id",
+                details={"response_keys": list((order or {}).keys()) if isinstance(order, dict) else []},
+            )
+            return
+
+        position["native_hard_stop_order_id"] = order_id
+        position.pop("native_hard_stop_place_failed", None)
+        position.pop("native_hard_stop_place_failed_reason", None)
+        position.pop("native_hard_stop_place_failed_error_code", None)
+        position.pop("native_hard_stop_place_failed_at", None)
+        self._save_positions_snapshot(force=True)
+
+        logger.info("[BINGX-NATIVE] HARD_STOP placed position_id=%s order_id=%s", position_id, order_id)
+
+    async def _maybe_place_bingx_native_trailing_stop(self, position_id: str, trailing_distance: float) -> None:
+        if not _env_flag("BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED"):
+            return
+        if not is_real_execution_enabled():
+            return
+
+        require_explicit_bingx_env_if_real_execution()
+
+        position = self.positions.get(position_id)
+        if not position:
+            return
+
+        exchange = str(position.get("exchange") or "").lower()
+        if exchange != "bingx":
+            return
+
+        if position.get("native_trailing_stop_order_id"):
+            return
+
+        symbol = str(position.get("symbol") or "")
+        if not symbol:
+            return
+
+        side = position.get("side") or "long"
+        position_side = self._bingx_position_side(side)
+        close_side = self._bingx_close_side(side)
+        if not position_side or not close_side:
+            return
+
+        qty = self._safe_float(position.get("amount"), 0.0) or 0.0
+        if qty <= 0:
+            return
+
+        trailing_percent = (
+            self._safe_float(position.get("native_trailing_stop_trailing_percent"))
+            or float(max(0.0, trailing_distance) * 100.0)
+        )
+        if trailing_percent <= 0:
+            return
+
+        client = self._get_exchange_client("bingx")
+        if not client:
+            logger.warning("[BINGX-NATIVE] trailing stop skipped: missing exchange client (bingx)")
+            return
+
+        create_fn = getattr(client, "create_trailing_percent_order", None)
+        if not callable(create_fn):
+            logger.warning("[BINGX-NATIVE] trailing stop skipped: ccxt client missing create_trailing_percent_order()")
+            return
+
+        try:
+            await asyncio.to_thread(client.ensure_bingx_hedge_mode, symbol, True)
+        except Exception as exc:
+            logger.error("[BINGX-NATIVE] trailing stop skipped: hedge mode check failed: %s", exc)
+            return
+
+        params = {
+            "trailingType": "TRAILING_STOP_MARKET",
+            "workingType": "MARK_PRICE",
+            "positionSide": position_side,
+            "reduceOnly": True,  # best-effort; BingX may ignore in hedge mode
+        }
+
+        logger.info(
+            "[BINGX-NATIVE] TRAILING placing %s %s qty=%.8f trailing_percent=%.4f positionSide=%s",
+            symbol,
+            close_side,
+            qty,
+            trailing_percent,
+            position_side,
+        )
+
+        try:
+            order = await asyncio.to_thread(
+                create_fn,
+                symbol,
+                "market",
+                close_side,
+                qty,
+                None,
+                trailing_percent,
+                None,
+                params,
+            )
+        except Exception as exc:
+            logger.error("[BINGX-NATIVE] TRAILING placement failed: %s", exc)
+            return
+
+        order_id = (order or {}).get("id") or (order or {}).get("orderId")
+        if not order_id:
+            logger.warning("[BINGX-NATIVE] TRAILING placed but missing order id (response keys=%s)", list((order or {}).keys()))
+            return
+
+        position["native_trailing_stop_order_id"] = order_id
+        position["native_trailing_stop_trailing_percent"] = trailing_percent
+        position["native_trailing_stop_qty"] = qty
+        position["native_trailing_stop_working_type"] = "MARK_PRICE"
+        position["native_trailing_stop_position_side"] = position_side
+        position["native_trailing_stop_reduce_only_requested"] = True
+        self._save_positions_snapshot(force=True)
+
+        logger.info("[BINGX-NATIVE] TRAILING placed position_id=%s order_id=%s", position_id, order_id)
+
+    async def _cancel_bingx_native_conditional_orders(self, position: Dict[str, Any], *, context: str) -> None:
+        if not is_real_execution_enabled():
+            return
+
+        exchange = str(position.get("exchange") or "").lower()
+        if exchange != "bingx":
+            return
+
+        symbol = str(position.get("symbol") or "")
+        if not symbol:
+            return
+
+        order_ids = [
+            ("hard_stop", position.get("native_hard_stop_order_id")),
+            ("trailing", position.get("native_trailing_stop_order_id")),
+        ]
+        order_ids = [(label, oid) for (label, oid) in order_ids if oid]
+        if not order_ids:
+            return
+
+        client = self._get_exchange_client("bingx")
+        if not client:
+            return
+
+        cancel_fn = getattr(client, "cancel_order", None)
+        if not callable(cancel_fn):
+            return
+
+        for label, oid in order_ids:
+            try:
+                await asyncio.to_thread(cancel_fn, oid, symbol, {})
+                logger.info("[BINGX-NATIVE] cancel ok (%s) position_id=%s order_id=%s", context, position.get("position_id"), oid)
+            except Exception as exc:
+                msg = str(exc).lower()
+                idempotent = any(
+                    x in msg
+                    for x in [
+                        "already canceled",
+                        "already cancelled",
+                        "already closed",
+                        "not found",
+                        "does not exist",
+                        "not exist",
+                    ]
+                )
+                if idempotent:
+                    logger.info(
+                        "[BINGX-NATIVE] cancel idempotent-ok (%s) position_id=%s order_id=%s err=%s",
+                        context,
+                        position.get("position_id"),
+                        oid,
+                        str(exc)[:120],
+                    )
+                    continue
+                logger.warning(
+                    "[BINGX-NATIVE] cancel failed (%s) position_id=%s order_id=%s err=%s",
+                    context,
+                    position.get("position_id"),
+                    oid,
+                    str(exc)[:200],
+                )
+
+    async def _bingx_is_position_open_on_exchange(self, position: Dict[str, Any]) -> Optional[bool]:
+        client = self._get_exchange_client("bingx")
+        if not client or not hasattr(client, "get_bingx_positions"):
+            return None
+
+        symbol = str(position.get("symbol") or "")
+        if not symbol:
+            return None
+
+        expected_side = self._bingx_position_side(position.get("side") or "")
+        if not expected_side:
+            return None
+
+        try:
+            resp = await asyncio.to_thread(client.get_bingx_positions, symbol)
+        except Exception as exc:
+            logger.debug("[BINGX-NATIVE] positions readback failed: %s", exc)
+            return None
+
+        if not isinstance(resp, dict):
+            return None
+        code = resp.get("code")
+        if code not in (0, "0", None):
+            return None
+
+        data = resp.get("data")
+        if not isinstance(data, list):
+            return None
+
+        native_symbol = None
+        try:
+            to_native = getattr(client, "_get_bingx_native_symbol", None)
+            if callable(to_native):
+                native_symbol = str(to_native(symbol))
+        except Exception:
+            native_symbol = None
+
+        expected_symbols = {s for s in {native_symbol, native_symbol and native_symbol.replace("-", "/"), symbol} if s}
+
+        now_ts = time.time()
+        matched_amt: Optional[float] = None
+
+        for pos in data or []:
+            if not isinstance(pos, dict):
+                continue
+            raw_symbol = str(pos.get("symbol") or "")
+            if expected_symbols and raw_symbol and (raw_symbol not in expected_symbols):
+                continue
+            amt = self._safe_float(pos.get("positionAmt"), 0.0) or 0.0
+            if amt == 0:
+                continue
+
+            pos_side = pos.get("positionSide")
+            if pos_side:
+                if str(pos_side).upper() != expected_side:
+                    continue
+                matched_amt = abs(float(amt))
+                break
+
+            # Fallback (one-way): signed amount indicates net side.
+            if expected_side == "LONG" and amt > 0:
+                matched_amt = abs(float(amt))
+                break
+            if expected_side == "SHORT" and amt < 0:
+                matched_amt = abs(float(amt))
+                break
+
+        if matched_amt is None:
+            position["exchange_position_amt"] = 0.0
+            position["exchange_position_last_readback_ts"] = now_ts
+            return False
+
+        position["exchange_position_amt"] = matched_amt
+        position["exchange_position_last_readback_ts"] = now_ts
+
+        # Keep local size aligned to exchange when native stops are active (partial closes / partial fills).
+        try:
+            local_amt = self._safe_float(position.get("amount"), 0.0) or 0.0
+            if local_amt <= 0 or abs(matched_amt - local_amt) > 1e-12:
+                position_id = position.get("position_id")
+                logger.warning(
+                    "[BINGX-NATIVE] exchange size readback differs; updating local size. position_id=%s local=%.8f exchange=%.8f",
+                    position_id,
+                    local_amt,
+                    matched_amt,
+                )
+                position["amount"] = matched_amt
+                if "size" in position:
+                    try:
+                        position["size"] = matched_amt
+                    except Exception:
+                        pass
+                # Force an immediate conditional-order qty resync on next sync check.
+                position["native_order_sync_last_ts"] = 0.0
+        except Exception:
+            pass
+
+        return True
+
+    async def _maybe_sync_bingx_native_order_qty(self, position: Dict[str, Any]) -> None:
+        if not is_real_execution_enabled():
+            return
+        if str(position.get("exchange") or "").lower() != "bingx":
+            return
+
+        now_ts = time.time()
+        last_ts = self._safe_float(position.get("native_order_sync_last_ts"), 0.0) or 0.0
+        if (now_ts - last_ts) < _BINGX_NATIVE_ORDER_SYNC_INTERVAL_S:
+            return
+        position["native_order_sync_last_ts"] = now_ts
+
+        qty = self._safe_float(position.get("amount"), 0.0) or 0.0
+        if qty <= 0:
+            return
+
+        hard_id = position.get("native_hard_stop_order_id")
+        hard_qty = self._safe_float(position.get("native_hard_stop_qty"), 0.0) or 0.0
+        trailing_id = position.get("native_trailing_stop_order_id")
+        trailing_qty = self._safe_float(position.get("native_trailing_stop_qty"), 0.0) or 0.0
+        trailing_percent = self._safe_float(position.get("native_trailing_stop_trailing_percent"), 0.0) or 0.0
+
+        needs_sync = False
+        if hard_id and hard_qty > 0 and abs(hard_qty - qty) > 1e-12:
+            needs_sync = True
+        if trailing_id and trailing_qty > 0 and abs(trailing_qty - qty) > 1e-12:
+            needs_sync = True
+
+        if not needs_sync:
+            return
+
+        pos_id = position.get("position_id")
+        had_hard = bool(hard_id)
+        had_trailing = bool(trailing_id)
+
+        await self._cancel_bingx_native_conditional_orders(position, context="qty_sync")
+        position["native_hard_stop_order_id"] = None
+        position["native_hard_stop_qty"] = None
+        position["native_trailing_stop_order_id"] = None
+        position["native_trailing_stop_qty"] = None
+
+        if had_hard and pos_id:
+            await self._maybe_place_bingx_native_hard_stop(str(pos_id))
+        if had_trailing and pos_id and trailing_percent > 0:
+            position["native_trailing_stop_trailing_percent"] = trailing_percent
+            await self._maybe_place_bingx_native_trailing_stop(str(pos_id), float(trailing_percent / 100.0))
+
     async def monitor_position_pnl(self, position_id: str, current_price: Optional[float] = None) -> Dict[str, Any]:
         """
         Real-time P&L monitoring and alerting.
@@ -1251,6 +1806,26 @@ class AdvancedPositionManager:
                     min_step_fraction = (min_step_bps / 10000.0) if min_step_bps > 0 else 0.0
                     now_ts = time.time()
                     last_update_ts = position.get('last_trail_update_ts', 0.0) or 0.0
+
+                    # Stage-2 (feature-flagged): place native trailing stop at activation time (BingX swap).
+                    if (
+                        _env_flag("BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED")
+                        and is_real_execution_enabled()
+                        and str(position.get("exchange") or "").lower() == "bingx"
+                        and not position.get("native_trailing_stop_order_id")
+                    ):
+                        last_attempt = position.get("native_trailing_stop_last_attempt_ts", 0.0) or 0.0
+                        if (now_ts - float(last_attempt)) >= 30.0:
+                            position["native_trailing_stop_last_attempt_ts"] = now_ts
+                            try:
+                                await self._maybe_place_bingx_native_trailing_stop(position_id, trailing_distance)
+                            except Exception as exc:
+                                logger.error(
+                                    "[BINGX-NATIVE] trailing placement failed for %s: %s",
+                                    position_id,
+                                    exc,
+                                    exc_info=True,
+                                )
 
                     if is_long:
                         trailing_stop_level = position['highest_price'] * (1 - trailing_distance)
@@ -1385,8 +1960,14 @@ class AdvancedPositionManager:
         
         return None
     
-    async def close_position(self, position_id: str, exit_price: float, 
-                           exit_reason: str = ExitReason.MANUAL.value) -> Dict[str, Any]:
+    async def close_position(
+        self,
+        position_id: str,
+        exit_price: float,
+        exit_reason: str = ExitReason.MANUAL.value,
+        *,
+        exit_order_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Close position and finalize P&L.
         
@@ -1401,9 +1982,16 @@ class AdvancedPositionManager:
         try:
             if position_id not in self.positions:
                 return {'success': False, 'reason': 'Position not found'}
-            
+             
             position = self.positions[position_id]
-            
+
+            # Stage-2 (feature-flagged): always cancel native conditional close orders on any close path
+            # (defense-in-depth; BingX may auto-cancel orphans, but we don't rely on it).
+            try:
+                await self._cancel_bingx_native_conditional_orders(position, context=f"close:{exit_reason}")
+            except Exception as exc:
+                logger.warning("[BINGX-NATIVE] cancel-on-close failed for %s: %s", position_id, exc)
+             
             # Calculate final P&L
             entry_price = position['entry_price']
             amount = position['amount']
@@ -1419,6 +2007,7 @@ class AdvancedPositionManager:
              
             position['realized_pnl'] = realized_pnl
             position['exit_price'] = exit_price
+            position['exit_order_id'] = exit_order_id
             position['exit_reason'] = exit_reason
             position['status'] = PositionStatus.CLOSED.value
             position['closed_at'] = datetime.now(timezone.utc)
@@ -1533,13 +2122,29 @@ class AdvancedPositionManager:
                 'entry_price': round(position.get('entry_price', 0.0), 4),
                 'entry_time': entry_time_iso,
                 'exit_price': round(exit_price, 4),
+                'exit_order_id': position.get('exit_order_id'),
                 'exit_time': exit_time_iso,
                 'exit_reason': exit_reason,
+                'entry_order_id': position.get('entry_order_id'),
                 'position_size': position.get('position_size') or position.get('size') or position.get('amount'),
                 'pnl_usd': round(realized_pnl, 4),
                 'realized_pnl_usd': round(realized_pnl, 4),
                 'realized_pnl_usdt': round(realized_pnl, 4),
                 'pnl_pct': round(return_pct, 3),
+                'native_hard_stop_order_id': position.get('native_hard_stop_order_id'),
+                'native_hard_stop_position_side': position.get('native_hard_stop_position_side'),
+                'native_hard_stop_working_type': position.get('native_hard_stop_working_type'),
+                'native_hard_stop_qty': position.get('native_hard_stop_qty'),
+                'native_hard_stop_stop_price': position.get('native_hard_stop_stop_price'),
+                'native_hard_stop_place_failed': position.get('native_hard_stop_place_failed'),
+                'native_hard_stop_place_failed_reason': position.get('native_hard_stop_place_failed_reason'),
+                'native_hard_stop_place_failed_error_code': position.get('native_hard_stop_place_failed_error_code'),
+                'native_trailing_stop_order_id': position.get('native_trailing_stop_order_id'),
+                'native_trailing_stop_position_side': position.get('native_trailing_stop_position_side'),
+                'native_trailing_stop_working_type': position.get('native_trailing_stop_working_type'),
+                'native_trailing_stop_qty': position.get('native_trailing_stop_qty'),
+                'native_trailing_stop_trailing_percent': position.get('native_trailing_stop_trailing_percent'),
+                'prod_canary_0_abort_reason': position.get('prod_canary_0_abort_reason'),
                 'rr': rr_achieved,
                 'rr_achieved': rr_achieved,
                 'duration_min': duration_min,
@@ -1721,6 +2326,79 @@ class AdvancedPositionManager:
             entry_price = position.get('entry_price', 0)
             is_long = side in self.LONG_SIDES
 
+            exchange = str(position.get("exchange") or "").lower()
+            native_hard_stop_id = position.get("native_hard_stop_order_id")
+            native_trailing_id = position.get("native_trailing_stop_order_id")
+
+            # Keep conditional order qty aligned to current position size (before using ids/flags below).
+            if exchange == "bingx" and is_real_execution_enabled() and (native_hard_stop_id or native_trailing_id):
+                await self._maybe_sync_bingx_native_order_qty(position)
+                native_hard_stop_id = position.get("native_hard_stop_order_id")
+                native_trailing_id = position.get("native_trailing_stop_order_id")
+
+            native_hard_stop_active = bool(
+                native_hard_stop_id
+                and exchange == "bingx"
+                and _env_flag("BINGX_NATIVE_HARD_STOP_ENABLED")
+                and is_real_execution_enabled()
+            )
+            native_trailing_active = bool(
+                native_trailing_id
+                and exchange == "bingx"
+                and _env_flag("BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED")
+                and is_real_execution_enabled()
+            )
+
+            if native_hard_stop_active or native_trailing_active:
+
+                # If exchange-native conditionals close the position, suppress client-side market exit
+                # and close locally (approx exit_price=current_price) to avoid reopening exposure.
+                now_ts = time.time()
+                open_ts = self._safe_float(position.get("open_timestamp"), 0.0) or 0.0
+                if open_ts and (now_ts - open_ts) >= 2.0:
+                    last_ts = self._safe_float(position.get("native_exit_reconcile_last_ts"), 0.0) or 0.0
+                    if (now_ts - last_ts) >= _BINGX_NATIVE_EXIT_RECONCILE_INTERVAL_S:
+                        position["native_exit_reconcile_last_ts"] = now_ts
+                        amt_before = self._safe_float(position.get("amount"), 0.0) or 0.0
+                        is_open = await self._bingx_is_position_open_on_exchange(position)
+                        amt_after = self._safe_float(position.get("amount"), 0.0) or 0.0
+                        if is_open is True and abs(amt_after - amt_before) > 1e-12:
+                            # Exchange size changed (partial close/fill). Force immediate conditional qty resync.
+                            try:
+                                position["native_order_sync_last_ts"] = 0.0
+                                await self._maybe_sync_bingx_native_order_qty(position)
+
+                                # _maybe_sync_bingx_native_order_qty may cancel/recreate and mutate ids;
+                                # refresh active flags for the rest of this evaluation pass.
+                                native_hard_stop_id = position.get("native_hard_stop_order_id")
+                                native_trailing_id = position.get("native_trailing_stop_order_id")
+                                native_hard_stop_active = bool(
+                                    native_hard_stop_id
+                                    and exchange == "bingx"
+                                    and _env_flag("BINGX_NATIVE_HARD_STOP_ENABLED")
+                                    and is_real_execution_enabled()
+                                )
+                                native_trailing_active = bool(
+                                    native_trailing_id
+                                    and exchange == "bingx"
+                                    and _env_flag("BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED")
+                                    and is_real_execution_enabled()
+                                )
+                            except Exception as exc:
+                                logger.warning("[BINGX-NATIVE] qty sync after exchange size update failed: %s", exc)
+                        if is_open is False:
+                            logger.warning(
+                                "[BINGX-NATIVE] exchange reports position closed; skipping market exit. position_id=%s",
+                                position_id,
+                            )
+                            return {
+                                "should_exit": True,
+                                "exit_reason": ExitReason.STOP_LOSS.value,
+                                "exit_price": current_price,
+                                "skip_market_exit": True,
+                                "native_exit_detected": True,
+                            }
+
             config = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
             exit_guardrails = config.get('position_management', {}).get('exit_guardrails', {})
             eps = self._safe_float(exit_guardrails.get('eps'), 0.0) or 0.0
@@ -1759,11 +2437,24 @@ class AdvancedPositionManager:
                         highest_price = current_price
                     trailing_stop_level = highest_price * (1 - trailing_distance)
                     if self._is_trailing_stop_active(position, current_price, entry_price, True) and current_price <= trailing_stop_level:
-                        return {
-                            'should_exit': True,
-                            'exit_reason': ExitReason.TRAILING_STOP.value,
-                            'exit_price': current_price
-                        }
+                        if native_trailing_active:
+                            now_ts = time.time()
+                            last_log = position.get("native_trailing_suppress_last_log_ts", 0.0) or 0.0
+                            if (now_ts - float(last_log)) >= 30.0:
+                                logger.info(
+                                    "[BINGX-NATIVE] TRAILING-HIT suppressed: position_id=%s price=%.4f trail_stop=%.4f order_id=%s",
+                                    position_id,
+                                    current_price,
+                                    trailing_stop_level,
+                                    native_trailing_id,
+                                )
+                                position["native_trailing_suppress_last_log_ts"] = now_ts
+                        else:
+                            return {
+                                'should_exit': True,
+                                'exit_reason': ExitReason.TRAILING_STOP.value,
+                                'exit_price': current_price
+                            }
                 else:  # short position
                     lowest_price = position.get('lowest_price', entry_price)
                     if current_price < lowest_price:
@@ -1771,16 +2462,43 @@ class AdvancedPositionManager:
                         lowest_price = current_price
                     trailing_stop_level = lowest_price * (1 + trailing_distance)
                     if self._is_trailing_stop_active(position, current_price, entry_price, False) and current_price >= trailing_stop_level:
-                        return {
-                            'should_exit': True,
-                            'exit_reason': ExitReason.TRAILING_STOP.value,
-                            'exit_price': current_price
-                        }
+                        if native_trailing_active:
+                            now_ts = time.time()
+                            last_log = position.get("native_trailing_suppress_last_log_ts", 0.0) or 0.0
+                            if (now_ts - float(last_log)) >= 30.0:
+                                logger.info(
+                                    "[BINGX-NATIVE] TRAILING-HIT suppressed: position_id=%s price=%.4f trail_stop=%.4f order_id=%s",
+                                    position_id,
+                                    current_price,
+                                    trailing_stop_level,
+                                    native_trailing_id,
+                                )
+                                position["native_trailing_suppress_last_log_ts"] = now_ts
+                        else:
+                            return {
+                                'should_exit': True,
+                                'exit_reason': ExitReason.TRAILING_STOP.value,
+                                'exit_price': current_price
+                            }
 
             # Check stop loss
             if side in ['long', 'buy']:
                 stop_threshold = stop_loss * (1 - eps) if stop_loss > 0 else stop_loss
                 if stop_loss > 0 and current_price <= stop_threshold:
+                    if native_hard_stop_active:
+                        now_ts = time.time()
+                        last_log = position.get("native_hard_stop_suppress_last_log_ts", 0.0) or 0.0
+                        if (now_ts - float(last_log)) >= 30.0:
+                            logger.warning(
+                                "[BINGX-NATIVE] STOP-LOSS-HIT suppressed: position_id=%s price=%.4f stop=%.4f order_id=%s%s",
+                                position_id,
+                                current_price,
+                                stop_loss,
+                                native_hard_stop_id,
+                                trailing_context,
+                            )
+                            position["native_hard_stop_suppress_last_log_ts"] = now_ts
+                        return {"should_exit": False, "reason": "native_hard_stop_active"}
                     logger.warning(
                         f"🛑 [STOP-LOSS-HIT] {position_id}\n"
                         f"   Current Price: ${current_price:.2f}\n"
@@ -1796,6 +2514,20 @@ class AdvancedPositionManager:
             else:  # short
                 stop_threshold = stop_loss * (1 + eps) if stop_loss > 0 else stop_loss
                 if stop_loss > 0 and current_price >= stop_threshold:
+                    if native_hard_stop_active:
+                        now_ts = time.time()
+                        last_log = position.get("native_hard_stop_suppress_last_log_ts", 0.0) or 0.0
+                        if (now_ts - float(last_log)) >= 30.0:
+                            logger.warning(
+                                "[BINGX-NATIVE] STOP-LOSS-HIT suppressed: position_id=%s price=%.4f stop=%.4f order_id=%s%s",
+                                position_id,
+                                current_price,
+                                stop_loss,
+                                native_hard_stop_id,
+                                trailing_context,
+                            )
+                            position["native_hard_stop_suppress_last_log_ts"] = now_ts
+                        return {"should_exit": False, "reason": "native_hard_stop_active"}
                     logger.warning(
                         f"🛑 [STOP-LOSS-HIT] {position_id}\n"
                         f"   Current Price: ${current_price:.2f}\n"
@@ -1852,6 +2584,19 @@ class AdvancedPositionManager:
 
                     if self._is_trailing_stop_active(position, current_price, entry_price, True):
                         if current_price <= trailing_stop_level:
+                            if native_trailing_active:
+                                now_ts = time.time()
+                                last_log = position.get("native_trailing_suppress_last_log_ts", 0.0) or 0.0
+                                if (now_ts - float(last_log)) >= 30.0:
+                                    logger.info(
+                                        "[BINGX-NATIVE] TRAILING-STOP-HIT suppressed: position_id=%s price=%.4f trail_stop=%.4f order_id=%s",
+                                        position_id,
+                                        current_price,
+                                        trailing_stop_level,
+                                        native_trailing_id,
+                                    )
+                                    position["native_trailing_suppress_last_log_ts"] = now_ts
+                                return {"should_exit": False, "reason": "native_trailing_active"}
                             logger.info(
                                 f"📉 [TRAILING-STOP-HIT] {position_id}\n"
                                 f"   Highest Price: ${highest_price:.2f}\n"
@@ -1873,6 +2618,19 @@ class AdvancedPositionManager:
 
                     if self._is_trailing_stop_active(position, current_price, entry_price, False):
                         if current_price >= trailing_stop_level:
+                            if native_trailing_active:
+                                now_ts = time.time()
+                                last_log = position.get("native_trailing_suppress_last_log_ts", 0.0) or 0.0
+                                if (now_ts - float(last_log)) >= 30.0:
+                                    logger.info(
+                                        "[BINGX-NATIVE] TRAILING-STOP-HIT suppressed: position_id=%s price=%.4f trail_stop=%.4f order_id=%s",
+                                        position_id,
+                                        current_price,
+                                        trailing_stop_level,
+                                        native_trailing_id,
+                                    )
+                                    position["native_trailing_suppress_last_log_ts"] = now_ts
+                                return {"should_exit": False, "reason": "native_trailing_active"}
                             logger.info(
                                 f"📈 [TRAILING-STOP-HIT] {position_id}\n"
                                 f"   Lowest Price: ${lowest_price:.2f}\n"
@@ -2368,7 +3126,12 @@ class AdvancedPositionManager:
                 
                 if result.get('success'):
                     exit_price = result.get('avg_price', position.get('current_price'))
-                    return await self.close_position(position_id, exit_price, reason)
+                    return await self.close_position(
+                        position_id,
+                        exit_price,
+                        reason,
+                        exit_order_id=result.get("order_id"),
+                    )
                 else:
                     return {'success': False, 'reason': f"Order failed: {result.get('reason')}"}
             else:

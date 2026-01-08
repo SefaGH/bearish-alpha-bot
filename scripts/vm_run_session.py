@@ -1,7 +1,38 @@
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+
+def ensure_host_volume_dir(path: str, *, uid: int = 1000, gid: int = 1000) -> None:
+    """
+    Ensure bind-mount host directories exist and are writable by the container user.
+
+    Our Docker image runs as a non-root user (uid/gid 1000). If Docker creates the host
+    mount path as root (common when the directory doesn't exist), the container can fail
+    immediately with PermissionError when writing logs/data.
+
+    Best-effort: create the directory, then chown/chmod when running as root.
+    """
+    if not path:
+        return
+
+    host_path = Path(path)
+    try:
+        host_path.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        print(f"??  WARNING: Failed to create host directory '{path}': {exc}", file=sys.stderr)
+        return
+
+    try:
+        geteuid = getattr(os, "geteuid", None)
+        if callable(geteuid) and geteuid() == 0:
+            os.chown(host_path, uid, gid)
+            os.chmod(host_path, 0o775)
+    except Exception as exc:
+        # Some filesystems (or mount options) may reject chown/chmod; don't abort startup.
+        print(f"??  WARNING: Failed to set permissions on '{path}': {exc}", file=sys.stderr)
 
 
 def build_docker_command(
@@ -198,6 +229,12 @@ def main(argv: list[str] | None = None) -> int:
 
     logs_host = None if args.no_volumes else args.logs_host
     data_host = None if args.no_volumes else args.data_host
+
+    # Ensure bind-mount host dirs exist and are writable for the container user.
+    if logs_host:
+        ensure_host_volume_dir(logs_host)
+    if data_host:
+        ensure_host_volume_dir(data_host)
 
     # Build extra_env list
     extra_env = []

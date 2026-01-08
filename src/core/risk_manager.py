@@ -1161,6 +1161,7 @@ class RiskManager:
         max_portfolio_risk_usd: Optional[float],
         current_open_risk_usd: float,
         position_size_policy: str,
+        stop_pct: Optional[float] = None,
     ) -> PlannedSizeResult:
         max_position_size_pct = float(risk_limits.get('max_position_size', 0) or 0)
         max_position_notional_usd = risk_limits.get('max_position_notional_usd')
@@ -1178,16 +1179,33 @@ class RiskManager:
 
         cap_capital = compute_max_affordable_notional(available_balance or 0.0, leverage or 1.0)
 
-        cap_heat = float('inf')
+        cap_heat_notional = float('inf')
         if max_portfolio_risk_usd is not None:
-            cap_heat = max(0.0, max_portfolio_risk_usd - max(0.0, current_open_risk_usd))
+            heat_remaining_usd = max(0.0, max_portfolio_risk_usd - max(0.0, current_open_risk_usd))
+            if heat_remaining_usd <= 0:
+                cap_heat_notional = 0.0
+            else:
+                effective_stop_pct = None
+                try:
+                    effective_stop_pct = float(stop_pct) if stop_pct is not None else None
+                except Exception:
+                    effective_stop_pct = None
 
-        planned_notional = min(raw_notional, cap_size_pct, cap_notional, cap_capital, cap_heat)
+                min_stop_pct = float(risk_limits.get('min_stop_pct', 0) or 0.0)
+                if effective_stop_pct is None or effective_stop_pct <= 0:
+                    effective_stop_pct = min_stop_pct
+                elif min_stop_pct and effective_stop_pct < min_stop_pct:
+                    effective_stop_pct = min_stop_pct
+
+                if effective_stop_pct and effective_stop_pct > 0:
+                    cap_heat_notional = heat_remaining_usd / effective_stop_pct
+
+        planned_notional = min(raw_notional, cap_size_pct, cap_notional, cap_capital, cap_heat_notional)
 
         capped_by_size_pct = planned_notional < raw_notional and planned_notional == cap_size_pct
         capped_by_max_notional = planned_notional < raw_notional and planned_notional == cap_notional
         capped_by_capital = planned_notional < raw_notional and planned_notional == cap_capital
-        capped_by_heat = planned_notional < raw_notional and planned_notional == cap_heat
+        capped_by_heat = planned_notional < raw_notional and planned_notional == cap_heat_notional
 
         # position_size_policy handling
         reason = None
@@ -1208,7 +1226,7 @@ class RiskManager:
 
         # min-notional enforcement
         if planned_notional < min_notional_threshold:
-            if cap_heat == planned_notional:
+            if cap_heat_notional == planned_notional:
                 reason = "portfolio_heat_exhausted"
                 capped_by_heat = True
             else:
@@ -1460,6 +1478,21 @@ class RiskManager:
                 },
             )
             entry_price = signal.get('entry', 0) or signal.get('entry_price', 0)
+            stop_pct = None
+            try:
+                stop_price = (
+                    signal.get('stop')
+                    or signal.get('stop_loss')
+                    or signal.get('stop_loss_price')
+                    or signal.get('stopPrice')
+                    or signal.get('stopLossPrice')
+                )
+                if stop_price is None and entry_price:
+                    stop_price = self._calculate_stop_loss_from_signal(signal, float(entry_price))
+                if entry_price and stop_price:
+                    stop_pct = abs(float(entry_price) - float(stop_price)) / float(entry_price)
+            except Exception:
+                stop_pct = None
             raw_notional = signal.get('notional')
             if raw_notional is None:
                 proposed_size = signal.get('position_size') or signal.get('amount') or 0.0
@@ -1493,6 +1526,7 @@ class RiskManager:
                 max_portfolio_risk_usd=max_portfolio_risk_usd,
                 current_open_risk_usd=current_open_risk_usd,
                 position_size_policy=self.risk_limits.get('position_size_policy', 'clip'),
+                stop_pct=stop_pct,
             )
 
             # Telemetry helper: surface the cap components used by the planner to downstream consumers

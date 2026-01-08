@@ -48,6 +48,7 @@ coverage_html/
 .env.gemma
 .env.gemma_*
 .env.gemma*
+bearish-bot.env.local
 
 # Data files
 data/
@@ -58,6 +59,8 @@ logs/health_*.json
 test_results.txt
 diagnostics/*.json
 diagnostics/*.csv
+diagnostics/vst/
+diagnostics/prod_canary/
 # Keep verification reports but exclude temp/cache files
 logs/gemma_workflow_verification_*.json
 logs/gemma_workflow_verification_*.txt

@@ -460,16 +460,28 @@ az logic workflow show \
 | `kvSecretNames` | string | ❌ | BINGX-KEY,... | Comma-separated secrets |
 | `idempotencyToken` | string | ❌ | "" | Unique execution token |
 | `maxRetries` | int | ❌ | 3 | Max retry attempts |
+| `targetEnv` | string | ❌ | prod | BingX routing env: `vst` uses `open-api-vst`, `prod` uses production API |
 
 ### Logic App Trigger Schema
 
 ```json
 {
   "durationMinutes": 60,           // Required: 1-85
+  "targetEnv": "prod",             // Optional: "vst" | "prod" (default: "prod")
   "imageTag": "vm-vmboot-9",       // Optional
   "keyVaultName": "bearish-kv",    // Optional
   "kvSecretNames": "BINGX-KEY,..." // Optional
 }
+```
+
+Example payloads:
+
+```json
+{ "durationMinutes": 10, "targetEnv": "vst" }
+```
+
+```json
+{ "durationMinutes": 10, "targetEnv": "prod" }
 ```
 
 ---

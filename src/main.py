@@ -2,11 +2,17 @@
 # Bearish Alpha Bot — Orchestrated MVP with Adaptive Strategies
 
 from __future__ import annotations
-import os, json, time, traceback, logging
+import os, json, time, traceback, logging, sys
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, List
 import pandas as pd
 import yaml
+
+# Ensure repo root is on sys.path so both `core.*` and `src.*` imports work when running `python src/main.py`.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 # Configure basic logging
 logging.basicConfig(
@@ -34,6 +40,7 @@ from core.sizing import position_size_usdt
 from core.limits import clamp_amount, meets_or_scale_notional
 from core.normalize import amount_to_precision
 from core.exec_engine import ExecEngine
+from core.execution_env import get_bingx_env, get_execution_backend, is_real_execution_enabled
 
 DATA_DIR = "data"
 logger = logging.getLogger(__name__)
@@ -468,11 +475,16 @@ async def main_live_trading():
         # Get trading mode and duration from environment
         mode = os.getenv('TRADING_MODE', 'paper').lower()
         duration = int(os.getenv('TRADING_DURATION', '0')) or None
-        
-        if mode == 'live':
-            logger.warning("⚠️  LIVE TRADING MODE - Real money at risk!")
+
+        execution_backend = get_execution_backend()
+        bingx_env = get_bingx_env()
+
+        if is_real_execution_enabled():
+            logger.warning(f"⚠️  REAL EXECUTION ENABLED ({execution_backend}, BINGX_ENV={bingx_env}) - Real money at risk!")
+        elif mode == 'live':
+            logger.info(f"📝 Live mode with simulated execution (EXECUTION_BACKEND={execution_backend})")
         else:
-            logger.info(f"📝 Paper trading mode - No real executions")
+            logger.info(f"📝 Paper trading mode - Simulated execution (EXECUTION_BACKEND={execution_backend})")
         
         if duration:
             logger.info(f"Trading duration: {duration} seconds")

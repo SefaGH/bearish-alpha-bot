@@ -1,0 +1,1168 @@
+2026-01-07 22:30:38 - [core.strategy_coordinator] - INFO - 👀 [PPO-MONITOR] BTC/USDT:USDT | Score(Raw): 0.0009 | Action: HOLD | Conf: 1.00
+2026-01-07 22:30:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:30:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:30:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91038.7000, lower=90411.7621, upper=93487.6027, adx=15.3, adx_th=25.0
+2026-01-07 22:30:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:31:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:31:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:31:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91038.7000, lower=90411.1329, upper=93487.1926, adx=15.3, adx_th=25.0
+2026-01-07 22:31:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:31:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:31:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:31:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91038.7000, lower=90411.1329, upper=93487.1926, adx=15.3, adx_th=25.0
+2026-01-07 22:31:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:32:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:32:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:32:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91038.7000, lower=90410.8885, upper=93486.9052, adx=15.3, adx_th=25.0
+2026-01-07 22:32:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:32:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:32:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:32:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91038.7000, lower=90410.8885, upper=93486.9052, adx=15.3, adx_th=25.0
+2026-01-07 22:32:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:33:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:33:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:33:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91038.7000, lower=90410.2710, upper=93486.3002, adx=15.3, adx_th=25.0
+2026-01-07 22:33:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:33:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:33:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:33:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91038.7000, lower=90410.2710, upper=93486.3002, adx=15.3, adx_th=25.0
+2026-01-07 22:33:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:34:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:34:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:34:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91038.7000, lower=90409.8668, upper=93485.4739, adx=15.3, adx_th=25.0
+2026-01-07 22:34:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:34:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:34:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:34:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91038.7000, lower=90409.8668, upper=93485.4739, adx=15.3, adx_th=25.0
+2026-01-07 22:34:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:35:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:35:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:35:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91189.4000, lower=90407.7657, upper=93483.2573, adx=15.8, adx_th=25.0
+2026-01-07 22:35:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:35:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:35:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:35:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91189.4000, lower=90407.7657, upper=93483.2573, adx=15.8, adx_th=25.0
+2026-01-07 22:35:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:36:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:36:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:36:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91189.4000, lower=90406.5423, upper=93482.3356, adx=15.8, adx_th=25.0
+2026-01-07 22:36:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:37:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:37:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:37:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91189.4000, lower=90405.9864, upper=93481.7743, adx=15.8, adx_th=25.0
+2026-01-07 22:37:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:37:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:37:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:37:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91189.4000, lower=90405.9864, upper=93481.7743, adx=15.8, adx_th=25.0
+2026-01-07 22:37:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:38:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:38:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:38:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91189.4000, lower=90405.5956, upper=93481.2125, adx=15.8, adx_th=25.0
+2026-01-07 22:38:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:38:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:38:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:38:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91189.4000, lower=90405.5956, upper=93481.2125, adx=15.8, adx_th=25.0
+2026-01-07 22:38:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:39:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:39:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:39:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91189.4000, lower=90405.2455, upper=93481.0742, adx=15.8, adx_th=25.0
+2026-01-07 22:39:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:39:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:39:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:39:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91189.4000, lower=90405.2455, upper=93481.0742, adx=15.8, adx_th=25.0
+2026-01-07 22:39:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:40:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:40:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:40:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91189.4000, lower=90404.8822, upper=93480.9877, adx=15.8, adx_th=25.0
+2026-01-07 22:40:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:40:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:40:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:40:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91096.4000, lower=90404.8822, upper=93480.9877, adx=16.2, adx_th=25.0
+2026-01-07 22:40:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:41:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:41:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:41:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91096.4000, lower=90402.6361, upper=93479.1548, adx=16.2, adx_th=25.0
+2026-01-07 22:41:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:41:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:41:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:41:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91096.4000, lower=90402.6361, upper=93479.1548, adx=16.2, adx_th=25.0
+2026-01-07 22:41:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:42:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:42:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:42:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91096.4000, lower=90401.4623, upper=93478.4793, adx=16.2, adx_th=25.0
+2026-01-07 22:42:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:42:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:42:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:42:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91096.4000, lower=90401.4623, upper=93478.4793, adx=16.2, adx_th=25.0
+2026-01-07 22:42:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:43:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:43:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:43:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91096.4000, lower=90400.7085, upper=93478.1461, adx=16.2, adx_th=25.0
+2026-01-07 22:43:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:43:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:43:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:43:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91096.4000, lower=90400.7085, upper=93478.1461, adx=16.2, adx_th=25.0
+2026-01-07 22:43:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:44:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:44:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:44:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91096.4000, lower=90399.6433, upper=93477.8685, adx=16.2, adx_th=25.0
+2026-01-07 22:44:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:45:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:45:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:45:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91096.4000, lower=90398.5789, upper=93477.4027, adx=16.2, adx_th=25.0
+2026-01-07 22:45:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:45:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:45:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:45:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91018.7000, lower=90398.5789, upper=93477.4027, adx=16.3, adx_th=25.0
+2026-01-07 22:45:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:46:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:46:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:46:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91018.7000, lower=90397.6339, upper=93476.9187, adx=16.3, adx_th=25.0
+2026-01-07 22:46:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:46:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:46:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:46:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91018.7000, lower=90397.6339, upper=93476.9187, adx=16.3, adx_th=25.0
+2026-01-07 22:46:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:47:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:47:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:47:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91018.7000, lower=90397.0695, upper=93476.3601, adx=16.3, adx_th=25.0
+2026-01-07 22:47:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:47:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:47:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:47:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91018.7000, lower=90397.0695, upper=93476.3601, adx=16.3, adx_th=25.0
+2026-01-07 22:47:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:48:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:48:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:48:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91018.7000, lower=90396.0773, upper=93475.3627, adx=16.3, adx_th=25.0
+2026-01-07 22:48:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:48:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:48:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:48:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91018.7000, lower=90396.0773, upper=93475.3627, adx=16.3, adx_th=25.0
+2026-01-07 22:48:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:49:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:49:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:49:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91018.7000, lower=90395.7990, upper=93474.8869, adx=16.3, adx_th=25.0
+2026-01-07 22:49:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:49:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:49:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:49:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91018.7000, lower=90395.7990, upper=93474.8869, adx=16.3, adx_th=25.0
+2026-01-07 22:49:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:50:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:50:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:50:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91050.2000, lower=90395.6844, upper=93474.3471, adx=16.4, adx_th=25.0
+2026-01-07 22:50:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:50:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:50:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:50:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91050.2000, lower=90395.6844, upper=93474.3471, adx=16.4, adx_th=25.0
+2026-01-07 22:50:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:51:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:51:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:51:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91050.2000, lower=90395.1487, upper=93473.6425, adx=16.4, adx_th=25.0
+2026-01-07 22:51:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:52:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:52:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:52:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91050.2000, lower=90395.1487, upper=93473.6425, adx=16.4, adx_th=25.0
+2026-01-07 22:52:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:52:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:52:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:52:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91050.2000, lower=90394.7549, upper=93473.0899, adx=16.4, adx_th=25.0
+2026-01-07 22:52:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:53:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:53:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:53:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91050.2000, lower=90394.4879, upper=93472.5268, adx=16.4, adx_th=25.0
+2026-01-07 22:53:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:53:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:53:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:53:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91050.2000, lower=90394.4879, upper=93472.5268, adx=16.4, adx_th=25.0
+2026-01-07 22:53:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:54:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:54:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:54:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91050.2000, lower=90394.0041, upper=93471.1134, adx=16.4, adx_th=25.0
+2026-01-07 22:54:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:54:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:54:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:54:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91050.2000, lower=90394.0041, upper=93471.1134, adx=16.4, adx_th=25.0
+2026-01-07 22:54:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:55:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:55:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:55:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91050.2000, lower=90392.8749, upper=93469.2157, adx=16.4, adx_th=25.0
+2026-01-07 22:55:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:55:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:55:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:55:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91164.9000, lower=90392.8749, upper=93469.2157, adx=17.2, adx_th=25.0
+2026-01-07 22:55:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:56:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:56:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:56:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91164.9000, lower=90392.0922, upper=93467.5654, adx=17.2, adx_th=25.0
+2026-01-07 22:56:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:56:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:56:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:56:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91164.9000, lower=90392.0922, upper=93467.5654, adx=17.2, adx_th=25.0
+2026-01-07 22:56:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:57:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:57:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:57:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91164.9000, lower=90392.3105, upper=93466.8487, adx=17.2, adx_th=25.0
+2026-01-07 22:57:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:57:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:57:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:57:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91164.9000, lower=90392.3105, upper=93466.8487, adx=17.2, adx_th=25.0
+2026-01-07 22:57:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:58:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:58:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:58:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91164.9000, lower=90392.5233, upper=93465.6848, adx=17.2, adx_th=25.0
+2026-01-07 22:58:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:58:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:58:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:58:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91164.9000, lower=90392.5233, upper=93465.6848, adx=17.2, adx_th=25.0
+2026-01-07 22:58:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 22:59:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 22:59:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 22:59:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91164.9000, lower=90391.4626, upper=93463.7425, adx=17.2, adx_th=25.0
+2026-01-07 22:59:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:00:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:00:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:00:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91164.9000, lower=90391.1731, upper=93462.2123, adx=17.2, adx_th=25.0
+2026-01-07 23:00:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:00:33 - [core.strategy_coordinator] - INFO - 👀 [PPO-MONITOR] BTC/USDT:USDT | Score(Raw): 0.0021 | Action: HOLD | Conf: 1.00
+2026-01-07 23:00:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:00:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:00:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91138.3000, lower=90391.1731, upper=93462.2123, adx=17.9, adx_th=25.0
+2026-01-07 23:00:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:01:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:01:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:01:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91138.3000, lower=90391.2572, upper=93460.9669, adx=17.9, adx_th=25.0
+2026-01-07 23:01:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:01:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:01:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:01:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91138.3000, lower=90391.2572, upper=93460.9669, adx=17.9, adx_th=25.0
+2026-01-07 23:01:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:02:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:02:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:02:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91138.3000, lower=90391.1317, upper=93459.6437, adx=17.9, adx_th=25.0
+2026-01-07 23:02:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:02:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:02:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:02:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91138.3000, lower=90391.1317, upper=93459.6437, adx=17.9, adx_th=25.0
+2026-01-07 23:02:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:03:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:03:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:03:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91138.3000, lower=90390.1824, upper=93457.3657, adx=17.9, adx_th=25.0
+2026-01-07 23:03:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:03:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:03:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:03:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91138.3000, lower=90390.1824, upper=93457.3657, adx=17.9, adx_th=25.0
+2026-01-07 23:03:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:04:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:04:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:04:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91138.3000, lower=90390.4120, upper=93456.1798, adx=17.9, adx_th=25.0
+2026-01-07 23:04:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:04:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:04:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:04:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91138.3000, lower=90390.4120, upper=93456.1798, adx=17.9, adx_th=25.0
+2026-01-07 23:04:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:05:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:05:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:05:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91008.0000, lower=90388.7560, upper=93453.0633, adx=17.3, adx_th=25.0
+2026-01-07 23:05:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:05:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:05:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:05:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91008.0000, lower=90388.7560, upper=93453.0633, adx=17.3, adx_th=25.0
+2026-01-07 23:05:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:06:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:06:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:06:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91008.0000, lower=90388.2669, upper=93451.4636, adx=17.3, adx_th=25.0
+2026-01-07 23:06:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:06:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:06:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:06:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91008.0000, lower=90388.2669, upper=93451.4636, adx=17.3, adx_th=25.0
+2026-01-07 23:06:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:07:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:07:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:07:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91008.0000, lower=90386.3532, upper=93448.2562, adx=17.3, adx_th=25.0
+2026-01-07 23:07:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:08:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:08:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:08:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91008.0000, lower=90386.7447, upper=93447.1107, adx=17.3, adx_th=25.0
+2026-01-07 23:08:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:08:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:08:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:08:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91008.0000, lower=90386.7447, upper=93447.1107, adx=17.3, adx_th=25.0
+2026-01-07 23:08:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:09:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:09:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:09:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91008.0000, lower=90387.4158, upper=93446.0647, adx=17.3, adx_th=25.0
+2026-01-07 23:09:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:09:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:09:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:09:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91008.0000, lower=90387.4158, upper=93446.0647, adx=17.3, adx_th=25.0
+2026-01-07 23:09:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:10:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:10:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:10:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91008.0000, lower=90387.7983, upper=93444.9619, adx=17.3, adx_th=25.0
+2026-01-07 23:10:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:10:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:10:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:10:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=90975.0000, lower=90387.7983, upper=93444.9619, adx=16.5, adx_th=25.0
+2026-01-07 23:10:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:11:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:11:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:11:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=90975.0000, lower=90387.9252, upper=93443.5616, adx=16.5, adx_th=25.0
+2026-01-07 23:11:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:11:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:11:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:11:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=90975.0000, lower=90387.9252, upper=93443.5616, adx=16.5, adx_th=25.0
+2026-01-07 23:11:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:12:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:12:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:12:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=90975.0000, lower=90388.2265, upper=93441.9594, adx=16.5, adx_th=25.0
+2026-01-07 23:12:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:12:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:12:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:12:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=90975.0000, lower=90388.2265, upper=93441.9594, adx=16.5, adx_th=25.0
+2026-01-07 23:12:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:13:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:13:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:13:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=90975.0000, lower=90388.4614, upper=93440.3824, adx=16.5, adx_th=25.0
+2026-01-07 23:13:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:13:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:13:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:13:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=90975.0000, lower=90388.4614, upper=93440.3824, adx=16.5, adx_th=25.0
+2026-01-07 23:13:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:14:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:14:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:14:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=90975.0000, lower=90388.8606, upper=93438.7947, adx=16.5, adx_th=25.0
+2026-01-07 23:14:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:14:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:14:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:14:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=90975.0000, lower=90388.8606, upper=93438.7947, adx=16.5, adx_th=25.0
+2026-01-07 23:14:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:15:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:15:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:15:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.3000, lower=90389.2444, upper=93436.9755, adx=16.7, adx_th=25.0
+2026-01-07 23:15:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:16:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:16:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:16:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.3000, lower=90390.0574, upper=93435.1871, adx=16.7, adx_th=25.0
+2026-01-07 23:16:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:16:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:16:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:16:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.3000, lower=90390.0574, upper=93435.1871, adx=16.7, adx_th=25.0
+2026-01-07 23:16:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:17:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:17:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:17:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.3000, lower=90390.5940, upper=93433.2002, adx=16.7, adx_th=25.0
+2026-01-07 23:17:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:17:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:17:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:17:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.3000, lower=90390.5940, upper=93433.2002, adx=16.7, adx_th=25.0
+2026-01-07 23:17:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:18:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:18:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:18:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.3000, lower=90390.9365, upper=93430.7507, adx=16.7, adx_th=25.0
+2026-01-07 23:18:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:18:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:18:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:18:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.3000, lower=90390.9365, upper=93430.7507, adx=16.7, adx_th=25.0
+2026-01-07 23:18:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:19:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:19:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:19:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.3000, lower=90391.0591, upper=93428.3713, adx=16.7, adx_th=25.0
+2026-01-07 23:19:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:19:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:19:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:19:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.3000, lower=90391.0591, upper=93428.3713, adx=16.7, adx_th=25.0
+2026-01-07 23:19:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:20:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:20:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:20:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91362.6000, lower=90391.6575, upper=93426.1297, adx=18.2, adx_th=25.0
+2026-01-07 23:20:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:20:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:20:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:20:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91362.6000, lower=90391.6575, upper=93426.1297, adx=18.2, adx_th=25.0
+2026-01-07 23:20:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:21:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:21:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:21:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91362.6000, lower=90391.4094, upper=93423.1239, adx=18.2, adx_th=25.0
+2026-01-07 23:21:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:21:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:21:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:21:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91362.6000, lower=90391.4094, upper=93423.1239, adx=18.2, adx_th=25.0
+2026-01-07 23:21:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:22:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:22:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:22:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91362.6000, lower=90391.2294, upper=93420.1074, adx=18.2, adx_th=25.0
+2026-01-07 23:22:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:23:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:23:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:23:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91362.6000, lower=90391.2294, upper=93420.1074, adx=18.2, adx_th=25.0
+2026-01-07 23:23:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:23:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:23:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:23:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91362.6000, lower=90391.8159, upper=93418.3255, adx=18.2, adx_th=25.0
+2026-01-07 23:23:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:24:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:24:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:24:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91362.6000, lower=90391.3116, upper=93415.0738, adx=18.2, adx_th=25.0
+2026-01-07 23:24:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:24:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:24:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:24:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91362.6000, lower=90391.3116, upper=93415.0738, adx=18.2, adx_th=25.0
+2026-01-07 23:24:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:25:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:25:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:25:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91362.6000, lower=90390.9999, upper=93412.1367, adx=18.2, adx_th=25.0
+2026-01-07 23:25:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:25:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:25:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:25:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91410.4000, lower=90390.9999, upper=93412.1367, adx=19.7, adx_th=25.0
+2026-01-07 23:25:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:26:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:26:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:26:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91410.4000, lower=90389.8915, upper=93408.8070, adx=19.7, adx_th=25.0
+2026-01-07 23:26:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:26:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:26:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:26:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91410.4000, lower=90389.8915, upper=93408.8070, adx=19.7, adx_th=25.0
+2026-01-07 23:26:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:27:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:27:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:27:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91410.4000, lower=90390.5955, upper=93406.9850, adx=19.7, adx_th=25.0
+2026-01-07 23:27:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:27:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:27:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:27:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91410.4000, lower=90390.5955, upper=93406.9850, adx=19.7, adx_th=25.0
+2026-01-07 23:27:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:28:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:28:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:28:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91410.4000, lower=90391.2235, upper=93404.8139, adx=19.7, adx_th=25.0
+2026-01-07 23:28:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:28:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:28:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:28:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91410.4000, lower=90391.2235, upper=93404.8139, adx=19.7, adx_th=25.0
+2026-01-07 23:28:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:29:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:29:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:29:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91410.4000, lower=90392.3288, upper=93402.9599, adx=19.7, adx_th=25.0
+2026-01-07 23:29:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:29:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:29:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:29:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91410.4000, lower=90392.3288, upper=93402.9599, adx=19.7, adx_th=25.0
+2026-01-07 23:29:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:30:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:30:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:30:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91276.3000, lower=90393.3543, upper=93401.0836, adx=21.2, adx_th=25.0
+2026-01-07 23:30:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:31:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:31:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:31:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91276.3000, lower=90394.0987, upper=93398.9461, adx=21.2, adx_th=25.0
+2026-01-07 23:31:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:31:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:31:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:31:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91276.3000, lower=90394.0987, upper=93398.9461, adx=21.2, adx_th=25.0
+2026-01-07 23:31:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:32:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:32:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:32:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91276.3000, lower=90394.4058, upper=93396.0440, adx=21.2, adx_th=25.0
+2026-01-07 23:32:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:32:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:32:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:32:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91276.3000, lower=90394.4058, upper=93396.0440, adx=21.2, adx_th=25.0
+2026-01-07 23:32:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:33:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:33:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:33:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91276.3000, lower=90393.1910, upper=93391.3508, adx=21.2, adx_th=25.0
+2026-01-07 23:33:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:33:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:33:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:33:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91276.3000, lower=90393.1910, upper=93391.3508, adx=21.2, adx_th=25.0
+2026-01-07 23:33:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:34:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:34:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:34:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91276.3000, lower=90394.2561, upper=93389.1127, adx=21.2, adx_th=25.0
+2026-01-07 23:34:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:34:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:34:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:34:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91276.3000, lower=90394.2561, upper=93389.1127, adx=21.2, adx_th=25.0
+2026-01-07 23:34:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:35:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:35:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:35:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91276.3000, lower=90395.5092, upper=93387.0446, adx=21.2, adx_th=25.0
+2026-01-07 23:35:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:35:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:35:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:35:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91287.1000, lower=90395.5092, upper=93387.0446, adx=22.6, adx_th=25.0
+2026-01-07 23:35:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:36:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:36:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:36:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91287.1000, lower=90396.1492, upper=93384.0507, adx=22.6, adx_th=25.0
+2026-01-07 23:36:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:36:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:36:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:36:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91287.1000, lower=90396.1492, upper=93384.0507, adx=22.6, adx_th=25.0
+2026-01-07 23:36:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:37:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:37:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:37:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91287.1000, lower=90396.2836, upper=93380.6158, adx=22.6, adx_th=25.0
+2026-01-07 23:37:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:37:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:37:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:37:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91287.1000, lower=90396.2836, upper=93380.6158, adx=22.6, adx_th=25.0
+2026-01-07 23:37:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:38:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:38:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:38:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91287.1000, lower=90397.2976, upper=93378.0231, adx=22.6, adx_th=25.0
+2026-01-07 23:38:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:39:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:39:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:39:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91287.1000, lower=90394.9120, upper=93372.4455, adx=22.6, adx_th=25.0
+2026-01-07 23:39:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:39:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:39:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:39:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91287.1000, lower=90394.9120, upper=93372.4455, adx=22.6, adx_th=25.0
+2026-01-07 23:39:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:40:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:40:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:40:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91287.1000, lower=90395.7859, upper=93370.2721, adx=22.6, adx_th=25.0
+2026-01-07 23:40:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:40:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:40:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:40:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91154.9000, lower=90395.7859, upper=93370.2721, adx=22.7, adx_th=25.0
+2026-01-07 23:40:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:41:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:41:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:41:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91154.9000, lower=90395.7901, upper=93367.1884, adx=22.7, adx_th=25.0
+2026-01-07 23:41:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:41:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:41:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:41:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91154.9000, lower=90395.7901, upper=93367.1884, adx=22.7, adx_th=25.0
+2026-01-07 23:41:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:42:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:42:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:42:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91154.9000, lower=90396.8713, upper=93365.1528, adx=22.7, adx_th=25.0
+2026-01-07 23:42:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:42:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:42:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:42:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91154.9000, lower=90396.8713, upper=93365.1528, adx=22.7, adx_th=25.0
+2026-01-07 23:42:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:43:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:43:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:43:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91154.9000, lower=90397.8718, upper=93362.8747, adx=22.7, adx_th=25.0
+2026-01-07 23:43:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:43:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:43:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:43:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91154.9000, lower=90397.8718, upper=93362.8747, adx=22.7, adx_th=25.0
+2026-01-07 23:43:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:44:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:44:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:44:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91154.9000, lower=90399.2460, upper=93361.0828, adx=22.7, adx_th=25.0
+2026-01-07 23:44:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:44:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:44:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:44:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91154.9000, lower=90399.2460, upper=93361.0828, adx=22.7, adx_th=25.0
+2026-01-07 23:44:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:45:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:45:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:45:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91185.6000, lower=90399.4963, upper=93358.2846, adx=22.5, adx_th=25.0
+2026-01-07 23:45:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:45:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:45:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:45:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91185.6000, lower=90399.4963, upper=93358.2846, adx=22.5, adx_th=25.0
+2026-01-07 23:45:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:46:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:46:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:46:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91185.6000, lower=90400.3781, upper=93356.1377, adx=22.5, adx_th=25.0
+2026-01-07 23:46:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:47:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:47:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:47:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91185.6000, lower=90399.6837, upper=93352.1453, adx=22.5, adx_th=25.0
+2026-01-07 23:47:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:47:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:47:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:47:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91185.6000, lower=90399.6837, upper=93352.1453, adx=22.5, adx_th=25.0
+2026-01-07 23:47:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:48:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:48:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:48:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91185.6000, lower=90401.1974, upper=93349.8408, adx=22.5, adx_th=25.0
+2026-01-07 23:48:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:48:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:48:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:48:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91185.6000, lower=90401.1974, upper=93349.8408, adx=22.5, adx_th=25.0
+2026-01-07 23:48:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:49:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:49:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:49:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91185.6000, lower=90402.0880, upper=93346.8851, adx=22.5, adx_th=25.0
+2026-01-07 23:49:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:49:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:49:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:49:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91185.6000, lower=90402.0880, upper=93346.8851, adx=22.5, adx_th=25.0
+2026-01-07 23:49:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:50:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:50:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:50:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91240.0000, lower=90403.1986, upper=93344.1703, adx=22.8, adx_th=25.0
+2026-01-07 23:50:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:50:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:50:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:50:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91240.0000, lower=90403.1986, upper=93344.1703, adx=22.8, adx_th=25.0
+2026-01-07 23:50:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:51:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:51:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:51:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91240.0000, lower=90403.4329, upper=93340.3868, adx=22.8, adx_th=25.0
+2026-01-07 23:51:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:51:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:51:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:51:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91240.0000, lower=90403.4329, upper=93340.3868, adx=22.8, adx_th=25.0
+2026-01-07 23:51:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:52:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:52:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:52:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91240.0000, lower=90404.9723, upper=93337.6732, adx=22.8, adx_th=25.0
+2026-01-07 23:52:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:52:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:52:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:52:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91240.0000, lower=90404.9723, upper=93337.6732, adx=22.8, adx_th=25.0
+2026-01-07 23:52:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:53:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:53:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:53:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91240.0000, lower=90406.3398, upper=93334.7415, adx=22.8, adx_th=25.0
+2026-01-07 23:53:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:53:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:53:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:53:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91240.0000, lower=90406.3398, upper=93334.7415, adx=22.8, adx_th=25.0
+2026-01-07 23:53:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:54:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:54:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:54:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91240.0000, lower=90408.0830, upper=93332.1317, adx=22.8, adx_th=25.0
+2026-01-07 23:54:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:55:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:55:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:55:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91240.0000, lower=90409.8749, upper=93329.3640, adx=22.8, adx_th=25.0
+2026-01-07 23:55:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:55:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:55:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:55:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91322.8000, lower=90409.8749, upper=93329.3640, adx=23.5, adx_th=25.0
+2026-01-07 23:55:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:56:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:56:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:56:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91322.8000, lower=90411.9498, upper=93326.7339, adx=23.5, adx_th=25.0
+2026-01-07 23:56:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:56:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:56:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:56:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91322.8000, lower=90411.9498, upper=93326.7339, adx=23.5, adx_th=25.0
+2026-01-07 23:56:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:57:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:57:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:57:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91322.8000, lower=90413.9429, upper=93323.8275, adx=23.5, adx_th=25.0
+2026-01-07 23:57:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:57:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:57:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:57:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91322.8000, lower=90413.9429, upper=93323.8275, adx=23.5, adx_th=25.0
+2026-01-07 23:57:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:58:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:58:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:58:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91322.8000, lower=90413.9302, upper=93318.5789, adx=23.5, adx_th=25.0
+2026-01-07 23:58:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:58:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:58:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:58:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91322.8000, lower=90413.9302, upper=93318.5789, adx=23.5, adx_th=25.0
+2026-01-07 23:58:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:59:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:59:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:59:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91322.8000, lower=90415.9583, upper=93315.4737, adx=23.5, adx_th=25.0
+2026-01-07 23:59:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-07 23:59:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-07 23:59:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-07 23:59:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91322.8000, lower=90415.9583, upper=93315.4737, adx=23.5, adx_th=25.0
+2026-01-07 23:59:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:00:24 - [core.strategy_coordinator] - INFO - 👀 [PPO-MONITOR] BTC/USDT:USDT | Score(Raw): 0.0010 | Action: HOLD | Conf: 1.00
+2026-01-08 00:00:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:00:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:00:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91328.4000, lower=90414.5462, upper=93309.1661, adx=24.3, adx_th=25.0
+2026-01-08 00:00:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:00:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:00:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:00:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91328.4000, lower=90414.5462, upper=93309.1661, adx=24.3, adx_th=25.0
+2026-01-08 00:00:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:01:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:01:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:01:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91328.4000, lower=90415.3400, upper=93305.6214, adx=24.3, adx_th=25.0
+2026-01-08 00:01:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:02:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:02:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:02:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91328.4000, lower=90416.3351, upper=93302.1491, adx=24.3, adx_th=25.0
+2026-01-08 00:02:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:02:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:02:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:02:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91328.4000, lower=90416.3351, upper=93302.1491, adx=24.3, adx_th=25.0
+2026-01-08 00:02:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:03:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:03:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:03:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91328.4000, lower=90418.0679, upper=93299.2303, adx=24.3, adx_th=25.0
+2026-01-08 00:03:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:03:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:03:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:03:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91328.4000, lower=90418.0679, upper=93299.2303, adx=24.3, adx_th=25.0
+2026-01-08 00:03:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:04:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:04:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:04:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91328.4000, lower=90419.7698, upper=93296.3859, adx=24.3, adx_th=25.0
+2026-01-08 00:04:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:04:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:04:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:04:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91328.4000, lower=90419.7698, upper=93296.3859, adx=24.3, adx_th=25.0
+2026-01-08 00:04:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:05:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:05:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:05:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91300.2000, lower=90420.1799, upper=93292.6837, adx=25.7, adx_th=25.0
+2026-01-08 00:05:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:05:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:05:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:05:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91300.2000, lower=90420.1799, upper=93292.6837, adx=25.7, adx_th=25.0
+2026-01-08 00:05:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:06:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:06:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:06:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91300.2000, lower=90421.4767, upper=93289.6475, adx=25.7, adx_th=25.0
+2026-01-08 00:06:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:06:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:06:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:06:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91300.2000, lower=90421.4767, upper=93289.6475, adx=25.7, adx_th=25.0
+2026-01-08 00:06:49 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:07:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:07:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:07:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91300.2000, lower=90422.7283, upper=93286.7749, adx=25.7, adx_th=25.0
+2026-01-08 00:07:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:07:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:07:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:07:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91300.2000, lower=90422.7283, upper=93286.7749, adx=25.7, adx_th=25.0
+2026-01-08 00:07:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:08:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:08:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:08:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91300.2000, lower=90422.7888, upper=93282.7521, adx=25.7, adx_th=25.0
+2026-01-08 00:08:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:08:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:08:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:08:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91300.2000, lower=90422.7888, upper=93282.7521, adx=25.7, adx_th=25.0
+2026-01-08 00:08:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:09:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:09:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:09:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91300.2000, lower=90423.6578, upper=93279.8464, adx=25.7, adx_th=25.0
+2026-01-08 00:09:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:10:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:10:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:10:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91300.2000, lower=90425.2279, upper=93277.4214, adx=25.7, adx_th=25.0
+2026-01-08 00:10:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:10:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:10:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:10:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91263.8000, lower=90425.2279, upper=93277.4214, adx=26.8, adx_th=25.0
+2026-01-08 00:10:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:11:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:11:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:11:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91263.8000, lower=90426.6515, upper=93274.9498, adx=26.8, adx_th=25.0
+2026-01-08 00:11:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:11:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:11:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:11:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91263.8000, lower=90426.6515, upper=93274.9498, adx=26.8, adx_th=25.0
+2026-01-08 00:11:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:12:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:12:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:12:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91263.8000, lower=90428.3010, upper=93272.7314, adx=26.8, adx_th=25.0
+2026-01-08 00:12:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:12:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:12:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:12:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91263.8000, lower=90428.3010, upper=93272.7314, adx=26.8, adx_th=25.0
+2026-01-08 00:12:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:13:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:13:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:13:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91263.8000, lower=90429.6988, upper=93270.4698, adx=26.8, adx_th=25.0
+2026-01-08 00:13:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:13:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:13:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:13:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91263.8000, lower=90429.6988, upper=93270.4698, adx=26.8, adx_th=25.0
+2026-01-08 00:13:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:14:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:14:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:14:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91263.8000, lower=90430.3837, upper=93267.4274, adx=26.8, adx_th=25.0
+2026-01-08 00:14:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:14:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:14:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:14:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91263.8000, lower=90430.3837, upper=93267.4274, adx=26.8, adx_th=25.0
+2026-01-08 00:14:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:15:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:15:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:15:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.8000, lower=90429.0350, upper=93262.2209, adx=27.0, adx_th=25.0
+2026-01-08 00:15:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:15:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:15:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:15:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.8000, lower=90429.0350, upper=93262.2209, adx=27.0, adx_th=25.0
+2026-01-08 00:15:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:16:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:16:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:16:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.8000, lower=90429.6697, upper=93259.3265, adx=27.0, adx_th=25.0
+2026-01-08 00:16:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:16:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:16:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:16:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.8000, lower=90429.6697, upper=93259.3265, adx=27.0, adx_th=25.0
+2026-01-08 00:16:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:17:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:17:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:17:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.8000, lower=90430.2206, upper=93256.5675, adx=27.0, adx_th=25.0
+2026-01-08 00:17:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:18:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:18:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:18:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.8000, lower=90430.2272, upper=93253.5304, adx=27.0, adx_th=25.0
+2026-01-08 00:18:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:18:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:18:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:18:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.8000, lower=90430.2272, upper=93253.5304, adx=27.0, adx_th=25.0
+2026-01-08 00:18:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:19:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:19:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:19:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.8000, lower=90430.2067, upper=93250.3293, adx=27.0, adx_th=25.0
+2026-01-08 00:19:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:19:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:19:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:19:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.8000, lower=90430.2067, upper=93250.3293, adx=27.0, adx_th=25.0
+2026-01-08 00:19:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:20:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:20:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:20:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91190.8000, lower=90430.0803, upper=93247.1632, adx=27.0, adx_th=25.0
+2026-01-08 00:20:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:20:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:20:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:20:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91115.0000, lower=90430.0803, upper=93247.1632, adx=26.6, adx_th=25.0
+2026-01-08 00:20:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:21:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:21:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:21:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91115.0000, lower=90431.2350, upper=93245.2763, adx=26.6, adx_th=25.0
+2026-01-08 00:21:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:21:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:21:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:21:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91115.0000, lower=90431.2350, upper=93245.2763, adx=26.6, adx_th=25.0
+2026-01-08 00:21:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:22:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:22:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:22:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91115.0000, lower=90432.0619, upper=93242.6644, adx=26.6, adx_th=25.0
+2026-01-08 00:22:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:22:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:22:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:22:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91115.0000, lower=90432.0619, upper=93242.6644, adx=26.6, adx_th=25.0
+2026-01-08 00:22:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:23:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:23:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:23:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91115.0000, lower=90432.7257, upper=93240.3559, adx=26.6, adx_th=25.0
+2026-01-08 00:23:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:23:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:23:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:23:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91115.0000, lower=90432.7257, upper=93240.3559, adx=26.6, adx_th=25.0
+2026-01-08 00:23:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:24:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:24:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:24:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91115.0000, lower=90432.9850, upper=93237.8578, adx=26.6, adx_th=25.0
+2026-01-08 00:24:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:24:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:24:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:24:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91115.0000, lower=90432.9850, upper=93237.8578, adx=26.6, adx_th=25.0
+2026-01-08 00:24:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:25:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:25:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:25:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.5000, lower=90433.3816, upper=93235.3999, adx=25.4, adx_th=25.0
+2026-01-08 00:25:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:26:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:26:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:26:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.5000, lower=90433.9325, upper=93233.2965, adx=25.4, adx_th=25.0
+2026-01-08 00:26:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:26:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:26:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:26:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.5000, lower=90433.9325, upper=93233.2965, adx=25.4, adx_th=25.0
+2026-01-08 00:26:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:27:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:27:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:27:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.5000, lower=90435.0596, upper=93231.5516, adx=25.4, adx_th=25.0
+2026-01-08 00:27:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:27:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:27:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:27:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.5000, lower=90435.0596, upper=93231.5516, adx=25.4, adx_th=25.0
+2026-01-08 00:27:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:28:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:28:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:28:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.5000, lower=90436.1254, upper=93229.8419, adx=25.4, adx_th=25.0
+2026-01-08 00:28:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:28:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:28:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:28:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.5000, lower=90436.1254, upper=93229.8419, adx=25.4, adx_th=25.0
+2026-01-08 00:28:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:29:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:29:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:29:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.5000, lower=90437.1578, upper=93228.3499, adx=25.4, adx_th=25.0
+2026-01-08 00:29:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:29:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:29:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:29:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.5000, lower=90437.1578, upper=93228.3499, adx=25.4, adx_th=25.0
+2026-01-08 00:29:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:30:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:30:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:30:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.9000, lower=90437.8781, upper=93226.6137, adx=24.4, adx_th=25.0
+2026-01-08 00:30:20 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:30:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:30:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:30:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.9000, lower=90437.8781, upper=93226.6137, adx=24.4, adx_th=25.0
+2026-01-08 00:30:52 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:31:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:31:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:31:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.9000, lower=90438.5695, upper=93224.7460, adx=24.4, adx_th=25.0
+2026-01-08 00:31:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:31:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:31:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:31:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.9000, lower=90438.5695, upper=93224.7460, adx=24.4, adx_th=25.0
+2026-01-08 00:31:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:32:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:32:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:32:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.9000, lower=90438.7469, upper=93222.6701, adx=24.4, adx_th=25.0
+2026-01-08 00:32:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:33:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:33:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:33:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.9000, lower=90438.7469, upper=93222.6701, adx=24.4, adx_th=25.0
+2026-01-08 00:33:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:33:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:33:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:33:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.9000, lower=90439.1543, upper=93221.0242, adx=24.4, adx_th=25.0
+2026-01-08 00:33:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:34:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:34:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:34:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.9000, lower=90437.6367, upper=93217.4731, adx=24.4, adx_th=25.0
+2026-01-08 00:34:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:34:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:34:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:34:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.9000, lower=90437.6367, upper=93217.4731, adx=24.4, adx_th=25.0
+2026-01-08 00:34:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:35:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:35:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:35:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91086.9000, lower=90437.9930, upper=93215.6897, adx=24.4, adx_th=25.0
+2026-01-08 00:35:08 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:35:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:35:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:35:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91130.9000, lower=90437.9930, upper=93215.6897, adx=23.9, adx_th=25.0
+2026-01-08 00:35:40 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:36:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:36:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:36:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91130.9000, lower=90438.3228, upper=93213.8009, adx=23.9, adx_th=25.0
+2026-01-08 00:36:12 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:36:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:36:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:36:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91130.9000, lower=90438.3228, upper=93213.8009, adx=23.9, adx_th=25.0
+2026-01-08 00:36:44 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:37:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:37:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:37:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91130.9000, lower=90437.6102, upper=93210.8526, adx=23.9, adx_th=25.0
+2026-01-08 00:37:16 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:37:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:37:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:37:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91130.9000, lower=90437.6102, upper=93210.8526, adx=23.9, adx_th=25.0
+2026-01-08 00:37:48 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:38:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:38:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:38:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91130.9000, lower=90438.3907, upper=93209.4494, adx=23.9, adx_th=25.0
+2026-01-08 00:38:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:38:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:38:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:38:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91130.9000, lower=90438.3907, upper=93209.4494, adx=23.9, adx_th=25.0
+2026-01-08 00:38:53 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:39:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:39:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:39:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91130.9000, lower=90438.7063, upper=93207.7037, adx=23.9, adx_th=25.0
+2026-01-08 00:39:25 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:39:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:39:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:39:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91130.9000, lower=90438.7063, upper=93207.7037, adx=23.9, adx_th=25.0
+2026-01-08 00:39:57 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:40:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:40:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:40:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91156.6000, lower=90438.2444, upper=93205.2525, adx=23.5, adx_th=25.0
+2026-01-08 00:40:29 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:41:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:41:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:41:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91156.6000, lower=90438.5652, upper=93203.6700, adx=23.5, adx_th=25.0
+2026-01-08 00:41:01 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:41:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:41:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:41:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91156.6000, lower=90438.5652, upper=93203.6700, adx=23.5, adx_th=25.0
+2026-01-08 00:41:33 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:42:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:42:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:42:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91156.6000, lower=90438.7397, upper=93202.1961, adx=23.5, adx_th=25.0
+2026-01-08 00:42:05 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:42:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:42:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:42:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91156.6000, lower=90438.7397, upper=93202.1961, adx=23.5, adx_th=25.0
+2026-01-08 00:42:37 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:43:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:43:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:43:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91156.6000, lower=90438.7846, upper=93200.4702, adx=23.5, adx_th=25.0
+2026-01-08 00:43:09 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:43:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:43:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:43:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91156.6000, lower=90438.7846, upper=93200.4702, adx=23.5, adx_th=25.0
+2026-01-08 00:43:41 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:44:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:44:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:44:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91156.6000, lower=90438.9346, upper=93198.6513, adx=23.5, adx_th=25.0
+2026-01-08 00:44:13 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:44:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:44:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:44:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91156.6000, lower=90438.9346, upper=93198.6513, adx=23.5, adx_th=25.0
+2026-01-08 00:44:45 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:45:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:45:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:45:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91203.3000, lower=90439.1656, upper=93196.7276, adx=23.4, adx_th=25.0
+2026-01-08 00:45:17 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:45:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:45:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:45:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91203.3000, lower=90439.1656, upper=93196.7276, adx=23.4, adx_th=25.0
+2026-01-08 00:45:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:46:21 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:46:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:46:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91203.3000, lower=90439.5115, upper=93194.5953, adx=23.4, adx_th=25.0
+2026-01-08 00:46:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:46:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:46:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:46:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91203.3000, lower=90439.5115, upper=93194.5953, adx=23.4, adx_th=25.0
+2026-01-08 00:46:54 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:47:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:47:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:47:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91203.3000, lower=90440.3104, upper=93193.0860, adx=23.4, adx_th=25.0
+2026-01-08 00:47:26 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:47:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:47:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:47:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91203.3000, lower=90440.3104, upper=93193.0860, adx=23.4, adx_th=25.0
+2026-01-08 00:47:58 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:48:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:48:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:48:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91203.3000, lower=90439.9654, upper=93190.4348, adx=23.4, adx_th=25.0
+2026-01-08 00:48:30 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:49:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:49:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:49:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91203.3000, lower=90440.5140, upper=93188.9945, adx=23.4, adx_th=25.0
+2026-01-08 00:49:02 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:49:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:49:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:49:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91203.3000, lower=90440.5140, upper=93188.9945, adx=23.4, adx_th=25.0
+2026-01-08 00:49:34 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:50:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:50:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:50:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91203.3000, lower=90440.8286, upper=93187.6716, adx=23.4, adx_th=25.0
+2026-01-08 00:50:06 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:50:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:50:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:50:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91308.8000, lower=90440.8286, upper=93187.6716, adx=24.5, adx_th=25.0
+2026-01-08 00:50:38 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:51:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:51:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:51:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91308.8000, lower=90439.8722, upper=93185.2151, adx=24.5, adx_th=25.0
+2026-01-08 00:51:10 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:51:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:51:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:51:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91308.8000, lower=90439.8722, upper=93185.2151, adx=24.5, adx_th=25.0
+2026-01-08 00:51:42 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:52:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:52:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:52:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91308.8000, lower=90439.2515, upper=93183.3025, adx=24.5, adx_th=25.0
+2026-01-08 00:52:14 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:52:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:52:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:52:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91308.8000, lower=90439.2515, upper=93183.3025, adx=24.5, adx_th=25.0
+2026-01-08 00:52:46 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:53:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:53:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:53:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91308.8000, lower=90439.2565, upper=93181.9714, adx=24.5, adx_th=25.0
+2026-01-08 00:53:18 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:53:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:53:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:53:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91308.8000, lower=90439.2565, upper=93181.9714, adx=24.5, adx_th=25.0
+2026-01-08 00:53:50 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:54:22 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:54:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:54:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91308.8000, lower=90439.4012, upper=93180.3574, adx=24.5, adx_th=25.0
+2026-01-08 00:54:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:54:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:54:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:54:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91308.8000, lower=90439.4012, upper=93180.3574, adx=24.5, adx_th=25.0
+2026-01-08 00:54:55 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:55:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:55:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:55:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91380.3000, lower=90438.4167, upper=93177.5133, adx=25.5, adx_th=25.0
+2026-01-08 00:55:27 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:55:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:55:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:55:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91380.3000, lower=90438.4167, upper=93177.5133, adx=25.5, adx_th=25.0
+2026-01-08 00:55:59 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:56:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:56:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:56:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91380.3000, lower=90438.8801, upper=93176.0748, adx=25.5, adx_th=25.0
+2026-01-08 00:56:31 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:57:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:57:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:57:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91380.3000, lower=90438.1280, upper=93173.7670, adx=25.5, adx_th=25.0
+2026-01-08 00:57:03 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:57:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:57:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:57:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91380.3000, lower=90438.1280, upper=93173.7670, adx=25.5, adx_th=25.0
+2026-01-08 00:57:35 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:58:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:58:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:58:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91380.3000, lower=90437.4292, upper=93171.9083, adx=25.5, adx_th=25.0
+2026-01-08 00:58:07 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:58:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:58:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:58:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91380.3000, lower=90437.4292, upper=93171.9083, adx=25.5, adx_th=25.0
+2026-01-08 00:58:39 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:59:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:59:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:59:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91380.3000, lower=90435.2991, upper=93168.9304, adx=25.5, adx_th=25.0
+2026-01-08 00:59:11 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 00:59:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 00:59:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 00:59:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91380.3000, lower=90435.2991, upper=93168.9304, adx=25.5, adx_th=25.0
+2026-01-08 00:59:43 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 01:00:15 - [core.strategy_coordinator] - INFO - 👀 [PPO-MONITOR] BTC/USDT:USDT | Score(Raw): 0.0024 | Action: HOLD | Conf: 1.00
+2026-01-08 01:00:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 01:00:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 01:00:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91380.3000, lower=90433.9446, upper=93166.9161, adx=25.5, adx_th=25.0
+2026-01-08 01:00:15 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 01:00:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 01:00:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 01:00:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91356.4000, lower=90433.9446, upper=93166.9161, adx=26.5, adx_th=25.0
+2026-01-08 01:00:47 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 01:01:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 01:01:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 01:01:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91356.4000, lower=90433.2172, upper=93165.3190, adx=26.5, adx_th=25.0
+2026-01-08 01:01:19 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 01:01:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 01:01:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 01:01:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91356.4000, lower=90433.2172, upper=93165.3190, adx=26.5, adx_th=25.0
+2026-01-08 01:01:51 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 01:02:23 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 01:02:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 01:02:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91356.4000, lower=90432.4889, upper=93163.4589, adx=26.5, adx_th=25.0
+2026-01-08 01:02:24 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 01:02:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 01:02:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 01:02:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91356.4000, lower=90432.4889, upper=93163.4589, adx=26.5, adx_th=25.0
+2026-01-08 01:02:56 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 01:03:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 01:03:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 01:03:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91356.4000, lower=90432.1608, upper=93162.1963, adx=26.5, adx_th=25.0
+2026-01-08 01:03:28 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 01:04:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 01:04:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 01:04:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91356.4000, lower=90432.1608, upper=93162.1963, adx=26.5, adx_th=25.0
+2026-01-08 01:04:00 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 01:04:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 01:04:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 01:04:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91356.4000, lower=90432.3877, upper=93161.4812, adx=26.5, adx_th=25.0
+2026-01-08 01:04:32 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 01:05:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 01:05:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 01:05:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91356.4000, lower=90432.5531, upper=93160.5618, adx=26.5, adx_th=25.0
+2026-01-08 01:05:04 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD
+2026-01-08 01:05:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Processing signal for BTC/USDT:USDT... Input Data Rows: 255
+2026-01-08 01:05:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Data rows: vwap=2100, signal_tf=1000, min_vwap=2100, min_signal=50
+2026-01-08 01:05:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Price within bands for BTC/USDT:USDT. px=91317.6000, lower=90432.5531, upper=93160.5618, adx=26.5, adx_th=25.0
+2026-01-08 01:05:36 - [strategies.mean_reversion] - INFO - [MeanReversion] Cycle complete for BTC/USDT:USDT. Action: HOLD

@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from src.core.signal_intents import INTENT_ENTRY, INTENT_FORCE_SWAP, INTENT_REVERSE
 from .dca_watcher import DCAWatcher
+from .execution_env import is_prod_canary_0_enabled, is_real_execution_enabled, is_vst_fullbot_canary_enabled
 
 from core.logger import get_current_run_id
 
@@ -201,6 +202,7 @@ class LiveTradingEngine:
         self._signal_count = 0  # Received from ProductionCoordinator
         self._executed_count = 0  # Track executed signals
         self._last_signal_time = None
+        self.prod_canary_0_abort_reason: Optional[str] = None
 
         logger.info("LiveTradingEngine initialized")
         logger.info(f"  Mode: {mode}")
@@ -359,7 +361,25 @@ class LiveTradingEngine:
         try:
             logger.info("Stopping live trading engine...")
             self.state = EngineState.STOPPING
-            
+
+            # VST full-bot canary safety: always attempt to close positions before halting background tasks.
+            # This keeps the canary window minimal-risk and ensures evidence JSON can show flat final state.
+            if is_vst_fullbot_canary_enabled() and self.active_positions:
+                logger.warning(
+                    "[VST-FULLBOT-CANARY] Shutdown: attempting to close %s open position(s)",
+                    len(self.active_positions),
+                )
+                for position_id in list(self.active_positions.keys()):
+                    try:
+                        await self._execute_position_exit(position_id, {"exit_reason": "shutdown"})
+                    except Exception as exc:
+                        logger.error(
+                            "[VST-FULLBOT-CANARY] Shutdown close failed for %s: %s",
+                            position_id,
+                            exc,
+                            exc_info=True,
+                        )
+             
             # Cancel all background tasks
             for task in self.tasks:
                 if not task.done():
@@ -922,6 +942,45 @@ class LiveTradingEngine:
             
             position_id = position_result['position_id']
             position = position_result.get('position')
+
+            # -------------------------------------------------------------
+            # Stage-4: Production Canary-0 (hard stop only) - fail-fast if
+            # we cannot confirm exchange-native hard stop placement.
+            # -------------------------------------------------------------
+            if is_prod_canary_0_enabled():
+                hard_stop_required = os.getenv("BINGX_NATIVE_HARD_STOP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+                trailing_flag = os.getenv("BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+                exchange_name = str((position or {}).get("exchange") or "").lower()
+                hard_stop_order_id = (position or {}).get("native_hard_stop_order_id")
+
+                if hard_stop_required and not trailing_flag and exchange_name == "bingx" and not hard_stop_order_id:
+                    failure_reason = (position or {}).get("native_hard_stop_place_failed_reason") or "missing_native_hard_stop_order_id"
+                    abort_reason = f"native_hard_stop_missing:{failure_reason}"
+                    self.prod_canary_0_abort_reason = abort_reason
+
+                    if isinstance(position, dict):
+                        position["prod_canary_0_abort"] = True
+                        position["prod_canary_0_abort_reason"] = abort_reason
+
+                    logger.critical(
+                        "[PROD-CANARY-0] Native HARD_STOP missing after entry; closing position immediately. position_id=%s reason=%s",
+                        position_id,
+                        abort_reason,
+                    )
+
+                    # Ensure _execute_position_exit sees the position.
+                    self.active_positions[position_id] = position
+                    close_result = await self._execute_position_exit(
+                        position_id,
+                        {"exit_reason": "native_hard_stop_place_failed"},
+                    )
+                    return {
+                        "success": False,
+                        "stage": "prod_canary_0_abort",
+                        "reason": abort_reason,
+                        "position_id": position_id,
+                        "close_result": close_result,
+                    }
 
             # Persist resolved execution settings on the position for restart safety + DCA gating.
             if position_id and self.position_manager and hasattr(self.position_manager, "attach_execution_config"):
@@ -1689,12 +1748,88 @@ class LiveTradingEngine:
             logger.info(f"  Amount: {position.get('amount')}")
             logger.info(f"  Exit reason: {exit_reason}")
 
+            if exit_signal.get("skip_market_exit"):
+                raw_exit_price = exit_signal.get("exit_price") or position.get("current_price") or position.get("entry_price") or 0
+                try:
+                    exit_price = float(raw_exit_price or 0.0)
+                except (TypeError, ValueError):
+                    exit_price = 0.0
+
+                logger.warning("🟦 [NATIVE EXIT] Skipping market order; closing locally: %s", position_id)
+
+                close_result = await self.position_manager.close_position(
+                    position_id,
+                    exit_price,
+                    exit_reason,
+                )
+
+                if not close_result.get("success"):
+                    logger.error(f"Failed to close position: {close_result.get('reason')}")
+                    return {'success': False, 'reason': close_result.get('reason')}
+
+                self.active_positions.pop(position_id, None)
+                return {
+                    "success": True,
+                    "skip_market_exit": True,
+                    "exit_price": exit_price,
+                    "close_result": close_result,
+                }
+
+            # Defense-in-depth: if native conditional order ids exist, confirm the position is still open on
+            # the exchange right before placing a market close (race: native stop triggers between exit-check and order placement).
+            try:
+                exchange_name = str(position.get("exchange") or "").lower()
+                has_native_ids = bool(position.get("native_hard_stop_order_id") or position.get("native_trailing_stop_order_id"))
+                if exchange_name == "bingx" and has_native_ids and is_real_execution_enabled():
+                    checker = getattr(self.position_manager, "_bingx_is_position_open_on_exchange", None)
+                    if callable(checker):
+                        is_open = await checker(position)
+                        if is_open is False:
+                            raw_exit_price = exit_signal.get("exit_price") or position.get("current_price") or position.get("entry_price") or 0
+                            try:
+                                exit_price = float(raw_exit_price or 0.0)
+                            except (TypeError, ValueError):
+                                exit_price = 0.0
+
+                            logger.warning("?? [NATIVE EXIT] Preflight: exchange already flat; skipping market order: %s", position_id)
+
+                            close_result = await self.position_manager.close_position(
+                                position_id,
+                                exit_price,
+                                exit_reason,
+                            )
+
+                            if not close_result.get("success"):
+                                logger.error(f"Failed to close position: {close_result.get('reason')}")
+                                return {'success': False, 'reason': close_result.get('reason')}
+
+                            self.active_positions.pop(position_id, None)
+                            return {
+                                "success": True,
+                                "skip_market_exit": True,
+                                "preflight_skip_market_exit": True,
+                                "exit_price": exit_price,
+                                "close_result": close_result,
+                            }
+            except Exception as exc:
+                logger.warning("?? [NATIVE EXIT] Preflight check failed (continuing): %s", exc)
+
             exit_order = {
                 'symbol': position['symbol'],
-                'side': 'sell' if position['side'] == 'long' else 'buy',
+                'side': 'sell' if str(position.get('side') or '').lower() in {'long', 'buy'} else 'buy',
                 'amount': position['amount'],
                 'exchange': position['exchange']
             }
+
+            # Safer close semantics for BingX hedge mode when real execution is enabled.
+            try:
+                exchange_name = str(position.get("exchange") or "").lower()
+                side_raw = str(position.get("side") or "").lower().strip()
+                position_side = "LONG" if side_raw in {"long", "buy"} else ("SHORT" if side_raw in {"short", "sell"} else None)
+                if exchange_name == "bingx" and is_real_execution_enabled() and position_side:
+                    exit_order["execution_params"] = {"reduceOnly": True, "positionSide": position_side}
+            except Exception:
+                pass
 
             execution_result = await self.order_manager.place_order(exit_order, 'market')
 
@@ -1709,7 +1844,8 @@ class LiveTradingEngine:
             close_result = await self.position_manager.close_position(
                 position_id,
                 exit_price,
-                exit_reason
+                exit_reason,
+                exit_order_id=execution_result.get("order_id"),
             )
 
             if not close_result.get('success'):

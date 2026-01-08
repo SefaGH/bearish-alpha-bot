@@ -6,6 +6,7 @@ Manages the complete production trading system with all phases integrated.
 import logging
 import asyncio
 import inspect
+import json
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
 import time
@@ -18,6 +19,22 @@ import numpy as np  # For ML health checks
 # Phase 1: Multi-Exchange Framework
 from .multi_exchange import build_clients_from_env
 from .ccxt_client import CcxtClient
+from .execution_env import (
+    get_bingx_env,
+    get_execution_backend,
+    format_mode_banner,
+    get_trading_mode,
+    get_prod_canary_0_evidence_dir,
+    get_prod_canary_0_max_closed_trades,
+    get_vst_fullbot_canary_side,
+    get_vst_fullbot_canary_evidence_dir,
+    get_vst_fullbot_canary_max_closed_trades,
+    is_real_execution_enabled,
+    is_prod_canary_0_cleanup_enabled,
+    is_prod_canary_0_enabled,
+    is_vst_fullbot_canary_cleanup_enabled,
+    is_vst_fullbot_canary_enabled,
+)
 
 # Phase 2: Market Intelligence  
 from core.market_regime import MarketRegimeAnalyzer
@@ -58,6 +75,7 @@ from .risk_manager import RiskManager
 from .portfolio_manager import PortfolioManager
 from .strategy_coordinator import StrategyCoordinator
 from .circuit_breaker import CircuitBreakerSystem
+from .bingx_vst_balance import BingxVstBalanceError, create_vst_balance_client_from_ccxt_bingx_client
 
 # Phase 3.4: Live Trading Components
 from .live_trading_engine import LiveTradingEngine
@@ -1457,6 +1475,7 @@ class ProductionCoordinator:
     
     async def initialize_core_systems(self,
                                       exchange_clients: Optional[Dict] = None,
+                                      portfolio_config: Optional[Dict] = None,
                                       portfolio_value: Optional[float] = None,
                                       risk_config: Optional[RiskConfiguration] = None,
                                       mode: str = 'paper',
@@ -1488,6 +1507,12 @@ class ProductionCoordinator:
                 logger.info(f"✓ Received {len(self.exchange_clients)} exchange client(s): {list(self.exchange_clients.keys())}")
             
             self.websocket_manager = websocket_manager
+
+            # One-line runtime banner to prevent environment/operator mistakes.
+            try:
+                logger.warning(format_mode_banner(self.exchange_clients))
+            except Exception as exc:
+                logger.warning("[MODE-BANNER] failed to render: %s", exc)
             if self.websocket_manager:
                 logger.info("✓ WebSocket manager received from launcher (external).")
             else:
@@ -1512,9 +1537,18 @@ class ProductionCoordinator:
             
             # === STEP 4: PREPARE RISK MANAGER WITH STANDARDIZED CONFIG ===
             # Use provided risk_config or create default from config
+            cfg_equity_override = None
+            if isinstance(portfolio_config, dict) and portfolio_config.get('equity_usd') is not None:
+                try:
+                    cfg_equity_override = float(portfolio_config.get('equity_usd'))
+                except (TypeError, ValueError):
+                    cfg_equity_override = None
+
             if risk_config is None:
                 config = self.config
-                risk_params = config.get('risk', {})
+                risk_params = dict(config.get('risk', {}) or {})
+                if cfg_equity_override is not None:
+                    risk_params['equity_usd'] = cfg_equity_override
                 risk_config = RiskConfiguration(custom_limits=risk_params)
                 logger.info("✓ Created RiskConfiguration from config file")
             else:
@@ -1523,7 +1557,9 @@ class ProductionCoordinator:
             # Use provided portfolio_value or get from config
             if portfolio_value is None:
                 config = self.config
-                risk_params = config.get('risk', {})
+                risk_params = dict(config.get('risk', {}) or {})
+                if cfg_equity_override is not None:
+                    risk_params['equity_usd'] = cfg_equity_override
                 portfolio_value = float(risk_params.get('equity_usd', 500))
                 logger.info(f"✓ Portfolio value from config: ${portfolio_value:.2f}")
             else:
@@ -1653,6 +1689,24 @@ class ProductionCoordinator:
                 self.trading_engine._cached_symbols = self.active_symbols
                 logger.info(f"✓ Trading engine symbols cache set: {len(self.active_symbols)} symbols")
             
+            if is_vst_fullbot_canary_enabled():
+                try:
+                    from strategies.vst_fullbot_canary import VstFullbotCanaryStrategy
+
+                    canary_side = get_vst_fullbot_canary_side()
+                    self.portfolio_manager.register_strategy(
+                        "vst_fullbot_canary",
+                        VstFullbotCanaryStrategy(side=canary_side),
+                        initial_allocation=1.0,
+                    )
+                    logger.warning(
+                        "[VST-FULLBOT-CANARY] Canary strategy registered | name=vst_fullbot_canary side=%s",
+                        canary_side,
+                    )
+                except Exception as exc:
+                    logger.error("[VST-FULLBOT-CANARY] Failed to register canary strategy: %s", exc, exc_info=True)
+                    return {"success": False, "reason": f"canary_strategy_registration_failed: {exc}"}
+
             # === STEP 14: VALIDATE ACTIVE SYMBOLS ===
             if not self.active_symbols:
                 logger.error("="*70)
@@ -1935,7 +1989,461 @@ class ProductionCoordinator:
             self.is_initialized = False
             return {'success': False, 'reason': str(e), 'is_initialized': False}
     
-    async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None, 
+    @staticmethod
+    def _vst_fullbot_canary_sanitize_order(order: Any) -> Dict[str, Any]:
+        if not isinstance(order, dict):
+            return {"type": str(type(order))}
+        keep = (
+            "id",
+            "clientOrderId",
+            "symbol",
+            "type",
+            "side",
+            "status",
+            "timestamp",
+            "datetime",
+            "price",
+            "amount",
+            "filled",
+            "remaining",
+            "reduceOnly",
+            "positionSide",
+        )
+        return {k: order.get(k) for k in keep if k in order}
+
+    async def _vst_fullbot_canary_fetch_exchange_state(self, symbol: str) -> Dict[str, Any]:
+        """
+        Fetch exchange state for the canary symbol (open orders + positions).
+
+        IMPORTANT: This is only intended to be called when BINGX_ENV=vst and real execution is enabled.
+        """
+        state: Dict[str, Any] = {"symbol": symbol, "open_orders": [], "positions": [], "errors": []}
+        client = (self.exchange_clients or {}).get("bingx")
+        if not client:
+            state["errors"].append("missing_bingx_client")
+            return state
+
+        native_symbol = symbol
+        to_native = getattr(client, "_get_bingx_native_symbol", None)
+        if callable(to_native):
+            try:
+                native_symbol = str(to_native(symbol))
+            except Exception:
+                native_symbol = symbol
+
+        try:
+            fetch_open = getattr(getattr(client, "ex", None), "fetch_open_orders", None)
+            if callable(fetch_open):
+                open_orders = await asyncio.to_thread(fetch_open, native_symbol)
+                state["open_orders"] = [self._vst_fullbot_canary_sanitize_order(o) for o in (open_orders or [])]
+        except Exception as exc:
+            state["errors"].append(f"fetch_open_orders_failed:{type(exc).__name__}:{str(exc)[:200]}")
+
+        try:
+            if hasattr(client, "get_bingx_positions"):
+                resp = await asyncio.to_thread(client.get_bingx_positions, symbol)
+                data = resp.get("data") if isinstance(resp, dict) else None
+                if isinstance(data, list):
+                    normalized: List[Dict[str, Any]] = []
+                    for item in data:
+                        if not isinstance(item, dict):
+                            continue
+                        normalized.append(
+                            {
+                                "symbol": item.get("symbol"),
+                                "positionSide": item.get("positionSide"),
+                                "positionAmt": item.get("positionAmt"),
+                                "positionId": item.get("positionId"),
+                            }
+                        )
+                    state["positions"] = normalized
+        except Exception as exc:
+            state["errors"].append(f"get_positions_failed:{type(exc).__name__}:{str(exc)[:200]}")
+
+        return state
+
+    async def _vst_fullbot_canary_preflight(self, symbol: str, *, allow_cleanup: bool) -> Dict[str, Any]:
+        """
+        Fail-fast preflight for a VST full-bot canary run.
+
+        Default (safe) behavior: if any open orders/positions exist for symbol, return ok=False.
+        If allow_cleanup=True, attempts to cancel open orders and close open positions (best-effort, symbol-scoped).
+        """
+        result: Dict[str, Any] = {
+            "ok": False,
+            "symbol": symbol,
+            "allow_cleanup": bool(allow_cleanup),
+            "errors": [],
+            "before": {},
+            "after": {},
+            "cleanup": {"cancelled_orders": [], "closed_positions": []},
+            "vst_balance": {},
+        }
+
+        if not is_real_execution_enabled():
+            result["errors"].append("real_execution_not_enabled")
+            return result
+        if get_bingx_env() != "vst":
+            result["errors"].append("BINGX_ENV_not_vst")
+            return result
+
+        client = (self.exchange_clients or {}).get("bingx")
+        if not client:
+            result["errors"].append("missing_bingx_client")
+            return result
+
+        try:
+            await asyncio.to_thread(client.ensure_bingx_hedge_mode, symbol, True)
+        except Exception as exc:
+            result["errors"].append(f"hedge_mode_check_failed:{type(exc).__name__}:{str(exc)[:200]}")
+            return result
+
+        # Optional: Demo (VST) balance preflight + auto top-up.
+        auto_topup_enabled = os.getenv("BINGX_VST_AUTO_TOPUP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+        if auto_topup_enabled:
+            try:
+                recv_window_ms = int(os.getenv("BINGX_VST_RECV_WINDOW_MS", "5000") or "5000")
+            except (TypeError, ValueError):
+                recv_window_ms = 5000
+            try:
+                threshold = float(os.getenv("BINGX_VST_TOPUP_THRESHOLD", "20000") or "20000")
+            except (TypeError, ValueError):
+                threshold = 20000.0
+            try:
+                topup_amount = float(os.getenv("BINGX_VST_TOPUP_AMOUNT", "100000") or "100000")
+            except (TypeError, ValueError):
+                topup_amount = 100000.0
+
+            result["vst_balance"] = {
+                "auto_topup_enabled": True,
+                "threshold": threshold,
+                "topup_amount": topup_amount,
+                "recv_window_ms": recv_window_ms,
+            }
+
+            try:
+                vst_balance_client = create_vst_balance_client_from_ccxt_bingx_client(
+                    client,
+                    recv_window_ms=recv_window_ms,
+                    timeout_s=10.0,
+                )
+            except Exception as exc:
+                result["errors"].append(f"vst_balance_client_init_failed:{type(exc).__name__}:{str(exc)[:200]}")
+                return result
+
+            try:
+                balance_result = await asyncio.to_thread(vst_balance_client.get_vst_balance)
+                balance = float(balance_result.balance)
+                result["vst_balance"]["balance"] = balance
+                result["vst_balance"]["balance_code"] = (balance_result.raw or {}).get("code")
+
+                if balance < threshold:
+                    logger.warning(
+                        "[VST-TOPUP] balance below threshold: balance=%.4f threshold=%.4f; requesting topup=%.4f",
+                        balance,
+                        threshold,
+                        topup_amount,
+                    )
+                    topup_resp = await asyncio.to_thread(vst_balance_client.apply_vst_topup, topup_amount)
+                    result["vst_balance"]["topup_requested"] = True
+                    result["vst_balance"]["topup_code"] = (topup_resp or {}).get("code")
+
+                    # Re-check after top-up for operator clarity.
+                    balance_after = await asyncio.to_thread(vst_balance_client.get_vst_balance)
+                    result["vst_balance"]["balance_after"] = float(balance_after.balance)
+            except BingxVstBalanceError as exc:
+                result["errors"].append(f"vst_balance_failed:{str(exc)[:200]}")
+                return result
+            except Exception as exc:
+                result["errors"].append(f"vst_balance_failed:{type(exc).__name__}:{str(exc)[:200]}")
+                return result
+
+        before = await self._vst_fullbot_canary_fetch_exchange_state(symbol)
+        result["before"] = before
+
+        open_orders = before.get("open_orders") if isinstance(before.get("open_orders"), list) else []
+        open_positions = before.get("positions") if isinstance(before.get("positions"), list) else []
+        has_open_orders = len(open_orders) > 0
+
+        def _pos_amt(item: Dict[str, Any]) -> float:
+            raw = item.get("positionAmt")
+            try:
+                return abs(float(raw))
+            except (TypeError, ValueError):
+                return 0.0
+
+        open_pos_items = [p for p in open_positions if isinstance(p, dict) and _pos_amt(p) > 0]
+        has_open_positions = len(open_pos_items) > 0
+
+        if (has_open_orders or has_open_positions) and not allow_cleanup:
+            result["errors"].append(
+                f"dirty_state(open_orders={len(open_orders)}, open_positions={len(open_pos_items)})"
+            )
+            return result
+
+        if allow_cleanup and has_open_orders:
+            cancel_fn = getattr(client, "cancel_order", None)
+            if not callable(cancel_fn):
+                result["errors"].append("cancel_order_missing")
+            else:
+                for order in open_orders:
+                    oid = (order or {}).get("id")
+                    if not oid:
+                        continue
+                    try:
+                        await asyncio.to_thread(cancel_fn, oid, symbol, {})
+                        result["cleanup"]["cancelled_orders"].append({"order_id": oid, "ok": True})
+                    except Exception as exc:
+                        msg = str(exc).lower()
+                        idempotent = any(
+                            x in msg
+                            for x in [
+                                "already canceled",
+                                "already cancelled",
+                                "already closed",
+                                "not found",
+                                "does not exist",
+                                "not exist",
+                            ]
+                        )
+                        if idempotent:
+                            result["cleanup"]["cancelled_orders"].append(
+                                {"order_id": oid, "ok": True, "idempotent": True}
+                            )
+                        else:
+                            result["cleanup"]["cancelled_orders"].append(
+                                {"order_id": oid, "ok": False, "error": str(exc)[:200]}
+                            )
+                    await asyncio.sleep(0.1)
+
+        if allow_cleanup and has_open_positions:
+            create_fn = getattr(client, "create_order", None)
+            if not callable(create_fn):
+                result["errors"].append("create_order_missing")
+            else:
+                for pos in open_pos_items:
+                    position_side = str(pos.get("positionSide") or "").upper().strip()
+                    amt = _pos_amt(pos)
+                    if amt <= 0:
+                        continue
+                    close_side = "sell" if position_side == "LONG" else "buy" if position_side == "SHORT" else None
+                    if not close_side:
+                        continue
+                    params = {"reduceOnly": True, "positionSide": position_side}
+                    try:
+                        order = await asyncio.to_thread(
+                            create_fn,
+                            symbol=symbol,
+                            side=close_side,
+                            type_="market",
+                            amount=amt,
+                            price=None,
+                            params=params,
+                        )
+                        oid = (order or {}).get("id") or (order or {}).get("orderId")
+                        result["cleanup"]["closed_positions"].append(
+                            {"positionSide": position_side, "qty": amt, "order_id": oid, "ok": True}
+                        )
+                    except Exception as exc:
+                        result["cleanup"]["closed_positions"].append(
+                            {"positionSide": position_side, "qty": amt, "ok": False, "error": str(exc)[:200]}
+                        )
+                    await asyncio.sleep(0.2)
+
+        after = await self._vst_fullbot_canary_fetch_exchange_state(symbol)
+        result["after"] = after
+
+        after_open_orders = after.get("open_orders") if isinstance(after.get("open_orders"), list) else []
+        after_positions = after.get("positions") if isinstance(after.get("positions"), list) else []
+        after_open_pos_items = [p for p in after_positions if isinstance(p, dict) and _pos_amt(p) > 0]
+
+        if after_open_orders or after_open_pos_items:
+            result["errors"].append(
+                f"dirty_state_after_cleanup(open_orders={len(after_open_orders)}, open_positions={len(after_open_pos_items)})"
+            )
+            return result
+
+        result["ok"] = True
+        return result
+
+    async def _prod_canary_0_preflight(self, symbol: str, *, allow_cleanup: bool) -> Dict[str, Any]:
+        """
+        Fail-fast preflight for a production canary-0 run.
+
+        Default (safe) behavior: if any open orders/positions exist for symbol, return ok=False.
+        If allow_cleanup=True, attempts to cancel open orders and close open positions (best-effort, symbol-scoped).
+        """
+        result: Dict[str, Any] = {
+            "ok": False,
+            "symbol": symbol,
+            "allow_cleanup": bool(allow_cleanup),
+            "errors": [],
+            "before": {},
+            "after": {},
+            "cleanup": {"cancelled_orders": [], "closed_positions": []},
+        }
+
+        if not is_real_execution_enabled():
+            result["errors"].append("real_execution_not_enabled")
+            return result
+        if get_bingx_env() != "prod":
+            result["errors"].append("BINGX_ENV_not_prod")
+            return result
+
+        client = (self.exchange_clients or {}).get("bingx")
+        if not client:
+            result["errors"].append("missing_bingx_client")
+            return result
+
+        try:
+            await asyncio.to_thread(client.ensure_bingx_hedge_mode, symbol, True)
+        except Exception as exc:
+            result["errors"].append(f"hedge_mode_check_failed:{type(exc).__name__}:{str(exc)[:200]}")
+            return result
+
+        before = await self._vst_fullbot_canary_fetch_exchange_state(symbol)
+        result["before"] = before
+
+        open_orders = before.get("open_orders") if isinstance(before.get("open_orders"), list) else []
+        open_positions = before.get("positions") if isinstance(before.get("positions"), list) else []
+        has_open_orders = len(open_orders) > 0
+
+        def _pos_amt(item: Dict[str, Any]) -> float:
+            raw = item.get("positionAmt")
+            try:
+                return abs(float(raw))
+            except (TypeError, ValueError):
+                return 0.0
+
+        open_pos_items = [p for p in open_positions if isinstance(p, dict) and _pos_amt(p) > 0]
+        has_open_positions = len(open_pos_items) > 0
+
+        if (has_open_orders or has_open_positions) and not allow_cleanup:
+            result["errors"].append(
+                f"dirty_state(open_orders={len(open_orders)}, open_positions={len(open_pos_items)})"
+            )
+            return result
+
+        if allow_cleanup and has_open_orders:
+            cancel_fn = getattr(client, "cancel_order", None)
+            if not callable(cancel_fn):
+                result["errors"].append("cancel_order_missing")
+            else:
+                for order in open_orders:
+                    oid = (order or {}).get("id")
+                    if not oid:
+                        continue
+                    try:
+                        await asyncio.to_thread(cancel_fn, oid, symbol, {})
+                        result["cleanup"]["cancelled_orders"].append({"order_id": oid, "ok": True})
+                    except Exception as exc:
+                        msg = str(exc).lower()
+                        idempotent = any(
+                            x in msg
+                            for x in [
+                                "already canceled",
+                                "already cancelled",
+                                "already closed",
+                                "not found",
+                                "does not exist",
+                                "not exist",
+                            ]
+                        )
+                        if idempotent:
+                            result["cleanup"]["cancelled_orders"].append(
+                                {"order_id": oid, "ok": True, "idempotent": True}
+                            )
+                        else:
+                            result["cleanup"]["cancelled_orders"].append(
+                                {"order_id": oid, "ok": False, "error": str(exc)[:200]}
+                            )
+                    await asyncio.sleep(0.1)
+
+        if allow_cleanup and has_open_positions:
+            create_fn = getattr(client, "create_order", None)
+            if not callable(create_fn):
+                result["errors"].append("create_order_missing")
+            else:
+                for pos in open_pos_items:
+                    position_side = str(pos.get("positionSide") or "").upper().strip()
+                    amt = _pos_amt(pos)
+                    if amt <= 0:
+                        continue
+                    close_side = "sell" if position_side == "LONG" else "buy" if position_side == "SHORT" else None
+                    if not close_side:
+                        continue
+                    params = {"reduceOnly": True, "positionSide": position_side}
+                    try:
+                        order = await asyncio.to_thread(
+                            create_fn,
+                            symbol=symbol,
+                            side=close_side,
+                            type_="market",
+                            amount=amt,
+                            price=None,
+                            params=params,
+                        )
+                        oid = (order or {}).get("id") or (order or {}).get("orderId")
+                        result["cleanup"]["closed_positions"].append(
+                            {"positionSide": position_side, "qty": amt, "order_id": oid, "ok": True}
+                        )
+                    except Exception as exc:
+                        result["cleanup"]["closed_positions"].append(
+                            {"positionSide": position_side, "qty": amt, "ok": False, "error": str(exc)[:200]}
+                        )
+                    await asyncio.sleep(0.2)
+
+        after = await self._vst_fullbot_canary_fetch_exchange_state(symbol)
+        result["after"] = after
+
+        after_open_orders = after.get("open_orders") if isinstance(after.get("open_orders"), list) else []
+        after_positions = after.get("positions") if isinstance(after.get("positions"), list) else []
+        after_open_pos_items = [p for p in after_positions if isinstance(p, dict) and _pos_amt(p) > 0]
+
+        if after_open_orders or after_open_pos_items:
+            result["errors"].append(
+                f"dirty_state_after_cleanup(open_orders={len(after_open_orders)}, open_positions={len(after_open_pos_items)})"
+            )
+            return result
+
+        result["ok"] = True
+        return result
+
+    def _write_vst_fullbot_canary_summary(self, summary: Dict[str, Any]) -> Optional[str]:
+        try:
+            out_dir = Path.cwd() / Path(get_vst_fullbot_canary_evidence_dir())
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            out_path = out_dir / f"vst_fullbot_canary_summary_{ts}.json"
+            latest_path = out_dir / "vst_fullbot_canary_summary_latest.json"
+
+            payload = json.dumps(summary, indent=2, default=str, ensure_ascii=False)
+            out_path.write_text(payload, encoding="utf-8")
+            latest_path.write_text(payload, encoding="utf-8")
+            logger.info("[VST-FULLBOT-CANARY] Wrote summary: %s", out_path)
+            return str(out_path)
+        except Exception as exc:
+            logger.warning("[VST-FULLBOT-CANARY] Failed to write summary: %s", exc)
+            return None
+
+    def _write_prod_canary_0_summary(self, summary: Dict[str, Any]) -> Optional[str]:
+        try:
+            out_dir = Path.cwd() / Path(get_prod_canary_0_evidence_dir())
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            out_path = out_dir / f"prod_canary_summary_{ts}.json"
+            latest_path = out_dir / "prod_canary_summary_latest.json"
+
+            payload = json.dumps(summary, indent=2, default=str, ensure_ascii=False)
+            out_path.write_text(payload, encoding="utf-8")
+            latest_path.write_text(payload, encoding="utf-8")
+            logger.info("[PROD-CANARY-0] Wrote summary: %s", out_path)
+            return str(out_path)
+        except Exception as exc:
+            logger.warning("[PROD-CANARY-0] Failed to write summary: %s", exc)
+            return None
+
+    async def run_production_loop(self, mode: str = 'paper', duration: Optional[float] = None,
                                   continuous: bool = False):
         # Emergency debug prints using ASCII to avoid encoding issues on Windows consoles.
         print(f"\n{'='*70}")
@@ -1968,38 +2476,13 @@ class ProductionCoordinator:
             logger.info("STARTING PRODUCTION TRADING LOOP")
             logger.info("="*70)
             
-            # Ensure the trading engine is running (avoid double starts)
+            # Ensure the trading engine exists; it will be started after any VST canary preflight.
             logger.info("[DEBUG] Checking trading engine...")
             if not self.trading_engine:
                 logger.error("[DEBUG] trading_engine is None!")
                 raise RuntimeError("Trading engine not initialized!")
-            
+
             logger.info(f"[DEBUG] trading_engine exists, state={self.trading_engine.state.value}")
-
-            if self.trading_engine.state.value != 'running':
-                logger.warning(
-                    "Trading engine reported state '%s' while entering production loop; "
-                    "awaiting synchronization...",
-                    self.trading_engine.state.value
-                )
-                # Give the event loop more time to schedule engine startup tasks
-                # Extended from 0s to 1.0s to ensure proper task scheduling
-                logger.info("Waiting 1.0s for engine tasks to initialize...")
-                await asyncio.sleep(1.0)
-
-                if self.trading_engine.state.value != 'running':
-                    logger.error(
-                        "Engine state still '%s' after 1s synchronization delay; aborting production loop.",
-                        self.trading_engine.state.value
-                    )
-                    raise RuntimeError(
-                        "Trading engine not running after synchronization delay "
-                        f"(state={self.trading_engine.state.value})"
-                    )
-                else:
-                    logger.info("Trading engine reached running state after synchronization delay")
-            else:
-                logger.info(f"Trading engine already running (state={self.trading_engine.state.value})")
 
             # Ensure is_running is True
             logger.info(f"[DEBUG] Current is_running = {self.is_running}")
@@ -2058,9 +2541,262 @@ class ProductionCoordinator:
 
             logger.info("[DEBUG] active_symbols check passed")
 
+            # -------------------------------------------------------------
+            # Stage-3: Full-bot VST canary mode (feature-flagged, safe default OFF)
+            # -------------------------------------------------------------
+            vst_fullbot_canary_enabled = is_vst_fullbot_canary_enabled()
+            vst_fullbot_canary_symbol: Optional[str] = None
+            vst_fullbot_canary_started_at: Optional[datetime] = None
+            vst_fullbot_canary_preflight: Optional[Dict[str, Any]] = None
+            vst_fullbot_canary_max_closed_trades: Optional[int] = None
+            vst_fullbot_canary_stop_reason: Optional[str] = None
+
+            prod_canary_0_enabled = is_prod_canary_0_enabled()
+            prod_canary_0_symbol: Optional[str] = None
+            prod_canary_0_started_at: Optional[datetime] = None
+            prod_canary_0_preflight: Optional[Dict[str, Any]] = None
+            prod_canary_0_max_closed_trades: Optional[int] = None
+            prod_canary_0_stop_reason: Optional[str] = None
+
+            if vst_fullbot_canary_enabled:
+                if prod_canary_0_enabled:
+                    logger.error("[VST-FULLBOT-CANARY] Refusing to run: PROD_CANARY_0 is also enabled (choose one canary mode).")
+                    self.is_running = False
+                    return
+
+                vst_fullbot_canary_started_at = datetime.now(timezone.utc)
+                vst_fullbot_canary_max_closed_trades = get_vst_fullbot_canary_max_closed_trades()
+
+                trading_mode = get_trading_mode()
+                execution_backend = get_execution_backend()
+                bingx_env = get_bingx_env()
+                allow_cleanup = is_vst_fullbot_canary_cleanup_enabled()
+
+                logger.warning(
+                    "[VST-FULLBOT-CANARY] ENABLED | TRADING_MODE=%s EXECUTION_BACKEND=%s BINGX_ENV=%s allow_cleanup=%s max_closed_trades=%s",
+                    trading_mode,
+                    execution_backend,
+                    bingx_env,
+                    allow_cleanup,
+                    vst_fullbot_canary_max_closed_trades,
+                )
+
+                if not is_real_execution_enabled():
+                    logger.error(
+                        "[VST-FULLBOT-CANARY] Refusing to run: real execution not enabled. "
+                        "Set TRADING_MODE=live and EXECUTION_BACKEND=ccxt."
+                    )
+                    self.is_running = False
+                    return
+
+                if bingx_env != "vst":
+                    logger.error("[VST-FULLBOT-CANARY] Refusing to run: BINGX_ENV must be vst.")
+                    self.is_running = False
+                    return
+
+                if len(self.active_symbols) != 1:
+                    logger.error(
+                        "[VST-FULLBOT-CANARY] Refusing to run: must restrict to exactly 1 symbol (TRADING_SYMBOLS or config.universe.fixed_symbols). "
+                        f"active_symbols={self.active_symbols}"
+                    )
+                    self.is_running = False
+                    return
+
+                vst_fullbot_canary_symbol = str(self.active_symbols[0])
+                vst_fullbot_canary_preflight = await self._vst_fullbot_canary_preflight(
+                    vst_fullbot_canary_symbol,
+                    allow_cleanup=allow_cleanup,
+                )
+
+                if not vst_fullbot_canary_preflight.get("ok"):
+                    vst_fullbot_canary_stop_reason = "preflight_failed"
+                    logger.error(
+                        "[VST-FULLBOT-CANARY] Preflight failed; aborting. errors=%s",
+                        vst_fullbot_canary_preflight.get("errors"),
+                    )
+
+                    try:
+                        if self.trading_engine:
+                            await self.trading_engine.stop_live_trading()
+                    except Exception:
+                        pass
+
+                    try:
+                        final_state = await self._vst_fullbot_canary_fetch_exchange_state(vst_fullbot_canary_symbol)
+                    except Exception:
+                        final_state = {"errors": ["final_state_failed"]}
+
+                    summary = {
+                        "stage": "vst_fullbot_canary",
+                        "ok": False,
+                        "stop_reason": vst_fullbot_canary_stop_reason,
+                        "started_at": (vst_fullbot_canary_started_at.isoformat() if vst_fullbot_canary_started_at else None),
+                        "ended_at": datetime.now(timezone.utc).isoformat(),
+                        "symbol": vst_fullbot_canary_symbol,
+                        "bingx": {
+                            "ccxt_sandbox": bool(
+                                getattr(getattr((self.exchange_clients or {}).get("bingx"), "ex", None), "sandbox", False)
+                                or getattr((self.exchange_clients or {}).get("bingx"), "bingx_env", None) == "vst"
+                            ),
+                            "ccxt_swap_url": str(
+                                (
+                                    (
+                                        getattr(getattr((self.exchange_clients or {}).get("bingx"), "ex", None), "urls", None)
+                                        or {}
+                                    )
+                                    .get("api", {})
+                                    .get("swap", "")
+                                )
+                            ),
+                            "rest_base_url": getattr((self.exchange_clients or {}).get("bingx"), "_bingx_rest_base_url", None),
+                            "hedged": getattr((self.exchange_clients or {}).get("bingx"), "_bingx_is_hedged", None),
+                        },
+                        "env": {
+                            "TRADING_MODE": trading_mode,
+                            "EXECUTION_BACKEND": execution_backend,
+                            "BINGX_ENV": bingx_env,
+                            "BINGX_NATIVE_HARD_STOP_ENABLED": os.getenv("BINGX_NATIVE_HARD_STOP_ENABLED", ""),
+                            "BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED": os.getenv("BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED", ""),
+                        },
+                        "preflight": vst_fullbot_canary_preflight,
+                        "final_exchange_state": final_state,
+                        "closed_positions": [],
+                    }
+                    self._write_vst_fullbot_canary_summary(summary)
+                    self.is_running = False
+                    return
+
+            # -------------------------------------------------------------
+            # Stage-4: Production Canary-0 (Hard stop only) - evidence mode
+            # -------------------------------------------------------------
+            if prod_canary_0_enabled:
+                prod_canary_0_started_at = datetime.now(timezone.utc)
+                prod_canary_0_max_closed_trades = get_prod_canary_0_max_closed_trades()
+
+                trading_mode = get_trading_mode()
+                execution_backend = get_execution_backend()
+                bingx_env = get_bingx_env()
+                allow_cleanup = is_prod_canary_0_cleanup_enabled()
+
+                logger.warning(
+                    "[PROD-CANARY-0] ENABLED | TRADING_MODE=%s EXECUTION_BACKEND=%s BINGX_ENV=%s allow_cleanup=%s max_closed_trades=%s",
+                    trading_mode,
+                    execution_backend,
+                    bingx_env,
+                    allow_cleanup,
+                    prod_canary_0_max_closed_trades,
+                )
+
+                if not is_real_execution_enabled():
+                    logger.error(
+                        "[PROD-CANARY-0] Refusing to run: real execution not enabled. "
+                        "Set TRADING_MODE=live and EXECUTION_BACKEND=ccxt."
+                    )
+                    self.is_running = False
+                    return
+
+                if bingx_env != "prod":
+                    logger.error("[PROD-CANARY-0] Refusing to run: BINGX_ENV must be prod.")
+                    self.is_running = False
+                    return
+
+                hard_stop_flag = os.getenv("BINGX_NATIVE_HARD_STOP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+                trailing_flag = os.getenv("BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+                if not hard_stop_flag:
+                    logger.error("[PROD-CANARY-0] Refusing to run: BINGX_NATIVE_HARD_STOP_ENABLED must be true.")
+                    self.is_running = False
+                    return
+                if trailing_flag:
+                    logger.error("[PROD-CANARY-0] Refusing to run: BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED must be false.")
+                    self.is_running = False
+                    return
+
+                if len(self.active_symbols) != 1:
+                    logger.error(
+                        "[PROD-CANARY-0] Refusing to run: must restrict to exactly 1 symbol (TRADING_SYMBOLS or config.universe.fixed_symbols). "
+                        f"active_symbols={self.active_symbols}"
+                    )
+                    self.is_running = False
+                    return
+
+                prod_canary_0_symbol = str(self.active_symbols[0])
+
+                prod_canary_0_preflight = await self._prod_canary_0_preflight(
+                    prod_canary_0_symbol,
+                    allow_cleanup=allow_cleanup,
+                )
+
+                if not (prod_canary_0_preflight or {}).get("ok"):
+                    prod_canary_0_stop_reason = "preflight_failed"
+                    logger.error(
+                        "[PROD-CANARY-0] Preflight failed; aborting. errors=%s",
+                        (prod_canary_0_preflight or {}).get("errors"),
+                    )
+
+                    try:
+                        if self.trading_engine:
+                            await self.trading_engine.stop_live_trading()
+                    except Exception:
+                        pass
+
+                    try:
+                        final_state = await self._vst_fullbot_canary_fetch_exchange_state(prod_canary_0_symbol)
+                    except Exception:
+                        final_state = {"errors": ["final_state_failed"]}
+
+                    summary = {
+                        "stage": "prod_canary_0",
+                        "ok": False,
+                        "stop_reason": prod_canary_0_stop_reason,
+                        "started_at": (prod_canary_0_started_at.isoformat() if prod_canary_0_started_at else None),
+                        "ended_at": datetime.now(timezone.utc).isoformat(),
+                        "symbol": prod_canary_0_symbol,
+                        "bingx": {
+                            "ccxt_sandbox": bool(
+                                getattr(getattr((self.exchange_clients or {}).get("bingx"), "ex", None), "sandbox", False)
+                                or getattr((self.exchange_clients or {}).get("bingx"), "bingx_env", None) == "vst"
+                            ),
+                            "ccxt_swap_url": str(
+                                (
+                                    (
+                                        getattr(getattr((self.exchange_clients or {}).get("bingx"), "ex", None), "urls", None)
+                                        or {}
+                                    )
+                                    .get("api", {})
+                                    .get("swap", "")
+                                )
+                            ),
+                            "rest_base_url": getattr((self.exchange_clients or {}).get("bingx"), "_bingx_rest_base_url", None),
+                            "hedged": getattr((self.exchange_clients or {}).get("bingx"), "_bingx_is_hedged", None),
+                        },
+                        "env": {
+                            "TRADING_MODE": trading_mode,
+                            "EXECUTION_BACKEND": execution_backend,
+                            "BINGX_ENV": bingx_env,
+                            "BINGX_NATIVE_HARD_STOP_ENABLED": os.getenv("BINGX_NATIVE_HARD_STOP_ENABLED", ""),
+                            "BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED": os.getenv("BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED", ""),
+                            "PROD_CANARY_0_MAX_CLOSED_TRADES": prod_canary_0_max_closed_trades,
+                            "PROD_CANARY_0_ALLOW_CLEANUP": os.getenv("PROD_CANARY_0_ALLOW_CLEANUP", ""),
+                        },
+                        "preflight": prod_canary_0_preflight,
+                        "final_exchange_state": final_state,
+                        "closed_positions": [],
+                    }
+                    self._write_prod_canary_0_summary(summary)
+                    self.is_running = False
+                    return
+
+            # Start the trading engine (required for signal execution + position monitoring).
+            if self.trading_engine and self.trading_engine.state.value != "running":
+                logger.info("[DEBUG] Starting trading engine...")
+                start_result = await self.trading_engine.start_live_trading(mode=mode)
+                if not start_result.get("success"):
+                    raise RuntimeError(f"Failed to start trading engine: {start_result.get('reason')}")
+                logger.info("[DEBUG] Trading engine started (state=%s)", self.trading_engine.state.value)
+
             # Main loop setup
             logger.info("[DEBUG] Initializing loop variables...")
-            start_time = datetime.now(timezone.utc)
+            start_time = vst_fullbot_canary_started_at or prod_canary_0_started_at or datetime.now(timezone.utc)
             last_recommendation_time = start_time
             recommendation_interval = 300  # Her 5 dakikada bir recommendations
             loop_iteration = 0
@@ -2155,6 +2891,10 @@ class ProductionCoordinator:
                         logger.info(f"[DEBUG] Duration check: elapsed={elapsed:.1f}s, duration={duration}s")
                         if elapsed >= duration:
                             logger.info(f"Duration {duration}s reached - stopping (elapsed: {elapsed:.1f}s)")
+                            if vst_fullbot_canary_enabled and not vst_fullbot_canary_stop_reason:
+                                vst_fullbot_canary_stop_reason = "duration_reached"
+                            if prod_canary_0_enabled and not prod_canary_0_stop_reason:
+                                prod_canary_0_stop_reason = "duration_reached"
                             break
                         else:
                             logger.info(f"[DEBUG] Duration check passed - continuing loop")
@@ -2163,6 +2903,48 @@ class ProductionCoordinator:
                     logger.info("[DEBUG] About to call _process_trading_loop()...")
                     await self._process_trading_loop()
                     logger.info("[DEBUG] _process_trading_loop() completed")
+
+                    # Production Canary-0: if the engine requests abort (e.g., hard stop not placed), stop immediately.
+                    if prod_canary_0_enabled:
+                        abort_reason = getattr(self.trading_engine, "prod_canary_0_abort_reason", None) if self.trading_engine else None
+                        if abort_reason and not prod_canary_0_stop_reason:
+                            prod_canary_0_stop_reason = str(abort_reason)
+                            logger.critical("[PROD-CANARY-0] Abort requested by engine: %s", abort_reason)
+                            break
+
+                    # VST full-bot canary: stop after N closed trades to keep the window minimal-risk.
+                    if vst_fullbot_canary_enabled and vst_fullbot_canary_max_closed_trades:
+                        try:
+                            pm = getattr(self.trading_engine, "position_manager", None) if self.trading_engine else None
+                            closed_positions = getattr(pm, "closed_positions", []) if pm else []
+                            closed_count = len(closed_positions or [])
+                        except Exception:
+                            closed_count = 0
+
+                        if closed_count >= int(vst_fullbot_canary_max_closed_trades):
+                            vst_fullbot_canary_stop_reason = "max_closed_trades_reached"
+                            logger.warning(
+                                "[VST-FULLBOT-CANARY] Max closed trades reached (%s); stopping loop.",
+                                vst_fullbot_canary_max_closed_trades,
+                            )
+                            break
+
+                    # Production canary-0: stop after N closed trades to keep the window minimal-risk.
+                    if prod_canary_0_enabled and prod_canary_0_max_closed_trades:
+                        try:
+                            pm = getattr(self.trading_engine, "position_manager", None) if self.trading_engine else None
+                            closed_positions = getattr(pm, "closed_positions", []) if pm else []
+                            closed_count = len(closed_positions or [])
+                        except Exception:
+                            closed_count = 0
+
+                        if closed_count >= int(prod_canary_0_max_closed_trades):
+                            prod_canary_0_stop_reason = "max_closed_trades_reached"
+                            logger.warning(
+                                "[PROD-CANARY-0] Max closed trades reached (%s); stopping loop.",
+                                prod_canary_0_max_closed_trades,
+                            )
+                            break
                     
                     # YENİ: Periyodik indikatör sağlık kontrolü
                     current_time = time.monotonic()
@@ -2179,6 +2961,10 @@ class ProductionCoordinator:
                         remaining = duration - elapsed
                         if remaining <= 0:
                             logger.info(f"Duration {duration}s reached after processing - stopping")
+                            if vst_fullbot_canary_enabled and not vst_fullbot_canary_stop_reason:
+                                vst_fullbot_canary_stop_reason = "duration_reached"
+                            if prod_canary_0_enabled and not prod_canary_0_stop_reason:
+                                prod_canary_0_stop_reason = "duration_reached"
                             break
                         # Sleep for minimum of loop_interval or remaining time
                         sleep_time = min(self.loop_interval, remaining)
@@ -2190,6 +2976,10 @@ class ProductionCoordinator:
                     
                 except KeyboardInterrupt:
                     logger.info("Keyboard interrupt received - stopping gracefully")
+                    if vst_fullbot_canary_enabled and not vst_fullbot_canary_stop_reason:
+                        vst_fullbot_canary_stop_reason = "keyboard_interrupt"
+                    if prod_canary_0_enabled and not prod_canary_0_stop_reason:
+                        prod_canary_0_stop_reason = "keyboard_interrupt"
                     break
                     
                 except Exception as e:
@@ -2224,8 +3014,201 @@ class ProductionCoordinator:
             # Shutdown
             logger.info("\nShutting down production trading loop...")
             await self.trading_engine.stop_live_trading()
+
+            if vst_fullbot_canary_enabled and vst_fullbot_canary_symbol:
+                ended_at = datetime.now(timezone.utc)
+                try:
+                    final_state = await self._vst_fullbot_canary_fetch_exchange_state(vst_fullbot_canary_symbol)
+                except Exception:
+                    final_state = {"errors": ["final_exchange_state_failed"]}
+
+                pm = getattr(self.trading_engine, "position_manager", None) if self.trading_engine else None
+                closed_positions = getattr(pm, "closed_positions", []) if pm else []
+
+                trades: List[Dict[str, Any]] = []
+                for pos in closed_positions or []:
+                    if not isinstance(pos, dict):
+                        continue
+                    trades.append(
+                        {
+                            "position_id": pos.get("position_id"),
+                            "trade_id": pos.get("trade_id"),
+                            "symbol": pos.get("symbol"),
+                            "side": pos.get("side"),
+                            "amount": pos.get("amount"),
+                            "entry_price": pos.get("entry_price"),
+                            "exit_price": pos.get("exit_price"),
+                            "realized_pnl": pos.get("realized_pnl"),
+                            "return_pct": pos.get("return_pct"),
+                            "exit_reason": pos.get("exit_reason"),
+                            "opened_at": str(pos.get("opened_at") or ""),
+                            "closed_at": str(pos.get("closed_at") or ""),
+                            "entry_order_id": pos.get("entry_order_id"),
+                            "exit_order_id": pos.get("exit_order_id"),
+                            "native_hard_stop": {
+                                "order_id": pos.get("native_hard_stop_order_id"),
+                                "stop_price": pos.get("native_hard_stop_stop_price"),
+                                "working_type": pos.get("native_hard_stop_working_type"),
+                                "position_side": pos.get("native_hard_stop_position_side"),
+                                "qty": pos.get("native_hard_stop_qty"),
+                            },
+                            "native_trailing_stop": {
+                                "order_id": pos.get("native_trailing_stop_order_id"),
+                                "trailing_percent": pos.get("native_trailing_stop_trailing_percent"),
+                                "working_type": pos.get("native_trailing_stop_working_type"),
+                                "position_side": pos.get("native_trailing_stop_position_side"),
+                                "qty": pos.get("native_trailing_stop_qty"),
+                            },
+                        }
+                    )
+
+                summary = {
+                    "stage": "vst_fullbot_canary",
+                    "ok": bool(trades),
+                    "stop_reason": vst_fullbot_canary_stop_reason or "loop_ended",
+                    "started_at": (vst_fullbot_canary_started_at.isoformat() if vst_fullbot_canary_started_at else None),
+                    "ended_at": ended_at.isoformat(),
+                    "symbol": vst_fullbot_canary_symbol,
+                    "closed_trades_count": len(trades),
+                    "bingx": {
+                        "ccxt_sandbox": bool(
+                            getattr(getattr((self.exchange_clients or {}).get("bingx"), "ex", None), "sandbox", False)
+                            or getattr((self.exchange_clients or {}).get("bingx"), "bingx_env", None) == "vst"
+                        ),
+                        "ccxt_swap_url": str(
+                            (
+                                (
+                                    getattr(getattr((self.exchange_clients or {}).get("bingx"), "ex", None), "urls", None)
+                                    or {}
+                                )
+                                .get("api", {})
+                                .get("swap", "")
+                            )
+                        ),
+                        "rest_base_url": getattr((self.exchange_clients or {}).get("bingx"), "_bingx_rest_base_url", None),
+                        "hedged": getattr((self.exchange_clients or {}).get("bingx"), "_bingx_is_hedged", None),
+                    },
+                    "env": {
+                        "TRADING_MODE": get_trading_mode(),
+                        "EXECUTION_BACKEND": get_execution_backend(),
+                        "BINGX_ENV": get_bingx_env(),
+                        "BINGX_NATIVE_HARD_STOP_ENABLED": os.getenv("BINGX_NATIVE_HARD_STOP_ENABLED", ""),
+                        "BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED": os.getenv("BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED", ""),
+                        "VST_FULLBOT_CANARY_MAX_CLOSED_TRADES": vst_fullbot_canary_max_closed_trades,
+                        "VST_FULLBOT_CANARY_SIDE": os.getenv("VST_FULLBOT_CANARY_SIDE", ""),
+                        "VST_FULLBOT_CANARY_ALLOW_CLEANUP": os.getenv("VST_FULLBOT_CANARY_ALLOW_CLEANUP", ""),
+                    },
+                    "preflight": vst_fullbot_canary_preflight,
+                    "trades": trades,
+                    "final_exchange_state": final_state,
+                }
+                self._write_vst_fullbot_canary_summary(summary)
+
+            if prod_canary_0_enabled and prod_canary_0_symbol:
+                ended_at = datetime.now(timezone.utc)
+                try:
+                    final_state = await self._vst_fullbot_canary_fetch_exchange_state(prod_canary_0_symbol)
+                except Exception:
+                    final_state = {"errors": ["final_exchange_state_failed"]}
+
+                pm = getattr(self.trading_engine, "position_manager", None) if self.trading_engine else None
+                closed_positions = getattr(pm, "closed_positions", []) if pm else []
+
+                trades: List[Dict[str, Any]] = []
+                for pos in closed_positions or []:
+                    if not isinstance(pos, dict):
+                        continue
+                    trades.append(
+                        {
+                            "position_id": pos.get("position_id"),
+                            "trade_id": pos.get("trade_id"),
+                            "symbol": pos.get("symbol"),
+                            "side": pos.get("side"),
+                            "amount": pos.get("amount"),
+                            "entry_price": pos.get("entry_price"),
+                            "exit_price": pos.get("exit_price"),
+                            "realized_pnl": pos.get("realized_pnl"),
+                            "return_pct": pos.get("return_pct"),
+                            "exit_reason": pos.get("exit_reason"),
+                            "opened_at": str(pos.get("opened_at") or ""),
+                            "closed_at": str(pos.get("closed_at") or ""),
+                            "entry_order_id": pos.get("entry_order_id"),
+                            "exit_order_id": pos.get("exit_order_id"),
+                            "native_hard_stop": {
+                                "order_id": pos.get("native_hard_stop_order_id"),
+                                "stop_price": pos.get("native_hard_stop_stop_price"),
+                                "working_type": pos.get("native_hard_stop_working_type"),
+                                "position_side": pos.get("native_hard_stop_position_side"),
+                                "qty": pos.get("native_hard_stop_qty"),
+                            },
+                            "native_hard_stop_place_failed": pos.get("native_hard_stop_place_failed"),
+                            "native_hard_stop_place_failed_reason": pos.get("native_hard_stop_place_failed_reason"),
+                            "native_hard_stop_place_failed_error_code": pos.get("native_hard_stop_place_failed_error_code"),
+                            "native_trailing_stop": {
+                                "order_id": pos.get("native_trailing_stop_order_id"),
+                                "trailing_percent": pos.get("native_trailing_stop_trailing_percent"),
+                                "working_type": pos.get("native_trailing_stop_working_type"),
+                                "position_side": pos.get("native_trailing_stop_position_side"),
+                                "qty": pos.get("native_trailing_stop_qty"),
+                            },
+                            "prod_canary_0_abort_reason": pos.get("prod_canary_0_abort_reason"),
+                        }
+                    )
+
+                abort_reason = getattr(self.trading_engine, "prod_canary_0_abort_reason", None) if self.trading_engine else None
+                hard_stop_missing = any(not (t.get("native_hard_stop") or {}).get("order_id") for t in trades)
+                hard_stop_failed = any((t.get("native_hard_stop_place_failed") is True) for t in trades)
+                ok = bool(trades) and not abort_reason and not hard_stop_missing and not hard_stop_failed
+
+                summary = {
+                    "stage": "prod_canary_0",
+                    "ok": ok,
+                    "stop_reason": prod_canary_0_stop_reason or (str(abort_reason) if abort_reason else "loop_ended"),
+                    "started_at": (prod_canary_0_started_at.isoformat() if prod_canary_0_started_at else None),
+                    "ended_at": ended_at.isoformat(),
+                    "symbol": prod_canary_0_symbol,
+                    "closed_trades_count": len(trades),
+                    "abort_reason": abort_reason,
+                    "invariants": {
+                        "native_hard_stop_required": True,
+                        "native_hard_stop_present_for_all_trades": (not hard_stop_missing),
+                        "native_hard_stop_place_failed": hard_stop_failed,
+                    },
+                    "bingx": {
+                        "ccxt_sandbox": bool(
+                            getattr(getattr((self.exchange_clients or {}).get("bingx"), "ex", None), "sandbox", False)
+                            or getattr((self.exchange_clients or {}).get("bingx"), "bingx_env", None) == "vst"
+                        ),
+                        "ccxt_swap_url": str(
+                            (
+                                (
+                                    getattr(getattr((self.exchange_clients or {}).get("bingx"), "ex", None), "urls", None)
+                                    or {}
+                                )
+                                .get("api", {})
+                                .get("swap", "")
+                            )
+                        ),
+                        "rest_base_url": getattr((self.exchange_clients or {}).get("bingx"), "_bingx_rest_base_url", None),
+                        "hedged": getattr((self.exchange_clients or {}).get("bingx"), "_bingx_is_hedged", None),
+                    },
+                    "env": {
+                        "TRADING_MODE": get_trading_mode(),
+                        "EXECUTION_BACKEND": get_execution_backend(),
+                        "BINGX_ENV": get_bingx_env(),
+                        "BINGX_NATIVE_HARD_STOP_ENABLED": os.getenv("BINGX_NATIVE_HARD_STOP_ENABLED", ""),
+                        "BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED": os.getenv("BINGX_NATIVE_TRAILING_ON_ACTIVATION_ENABLED", ""),
+                        "PROD_CANARY_0_MAX_CLOSED_TRADES": prod_canary_0_max_closed_trades,
+                        "PROD_CANARY_0_ALLOW_CLEANUP": os.getenv("PROD_CANARY_0_ALLOW_CLEANUP", ""),
+                    },
+                    "preflight": prod_canary_0_preflight,
+                    "trades": trades,
+                    "final_exchange_state": final_state,
+                }
+                self._write_prod_canary_0_summary(summary)
+
             self.is_running = False
-            
+             
             logger.info("Production trading loop stopped")
             
         except Exception as e:

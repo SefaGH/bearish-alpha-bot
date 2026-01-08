@@ -1,10 +1,12 @@
 import math
 import logging
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 import pandas as pd
 
 from .base_strategy import BaseStrategy
+from .mr_controller import DynamicMRController, MRControllerDecision
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +22,35 @@ class VWAPMeanReversion(BaseStrategy):
         self.vwap_tf = cfg.get("timeframe", "1m")
         self.signal_tf = cfg.get("signal_timeframe", "5m")
         self.band_mult = float(cfg.get("band_multiplier", 2.0))
+        self.vwap_lookback = int(cfg.get("vwap_lookback", 1440))
         self.adx_threshold = float(cfg.get("adx_threshold", 30))
         self.min_rr_ratio = float(cfg.get("min_rr_ratio", 1.0))
         # Increase baseline so VWAP window (1440) + signal buffer can coexist
         self.min_rows = int(cfg.get("min_rows", 2100))
         self.min_signal_rows = int(cfg.get("min_signal_rows", 50))
+
+        controller_cfg = cfg.get("dynamic_controller", {})
+        if controller_cfg is not None and not isinstance(controller_cfg, dict):
+            logger.warning(
+                "[MeanReversion] dynamic_controller config must be a dict; disabling controller."
+            )
+            controller_cfg = {}
+        controller_cfg = dict(controller_cfg) if isinstance(controller_cfg, dict) else {}
+        controller_cfg.setdefault("adx_freeze_threshold", self.adx_threshold)
+        self._mr_controller = DynamicMRController(
+            controller_cfg,
+            static_band_multiplier=self.band_mult,
+            static_lookback=self.vwap_lookback,
+        )
+        self._pipeline_cfg_warned = False
+        self._controller_fallback_warned = False
+
+        if self.vwap_lookback > 1000:
+            logger.warning(
+                f"[MeanReversion] High Lookback detected (L={self.vwap_lookback}). "
+                "Note that L is in BARS (in VWAP timeframe), not minutes."
+            )
+
         # Interface guard
         if not hasattr(self, "signal"):
             self.signal = self._default_signal_wrapper  # type: ignore
@@ -142,6 +168,8 @@ class VWAPMeanReversion(BaseStrategy):
         last_vwap = clean_vwap.iloc[-1]
         last_sig = clean_sig.iloc[-1]
 
+        self._maybe_warn_pipeline_indicator_mismatch()
+
         required_cols_vwap = {"vwap", "vwap_lower", "vwap_upper"}
         if not required_cols_vwap.issubset(set(last_vwap.index)):
             logger.warning(f"[MeanReversion] Missing required VWAP columns for {symbol}: "
@@ -164,47 +192,61 @@ class VWAPMeanReversion(BaseStrategy):
 
         atr_val = float(last_sig["atr"]) if "atr" in last_sig.index else None
 
-        in_band = vwap_lower <= price <= vwap_upper
+        controller_decision = self._maybe_apply_dynamic_controller(
+            symbol=symbol,
+            df_vwap=df_vwap,
+            df_sig=df_sig,
+            price=price,
+            vwap=vwap_main,
+            vwap_std=float(last_vwap["vwap_std"]) if "vwap_std" in last_vwap.index else None,
+            adx=adx_val,
+            atr=atr_val,
+        )
+        lower = float(controller_decision.lower) if controller_decision else vwap_lower
+        upper = float(controller_decision.upper) if controller_decision else vwap_upper
+        vwap_target = float(controller_decision.vwap) if controller_decision else vwap_main
+
+        in_band = lower <= price <= upper
         adx_ok = adx_val < self.adx_threshold
 
         if in_band:
             logger.info(
                 f"[MeanReversion] Price within bands for {symbol}. "
-                f"px={price:.4f}, lower={vwap_lower:.4f}, upper={vwap_upper:.4f}, "
+                f"px={price:.4f}, lower={lower:.4f}, upper={upper:.4f}, "
                 f"adx={adx_val:.1f}, adx_th={self.adx_threshold:.1f}"
             )
             return None
 
         if not adx_ok:
-            if price > vwap_upper:
+            if price > upper:
                 breach = "above_upper"
-            elif price < vwap_lower:
+            elif price < lower:
                 breach = "below_lower"
             else:
                 breach = "outside"
             logger.info(
                 f"[MeanReversion] Price outside bands but ADX veto for {symbol}. "
-                f"breach={breach}, px={price:.4f}, lower={vwap_lower:.4f}, upper={vwap_upper:.4f}, "
+                f"breach={breach}, px={price:.4f}, lower={lower:.4f}, upper={upper:.4f}, "
                 f"adx={adx_val:.1f}, adx_th={self.adx_threshold:.1f}"
             )
             return None
 
-        if price < vwap_lower:
+        if price < lower:
             side = "buy"
             reason = (
-                f"VWAP MR long (px {price:.4f} < lower {vwap_lower:.4f}, "
+                f"VWAP MR long (px {price:.4f} < lower {lower:.4f}, "
                 f"ADX {adx_val:.1f} < {self.adx_threshold})"
             )
-        elif price > vwap_upper:
+        elif price > upper:
             side = "sell"
             reason = (
-                f"VWAP MR short (px {price:.4f} > upper {vwap_upper:.4f}, "
+                f"VWAP MR short (px {price:.4f} > upper {upper:.4f}, "
                 f"ADX {adx_val:.1f} < {self.adx_threshold})"
             )
         else:
             logger.info(
                 f"[MeanReversion] Price within bands for {symbol}. "
-                f"px={price:.4f}, lower={vwap_lower:.4f}, upper={vwap_upper:.4f}, "
+                f"px={price:.4f}, lower={lower:.4f}, upper={upper:.4f}, "
                 f"adx={adx_val:.1f}, adx_th={self.adx_threshold:.1f}"
             )
             return None
@@ -216,7 +258,7 @@ class VWAPMeanReversion(BaseStrategy):
             else:
                 stop = price + atr_val * 1.5
 
-        target = vwap_main
+        target = vwap_target
 
         signal = {
             "strategy_name": self.strategy_name,
@@ -230,10 +272,109 @@ class VWAPMeanReversion(BaseStrategy):
             "signal_type": "MEAN_REVERSION",
             "tp_mode": "DYNAMIC",
             "min_rr_ratio": self.min_rr_ratio,
-            "vwap": vwap_main,
-            "vwap_lower": vwap_lower,
-            "vwap_upper": vwap_upper,
+            "vwap": vwap_target,
+            "vwap_lower": lower,
+            "vwap_upper": upper,
             "adx": adx_val,
         }
+        if controller_decision is not None:
+            signal["mr_controller"] = {
+                "band_multiplier": controller_decision.band_multiplier,
+                "lookback": controller_decision.lookback,
+                "z": controller_decision.z,
+                "abs_z": controller_decision.abs_z,
+                "target_outside_pct": controller_decision.target_outside_pct,
+                "current_outside_pct": controller_decision.current_outside_pct,
+                "reason": controller_decision.reason,
+                "updated": controller_decision.updated,
+            }
 
         return signal
+
+    def _maybe_warn_pipeline_indicator_mismatch(self) -> None:
+        if self._pipeline_cfg_warned:
+            return
+        pipeline = getattr(self, "market_data_pipeline", None)
+        pipeline_cfg = getattr(pipeline, "config", None)
+        if not isinstance(pipeline_cfg, dict):
+            return
+        indicators_cfg = pipeline_cfg.get("indicators", {})
+        if not isinstance(indicators_cfg, dict):
+            indicators_cfg = {}
+
+        try:
+            pipeline_lookback = int(indicators_cfg.get("vwap_lookback", 1440))
+        except Exception:
+            pipeline_lookback = 1440
+        try:
+            pipeline_mult = float(indicators_cfg.get("vwap_band_multiplier", 2.0))
+        except Exception:
+            pipeline_mult = 2.0
+
+        if pipeline_lookback != int(self.vwap_lookback) or not math.isclose(pipeline_mult, float(self.band_mult), rel_tol=0, abs_tol=1e-12):
+            logger.warning(
+                "[MeanReversion] Strategy config differs from pipeline indicators; "
+                f"strategy(vwap_lookback={self.vwap_lookback}, band_multiplier={self.band_mult}) "
+                f"pipeline(indicators.vwap_lookback={pipeline_lookback}, indicators.vwap_band_multiplier={pipeline_mult}). "
+                "Static bands (vwap_lower/vwap_upper) come from pipeline; enable dynamic_controller or align indicators.*."
+            )
+        self._pipeline_cfg_warned = True
+
+    def _maybe_apply_dynamic_controller(
+        self,
+        *,
+        symbol: str,
+        df_vwap: pd.DataFrame,
+        df_sig: pd.DataFrame,
+        price: float,
+        vwap: float,
+        vwap_std: Optional[float],
+        adx: float,
+        atr: Optional[float],
+    ) -> Optional[MRControllerDecision]:
+        if not getattr(self._mr_controller, "enabled", False):
+            return None
+
+        ts = None
+        try:
+            ts_val = df_sig.index[-1]
+            if isinstance(ts_val, pd.Timestamp):
+                ts = ts_val.to_pydatetime()
+            elif isinstance(ts_val, datetime):
+                ts = ts_val
+        except Exception:
+            ts = None
+
+        if ts is None:
+            ts = datetime.now(timezone.utc)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+
+        is_forming = False
+        try:
+            is_forming = bool(getattr(df_sig, "attrs", {}).get("includes_forming")) or bool(
+                getattr(df_vwap, "attrs", {}).get("includes_forming")
+            )
+        except Exception:
+            is_forming = False
+
+        decision = self._mr_controller.evaluate(
+            symbol=symbol,
+            ts=ts,
+            price=price,
+            vwap=vwap,
+            vwap_std=vwap_std,
+            adx=adx,
+            atr=atr,
+            df_vwap=df_vwap,
+            is_forming_candle=is_forming,
+        )
+        if not math.isfinite(float(decision.lower)) or not math.isfinite(float(decision.upper)):
+            if not self._controller_fallback_warned:
+                logger.warning(
+                    f"[MeanReversion] Dynamic controller enabled but bands unavailable; "
+                    f"falling back to pipeline bands (reason={decision.reason})."
+                )
+                self._controller_fallback_warned = True
+            return None
+        return decision

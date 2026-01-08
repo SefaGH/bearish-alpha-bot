@@ -49,7 +49,12 @@ param(
     [object] $DebugMode = $null,
 
     [Parameter(Mandatory=$false)]
-    [string] $LogLevel = ""
+    [string] $LogLevel = "",
+
+    # Logic App payload-mapped target environment (controls BingX routing only)
+    # Allowed: "vst" | "prod" (default: prod if missing)
+    [Parameter(Mandatory=$false)]
+    [string] $TargetEnv = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -120,9 +125,18 @@ try {
         throw "Invalid logLevel: '$val'. Allowed: $($allowed -join ', ')"
     }
 
+    function Normalize-TargetEnv([string]$val) {
+        if ([string]::IsNullOrWhiteSpace($val)) { return "prod" }
+        $s = $val.Trim().ToLower()
+        if ($s -in @("prod","production")) { return "prod" }
+        if ($s -in @("vst","demo","sandbox")) { return "vst" }
+        throw "Invalid targetEnv: '$val'. Allowed: vst|prod."
+    }
+
     # === Normalize payload-mapped values ===
     $debugModeNorm = Normalize-Bool $DebugMode
     $logLevelNorm = if ([string]::IsNullOrWhiteSpace($LogLevel)) { "" } else { Validate-LogLevel $LogLevel }
+    $targetEnvNorm = Normalize-TargetEnv $TargetEnv
 
     # Defaulting rules:
     # - debugMode=true + missing logLevel => logLevel=DEBUG
@@ -151,6 +165,7 @@ try {
     $forceRecreateStr = if ($ForceRestart) { "true" } else { "false" }
 
     Write-Output "Run config: debugMode=$debugModeStr logLevel=$logLevelStr forceRestart=$ForceRestart"
+    Write-Output "Routing: targetEnv=$targetEnvNorm => BINGX_ENV=$targetEnvNorm (single API key; base URL routing only)"
     if ($overrideRequested) {
         Write-Output "Override requested => container recreate enforced"
     }
@@ -175,12 +190,17 @@ echo "1. Cleaning Docker system..."
 # Kullanılmayan her şeyi sil (Volume'lar dahil)
 docker system prune -af --volumes || true
 
+# Eski durdurma bayraklarını temizle
+echo "1b. Removing stale stop flags..."
+sudo rm -f /tmp/bearish_bot_manual_stop.flag
+
 # --- ADIM 2: (Optional) recreate is handled by vm_run_session.py ---
 FORCE_RECREATE="__FORCE_RECREATE__"
 TRADING_DURATION_SECONDS="__TRADING_DURATION_SECONDS__"
 IMAGE_TAG="__IMAGE_TAG__"
 DEBUG_MODE_STR="__DEBUG_MODE__"
 LOG_LEVEL_STR="__LOG_LEVEL__"
+BINGX_ENV="__BINGX_ENV__"
 
 echo "2. Force recreate: $FORCE_RECREATE"
 
@@ -227,6 +247,10 @@ echo "   Wrapper supports new flags: $HAS_NEW_WRAPPER"
 if [ "$HAS_NEW_WRAPPER" -eq 1 ]; then
     # vm_run_session.py container'ı --detach (arka plan) modunda başlatır.
     ARGS=(--image "$IMAGE" --name "$NAME" --force-recreate "$FORCE_RECREATE")
+    # Prefer env overrides instead of editing env-file in place (safer for VST/PROD routing).
+    if [ -n "$BINGX_ENV" ]; then
+        ARGS+=(--env "BINGX_ENV=$BINGX_ENV")
+    fi
     if [ -n "$DEBUG_MODE_STR" ]; then
         ARGS+=(--debug-mode "$DEBUG_MODE_STR")
     fi
@@ -256,6 +280,9 @@ else
 
     # Build env overrides AFTER --env-file.
     EXTRA_ENV_ARGS=""
+    if [ -n "$BINGX_ENV" ]; then
+        EXTRA_ENV_ARGS="$EXTRA_ENV_ARGS -e BINGX_ENV=$BINGX_ENV"
+    fi
     if [ -n "$DEBUG_MODE_STR" ]; then
         EXTRA_ENV_ARGS="$EXTRA_ENV_ARGS -e DEBUG_MODE=$DEBUG_MODE_STR"
     fi
@@ -285,11 +312,27 @@ if docker ps --filter "name=^bearish-bot$" --filter "status=running" | grep -q "
     CID=$(docker ps --filter "name=^bearish-bot$" --format "{{.ID}}" | head -n 1)
     echo "   Container ID: $CID"
     echo "--- ENV OVERRIDE DIAGNOSTICS ---"
-    docker inspect bearish-bot --format '{{range .Config.Env}}{{println .}}{{end}}' | egrep 'DEBUG_MODE|LOG_LEVEL' || true
-    docker exec bearish-bot env | egrep 'DEBUG_MODE|LOG_LEVEL' || true
+    docker inspect bearish-bot --format '{{range .Config.Env}}{{println .}}{{end}}' | egrep 'BINGX_ENV|DEBUG_MODE|LOG_LEVEL' || true
+    docker exec bearish-bot env | egrep 'BINGX_ENV|DEBUG_MODE|LOG_LEVEL' || true
     LATEST=$(ls -t /mnt/bearish/logs/live_trading_*.log 2>/dev/null | head -n 1 || true)
     if [ -n "$LATEST" ]; then
         grep -m 5 " - DEBUG - " "$LATEST" || echo "NO DEBUG lines"
+        echo "--- ROUTING CONFIRMATION (best-effort) ---"
+        echo "Expected BINGX_ENV=$BINGX_ENV"
+        GREP_OK=1
+        if ! grep -m 1 "\\[BINGX-ENV\\] env=$BINGX_ENV " "$LATEST" >/dev/null 2>&1; then
+            echo "?? WARNING: Missing or mismatched [BINGX-ENV] line in log (expected env=$BINGX_ENV)."
+            GREP_OK=0
+        fi
+        if ! grep -m 1 "\\[MODE-BANNER\\].*BINGX_ENV=$BINGX_ENV" "$LATEST" >/dev/null 2>&1; then
+            echo "?? WARNING: Missing or mismatched [MODE-BANNER] line in log (expected BINGX_ENV=$BINGX_ENV)."
+            GREP_OK=0
+        fi
+        if [ "$GREP_OK" -eq 0 ]; then
+            echo "?? WARNING: Routing confirmation failed. Verify container logs with: docker logs --tail 200 bearish-bot"
+        else
+            echo "? Routing confirmation OK ([BINGX-ENV] and [MODE-BANNER] match)."
+        fi
     else
         echo "NO log file found under /mnt/bearish/logs"
     fi
@@ -308,6 +351,7 @@ fi
     $startupScript = $startupScript.Replace('__IMAGE_TAG__', $ImageTag)
     $startupScript = $startupScript.Replace('__DEBUG_MODE__', $debugModeStr)
     $startupScript = $startupScript.Replace('__LOG_LEVEL__', $logLevelStr)
+    $startupScript = $startupScript.Replace('__BINGX_ENV__', $targetEnvNorm)
 
     # 4. EXECUTE ON VM
     Write-Output "[5/6] Sending command to VM..."
