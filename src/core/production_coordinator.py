@@ -1230,7 +1230,16 @@ class ProductionCoordinator:
 
         # 2. Fiyat Tahmin Motoru (Price Prediction Engine)
         # ✔️ DÜZELTME: Bu bileşene artık sadece 'price_prediction' alt bloğu verilir.
-        price_pred_config = ml_config.get('price_prediction', {})
+        price_pred_config = dict(ml_config.get('price_prediction', {}) or {})
+
+        # Gemma adapter controls:
+        # - Operational enable/disable: `ml.gemma.enabled` (single source of truth)
+        # - Shadow mode precedence: `ml.price_prediction.shadow_mode` (explicit) > `ml.gemma.shadow_mode` (fallback)
+        gemma_cfg = ml_config.get('gemma', {})
+        if isinstance(gemma_cfg, dict):
+            price_pred_config['gemma_enabled'] = bool(gemma_cfg.get('enabled', True))
+            if 'shadow_mode' not in price_pred_config and 'shadow_mode' in gemma_cfg:
+                price_pred_config['shadow_mode'] = bool(gemma_cfg.get('shadow_mode', False))
         if price_pred_config.get('enabled', True):
             try:
                 self.price_engine = AdvancedPricePredictionEngine(

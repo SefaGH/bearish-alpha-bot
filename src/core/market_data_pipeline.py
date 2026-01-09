@@ -558,6 +558,19 @@ class MarketDataPipeline:
         This is called at startup to prevent "Insufficient data" errors for indicators.
         """
         logger.info(f"[PRIME] Starting historical data priming for {len(symbols)} symbols and {len(timeframes)} timeframes.")
+
+        # Optional operator kill-switch (kept explicit to avoid silent behavior changes).
+        try:
+            universe_cfg = self.config.get('universe', {}) if isinstance(self.config, dict) else {}
+            prefetch_cfg = universe_cfg.get('prefetch', {}) if isinstance(universe_cfg, dict) else {}
+            prefetch_enabled = bool(prefetch_cfg.get('enabled', True))
+        except Exception:
+            prefetch_enabled = True
+            prefetch_cfg = {}
+
+        if not prefetch_enabled:
+            logger.warning("[PRIME] Prefetch disabled via universe.prefetch.enabled=false; skipping historical priming.")
+            return
         
         # CRITICAL: Wait for WebSocket collector to be ready before priming
         if not await self._wait_for_websocket_ready(timeout=10.0):
@@ -565,13 +578,27 @@ class MarketDataPipeline:
         
         tasks = []
         # We need enough data for indicators like EMA(200) and VWAP (target at least 2 days of 1m bars ~2880+)
-        limit = (
-            self.config.get('indicators', {}).get('ema_slow', 200)
-            + self.INDICATOR_WARMUP_BUFFER
-            + self.FETCH_SAFETY_BUFFER
-        )
-        # Raise the floor to ensure sufficient post-warmup history for signal generation
-        required_limit = max(limit, 3000)
+        indicators_cfg = self.config.get('indicators', {}) if isinstance(self.config, dict) else {}
+        try:
+            ema_slow = int(indicators_cfg.get('ema_slow', 200))
+        except Exception:
+            ema_slow = 200
+
+        limit = ema_slow + self.INDICATOR_WARMUP_BUFFER + self.FETCH_SAFETY_BUFFER
+
+        # Single source of truth: universe.prefetch.startup_candle_count (schema enforces >= 2000).
+        startup_floor = 3000
+        try:
+            if isinstance(prefetch_cfg, dict) and prefetch_cfg.get('startup_candle_count') is not None:
+                startup_floor = int(prefetch_cfg.get('startup_candle_count'))
+        except Exception:
+            startup_floor = 3000
+        if startup_floor < 2000:
+            logger.warning("[PRIME] startup_candle_count=%s too low; clamping to 2000.", startup_floor)
+            startup_floor = 2000
+
+        required_limit = max(limit, startup_floor)
+        logger.info("[PRIME] Priming candle target: required_limit=%s (ema_slow=%s, startup_floor=%s)", required_limit, ema_slow, startup_floor)
 
         for symbol in symbols:
             for timeframe in timeframes:

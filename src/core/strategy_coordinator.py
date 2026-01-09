@@ -638,6 +638,12 @@ class StrategyCoordinator:
             from src.ml.manifest_manager import ManifestManager
             
             gemma_config = self.config['ml']['gemma'].copy()
+
+            # Single operational flag: ml.gemma.enabled
+            if isinstance(gemma_config, dict) and gemma_config.get("enabled", True) is False:
+                logger.info("🧠 GEMMA disabled via config (ml.gemma.enabled=false); skipping adapter init.")
+                self.gemma_adapter = None
+                return
             
             # Load manifest for GEMMA configuration
             try:

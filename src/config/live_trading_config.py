@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import sys
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import yaml
@@ -175,6 +176,30 @@ class LiveTradingConfiguration:
         'ml_rl_training_mode': 'ml.reinforcement_learning.training_mode',
     }
 
+    # ------------------------------------------------------------------
+    # Azure App Configuration compatibility (strict-schema safe)
+    #
+    # AppConfig is highest priority. When stale keys linger in the remote store,
+    # strict schema mode fails early (before we can run safety validation).
+    # We therefore rewrite known legacy keys into their canonical equivalents
+    # and drop removed/dead blocks with an explicit warning.
+    # ------------------------------------------------------------------
+    APPCONFIG_DROP_PREFIXES = (
+        # Removed from YAML; legacy/unused in current live launcher path.
+        'adaptive_strategies',
+    )
+    APPCONFIG_KEY_REWRITES = {
+        # Naming mismatch (RiskConfiguration ignores the *_pct legacy key)
+        'risk.max_position_size_pct': 'risk.max_position_size',
+        # STR MTF legacy missing-data flags -> canonical missing_*_is_fatal
+        'signals.short_the_rip.mtf_confirmation.require_15m': 'signals.short_the_rip.mtf_confirmation.missing_15m_is_fatal',
+        'signals.short_the_rip.mtf_confirmation.require_1h': 'signals.short_the_rip.mtf_confirmation.missing_1h_is_fatal',
+    }
+    APPCONFIG_PREFIX_REWRITES = {
+        # Strategy rename: AdaptiveShortTheRip emits strategy_name=adaptive_str
+        'strategies.adaptive_short_the_rip': 'strategies.adaptive_str',
+    }
+
     @classmethod
     def load(
         cls,
@@ -295,6 +320,7 @@ class LiveTradingConfiguration:
         self._apply_heuristic_type_coercion(merged, combined_schema)
         self._warn_deprecated_keys(merged)
         self._validate_schema_types(merged, combined_schema)
+        self._validate_security_layer(merged)
         
         self._apply_universe_defaults(merged)
         self._apply_trigger_price_defaults(merged)
@@ -303,6 +329,43 @@ class LiveTradingConfiguration:
         self._normalize_str_mtf_config(merged)
         self._normalize_mean_reversion_dynamic_controller_config(merged)
         return merged
+
+    def _validate_security_layer(self, config: Dict[str, Any]) -> None:
+        """Fail-fast validation for critical config invariants (Pydantic when available)."""
+        try:
+            from .schema import PYDANTIC_AVAILABLE, ConfigSafetyError, ValidationError, validate_with_schema
+        except Exception as exc:  # noqa: BLE001
+            # Never silently fail without visibility.
+            logger.warning("?? Config security layer unavailable (schema import failed): %s", exc)
+            return
+
+        logger.info("?? [CONFIG-VALIDATION] Validating configuration safety invariants...")
+        try:
+            validate_with_schema(config)
+            logger.info(
+                "?? [CONFIG-VALIDATION] OK (%s)",
+                "pydantic" if PYDANTIC_AVAILABLE else "fallback",
+            )
+        except (ConfigSafetyError, ValidationError, ValueError) as e:
+            print("\n" + "=" * 60)
+            print("?? KRITIK KONFIGURASYON HATASI (BOT BASLATILAMADI)")
+            print("=" * 60)
+
+            if isinstance(e, ValidationError) and hasattr(e, "errors"):
+                try:
+                    for err in e.errors():
+                        loc = " -> ".join(str(l) for l in err.get("loc", []))
+                        msg = err.get("msg", str(e))
+                        print(f"? HATA YERI: {loc}")
+                        print(f"  MESAJ: {msg}")
+                except Exception:
+                    print(str(e))
+            else:
+                print(str(e))
+
+            print("=" * 60 + "\n")
+            # Fail-fast: do not continue with a possibly unsafe config.
+            sys.exit(1)
 
     def _load_yaml_and_map_env_vars(self) -> Tuple[Dict[str, Any], Dict[str, List[str]]]:
         """
@@ -1397,6 +1460,9 @@ class LiveTradingConfiguration:
 
         percent_keys = [
             'daily_loss_limit_pct',
+            # Canonical key (RiskConfiguration expects `max_position_size`).
+            'max_position_size',
+            # Legacy key (ignored by RiskConfiguration; validated/blocked by schema layer).
             'max_position_size_pct',
             'max_notional_pct_per_trade',
             'max_margin_pct_per_trade'
@@ -1697,6 +1763,7 @@ class LiveTradingConfiguration:
                 
                 if app_config_dict:
                     logger.info(f"✅ Loaded {len(app_config_dict)} settings from App Configuration")
+                    app_config_dict = self._sanitize_appconfig_flat_dict(app_config_dict)
                     self._appconfig_raw_keys = tuple(sorted(app_config_dict.keys()))
                     self._appconfig_normalized_paths = self._normalize_appconfig_keys(self._appconfig_raw_keys)
                     nested_config = self._flatten_to_nested(app_config_dict)
@@ -1717,6 +1784,97 @@ class LiveTradingConfiguration:
             )
             return {}
     
+    def _sanitize_appconfig_flat_dict(self, flat_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Rewrite/drop stale AppConfig keys so strict schema mode can proceed safely."""
+        if not isinstance(flat_dict, dict) or not flat_dict:
+            return {}
+
+        def _has_prefix(key: str, prefix: str) -> bool:
+            return key == prefix or key.startswith(prefix + '.')
+
+        sanitized: Dict[str, Any] = {}
+        dropped: List[str] = []
+        rewritten: List[str] = []
+        seen_lower: set = set()
+
+        for raw_key, value in flat_dict.items():
+            key_str = str(raw_key).strip().strip('"').strip("'")
+            if not key_str:
+                continue
+
+            key_lower = key_str.lower()
+
+            # Drop known removed blocks (prevents strict-mode startup failure).
+            if any(_has_prefix(key_lower, prefix) for prefix in self.APPCONFIG_DROP_PREFIXES):
+                dropped.append(key_str)
+                continue
+
+            # Exact key rewrites.
+            target = self.APPCONFIG_KEY_REWRITES.get(key_lower)
+            if target:
+                target_lower = target.lower()
+                if target_lower in seen_lower:
+                    # Prefer the already-present canonical key over legacy alias.
+                    dropped.append(key_str)
+                    continue
+                sanitized[target] = value
+                seen_lower.add(target_lower)
+                rewritten.append(f"{key_str} -> {target}")
+                continue
+
+            # Prefix rewrites (strategy renames, etc.).
+            prefix_rewritten = False
+            for old_prefix, new_prefix in self.APPCONFIG_PREFIX_REWRITES.items():
+                old_lower = old_prefix.lower()
+                if not _has_prefix(key_lower, old_lower):
+                    continue
+
+                suffix = key_lower[len(old_lower):]
+                target_key = new_prefix + suffix
+                target_lower = target_key.lower()
+                if target_lower in seen_lower:
+                    dropped.append(key_str)
+                    prefix_rewritten = True
+                    break
+
+                sanitized[target_key] = value
+                seen_lower.add(target_lower)
+                rewritten.append(f"{key_str} -> {target_key}")
+                prefix_rewritten = True
+                break
+
+            if prefix_rewritten:
+                continue
+
+            # Default: keep key as-is (first occurrence wins).
+            if key_lower in seen_lower:
+                dropped.append(key_str)
+                continue
+
+            sanitized[key_str] = value
+            seen_lower.add(key_lower)
+
+        if rewritten:
+            sample = sorted(rewritten)[:20]
+            suffix = " (+more)" if len(rewritten) > 20 else ""
+            logger.warning(
+                "?? [APPCONFIG] Rewrote deprecated keys (%d): %s%s",
+                len(rewritten),
+                ", ".join(sample),
+                suffix,
+            )
+        if dropped:
+            sample = sorted(dropped)[:20]
+            suffix = " (+more)" if len(dropped) > 20 else ""
+            logger.warning(
+                "?? [APPCONFIG] Ignored deprecated/duplicate keys (%d): %s%s",
+                len(dropped),
+                ", ".join(sample),
+                suffix,
+            )
+
+        return sanitized
+
     @classmethod
     def _flatten_to_nested(cls, flat_dict: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -1886,19 +2044,89 @@ class LiveTradingConfiguration:
         exit_enabled = get_nested(config, ['position_management', 'exit_monitoring', 'enabled'], True)
         exit_frequency = get_nested(config, ['position_management', 'exit_monitoring', 'check_frequency'], 'N/A')
         logger.info(f"   Exit monitoring enabled: {exit_enabled} | check_frequency: {exit_frequency}")
-        logger.info("   Exit monitor poll interval (engine): 10s")
+
+        engine_loop_interval = get_nested(
+            config,
+            ['position_management', 'position_monitoring_loop_interval_s'],
+            10,
+        )
+        logger.info(f"   Position monitoring loop interval (engine): {engine_loop_interval}s")
         logger.info(
             "   Exit guardrails eps: "
             f"{get_nested(config, ['position_management', 'exit_guardrails', 'eps'], 0.0)}"
         )
-        logger.info(
-            "   Trailing stop: "
-            f"enabled={get_nested(config, ['position_management', 'trailing_stop', 'trailing_stop_enabled'], 'N/A')} "
-            f"distance={get_nested(config, ['position_management', 'trailing_stop', 'trailing_stop_distance'], 'N/A')} "
-            f"activation_threshold={get_nested(config, ['position_management', 'trailing_stop', 'activation_threshold'], 'N/A')} "
-            f"min_trail_step_bps={get_nested(config, ['position_management', 'trailing_stop', 'min_trail_step_bps'], 0)} "
-            f"min_trail_update_interval_s={get_nested(config, ['position_management', 'trailing_stop', 'min_trail_update_interval_s'], 0)}"
-        )
+
+        # NOTE: Trailing stop is resolved per-position:
+        #   Signal overrides > Strategy execution_profile > Global defaults.
+        # The global position_management.trailing_stop block is intended to contain
+        # only safety floors (min step / min update interval) that cannot be overridden.
+        trailing_block = get_nested(config, ['position_management', 'trailing_stop'], {})
+        if not isinstance(trailing_block, dict):
+            trailing_block = {}
+
+        legacy_ts_keys = ('trailing_stop_enabled', 'trailing_stop_distance', 'activation_threshold')
+        legacy_ts_present = any(key in trailing_block for key in legacy_ts_keys)
+
+        min_step_bps = get_nested(config, ['position_management', 'trailing_stop', 'min_trail_step_bps'], 0)
+        min_update_s = get_nested(config, ['position_management', 'trailing_stop', 'min_trail_update_interval_s'], 0)
+
+        if legacy_ts_present:
+            logger.info(
+                "   Trailing stop (legacy global defaults): "
+                f"enabled={get_nested(config, ['position_management', 'trailing_stop', 'trailing_stop_enabled'], False)} "
+                f"distance={get_nested(config, ['position_management', 'trailing_stop', 'trailing_stop_distance'], 'N/A')} "
+                f"activation_threshold={get_nested(config, ['position_management', 'trailing_stop', 'activation_threshold'], 'N/A')} "
+                f"| safety_floors: min_trail_step_bps={min_step_bps} min_trail_update_interval_s={min_update_s}"
+            )
+        else:
+            profiles = get_nested(config, ['execution_profiles'], {})
+            if not isinstance(profiles, dict):
+                profiles = {}
+
+            strategies = get_nested(config, ['strategies'], {})
+            if not isinstance(strategies, dict):
+                strategies = {}
+
+            used_profiles: List[str] = []
+            for strat_cfg in strategies.values():
+                if not isinstance(strat_cfg, dict):
+                    continue
+                name = (strat_cfg.get('execution_profile') or '').strip()
+                if name:
+                    used_profiles.append(name)
+
+            # Preserve order but de-duplicate.
+            used_profiles = list(dict.fromkeys(used_profiles))
+            if not used_profiles and profiles:
+                used_profiles = sorted(profiles.keys())
+
+            profile_summaries: List[str] = []
+            for profile_name in used_profiles:
+                profile_cfg = profiles.get(profile_name)
+                if not isinstance(profile_cfg, dict):
+                    continue
+                ts_cfg = profile_cfg.get('trailing_stop')
+                if not isinstance(ts_cfg, dict) or not ts_cfg:
+                    continue
+
+                enabled = ts_cfg.get('enabled', 'N/A')
+                delta = ts_cfg.get('delta_pct', 'N/A')
+                activation = ts_cfg.get('activation_threshold_pct', 'N/A')
+                profile_summaries.append(
+                    f"{profile_name}(enabled={enabled} delta_pct={delta} activation_threshold_pct={activation})"
+                )
+
+            if profile_summaries:
+                logger.info(
+                    "   Trailing stop (resolved via execution_profiles; signal overrides can override): "
+                    + "; ".join(profile_summaries)
+                    + f" | safety_floors: min_trail_step_bps={min_step_bps} min_trail_update_interval_s={min_update_s}"
+                )
+            else:
+                logger.info(
+                    "   Trailing stop: not configured in global defaults or execution_profiles "
+                    f"(safety_floors: min_trail_step_bps={min_step_bps} min_trail_update_interval_s={min_update_s})"
+                )
         logger.info(
             "   Trigger price: "
             f"source={get_nested(config, ['trigger_price', 'source'], 'mid')} "

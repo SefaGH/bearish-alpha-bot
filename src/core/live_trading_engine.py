@@ -1515,6 +1515,19 @@ class LiveTradingEngine:
         logger.info("Position monitoring loop started")
         
         interval = 10
+        try:
+            raw_interval = (
+                (self.config or {})
+                .get("position_management", {})
+                .get("position_monitoring_loop_interval_s", interval)
+            )
+            interval = max(1, int(raw_interval))
+        except Exception:
+            interval = 10
+            logger.warning(
+                "Invalid position_management.position_monitoring_loop_interval_s; using default=%ss",
+                interval,
+            )
         
         try:
             while self.state == EngineState.RUNNING:

@@ -49,7 +49,11 @@ class AdvancedPricePredictionEngine:
         self.manifest_mgr = ManifestManager()
         self.bundle_path = self._resolve_bundle_path()
         self.manifest = self._load_manifest()
-        self.adapter = self._initialize_adapter()
+
+        # Single source of truth for GEMMA adapter enable/disable is `ml.gemma.enabled`
+        # (propagated into this engine as `gemma_enabled` by ProductionCoordinator).
+        self.gemma_enabled = bool(self.config.get('gemma_enabled', True))
+        self.adapter = self._initialize_adapter() if self.gemma_enabled else None
         self.is_trained = self.adapter is not None and getattr(self.adapter, 'model', None) is not None
 
         status_summary = self.get_status_summary()
