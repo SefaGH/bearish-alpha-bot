@@ -151,56 +151,35 @@ class DynamicMRController:
         lookback_prev = int(state.last_lookback or self._lookback_static)
         vol_state_prev = state.last_vol_state
 
-        z = None
-        abs_z = None
-        if vwap_std is not None and vwap_std > 0 and all(map(math.isfinite, (price, vwap, vwap_std))):
-            z = (price - vwap) / vwap_std
-            abs_z = abs(z)
-            if math.isfinite(abs_z):
-                state.abs_z_hist.append(float(abs_z))
+        atr_pct = None
+        if atr is not None and price and math.isfinite(atr) and math.isfinite(price) and price > 0:
+            atr_pct = float(atr / price)
 
+        reason = "updated"
+        should_update = True
         if self._freeze_on_trend and adx is not None and math.isfinite(adx) and adx >= self._adx_freeze_threshold:
-            return self._decision_from_state(
-                state=state,
-                ts=ts,
-                price=price,
-                vwap=vwap,
-                vwap_std=vwap_std,
-                adx=adx,
-                atr=atr,
-                z=z,
-                abs_z=abs_z,
-                updated=False,
-                reason="freeze_on_trend",
-                df_vwap=df_vwap,
-            )
-
-        if (
+            should_update = False
+            reason = "freeze_on_trend"
+        elif (
             state.last_update_ts is not None
             and self._update_interval_sec > 0
             and (ts - state.last_update_ts).total_seconds() < self._update_interval_sec
         ):
-            return self._decision_from_state(
-                state=state,
-                ts=ts,
-                price=price,
-                vwap=vwap,
-                vwap_std=vwap_std,
-                adx=adx,
-                atr=atr,
-                z=z,
-                abs_z=abs_z,
-                updated=False,
-                reason="update_interval",
-                df_vwap=df_vwap,
-            )
+            should_update = False
+            reason = "update_interval"
 
-        m_eff = self._compute_band_multiplier(state)
-        lookback_eff, vol_state, atr_pct = self._compute_lookback(
-            prev_state=state.last_vol_state,
-            price=price,
-            atr=atr,
-        )
+        # Determine which lookback to use for effective vwap/std (and z-score).
+        if should_update:
+            lookback_eff, vol_state, atr_pct_candidate = self._compute_lookback(
+                prev_state=state.last_vol_state,
+                price=price,
+                atr=atr,
+            )
+            if atr_pct_candidate is not None:
+                atr_pct = atr_pct_candidate
+        else:
+            lookback_eff = lookback_prev
+            vol_state = vol_state_prev
 
         vwap_eff = vwap
         std_eff = vwap_std if vwap_std is not None else float("nan")
@@ -211,6 +190,7 @@ class DynamicMRController:
                 std_eff = std_candidate
 
         if not math.isfinite(std_eff) or std_eff <= 0 or not math.isfinite(vwap_eff):
+            # Preserve prior state bands when effective std can't be computed.
             return self._decision_from_state(
                 state=state,
                 ts=ts,
@@ -219,12 +199,46 @@ class DynamicMRController:
                 vwap_std=vwap_std,
                 adx=adx,
                 atr=atr,
-                z=z,
-                abs_z=abs_z,
+                z=None,
+                abs_z=None,
                 updated=False,
                 reason="std_unavailable",
                 df_vwap=df_vwap,
             )
+
+        # Compute z/abs_z using the SAME effective vwap/std used for band computation.
+        z = None
+        abs_z = None
+        if all(map(math.isfinite, (price, vwap_eff, std_eff))) and std_eff > 0:
+            z = (price - float(vwap_eff)) / float(std_eff)
+            abs_z = abs(z)
+            if math.isfinite(abs_z):
+                state.abs_z_hist.append(float(abs_z))
+
+        if not should_update:
+            lower = float(vwap_eff) - (m_prev * float(std_eff))
+            upper = float(vwap_eff) + (m_prev * float(std_eff))
+            outside_pct = self._current_outside_pct(state.abs_z_hist, m_prev)
+            return MRControllerDecision(
+                enabled=True,
+                updated=False,
+                band_multiplier=float(m_prev),
+                lookback=int(lookback_eff),
+                vwap=float(vwap_eff),
+                vwap_std=float(std_eff),
+                lower=float(lower),
+                upper=float(upper),
+                z=z,
+                abs_z=abs_z,
+                target_outside_pct=float(self._target_outside_pct),
+                current_outside_pct=outside_pct,
+                adx=adx,
+                atr=atr,
+                atr_pct=atr_pct,
+                reason=reason,
+            )
+
+        m_eff = self._compute_band_multiplier(state)
 
         lower = vwap_eff - (m_eff * std_eff)
         upper = vwap_eff + (m_eff * std_eff)

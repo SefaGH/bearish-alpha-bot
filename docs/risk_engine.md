@@ -32,7 +32,7 @@ Use these keys/values when setting cloud overrides (App Config applies last afte
 - `per_trade_risk_pct`: per-trade risk percent (e.g., `1` for 1%)
 - `risk.min_stop_pct`: stop floor (e.g., `0.5` → 0.5%; values >1 are treated as percent/100)
 - `max_position_notional_usd`: hard cap per position in USD (set explicit number, e.g., `250`)
- - `risk.max_notional_pct_per_trade`: fraction/percent that derives `computed_max_notional_usd` (e.g., `0.75` or `75` → 0.75)
+ - `risk.max_notional_pct_per_trade`: raw multiplier that derives `computed_max_notional_usd` (e.g., `0.75` or `10.0`)
 
 Example key-value list (App Config):
 ```
@@ -40,7 +40,7 @@ capital_usdt = 1000
 per_trade_risk_pct = 1
 risk.min_stop_pct = 0.5
 max_position_notional_usd = 250
-risk.max_notional_pct_per_trade = 75
+risk.max_notional_pct_per_trade = 0.75
 risk.size_planner_enabled = true
 ```
 
@@ -95,7 +95,7 @@ Supported keys to enable planner:
 - App Config: `risk.size_planner_enabled=true|false` (preferred nested key)
 
 ## End-to-end pipeline (planner enabled)
-1) **Config inputs:** `risk.per_trade_risk_pct` (fraction), `risk.risk_usd_cap`, `risk.max_position_size` (`max_position_size_pct`), `max_position_notional_usd` or `risk.max_notional_pct_per_trade`, `risk.min_stop_pct`, `risk.min_notional_threshold`, `risk.max_portfolio_risk_usd`, `equity_usd`, `available_balance`, `leverage`, `price`.
+1) **Config inputs:** `risk.per_trade_risk_pct` (fraction), `risk.risk_usd_cap`, `risk.max_position_size`, `max_position_notional_usd` or `risk.max_notional_pct_per_trade`, `risk.min_stop_pct`, `risk.min_notional_threshold`, `risk.max_portfolio_risk_usd`, `equity_usd`, `available_balance`, `leverage`, `price`.
 2) **APS (stop/risk/volatility expert):**
 	- `computed_max_risk_usd = equity * per_trade_risk_pct`
 	- `effective_risk_usd = min(computed_max_risk_usd, risk_usd_cap)` (cap optional)

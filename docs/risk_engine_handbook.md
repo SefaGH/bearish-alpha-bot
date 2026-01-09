@@ -37,7 +37,7 @@ Risk sistemi kabaca üç katmandan oluşuyor:
 
        * `risk.per_trade_risk_pct` → fraction (0.01 = %1)
        * `risk.daily_loss_limit_pct` → fraction
-       * `risk.max_notional_pct_per_trade` → fraction
+       * `risk.max_notional_pct_per_trade` → multiplier (equity * value)
      * İnsan-okur özet oluşturmak:
 
        * “Capital: 100 USDT, Risk Per Trade: 1.00% (1.00 USDT max risk)” gibi.
@@ -116,11 +116,11 @@ Aşağıdaki tablo en önemli risk parametrelerini özetler:
 | Sermaye                | `risk.equity_usd`                       | `CAPITAL_USDT`               | Toplam sermaye (USDT)                                               |
 | Trade başına risk (%)  | `risk.per_trade_risk_pct`               | `PER_TRADE_RISK_PCT`         | Fraction: `0.01` = %1                                               |
 | Stop floor (%)         | `risk.min_stop_pct`                     | `RISK_MIN_STOP_PCT`          | ≤1 → fraction, >1 → `%`/100                                         |
-| Max notional (%)       | `risk.max_notional_pct_per_trade`       | `MAX_NOTIONAL_PCT_PER_TRADE` | Fraction: `0.75` = sermayenin %75’i                                 |
+| Max notional (x)       | `risk.max_notional_pct_per_trade`       | `MAX_NOTIONAL_PCT_PER_TRADE` | Multiplier: `0.75` = %75, `10.0` = 10x equity                        |
 | Max notional (USD)     | `max_position_notional_usd`             | `MAX_POSITION_NOTIONAL_USD`  | Opsiyonel; set edilirse hard USD clamp                              |
 | Min notional threshold | (şu an YAML/AppConfig’te exposed değil) | (ENV’de de yok)              | Internal default: 5.0 USDT; `min_notional`/`min_notional_threshold` |
 
-> Not: `per_trade_risk_pct` ve `max_notional_pct_per_trade` **her yerde fraction** olarak çalışır (0.01 = %1, 0.75 = %75). Eğer App Config’te/ENV’de `1` yazarsan, kod bunu `%1` değil `%100` kabul eder, sonra normalize eder. Bu yüzden **0.01, 0.02, 0.75** gibi değerler kullanmak en temiz yaklaşımdır.
+> Not: `per_trade_risk_pct` **fraction** olarak çalışır (0.01 = %1). `max_notional_pct_per_trade` ise **multiplier** olarak yorumlanır (0.75 = %75, 10.0 = 10x). Bu alan için percent-style değerler (`75` gibi) kullanma.
 
 ---
 
@@ -213,12 +213,12 @@ En kritik key’ler:
   * Örnek: `0.003` → %0.3 stop floor
 * `risk.max_notional_pct_per_trade`:
 
-  * Örnek: `0.75` → sermayenin %75’i kadar notional clamp
+  * Örnek: `0.75` → sermayenin %75’i kadar notional clamp (`10.0` → 10x equity)
 * Opsiyonel: `max_position_notional_usd`:
 
   * Örnek: `75` → her trade için max 75 USDT notional
 
-Bu değerleri App Config portalından kontrol et; fraction semantiğini unutma.
+Bu değerleri App Config portalından kontrol et; multiplier semantiğini unutma.
 
 ### 5.2. Paper Mode Başlangıç Loglarını Kontrol Et
 

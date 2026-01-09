@@ -1615,7 +1615,9 @@ class ProductionCoordinator:
                 risk_params = dict(config.get('risk', {}) or {})
                 if cfg_equity_override is not None:
                     risk_params['equity_usd'] = cfg_equity_override
-                portfolio_value = float(risk_params.get('equity_usd', 500))
+                if risk_params.get('equity_usd') is None:
+                    raise RuntimeError("Missing `risk.equity_usd` in configuration (or CAPITAL_USDT override).")
+                portfolio_value = float(risk_params.get('equity_usd'))
                 logger.info(f"✓ Portfolio value from config: ${portfolio_value:.2f}")
             else:
                 logger.info(f"✓ Using provided portfolio value: ${portfolio_value:.2f}")

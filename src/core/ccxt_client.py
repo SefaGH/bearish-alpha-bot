@@ -612,6 +612,52 @@ class CcxtClient:
                 raise RuntimeError(f"Unable to verify BingX hedge mode: {exc}") from exc
             return None
 
+    def set_leverage(self, symbol: str, leverage: float) -> Optional[Dict[str, Any]]:
+        """Best-effort leverage setter (exchange-side).
+
+        Notes:
+        - Many exchanges require swap/futures market type (`options.defaultType=swap`) which we already set.
+        - Some exchanges/symbols do not support API leverage changes; this must not crash the bot.
+        """
+        if leverage is None:
+            return None
+
+        try:
+            leverage_int = int(float(leverage))
+        except (TypeError, ValueError):
+            logger.warning("[%s] set_leverage skipped: invalid leverage=%r", self.name, leverage)
+            return None
+
+        if leverage_int <= 0:
+            leverage_int = 1
+
+        setter = getattr(self.ex, "set_leverage", None) or getattr(self.exchange, "set_leverage", None)
+        if not callable(setter):
+            logger.warning("[%s] set_leverage not supported by CCXT adapter", self.name)
+            return None
+
+        candidates = [symbol]
+        if self.name == "bingx":
+            try:
+                native_symbol = self._get_bingx_native_symbol(symbol)
+                if native_symbol and native_symbol not in candidates:
+                    candidates.append(native_symbol)
+            except Exception:
+                pass
+
+        last_exc: Optional[Exception] = None
+        for sym in candidates:
+            try:
+                resp = setter(leverage_int, sym)
+                logger.info("[%s] leverage set: symbol=%s leverage=%s", self.name, sym, leverage_int)
+                return resp if isinstance(resp, dict) else {"response": resp, "symbol": sym, "leverage": leverage_int}
+            except Exception as exc:
+                last_exc = exc
+                continue
+
+        logger.warning("[%s] set_leverage failed: symbol=%s leverage=%s err=%s", self.name, symbol, leverage_int, last_exc)
+        return None
+
     def fetch_ohlcv_bulk(self, symbol: str, timeframe: str, target_limit: int) -> List[List]:
         """
         Ultimate bulk OHLCV fetching with server sync + dynamic symbols.

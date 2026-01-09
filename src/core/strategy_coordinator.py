@@ -3585,6 +3585,15 @@ class StrategyCoordinator:
             position_multiplier = self._compute_ppo_position_multiplier(signal)
             signal['ppo_position_multiplier'] = position_multiplier
 
+            # Leverage SSOT: default from centralized config unless strategy/signal explicitly sets it.
+            if not signal.get('leverage'):
+                try:
+                    trading_cfg = self.config.get('trading', {}) if isinstance(self.config, dict) else {}
+                    if isinstance(trading_cfg, dict) and trading_cfg.get('leverage') is not None:
+                        signal['leverage'] = float(trading_cfg.get('leverage') or 1.0)
+                except Exception:
+                    signal['leverage'] = signal.get('leverage') or 1.0
+
             # Apply volume bucket filters/boosts per-strategy
             # NOTE: Volume gating and scoring are now handled in process_strategy_signal and _enrich_signal (Issue #450).
             # The legacy logic here has been removed to prevent duplication and errors.
@@ -3600,7 +3609,11 @@ class StrategyCoordinator:
                 logger.debug(f"📊 Signal R/R: {signal['rr_ratio']:.2f}")
             
             # Calculate position size using the new module
-            sized_signal = await self.position_sizing.calculate_optimal_size(signal, return_signal=True)
+            sized_signal = await self.position_sizing.calculate_optimal_size(
+                signal,
+                return_signal=True,
+                portfolio_manager=getattr(self, "portfolio_manager", None),
+            )
 
             if position_multiplier != 1.0:
                 sized_signal.setdefault('sizing_meta', {})

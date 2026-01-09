@@ -42,6 +42,12 @@ def _iter_pct_violations(config: Any) -> List[Tuple[str, str]]:
             for key, value in obj.items():
                 child = f"{path}.{key}" if path else str(key)
 
+                # NOTE: `risk.max_notional_pct_per_trade` is treated as a raw multiplier (e.g., 10.0 == 10x),
+                # despite the `_pct` suffix. Exempt it from the generic 0-1 invariant enforcement.
+                if key == "max_notional_pct_per_trade":
+                    walk(value, child)
+                    continue
+
                 if isinstance(key, str) and key.endswith("_pct"):
                     if isinstance(value, bool) or value is None:
                         violations.append((child, "must be a number in [0, 1] (decimal fraction)"))
@@ -91,7 +97,7 @@ def validate_config_safety(config_data: Dict[str, Any]) -> None:
         if "max_notional_per_trade" in risk:
             errors.append((
                 "risk.max_notional_per_trade",
-                "is removed; use risk.max_notional_pct_per_trade (percent-based cap) instead",
+                "is removed; use risk.max_notional_pct_per_trade (multiplier-based cap) instead",
             ))
         if "max_position_size_pct" in risk:
             errors.append((
@@ -154,10 +160,17 @@ class RiskConfiguration(BaseModel):
     equity_usd: float = Field(..., gt=0)
     per_trade_risk_pct: float = Field(..., le=0.05, description="Trade başı risk %5'i geçemez")
     daily_loss_limit_pct: float = Field(..., le=0.20, description="Günlük zarar limiti %20'yi geçemez")
-    risk_usd_cap: float
+    risk_usd_cap: Optional[float] = Field(
+        default=None,
+        description="Optional absolute USD risk ceiling per trade (None disables the cap).",
+    )
 
     max_position_size: float = Field(default=0.25, le=1.0)
-    max_notional_pct_per_trade: float = Field(..., le=1.0)
+    max_notional_pct_per_trade: float = Field(
+        ...,
+        le=50.0,
+        description="NOTE: Treated as a raw leverage multiplier (e.g., 10.0 = 10x equity), despite the '_pct' suffix. Do not normalize.",
+    )
     position_size_policy: Literal["clip", "reject"]
 
     concurrent_limits: ConcurrentLimits

@@ -53,7 +53,20 @@ class PortfolioManager:
         # Portfolio metrics
         # NOTE: Initial value taken from RiskManager for backward compatibility
         # In Phase 3, consider passing portfolio_value as separate parameter to constructor
-        self.portfolio_value = float(risk_manager.portfolio_value)
+        initial_equity = None
+        try:
+            initial_equity = getattr(getattr(risk_manager, 'risk_config', None), 'initial_capital', None)
+            if initial_equity is not None:
+                initial_equity = float(initial_equity)
+        except Exception:
+            initial_equity = None
+
+        if initial_equity is None:
+            raise RuntimeError("PortfolioManager requires configured virtual equity (risk.equity_usd).")
+
+        self.portfolio_value = float(initial_equity)
+        # Virtual equity (VST): tracked internally; no exchange balance sync.
+        self.total_equity = float(self.portfolio_value)
         self.peak_portfolio_value = self.portfolio_value
         self.current_drawdown = 0.0
         
@@ -114,6 +127,10 @@ class PortfolioManager:
     
     def get_current_equity(self) -> float:
         """Get current portfolio equity value."""
+        return self.portfolio_value
+
+    def get_total_equity(self) -> float:
+        """Alias for total equity (virtual equity in VST mode)."""
         return self.portfolio_value
     
     def get_peak_equity(self) -> float:
@@ -219,15 +236,32 @@ class PortfolioManager:
     
     def get_total_exposure(self) -> float:
         """
-        Calculate total notional value of all open positions.
+        Calculate total used margin across open positions (notional / leverage).
         
         Returns:
             Total exposure in USDT
         """
-        total_exposure = sum(
-            (pos.get('size', pos.get('amount', 0)) or 0) * pos.get('entry_price', 0)
-            for pos in self.active_positions.values()
-        )
+        total_exposure = 0.0
+        for pos in self.active_positions.values():
+            try:
+                notional = pos.get("notional")
+                if notional is None:
+                    size = float(pos.get('size', pos.get('amount', 0)) or 0)
+                    entry = float(pos.get('entry_price', pos.get('entry', 0)) or 0)
+                    notional = size * entry
+                notional = float(notional or 0.0)
+
+                raw_leverage = pos.get("leverage", pos.get("lev", 1))
+                try:
+                    leverage = float(raw_leverage or 1.0)
+                except (TypeError, ValueError):
+                    leverage = 1.0
+                if leverage <= 0:
+                    leverage = 1.0
+
+                total_exposure += max(0.0, notional) / leverage
+            except Exception:
+                continue
         
         active_count = len(self.active_positions)
         capital_utilization = (total_exposure / self.portfolio_value * 100) if self.portfolio_value > 0 else 0
@@ -263,6 +297,10 @@ class PortfolioManager:
         """
         total_exposure = self.get_total_exposure()
         return self.portfolio_value - total_exposure
+
+    def get_available_balance(self) -> float:
+        """Alias for RiskManager: available margin/equity after used margin."""
+        return self.get_available_capital()
     
     def add_exchange_client(self, exchange_name: str, client):
         """

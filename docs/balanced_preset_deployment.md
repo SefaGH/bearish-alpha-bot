@@ -3,7 +3,7 @@
 ## Final values (balanced preset)
 - risk.equity_usd = 500
 - risk.per_trade_risk_pct = 0.003  # 0.3%
-- risk.max_position_size_pct = 0.25
+- risk.max_position_size = 0.25
 - risk.max_notional_pct_per_trade = 0.25
 - risk.min_stop_pct = 0.005
 - risk.position_size_policy = clip
@@ -23,7 +23,7 @@ $label = "production"
 $keys = @{
   "risk.equity_usd" = "500"
   "risk.per_trade_risk_pct" = "0.003"
-  "risk.max_position_size_pct" = "0.25"
+  "risk.max_position_size" = "0.25"
   "risk.max_notional_pct_per_trade" = "0.25"
   "risk.min_stop_pct" = "0.005"
   "risk.position_size_policy" = "clip"

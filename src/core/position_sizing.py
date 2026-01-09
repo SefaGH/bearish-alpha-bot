@@ -235,7 +235,13 @@ class AdvancedPositionSizing(PositionSizingProtocol):
             logger.error(f"Error in regime-based sizing: {e}")
             return 0.0
     
-    async def calculate_optimal_size(self, signal: Dict, method: str = 'fixed_risk_capped', return_signal: bool = False, **kwargs) -> Union[Dict, float]:
+    async def calculate_optimal_size(
+        self,
+        signal: Dict,
+        method: str = 'fixed_risk_capped',
+        return_signal: bool = False,
+        **kwargs,
+    ) -> Union[Dict, float]:
         """
         Calculate the uncapped, risk-based proposal for a position size.
 
@@ -285,8 +291,10 @@ class AdvancedPositionSizing(PositionSizingProtocol):
                 signal['position_size'] = 0
                 return signal
             
-            # Get portfolio state from RiskManager
-            portfolio = self.risk_manager.get_portfolio_summary()
+            portfolio_manager = kwargs.pop('portfolio_manager', None)
+
+            # Get portfolio state from RiskManager (prefer live PortfolioManager equity when available)
+            portfolio = self.risk_manager.get_portfolio_summary(portfolio_manager=portfolio_manager)
             capital = float(portfolio.get('portfolio_value', 0))
             
             if capital <= 0:
@@ -302,13 +310,20 @@ class AdvancedPositionSizing(PositionSizingProtocol):
 
             # Use configuration with GitHub Variables priority
             # Default to balanced preset (0.3%) when config is missing
+            strategy_name = (signal.get('strategy_name') or signal.get('strategy') or '').strip()
+
             risk_pct = float(config.get('per_trade_risk_pct', 0.003))
+            try:
+                resolver = getattr(getattr(self.risk_manager, 'risk_config', None), 'get_effective_risk_pct', None)
+                if callable(resolver):
+                    risk_pct = float(resolver(strategy_name) or risk_pct)
+            except Exception:
+                pass
             risk_cap = config.get('risk_usd_cap')
             leverage = float(signal.get('leverage', config.get('leverage_default', 5)))
 
             # Risk-based calculation only (no caps here)
-            per_trade_risk_usd = getattr(self.risk_manager.risk_config, 'max_risk_per_trade_usd', None)
-            base_risk_usd = risk_per_trade_override if risk_per_trade_override is not None else per_trade_risk_usd or (capital * risk_pct)
+            base_risk_usd = risk_per_trade_override if risk_per_trade_override is not None else (capital * risk_pct)
             if risk_cap:
                 base_risk_usd = min(base_risk_usd, float(risk_cap))
 
@@ -339,8 +354,9 @@ class AdvancedPositionSizing(PositionSizingProtocol):
                 'proposed_notional': proposed_notional,
                 'capped': False,
                 'cap_applied_by': None,
-                'original_notional': risk_per_trade_override if risk_per_trade_override is not None else per_trade_risk_usd or (capital * risk_pct) / (raw_stop_pct if raw_stop_pct > 0 else 1),
+                'original_notional': risk_per_trade_override if risk_per_trade_override is not None else (capital * risk_pct) / (raw_stop_pct if raw_stop_pct > 0 else 1),
                 'below_min_notional': below_min_flag,
+                'strategy_name': strategy_name or None,
             }
 
             logger.info(f"📊 [SIZING-PROPOSED] {symbol}")

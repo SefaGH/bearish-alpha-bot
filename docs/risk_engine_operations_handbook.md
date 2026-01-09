@@ -35,7 +35,7 @@ Ana kaynak: `config.example.yaml` + ENV + Azure App Configuration.
 
      * `risk.size_planner_enabled` (planner flag)
      * `risk.per_trade_risk_pct`
-     * `risk.max_position_size_pct`
+     * `risk.max_position_size`
      * `risk.max_notional_pct_per_trade`
      * `risk.max_position_notional_usd`
      * `risk.min_stop_pct`
@@ -72,8 +72,8 @@ Ana kaynak: `config.example.yaml` + ENV + Azure App Configuration.
 
 * **Büyüklük limitleri:**
 
-  * `max_position_size_pct` → pozisyon değeri / equity üst limiti (ör: 0.10 = %10).
-  * `max_notional_pct_per_trade` → trade başına notional yüzdesi (equity * pct).
+  * `max_position_size` → pozisyon büyüklüğü limiti (fraction of equity; 0.10 = %10).
+  * `max_notional_pct_per_trade` → trade başına notional çarpanı (equity * multiple; 0.75 = %75, 10.0 = 10x).
   * `max_position_notional_usd`
 
     * Öncelik: explicit USD > computed (equity * max_notional_pct_per_trade) > None.
@@ -113,7 +113,7 @@ Kullanılan değerler:
 
 * `equity` (toplam özsermaye)
 * `available_balance` (serbest bakiye)
-* `max_position_size_pct`
+* `max_position_size`
 * `max_position_notional_usd` / `max_notional_pct_per_trade`
 * `min_notional_threshold`
 * `max_portfolio_risk_usd` & `current_open_risk_usd`
@@ -123,7 +123,7 @@ Kullanılan değerler:
 Kaplar:
 
 1. **Size % cap**
-   `cap_size_pct = equity * max_position_size_pct`
+   `cap_size_pct = equity * max_position_size`
 2. **Notional cap**
    `cap_notional = max_position_notional_usd`
    veya `equity * max_notional_pct_per_trade`
@@ -288,7 +288,7 @@ Agent’ın bakacağı kritik log etiketleri:
 
    * Sermaye (`equity_usd`)
    * `per_trade_risk_pct`
-   * `max_position_size_pct`
+   * `max_position_size`
    * `max_notional_pct_per_trade` / `max_position_notional_usd`
    * `min_stop_pct`
    * `min_notional_threshold`
@@ -390,7 +390,7 @@ AI agent’ın, log + config üzerinden önerebileceği optimizasyonlar:
 
 **Parametreler:**
 
-* `risk.max_position_size_pct` / `MAX_POSITION_SIZE_PCT`
+* `risk.max_position_size` / `MAX_POSITION_SIZE_PCT`
 * `risk.max_notional_pct_per_trade` / `MAX_NOTIONAL_PCT_PER_TRADE`
 * `risk.max_position_notional_usd`
 
@@ -400,7 +400,7 @@ AI agent’ın, log + config üzerinden önerebileceği optimizasyonlar:
 
   * Her sinyalde `capped_by_size_pct=True` ve **daha yüksek risk istiyorsun**:
 
-    * `max_position_size_pct`’i artır (0.10 → 0.2 gibi).
+    * `max_position_size`’ı artır (0.10 → 0.2 gibi).
 * Eğer:
 
   * Çok büyük notional önerileri var, ama sistem bunları `max_position_notional_usd` ile kırpıyor ve sen daha fazla risk istemiyorsun:
@@ -408,7 +408,7 @@ AI agent’ın, log + config üzerinden önerebileceği optimizasyonlar:
     * `max_position_notional_usd`’i sabit kalarak bırak (bu zaten güvenlik kapağı).
 * Eğer capital reject’leri çok sık:
 
-  * `max_position_size_pct` ve `max_notional_pct_per_trade` değerleri, sermayeye göre fazla agresif olabilir → düşür.
+  * `max_position_size` ve `max_notional_pct_per_trade` değerleri, sermayeye göre fazla agresif olabilir → düşür.
 
 ### 5.3 Stop floor ve min_notional
 

@@ -378,22 +378,39 @@ class PositionSizeRule(BaseRiskRule):
             position_value = signal.get('notional')
             if position_value is None or position_value <= 0:
                 position_value = position_size * entry_price
+
+            raw_leverage = signal.get('leverage', 1)
+            try:
+                leverage = float(raw_leverage or 1.0)
+            except (TypeError, ValueError):
+                leverage = 1.0
+            if leverage <= 0:
+                leverage = 1.0
+
+            required_margin = position_value / leverage if position_value > 0 else 0.0
             
             # Get portfolio value using helper function
             portfolio_value = _get_portfolio_value(portfolio_manager, signal)
                 
+            # Leverage-aware: interpret `max_position_size` as max margin fraction of equity.
             max_position_value = portfolio_value * self.max_position_size
             
             position_size_pct = position_value / portfolio_value if portfolio_value > 0 else 0
 
             # Expose the value seen by the rule for downstream anomaly logging
             signal['__position_size_rule_position_value'] = position_value
+            signal['__position_size_rule_required_margin'] = required_margin
             
-            logger.debug(f"[{self.rule_name}] {symbol}: ${position_value:.2f} ({position_size_pct:.1%}) vs max ${max_position_value:.2f} ({self.max_position_size:.1%})")
+            logger.debug(
+                f"[{self.rule_name}] {symbol}: notional=${position_value:.2f} lev={leverage:.2f} "
+                f"margin=${required_margin:.2f} ({position_size_pct:.1%}) vs max_margin=${max_position_value:.2f} ({self.max_position_size:.1%})"
+            )
             
-            if position_value > max_position_value:
-                logger.warning(f"🚫 [{self.rule_name}] REJECTED: {symbol} position size ${position_value:.2f} exceeds max ${max_position_value:.2f}")
-                return (False, f"Position size ${position_value:.2f} exceeds max ${max_position_value:.2f}")
+            if required_margin > max_position_value:
+                logger.warning(
+                    f"🚫 [{self.rule_name}] REJECTED: {symbol} required margin ${required_margin:.2f} exceeds max ${max_position_value:.2f}"
+                )
+                return (False, f"Required margin ${required_margin:.2f} exceeds max ${max_position_value:.2f}")
             
             logger.debug(f"✅ [{self.rule_name}] PASSED: {symbol}")
             return (True, f"Position size within limits")
@@ -749,9 +766,19 @@ class RiskRewardRatioRule(BaseRiskRule):
         # Calculate dynamic target
         dynamic_target = (base_rr - relaxation + tightening) * regime_adjustment
         
-        # Respect strategy's minimum
-        strategy_min = float(signal.get('strategy_min_rr', 0.5))
-        dynamic_target = max(dynamic_target, strategy_min)
+        # Respect strategy's minimum (support both keys for interoperability):
+        # - `strategy_min_rr` (common)
+        # - `min_rr_ratio` (mean_reversion emits this)
+        strategy_floor_raw = signal.get('strategy_min_rr')
+        if strategy_floor_raw is None:
+            strategy_floor_raw = signal.get('min_rr_ratio')
+        strategy_floor = 0.5
+        if strategy_floor_raw is not None:
+            try:
+                strategy_floor = float(strategy_floor_raw)
+            except Exception:
+                strategy_floor = 0.5
+        dynamic_target = max(dynamic_target, strategy_floor)
         
         # Apply bounds
         final_target = max(lower_bound, min(dynamic_target, upper_bound))
@@ -767,15 +794,26 @@ class RiskRewardRatioRule(BaseRiskRule):
         return final_target
 
     def _get_rr_config_for_signal(self, signal: Dict[str, Any]) -> Dict[str, Any]:
-        """Resolve dynamic R/R config, applying per-strategy overrides when available."""
+        """Resolve dynamic R/R config for this signal using strategy risk profiles."""
         base_config = deepcopy(self.risk_config.rr_dynamic)
-        overrides = getattr(self.risk_config, 'rr_dynamic_strategy_overrides', {}) or {}
-        if not overrides:
-            return base_config
         strategy_name = signal.get('strategy_name') or signal.get('strategy')
-        if not strategy_name:
+
+        resolver = getattr(self.risk_config, 'get_strategy_profile', None)
+        if callable(resolver):
+            try:
+                profile = resolver(strategy_name)
+                rr_cfg = profile.get('rr_dynamic') if isinstance(profile, dict) else None
+                if isinstance(rr_cfg, dict):
+                    return deepcopy(rr_cfg)
+            except Exception:
+                # Fall back to legacy path below
+                pass
+
+        # Backward-compatible fallback: legacy rr_dynamic.strategy_overrides
+        overrides = getattr(self.risk_config, 'rr_dynamic_strategy_overrides', {}) or {}
+        if not overrides or not strategy_name:
             return base_config
-        strategy_key = strategy_name.lower()
+        strategy_key = str(strategy_name).lower()
         override = overrides.get(strategy_key) or overrides.get(strategy_name)
         if not override:
             return base_config

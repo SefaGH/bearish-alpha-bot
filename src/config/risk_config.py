@@ -154,10 +154,31 @@ class RiskConfiguration:
             custom_limits: Configuration dictionary from YAML/ENV
             initial_capital: Trading capital for USD calculations
         """
-        # Store capital for USD calculations
-        self.initial_capital = initial_capital or (custom_limits.get('equity_usd', 500.0) if custom_limits else 500.0)
+        # Store capital for USD calculations (Single Source of Truth: risk.equity_usd)
+        equity_from_cfg = None
+        if isinstance(custom_limits, dict) and custom_limits.get('equity_usd') is not None:
+            try:
+                equity_from_cfg = float(custom_limits.get('equity_usd'))
+            except (TypeError, ValueError):
+                equity_from_cfg = None
+
+        if initial_capital is not None:
+            try:
+                self.initial_capital = float(initial_capital)
+            except (TypeError, ValueError):
+                raise ValueError(f"Invalid initial_capital={initial_capital!r}; expected float") from None
+        elif equity_from_cfg is not None:
+            self.initial_capital = float(equity_from_cfg)
+        else:
+            raise ValueError(
+                "Missing starting capital: set `risk.equity_usd` in config (or override via `CAPITAL_USDT`)."
+            )
         # Preserve a flattened snapshot of the normalized risk section for downstream consumers
         self._raw_risk_config = deepcopy(custom_limits) if custom_limits else {}
+
+        # Polymorphic risk management: per-strategy profile overrides.
+        self.strategy_profiles: Dict[str, Dict[str, Any]] = {}
+        self._load_strategy_profiles(custom_limits or {})
         
         # Store daily_max_trades if provided
         self.daily_max_trades = custom_limits.get('daily_max_trades') if custom_limits else None
@@ -182,6 +203,20 @@ class RiskConfiguration:
             
             processed_limits[key] = value
 
+        # Normalize percent-style inputs for key risk limits when provided via config dict.
+        # LiveTradingConfiguration already normalizes these, but RiskConfiguration also supports
+        # direct instantiation in tests/tools.
+        for pct_key in ('max_drawdown', 'max_portfolio_risk', 'max_position_size'):
+            try:
+                raw = processed_limits.get(pct_key)
+                if raw is None or isinstance(raw, bool):
+                    continue
+                numeric = float(raw)
+                if numeric > 1:
+                    processed_limits[pct_key] = numeric / 100.0
+            except Exception:
+                continue
+
         # ENV → YAML → default priority for min_stop_pct
         processed_limits['min_stop_pct'] = self._get_env_or_config(
             'RISK_MIN_STOP_PCT',
@@ -197,7 +232,8 @@ class RiskConfiguration:
             # Normalize percent-style values (e.g., 0.5 -> 0.5%, 50 -> 50%)
             processed_limits['min_stop_pct'] = processed_limits['min_stop_pct'] / 100.0
 
-        # Max position notional: explicit override > computed > None
+        # Max position notional (total exposure cap):
+        # - explicit override (env/config) > computed (pct-based) > legacy computed > None (unlimited)
         explicit_max_notional = self._get_env_or_config(
             'MAX_POSITION_NOTIONAL_USD',
             custom_limits.get('max_position_notional_usd') if custom_limits else None,
@@ -210,7 +246,16 @@ class RiskConfiguration:
         )
         computed_max_notional = None
         if custom_limits:
-            computed_max_notional = custom_limits.get('computed_max_notional_usd') or custom_limits.get('max_notional_per_trade')
+            # Prefer pct-based cap when present (e.g., 10.0 == 10x equity notional cap)
+            computed_pct = custom_limits.get('max_notional_pct_per_trade')
+            try:
+                computed_pct = float(computed_pct) if computed_pct is not None else None
+            except Exception:
+                computed_pct = None
+            if computed_pct is not None and computed_pct > 0 and self.initial_capital:
+                computed_max_notional = float(self.initial_capital) * float(computed_pct)
+            else:
+                computed_max_notional = custom_limits.get('computed_max_notional_usd') or custom_limits.get('max_notional_per_trade')
         computed_max_notional = self._safe_float_optional(
             computed_max_notional,
             default=None,
@@ -225,9 +270,7 @@ class RiskConfiguration:
 
         if max_notional_choice is not None:
             processed_limits['max_position_notional_usd'] = float(max_notional_choice)
-        elif processed_limits.get('max_position_notional_usd') is None:
-            # Balanced fallback: cap notional at 25% of equity when no explicit/computed value is supplied
-            processed_limits['max_position_notional_usd'] = self.initial_capital * 0.25
+        # Else: keep None (unlimited) when not explicitly configured
 
         self.risk_limits = RiskLimits(**processed_limits)
         
@@ -257,6 +300,128 @@ class RiskConfiguration:
         
         # NEW: Calculate USD amounts after loading risk limits
         self._calculate_usd_amounts(custom_limits)
+
+    def _load_strategy_profiles(self, custom_limits: Dict[str, Any]) -> None:
+        """Load per-strategy risk profiles with case-insensitive keys."""
+        raw_profiles = custom_limits.get('strategy_profiles') if isinstance(custom_limits, dict) else None
+        if raw_profiles is None:
+            self.strategy_profiles = {}
+            return
+        if not isinstance(raw_profiles, dict):
+            logger.warning("Ignoring invalid risk.strategy_profiles (expected dict): %s", type(raw_profiles))
+            self.strategy_profiles = {}
+            return
+
+        profiles: Dict[str, Dict[str, Any]] = {}
+        for name, profile in raw_profiles.items():
+            if not isinstance(name, str):
+                continue
+            key = name.strip().lower()
+            if not key:
+                continue
+            if not isinstance(profile, dict):
+                logger.warning("Ignoring invalid strategy profile '%s' (expected dict): %s", name, type(profile))
+                continue
+            profiles[key] = deepcopy(profile)
+
+        self.strategy_profiles = profiles
+        if self.strategy_profiles:
+            logger.info("✓ Strategy risk profiles loaded for %d strategies", len(self.strategy_profiles))
+
+    @staticmethod
+    def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively merge override values into base (override wins)."""
+        merged = deepcopy(base) if isinstance(base, dict) else {}
+        if not isinstance(override, dict):
+            return merged
+        for key, value in override.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = RiskConfiguration._deep_merge_dict(merged[key], value)
+            else:
+                merged[key] = deepcopy(value) if isinstance(value, dict) else value
+        return merged
+
+    def get_strategy_profile(self, strategy_name: Optional[str]) -> Dict[str, Any]:
+        """Resolve a strategy's effective risk profile (global defaults + overrides).
+
+        Precedence for R/R dynamic settings:
+        1) Legacy: `risk.rr_dynamic.strategy_overrides.<strategy>`
+        2) New: `risk.strategy_profiles.<strategy>.rr_dynamic` (wins if both present)
+        """
+        base_profile: Dict[str, Any] = {}
+        if hasattr(self, 'rr_dynamic'):
+            base_profile['rr_dynamic'] = deepcopy(self.rr_dynamic)
+
+        if not strategy_name:
+            return base_profile
+
+        key = str(strategy_name).strip().lower()
+        if not key:
+            return base_profile
+
+        # Legacy per-strategy overrides (risk.rr_dynamic.strategy_overrides)
+        try:
+            legacy_overrides = getattr(self, 'rr_dynamic_strategy_overrides', {}) or {}
+        except Exception:
+            legacy_overrides = {}
+        legacy_override = None
+        if isinstance(legacy_overrides, dict):
+            legacy_override = legacy_overrides.get(key) or legacy_overrides.get(strategy_name)
+        if isinstance(legacy_override, dict) and 'rr_dynamic' in base_profile:
+            base_profile['rr_dynamic'] = self._deep_merge_dict(base_profile['rr_dynamic'], legacy_override)
+
+        # New polymorphic strategy profiles (risk.strategy_profiles)
+        override = self.strategy_profiles.get(key)
+        if not isinstance(override, dict):
+            return base_profile
+
+        # Merge known nested blocks first.
+        rr_override = override.get('rr_dynamic')
+        if isinstance(rr_override, dict) and 'rr_dynamic' in base_profile:
+            base_profile['rr_dynamic'] = self._deep_merge_dict(base_profile['rr_dynamic'], rr_override)
+
+        # Merge any additional keys so other rules can adopt profiles later.
+        for ov_key, ov_value in override.items():
+            if ov_key == 'rr_dynamic':
+                continue
+            if isinstance(ov_value, dict) and isinstance(base_profile.get(ov_key), dict):
+                base_profile[ov_key] = self._deep_merge_dict(base_profile[ov_key], ov_value)
+            else:
+                base_profile[ov_key] = deepcopy(ov_value) if isinstance(ov_value, dict) else ov_value
+
+        return base_profile
+
+    def get_effective_risk_pct(self, strategy_name: Optional[str]) -> float:
+        """Resolve per-trade risk fraction with Strategy Profile > Global fallback.
+
+        Returns a fraction (e.g., 0.02 for 2%).
+        """
+        default_pct = getattr(self, "per_trade_risk_pct", self.PER_TRADE_RISK_DEFAULT)
+        if not strategy_name:
+            return float(default_pct or 0.0)
+
+        key = str(strategy_name).strip().lower()
+        if not key:
+            return float(default_pct or 0.0)
+
+        override = None
+        if isinstance(getattr(self, "strategy_profiles", None), dict):
+            override = self.strategy_profiles.get(key)
+
+        if isinstance(override, dict) and "per_trade_risk_pct" in override:
+            normalized = self._normalize_fraction_value(
+                override.get("per_trade_risk_pct"),
+                f"risk.strategy_profiles.{key}.per_trade_risk_pct",
+            )
+            try:
+                normalized = float(normalized)
+            except (TypeError, ValueError):
+                normalized = float(default_pct or 0.0)
+            if normalized < 0:
+                return 0.0
+            return min(normalized, 1.0)
+
+        return float(default_pct or 0.0)
     
     def _calculate_usd_amounts(self, custom_limits: Dict[str, Any] = None):
         """Calculate USD amounts based on percentages and capital."""
@@ -336,6 +501,13 @@ Portfolio Heat Cap: {self.risk_limits.max_portfolio_risk:.1%} = ${self.max_portf
             except Exception:
                 return None
 
+        raw_max_notional_multiple = None
+        try:
+            if custom_limits and custom_limits.get('max_notional_pct_per_trade') is not None:
+                raw_max_notional_multiple = float(custom_limits.get('max_notional_pct_per_trade'))
+        except Exception:
+            raw_max_notional_multiple = None
+
         logger.info(
             "[RISK-CONFIG-SNAPSHOT] %s",
             {
@@ -343,7 +515,7 @@ Portfolio Heat Cap: {self.risk_limits.max_portfolio_risk:.1%} = ${self.max_portf
                 'per_trade_risk_pct': _safe_round(per_trade_risk_pct),
                 'max_portfolio_risk_pct': _safe_round(self.risk_limits.max_portfolio_risk),
                 'max_position_size_pct': _safe_round(self.risk_limits.max_position_size),
-                'max_notional_pct_per_trade': _safe_round(self.risk_limits.max_position_size),
+                'max_notional_pct_per_trade': _safe_round(raw_max_notional_multiple),
                 'max_position_notional_usd': _safe_round(self.risk_limits.max_position_notional_usd),
                 'min_stop_pct': _safe_round(self.risk_limits.min_stop_pct or 0.0),
                 'min_notional_threshold': _safe_round(self.risk_limits.min_notional_threshold or 0.0),
@@ -416,7 +588,12 @@ Portfolio Heat Cap: {self.risk_limits.max_portfolio_risk:.1%} = ${self.max_portf
     
     def _get_env_or_config(self, env_key: str, config_value: Any, value_type=str) -> Any:
         """
-        Helper to get value with priority: ENV > config > default.
+        Helper to coerce config values to expected types.
+
+        NOTE: RiskConfiguration no longer reads environment variables directly.
+        The single source of truth is the `custom_limits` dict passed during init,
+        which is expected to already include any ENV/AppConfig overrides applied
+        by `LiveTradingConfiguration`.
         
         Args:
             env_key: Environment variable name
@@ -424,26 +601,41 @@ Portfolio Heat Cap: {self.risk_limits.max_portfolio_risk:.1%} = ${self.max_portf
             value_type: Type to convert to (str, bool, float, int)
             
         Returns:
-            Value with priority order applied
+            Coerced value
         """
-        env_value = os.getenv(env_key)
-        if env_value is not None:
-            if value_type == bool:
-                # Enhanced boolean parsing with more edge cases
-                val_lower = str(env_value).strip().lower()
-                if val_lower in ['true', '1', 'yes', 'on', 'enabled']:
-                    return True
-                elif val_lower in ['false', '0', 'no', 'off', 'disabled', '']:
-                    return False
-                else:
-                    logger.warning(f"Invalid boolean value '{env_value}' for {env_key}, defaulting to config value")
-                    return config_value
-            elif value_type == float:
-                return float(env_value)
-            elif value_type == int:
-                return int(env_value)
-            return str(env_value)
-        return config_value
+        _ = env_key  # kept for backward compatibility with call sites
+        if config_value is None:
+            return None
+
+        if value_type == bool:
+            if isinstance(config_value, bool):
+                return config_value
+            try:
+                val_lower = str(config_value).strip().lower()
+            except Exception:
+                return bool(config_value)
+            if val_lower in ['true', '1', 'yes', 'on', 'enabled']:
+                return True
+            if val_lower in ['false', '0', 'no', 'off', 'disabled', '']:
+                return False
+            logger.warning("Invalid boolean value '%s' for %s; using bool() fallback", config_value, env_key)
+            return bool(config_value)
+
+        if value_type == float:
+            try:
+                return float(config_value)
+            except (TypeError, ValueError):
+                logger.warning("Invalid float value '%s' for %s; leaving as-is", config_value, env_key)
+                return config_value
+
+        if value_type == int:
+            try:
+                return int(config_value)
+            except (TypeError, ValueError):
+                logger.warning("Invalid int value '%s' for %s; leaving as-is", config_value, env_key)
+                return config_value
+
+        return str(config_value)
 
     @staticmethod
     def _safe_float_optional(value: Any, default: Optional[float], field_name: str) -> Optional[float]:

@@ -381,7 +381,36 @@ class RiskManager:
                     pyramiding_cfg = cfg_source.get("pyramiding", {}) or {}
         except Exception:
             pyramiding_cfg = {}
-        pyramiding_enabled = bool(pyramiding_cfg.get("enabled", False))
+        global_pyramiding_enabled = bool(pyramiding_cfg.get("enabled", False))
+
+        # Strategy-specific pyramiding override via execution_profile (Hybrid model support)
+        strategy_pyramiding_enabled = None
+        try:
+            cfg_source = getattr(portfolio_manager, "cfg", {}) if portfolio_manager and hasattr(portfolio_manager, "cfg") else {}
+            if not cfg_source and isinstance(self.config, dict):
+                cfg_source = self.config
+            if isinstance(cfg_source, dict) and isinstance(signal, dict):
+                strategy_name = (signal.get("strategy_name") or signal.get("strategy") or "").strip()
+                if strategy_name:
+                    strategies_cfg = cfg_source.get("strategies", {}) if isinstance(cfg_source.get("strategies", {}), dict) else {}
+                    strat_cfg = strategies_cfg.get(strategy_name, {}) if isinstance(strategies_cfg, dict) else {}
+                    profile_name = None
+                    if isinstance(strat_cfg, dict):
+                        profile_name = strat_cfg.get("execution_profile") or strat_cfg.get("executionProfile")
+                    if profile_name:
+                        profiles = cfg_source.get("execution_profiles", {}) if isinstance(cfg_source.get("execution_profiles", {}), dict) else {}
+                        profile_cfg = profiles.get(profile_name, {}) if isinstance(profiles, dict) else {}
+                        pyr_cfg = profile_cfg.get("pyramiding") if isinstance(profile_cfg, dict) else None
+                        if isinstance(pyr_cfg, dict) and "enabled" in pyr_cfg:
+                            strategy_pyramiding_enabled = bool(pyr_cfg.get("enabled"))
+        except Exception:
+            strategy_pyramiding_enabled = None
+
+        pyramiding_enabled = global_pyramiding_enabled and (True if strategy_pyramiding_enabled is None else bool(strategy_pyramiding_enabled))
+
+        # Hard stop: if this is a pyramiding scale-in and the strategy disables pyramiding, reject early.
+        if intent == INTENT_SCALE_IN and not is_dca_signal and not pyramiding_enabled:
+            return False, "pyramiding_disabled_for_strategy"
 
         if is_derisking_intent:
             logger.info(
@@ -763,13 +792,33 @@ class RiskManager:
         except (TypeError, ValueError):
             return 0.0
 
+    def _extract_position_leverage(self, position: Dict[str, Any]) -> float:
+        if not position:
+            return 1.0
+        raw = position.get("leverage") or position.get("lev") or 1
+        try:
+            lev = float(raw or 1.0)
+        except (TypeError, ValueError):
+            lev = 1.0
+        if lev <= 0:
+            lev = 1.0
+        return lev
+
+    def _extract_position_margin(self, position: Dict[str, Any]) -> float:
+        """Margin used by a position (notional / leverage)."""
+        notional = self._extract_position_notional(position)
+        lev = self._extract_position_leverage(position)
+        if notional <= 0:
+            return 0.0
+        return float(notional) / float(lev or 1.0)
+
     def _calculate_portfolio_dca_heat(self, active_positions: Dict[str, Dict[str, Any]], equity: float) -> float:
         if equity is None or equity <= 0:
             return 0.0
         total = 0.0
         for pos in (active_positions or {}).values():
             if self._is_dca_position(pos):
-                total += self._extract_position_notional(pos)
+                total += self._extract_position_margin(pos)
         return total / equity if equity else 0.0
 
     def _calculate_symbol_dca_heat(
@@ -785,7 +834,7 @@ class RiskManager:
             if pos.get("symbol") != symbol:
                 continue
             if self._is_dca_position(pos):
-                total += self._extract_position_notional(pos)
+                total += self._extract_position_margin(pos)
         return total / equity if equity else 0.0
 
     def _calculate_symbol_drawdown(
@@ -1167,7 +1216,16 @@ class RiskManager:
         max_position_notional_usd = risk_limits.get('max_position_notional_usd')
         max_notional_pct_per_trade = risk_limits.get('max_notional_pct_per_trade') or risk_limits.get('computed_max_notional_pct_per_trade')
 
-        cap_size_pct = equity * max_position_size_pct if max_position_size_pct else float('inf')
+        # Leverage-aware: treat `max_position_size` as a cap on margin usage (fraction of equity).
+        # Allowed notional under this cap scales with leverage.
+        try:
+            leverage_for_caps = float(leverage or 1.0)
+        except (TypeError, ValueError):
+            leverage_for_caps = 1.0
+        if leverage_for_caps <= 0:
+            leverage_for_caps = 1.0
+
+        cap_size_pct = (equity * max_position_size_pct * leverage_for_caps) if max_position_size_pct else float('inf')
         cap_notional = float('inf')
         try:
             if max_position_notional_usd is not None:
@@ -1355,6 +1413,13 @@ class RiskManager:
         """Apply SSOT position limits and return the capped size plus metadata."""
         portfolio_value = self._safe_get_equity(portfolio_manager)
         entry_price = signal.get('entry', 0) or signal.get('entry_price', 0)
+        raw_leverage = signal.get('leverage', 1) or 1
+        try:
+            leverage = float(raw_leverage or 1.0)
+        except (TypeError, ValueError):
+            leverage = 1.0
+        if leverage <= 0:
+            leverage = 1.0
 
         proposed_size = signal.get('position_size')
         if proposed_size is None:
@@ -1363,7 +1428,8 @@ class RiskManager:
         if proposed_notional is None:
             proposed_notional = proposed_size * entry_price if entry_price > 0 else 0
 
-        max_by_pct = portfolio_value * self.risk_limits['max_position_size']
+        # Leverage-aware: cap by margin fraction (equity * max_position_size), scaled back to notional via leverage.
+        max_by_pct = portfolio_value * self.risk_limits['max_position_size'] * leverage
         max_abs_limit = self.risk_limits.get('max_position_notional_usd')
         if max_abs_limit is None:
             max_by_abs = float('inf')
@@ -1408,6 +1474,7 @@ class RiskManager:
         limit_meta = {
             'action': action,
             'reason': reason,
+            'leverage': leverage,
             'proposed_notional': proposed_notional,
             'allowed_notional': allowed_notional,
             'final_notional': final_notional,
@@ -1457,7 +1524,11 @@ class RiskManager:
         try:
             if sizing_engine:
                 try:
-                    signal = await sizing_engine.calculate_optimal_size(signal, return_signal=True)
+                    signal = await sizing_engine.calculate_optimal_size(
+                        signal,
+                        return_signal=True,
+                        portfolio_manager=portfolio_manager,
+                    )
                 except ValueError as exc:
                     logger.warning(
                         "[RISK-ENGINE] Position sizing rejected trade",

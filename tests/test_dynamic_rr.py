@@ -60,20 +60,17 @@ class TestDynamicRRConfiguration:
         assert config.rr_dynamic['upper_bound_rr'] == 2.0
     
     def test_env_override_works(self):
-        """Test that environment variables override config values."""
-        # Set environment variable
+        """Legacy behavior: RiskConfiguration no longer reads env vars directly."""
         os.environ['RR_BASE_TARGET'] = '2.0'
-        
-        config = RiskConfiguration({
-            'rr_dynamic': {
-                'base_target_rr': 1.5
-            }
-        })
-        
-        assert config.rr_dynamic['base_target_rr'] == 2.0
-        
-        # Cleanup
-        del os.environ['RR_BASE_TARGET']
+        try:
+            config = RiskConfiguration({
+                'rr_dynamic': {
+                    'base_target_rr': 1.5
+                }
+            })
+            assert config.rr_dynamic['base_target_rr'] == 1.5
+        finally:
+            del os.environ['RR_BASE_TARGET']
 
 
 class TestDynamicRRCalculation:

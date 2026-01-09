@@ -84,12 +84,11 @@ def get_risk_params():
     """Extract risk parameters from config file first, then env vars."""
     cfg = load_config()
     risk_cfg = cfg.get('risk', {})
-    
+    if risk_cfg.get('equity_usd') is None:
+        raise RuntimeError("Missing `risk.equity_usd` in config (or CAPITAL_USDT override).")
+     
     return {
-        'equity_usd': float(
-            risk_cfg.get('equity_usd') or 
-            os.getenv('RISK_EQUITY_USD', '500')
-        ),
+        'equity_usd': float(risk_cfg.get('equity_usd')),
         'per_trade_risk_pct': float(
             risk_cfg.get('per_trade_risk_pct') or 
             os.getenv('RISK_PER_TRADE_RISK_PCT', '0.003')
@@ -458,12 +457,64 @@ async def main_live_trading():
             raise SystemExit("ERROR: No exchange clients configured. Set EXCHANGES environment variable.")
         
         logger.info(f"Loaded exchanges: {list(exchange_clients.keys())}")
-        
-        # Portfolio configuration from environment
-        portfolio_config = {
-            'equity_usd': float(os.getenv('EQUITY_USD', '500'))
-        }
-        logger.info(f"Portfolio config: {portfolio_config}")
+
+        # ------------------------------------------------------------------
+        # Leverage bootstrap (exchange-side; best-effort)
+        # - Reads leverage from centralized config: config.trading.leverage
+        # - Applies to discovered symbols (config.universe.fixed_symbols > TRADING_SYMBOLS > defaults)
+        # - Never crashes if unsupported by exchange/adapter
+        # ------------------------------------------------------------------
+        try:
+            cfg = getattr(coordinator, "config", {}) if coordinator else {}
+            trading_cfg = cfg.get("trading", {}) if isinstance(cfg, dict) else {}
+            raw_leverage = trading_cfg.get("leverage", 1)
+            try:
+                trading_leverage = int(float(raw_leverage or 1))
+            except (TypeError, ValueError):
+                trading_leverage = 1
+            trading_leverage = max(1, trading_leverage)
+
+            cfg_symbols = (cfg.get("universe", {}) or {}).get("fixed_symbols") if isinstance(cfg, dict) else None
+            env_symbols = os.environ.get("TRADING_SYMBOLS", "").strip()
+            symbols = []
+            if isinstance(cfg_symbols, list) and cfg_symbols:
+                symbols = [str(s).strip() for s in cfg_symbols if str(s).strip()]
+            elif env_symbols:
+                symbols = [s.strip() for s in env_symbols.split(",") if s.strip()]
+            if not symbols:
+                symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
+
+            if trading_leverage != 1:
+                logger.info("[LEVERAGE] Setting exchange leverage=%s for %s symbols", trading_leverage, len(symbols))
+
+            for ex_name, client in (exchange_clients or {}).items():
+                try:
+                    load_fn = getattr(client, "load_markets", None)
+                    if callable(load_fn):
+                        load_fn()
+                except Exception as exc:
+                    logger.warning("[LEVERAGE] %s load_markets failed (continuing): %s", ex_name, exc)
+
+                set_fn = getattr(client, "set_leverage", None)
+                if not callable(set_fn):
+                    continue
+
+                for sym in symbols:
+                    try:
+                        set_fn(sym, trading_leverage)
+                    except Exception as exc:
+                        logger.warning("[LEVERAGE] %s set_leverage failed (continuing): %s", ex_name, exc)
+        except Exception as exc:
+            logger.warning("[LEVERAGE] Bootstrap skipped due to error: %s", exc)
+         
+        # Capital SSOT: log configured virtual equity from central config (risk.equity_usd)
+        try:
+            cfg = getattr(coordinator, "config", {}) or {}
+            equity = float(((cfg.get("risk", {}) or {}).get("equity_usd")))
+            logger.info("Capital: $%.2f (Configured Virtual Equity)", equity)
+        except Exception as exc:
+            raise RuntimeError("Missing `risk.equity_usd` in configuration (or CAPITAL_USDT override).") from exc
+        portfolio_config = {}
         
         # Initialize production system
         logger.info("Initializing production system...")

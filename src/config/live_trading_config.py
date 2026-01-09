@@ -60,7 +60,10 @@ class LiveTradingConfiguration:
     """Centralized configuration loader with ENV > YAML priority."""
 
     CONFIG_FILE_PATH = 'config/config.example.yaml'
-    ENV_OVERRIDE_PATTERN = re.compile(r'#\s*Override with:\s*(\w+)')
+    # Accept both:
+    # - "# Override with: ENV_VAR" (canonical)
+    # - "# Override: ENV_VAR" (legacy/ML sections)
+    ENV_OVERRIDE_PATTERN = re.compile(r'#\s*Override(?:\s+with)?:\s*([A-Z0-9_]+)')
     _env_keys_snapshot: Tuple[str, ...] = ()
     TYPE_COERCION_ALLOWLIST = (
         'ml.reinforcement_learning.training_mode',
@@ -409,15 +412,16 @@ class LiveTradingConfiguration:
     
             path_stack.append((indentation, key_part))
             
-            match = self.ENV_OVERRIDE_PATTERN.search(line)
-            if match:
-                env_var = match.group(1)
+            matches = list(self.ENV_OVERRIDE_PATTERN.finditer(line))
+            if matches:
                 current_path = [p[1] for p in path_stack]
-                env_map[env_var] = current_path
-                
-                # Debug log for problematic variables
-                if 'RSI_THRESHOLD' in env_var or 'ML_' in env_var:
-                    logger.debug(f"Mapped ENV '{env_var}' to config path: {'.'.join(current_path)}")
+                for match in matches:
+                    env_var = match.group(1)
+                    env_map[env_var] = current_path
+
+                    # Debug log for problematic variables
+                    if 'RSI_THRESHOLD' in env_var or 'ML_' in env_var:
+                        logger.debug(f"Mapped ENV '{env_var}' to config path: {'.'.join(current_path)}")
     
         with open(self.config_path, 'r', encoding='utf-8') as f:
             yaml_config = yaml.safe_load(f)
@@ -1464,8 +1468,8 @@ class LiveTradingConfiguration:
             'max_position_size',
             # Legacy key (ignored by RiskConfiguration; validated/blocked by schema layer).
             'max_position_size_pct',
-            'max_notional_pct_per_trade',
-            'max_margin_pct_per_trade'
+            'max_margin_pct_per_trade',
+            'max_drawdown',
         ]
 
         # --- Critical: normalize per-trade risk with env + defaults ---

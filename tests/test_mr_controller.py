@@ -301,3 +301,57 @@ def test_mr_controller_cache_invalidates_on_last_row_change():
     )
 
     assert d1.vwap != d2.vwap
+
+
+def test_mr_controller_z_uses_effective_vwap_std():
+    lookback = 20
+    band_mult = 2.0
+    idx = pd.date_range("2026-01-01", periods=60, freq="min", tz="UTC")
+    close = pd.Series(range(len(idx)), index=idx, dtype=float) * 0.1 + 100.0
+    df = pd.DataFrame(
+        {
+            "open": close - 0.1,
+            "high": close + 0.5,
+            "low": close - 0.5,
+            "close": close,
+            "volume": 10.0,
+        },
+        index=idx,
+    )
+
+    controller = DynamicMRController(
+        {
+            "enabled": True,
+            "warmup_samples": 9999,
+            "abs_z_window": 50,
+            "update_interval_sec": 0,
+            "min_m_change": 0.0,
+            "m_min": band_mult,
+            "m_max": band_mult,
+            "freeze_on_trend": False,
+            "log_every_update": False,
+            "dynamic_lookback": {
+                "enabled": True,
+                "lookback_static": lookback,
+                "lookback_min": lookback,
+                "lookback_max": lookback,
+            },
+        },
+        static_band_multiplier=band_mult,
+        static_lookback=lookback,
+    )
+
+    # Force a mismatch between input vwap/vwap_std and locally recomputed effective values.
+    price = float(df["close"].iloc[-1]) + 10.0
+    decision = controller.evaluate(
+        symbol="BTC/USDT:USDT",
+        ts=idx[-1].to_pydatetime(),
+        price=price,
+        vwap=0.0,
+        vwap_std=9999.0,
+        adx=0.0,
+        atr=None,
+        df_vwap=df,
+    )
+
+    assert decision.z == pytest.approx((price - decision.vwap) / decision.vwap_std, rel=1e-12, abs=1e-12)

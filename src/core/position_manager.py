@@ -1083,6 +1083,13 @@ class AdvancedPositionManager:
             strategy_name = signal.get('strategy_name') or signal.get('strategy') or 'unknown'
             dca_metadata = signal.get('dca_metadata') if isinstance(signal.get('dca_metadata'), dict) else {}
             scale_profile = signal.get('scale_profile') or dca_metadata.get('profile')
+            raw_leverage = signal.get('leverage', 1)
+            try:
+                leverage = float(raw_leverage or 1.0)
+            except (TypeError, ValueError):
+                leverage = 1.0
+            if leverage <= 0:
+                leverage = 1.0
             risk_per_unit = abs(entry_price - stop_loss)
             risk_usd = risk_per_unit * amount if amount and amount > 0 else 0.0
             opened_at = datetime.now(timezone.utc)
@@ -1141,6 +1148,7 @@ class AdvancedPositionManager:
                 'risk_usd': risk_usd,
                 'risk_amount': risk_usd,
                 'position_notional': entry_price * amount if amount else 0.0,
+                'leverage': leverage,
                 'rsi_at_entry': entry_meta.get('rsi_at_entry'),
                 'regime_at_entry': entry_meta.get('regime_at_entry'),
                 'regime_confidence': entry_meta.get('regime_confidence'),

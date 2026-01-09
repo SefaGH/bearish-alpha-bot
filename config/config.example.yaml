@@ -45,6 +45,7 @@
 trading:
   order_type: market             # Override with: ORDER_TYPE ; LiveTradingEngine reads `trading.order_type` (NOT `execution.order_type`)
   slippage_buffer: 0.001         # Used only for limit orders (maker offset); market orders ignore this unless signal overrides order type
+  leverage: 10                   # Override with: TRADING_LEVERAGE ; Exchange-side leverage target (best-effort; unsupported exchanges ignore)
 
 # ==============================================================================
 # RISK MANAGEMENT - ENHANCED POSITION SIZING
@@ -56,18 +57,21 @@ risk:
   size_planner_enabled: true          # Override with: RISK_SIZE_PLANNER_ENABLED (balanced preset = active)
 
   # Balanced preset (fractions, not percents)
-  equity_usd: 500                     # Override with: CAPITAL_USDT
-  per_trade_risk_pct: 0.003           # Override with: PER_TRADE_RISK_PCT (0.3% of equity)
-  daily_loss_limit_pct: 0.02          # Override with: DAILY_LOSS_LIMIT_PCT
-  risk_usd_cap: 1                     # Override with: RISK_USD_CAP
+  equity_usd: 1000                     # Override with: CAPITAL_USDT ; Virtual Starting Balance (VST)
+  per_trade_risk_pct: 0.02            # Override with: PER_TRADE_RISK_PCT (2% of equity)
+  daily_loss_limit_pct: 0.10          # Override with: DAILY_LOSS_LIMIT_PCT
+  risk_usd_cap: null                  # Override with: RISK_USD_CAP ; Optional safety ceiling (e.g., 500). Leave null for unlimited.
+  position_sizing_type: risk_percentage  # Default: risk_percentage (dynamic % risk sizing)
   
   # NEW: Dynamic position sizing parameters
+  max_position_notional_usd: null     # Override with: MAX_POSITION_NOTIONAL_USD ; Override with: RISK_MAX_POSITION_NOTIONAL_USD ; Optional absolute notional ceiling
   max_position_size: 0.25             # Override with: MAX_POSITION_SIZE_PCT ; Renamed: RiskConfiguration expects `max_position_size`; `max_position_size_pct` is ignored
-  max_notional_pct_per_trade: 0.25    # Override with: MAX_NOTIONAL_PCT_PER_TRADE ; Prefer pct-based cap; loader derives legacy `max_notional_per_trade` at runtime
+  max_notional_pct_per_trade: 10.0    # Override with: MAX_NOTIONAL_PCT_PER_TRADE ; Total notional cap as multiple of equity (e.g., 10.0 == 10x)
   position_size_policy: clip          # Override with: POSITION_SIZE_POLICY (clip|reject)
+  max_drawdown: 0.20                  # Override with: MAX_DRAWDOWN ; Max portfolio drawdown (fraction)
   
   # Safety limits
-  min_stop_pct: 0.005                 # Override with: MIN_STOP_PCT
+  min_stop_pct: 0.005                 # Override with: MIN_STOP_PCT ; Override with: RISK_MIN_STOP_PCT
   
   daily_max_trades: 8                 # Override with: DAILY_MAX_TRADES
   
@@ -121,6 +125,18 @@ risk:
           ml_confidence: 0.45            # Override with: RR_BREAKOUT_WEIGHT_ML
           volume_strength: 0.15          # Override with: RR_BREAKOUT_WEIGHT_VOLUME
 
+  # NEW: Strategy-based risk profiles (polymorphic risk management)
+  # - Provides a unified place to override risk knobs per strategy.
+  # - For R/R, `strategy_profiles.<name>.rr_dynamic` overrides global `rr_dynamic` settings.
+  # - Backward compatible: `rr_dynamic.strategy_overrides` still works (and is merged first).
+  strategy_profiles:
+    mean_reversion:
+      per_trade_risk_pct: 0.02  # Strategy override: per-trade risk fraction (2%); falls back to global `risk.per_trade_risk_pct` when omitted
+      rr_dynamic:
+        base_target_rr: 1.25  # Override with: RISK__STRATEGY_PROFILES__MEAN_REVERSION__RR_DYNAMIC__BASE_TARGET_RR
+        lower_bound_rr: 1.15  # Override with: RISK__STRATEGY_PROFILES__MEAN_REVERSION__RR_DYNAMIC__LOWER_BOUND_RR
+        upper_bound_rr: 3.0
+
   # Volume-aware risk scaling
   volume_bucket_risk_matrix:        # Override with: RISK_VOLUME_BUCKET_MATRIX
     LOW:
@@ -159,7 +175,7 @@ risk:
   concurrent_limits:
     max_open_positions: 3           # Override with: MAX_OPEN_POSITIONS
     max_positions_per_symbol: 1     # Override with: MAX_POSITIONS_PER_SYMBOL
-    max_total_risk_pct: 0.06        # Override with: MAX_TOTAL_RISK_PCT (fraction of equity at risk)
+    max_total_risk_pct: 0.15        # Override with: MAX_TOTAL_RISK_PCT (fraction of equity at risk)
     correlation_bucket_threshold: 0.8 # Override with: CORRELATION_BUCKET_THRESHOLD
     dynamic_scaling:
       enabled: true                 # Override with: DYNAMIC_SCALING_ENABLED
@@ -396,7 +412,9 @@ signals:
       missing_15m_is_fatal: false
       missing_1h_is_fatal: true
 
-      # Legacy missing-data flags removed (deprecated; use missing_*_is_fatal)
+      # Legacy missing-data flags (deprecated; use missing_*_is_fatal)
+      require_15m: false
+      require_1h: true
 
       rsi_15m_min: 62.0
       min_15m_close_over_ema50_pct: 0.0015
@@ -503,6 +521,30 @@ execution_profiles:
     dca:
       enabled: false
 
+  # Hybrid model: Sniper Mode (MR) -> no DCA/pyramiding, trailing enabled.
+  sniper_mode:
+    trailing_stop:
+      enabled: true
+      delta_pct: 0.002
+      activation_threshold_pct: 0.003
+    dca:
+      enabled: false
+    pyramiding:
+      enabled: false
+
+  # Hybrid model: Standard Mode (Adaptive) -> DCA + pyramiding enabled.
+  standard_mode:
+    trailing_stop:
+      enabled: true
+      delta_pct: 0.002
+      activation_threshold_pct: 0.003
+    dca:
+      enabled: true
+      max_layers: 3
+      step_pct: 0.01
+    pyramiding:
+      enabled: true
+
 # ==============================================================================
 # STRATEGY ROUTING (Regime-aware)
 # ==============================================================================
@@ -536,7 +578,7 @@ strategies:
       fallback_priority: 0.4          # Override with: REGIME_DEFAULT_FALLBACK
 
   adaptive_ob:
-    execution_profile: "scalp_tight"  # Trailing/DCA resolution: Signal overrides > execution_profile > global safety-only
+    execution_profile: "standard_mode"  # Hybrid: DCA+pyramiding enabled
     allow_low_volume: true         # Override with: STRATEGY_OB_ALLOW_LOW_VOLUME
     volume_filters:
       enabled: true                 # Override with: STRATEGY_OB_VOLUME_FILTERS_ENABLED
@@ -551,7 +593,7 @@ strategies:
     adaptive_ob_wick_closeness_k: 0.25              # Normalized closeness to low (bar_low_and_close)
 
   adaptive_str:                      # Renamed: AdaptiveShortTheRip emits `strategy_name=adaptive_str`; `adaptive_short_the_rip` would be ignored
-    execution_profile: "scalp_tight"  # Trailing/DCA resolution: Signal overrides > execution_profile > global safety-only
+    execution_profile: "standard_mode"  # Hybrid: DCA+pyramiding enabled
     allow_low_volume: true         # Override with: STRATEGY_STR_ALLOW_LOW_VOLUME
     volume_filters:
       enabled: true                 # Override with: STRATEGY_STR_VOLUME_FILTERS_ENABLED
@@ -562,11 +604,12 @@ strategies:
 
   mean_reversion:
     enabled: true
-    execution_profile: "scalp_tight"
+    execution_profile: "sniper_mode"  # Hybrid: NO DCA/NO pyramiding (sniper MR)
     timeframe: "1m"           # VWAP calculation window
     signal_timeframe: "5m"    # Decision timeframe
     vwap_lookback: 1440       # Rolling 24h (1m bars)
     band_multiplier: 2.0
+    stop_loss_std_delta: 1.0  # Override with: STRATEGIES__MEAN_REVERSION__STOP_LOSS_STD_DELTA ; Z-score stop distance beyond the active band (in sigmas)
     adx_threshold: 25
     allocation_pct: 0.20
     dynamic_controller:
@@ -576,8 +619,8 @@ strategies:
       warmup_samples: 50
       update_interval_sec: 300
       min_m_change: 0.05
-      m_min: 1.0                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MIN ; More aggressive: allow trades at ~1.0σ (old: 1.5 blocked too much)
-      m_max: 3.0                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MAX
+      m_min: 1.8                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MIN ; Raise entry selectivity (filters noise)
+      m_max: 3.5                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MAX
       log_every_update: true
       freeze_on_trend: true
       adx_freeze_threshold: 32.0     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__ADX_FREEZE_THRESHOLD ; Looser freeze (old: 25 froze too early)

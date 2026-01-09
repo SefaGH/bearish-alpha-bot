@@ -98,6 +98,11 @@ class DCAWatcher:
 
         state = self._state.get(symbol, {})
         if not state:
+            base_leverage = base.get("leverage") or base.get("lev")
+            try:
+                base_leverage = float(base_leverage) if base_leverage is not None else None
+            except (TypeError, ValueError):
+                base_leverage = None
             state = {
                 "plan_id": uuid.uuid4().hex[:10],
                 "anchor_price": anchor_price,
@@ -109,6 +114,7 @@ class DCAWatcher:
                 "take_profit": base.get("take_profit"),
                 "timeframe": base.get("timeframe") or base.get("tf"),
                 "strategy_name": base.get("strategy_name") or base.get("strategy") or "unknown",
+                "leverage": base_leverage,
             }
         else:
             # Keep anchor stable for consistency in v1
@@ -255,10 +261,8 @@ class DCAWatcher:
 
         timestamp = time.time()
         reason = f"DCA layer {layer_index} price drop {price_drop_pct:.2%}"
-        strategy_name = "dca_watcher"
-        base_strategy = state.get("strategy_name")
-        if base_strategy and base_strategy != "unknown":
-            strategy_name = f"{base_strategy}_dca"
+        base_strategy = state.get("strategy_name") or "unknown"
+        strategy_name = base_strategy if base_strategy else "unknown"
 
         signal = {
             "symbol": symbol,
@@ -274,6 +278,12 @@ class DCAWatcher:
             "notional": volume_usdt,
             "stop": state.get("stop_loss"),
             "target": state.get("take_profit"),
+            "leverage": state.get("leverage"),
+            "meta": {
+                "is_dca": True,
+                "source": "dca_watcher",
+                "base_strategy": base_strategy,
+            },
             "dca_metadata": {
                 "profile": "dca",
                 "plan_id": state.get("plan_id"),

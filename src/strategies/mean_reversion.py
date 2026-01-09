@@ -22,6 +22,9 @@ class VWAPMeanReversion(BaseStrategy):
         self.vwap_tf = cfg.get("timeframe", "1m")
         self.signal_tf = cfg.get("signal_timeframe", "5m")
         self.band_mult = float(cfg.get("band_multiplier", 2.0))
+        self.stop_loss_std_delta = float(cfg.get("stop_loss_std_delta", 0.5))
+        if not math.isfinite(self.stop_loss_std_delta) or self.stop_loss_std_delta < 0:
+            self.stop_loss_std_delta = 0.5
         self.vwap_lookback = int(cfg.get("vwap_lookback", 1440))
         self.adx_threshold = float(cfg.get("adx_threshold", 30))
         self.min_rr_ratio = float(cfg.get("min_rr_ratio", 1.0))
@@ -251,14 +254,70 @@ class VWAPMeanReversion(BaseStrategy):
             )
             return None
 
-        stop = None
-        if atr_val and not math.isnan(atr_val):
-            if side == "buy":
-                stop = price - atr_val * 1.5
-            else:
-                stop = price + atr_val * 1.5
+        # ------------------------------------------------------------------
+        # Dynamic exit levels (Z-score consistent with VWAP bands)
+        # Goal: as volatility tightens/expands (vwap_std), stop adapts proportionally.
+        # ------------------------------------------------------------------
+        stop_loss_price = None
+        take_profit_price = vwap_target
 
-        target = vwap_target
+        effective_vwap_std = None
+        effective_band_mult = float(controller_decision.band_multiplier) if controller_decision else float(self.band_mult)
+        try:
+            if controller_decision is not None:
+                effective_vwap_std = float(controller_decision.vwap_std)
+        except Exception:
+            effective_vwap_std = None
+        if effective_vwap_std is None:
+            try:
+                if "vwap_std" in last_vwap.index:
+                    effective_vwap_std = float(last_vwap["vwap_std"])
+            except Exception:
+                effective_vwap_std = None
+        if effective_vwap_std is None:
+            try:
+                if (
+                    math.isfinite(upper)
+                    and math.isfinite(lower)
+                    and math.isfinite(effective_band_mult)
+                    and effective_band_mult > 0
+                    and upper > lower
+                ):
+                    effective_vwap_std = (upper - lower) / (2.0 * effective_band_mult)
+            except Exception:
+                effective_vwap_std = None
+
+        if (
+            effective_vwap_std is not None
+            and math.isfinite(effective_vwap_std)
+            and effective_vwap_std > 0
+            and self.stop_loss_std_delta is not None
+            and math.isfinite(self.stop_loss_std_delta)
+            and self.stop_loss_std_delta > 0
+        ):
+            delta = float(self.stop_loss_std_delta)
+            if side == "buy":
+                stop_candidate = lower - delta * float(effective_vwap_std)
+                # Safety: ensure stop is below entry.
+                if stop_candidate >= price:
+                    stop_candidate = price - delta * float(effective_vwap_std)
+                stop_loss_price = stop_candidate
+            else:
+                stop_candidate = upper + delta * float(effective_vwap_std)
+                # Safety: ensure stop is above entry.
+                if stop_candidate <= price:
+                    stop_candidate = price + delta * float(effective_vwap_std)
+                stop_loss_price = stop_candidate
+
+        # Fallback: ATR-based stop if dynamic std-based stop not available.
+        if (stop_loss_price is None or not math.isfinite(float(stop_loss_price))) and atr_val and not math.isnan(atr_val):
+            if side == "buy":
+                stop_loss_price = price - float(atr_val) * 1.5
+            else:
+                stop_loss_price = price + float(atr_val) * 1.5
+
+        stop = stop_loss_price
+        target = take_profit_price
 
         signal = {
             "strategy_name": self.strategy_name,
@@ -268,6 +327,8 @@ class VWAPMeanReversion(BaseStrategy):
             "entry": price,
             "stop": stop,
             "target": target,
+            "stop_loss_price": stop_loss_price,
+            "take_profit_price": take_profit_price,
             "reason": reason,
             "signal_type": "MEAN_REVERSION",
             "tp_mode": "DYNAMIC",
@@ -275,6 +336,9 @@ class VWAPMeanReversion(BaseStrategy):
             "vwap": vwap_target,
             "vwap_lower": lower,
             "vwap_upper": upper,
+            "vwap_std": effective_vwap_std,
+            "band_multiplier_effective": effective_band_mult,
+            "stop_loss_std_delta": self.stop_loss_std_delta,
             "adx": adx_val,
         }
         if controller_decision is not None:
