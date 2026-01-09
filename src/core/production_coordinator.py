@@ -1522,6 +1522,52 @@ class ProductionCoordinator:
                 logger.warning(format_mode_banner(self.exchange_clients))
             except Exception as exc:
                 logger.warning("[MODE-BANNER] failed to render: %s", exc)
+
+            # Optional startup balance check (auth sanity): validates credentials + routing before trading.
+            # Controlled by env var STARTUP_BALANCE_CHECK={off|auto|warn|required}. Default: auto (warn-only).
+            async def _startup_balance_check() -> None:
+                import os
+
+                mode = (os.getenv("STARTUP_BALANCE_CHECK", "auto") or "auto").strip().lower()
+                if mode in {"0", "false", "off", "no", "disabled"}:
+                    return
+                required = mode in {"1", "true", "on", "yes", "require", "required", "fail"}
+
+                try:
+                    from core.execution_env import get_bingx_env, is_real_execution_enabled
+
+                    if not is_real_execution_enabled():
+                        return
+                    env_name = get_bingx_env()
+                except Exception:
+                    return
+
+                bingx_client = (self.exchange_clients or {}).get("bingx")
+                if not bingx_client or not hasattr(bingx_client, "get_bingx_balance"):
+                    return
+
+                try:
+                    resp = await asyncio.to_thread(bingx_client.get_bingx_balance)
+                    code = (resp or {}).get("code")
+                    usdt_avail = None
+                    if hasattr(bingx_client, "extract_bingx_usdt_available"):
+                        usdt_avail = bingx_client.extract_bingx_usdt_available(resp)
+
+                    if usdt_avail is None:
+                        logger.info("[BALANCE-CHECK] exchange=bingx env=%s code=%s (USDT available not parsed)", env_name, code)
+                    else:
+                        logger.info("[BALANCE-CHECK] exchange=bingx env=%s code=%s usdt_available=%.4f", env_name, code, usdt_avail)
+                except Exception as exc:
+                    msg = f"{type(exc).__name__}: {str(exc)[:200]}"
+                    if required:
+                        logger.error("[BALANCE-CHECK] FAILED (required): %s", msg)
+                        raise
+                    logger.warning("[BALANCE-CHECK] failed (continuing): %s", msg)
+
+            try:
+                await _startup_balance_check()
+            except Exception:
+                return {"success": False, "reason": "startup_balance_check_failed"}
             if self.websocket_manager:
                 logger.info("✓ WebSocket manager received from launcher (external).")
             else:

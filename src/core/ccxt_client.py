@@ -359,8 +359,9 @@ class CcxtClient:
                     'linear': True,
                     'swap': True,
                     'spot': False,
-                    'precision': {'amount': 0.001, 'price': 0.1}, # Makul varsayılanlar
-                    'limits': {'amount': {'min': 0.001, 'max': 100}}, # Makul varsayılanlar
+                    # BingX (CCXT) uses TICK_SIZE precision mode for swaps; these are tick sizes (not decimal places).
+                    'precision': {'amount': 0.0001, 'price': 0.1}, # Makul varsayılanlar
+                    'limits': {'amount': {'min': 0.0001, 'max': 100}}, # Makul varsayılanlar
                 }
             return fake_markets
 
@@ -412,8 +413,11 @@ class CcxtClient:
                         'id': native_id, 'symbol': symbol, 'base': base, 'quote': quote,
                         'baseId': base, 'quoteId': quote, 'active': True,
                         'type': 'swap', 'linear': True, 'swap': True,
-                        'precision': {'amount': 8, 'price': 8},
-                        'limits': {'amount': {'min': 1e-8}}, 'info': {},
+                        # IMPORTANT: BingX swap in CCXT uses tick-size precision mode; precision fields must be tick sizes.
+                        # If you set precision.amount=8 (decimal places) while precisionMode=TICK_SIZE, CCXT will truncate
+                        # most valid sizes to '0' and raise InvalidOrder ("minimum amount precision of 8").
+                        'precision': {'amount': 0.0001, 'price': 0.1},
+                        'limits': {'amount': {'min': 0.0001}}, 'info': {},
                     })
                     minimal_markets[symbol] = market
 
@@ -986,6 +990,47 @@ class CcxtClient:
         """
         logger.info("🔐 [BINGX-API] Fetching account balance")
         return self._make_authenticated_bingx_request('/openApi/swap/v2/user/balance')
+
+    @staticmethod
+    def extract_bingx_usdt_available(balance_response: Any) -> Optional[float]:
+        """
+        Best-effort extraction of USDT available balance from BingX swap balance response.
+        """
+        if not isinstance(balance_response, dict):
+            return None
+
+        data = balance_response.get("data")
+        candidates = ("availableBalance", "available", "free", "balance")
+
+        def _as_float(value: Any) -> Optional[float]:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                asset = str(item.get("asset") or item.get("currency") or "").upper()
+                if asset != "USDT":
+                    continue
+                for key in candidates:
+                    if key in item:
+                        parsed = _as_float(item.get(key))
+                        if parsed is not None:
+                            return parsed
+
+        if isinstance(data, dict):
+            asset = str(data.get("asset") or data.get("currency") or "").upper()
+            if asset == "USDT":
+                for key in candidates:
+                    if key in data:
+                        parsed = _as_float(data.get(key))
+                        if parsed is not None:
+                            return parsed
+
+        return None
     
     def get_bingx_positions(self, symbol: str = None) -> Dict:
         """
