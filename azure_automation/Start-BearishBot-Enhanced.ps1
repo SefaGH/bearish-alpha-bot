@@ -54,7 +54,26 @@ param(
     # Logic App payload-mapped target environment (controls BingX routing only)
     # Allowed: "vst" | "prod" (default: prod if missing)
     [Parameter(Mandatory=$false)]
-    [string] $TargetEnv = ""
+    [string] $TargetEnv = "",
+
+    # Key Vault integration (VM Managed Identity should have secrets/get permission).
+    # When provided, the VM RunCommand script will fetch BingX credentials from Key Vault
+    # and inject them into a temporary runtime env-file for docker run.
+    [Parameter(Mandatory=$false)]
+    [string] $KeyVaultName = "",
+
+    [Parameter(Mandatory=$false)]
+    [string] $BingxKeySecretName = "",
+
+    [Parameter(Mandatory=$false)]
+    [string] $BingxSecretSecretName = "",
+
+    # Optional Telegram credentials from Key Vault (recommended; avoids storing bot token in env-file)
+    [Parameter(Mandatory=$false)]
+    [string] $TelegramBotTokenSecretName = "",
+
+    [Parameter(Mandatory=$false)]
+    [string] $TelegramChatIdSecretName = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -178,7 +197,7 @@ try {
     Write-Output "vm_run_session flags: debugMode=$debugModeStr logLevel=$logLevelStr --force-recreate $forceRecreateStr"
 
     # IMPORTANT: Use a single-quoted here-string so PowerShell does NOT evaluate bash syntax like $(...) or $VAR.
-    $startupScript = @'
+$startupScript = @'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -201,6 +220,12 @@ IMAGE_TAG="__IMAGE_TAG__"
 DEBUG_MODE_STR="__DEBUG_MODE__"
 LOG_LEVEL_STR="__LOG_LEVEL__"
 BINGX_ENV="__BINGX_ENV__"
+KEYVAULT_NAME="__KEYVAULT_NAME__"
+BINGX_KEY_SECRET_NAME="__BINGX_KEY_SECRET_NAME__"
+BINGX_SECRET_SECRET_NAME="__BINGX_SECRET_SECRET_NAME__"
+TELEGRAM_BOT_TOKEN_SECRET_NAME="__TELEGRAM_BOT_TOKEN_SECRET_NAME__"
+TELEGRAM_CHAT_ID_SECRET_NAME="__TELEGRAM_CHAT_ID_SECRET_NAME__"
+KV_TOKEN_ID_LOGGED=0
 
 echo "2. Force recreate: $FORCE_RECREATE"
 
@@ -212,21 +237,295 @@ fi
 
 # --- ADIM 3b: AZURE APP CONFIGURATION ENV VARS ---
 echo "3b. Ensuring Azure App Configuration environment variables..."
-ENV_FILE="/home/azureuser/bearish-bot.env"
+ENV_FILE_BASE="/home/azureuser/bearish-bot.env"
 
 # Ensure AZURE_APPCONFIG_ENDPOINT is set
-if ! grep -q "^AZURE_APPCONFIG_ENDPOINT=" "$ENV_FILE"; then
+if ! grep -q "^AZURE_APPCONFIG_ENDPOINT=" "$ENV_FILE_BASE"; then
     echo "   Adding AZURE_APPCONFIG_ENDPOINT..."
-    echo "AZURE_APPCONFIG_ENDPOINT=https://appcs-bearish-bot.azconfig.io" | sudo tee -a "$ENV_FILE" > /dev/null
+    echo "AZURE_APPCONFIG_ENDPOINT=https://appcs-bearish-bot.azconfig.io" | sudo tee -a "$ENV_FILE_BASE" > /dev/null
 fi
 
 # Ensure AZURE_APPCONFIG_LABEL is set
-if ! grep -q "^AZURE_APPCONFIG_LABEL=" "$ENV_FILE"; then
+if ! grep -q "^AZURE_APPCONFIG_LABEL=" "$ENV_FILE_BASE"; then
     echo "   Adding AZURE_APPCONFIG_LABEL..."
-    echo "AZURE_APPCONFIG_LABEL=production" | sudo tee -a "$ENV_FILE" > /dev/null
+    echo "AZURE_APPCONFIG_LABEL=production" | sudo tee -a "$ENV_FILE_BASE" > /dev/null
 fi
 
 echo "   ✓ App Configuration environment variables configured"
+
+# --- ADIM 3c: KEY VAULT (BingX credentials) -> runtime env file (no secrets at rest) ---
+echo "3c. Preparing runtime env-file..."
+ENV_FILE="/tmp/bearish-bot.env.runtime"
+cp "$ENV_FILE_BASE" "$ENV_FILE"
+chmod 600 "$ENV_FILE" || true
+
+cleanup_env_file() {
+    rm -f "$ENV_FILE" || true
+}
+trap cleanup_env_file EXIT
+
+read_env_value() {
+    local key="$1"
+    local file="$2"
+    # shellcheck disable=SC2002
+    cat "$file" 2>/dev/null | grep -E "^${key}=" | tail -n 1 | cut -d= -f2- || true
+}
+
+log_kv_token_identity() {
+    if [ "${KV_TOKEN_ID_LOGGED:-0}" = "1" ]; then
+        return 0
+    fi
+    if [ -z "${ACCESS_TOKEN:-}" ]; then
+        return 0
+    fi
+    ident="$(
+        python3 - <<'PY' 2>/dev/null
+import os, json, base64
+token = os.environ.get("ACCESS_TOKEN", "")
+parts = token.split(".")
+if len(parts) < 2:
+    raise SystemExit(0)
+payload = parts[1].replace("-", "+").replace("_", "/")
+payload += "=" * (-len(payload) % 4)
+data = json.loads(base64.b64decode(payload.encode("utf-8")).decode("utf-8"))
+appid = data.get("appid") or data.get("azp") or ""
+oid = data.get("oid") or ""
+tid = data.get("tid") or ""
+iss = data.get("iss") or ""
+print(f"appid={appid} oid={oid} tid={tid} iss={iss}")
+PY
+    )"
+    if [ -n "${ident:-}" ]; then
+        echo "   KeyVault token identity: ${ident}"
+        KV_TOKEN_ID_LOGGED=1
+    fi
+}
+
+needs_bingx_secrets=0
+CUR_BINGX_KEY="$(read_env_value "BINGX_KEY" "$ENV_FILE")"
+CUR_BINGX_SECRET="$(read_env_value "BINGX_SECRET" "$ENV_FILE")"
+if [ -z "${CUR_BINGX_KEY:-}" ] || [ "${CUR_BINGX_KEY:-}" = "CHANGEME" ]; then
+    needs_bingx_secrets=1
+fi
+if [ -z "${CUR_BINGX_SECRET:-}" ] || [ "${CUR_BINGX_SECRET:-}" = "CHANGEME" ]; then
+    needs_bingx_secrets=1
+fi
+
+if [ "$needs_bingx_secrets" -eq 1 ]; then
+    # Allow names to be supplied via Runbook params OR persisted in the base env-file.
+    if [ -z "${KEYVAULT_NAME:-}" ] || [ "${KEYVAULT_NAME:-}" = "__KEYVAULT_NAME__" ]; then
+        KEYVAULT_NAME="$(read_env_value "KEYVAULT_NAME" "$ENV_FILE_BASE")"
+    fi
+    if [ -z "${BINGX_KEY_SECRET_NAME:-}" ] || [ "${BINGX_KEY_SECRET_NAME:-}" = "__BINGX_KEY_SECRET_NAME__" ]; then
+        BINGX_KEY_SECRET_NAME="$(read_env_value "BINGX_KEY_SECRET_NAME" "$ENV_FILE_BASE")"
+    fi
+    if [ -z "${BINGX_SECRET_SECRET_NAME:-}" ] || [ "${BINGX_SECRET_SECRET_NAME:-}" = "__BINGX_SECRET_SECRET_NAME__" ]; then
+        BINGX_SECRET_SECRET_NAME="$(read_env_value "BINGX_SECRET_SECRET_NAME" "$ENV_FILE_BASE")"
+    fi
+
+    if [ -z "${KEYVAULT_NAME:-}" ] || [ -z "${BINGX_KEY_SECRET_NAME:-}" ] || [ -z "${BINGX_SECRET_SECRET_NAME:-}" ]; then
+        echo "❌ Missing Key Vault settings for BingX credentials."
+        echo "   Provide KEYVAULT_NAME + BINGX_KEY_SECRET_NAME + BINGX_SECRET_SECRET_NAME (either as Runbook params or in $ENV_FILE_BASE)."
+        echo "   Or set BINGX_KEY/BINGX_SECRET directly (not recommended)."
+        exit 1
+    fi
+
+    echo "   Fetching BingX credentials from Key Vault (managed identity; values not logged)..."
+    echo "   KeyVault=${KEYVAULT_NAME} secrets: BINGX_KEY_SECRET_NAME=${BINGX_KEY_SECRET_NAME} BINGX_SECRET_SECRET_NAME=${BINGX_SECRET_SECRET_NAME}"
+
+    ACCESS_TOKEN="$(
+        curl -sS -H Metadata:true \
+          "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net" \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))'
+    )"
+
+    if [ -z "${ACCESS_TOKEN:-}" ]; then
+        echo "❌ Failed to obtain managed identity token for Key Vault."
+        echo "   Ensure the VM has a Managed Identity and it has secrets/get permission on the Key Vault."
+        exit 1
+    fi
+    log_kv_token_identity
+
+    fetch_kv_secret_value() {
+        local secret_name="$1"
+        local url="https://${KEYVAULT_NAME}.vault.azure.net/secrets/${secret_name}?api-version=7.4"
+        local resp http body
+        resp="$(curl -sS -H "Authorization: Bearer ${ACCESS_TOKEN}" -w $'\\n%{http_code}' "$url" || true)"
+        http="$(printf '%s' "$resp" | tail -n 1 | tr -d '\r')"
+        body="$(printf '%s' "$resp" | sed '$d')"
+        if [ "$http" != "200" ]; then
+            err="$(
+                printf '%s' "$body" | python3 -c 'import json,sys; 
+try: data=json.load(sys.stdin)
+except Exception: print("non-json response"); sys.exit(0)
+e=(data.get("error") or {})
+code=str(e.get("code") or "")
+msg=str(e.get("message") or "")
+out=(code + (" " if code and msg else "") + msg).strip()
+print(out[:220])' 2>/dev/null
+            )"
+            echo "❌ Key Vault secret fetch failed: name=${secret_name} status=${http} error=${err}" >&2
+            printf '%s' ""
+            return 0
+        fi
+        printf '%s' "$body" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("value") or "").strip())' 2>/dev/null
+    }
+
+    NEW_BINGX_KEY="$(fetch_kv_secret_value "$BINGX_KEY_SECRET_NAME")"
+    NEW_BINGX_SECRET="$(fetch_kv_secret_value "$BINGX_SECRET_SECRET_NAME")"
+
+    if [ -z "${NEW_BINGX_KEY:-}" ] || [ -z "${NEW_BINGX_SECRET:-}" ]; then
+        echo "❌ Failed to read BingX secrets from Key Vault (empty value)."
+        echo "   Most common causes: wrong secret names, VM Managed Identity lacks secrets/get, or Key Vault firewall/private endpoint blocks the VM."
+        exit 1
+    fi
+
+    # Update runtime env-file safely (avoid sed escaping issues; do not print values).
+    export ENV_FILE NEW_BINGX_KEY NEW_BINGX_SECRET
+    python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["ENV_FILE"])
+updates = {
+    "BINGX_KEY": os.environ["NEW_BINGX_KEY"],
+    "BINGX_SECRET": os.environ["NEW_BINGX_SECRET"],
+}
+
+lines = path.read_text(encoding="utf-8").splitlines()
+out = []
+seen = set()
+for line in lines:
+    if not line or line.lstrip().startswith("#") or "=" not in line:
+        out.append(line)
+        continue
+    key, _ = line.split("=", 1)
+    if key in updates:
+        out.append(f"{key}={updates[key]}")
+        seen.add(key)
+    else:
+        out.append(line)
+
+for key, value in updates.items():
+    if key not in seen:
+        out.append(f"{key}={value}")
+
+path.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
+fi
+
+# --- Telegram credentials (optional) ---
+needs_telegram_secrets=0
+CUR_TG_TOKEN="$(read_env_value "TELEGRAM_BOT_TOKEN" "$ENV_FILE")"
+CUR_TG_CHAT_ID="$(read_env_value "TELEGRAM_CHAT_ID" "$ENV_FILE")"
+if [ -z "${CUR_TG_TOKEN:-}" ] || [ "${CUR_TG_TOKEN:-}" = "CHANGEME" ]; then
+    needs_telegram_secrets=1
+fi
+if [ -z "${CUR_TG_CHAT_ID:-}" ] || [ "${CUR_TG_CHAT_ID:-}" = "CHANGEME" ]; then
+    needs_telegram_secrets=1
+fi
+
+if [ "$needs_telegram_secrets" -eq 1 ]; then
+    if [ -z "${KEYVAULT_NAME:-}" ] || [ "${KEYVAULT_NAME:-}" = "__KEYVAULT_NAME__" ]; then
+        KEYVAULT_NAME="$(read_env_value "KEYVAULT_NAME" "$ENV_FILE_BASE")"
+    fi
+    if [ -z "${TELEGRAM_BOT_TOKEN_SECRET_NAME:-}" ] || [ "${TELEGRAM_BOT_TOKEN_SECRET_NAME:-}" = "__TELEGRAM_BOT_TOKEN_SECRET_NAME__" ]; then
+        TELEGRAM_BOT_TOKEN_SECRET_NAME="$(read_env_value "TELEGRAM_BOT_TOKEN_SECRET_NAME" "$ENV_FILE_BASE")"
+    fi
+    if [ -z "${TELEGRAM_CHAT_ID_SECRET_NAME:-}" ] || [ "${TELEGRAM_CHAT_ID_SECRET_NAME:-}" = "__TELEGRAM_CHAT_ID_SECRET_NAME__" ]; then
+        TELEGRAM_CHAT_ID_SECRET_NAME="$(read_env_value "TELEGRAM_CHAT_ID_SECRET_NAME" "$ENV_FILE_BASE")"
+    fi
+
+    if [ -z "${KEYVAULT_NAME:-}" ] || [ -z "${TELEGRAM_BOT_TOKEN_SECRET_NAME:-}" ] || [ -z "${TELEGRAM_CHAT_ID_SECRET_NAME:-}" ]; then
+        echo "❌ Missing Key Vault settings for Telegram."
+        echo "   Provide KEYVAULT_NAME + TELEGRAM_BOT_TOKEN_SECRET_NAME + TELEGRAM_CHAT_ID_SECRET_NAME (either as Runbook params or in $ENV_FILE_BASE)."
+        exit 1
+    fi
+
+    echo "   Fetching Telegram credentials from Key Vault (managed identity; values not logged)..."
+    echo "   KeyVault=${KEYVAULT_NAME} secrets: TELEGRAM_BOT_TOKEN_SECRET_NAME=${TELEGRAM_BOT_TOKEN_SECRET_NAME} TELEGRAM_CHAT_ID_SECRET_NAME=${TELEGRAM_CHAT_ID_SECRET_NAME}"
+
+    if [ -z "${ACCESS_TOKEN:-}" ]; then
+        ACCESS_TOKEN="$(
+            curl -sS -H Metadata:true \
+              "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))'
+        )"
+        if [ -z "${ACCESS_TOKEN:-}" ]; then
+            echo "❌ Failed to obtain managed identity token for Key Vault."
+            echo "   Ensure the VM has a Managed Identity and it has secrets/get permission on the Key Vault."
+            exit 1
+        fi
+        log_kv_token_identity
+    fi
+
+    # Ensure helper exists even when BingX branch was skipped.
+    fetch_kv_secret_value() {
+        local secret_name="$1"
+        local url="https://${KEYVAULT_NAME}.vault.azure.net/secrets/${secret_name}?api-version=7.4"
+        local resp http body
+        resp="$(curl -sS -H "Authorization: Bearer ${ACCESS_TOKEN}" -w $'\\n%{http_code}' "$url" || true)"
+        http="$(printf '%s' "$resp" | tail -n 1 | tr -d '\r')"
+        body="$(printf '%s' "$resp" | sed '$d')"
+        if [ "$http" != "200" ]; then
+            err="$(
+                printf '%s' "$body" | python3 -c 'import json,sys; 
+try: data=json.load(sys.stdin)
+except Exception: print("non-json response"); sys.exit(0)
+e=(data.get("error") or {})
+code=str(e.get("code") or "")
+msg=str(e.get("message") or "")
+out=(code + (" " if code and msg else "") + msg).strip()
+print(out[:220])' 2>/dev/null
+            )"
+            echo "❌ Key Vault secret fetch failed: name=${secret_name} status=${http} error=${err}" >&2
+            printf '%s' ""
+            return 0
+        fi
+        printf '%s' "$body" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("value") or "").strip())' 2>/dev/null
+    }
+
+    NEW_TG_TOKEN="$(fetch_kv_secret_value "$TELEGRAM_BOT_TOKEN_SECRET_NAME")"
+    NEW_TG_CHAT_ID="$(fetch_kv_secret_value "$TELEGRAM_CHAT_ID_SECRET_NAME")"
+
+    if [ -z "${NEW_TG_TOKEN:-}" ] || [ -z "${NEW_TG_CHAT_ID:-}" ]; then
+        echo "❌ Failed to read Telegram secrets from Key Vault (empty value)."
+        echo "   Check secret names and Key Vault permissions for the VM identity."
+        exit 1
+    fi
+
+    export ENV_FILE NEW_TG_TOKEN NEW_TG_CHAT_ID
+    python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["ENV_FILE"])
+updates = {
+    "TELEGRAM_BOT_TOKEN": os.environ["NEW_TG_TOKEN"],
+    "TELEGRAM_CHAT_ID": os.environ["NEW_TG_CHAT_ID"],
+}
+
+lines = path.read_text(encoding="utf-8").splitlines()
+out = []
+seen = set()
+for line in lines:
+    if not line or line.lstrip().startswith("#") or "=" not in line:
+        out.append(line)
+        continue
+    key, _ = line.split("=", 1)
+    if key in updates:
+        out.append(f"{key}={updates[key]}")
+        seen.add(key)
+    else:
+        out.append(line)
+
+for key, value in updates.items():
+    if key not in seen:
+        out.append(f"{key}={value}")
+
+path.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
+fi
 
 # --- ADIM 4: BOTU BAŞLAT (PYTHON WRAPPER) ---
 echo "4. Launching bot container..."
@@ -246,7 +545,7 @@ echo "   Wrapper supports new flags: $HAS_NEW_WRAPPER"
 
 if [ "$HAS_NEW_WRAPPER" -eq 1 ]; then
     # vm_run_session.py container'ı --detach (arka plan) modunda başlatır.
-    ARGS=(--image "$IMAGE" --name "$NAME" --force-recreate "$FORCE_RECREATE")
+    ARGS=(--image "$IMAGE" --name "$NAME" --env-file "$ENV_FILE" --force-recreate "$FORCE_RECREATE")
     # Prefer env overrides instead of editing env-file in place (safer for VST/PROD routing).
     if [ -n "$BINGX_ENV" ]; then
         ARGS+=(--env "BINGX_ENV=$BINGX_ENV")
@@ -314,24 +613,63 @@ if docker ps --filter "name=^bearish-bot$" --filter "status=running" | grep -q "
     echo "--- ENV OVERRIDE DIAGNOSTICS ---"
     docker inspect bearish-bot --format '{{range .Config.Env}}{{println .}}{{end}}' | egrep 'BINGX_ENV|DEBUG_MODE|LOG_LEVEL' || true
     docker exec bearish-bot env | egrep 'BINGX_ENV|DEBUG_MODE|LOG_LEVEL' || true
+    echo "--- TELEGRAM DIAGNOSTICS (no secrets) ---"
+    # Do not print TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID values; only confirm presence and length.
+    docker exec bearish-bot sh -lc 'echo "TELEGRAM_STARTUP_PING=${TELEGRAM_STARTUP_PING:-unset}"; echo "TELEGRAM_BOT_TOKEN_LEN=${#TELEGRAM_BOT_TOKEN}"; echo "TELEGRAM_CHAT_ID_SET=${TELEGRAM_CHAT_ID:+set}"' || true
     LATEST=$(ls -t /mnt/bearish/logs/live_trading_*.log 2>/dev/null | head -n 1 || true)
     if [ -n "$LATEST" ]; then
         grep -m 5 " - DEBUG - " "$LATEST" || echo "NO DEBUG lines"
         echo "--- ROUTING CONFIRMATION (best-effort) ---"
         echo "Expected BINGX_ENV=$BINGX_ENV"
-        GREP_OK=1
-        if ! grep -m 1 "\\[BINGX-ENV\\] env=$BINGX_ENV " "$LATEST" >/dev/null 2>&1; then
-            echo "?? WARNING: Missing or mismatched [BINGX-ENV] line in log (expected env=$BINGX_ENV)."
-            GREP_OK=0
-        fi
-        if ! grep -m 1 "\\[MODE-BANNER\\].*BINGX_ENV=$BINGX_ENV" "$LATEST" >/dev/null 2>&1; then
-            echo "?? WARNING: Missing or mismatched [MODE-BANNER] line in log (expected BINGX_ENV=$BINGX_ENV)."
-            GREP_OK=0
-        fi
+
+        check_routing_in_file() {
+            local file="$1"
+            [ -n "$file" ] || return 1
+            grep -m 1 "\\[BINGX-ENV\\].*env=${BINGX_ENV}\\b" "$file" >/dev/null 2>&1 || return 1
+            grep -m 1 "\\[MODE-BANNER\\].*BINGX_ENV=${BINGX_ENV}\\b" "$file" >/dev/null 2>&1 || return 1
+            return 0
+        }
+
+        check_routing_in_docker_logs() {
+            docker logs --tail 400 bearish-bot 2>/dev/null | grep -m 1 "\\[BINGX-ENV\\].*env=${BINGX_ENV}\\b" >/dev/null 2>&1 || return 1
+            docker logs --tail 400 bearish-bot 2>/dev/null | grep -m 1 "\\[MODE-BANNER\\].*BINGX_ENV=${BINGX_ENV}\\b" >/dev/null 2>&1 || return 1
+            return 0
+        }
+
+        # The bot may need >10s to reach exchange init / core init; retry briefly to reduce false warnings.
+        GREP_OK=0
+        for attempt in $(seq 1 6); do
+            LATEST=$(ls -t /mnt/bearish/logs/live_trading_*.log 2>/dev/null | head -n 1 || true)
+            echo "Routing check attempt ${attempt}/6 (log file: ${LATEST:-<none>})"
+
+            if check_routing_in_file "$LATEST"; then
+                echo "? Routing confirmation OK (file)"
+                grep -m 1 "\\[BINGX-ENV\\].*env=${BINGX_ENV}\\b" "$LATEST" || true
+                grep -m 1 "\\[MODE-BANNER\\].*BINGX_ENV=${BINGX_ENV}\\b" "$LATEST" || true
+                GREP_OK=1
+                break
+            fi
+
+            if check_routing_in_docker_logs; then
+                echo "? Routing confirmation OK (docker logs)"
+                docker logs --tail 400 bearish-bot 2>/dev/null | grep -m 1 "\\[BINGX-ENV\\].*env=${BINGX_ENV}\\b" || true
+                docker logs --tail 400 bearish-bot 2>/dev/null | grep -m 1 "\\[MODE-BANNER\\].*BINGX_ENV=${BINGX_ENV}\\b" || true
+                GREP_OK=1
+                break
+            fi
+
+            sleep 5
+        done
+
         if [ "$GREP_OK" -eq 0 ]; then
-            echo "?? WARNING: Routing confirmation failed. Verify container logs with: docker logs --tail 200 bearish-bot"
-        else
-            echo "? Routing confirmation OK ([BINGX-ENV] and [MODE-BANNER] match)."
+            echo "?? WARNING: Routing confirmation failed after retries."
+            echo "   Expected env=$BINGX_ENV but did not find [BINGX-ENV] / [MODE-BANNER] in file or docker logs yet."
+            echo "   Next steps (safe literal grep; avoids regex escaping issues):"
+            echo "     docker logs --since 30m bearish-bot | grep -F '[MODE-BANNER]' -m 5 || true"
+            echo "     docker logs --since 30m bearish-bot | grep -F '[BINGX-ENV]' -m 5 || true"
+            echo "   Or check the file log (most reliable when logs are file-based):"
+            echo "     LATEST=\$(ls -t /mnt/bearish/logs/live_trading_*.log 2>/dev/null | head -n 1 || true); \\"
+            echo "       [ -n \"\$LATEST\" ] && (grep -F '[MODE-BANNER]' \"\$LATEST\" -m 5 || true; grep -F '[BINGX-ENV]' \"\$LATEST\" -m 5 || true)"
         fi
     else
         echo "NO log file found under /mnt/bearish/logs"
@@ -352,6 +690,11 @@ fi
     $startupScript = $startupScript.Replace('__DEBUG_MODE__', $debugModeStr)
     $startupScript = $startupScript.Replace('__LOG_LEVEL__', $logLevelStr)
     $startupScript = $startupScript.Replace('__BINGX_ENV__', $targetEnvNorm)
+    $startupScript = $startupScript.Replace('__KEYVAULT_NAME__', $KeyVaultName)
+    $startupScript = $startupScript.Replace('__BINGX_KEY_SECRET_NAME__', $BingxKeySecretName)
+    $startupScript = $startupScript.Replace('__BINGX_SECRET_SECRET_NAME__', $BingxSecretSecretName)
+    $startupScript = $startupScript.Replace('__TELEGRAM_BOT_TOKEN_SECRET_NAME__', $TelegramBotTokenSecretName)
+    $startupScript = $startupScript.Replace('__TELEGRAM_CHAT_ID_SECRET_NAME__', $TelegramChatIdSecretName)
 
     # 4. EXECUTE ON VM
     Write-Output "[5/6] Sending command to VM..."

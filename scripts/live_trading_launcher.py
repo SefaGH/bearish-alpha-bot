@@ -1520,8 +1520,29 @@ class LiveTradingLauncher:
         if tg_token and tg_chat:
             self.telegram = Telegram(tg_token, tg_chat)
             logger.info("✓ Telegram notifications enabled")
+
+            tg_ping_raw = os.getenv("TELEGRAM_STARTUP_PING", "false")
+            tg_ping_enabled = str(tg_ping_raw).strip().lower() in {"1", "true", "yes", "on"}
+            if tg_ping_enabled:
+                try:
+                    ok = self.telegram.send(
+                        "✅ <b>Bearish Alpha Bot</b> started\n"
+                        f"mode={self.mode} dry_run={self.dry_run} infinite={self.infinite} auto_restart={self.auto_restart}\n"
+                        f"time={datetime.now(timezone.utc).isoformat()}"
+                    )
+                    if ok:
+                        logger.info("✓ Telegram startup ping sent")
+                    else:
+                        logger.error("Telegram startup ping failed (see previous Telegram error log)")
+                except Exception as exc:
+                    logger.error("Telegram startup ping error: %s", exc, exc_info=True)
         else:
-            logger.info("ℹ️  Telegram notifications disabled (optional)")
+            if tg_token or tg_chat:
+                logger.warning(
+                    "⚠️ Telegram partially configured; set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable notifications."
+                )
+            else:
+                logger.info("ℹ️  Telegram notifications disabled (optional)")
         
         # Initialize health monitor (Layer 3)
         if self.infinite or self.auto_restart:
@@ -2795,6 +2816,24 @@ class LiveTradingLauncher:
                 # Hızlı bir test yap
                 test_ticker = bingx_client.ticker('BTC/USDT') # Not async
                 logger.info(f"✓ Connection test OK. BTC price: ${test_ticker['last']:.2f}")
+
+                # Authenticated smoke check (fail-fast) - helps catch invalid api keys
+                # before the first order attempts to enforce hedge mode.
+                auth_check_raw = os.getenv("BINGX_AUTH_SMOKE_CHECK", "true")
+                auth_check_enabled = str(auth_check_raw).strip().lower() in {"1", "true", "yes", "on"}
+                if auth_check_enabled and creds is not None:
+                    health = await bingx_client.check_api_health()
+                    if not isinstance(health, dict) or health.get("status") != "HEALTHY":
+                        reason = (health or {}).get("reason") if isinstance(health, dict) else str(health)
+                        raise RuntimeError(
+                            "Authenticated API health check failed for BingX. "
+                            "Verify BINGX_KEY/BINGX_SECRET injection (Key Vault / env-file) and API permissions. "
+                            f"Reason: {reason}"
+                        )
+                elif not auth_check_enabled:
+                    logger.warning("⚠️ Skipping BingX authenticated smoke check (BINGX_AUTH_SMOKE_CHECK=%s).", auth_check_raw)
+                else:
+                    logger.info("ℹ️ Skipping BingX authenticated smoke check (no credentials or dry-run).")
 
             except Exception as e:
                 logger.error(f"❌ Failed to initialize exchange connection: {e}", exc_info=True)
