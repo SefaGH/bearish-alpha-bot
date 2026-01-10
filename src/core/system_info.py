@@ -570,7 +570,7 @@ def format_startup_header(
     max_correlation = risk_params.get('max_correlation', 0.7)
     lines.append(f"Max Correlation:        {max_correlation * 100:.1f}%")
     
-    daily_loss_limit = risk_params.get('daily_loss_limit', 0.02)
+    daily_loss_limit = risk_params.get('daily_loss_limit_pct', risk_params.get('daily_loss_limit', 0.10))
     lines.append(f"Daily Loss Limit:       {daily_loss_limit * 100:.1f}%")
     lines.append("")
     
