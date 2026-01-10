@@ -60,12 +60,13 @@ risk:
   equity_usd: 1000                     # Override with: CAPITAL_USDT ; Virtual Starting Balance (VST)
   per_trade_risk_pct: 0.02            # Override with: PER_TRADE_RISK_PCT (2% of equity)
   daily_loss_limit_pct: 0.10          # Override with: DAILY_LOSS_LIMIT_PCT
+  max_portfolio_risk: 0.25            # Override with: MAX_PORTFOLIO_RISK_PCT ; Portfolio heat cap (fraction of equity at risk)
   risk_usd_cap: null                  # Override with: RISK_USD_CAP ; Optional safety ceiling (e.g., 500). Leave null for unlimited.
   position_sizing_type: risk_percentage  # Default: risk_percentage (dynamic % risk sizing)
   
   # NEW: Dynamic position sizing parameters
   max_position_notional_usd: null     # Override with: MAX_POSITION_NOTIONAL_USD ; Override with: RISK_MAX_POSITION_NOTIONAL_USD ; Optional absolute notional ceiling
-  max_position_size: 0.25             # Override with: MAX_POSITION_SIZE_PCT ; Renamed: RiskConfiguration expects `max_position_size`; `max_position_size_pct` is ignored
+  max_position_size: 1.0              # Override with: MAX_POSITION_SIZE_PCT ; Leverage-aware: caps margin usage (fraction of equity). Set 1.0 to avoid conflicting with high notional multiples.
   max_notional_pct_per_trade: 10.0    # Override with: MAX_NOTIONAL_PCT_PER_TRADE ; Total notional cap as multiple of equity (e.g., 10.0 == 10x)
   position_size_policy: clip          # Override with: POSITION_SIZE_POLICY (clip|reject)
   max_drawdown: 0.20                  # Override with: MAX_DRAWDOWN ; Max portfolio drawdown (fraction)

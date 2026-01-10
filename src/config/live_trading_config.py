@@ -1465,7 +1465,6 @@ class LiveTradingConfiguration:
         percent_keys = [
             'daily_loss_limit_pct',
             # Canonical key (RiskConfiguration expects `max_position_size`).
-            'max_position_size',
             # Legacy key (ignored by RiskConfiguration; validated/blocked by schema layer).
             'max_position_size_pct',
             'max_margin_pct_per_trade',
@@ -1509,6 +1508,22 @@ class LiveTradingConfiguration:
         risk_section['max_portfolio_risk'] = normalized_portfolio_risk
         # Ensure consistency
         risk_section['max_portfolio_risk_pct'] = normalized_portfolio_risk
+
+        # Normalize max_position_size (fraction of equity).
+        # IMPORTANT: allow 1.0 to mean 100% (valid fraction), while still accepting percent-style inputs > 1 (e.g., 25 -> 0.25).
+        if 'max_position_size' in risk_section and risk_section.get('max_position_size') is not None:
+            try:
+                raw = float(risk_section.get('max_position_size'))
+            except (TypeError, ValueError):
+                raw = None
+            if raw is not None:
+                if raw > 1.0:
+                    logger.warning(
+                        "⚠️ risk.max_position_size appears to be expressed as percent (%.2f). Converting to fractional form.",
+                        raw,
+                    )
+                    raw = raw / 100.0
+                risk_section['max_position_size'] = raw
 
         for key in percent_keys:
             if key not in risk_section or risk_section[key] is None:
@@ -2042,6 +2057,62 @@ class LiveTradingConfiguration:
             f"   Queue max pending scale_in per symbol: "
             f"{get_nested(config, ['risk', 'queue', 'max_pending_scale_in_per_symbol'], 'N/A')}"
         )
+
+        # Per-strategy pyramiding routing via execution_profiles (Hybrid model observability).
+        # Resolution order for pyramiding.enabled (startup view):
+        # - Strategy execution_profile (strategies.<name>.execution_profile) if present
+        # - Global pyramiding.enabled fallback
+        def _supports_glyphs(*glyphs: str) -> bool:
+            encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+            try:
+                ("".join(glyphs)).encode(encoding)
+                return True
+            except Exception:
+                return False
+
+        use_emoji = _supports_glyphs("🧱", "✅", "⛔")
+        header_icon = "🧱 " if use_emoji else ""
+        enabled_icon = "✅ " if use_emoji else ""
+        disabled_icon = "⛔ " if use_emoji else ""
+
+        strategies_cfg = get_nested(config, ['strategies'], {})
+        profiles_cfg = get_nested(config, ['execution_profiles'], {})
+        enabled_strategies: List[str] = []
+        disabled_strategies: List[str] = []
+
+        if isinstance(strategies_cfg, dict) and isinstance(profiles_cfg, dict):
+            for strategy_name, strategy_cfg in strategies_cfg.items():
+                if strategy_name in ("regime_routing",):
+                    continue
+                if not isinstance(strategy_name, str) or not strategy_name.strip():
+                    continue
+                if not isinstance(strategy_cfg, dict):
+                    continue
+
+                # Skip explicitly disabled strategies.
+                if 'enabled' in strategy_cfg and not bool(strategy_cfg.get('enabled')):
+                    continue
+
+                profile_name = strategy_cfg.get('execution_profile')
+                profile_cfg = profiles_cfg.get(profile_name) if isinstance(profile_name, str) else None
+                pyramiding_cfg = profile_cfg.get('pyramiding') if isinstance(profile_cfg, dict) else None
+
+                if isinstance(pyramiding_cfg, dict) and 'enabled' in pyramiding_cfg:
+                    effective = bool(pyramiding_cfg.get('enabled'))
+                else:
+                    effective = bool(get_nested(config, ['pyramiding', 'enabled'], False))
+
+                if effective:
+                    enabled_strategies.append(strategy_name)
+                else:
+                    disabled_strategies.append(strategy_name)
+
+        if enabled_strategies or disabled_strategies:
+            enabled_strategies = sorted(set(enabled_strategies))
+            disabled_strategies = sorted(set(disabled_strategies))
+            logger.info(f"{header_icon}Pyramiding Allocation:")
+            logger.info(f"   {enabled_icon}Enabled: {', '.join(enabled_strategies) if enabled_strategies else 'None'}")
+            logger.info(f"   {disabled_icon}Disabled: {', '.join(disabled_strategies) if disabled_strategies else 'None'}")
 
         # Position management / exits
         logger.info("Position Management:")
