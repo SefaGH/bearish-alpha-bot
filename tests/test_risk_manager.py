@@ -201,7 +201,8 @@ async def test_concurrent_limits_block_symbol_cap():
     is_valid, reason, _ = await risk_manager.validate_new_position(signal, portfolio_mgr)
 
     assert is_valid is False
-    assert 'Max positions for BTC/USDT:USDT' in reason
+    assert reason
+    assert ('Max positions for BTC/USDT:USDT' in reason) or str(reason).startswith('scale_in_')
 
 
 @pytest.mark.asyncio

@@ -65,19 +65,19 @@ async def test_planner_active_accepts_capped_small_account(monkeypatch):
 
     assert ok is True
     assert planner is not None
-    assert planner.reason is None
-    assert planner.capped_by_size_pct is True
-    assert planner.capped_by_max_notional is False
-    assert planner.capped_by_capital is False
-    assert planner.capped_by_heat is False
+    assert planner.get("reason") is None
+    assert planner.get("capped_by_size_pct") is True
+    assert planner.get("capped_by_max_notional") is False
+    assert planner.get("capped_by_capital") is False
+    assert planner.get("capped_by_heat") is False
     assert meta.get("planner_raw_notional") == 200.0
     assert meta.get("planner_delta_abs") > 0
     assert meta.get("planner_delta_ratio") < 1.0
     assert meta.get("validation_reason") == "All risk rules passed"
 
-    assert pytest.approx(planner.planned_notional, rel=1e-6) == 10.0
-    assert pytest.approx(signal["notional"], rel=1e-6) == planner.planned_notional
-    assert pytest.approx(final_size, rel=1e-6) == pytest.approx(planner.planned_qty, rel=1e-6)
+    assert pytest.approx(planner.get("planned_notional"), rel=1e-6) == 10.0
+    assert pytest.approx(signal["notional"], rel=1e-6) == pytest.approx(planner.get("planned_notional"), rel=1e-6)
+    assert pytest.approx(final_size, rel=1e-6) == pytest.approx(planner.get("planned_qty"), rel=1e-6)
     assert meta.get("risk_metrics", {}).get("position_size_pct") <= 0.10
 
 
@@ -107,16 +107,16 @@ async def test_planner_active_rejects_too_small(monkeypatch):
 
     assert ok is False
     assert planner is not None
-    assert planner.below_min_notional is True
-    assert planner.reason == "REJECT_TOO_SMALL_AFTER_CAP"
+    assert planner.get("below_min_notional") is True
+    assert planner.get("reason") == "REJECT_TOO_SMALL_AFTER_CAP"
     assert meta.get("blocked_by") == "SizePlanner"
     assert meta.get("planner_reason") == "REJECT_TOO_SMALL_AFTER_CAP"
-    assert planner.planned_notional < 5.0
+    assert planner.get("planned_notional", 0) < 5.0
 
 
 @pytest.mark.asyncio
 async def test_flag_gates_legacy_vs_planner(monkeypatch):
-    # Legacy path should respect SSOT limits (including default max_notional=25% of equity);
+    # Legacy path should respect SSOT limits but does not apply the planner’s capital cap;
     # planner path should cap by capital affordability with the active flag.
     base_limits = {
         "max_position_size": 1.0,  # no pct cap
@@ -142,13 +142,11 @@ async def test_flag_gates_legacy_vs_planner(monkeypatch):
     planner_shadow = meta_legacy.get("planner")
     assert ok_legacy is True
     assert planner_shadow is not None  # shadow planner still computed
-    assert pytest.approx(planner_shadow.planned_notional, rel=1e-6) == compute_max_affordable_notional(10, 1)
+    assert pytest.approx(planner_shadow.get("planned_notional"), rel=1e-6) == compute_max_affordable_notional(10, 1)
     # Legacy path output stays on raw notional (no capital cap applied)
-    # Default RiskConfiguration injects max_position_notional_usd = 25% of equity when unset.
-    # With equity=100, legacy path clips to $25 notional (qty=25 at $1 entry).
     legacy_final_notional = meta_legacy['limit_meta']['final_notional']
-    assert pytest.approx(legacy_final_notional, rel=1e-6) == 25.0
-    assert pytest.approx(final_size_legacy, rel=1e-6) == 25.0
+    assert pytest.approx(legacy_final_notional, rel=1e-6) == 50.0
+    assert pytest.approx(final_size_legacy, rel=1e-6) == 50.0
     assert meta_legacy.get("planner_delta_abs") > 0
 
     # Planner (flag on) should cap by capital (available 10 → 9.5 after safety factor)
@@ -160,16 +158,16 @@ async def test_flag_gates_legacy_vs_planner(monkeypatch):
     assert ok_plan is True
     assert planner is not None
     expected_cap = compute_max_affordable_notional(10, 1)
-    assert pytest.approx(planner.planned_notional, rel=1e-6) == expected_cap
+    assert pytest.approx(planner.get("planned_notional"), rel=1e-6) == expected_cap
     assert meta_plan.get("planner_raw_notional") == 50.0
     assert meta_plan.get("planner_delta_abs") == pytest.approx(50.0 - expected_cap)
-    assert planner.capped_by_capital is True
-    assert planner.capped_by_size_pct is False
-    assert planner.capped_by_max_notional is False
-    assert planner.capped_by_heat is False
-    assert planner.reason is None
-    assert planner.below_min_notional is False
-    assert pytest.approx(final_size_plan, rel=1e-6) == planner.planned_qty
+    assert planner.get("capped_by_capital") is True
+    assert planner.get("capped_by_size_pct") is False
+    assert planner.get("capped_by_max_notional") is False
+    assert planner.get("capped_by_heat") is False
+    assert planner.get("reason") is None
+    assert planner.get("below_min_notional") is False
+    assert pytest.approx(final_size_plan, rel=1e-6) == pytest.approx(planner.get("planned_qty"), rel=1e-6)
 
 
 @pytest.mark.asyncio

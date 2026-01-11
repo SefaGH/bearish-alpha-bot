@@ -28,9 +28,9 @@ async def test_pyramiding_disabled_pending_limit_applies_to_scale_in():
         },
         logging.getLogger(__name__),
     )
-    ok, _ = await queue.put(_make_payload("BTC", INTENT_SCALE_IN))
+    ok, _, _ = await queue.put(_make_payload("BTC", INTENT_SCALE_IN))
     assert ok is True
-    ok, reason = await queue.put(_make_payload("BTC", INTENT_SCALE_IN))
+    ok, reason, _ = await queue.put(_make_payload("BTC", INTENT_SCALE_IN))
     assert ok is False
     assert "limit" in reason.lower()
 
@@ -53,7 +53,7 @@ async def test_pyramiding_enabled_allows_extra_scale_in_pending():
     assert (await queue.put(_make_payload("ETH", INTENT_SCALE_IN)))[0] is True
     assert (await queue.put(_make_payload("ETH", INTENT_SCALE_IN)))[0] is True
     # third scale-in rejected
-    ok, reason = await queue.put(_make_payload("ETH", INTENT_SCALE_IN))
+    ok, reason, _ = await queue.put(_make_payload("ETH", INTENT_SCALE_IN))
     assert ok is False
     assert "scale" in (reason or "").lower()
 
@@ -71,6 +71,6 @@ async def test_entry_stays_strict_even_with_scale_in_capacity():
         logging.getLogger(__name__),
     )
     assert (await queue.put(_make_payload("SOL", INTENT_ENTRY)))[0] is True
-    ok, reason = await queue.put(_make_payload("SOL", INTENT_ENTRY))
+    ok, reason, _ = await queue.put(_make_payload("SOL", INTENT_ENTRY))
     assert ok is False
     assert "limit" in reason.lower()

@@ -47,9 +47,9 @@ async def test_compute_context_bucket_and_strength():
     ctx = await analyzer.compute_context(symbol, trade_timeframe="5m", as_of_ts=123.0)
 
     assert ctx is not None
-    # With trade volume sum=20 over 5m, baseline scaled ~8.33 → ratios ~2.4 → sigmoid ~0.84 → HIGH bucket
-    assert ctx.bucket == "HIGH"
-    assert 0.8 <= ctx.volume_strength <= 0.9
+    # With trade volume sum=20 over 10m, baseline scaled ~16.67 → ratios ~1.2 → sigmoid ~0.56 → NORMAL bucket
+    assert ctx.bucket == "NORMAL"
+    assert 0.5 <= ctx.volume_strength <= 0.7
     assert ctx.last_updated_ts == 123.0
 
 

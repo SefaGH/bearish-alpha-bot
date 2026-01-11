@@ -7,11 +7,13 @@ import asyncio
 import heapq
 import itertools
 import logging
+import re
 import threading
 import time
 import json
+import uuid
 from dataclasses import asdict
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Callable
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 from enum import Enum
@@ -101,13 +103,20 @@ class PrioritySignalQueue:
             'rejected_symbol_limit': 0,
             'requeued': 0,
         }
+        self.on_expire: Optional[Callable[[Dict[str, Any]], None]] = None
 
-    async def put(self, payload: Dict[str, Any], process_after: Optional[float] = None) -> Tuple[bool, Optional[str]]:
+    async def put(
+        self, payload: Dict[str, Any], process_after: Optional[float] = None
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
         symbol = self._extract_symbol(payload)
         intent = self._extract_intent(payload)
+        expired_payloads: List[Dict[str, Any]] = []
+        ok = False
+        reason: Optional[str] = None
+        reason_code: Optional[str] = None
         async with self._condition:
             now = time.time()
-            self._purge_expired_locked()
+            expired_payloads = self._purge_expired_locked()
             if symbol:
                 pending_totals = self._pending_by_symbol[symbol]
                 pending_total = pending_totals["total"]
@@ -117,8 +126,8 @@ class PrioritySignalQueue:
                     if self._max_pending_per_symbol and pending_total >= self._max_pending_per_symbol:
                         self._stats['rejected_symbol_limit'] += 1
                         reason = f"Queue limit reached for {symbol}"
+                        reason_code = "queue.symbol_pending_limit"
                         self._logger.warning(f"🚫 [QUEUE] {reason}")
-                        return False, reason
                 else:
                     if intent == INTENT_SCALE_IN:
                         max_allowed = self._max_pending_per_symbol + self._max_pending_scale_in_per_symbol
@@ -127,6 +136,7 @@ class PrioritySignalQueue:
                         if pending_total >= max_allowed or pending_scale >= self._max_pending_scale_in_per_symbol > 0:
                             self._stats['rejected_symbol_limit'] += 1
                             reason = "Scale-in queue limit reached"
+                            reason_code = "queue.symbol_pending_limit"
                             self._logger.info(
                                 "[PYRAMID-QUEUE] scale-in rejected at enqueue | sym=%s | pending_total=%d | pending_scale_in=%d | max_entry=%d | max_scale_in=%d",
                                 symbol,
@@ -135,50 +145,107 @@ class PrioritySignalQueue:
                                 self._max_pending_per_symbol,
                                 self._max_pending_scale_in_per_symbol,
                             )
-                            return False, reason
                     else:
                         if self._max_pending_per_symbol and pending_total >= self._max_pending_per_symbol:
                             self._stats['rejected_symbol_limit'] += 1
                             reason = f"Queue limit reached for {symbol}"
+                            reason_code = "queue.symbol_pending_limit"
                             self._logger.warning(f"🚫 [QUEUE] {reason}")
-                            return False, reason
 
-            meta = payload.setdefault('queue_meta', {})
-            meta['enqueued_at'] = now
-            meta['expiration'] = now + self._ttl
-            if process_after is not None:
-                meta['process_after'] = process_after
+            if reason is None:
+                meta = payload.setdefault('queue_meta', {})
+                meta['enqueued_at'] = now
+                meta['expiration'] = now + self._ttl
+                if process_after is not None:
+                    meta['process_after'] = process_after
 
-            priority_score = self._compute_priority(payload, now)
-            entry = (-priority_score, meta['enqueued_at'], next(self._sequence), payload)
-            current_depth = len(self._queue) + len(self._waiting_room)
-            defer_signal = process_after is not None and process_after > now
+                priority_score = self._compute_priority(payload, now)
+                entry = (-priority_score, meta['enqueued_at'], next(self._sequence), payload)
+                current_depth = len(self._queue) + len(self._waiting_room)
+                defer_signal = process_after is not None and process_after > now
 
-            if current_depth >= self._max_depth:
-                replaced = self._maybe_replace_lowest(entry, priority_score, process_after)
-                if not replaced:
-                    self._stats['rejected_capacity'] += 1
-                    reason = "Signal queue at capacity"
-                    self._logger.warning(f"🚫 [QUEUE] {reason} (score={priority_score:.3f})")
-                    return False, reason
-            else:
-                if defer_signal:
-                    self._waiting_room.append((process_after, entry))
+                if current_depth >= self._max_depth:
+                    replaced = self._maybe_replace_lowest(entry, priority_score, process_after)
+                    if not replaced:
+                        self._stats['rejected_capacity'] += 1
+                        reason = "Signal queue at capacity"
+                        reason_code = "queue.capacity"
+                        self._logger.warning(f"🚫 [QUEUE] {reason} (score={priority_score:.3f})")
+                    else:
+                        ok = True
                 else:
-                    heapq.heappush(self._queue, entry)
+                    if defer_signal:
+                        self._waiting_room.append((process_after, entry))
+                    else:
+                        heapq.heappush(self._queue, entry)
+                    ok = True
+
+                if ok:
+                    if symbol:
+                        self._pending_by_symbol[symbol]["total"] += 1
+                        if intent == INTENT_SCALE_IN:
+                            self._pending_by_symbol[symbol]["scale_in"] += 1
+                    self._stats['accepted'] += 1
+                    self._condition.notify()
+                    self._logger.info(
+                        f"📥 [QUEUE] Signal enqueued: symbol={symbol}, score={priority_score:.3f}, depth={len(self._queue) + len(self._waiting_room)}"
+                    )
+
+        self._notify_expired(expired_payloads)
+        return ok, reason, reason_code
+
+    async def can_accept(self, payload: Dict[str, Any]) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Cheap acceptance check (no mutation) for incubator gating."""
+        symbol = self._extract_symbol(payload)
+        intent = self._extract_intent(payload)
+        expired_payloads: List[Dict[str, Any]] = []
+        ok = True
+        reason: Optional[str] = None
+        reason_code: Optional[str] = None
+        async with self._condition:
+            now = time.time()
+            expired_payloads = self._purge_expired_locked()
+            self._check_waiting_room_locked()
 
             if symbol:
-                self._pending_by_symbol[symbol]["total"] += 1
-                if intent == INTENT_SCALE_IN:
-                    self._pending_by_symbol[symbol]["scale_in"] += 1
-            self._stats['accepted'] += 1
-            self._condition.notify()
-            self._logger.info(
-                f"📥 [QUEUE] Signal enqueued: symbol={symbol}, score={priority_score:.3f}, depth={len(self._queue) + len(self._waiting_room)}"
-            )
-            return True, None
+                pending_totals = self._pending_by_symbol[symbol]
+                pending_total = pending_totals["total"]
+                pending_scale = pending_totals["scale_in"]
+
+                if not self._pyramiding_enabled:
+                    if self._max_pending_per_symbol and pending_total >= self._max_pending_per_symbol:
+                        ok = False
+                        reason = f"Queue limit reached for {symbol}"
+                        reason_code = "queue.symbol_pending_limit"
+                else:
+                    if intent == INTENT_SCALE_IN:
+                        max_allowed = self._max_pending_per_symbol + self._max_pending_scale_in_per_symbol
+                        if self._max_pending_scale_in_per_symbol <= 0:
+                            max_allowed = self._max_pending_per_symbol
+                        if pending_total >= max_allowed or pending_scale >= self._max_pending_scale_in_per_symbol > 0:
+                            ok = False
+                            reason = "Scale-in queue limit reached"
+                            reason_code = "queue.symbol_pending_limit"
+                    else:
+                        if self._max_pending_per_symbol and pending_total >= self._max_pending_per_symbol:
+                            ok = False
+                            reason = f"Queue limit reached for {symbol}"
+                            reason_code = "queue.symbol_pending_limit"
+
+            if ok:
+                current_depth = len(self._queue) + len(self._waiting_room)
+                if current_depth >= self._max_depth:
+                    ok = False
+                    reason = "Signal queue at capacity"
+                    reason_code = "queue.capacity"
+
+        self._notify_expired(expired_payloads)
+        return ok, reason, reason_code
 
     async def get(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        expired_payloads: List[Dict[str, Any]] = []
+        result: Optional[Dict[str, Any]] = None
+        timed_out = False
         async with self._condition:
             deadline = None
             loop = None
@@ -187,7 +254,7 @@ class PrioritySignalQueue:
                 deadline = loop.time() + timeout
 
             while True:
-                self._purge_expired_locked()
+                expired_payloads.extend(self._purge_expired_locked())
                 self._check_waiting_room_locked()
                 self._refresh_priorities_locked()
 
@@ -204,7 +271,8 @@ class PrioritySignalQueue:
                             self._pending_by_symbol[symbol] = counts
                     payload.setdefault('queue_meta', {})['dequeued_at'] = time.time()
                     self._stats['dequeued'] += 1
-                    return payload
+                    result = payload
+                    break
 
                 if timeout is None:
                     await self._condition.wait()
@@ -212,8 +280,20 @@ class PrioritySignalQueue:
                     loop = loop or asyncio.get_running_loop()
                     remaining = deadline - loop.time()
                     if remaining <= 0:
-                        raise asyncio.TimeoutError()
-                    await asyncio.wait_for(self._condition.wait(), timeout=remaining)
+                        timed_out = True
+                        break
+                    try:
+                        await asyncio.wait_for(self._condition.wait(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        timed_out = True
+                        break
+
+        self._notify_expired(expired_payloads)
+        if timed_out:
+            raise asyncio.TimeoutError()
+        if result is None:  # pragma: no cover - defensive
+            raise RuntimeError("PrioritySignalQueue.get exited without a payload")
+        return result
 
     def qsize(self) -> int:
         return len(self._queue) + len(self._waiting_room)
@@ -223,9 +303,10 @@ class PrioritySignalQueue:
 
     async def requeue(self, payload: Dict[str, Any]) -> None:
         symbol = self._extract_symbol(payload)
+        expired_payloads: List[Dict[str, Any]] = []
         async with self._condition:
             now = time.time()
-            self._purge_expired_locked()
+            expired_payloads = self._purge_expired_locked()
             meta = payload.setdefault('queue_meta', {})
             meta.setdefault('enqueued_at', now)
             meta.setdefault('expiration', now + self._ttl)
@@ -241,6 +322,7 @@ class PrioritySignalQueue:
 
             self._stats['requeued'] = self._stats.get('requeued', 0) + 1
             self._condition.notify()
+        self._notify_expired(expired_payloads)
 
     def _maybe_replace_lowest(self, entry, new_score: float, process_after: Optional[float]) -> bool:
         if not self._queue and not self._waiting_room:
@@ -305,9 +387,10 @@ class PrioritySignalQueue:
         )
         return True
 
-    def _purge_expired_locked(self) -> None:
+    def _purge_expired_locked(self) -> List[Dict[str, Any]]:
         now = time.time()
         expired = 0
+        expired_payloads: List[Dict[str, Any]] = []
 
         if self._queue:
             kept: List[Tuple[float, float, int, Dict[str, Any]]] = []
@@ -317,6 +400,7 @@ class PrioritySignalQueue:
                 expiration = payload.get('queue_meta', {}).get('expiration', now + 1)
                 if expiration < now:
                     expired += 1
+                    expired_payloads.append(payload)
                     symbol = self._extract_symbol(payload)
                     if symbol:
                         counts = self._pending_by_symbol[symbol]
@@ -337,6 +421,7 @@ class PrioritySignalQueue:
                 expiration = payload.get('queue_meta', {}).get('expiration', now + 1)
                 if expiration < now:
                     expired += 1
+                    expired_payloads.append(payload)
                     symbol = self._extract_symbol(payload)
                     if symbol:
                         counts = self._pending_by_symbol[symbol]
@@ -352,6 +437,18 @@ class PrioritySignalQueue:
         if expired:
             self._stats['expired'] += expired
             self._logger.warning(f"⏳ [QUEUE] Dropped {expired} expired signals")
+
+        return expired_payloads
+
+    def _notify_expired(self, expired_payloads: List[Dict[str, Any]]) -> None:
+        if not expired_payloads or not self.on_expire:
+            return
+        on_expire = self.on_expire
+        for payload in expired_payloads:
+            try:
+                on_expire(payload)
+            except Exception as exc:  # pragma: no cover - defensive
+                self._logger.error("[QUEUE] on_expire callback failed: %s", exc, exc_info=True)
 
     def _refresh_priorities_locked(self) -> None:
         if not self._queue:
@@ -512,6 +609,7 @@ class StrategyCoordinator:
         except Exception:
             pass
         self.signal_queue = PrioritySignalQueue(queue_cfg, logger)
+        self.signal_queue.on_expire = self._on_signal_queue_expire
         self.signal_history = []
         self._signal_history_lookup: Dict[str, Dict[str, Any]] = {}
         self._dispatch_lock = asyncio.Lock()
@@ -599,8 +697,32 @@ class StrategyCoordinator:
         self.gemma_adapter = None
         if self.config.get('ml', {}).get('gemma', {}).get('enabled', False):
             self._initialize_gemma()
-    
-        logger.info("StrategyCoordinator initialized (market_data_pipeline=%s)", bool(self.market_data_pipeline))
+
+        incubator_cfg = {}
+        try:
+            signals_cfg = self.config.get("signals", {}) if isinstance(self.config, dict) else {}
+            incubator_cfg = signals_cfg.get("incubator", {}) if isinstance(signals_cfg, dict) else {}
+            if not incubator_cfg and isinstance(self.config, dict):
+                incubator_cfg = self.config.get("incubator", {}) or {}
+        except Exception:
+            incubator_cfg = {}
+
+        self._incubator_enabled = bool(incubator_cfg.get("enabled", True))
+        self._incubator_tick_max_items = int(incubator_cfg.get("tick_max_items", 25) or 25)
+        self._incubator_tick_time_budget_ms = int(incubator_cfg.get("tick_time_budget_ms", 75) or 75)
+        self._incubator_lock = asyncio.Lock()
+        self._incubator_items: Dict[str, Dict[str, Any]] = {}
+        self._incubator_policies = self._build_incubator_policies(incubator_cfg)
+
+        # Dedupe registry: prevents duplicate orders/setup collisions between incubator + active pipeline
+        self._active_dedupe_by_key: Dict[str, str] = {}
+        self._active_dedupe_by_signal_id: Dict[str, str] = {}
+
+        logger.info(
+            "StrategyCoordinator initialized (market_data_pipeline=%s incubator=%s)",
+            bool(self.market_data_pipeline),
+            self._incubator_enabled,
+        )
 
     def _set_strategy_cooldown(self, strategy_name: str, symbol: str, duration_seconds: float) -> None:
         """Activate a cooldown for a specific strategy+symbol pair."""
@@ -615,21 +737,723 @@ class StrategyCoordinator:
         with self._strategy_cooldowns_lock:
             self._strategy_cooldowns[key] = expiry_time
 
-    def _is_strategy_in_cooldown(self, strategy_name: str, symbol: str) -> bool:
-        """Return True if strategy+symbol is in cooldown; auto-cleans expired keys."""
+    def _is_strategy_in_cooldown(self, strategy_name: str, symbol: str, return_expiry: bool = False):
+        """
+        Return True if strategy+symbol is in cooldown; auto-cleans expired keys.
+        
+        Args:
+            strategy_name: Strategy identifier
+            symbol: Trading symbol
+            return_expiry: When True, also returns the expiry datetime for logging/telemetry
+        """
         if not strategy_name or not symbol:
-            return False
+            return (False, None) if return_expiry else False
+
         now = datetime.now(timezone.utc)
         key = f"{strategy_name}:{symbol}"
+        cooldown_hit = False
+        expiry_time = None
+
         with self._strategy_cooldowns_lock:
             expiry_time = self._strategy_cooldowns.get(key)
             if expiry_time is None:
-                return False
-            if now < expiry_time:
-                return True
-            self._strategy_cooldowns.pop(key, None)
-            return False
-    
+                cooldown_hit = False
+            elif now < expiry_time:
+                cooldown_hit = True
+            else:
+                self._strategy_cooldowns.pop(key, None)
+                expiry_time = None
+
+        if return_expiry:
+            return cooldown_hit, expiry_time
+        return cooldown_hit
+
+    @staticmethod
+    def _now_ms() -> int:
+        return int(time.time() * 1000)
+
+    @staticmethod
+    def _normalize_side(side: Any) -> Optional[str]:
+        if side is None:
+            return None
+        try:
+            raw = str(side).strip().lower()
+        except Exception:
+            return None
+        mapping = {"buy": "long", "long": "long", "sell": "short", "short": "short"}
+        return mapping.get(raw)
+
+    def _normalize_signal_side(self, signal: Dict[str, Any]) -> None:
+        if not isinstance(signal, dict):
+            return
+        normalized = self._normalize_side(signal.get("side"))
+        if normalized:
+            signal["side"] = normalized
+
+    def _ensure_signal_id(self, strategy_name: str, signal: Dict[str, Any]) -> str:
+        if not isinstance(signal, dict):
+            return ""
+        existing = signal.get("signal_id") or signal.get("id")
+        if existing:
+            signal_id = str(existing)
+        else:
+            signal_id = self._generate_signal_id(strategy_name or "unknown", signal)
+        signal["signal_id"] = signal_id
+        return signal_id
+
+    @staticmethod
+    def _parse_timeframe_ms(timeframe: Any) -> Optional[int]:
+        if not timeframe:
+            return None
+        tf = str(timeframe).strip().lower()
+        match = re.match(r"^(\d+)\s*([smhd])$", tf)
+        if not match:
+            return None
+        value = int(match.group(1))
+        unit = match.group(2)
+        if value <= 0:
+            return None
+        mult = {"s": 1000, "m": 60_000, "h": 3_600_000, "d": 86_400_000}.get(unit)
+        return None if mult is None else value * mult
+
+    @staticmethod
+    def _coerce_ts_ms(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            try:
+                numeric = float(value)
+            except Exception:
+                return None
+            if numeric <= 0:
+                return None
+            # Heuristic: epoch ms ~ 1e12, epoch sec ~ 1e9
+            if numeric >= 1e12:
+                return int(numeric)
+            if numeric >= 1e9:
+                return int(numeric * 1000)
+            return int(numeric)
+        if isinstance(value, datetime):
+            try:
+                return int(value.timestamp() * 1000)
+            except Exception:
+                return None
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                if raw.endswith("Z"):
+                    raw = raw[:-1] + "+00:00"
+                dt = datetime.fromisoformat(raw)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return int(dt.timestamp() * 1000)
+            except Exception:
+                return None
+        return None
+
+    @classmethod
+    def _derive_setup_anchor_ts_ms(cls, signal: Dict[str, Any]) -> int:
+        timeframe = signal.get("timeframe") or signal.get("tf") or "5m"
+        timeframe_ms = cls._parse_timeframe_ms(timeframe) or cls._parse_timeframe_ms("5m") or 300_000
+
+        anchor = cls._coerce_ts_ms(signal.get("setup_anchor_ts_ms"))
+        if anchor is not None:
+            return int(anchor)
+
+        candidate_ts = (
+            signal.get("timestamp")
+            or signal.get("ts")
+            or signal.get("signal_timestamp")
+            or signal.get("created_at")
+            or signal.get("createdAt")
+        )
+        ts_ms = cls._coerce_ts_ms(candidate_ts) or cls._now_ms()
+        anchor_ms = int(ts_ms - (ts_ms % int(timeframe_ms)))
+        signal["setup_anchor_ts_ms"] = anchor_ms
+        return anchor_ms
+
+    @classmethod
+    def _derive_dedupe_key(cls, strategy_name: str, signal: Dict[str, Any]) -> Optional[str]:
+        if not isinstance(signal, dict):
+            return None
+        strategy = (strategy_name or signal.get("strategy_name") or signal.get("strategy") or "").strip()
+        symbol = (signal.get("symbol") or "").strip()
+        side = str(signal.get("side") or "").strip().lower()
+        intent = str(signal.get("intent") or INTENT_ENTRY).strip().lower()
+        timeframe = str(signal.get("timeframe") or "5m").strip().lower()
+        if not strategy or not symbol or not side or not intent:
+            return None
+        if intent == str(INTENT_SCALE_IN).strip().lower():
+            return f"{strategy}:{symbol}:{side}:{intent}"
+        anchor_ts = cls._derive_setup_anchor_ts_ms(signal)
+        return f"{strategy}:{symbol}:{side}:{intent}:{timeframe}:{anchor_ts}"
+
+    @staticmethod
+    def _json_sanitize(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            try:
+                return value.isoformat()
+            except Exception:
+                return str(value)
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, Enum):
+            return value.value
+        if isinstance(value, (np.integer,)):
+            return int(value)
+        if isinstance(value, (np.floating,)):
+            return float(value)
+        if isinstance(value, (list, tuple, set)):
+            return [StrategyCoordinator._json_sanitize(v) for v in value]
+        if isinstance(value, dict):
+            sanitized: Dict[str, Any] = {}
+            for k, v in value.items():
+                try:
+                    key_str = str(k)
+                except Exception:
+                    key_str = "key"
+                sanitized[key_str] = StrategyCoordinator._json_sanitize(v)
+            return sanitized
+        try:
+            as_dict = value.to_dict()  # type: ignore[attr-defined]
+        except Exception:
+            as_dict = None
+        if isinstance(as_dict, dict):
+            return StrategyCoordinator._json_sanitize(as_dict)
+        return str(value)
+
+    @staticmethod
+    def _build_incubator_policies(incubator_cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        defaults: Dict[str, Dict[str, Any]] = {
+            "queue.capacity": {
+                "ttl_seconds": 120,
+                "max_attempts": 60,
+                "base_delay_ms": 500,
+                "max_delay_ms": 10_000,
+                "refresh_policy": "NONE",
+            },
+            "queue.symbol_pending_limit": {
+                "ttl_seconds": 120,
+                "max_attempts": 60,
+                "base_delay_ms": 500,
+                "max_delay_ms": 10_000,
+                "refresh_policy": "NONE",
+            },
+            "risk.concurrent.max_open_positions": {
+                "ttl_seconds": 1800,
+                "max_attempts": 180,
+                "base_delay_ms": 2000,
+                "max_delay_ms": 60_000,
+                "refresh_policy": "NONE",
+            },
+            "risk.concurrent.max_positions_per_symbol": {
+                "ttl_seconds": 1800,
+                "max_attempts": 180,
+                "base_delay_ms": 2000,
+                "max_delay_ms": 60_000,
+                "refresh_policy": "NONE",
+            },
+            "volume.low_vol_tight_stop": {
+                "ttl_seconds": 3600,
+                "max_attempts": 120,
+                "base_delay_ms": 60_000,
+                "max_delay_ms": 300_000,
+                "refresh_policy": "REPRICE_AND_RESIZE",
+            },
+        }
+
+        overrides = incubator_cfg.get("policies", {}) if isinstance(incubator_cfg, dict) else {}
+        if isinstance(overrides, dict):
+            for key, override in overrides.items():
+                if not isinstance(override, dict):
+                    continue
+                base = defaults.get(str(key), {})
+                defaults[str(key)] = {**base, **override}
+        return defaults
+
+    def _emit_waiting_room_event(self, event: str, item: Dict[str, Any], **extra_fields: Any) -> None:
+        payload = item.get("payload", {}) if isinstance(item, dict) else {}
+        safe_extra = self._json_sanitize(extra_fields) if extra_fields else {}
+        ts_ms = self._now_ms()
+        if isinstance(payload, dict):
+            strat = payload.get("strategy_name") or payload.get("strategy") or "unknown"
+            self._ensure_signal_id(str(strat), payload)
+            if not payload.get("signal_id"):
+                logger.error("[INCUBATOR] Missing signal_id in waiting_room event=%s payload=%s", event, payload)
+        out = {
+            "event": event,
+            "ts_ms": ts_ms,
+            "run_id": get_current_run_id(),
+            "signal_id": payload.get("signal_id"),
+            "strategy": payload.get("strategy_name") or payload.get("strategy"),
+            "symbol": payload.get("symbol"),
+            "side": payload.get("side"),
+            "reason_code": item.get("reason_code"),
+            "attempts": item.get("attempts", 0),
+            "ttl_seconds": item.get("ttl_seconds"),
+            "elapsed_ms": ts_ms - int(item.get("first_seen_ts_ms", ts_ms) or ts_ms),
+            "ctx_hash": item.get("ctx_hash"),
+            "dedupe_key": item.get("dedupe_key"),
+            **(safe_extra if isinstance(safe_extra, dict) else {}),
+        }
+        try:
+            logger.info("%s %s", event, json.dumps(out, ensure_ascii=False, sort_keys=True))
+        except Exception:
+            logger.info("%s %s", event, out)
+
+    async def incubate_signal(
+        self,
+        strategy_name: str,
+        signal: Dict[str, Any],
+        reason_code: str,
+        refresh_policy: str,
+        stage: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self._incubator_enabled:
+            return {"status": "rejected", "reason": "incubator_disabled", "stage": stage or "incubator"}
+
+        if not isinstance(signal, dict):
+            return {"status": "rejected", "reason": "invalid_signal", "stage": stage or "incubator"}
+
+        self._normalize_signal_side(signal)
+        self._ensure_signal_id(strategy_name, signal)
+        if not signal.get("signal_id"):
+            logger.error("[INCUBATOR] Refusing to incubate without signal_id | strat=%s signal=%s", strategy_name, signal)
+            return {"status": "rejected", "reason": "missing_signal_id", "stage": stage or "incubator"}
+
+        dedupe_key = self._derive_dedupe_key(strategy_name, signal)
+        if not dedupe_key:
+            return {"status": "rejected", "reason": "missing_dedupe_key", "stage": stage or "incubator"}
+
+        now_ms = self._now_ms()
+        policy = self._incubator_policies.get(reason_code, {})
+        ttl_seconds = int(policy.get("ttl_seconds", 300) or 300)
+        max_attempts = int(policy.get("max_attempts", 20) or 20)
+        base_delay_ms = int(policy.get("base_delay_ms", 1000) or 1000)
+
+        safe_payload = self._json_sanitize(signal)
+        if isinstance(safe_payload, dict):
+            safe_payload.setdefault("strategy_name", strategy_name)
+            if not safe_payload.get("signal_id"):
+                self._ensure_signal_id(strategy_name, safe_payload)
+            safe_payload["dedupe_key"] = dedupe_key
+            safe_payload["setup_anchor_ts_ms"] = int(self._derive_setup_anchor_ts_ms(safe_payload))
+
+        new_item = {
+            "payload": safe_payload,
+            "first_seen_ts_ms": now_ms,
+            "next_check_at_ms": now_ms + max(250, base_delay_ms),
+            "attempts": 0,
+            "reason_code": str(reason_code),
+            "refresh_policy": str(refresh_policy),
+            "dedupe_key": dedupe_key,
+            "ttl_seconds": ttl_seconds,
+            "max_attempts": max_attempts,
+            "expires_at_ms": now_ms + ttl_seconds * 1000,
+            "ctx_hash": None,
+            "stage": stage,
+        }
+
+        emit_add: Optional[Dict[str, Any]] = None
+        emit_drop: Optional[Dict[str, Any]] = None
+
+        async with self._incubator_lock:
+            active_signal_id = self._active_dedupe_by_key.get(dedupe_key)
+            if active_signal_id:
+                emit_drop = {
+                    **new_item,
+                    "first_seen_ts_ms": now_ms,
+                    "attempts": 0,
+                }
+            else:
+                existing = self._incubator_items.get(dedupe_key)
+                if existing:
+                    first_seen = int(existing.get("first_seen_ts_ms", now_ms) or now_ms)
+                    existing["payload"] = safe_payload
+                    existing["reason_code"] = str(reason_code)
+                    existing["refresh_policy"] = str(refresh_policy)
+                    existing["ttl_seconds"] = ttl_seconds
+                    existing["max_attempts"] = max_attempts
+                    existing["expires_at_ms"] = first_seen + ttl_seconds * 1000
+                    existing["next_check_at_ms"] = min(
+                        int(existing.get("next_check_at_ms", now_ms + base_delay_ms) or (now_ms + base_delay_ms)),
+                        now_ms + max(250, base_delay_ms),
+                    )
+                    existing["stage"] = stage or existing.get("stage")
+                else:
+                    self._incubator_items[dedupe_key] = new_item
+                    emit_add = new_item
+
+        if emit_drop is not None:
+            self._emit_waiting_room_event(
+                "waiting_room_drop",
+                emit_drop,
+                drop_reason="incubator.dedupe.active_exists",
+                active_signal_id=active_signal_id,
+            )
+            return {
+                "status": "dropped",
+                "reason": "incubator.dedupe.active_exists",
+                "stage": stage or "incubator",
+                "dedupe_key": dedupe_key,
+            }
+
+        if emit_add is not None:
+            self._emit_waiting_room_event("waiting_room_add", emit_add)
+
+        return {"status": "incubated", "reason_code": reason_code, "stage": stage or "incubator", "dedupe_key": dedupe_key}
+
+    async def incubator_tick(self, max_items: Optional[int] = None, time_budget_ms: Optional[int] = None) -> int:
+        if not self._incubator_enabled:
+            return 0
+
+        max_items = self._incubator_tick_max_items if max_items is None else int(max_items)
+        time_budget_ms = self._incubator_tick_time_budget_ms if time_budget_ms is None else int(time_budget_ms)
+        if max_items <= 0 or time_budget_ms <= 0:
+            return 0
+
+        start_ms = self._now_ms()
+        now_ms = start_ms
+        processed = 0
+        price_cache: Dict[tuple[str, str], Optional[float]] = {}
+
+        expired_items: List[Dict[str, Any]] = []
+        due_keys: List[str] = []
+
+        async with self._incubator_lock:
+            for key, item in list(self._incubator_items.items()):
+                try:
+                    expires_at = int(item.get("expires_at_ms") or 0)
+                except Exception:
+                    expires_at = 0
+                if expires_at and now_ms >= expires_at:
+                    expired_items.append(item)
+                    self._incubator_items.pop(key, None)
+                    continue
+
+                try:
+                    next_check = int(item.get("next_check_at_ms") or 0)
+                except Exception:
+                    next_check = 0
+                if now_ms >= next_check:
+                    due_keys.append(key)
+
+        for item in expired_items:
+            self._emit_waiting_room_event("waiting_room_drop", item, drop_reason="ttl_expired")
+
+        due_keys.sort(key=lambda k: int(self._incubator_items.get(k, {}).get("next_check_at_ms", now_ms) or now_ms))
+        for dedupe_key in due_keys[:max_items]:
+            if self._now_ms() - start_ms >= time_budget_ms:
+                break
+
+            prev_ctx_hash: Optional[str] = None
+            async with self._incubator_lock:
+                item = self._incubator_items.get(dedupe_key)
+                if not item:
+                    continue
+                payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+                prev_ctx_hash = item.get("ctx_hash")
+                attempts = int(item.get("attempts", 0) or 0) + 1
+                item["attempts"] = attempts
+                item["last_attempt_ts_ms"] = now_ms
+                max_attempts = int(item.get("max_attempts", 0) or 0)
+                if max_attempts and attempts > max_attempts:
+                    self._incubator_items.pop(dedupe_key, None)
+                    drop_item = dict(item)
+                    item = None
+                else:
+                    drop_item = None
+
+            if drop_item is not None:
+                self._emit_waiting_room_event("waiting_room_drop", drop_item, drop_reason="max_attempts_exceeded")
+                processed += 1
+                continue
+
+            if not isinstance(payload, dict):
+                processed += 1
+                continue
+
+            reason_code = str(item.get("reason_code") or "")
+            policy = self._incubator_policies.get(reason_code, {})
+            base_delay_ms = int(policy.get("base_delay_ms", 1000) or 1000)
+            max_delay_ms = int(policy.get("max_delay_ms", 10_000) or 10_000)
+
+            condition_met = False
+            check_detail: Dict[str, Any] = {}
+
+            ctx_hash, ctx_detail = await self._compute_ctx_hash(payload, now_ms=now_ms, price_cache=price_cache)
+            if ctx_hash:
+                async with self._incubator_lock:
+                    existing = self._incubator_items.get(dedupe_key)
+                    if existing:
+                        existing["ctx_hash"] = ctx_hash
+                check_detail["ctx"] = ctx_detail
+
+            if reason_code == "volume.low_vol_tight_stop" and ctx_hash and ctx_hash == prev_ctx_hash:
+                # Optimization: if symbol+price+candle open didn't change, skip heavy checks.
+                condition_met = False
+                check_detail["skip_reason"] = "ctx_hash_unchanged"
+
+            if reason_code in ("queue.capacity", "queue.symbol_pending_limit"):
+                try:
+                    can_accept, _, _ = await self.signal_queue.can_accept(
+                        {"signal": {"symbol": payload.get("symbol"), "intent": payload.get("intent"), "priority": payload.get("priority", 1)}}
+                    )
+                    condition_met = bool(can_accept)
+                    check_detail["queue_qsize"] = self.signal_queue.qsize()
+                except Exception as exc:
+                    condition_met = False
+                    check_detail["error"] = str(exc)
+
+            elif reason_code in ("risk.concurrent.max_open_positions", "risk.concurrent.max_positions_per_symbol"):
+                condition_met, concurrent_detail = self._check_concurrent_release_condition(payload, reason_code)
+                check_detail.update(concurrent_detail)
+
+            elif reason_code == "volume.low_vol_tight_stop":
+                if check_detail.get("skip_reason") != "ctx_hash_unchanged":
+                    condition_met, volume_detail = await self._check_volume_release_condition(payload)
+                    check_detail.update(volume_detail)
+
+            self._emit_waiting_room_event("waiting_room_retry", item, check_detail=check_detail)
+
+            if condition_met:
+                refreshed_signal = await self._apply_refresh_policy(dict(payload), str(item.get("refresh_policy") or "NONE"))
+                refreshed_signal["incubator_replay"] = True
+                try:
+                    result = await self.process_strategy_signal(strategy_name=str(payload.get("strategy_name") or ""), signal=refreshed_signal)
+                except Exception as exc:
+                    result = {"status": "error", "reason": str(exc), "stage": "incubator_replay"}
+
+                status = str(result.get("status") or "")
+                if status == "accepted":
+                    async with self._incubator_lock:
+                        removed = self._incubator_items.pop(dedupe_key, None)
+                    if removed:
+                        self._emit_waiting_room_event("waiting_room_accept", removed)
+                elif status == "incubated":
+                    # process_strategy_signal re-incubated/update the item; keep it
+                    pass
+                else:
+                    async with self._incubator_lock:
+                        removed = self._incubator_items.pop(dedupe_key, None)
+                    if removed:
+                        self._emit_waiting_room_event(
+                            "waiting_room_drop",
+                            removed,
+                            drop_reason="replay_failed",
+                            replay_status=status,
+                            replay_stage=result.get("stage"),
+                            replay_reason=result.get("reason"),
+                        )
+
+            else:
+                delay = min(max_delay_ms, max(250, int(base_delay_ms * (2 ** min(int(item.get("attempts", 1) or 1) - 1, 6)))))
+                async with self._incubator_lock:
+                    existing = self._incubator_items.get(dedupe_key)
+                    if existing:
+                        existing["next_check_at_ms"] = self._now_ms() + delay
+
+            processed += 1
+
+        return processed
+
+    def _check_concurrent_release_condition(self, payload: Dict[str, Any], reason_code: str) -> Tuple[bool, Dict[str, Any]]:
+        limits = getattr(self.risk_manager, "concurrent_limits", None)
+        if limits is None or self.portfolio_manager is None:
+            return False, {"error": "missing_limits_or_portfolio_manager"}
+
+        symbol = payload.get("symbol")
+        try:
+            max_open_positions = getattr(limits, "max_open_positions", None)
+            max_positions_per_symbol = getattr(limits, "max_positions_per_symbol", None)
+        except Exception:
+            max_open_positions = None
+            max_positions_per_symbol = None
+
+        try:
+            if hasattr(self.portfolio_manager, "count_open_positions"):
+                total_open = int(self.portfolio_manager.count_open_positions())
+                symbol_open = int(self.portfolio_manager.count_open_positions(symbol)) if symbol else 0
+            elif hasattr(self.portfolio_manager, "get_open_positions"):
+                open_positions = self.portfolio_manager.get_open_positions() or {}
+                total_open = len(open_positions) if isinstance(open_positions, dict) else 0
+                symbol_open = sum(1 for pos in (open_positions or {}).values() if pos.get("symbol") == symbol) if symbol else 0
+            else:
+                total_open = len(getattr(self.risk_manager, "active_positions", {}) or {})
+                symbol_open = 0
+        except Exception as exc:
+            return False, {"error": str(exc)}
+
+        if reason_code == "risk.concurrent.max_open_positions":
+            if max_open_positions is None:
+                return False, {"error": "missing_max_open_positions", "total_open": total_open}
+            return total_open < int(max_open_positions), {"total_open": total_open, "max_open_positions": int(max_open_positions)}
+
+        if reason_code == "risk.concurrent.max_positions_per_symbol":
+            if max_positions_per_symbol is None or not symbol:
+                return False, {"error": "missing_symbol_or_max_positions_per_symbol", "symbol": symbol}
+            return (
+                symbol_open < int(max_positions_per_symbol),
+                {"symbol": symbol, "symbol_open": symbol_open, "max_positions_per_symbol": int(max_positions_per_symbol)},
+            )
+
+        return False, {"error": "unknown_reason_code", "reason_code": reason_code}
+
+    async def _compute_ctx_hash(
+        self,
+        payload: Dict[str, Any],
+        *,
+        now_ms: Optional[int] = None,
+        price_cache: Optional[Dict[tuple[str, str], Optional[float]]] = None,
+    ) -> Tuple[Optional[str], Dict[str, Any]]:
+        symbol = payload.get("symbol")
+        timeframe = payload.get("timeframe") or "5m"
+        timeframe_ms = self._parse_timeframe_ms(timeframe) or 300_000
+        now_ms = self._now_ms() if now_ms is None else int(now_ms)
+        candle_open_ms = int(now_ms - (now_ms % int(timeframe_ms)))
+
+        cache_key = None
+        if symbol:
+            cache_key = (str(symbol), str(timeframe))
+        last_price_val = price_cache.get(cache_key) if (price_cache is not None and cache_key is not None) else None
+        if last_price_val is None:
+            last_price = None
+            if self.market_data_pipeline and symbol:
+                try:
+                    last_price = await self.market_data_pipeline.get_latest_price(str(symbol), timeframe=str(timeframe))
+                except Exception:
+                    last_price = None
+            if last_price is None:
+                last_price = payload.get("entry") or payload.get("entry_price") or payload.get("price")
+
+            try:
+                last_price_val = float(last_price) if last_price is not None else None
+            except Exception:
+                last_price_val = None
+
+            if price_cache is not None and cache_key is not None:
+                price_cache[cache_key] = last_price_val
+
+        price_tag = "none" if last_price_val is None else f"{last_price_val:.8f}"
+        ctx_hash = None if not symbol else f"{symbol}:{timeframe}:{candle_open_ms}:{price_tag}"
+        return ctx_hash, {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "candle_open_ts_ms": candle_open_ms,
+            "last_price": last_price_val,
+        }
+
+    async def _check_volume_release_condition(self, payload: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+        symbol = payload.get("symbol")
+        timeframe = payload.get("timeframe") or "5m"
+        if not symbol or not self.volume_analyzer:
+            return False, {"error": "missing_symbol_or_volume_analyzer"}
+        try:
+            ctx = await self.volume_analyzer.compute_context(symbol, timeframe)
+        except Exception as exc:
+            return False, {"error": str(exc)}
+        bucket = getattr(ctx, "bucket", None) if ctx else None
+        bucket_label = str(bucket or "").upper()
+        try:
+            bucket_rank = get_bucket_rank(bucket_label) if bucket_label else None
+            normal_rank = get_bucket_rank("NORMAL")
+        except Exception:
+            bucket_rank = None
+            normal_rank = None
+        if bucket_rank is None or normal_rank is None:
+            return False, {"bucket": bucket_label, "error": "bucket_rank_unavailable"}
+        return bucket_rank >= normal_rank, {"bucket": bucket_label, "bucket_rank": bucket_rank, "normal_rank": normal_rank}
+
+    async def _apply_refresh_policy(self, payload: Dict[str, Any], refresh_policy: str) -> Dict[str, Any]:
+        if refresh_policy != "REPRICE_AND_RESIZE":
+            return payload
+
+        symbol = payload.get("symbol")
+        timeframe = payload.get("timeframe") or "5m"
+        latest_price = None
+        if self.market_data_pipeline and symbol:
+            try:
+                latest_price = await self.market_data_pipeline.get_latest_price(symbol, timeframe=timeframe)
+            except Exception:
+                latest_price = None
+
+        try:
+            old_entry = float(payload.get("entry") or payload.get("entry_price") or 0.0)
+        except Exception:
+            old_entry = 0.0
+
+        if latest_price is not None:
+            try:
+                latest_price = float(latest_price)
+            except Exception:
+                latest_price = None
+
+        if latest_price and latest_price > 0:
+            payload["entry"] = float(latest_price)
+
+            stop_pct = payload.get("stop_loss_pct")
+            if stop_pct is None:
+                try:
+                    old_stop = float(payload.get("stop") or payload.get("stop_loss") or 0.0)
+                except Exception:
+                    old_stop = 0.0
+                if old_entry > 0 and old_stop > 0:
+                    stop_pct = abs(old_entry - old_stop) / old_entry
+                    payload["stop_loss_pct"] = float(stop_pct)
+
+            try:
+                stop_pct = float(stop_pct) if stop_pct is not None else None
+            except Exception:
+                stop_pct = None
+
+            if stop_pct is not None and stop_pct > 0:
+                side = str(payload.get("side") or "").lower()
+                if side in ("short", "sell"):
+                    payload["stop"] = float(latest_price) * (1 + stop_pct)
+                else:
+                    payload["stop"] = float(latest_price) * (1 - stop_pct)
+
+            target_pct = payload.get("target_pct")
+            if target_pct is None:
+                try:
+                    old_target = float(payload.get("target") or payload.get("take_profit") or 0.0)
+                except Exception:
+                    old_target = 0.0
+                if old_entry > 0 and old_target > 0:
+                    target_pct = abs(old_target - old_entry) / old_entry
+                    payload["target_pct"] = float(target_pct)
+
+            try:
+                target_pct = float(target_pct) if target_pct is not None else None
+            except Exception:
+                target_pct = None
+
+            if target_pct is not None and target_pct > 0:
+                side = str(payload.get("side") or "").lower()
+                if side in ("short", "sell"):
+                    payload["target"] = float(latest_price) * (1 - target_pct)
+                else:
+                    payload["target"] = float(latest_price) * (1 + target_pct)
+
+        # Force re-sizing on replay
+        for k in (
+            "amount",
+            "position_size",
+            "notional",
+            "sizing_meta",
+            "planner_active",
+            "planner_raw_notional",
+            "planner_planned_notional",
+            "planner_cap_flags",
+        ):
+            payload.pop(k, None)
+
+        return payload
+
     def _initialize_gemma(self):
         """Initialize GEMMA adapter with manifest configuration."""
         try:
@@ -1500,14 +2324,89 @@ class StrategyCoordinator:
         """
         try:
             symbol = signal.get('symbol', 'UNKNOWN')
-            if symbol and symbol != 'UNKNOWN' and self._is_strategy_in_cooldown(strategy_name, symbol):
-                return {'status': 'dropped', 'reason': 'cooldown_active', 'stage': 'cooldown'}
+            self._normalize_signal_side(signal)
             log_prefix = f"[{strategy_name.upper()}/{symbol}]"
+            self._ensure_signal_id(strategy_name, signal)
+            logger.info(
+                "??  %s Signal ingress | side=%s | intent_hint=%s | reason=%s",
+                log_prefix,
+                signal.get('side', 'N/A'),
+                signal.get('intent', INTENT_ENTRY),
+                signal.get('reason', 'N/A'),
+            )
+
+            cooldown_active, cooldown_until = self._is_strategy_in_cooldown(
+                strategy_name, symbol, return_expiry=True
+            )
+            if symbol and symbol != 'UNKNOWN' and cooldown_active:
+                self.processing_stats['rejected_signals'] += 1
+                self.processing_stats['rejected_cooldown'] += 1
+                until_str = cooldown_until.isoformat() if isinstance(cooldown_until, datetime) else 'unknown'
+                logger.info(
+                    "??  %s DROPPED (Cooldown Active) | until=%s",
+                    log_prefix,
+                    until_str,
+                )
+                return {
+                    'status': 'dropped',
+                    'reason': 'cooldown_active',
+                    'stage': 'cooldown',
+                    'cooldown_until': until_str
+                }
 
             # Default all signals to entry intent unless explicitly provided
             signal.setdefault("intent", INTENT_ENTRY)
             signal["intent"] = self._determine_intent(signal, strategy_name)
             intent = signal.get("intent", INTENT_ENTRY)
+
+            dedupe_key = self._derive_dedupe_key(strategy_name, signal)
+            if dedupe_key and not bool(signal.get("incubator_replay")):
+                signal["dedupe_key"] = dedupe_key
+                active_signal_id = self._active_dedupe_by_key.get(dedupe_key)
+                if active_signal_id:
+                    drop_item = {
+                        "payload": self._json_sanitize(signal),
+                        "first_seen_ts_ms": self._now_ms(),
+                        "attempts": 0,
+                        "reason_code": "incubator.dedupe.active_exists",
+                        "dedupe_key": dedupe_key,
+                    }
+                    self._emit_waiting_room_event(
+                        "waiting_room_drop",
+                        drop_item,
+                        drop_kind="suppression",
+                        drop_reason="incubator.dedupe.active_exists",
+                        active_signal_id=active_signal_id,
+                    )
+                    return {
+                        "status": "dropped",
+                        "reason": "incubator.dedupe.active_exists",
+                        "stage": "incubator_dedupe",
+                        "dedupe_key": dedupe_key,
+                        "active_signal_id": active_signal_id,
+                    }
+
+                # If an identical setup is already waiting, refresh its payload and prompt a near-term recheck.
+                refreshed = None
+                async with self._incubator_lock:
+                    existing = self._incubator_items.get(dedupe_key)
+                    if existing:
+                        safe_payload = self._json_sanitize(signal)
+                        if isinstance(safe_payload, dict):
+                            safe_payload.setdefault("strategy_name", strategy_name)
+                            safe_payload["dedupe_key"] = dedupe_key
+                            safe_payload["setup_anchor_ts_ms"] = int(self._derive_setup_anchor_ts_ms(safe_payload))
+                        existing["payload"] = safe_payload
+                        existing["next_check_at_ms"] = self._now_ms()
+                        refreshed = dict(existing)
+
+                if refreshed:
+                    return {
+                        "status": "incubated",
+                        "reason_code": refreshed.get("reason_code"),
+                        "stage": "incubator_dedupe",
+                        "dedupe_key": dedupe_key,
+                    }
 
             cfg_source = self.config if isinstance(self.config, dict) else {}
             if hasattr(self.portfolio_manager, "cfg") and isinstance(getattr(self.portfolio_manager, "cfg"), dict):
@@ -1797,13 +2696,25 @@ class StrategyCoordinator:
                         wide_stop = stop_pct is not None and stop_pct > WIDE_STOP_THRESHOLD
 
                         if tight_stop:
-                            self._set_strategy_cooldown(strategy_name, symbol, duration_seconds=COOLDOWN_SECONDS)
                             logger.warning(
-                                f"{log_prefix} Signal DROPPED due to Low Volatility. "
-                                f"Cooldown activated for {COOLDOWN_SECONDS}s on {strategy_name}:{symbol}"
+                                f"{log_prefix} Signal DEFERRED due to Low Volatility (tight stop). "
+                                f"Reason=volume.low_vol_tight_stop strategy={strategy_name} symbol={symbol}"
                             )
-                            self.processing_stats['rejected_signals'] += 1
-                            return {'status': 'dropped', 'reason': 'cooldown_activated', 'stage': 'volume_policy'}
+                            incubated = await self.incubate_signal(
+                                strategy_name=strategy_name,
+                                signal=enriched_signal,
+                                reason_code="volume.low_vol_tight_stop",
+                                refresh_policy="REPRICE_AND_RESIZE",
+                                stage="volume_policy",
+                            )
+                            if incubated.get("status") == "incubated":
+                                return {
+                                    "status": "incubated",
+                                    "reason_code": "volume.low_vol_tight_stop",
+                                    "stage": "volume_policy",
+                                    "dedupe_key": incubated.get("dedupe_key"),
+                                }
+                            return incubated
 
                         elif wide_stop:
                             enriched_signal['execution_params'] = {'type': 'LIMIT', 'post_only': True}
@@ -1854,10 +2765,116 @@ class StrategyCoordinator:
 
             risk_assessment = await self._assess_signal_risk(enriched_signal, strategy_name)
             if not risk_assessment['acceptable']:
+                risk_reason_code = risk_assessment.get("reason_code")
+                risk_reason = str(risk_assessment.get("reason") or "")
+                risk_metrics = risk_assessment.get("metrics", {}) if isinstance(risk_assessment, dict) else {}
+                if not isinstance(risk_metrics, dict):
+                    risk_metrics = {}
+
+                if (
+                    risk_reason_code == "risk.concurrent.max_positions_per_symbol"
+                    and (
+                        risk_reason == "scale_in_quality_below_threshold"
+                        or str(risk_metrics.get("dynamic_scaling_denial") or "") == "scale_in_quality_below_threshold"
+                        or str(risk_metrics.get("blocked_by") or "") == "RiskManager._can_dynamic_scale"
+                    )
+                ):
+                    corrected_code = "risk.scale_in.quality_below_threshold"
+                    logger.error(
+                        "[INCUBATOR] Sanity guard: scale-in quality rejection misdiagnosed as %s | sym=%s strat=%s reason=%s",
+                        risk_reason_code,
+                        enriched_signal.get("symbol"),
+                        strategy_name,
+                        risk_reason,
+                    )
+                    pseudo_item = {
+                        "payload": self._json_sanitize(enriched_signal),
+                        "first_seen_ts_ms": self._now_ms(),
+                        "attempts": 0,
+                        "reason_code": corrected_code,
+                        "dedupe_key": enriched_signal.get("dedupe_key"),
+                    }
+                    self._emit_waiting_room_event(
+                        "waiting_room_drop",
+                        pseudo_item,
+                        drop_reason="incubator.sanity_guard.misdiagnosed_scale_in_quality",
+                        observed_reason_code=risk_reason_code,
+                        observed_reason=risk_reason,
+                    )
+                    self.processing_stats['rejected_signals'] += 1
+                    return {
+                        'status': 'rejected',
+                        'reason': risk_reason,
+                        'reason_code': corrected_code,
+                        'stage': 'risk_assessment',
+                    }
+
+                if risk_reason_code == "risk.scale_in.quality_below_threshold":
+                    self.processing_stats['rejected_signals'] += 1
+                    blocked_item = {
+                        "payload": self._json_sanitize(enriched_signal),
+                        "first_seen_ts_ms": self._now_ms(),
+                        "attempts": 0,
+                        "reason_code": "incubator.blocked.risk.scale_in.quality_below_threshold",
+                        "dedupe_key": enriched_signal.get("dedupe_key"),
+                        "stage": "risk_assessment",
+                    }
+                    self._emit_waiting_room_event(
+                        "waiting_room_drop",
+                        blocked_item,
+                        drop_kind="sanity_guard",
+                        blocked_reason_code=risk_reason_code,
+                        blocked_reason=risk_reason,
+                    )
+                    logger.warning(
+                        "🛡️  %s REJECTED (Scale-In Quality) | reason_code=%s | reason=%s",
+                        log_prefix,
+                        risk_reason_code,
+                        risk_reason,
+                    )
+                    return {
+                        'status': 'rejected',
+                        'reason': risk_reason,
+                        'reason_code': risk_reason_code,
+                        'stage': 'risk_assessment',
+                    }
+
+                if risk_reason_code in (
+                    "risk.concurrent.max_open_positions",
+                    "risk.concurrent.max_positions_per_symbol",
+                ):
+                    logger.warning(
+                        "🕒 %s DEFERRED (Risk Concurrent Limit) | reason_code=%s | reason=%s",
+                        log_prefix,
+                        risk_reason_code,
+                        risk_assessment.get("reason"),
+                    )
+                    incubated = await self.incubate_signal(
+                        strategy_name=strategy_name,
+                        signal=enriched_signal,
+                        reason_code=str(risk_reason_code),
+                        refresh_policy="NONE",
+                        stage="risk_assessment",
+                    )
+                    if incubated.get("status") == "incubated":
+                        return {
+                            "status": "incubated",
+                            "reason_code": str(risk_reason_code),
+                            "reason": risk_reason,
+                            "stage": "risk_assessment",
+                            "dedupe_key": incubated.get("dedupe_key"),
+                        }
+                    return incubated
+
                 self.processing_stats['rejected_signals'] += 1
                 # --- TELEMETRİ: Ret Sebebi (DÜZELTİLDİ) ---
                 logger.warning(f"🛡️  {log_prefix} REJECTED (Risk Check): {risk_assessment['reason']}")
-                return {'status': 'rejected', 'reason': risk_assessment['reason'], 'stage': 'risk_assessment'}
+                return {
+                    'status': 'rejected',
+                    'reason': risk_assessment['reason'],
+                    'reason_code': risk_reason_code,
+                    'stage': 'risk_assessment',
+                }
 
             # Late duplicate check for scale-in when pyramiding is enabled (soft guard)
             if not duplicate_checked:
@@ -1869,8 +2886,12 @@ class StrategyCoordinator:
             
             # Adim 7: Sinyali ve Rota Bilgisini Hazirla
             routing_result = self._route_signal(enriched_signal, risk_assessment)
-            signal_id = self._generate_signal_id(strategy_name, enriched_signal)
-            enriched_signal["signal_id"] = signal_id
+            signal_id = self._ensure_signal_id(strategy_name, enriched_signal)
+            dedupe_key = self._derive_dedupe_key(strategy_name, enriched_signal)
+            if dedupe_key:
+                enriched_signal["dedupe_key"] = dedupe_key
+                self._active_dedupe_by_key[dedupe_key] = signal_id
+                self._active_dedupe_by_signal_id[signal_id] = dedupe_key
 
             # --- Emit Signal Breakdown ---
             self.emit_signal_breakdown(enriched_signal, quality_result)
@@ -1881,18 +2902,57 @@ class StrategyCoordinator:
             }
 
             # Adım 8: Sinyali Yürütme Kuyruğuna Ekle
-            queued, queue_reason = await self.signal_queue.put({
+            put_result = await self.signal_queue.put({
                 'signal_id': signal_id,
                 'signal': enriched_signal,
                 'risk_assessment': risk_assessment,
                 'routing': routing_result
             })
+            queued = False
+            queue_reason = None
+            queue_reason_code = None
+            if isinstance(put_result, tuple):
+                if len(put_result) >= 1:
+                    queued = bool(put_result[0])
+                if len(put_result) >= 2:
+                    queue_reason = put_result[1]
+                if len(put_result) >= 3:
+                    queue_reason_code = put_result[2]
+            else:
+                queued = bool(put_result)
 
             if not queued:
+                if queue_reason_code in ("queue.capacity", "queue.symbol_pending_limit"):
+                    # Keep active registry aligned with true queue outcome
+                    self.discard_active_signal(signal_id)
+                    logger.warning(
+                        "🕒 %s DEFERRED (Queue Limit) | reason_code=%s | reason=%s | signal_id=%s",
+                        log_prefix,
+                        queue_reason_code,
+                        queue_reason,
+                        signal_id,
+                    )
+                    incubated = await self.incubate_signal(
+                        strategy_name=strategy_name,
+                        signal=enriched_signal,
+                        reason_code=str(queue_reason_code),
+                        refresh_policy="NONE",
+                        stage="queue",
+                    )
+                    if incubated.get("status") == "incubated":
+                        return {
+                            "status": "incubated",
+                            "reason_code": str(queue_reason_code),
+                            "reason": queue_reason,
+                            "stage": "queue",
+                            "dedupe_key": incubated.get("dedupe_key"),
+                        }
+                    return incubated
+
                 self.processing_stats['rejected_signals'] += 1
                 self.processing_stats['queue_rejections'] += 1
                 # Keep active registry aligned with true queue outcome
-                self.active_signals.pop(signal_id, None)
+                self.discard_active_signal(signal_id)
                 logger.info(
                     "🚫 %s REJECTED | reason=%s | symbol=%s strategy=%s side=%s tf=%s signal_id=%s prio=%s",
                     log_prefix,
@@ -1904,7 +2964,12 @@ class StrategyCoordinator:
                     signal_id,
                     enriched_signal.get('priority'),
                 )
-                return {'status': 'rejected', 'reason': queue_reason, 'stage': 'queue'}
+                return {
+                    'status': 'rejected',
+                    'reason': queue_reason,
+                    'reason_code': queue_reason_code,
+                    'stage': 'queue',
+                }
 
             logger.info(
                 "✅ %s ENQUEUED | symbol=%s strategy=%s side=%s tf=%s signal_id=%s prio=%s",
@@ -3646,8 +4711,16 @@ class StrategyCoordinator:
                 portfolio_manager=self.portfolio_manager,
             )
 
-            planner_result = meta.get('planner')
-            planner_dict = asdict(planner_result) if planner_result else None
+            planner_value = meta.get('planner')
+            if isinstance(planner_value, dict):
+                planner_dict = planner_value
+            elif planner_value:
+                try:
+                    planner_dict = asdict(planner_value)
+                except TypeError:
+                    planner_dict = None
+            else:
+                planner_dict = None
             risk_metrics = meta.get('risk_metrics', {}) or {}
             if planner_dict:
                 risk_metrics['planner'] = planner_dict
@@ -3683,9 +4756,11 @@ class StrategyCoordinator:
                     or meta.get('blocked_by')
                     or 'Risk validation failed'
                 )
+                reason_code = meta.get('reason_code') or (risk_metrics.get('reason_code') if isinstance(risk_metrics, dict) else None)
                 return {
                     'acceptable': False,
                     'reason': reason,
+                    'reason_code': reason_code,
                     'metrics': risk_metrics
                 }
             
@@ -3731,9 +4806,7 @@ class StrategyCoordinator:
     
     def _generate_signal_id(self, strategy_name: str, signal: Dict) -> str:
         """Generate unique signal identifier."""
-        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')
-        symbol = signal.get('symbol', 'UNKNOWN').replace('/', '_').replace(':', '_')
-        return f"{strategy_name}_{symbol}_{timestamp}"
+        return uuid.uuid4().hex
     
     def _resolve_by_priority(self, signals: List[Dict]) -> Dict:
         """Resolve conflict by selecting highest priority signal."""
@@ -3979,8 +5052,20 @@ class StrategyCoordinator:
 
         # Remove from active signals to prevent conflicts and unbounded growth
         self.active_signals.pop(signal_id, None)
+        dedupe_key = self._active_dedupe_by_signal_id.pop(signal_id, None)
+        if dedupe_key:
+            self._active_dedupe_by_key.pop(str(dedupe_key), None)
 
         logger.info(f"Signal {signal_id} marked as executed and removed from active registry")
+
+    def _on_signal_queue_expire(self, payload: Any) -> None:
+        """Queue lifecycle hook to keep active_signals aligned with TTL purges."""
+        if not payload or not isinstance(payload, dict):
+            return
+        signal_id = payload.get("signal_id")
+        if not signal_id:
+            return
+        self.discard_active_signal(str(signal_id))
 
     def discard_active_signal(self, signal_id: str) -> None:
         """Remove a signal from the active registry without raising errors."""
@@ -3989,9 +5074,16 @@ class StrategyCoordinator:
 
         removed = self.active_signals.pop(signal_id, None)
 
+        dedupe_key = self._active_dedupe_by_signal_id.pop(signal_id, None)
+        if not dedupe_key and isinstance(removed, dict):
+            signal = removed.get("signal") if isinstance(removed.get("signal"), dict) else {}
+            dedupe_key = signal.get("dedupe_key")
+        if dedupe_key:
+            self._active_dedupe_by_key.pop(str(dedupe_key), None)
+
         if removed:
             logger.warning(
-                "Signal %s discarded from active registry after lifecycle callback failure",
+                "Signal %s discarded from active registry",
                 signal_id
             )
         else:

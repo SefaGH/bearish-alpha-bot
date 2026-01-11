@@ -8,7 +8,7 @@ PHASE 3 REFACTOR: Transform into Rules Engine
 import logging
 import os
 from typing import Dict, List, Optional, Any, Tuple, Protocol
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from collections import defaultdict
 import numpy as np
@@ -410,6 +410,9 @@ class RiskManager:
 
         # Hard stop: if this is a pyramiding scale-in and the strategy disables pyramiding, reject early.
         if intent == INTENT_SCALE_IN and not is_dca_signal and not pyramiding_enabled:
+            if isinstance(risk_metrics, dict):
+                risk_metrics["reason_code"] = "risk.concurrent.pyramiding_disabled_for_strategy"
+                risk_metrics["blocked_by"] = "RiskManager._check_concurrent_limits"
             return False, "pyramiding_disabled_for_strategy"
 
         if is_derisking_intent:
@@ -423,6 +426,11 @@ class RiskManager:
         # DCA branch (mutually exclusive with trend pyramiding in v1)
         if is_dca_signal and intent == INTENT_SCALE_IN:
             if limits.max_open_positions and active_count >= limits.max_open_positions:
+                if isinstance(risk_metrics, dict):
+                    risk_metrics["reason_code"] = "risk.concurrent.max_open_positions"
+                    risk_metrics["blocked_by"] = "RiskManager._check_concurrent_limits"
+                    risk_metrics["active_open_positions"] = int(active_count)
+                    risk_metrics["max_open_positions"] = int(limits.max_open_positions)
                 return False, f"Max open positions reached ({active_count}/{limits.max_open_positions})"
             if active_positions is None and hasattr(portfolio_manager, 'get_open_positions'):
                 try:
@@ -437,15 +445,27 @@ class RiskManager:
                 concurrent_limits=limits,
             )
             if not ok_dca:
+                if isinstance(risk_metrics, dict):
+                    risk_metrics["reason_code"] = "risk.concurrent.dca_limits"
+                    risk_metrics["blocked_by"] = "RiskManager._check_concurrent_limits"
                 return False, dca_reason
 
             projected_heat = risk_metrics.get('portfolio_heat') if isinstance(risk_metrics, dict) else None
             max_heat = limits.max_total_risk_pct
             if projected_heat is not None and max_heat and projected_heat >= max_heat:
+                if isinstance(risk_metrics, dict):
+                    risk_metrics["reason_code"] = "risk.concurrent.portfolio_heat"
+                    risk_metrics["blocked_by"] = "RiskManager._check_concurrent_limits"
+                    risk_metrics["max_total_risk_pct"] = float(max_heat)
                 return False, f"Portfolio heat {projected_heat:.2%} exceeds limit {max_heat:.2%}"
             return True, dca_reason or "OK (DCA)"
 
         if limits.max_open_positions and active_count >= limits.max_open_positions:
+            if isinstance(risk_metrics, dict):
+                risk_metrics["reason_code"] = "risk.concurrent.max_open_positions"
+                risk_metrics["blocked_by"] = "RiskManager._check_concurrent_limits"
+                risk_metrics["active_open_positions"] = int(active_count)
+                risk_metrics["max_open_positions"] = int(limits.max_open_positions)
             return False, f"Max open positions reached ({active_count}/{limits.max_open_positions})"
 
         symbol_limit_override_reason: Optional[str] = None
@@ -456,7 +476,7 @@ class RiskManager:
                 active_positions = active_positions or {}
                 symbol_count = self._count_positions_for_symbol(active_positions, symbol)
             if symbol_count >= limits.max_positions_per_symbol:
-                can_scale, scale_reason = self._can_dynamic_scale(
+                can_scale, scale_reason, scale_reason_code = self._can_dynamic_scale(
                     signal,
                     portfolio_manager,
                     symbol,
@@ -468,6 +488,18 @@ class RiskManager:
                 if can_scale:
                     symbol_limit_override_reason = scale_reason
                 else:
+                    if isinstance(risk_metrics, dict):
+                        risk_metrics["active_positions_for_symbol"] = int(symbol_count)
+                        risk_metrics["max_positions_per_symbol"] = int(limits.max_positions_per_symbol)
+                        if scale_reason:
+                            risk_metrics["dynamic_scaling_denial"] = str(scale_reason)
+                        if scale_reason_code:
+                            risk_metrics["reason_code"] = str(scale_reason_code)
+                            risk_metrics["blocked_by"] = "RiskManager._can_dynamic_scale"
+                        else:
+                            risk_metrics["reason_code"] = "risk.concurrent.max_positions_per_symbol"
+                            risk_metrics["blocked_by"] = "RiskManager._check_concurrent_limits"
+
                     if scale_reason:
                         return False, scale_reason
                     return False, f"Max positions for {symbol} reached ({symbol_count}/{limits.max_positions_per_symbol})"
@@ -475,6 +507,10 @@ class RiskManager:
         projected_heat = risk_metrics.get('portfolio_heat') if isinstance(risk_metrics, dict) else None
         max_heat = limits.max_total_risk_pct
         if projected_heat is not None and max_heat and projected_heat >= max_heat:
+            if isinstance(risk_metrics, dict):
+                risk_metrics["reason_code"] = "risk.concurrent.portfolio_heat"
+                risk_metrics["blocked_by"] = "RiskManager._check_concurrent_limits"
+                risk_metrics["max_total_risk_pct"] = float(max_heat)
             return False, f"Portfolio heat {projected_heat:.2%} exceeds limit {max_heat:.2%}"
 
         if symbol_limit_override_reason:
@@ -490,15 +526,15 @@ class RiskManager:
         limits: ConcurrentRiskLimitsConfig,
         intent: str = INTENT_ENTRY,
         pyramiding_cfg: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """Determine whether dynamic scaling rules permit exceeding per-symbol limits."""
         if not symbol or portfolio_manager is None:
-            return False, ""
+            return False, "", None
 
         concurrent_cfg = (self.config.get('concurrent_limits') or {}) if isinstance(self.config, dict) else {}
         scaling_cfg = concurrent_cfg.get('dynamic_scaling', {}) if isinstance(concurrent_cfg, dict) else {}
         if not scaling_cfg.get('enabled', True):
-            return False, ""
+            return False, "", None
 
         pyramiding_enabled = bool(pyramiding_cfg.get("enabled", False)) if isinstance(pyramiding_cfg, dict) else False
 
@@ -540,16 +576,16 @@ class RiskManager:
                 quality_score,
                 eff_quality_threshold,
             )
-            return False, "scale_in_quality_below_threshold"
+            return False, "scale_in_quality_below_threshold", "risk.scale_in.quality_below_threshold"
 
         if max_extra == 0:
             logger.info("📉 [RISK-SCALING] Dynamic scaling disabled via config (max_extra=0)")
-            return False, ""
+            return False, "", None
 
         pnl_provider = getattr(self, "_pnl_provider", None)
         if pnl_provider is None:
             logger.warning("📉 [RISK-SCALING] PnL provider unavailable for %s", symbol or "UNKNOWN")
-            return False, "scale_in_pnl_data_unavailable"
+            return False, "scale_in_pnl_data_unavailable", "risk.scale_in.pnl_data_unavailable"
 
         try:
             positions: List[Dict[str, Any]] = pnl_provider.get_positions_for_symbol(
@@ -559,11 +595,11 @@ class RiskManager:
             )
         except Exception as exc:
             logger.warning(f"📉 [RISK-SCALING] Failed to read PnL from provider for {symbol}: {exc}")
-            return False, "scale_in_pnl_data_unavailable"
+            return False, "scale_in_pnl_data_unavailable", "risk.scale_in.pnl_data_unavailable"
 
         if not positions:
             logger.warning("📉 [RISK-SCALING] No PnL data available for %s", symbol)
-            return False, "scale_in_pnl_data_unavailable"
+            return False, "scale_in_pnl_data_unavailable", "risk.scale_in.pnl_data_unavailable"
 
         pnl_values = []
         last_entry_price = None
@@ -595,7 +631,7 @@ class RiskManager:
 
         if not pnl_values:
             logger.warning("📉 [RISK-SCALING] PnL data unavailable/invalid for %s (positions=%d)", symbol, len(positions))
-            return False, "scale_in_pnl_data_unavailable"
+            return False, "scale_in_pnl_data_unavailable", "risk.scale_in.pnl_data_unavailable"
 
         logger.info(
             "[RISK-SCALING-PNL] sym=%s | layers=%d | pnls=%s",
@@ -613,7 +649,7 @@ class RiskManager:
                 avg_pnl_pct * 100,
                 eff_pnl_threshold * 100,
             )
-            return False, "scale_in_pnl_below_threshold"
+            return False, "scale_in_pnl_below_threshold", "risk.scale_in.pnl_below_threshold"
 
         current_entry = None
         if isinstance(signal, dict):
@@ -642,7 +678,7 @@ class RiskManager:
                     price_diff_pct * 100,
                     eff_distance_pct * 100,
                 )
-                return False, "scale_in_distance_below_threshold"
+                return False, "scale_in_distance_below_threshold", "risk.scale_in.distance_below_threshold"
 
         max_allowed = limits.max_positions_per_symbol + max_extra
         if max_allowed <= limits.max_positions_per_symbol:
@@ -660,8 +696,8 @@ class RiskManager:
                 max_allowed,
             )
             if pyramiding_enabled and intent == INTENT_SCALE_IN and max_layers:
-                return False, "pyramiding_max_layers_reached"
-            return False, ""
+                return False, "pyramiding_max_layers_reached", "risk.scale_in.max_layers_reached"
+            return False, "", None
 
         if intent == INTENT_SCALE_IN and pyramiding_enabled:
             logger.info(
@@ -685,7 +721,7 @@ class RiskManager:
                 symbol_count,
                 max_allowed,
             )
-        return True, "OK (Dynamic Scaling Allowed)"
+        return True, "OK (Dynamic Scaling Allowed)", None
 
     def _check_dca_limits(
         self,
@@ -1003,7 +1039,14 @@ class RiskManager:
             if portfolio_manager is None:
                 # Bu durum artık bir hata olarak kabul ediliyor.
                 logger.error("[RISK-ENGINE] CRITICAL: validate_new_position called without a PortfolioManager.")
-                return (False, "Internal error: Risk validation requires a portfolio manager.", {})
+                return (
+                    False,
+                    "Internal error: Risk validation requires a portfolio manager.",
+                    {
+                        "reason_code": "risk.internal.missing_portfolio_manager",
+                        "blocked_by": "RiskManager.validate_new_position",
+                    },
+                )
             # ==========================================================
 
             logger.debug(f"🛡️ [RISK-ENGINE] Validating position for {symbol}")
@@ -1043,6 +1086,11 @@ class RiskManager:
                 is_valid, reason = rule.validate(signal, portfolio_manager)
                 
                 if not is_valid:
+                    rule_name = getattr(rule, "rule_name", None) or rule.__class__.__name__
+                    if isinstance(risk_metrics, dict):
+                        risk_metrics["rejected_by_rule"] = str(rule_name)
+                        risk_metrics["reason_code"] = f"risk.rule.{rule_name}"
+                        risk_metrics["blocked_by"] = f"RiskRule.{rule_name}"
                     if planner_mode == 'active' and getattr(rule, 'rule_name', '') == 'PositionSizeRule':
                         pos_value = signal.get('__position_size_rule_position_value')
                         if pos_value is None:
@@ -1519,7 +1567,16 @@ class RiskManager:
 
         if portfolio_manager is None:
             logger.error("[RISK-ENGINE] size_and_validate_position requires a PortfolioManager instance")
-            return False, 0.0, {'error': 'missing_portfolio_manager'}
+            return (
+                False,
+                0.0,
+                {
+                    "error": "missing_portfolio_manager",
+                    "reason_code": "risk.internal.missing_portfolio_manager",
+                    "validation_reason": "Portfolio manager unavailable",
+                    "blocked_by": "RiskManager.size_and_validate_position",
+                },
+            )
 
         try:
             if sizing_engine:
@@ -1536,6 +1593,8 @@ class RiskManager:
                     )
                     combined_meta['sizing_error'] = str(exc)
                     combined_meta['blocked_by'] = 'PositionSizing'
+                    combined_meta['reason_code'] = 'risk.sizing.rejected'
+                    combined_meta['validation_reason'] = str(exc) or "Position sizing rejected trade"
                     return False, 0.0, combined_meta
             combined_meta['sizing_meta'] = signal.get('sizing_meta', {})
 
@@ -1621,7 +1680,7 @@ class RiskManager:
                 shadow_mode,
             )
 
-            combined_meta['planner'] = planner_result
+            combined_meta['planner'] = asdict(planner_result)
             combined_meta['planner_reason'] = planner_result.reason
             combined_meta['planner_raw_notional'] = raw_notional
             combined_meta['planner_delta_abs'] = raw_notional - planner_result.planned_notional
@@ -1632,6 +1691,13 @@ class RiskManager:
             if planner_enabled:
                 if planner_result.below_min_notional or (planner_result.reason and planner_result.planned_notional == 0):
                     combined_meta['blocked_by'] = 'SizePlanner'
+                    planner_reason = planner_result.reason or ""
+                    planner_reason_map = {
+                        "REJECT_SIZE_CAP": "risk.planner.reject_size_cap",
+                        "portfolio_heat_exhausted": "risk.planner.heat_exhausted",
+                        "REJECT_TOO_SMALL_AFTER_CAP": "risk.planner.reject_too_small_after_cap",
+                    }
+                    combined_meta["reason_code"] = planner_reason_map.get(planner_reason, "risk.planner.rejected")
                     return False, 0.0, combined_meta
 
                 final_size = planner_result.planned_qty
@@ -1665,6 +1731,9 @@ class RiskManager:
                 signal['limit_meta'] = limit_meta
 
                 if limit_meta['action'] == 'reject':
+                    combined_meta['blocked_by'] = 'RiskManager.apply_position_limits'
+                    combined_meta['reason_code'] = 'risk.legacy.position_limits.reject'
+                    combined_meta['validation_reason'] = limit_meta.get('reason') or 'Rejected by position limits'
                     return False, 0.0, combined_meta
 
                 signal['position_size'] = final_size
@@ -1696,6 +1765,16 @@ class RiskManager:
                     else:
                         combined_meta['resize_failed'] = True
 
+                reason_code = None
+                blocked_by = None
+                if isinstance(risk_metrics, dict):
+                    reason_code = risk_metrics.get('reason_code')
+                    blocked_by = risk_metrics.get('blocked_by')
+                    rejected_by_rule = risk_metrics.get('rejected_by_rule')
+                    if rejected_by_rule:
+                        combined_meta['rejected_by_rule'] = str(rejected_by_rule)
+                combined_meta['reason_code'] = str(reason_code) if reason_code else 'risk.validation.rejected'
+                combined_meta['blocked_by'] = str(blocked_by) if blocked_by else 'RiskManager.validate_new_position'
                 return False, 0.0, combined_meta
 
             return True, final_size, combined_meta
@@ -1703,6 +1782,9 @@ class RiskManager:
         except Exception as exc:
             logger.error(f"[RISK-ENGINE] size_and_validate_position failed: {exc}", exc_info=True)
             combined_meta['error'] = str(exc)
+            combined_meta['reason_code'] = 'risk.internal.size_and_validate_exception'
+            combined_meta['blocked_by'] = 'RiskManager.size_and_validate_position'
+            combined_meta.setdefault('validation_reason', f"Risk validation exception: {exc}")
             return False, 0.0, combined_meta
 
     def _generate_position_key(self, signal: Dict) -> str:

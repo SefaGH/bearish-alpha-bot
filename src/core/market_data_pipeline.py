@@ -1578,6 +1578,111 @@ class MarketDataPipeline:
         return price, resolved_source, fallback_str
 
 
+    async def get_spread_metrics(
+        self,
+        symbol: str,
+        exchange: Optional[str] = None,
+        allow_rest_fallback: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """Return bid/ask spread metrics using WS ticker sample (fast) with optional REST fallback."""
+        if not symbol:
+            return None
+
+        ws_exchange = exchange or (next(iter(self.exchanges.keys())) if self.exchanges else self.DEFAULT_EXCHANGE)
+        now_dt = datetime.now(timezone.utc)
+        now_ms = int(now_dt.timestamp() * 1000)
+
+        def _to_float(val: Any) -> Optional[float]:
+            try:
+                fval = float(val)
+                if fval <= 0:
+                    return None
+                return fval
+            except Exception:
+                return None
+
+        def _compute_metrics(bid: Optional[float], ask: Optional[float]) -> Dict[str, Any]:
+            mid = None
+            spread_abs = None
+            spread_pct = None
+            if bid is not None and ask is not None and ask >= bid:
+                mid = (bid + ask) / 2.0
+                spread_abs = ask - bid
+                if mid and mid > 0:
+                    spread_pct = spread_abs / mid
+            return {
+                "bid": bid,
+                "ask": ask,
+                "mid": mid,
+                "spread_abs": spread_abs,
+                "spread_pct": spread_pct,
+            }
+
+        # 1) WebSocket-first (collector sample)
+        collector = getattr(self.websocket_manager, "collector", None) if self.websocket_manager else None
+        if collector:
+            try:
+                ticker_sample = collector.get_latest_ticker_sample(ws_exchange, symbol)
+            except Exception:
+                ticker_sample = None
+            ticker = ticker_sample.get("data") if isinstance(ticker_sample, dict) else None
+            sample_ts = ticker_sample.get("timestamp") if isinstance(ticker_sample, dict) else None
+
+            if isinstance(ticker, dict):
+                bid = _to_float(ticker.get("bid") or ticker.get("bestBid") or ticker.get("bidPrice"))
+                ask = _to_float(ticker.get("ask") or ticker.get("bestAsk") or ticker.get("askPrice"))
+                metrics = _compute_metrics(bid, ask)
+
+                sample_ts_ms = None
+                if isinstance(sample_ts, datetime):
+                    try:
+                        sample_ts_ms = int(sample_ts.timestamp() * 1000)
+                    except Exception:
+                        sample_ts_ms = None
+
+                age_ms = None if sample_ts_ms is None else max(0, now_ms - sample_ts_ms)
+                return {
+                    "exchange": ws_exchange,
+                    "symbol": symbol,
+                    "ts_ms": sample_ts_ms or now_ms,
+                    "age_ms": age_ms,
+                    "source": "ws",
+                    **metrics,
+                }
+
+        # 2) REST fallback (async to_thread to avoid blocking event loop)
+        if allow_rest_fallback and self.exchanges and ws_exchange in self.exchanges:
+            client = self.exchanges[ws_exchange]
+            try:
+                ticker = await asyncio.to_thread(client.fetch_ticker, symbol)
+            except Exception as exc:
+                logger.debug("[SPREAD] REST ticker fetch failed for %s on %s: %s", symbol, ws_exchange, exc)
+                return None
+
+            if isinstance(ticker, dict):
+                bid = _to_float(ticker.get("bid") or ticker.get("bestBid") or ticker.get("bidPrice"))
+                ask = _to_float(ticker.get("ask") or ticker.get("bestAsk") or ticker.get("askPrice"))
+                metrics = _compute_metrics(bid, ask)
+
+                ts_ms = ticker.get("timestamp")
+                try:
+                    ts_ms = int(ts_ms) if ts_ms is not None else now_ms
+                except Exception:
+                    ts_ms = now_ms
+                age_ms = max(0, now_ms - ts_ms) if ts_ms else None
+
+                return {
+                    "exchange": ws_exchange,
+                    "symbol": symbol,
+                    "ts_ms": ts_ms,
+                    "age_ms": age_ms,
+                    "source": "rest",
+                    **metrics,
+                }
+
+        return None
+
+
     async def get_latest_price(self, symbol: str, timeframe: str = '1m', exchange: str = None) -> Optional[float]:
         """
         Get latest price for a symbol with WebSocket-first approach and REST fallback.

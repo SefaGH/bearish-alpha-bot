@@ -69,7 +69,7 @@ def test_scale_in_rejected_when_pyramiding_disabled_and_scaling_off():
     signal = {"symbol": "BTC/USDT", "side": "long", "entry": 101, "quality_score": 0.9, "intent": INTENT_SCALE_IN}
     allowed, reason = rm._check_concurrent_limits(signal, {}, pm)
     assert allowed is False
-    assert "Max positions" in reason or "max positions" in reason.lower()
+    assert reason == "pyramiding_disabled_for_strategy" or "max positions" in str(reason).lower()
 
 
 def test_scale_in_allowed_when_pyramiding_enabled_and_thresholds_met():
@@ -112,8 +112,12 @@ def test_scale_in_rejected_when_quality_below_threshold():
     rm.set_pnl_provider(_StubPnlProvider(pm._positions))
 
     signal = {"symbol": "ETH/USDT", "side": "long", "entry": 110, "quality_score": 0.8, "intent": INTENT_SCALE_IN}
-    allowed, _ = rm._check_concurrent_limits(signal, {}, pm)
+    risk_metrics = {}
+    allowed, reason = rm._check_concurrent_limits(signal, risk_metrics, pm)
     assert allowed is False
+    assert reason == "scale_in_quality_below_threshold"
+    assert risk_metrics.get("reason_code") == "risk.scale_in.quality_below_threshold"
+    assert risk_metrics.get("blocked_by") == "RiskManager._can_dynamic_scale"
 
 
 def test_scale_in_rejected_when_max_layers_reached():

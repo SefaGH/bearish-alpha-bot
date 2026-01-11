@@ -918,6 +918,11 @@ class ProductionCoordinator:
                     error_count += 1
 
         await self._nudge_strategy_dispatch()
+        if self.strategy_coordinator and hasattr(self.strategy_coordinator, "incubator_tick"):
+            try:
+                await self.strategy_coordinator.incubator_tick()
+            except Exception as exc:
+                logger.debug("[PROCESS] incubator_tick failed: %s", exc)
 
         end_time = time.time()
         logger.info(f"✅ [PROCESSING] Completed processing loop in {end_time - start_time:.2f}s")

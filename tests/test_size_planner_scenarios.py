@@ -295,6 +295,6 @@ async def test_planner_caps_before_position_size_rule(monkeypatch):
     assert meta.get('planner') is not None
     assert math.isclose(signal['notional'], 10.0, rel_tol=1e-3)
     assert math.isclose(final_size * signal['entry'], 10.0, rel_tol=1e-3)
-    assert meta['planner'].capped_by_size_pct is True
+    assert meta['planner'].get('capped_by_size_pct') is True
     risk_metrics = meta.get('risk_metrics', {})
     assert risk_metrics.get('position_size_pct', 0) <= rm.risk_limits['max_position_size'] + 1e-6
