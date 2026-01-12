@@ -28,6 +28,9 @@ class VWAPMeanReversion(BaseStrategy):
         self.vwap_lookback = int(cfg.get("vwap_lookback", 1440))
         self.adx_threshold = float(cfg.get("adx_threshold", 30))
         self.min_rr_ratio = float(cfg.get("min_rr_ratio", 1.0))
+        self.soft_deferral_threshold = float(cfg.get("soft_deferral_threshold", 0.005))
+        if not math.isfinite(self.soft_deferral_threshold) or self.soft_deferral_threshold < 0:
+            self.soft_deferral_threshold = 0.005
         # Increase baseline so VWAP window (1440) + signal buffer can coexist
         self.min_rows = int(cfg.get("min_rows", 2100))
         self.min_signal_rows = int(cfg.get("min_signal_rows", 50))
@@ -47,6 +50,7 @@ class VWAPMeanReversion(BaseStrategy):
         )
         self._pipeline_cfg_warned = False
         self._controller_fallback_warned = False
+        self._last_soft_deferral_anchor_by_key: Dict[str, int] = {}
 
         if self.vwap_lookback > 1000:
             logger.warning(
@@ -59,6 +63,32 @@ class VWAPMeanReversion(BaseStrategy):
             self.signal = self._default_signal_wrapper  # type: ignore
         assert callable(getattr(self, "signal", None)), "MeanReversion: signal method not callable"
         print("MeanReversion: signal method bound successfully")
+
+    @staticmethod
+    def _parse_timeframe_ms(timeframe: str) -> int:
+        raw = str(timeframe or "").strip().lower()
+        if not raw:
+            return 300_000
+        try:
+            num = ""
+            unit = ""
+            for ch in raw:
+                if ch.isdigit():
+                    num += ch
+                else:
+                    unit += ch
+            value = int(num) if num else 1
+        except Exception:
+            return 300_000
+
+        unit = unit.strip() or "m"
+        if unit in ("m", "min", "mins", "minute", "minutes"):
+            return value * 60_000
+        if unit in ("h", "hr", "hrs", "hour", "hours"):
+            return value * 3_600_000
+        if unit in ("d", "day", "days"):
+            return value * 86_400_000
+        return 300_000
 
     async def signal(self, symbol: str, market_data: Optional[Dict[str, Any]] = None, ml_context=None, **kwargs) -> Optional[Dict[str, Any]]:
         """Interface method expected by ProductionCoordinator."""
@@ -74,6 +104,13 @@ class VWAPMeanReversion(BaseStrategy):
         """
         Generate a mean-reversion signal using VWAP bands and ADX trend filter.
         """
+        parent_pending_id = kwargs.get("parent_pending_id")
+        if parent_pending_id is not None:
+            try:
+                parent_pending_id = str(parent_pending_id)
+            except Exception:
+                parent_pending_id = None
+
         df_vwap = None
         df_sig = None
 
@@ -213,6 +250,91 @@ class VWAPMeanReversion(BaseStrategy):
         adx_ok = adx_val < self.adx_threshold
 
         if in_band:
+            if parent_pending_id:
+                logger.info(
+                    "[MeanReversion] Recheck context; skipping soft deferral near-miss for %s (parent_pending_id=%s)",
+                    symbol,
+                    parent_pending_id,
+                )
+                return None
+            threshold = float(self.soft_deferral_threshold)
+            if threshold > 0 and adx_ok and math.isfinite(threshold):
+                near_lower = False
+                near_upper = False
+                dist_lower = None
+                dist_upper = None
+                if lower > 0:
+                    dist_lower = max(0.0, (price - lower) / lower)
+                    near_lower = dist_lower <= threshold
+                if upper > 0:
+                    dist_upper = max(0.0, (upper - price) / upper)
+                    near_upper = dist_upper <= threshold
+
+                if near_lower or near_upper:
+                    choose_lower = bool(near_lower and not near_upper)
+                    choose_upper = bool(near_upper and not near_lower)
+                    if near_lower and near_upper:
+                        try:
+                            choose_lower = (dist_lower or 0.0) <= (dist_upper or 0.0)
+                            choose_upper = not choose_lower
+                        except Exception:
+                            choose_lower = True
+                            choose_upper = False
+
+                    side = "long" if choose_lower else "short"
+
+                    ts_ms = None
+                    try:
+                        ts_val = clean_sig.index[-1]
+                        if isinstance(ts_val, pd.Timestamp):
+                            ts = ts_val.to_pydatetime()
+                        elif isinstance(ts_val, datetime):
+                            ts = ts_val
+                        else:
+                            ts = None
+                        if ts is not None and ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        ts_ms = int(ts.timestamp() * 1000) if ts is not None else None
+                    except Exception:
+                        ts_ms = None
+
+                    if ts_ms is None:
+                        ts_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+                    tf_ms = self._parse_timeframe_ms(self.signal_tf)
+                    setup_anchor_ts_ms = int(ts_ms - (ts_ms % int(tf_ms))) if tf_ms > 0 else int(ts_ms)
+
+                    rate_key = f"{symbol}:{side}:{str(self.signal_tf).strip().lower()}"
+                    last_anchor = self._last_soft_deferral_anchor_by_key.get(rate_key)
+                    if last_anchor == setup_anchor_ts_ms:
+                        logger.debug(
+                            "[MeanReversion] Soft deferral rate-limited for %s key=%s anchor=%s",
+                            symbol,
+                            rate_key,
+                            setup_anchor_ts_ms,
+                        )
+                        return None
+                    self._last_soft_deferral_anchor_by_key[rate_key] = setup_anchor_ts_ms
+
+                    reason_code = "strategy.mean_reversion.near_miss"
+                    return {
+                        "event_type": "soft_deferral_event",
+                        "strategy": self.strategy_name,
+                        "symbol": symbol,
+                        "side": side,
+                        "timeframe": self.signal_tf,
+                        "setup_anchor_ts_ms": setup_anchor_ts_ms,
+                        "reason_code": reason_code,
+                        "condition_data": {
+                            "price": price,
+                            "lower": lower,
+                            "upper": upper,
+                            "vwap": vwap_target,
+                            "adx": adx_val,
+                            "threshold": threshold,
+                            "near": "lower" if choose_lower else "upper",
+                        },
+                    }
             logger.info(
                 f"[MeanReversion] Price within bands for {symbol}. "
                 f"px={price:.4f}, lower={lower:.4f}, upper={upper:.4f}, "
@@ -341,6 +463,12 @@ class VWAPMeanReversion(BaseStrategy):
             "stop_loss_std_delta": self.stop_loss_std_delta,
             "adx": adx_val,
         }
+        if parent_pending_id:
+            meta = signal.get("meta")
+            if not isinstance(meta, dict):
+                meta = {}
+                signal["meta"] = meta
+            meta.setdefault("parent_pending_id", parent_pending_id)
         if controller_decision is not None:
             signal["mr_controller"] = {
                 "band_multiplier": controller_decision.band_multiplier,

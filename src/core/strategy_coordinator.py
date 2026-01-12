@@ -15,7 +15,7 @@ import uuid
 from dataclasses import asdict
 from typing import Dict, List, Optional, Any, Tuple, Callable
 from datetime import datetime, timezone, timedelta
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from enum import Enum
 from pathlib import Path
 
@@ -610,6 +610,7 @@ class StrategyCoordinator:
             pass
         self.signal_queue = PrioritySignalQueue(queue_cfg, logger)
         self.signal_queue.on_expire = self._on_signal_queue_expire
+        self.strategy_recheck_queue: asyncio.Queue = asyncio.Queue()
         self.signal_history = []
         self._signal_history_lookup: Dict[str, Dict[str, Any]] = {}
         self._dispatch_lock = asyncio.Lock()
@@ -880,10 +881,19 @@ class StrategyCoordinator:
             return None
         strategy = (strategy_name or signal.get("strategy_name") or signal.get("strategy") or "").strip()
         symbol = (signal.get("symbol") or "").strip()
-        side = str(signal.get("side") or "").strip().lower()
         intent = str(signal.get("intent") or INTENT_ENTRY).strip().lower()
+        if not strategy or not symbol or not intent:
+            return None
+        if intent == "soft_deferral":
+            side = cls._normalize_side(signal.get("side")) or str(signal.get("side") or "").strip().lower()
+            if side not in ("long", "short"):
+                return None
+            timeframe = str(signal.get("timeframe") or signal.get("tf") or "5m").strip().lower() or "5m"
+            return f"{strategy}:{symbol}:{side}:soft_deferral:{timeframe}"
+
+        side = str(signal.get("side") or "").strip().lower()
         timeframe = str(signal.get("timeframe") or "5m").strip().lower()
-        if not strategy or not symbol or not side or not intent:
+        if not side:
             return None
         if intent == str(INTENT_SCALE_IN).strip().lower():
             return f"{strategy}:{symbol}:{side}:{intent}"
@@ -957,8 +967,36 @@ class StrategyCoordinator:
                 "max_delay_ms": 60_000,
                 "refresh_policy": "NONE",
             },
+            "risk.planner.heat_exhausted": {
+                "ttl_seconds": 900,
+                "max_attempts": 120,
+                "base_delay_ms": 15_000,
+                "max_delay_ms": 15_000,
+                "refresh_policy": "REPRICE_AND_RESIZE",
+            },
+            "risk.concurrent.portfolio_heat": {
+                "ttl_seconds": 900,
+                "max_attempts": 120,
+                "base_delay_ms": 15_000,
+                "max_delay_ms": 15_000,
+                "refresh_policy": "REPRICE_AND_RESIZE",
+            },
+            "risk.concurrent.portfolio_heat_exceeded": {
+                "ttl_seconds": 900,
+                "max_attempts": 120,
+                "base_delay_ms": 15_000,
+                "max_delay_ms": 15_000,
+                "refresh_policy": "REPRICE_AND_RESIZE",
+            },
+            "strategy.soft_deferral": {
+                "ttl_seconds": 300,
+                "max_attempts": 30,
+                "base_delay_ms": 15_000,
+                "max_delay_ms": 15_000,
+                "refresh_policy": "STRATEGY_RECHECK",
+            },
             "volume.low_vol_tight_stop": {
-                "ttl_seconds": 3600,
+                "ttl_seconds": 300,
                 "max_attempts": 120,
                 "base_delay_ms": 60_000,
                 "max_delay_ms": 300_000,
@@ -979,16 +1017,33 @@ class StrategyCoordinator:
         payload = item.get("payload", {}) if isinstance(item, dict) else {}
         safe_extra = self._json_sanitize(extra_fields) if extra_fields else {}
         ts_ms = self._now_ms()
+        signal_id_for_log = None
+        parent_pending_id = None
         if isinstance(payload, dict):
             strat = payload.get("strategy_name") or payload.get("strategy") or "unknown"
             self._ensure_signal_id(str(strat), payload)
             if not payload.get("signal_id"):
                 logger.error("[INCUBATOR] Missing signal_id in waiting_room event=%s payload=%s", event, payload)
+            signal_id_for_log = payload.get("signal_id")
+            try:
+                parent_pending_id = payload.get("parent_pending_id")
+                meta = payload.get("meta")
+                if isinstance(meta, dict) and meta.get("parent_pending_id"):
+                    parent_pending_id = meta.get("parent_pending_id")
+            except Exception:
+                parent_pending_id = None
+        pending_id = item.get("pending_id") if isinstance(item, dict) else None
+        if pending_id and signal_id_for_log and str(signal_id_for_log) == str(pending_id):
+            # Telemetry hardening: pending_id is the stable incubator identity; payload signal_id should remain distinct.
+            # Do not mutate the payload in-place; only adjust the emitted telemetry fields.
+            signal_id_for_log = uuid.uuid4().hex
         out = {
             "event": event,
             "ts_ms": ts_ms,
             "run_id": get_current_run_id(),
-            "signal_id": payload.get("signal_id"),
+            "pending_id": pending_id,
+            "parent_pending_id": parent_pending_id,
+            "signal_id": signal_id_for_log,
             "strategy": payload.get("strategy_name") or payload.get("strategy"),
             "symbol": payload.get("symbol"),
             "side": payload.get("side"),
@@ -1004,6 +1059,204 @@ class StrategyCoordinator:
             logger.info("%s %s", event, json.dumps(out, ensure_ascii=False, sort_keys=True))
         except Exception:
             logger.info("%s %s", event, out)
+
+    @staticmethod
+    def _normalize_salvage_final_status(status: Any) -> str:
+        status_norm = str(status or "").strip().lower()
+        if status_norm in ("queued", "enqueued"):
+            return "queued"
+        if status_norm in ("accepted", "active", "executing", "executed"):
+            return "accepted"
+        return status_norm or "unknown"
+
+    def _soft_deferral_salvage_cache_max(self) -> int:
+        cfg = self.config if isinstance(self.config, dict) else {}
+        soft_cfg = cfg.get("soft_deferral", {}) if isinstance(cfg, dict) else {}
+        raw = soft_cfg.get("salvage_idempotency_max_items") if isinstance(soft_cfg, dict) else None
+        if raw is None:
+            return 1000
+        try:
+            max_items = int(raw)
+        except Exception:
+            return 1000
+        return max(1, max_items)
+
+    def _reset_soft_deferral_roi_caches_if_needed(self) -> None:
+        try:
+            run_id = get_current_run_id()
+        except Exception:
+            run_id = None
+        last_run_id = getattr(self, "_soft_deferral_roi_cache_run_id", None)
+        if last_run_id == run_id:
+            return
+        setattr(self, "_soft_deferral_roi_cache_run_id", run_id)
+        setattr(self, "_salvaged_parent_ids", OrderedDict())
+        setattr(self, "_soft_deferral_pending_reason_by_parent_id", OrderedDict())
+
+    def _remember_soft_deferral_pending_reason(self, parent_pending_id: str, pending_reason_code: str) -> None:
+        if not parent_pending_id or not pending_reason_code:
+            return
+        try:
+            pending_reason_code = str(pending_reason_code).strip()
+        except Exception:
+            return
+        if not pending_reason_code or pending_reason_code.lower() == "unknown":
+            return
+        self._reset_soft_deferral_roi_caches_if_needed()
+        cache = getattr(self, "_soft_deferral_pending_reason_by_parent_id", None)
+        if not isinstance(cache, OrderedDict):
+            cache = OrderedDict()
+            setattr(self, "_soft_deferral_pending_reason_by_parent_id", cache)
+        if parent_pending_id in cache:
+            try:
+                existing = str(cache.get(parent_pending_id) or "").strip()
+            except Exception:
+                existing = ""
+            if existing and existing.lower() != "unknown":
+                cache.move_to_end(parent_pending_id)
+                return
+        cache[parent_pending_id] = pending_reason_code
+        cache.move_to_end(parent_pending_id)
+        max_size = self._soft_deferral_salvage_cache_max()
+        while len(cache) > max_size:
+            cache.popitem(last=False)
+
+    def _mark_soft_deferral_salvaged(self, parent_pending_id: str) -> bool:
+        if not parent_pending_id:
+            return False
+        self._reset_soft_deferral_roi_caches_if_needed()
+        cache = getattr(self, "_salvaged_parent_ids", None)
+        if not isinstance(cache, OrderedDict):
+            cache = OrderedDict()
+            setattr(self, "_salvaged_parent_ids", cache)
+        if parent_pending_id in cache:
+            cache.move_to_end(parent_pending_id)
+            return False
+        cache[parent_pending_id] = self._now_ms()
+        cache.move_to_end(parent_pending_id)
+        max_size = self._soft_deferral_salvage_cache_max()
+        while len(cache) > max_size:
+            cache.popitem(last=False)
+        return True
+
+    def _emit_soft_deferral_salvaged(
+        self,
+        *,
+        parent_pending_id: Any,
+        signal_id: Any,
+        final_status: Any,
+        signal_payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if parent_pending_id is None:
+            return
+        try:
+            parent_pending_id_str = str(parent_pending_id)
+        except Exception:
+            return
+        if not parent_pending_id_str:
+            return
+
+        if not self._mark_soft_deferral_salvaged(parent_pending_id_str):
+            return
+
+        payload = signal_payload if isinstance(signal_payload, dict) else {}
+        pending_reason_code = None
+        cache = getattr(self, "_soft_deferral_pending_reason_by_parent_id", None)
+        if isinstance(cache, OrderedDict):
+            pending_reason_code = cache.get(parent_pending_id_str)
+        if pending_reason_code is not None:
+            try:
+                pending_reason_code = str(pending_reason_code).strip()
+            except Exception:
+                pending_reason_code = None
+        if not pending_reason_code or str(pending_reason_code).strip().lower() == "unknown":
+            pending_reason_code = None
+        if not pending_reason_code:
+            pending_reason_code = payload.get("pending_reason_code")
+            if pending_reason_code is not None:
+                try:
+                    pending_reason_code = str(pending_reason_code).strip()
+                except Exception:
+                    pending_reason_code = None
+            if not pending_reason_code or str(pending_reason_code).strip().lower() == "unknown":
+                pending_reason_code = None
+        if not pending_reason_code:
+            meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+            pending_reason_code = meta.get("pending_reason_code")
+            if pending_reason_code is not None:
+                try:
+                    pending_reason_code = str(pending_reason_code).strip()
+                except Exception:
+                    pending_reason_code = None
+            if not pending_reason_code or str(pending_reason_code).strip().lower() == "unknown":
+                pending_reason_code = None
+        if not pending_reason_code:
+            pending_reason_code = "unknown"
+        reason_code = pending_reason_code
+
+        out = {
+            "event": "soft_deferral_salvaged",
+            "ts_ms": self._now_ms(),
+            "run_id": get_current_run_id(),
+            "parent_pending_id": parent_pending_id_str,
+            "signal_id": signal_id,
+            "final_status": self._normalize_salvage_final_status(final_status),
+            "reason_code": reason_code,
+            "pending_reason_code": pending_reason_code,
+            "strategy": payload.get("strategy_name") or payload.get("strategy"),
+            "symbol": payload.get("symbol"),
+            "side": payload.get("side"),
+            "timeframe": payload.get("timeframe") or payload.get("tf"),
+        }
+        safe_out = self._json_sanitize(out)
+        try:
+            logger.info("soft_deferral_salvaged %s", json.dumps(safe_out, ensure_ascii=False, sort_keys=True))
+        except Exception:
+            logger.info("soft_deferral_salvaged %s", safe_out)
+
+    def _emit_strategy_recheck_request(self, item: Dict[str, Any], *, check_detail: Optional[Dict[str, Any]] = None) -> None:
+        payload = item.get("payload", {}) if isinstance(item, dict) else {}
+        ts_ms = self._now_ms()
+        parent_pending_id = item.get("pending_id") if isinstance(item, dict) else None
+        pending_reason_code = None
+        if isinstance(item, dict):
+            pending_reason_code = item.get("pending_reason_code") or item.get("reason_code")
+        if parent_pending_id is not None and pending_reason_code is not None:
+            try:
+                self._remember_soft_deferral_pending_reason(str(parent_pending_id), str(pending_reason_code))
+            except Exception:
+                pass
+        out = {
+            "event": "strategy_recheck_request",
+            "ts_ms": ts_ms,
+            "run_id": get_current_run_id(),
+            "pending_id": parent_pending_id,
+            "parent_pending_id": parent_pending_id,
+            "signal_id": payload.get("signal_id") if isinstance(payload, dict) else None,
+            "strategy": (payload.get("strategy_name") or payload.get("strategy")) if isinstance(payload, dict) else None,
+            "symbol": payload.get("symbol") if isinstance(payload, dict) else None,
+            "side": payload.get("side") if isinstance(payload, dict) else None,
+            "timeframe": payload.get("timeframe") if isinstance(payload, dict) else None,
+            "intent": payload.get("intent") if isinstance(payload, dict) else None,
+            "setup_anchor_ts_ms": payload.get("setup_anchor_ts_ms") if isinstance(payload, dict) else None,
+            "reason": payload.get("reason") if isinstance(payload, dict) else None,
+            "reason_code": item.get("reason_code") if isinstance(item, dict) else None,
+            "pending_reason_code": pending_reason_code,
+            "dedupe_key": item.get("dedupe_key") if isinstance(item, dict) else None,
+            "condition_data": payload.get("condition_data") if isinstance(payload, dict) else None,
+            "check_detail": check_detail or {},
+        }
+        safe_out = self._json_sanitize(out)
+        try:
+            logger.info("strategy_recheck_request %s", json.dumps(safe_out, ensure_ascii=False, sort_keys=True))
+        except Exception:
+            logger.info("strategy_recheck_request %s", safe_out)
+        queue = getattr(self, "strategy_recheck_queue", None)
+        if queue is not None and hasattr(queue, "put_nowait"):
+            try:
+                queue.put_nowait(safe_out if isinstance(safe_out, dict) else out)
+            except Exception:
+                pass
 
     async def incubate_signal(
         self,
@@ -1030,7 +1283,11 @@ class StrategyCoordinator:
             return {"status": "rejected", "reason": "missing_dedupe_key", "stage": stage or "incubator"}
 
         now_ms = self._now_ms()
-        policy = self._incubator_policies.get(reason_code, {})
+        policy = dict(self._incubator_policies.get(reason_code, {}) or {})
+        if str(refresh_policy).upper() == "STRATEGY_RECHECK":
+            fallback_policy = self._incubator_policies.get("strategy.soft_deferral", {})
+            if isinstance(fallback_policy, dict):
+                policy = {**fallback_policy, **policy}
         ttl_seconds = int(policy.get("ttl_seconds", 300) or 300)
         max_attempts = int(policy.get("max_attempts", 20) or 20)
         base_delay_ms = int(policy.get("base_delay_ms", 1000) or 1000)
@@ -1043,12 +1300,61 @@ class StrategyCoordinator:
             safe_payload["dedupe_key"] = dedupe_key
             safe_payload["setup_anchor_ts_ms"] = int(self._derive_setup_anchor_ts_ms(safe_payload))
 
+        parent_pending_id = None
+        pending_reason_code = None
+        if isinstance(safe_payload, dict):
+            try:
+                meta = safe_payload.get("meta")
+                if isinstance(meta, dict):
+                    parent_pending_id = meta.get("parent_pending_id")
+                    pending_reason_code = meta.get("pending_reason_code")
+            except Exception:
+                parent_pending_id = None
+                pending_reason_code = None
+        if str(refresh_policy).upper() == "STRATEGY_RECHECK" and not pending_reason_code:
+            pending_reason_code = str(reason_code)
+
+        parent_pending_id_str = None
+        if parent_pending_id is not None:
+            try:
+                parent_pending_id_str = str(parent_pending_id)
+            except Exception:
+                parent_pending_id_str = None
+        pending_reason_code_str = None
+        if pending_reason_code is not None:
+            try:
+                pending_reason_code_str = str(pending_reason_code)
+            except Exception:
+                pending_reason_code_str = None
+
+        if isinstance(safe_payload, dict):
+            if pending_reason_code_str:
+                safe_payload.setdefault("pending_reason_code", pending_reason_code_str)
+                meta = safe_payload.get("meta")
+                if not isinstance(meta, dict):
+                    meta = {}
+                    safe_payload["meta"] = meta
+                meta.setdefault("pending_reason_code", pending_reason_code_str)
+            if parent_pending_id_str:
+                meta = safe_payload.get("meta")
+                if not isinstance(meta, dict):
+                    meta = {}
+                    safe_payload["meta"] = meta
+                meta.setdefault("parent_pending_id", parent_pending_id_str)
+
+        pending_id = uuid.uuid4().hex
+        if isinstance(safe_payload, dict) and safe_payload.get("signal_id") and str(safe_payload.get("signal_id")) == str(pending_id):
+            safe_payload["signal_id"] = uuid.uuid4().hex
+
         new_item = {
+            "pending_id": pending_id,
             "payload": safe_payload,
             "first_seen_ts_ms": now_ms,
             "next_check_at_ms": now_ms + max(250, base_delay_ms),
             "attempts": 0,
             "reason_code": str(reason_code),
+            "pending_reason_code": pending_reason_code_str,
+            "parent_pending_id": parent_pending_id_str,
             "refresh_policy": str(refresh_policy),
             "dedupe_key": dedupe_key,
             "ttl_seconds": ttl_seconds,
@@ -1072,21 +1378,68 @@ class StrategyCoordinator:
             else:
                 existing = self._incubator_items.get(dedupe_key)
                 if existing:
-                    first_seen = int(existing.get("first_seen_ts_ms", now_ms) or now_ms)
+                    if not existing.get("pending_id"):
+                        existing["pending_id"] = uuid.uuid4().hex
+
+                    existing_parent_pending_id = existing.get("parent_pending_id")
+                    if existing_parent_pending_id:
+                        try:
+                            existing_parent_pending_id = str(existing_parent_pending_id)
+                        except Exception:
+                            existing_parent_pending_id = None
+                    existing_pending_reason = existing.get("pending_reason_code")
+                    if existing_pending_reason:
+                        try:
+                            existing_pending_reason = str(existing_pending_reason)
+                        except Exception:
+                            existing_pending_reason = None
+
+                    pending_id_existing = existing.get("pending_id")
+                    if isinstance(safe_payload, dict):
+                        incoming_signal_id = safe_payload.get("signal_id")
+                        if not incoming_signal_id or (pending_id_existing and str(incoming_signal_id) == str(pending_id_existing)):
+                            safe_payload["signal_id"] = uuid.uuid4().hex
+
+                        # Preserve immutable parent correlation data across dedupe updates.
+                        if existing_pending_reason:
+                            safe_payload["pending_reason_code"] = existing_pending_reason
+                            meta = safe_payload.get("meta")
+                            if not isinstance(meta, dict):
+                                meta = {}
+                                safe_payload["meta"] = meta
+                            meta["pending_reason_code"] = existing_pending_reason
+                        if existing_parent_pending_id:
+                            meta = safe_payload.get("meta")
+                            if not isinstance(meta, dict):
+                                meta = {}
+                                safe_payload["meta"] = meta
+                            meta["parent_pending_id"] = existing_parent_pending_id
+
                     existing["payload"] = safe_payload
-                    existing["reason_code"] = str(reason_code)
-                    existing["refresh_policy"] = str(refresh_policy)
-                    existing["ttl_seconds"] = ttl_seconds
-                    existing["max_attempts"] = max_attempts
-                    existing["expires_at_ms"] = first_seen + ttl_seconds * 1000
-                    existing["next_check_at_ms"] = min(
-                        int(existing.get("next_check_at_ms", now_ms + base_delay_ms) or (now_ms + base_delay_ms)),
-                        now_ms + max(250, base_delay_ms),
-                    )
-                    existing["stage"] = stage or existing.get("stage")
+                    existing["ctx_hash"] = None
+                    if not existing.get("pending_reason_code") and pending_reason_code_str:
+                        existing["pending_reason_code"] = pending_reason_code_str
+                    if not existing.get("parent_pending_id") and parent_pending_id_str:
+                        existing["parent_pending_id"] = parent_pending_id_str
+
+                    try:
+                        cache_key = existing_parent_pending_id or (
+                            str(pending_id_existing) if str(refresh_policy).upper() == "STRATEGY_RECHECK" else None
+                        )
+                        cache_reason = existing_pending_reason or pending_reason_code_str
+                        if cache_key and cache_reason:
+                            self._remember_soft_deferral_pending_reason(str(cache_key), str(cache_reason))
+                    except Exception:
+                        pass
                 else:
                     self._incubator_items[dedupe_key] = new_item
                     emit_add = new_item
+                    try:
+                        cache_key = parent_pending_id_str or (pending_id if str(refresh_policy).upper() == "STRATEGY_RECHECK" else None)
+                        if cache_key and pending_reason_code_str:
+                            self._remember_soft_deferral_pending_reason(str(cache_key), str(pending_reason_code_str))
+                    except Exception:
+                        pass
 
         if emit_drop is not None:
             self._emit_waiting_room_event(
@@ -1107,6 +1460,159 @@ class StrategyCoordinator:
 
         return {"status": "incubated", "reason_code": reason_code, "stage": stage or "incubator", "dedupe_key": dedupe_key}
 
+    async def handle_soft_deferral(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        def _emit_reject(
+            *,
+            reason_code: str,
+            error: str,
+            strategy: Optional[str] = None,
+            symbol: Optional[str] = None,
+            side: Optional[str] = None,
+            timeframe: Optional[str] = None,
+            missing_fields: Optional[List[str]] = None,
+        ) -> None:
+            now_ms = self._now_ms()
+            payload: Dict[str, Any] = {
+                "intent": "soft_deferral",
+            }
+            if strategy:
+                payload["strategy_name"] = str(strategy)
+            if symbol:
+                payload["symbol"] = str(symbol)
+            if side:
+                payload["side"] = str(side)
+            if timeframe:
+                payload["timeframe"] = str(timeframe)
+            item = {
+                "pending_id": uuid.uuid4().hex,
+                "payload": payload,
+                "first_seen_ts_ms": now_ms,
+                "attempts": 0,
+                "reason_code": str(reason_code),
+                "dedupe_key": None,
+                "ttl_seconds": None,
+                "ctx_hash": None,
+            }
+            extra: Dict[str, Any] = {
+                "drop_kind": "soft_deferral_reject",
+                "drop_reason": str(reason_code),
+                "error": str(error),
+            }
+            if missing_fields:
+                extra["missing_fields"] = list(missing_fields)
+            self._emit_waiting_room_event("waiting_room_drop", item, **extra)
+
+        if not isinstance(event, dict):
+            _emit_reject(reason_code="soft_deferral.invalid_event", error="invalid_event_type_non_dict")
+            return {"status": "rejected", "reason": "invalid_event", "stage": "soft_deferral"}
+
+        event_type = event.get("event_type")
+        if event_type and str(event_type) != "soft_deferral_event":
+            strategy_hint = event.get("strategy") or event.get("strategy_name")
+            symbol_hint = event.get("symbol")
+            side_hint = event.get("side")
+            timeframe_hint = event.get("timeframe") or event.get("tf")
+            _emit_reject(
+                reason_code="soft_deferral.invalid_event_type",
+                error=f"invalid_event_type:{event_type}",
+                strategy=strategy_hint,
+                symbol=symbol_hint,
+                side=side_hint,
+                timeframe=timeframe_hint,
+            )
+            return {"status": "rejected", "reason": "invalid_event_type", "stage": "soft_deferral"}
+
+        strategy = event.get("strategy") or event.get("strategy_name")
+        symbol = event.get("symbol")
+        side = event.get("side")
+        timeframe = event.get("timeframe") or event.get("tf")
+        setup_anchor_ts_ms = event.get("setup_anchor_ts_ms")
+        reason_code = event.get("reason_code") or "strategy.soft_deferral"
+        condition_data = event.get("condition_data") if isinstance(event.get("condition_data"), dict) else {}
+
+        missing = []
+        if not strategy:
+            missing.append("strategy")
+        if not symbol:
+            missing.append("symbol")
+        if not side:
+            missing.append("side")
+        if not timeframe:
+            missing.append("timeframe")
+        if setup_anchor_ts_ms is None:
+            missing.append("setup_anchor_ts_ms")
+        if not reason_code:
+            missing.append("reason_code")
+        if missing:
+            subcode = "soft_deferral.schema_invalid"
+            if len(missing) == 1:
+                subcode = f"soft_deferral.missing_{missing[0]}"
+            _emit_reject(
+                reason_code=subcode,
+                error="missing_required_fields",
+                strategy=strategy,
+                symbol=symbol,
+                side=side,
+                timeframe=timeframe,
+                missing_fields=missing,
+            )
+            return {"status": "rejected", "reason": "invalid_schema", "stage": "soft_deferral", "missing": missing}
+
+        normalized_side = self._normalize_side(side) or str(side).strip().lower()
+        if normalized_side not in ("long", "short"):
+            _emit_reject(
+                reason_code="soft_deferral.invalid_side",
+                error=f"invalid_side:{side}",
+                strategy=strategy,
+                symbol=symbol,
+                side=side,
+                timeframe=timeframe,
+            )
+            return {"status": "rejected", "reason": "invalid_side", "stage": "soft_deferral"}
+
+        try:
+            anchor_ms = int(float(setup_anchor_ts_ms))
+        except Exception:
+            _emit_reject(
+                reason_code="soft_deferral.invalid_setup_anchor_ts_ms",
+                error=f"invalid_setup_anchor_ts_ms:{setup_anchor_ts_ms}",
+                strategy=strategy,
+                symbol=symbol,
+                side=normalized_side,
+                timeframe=timeframe,
+            )
+            return {"status": "rejected", "reason": "invalid_setup_anchor_ts_ms", "stage": "soft_deferral"}
+
+        if anchor_ms <= 0:
+            _emit_reject(
+                reason_code="soft_deferral.invalid_setup_anchor_ts_ms",
+                error=f"invalid_setup_anchor_ts_ms:{setup_anchor_ts_ms}",
+                strategy=strategy,
+                symbol=symbol,
+                side=normalized_side,
+                timeframe=timeframe,
+            )
+            return {"status": "rejected", "reason": "invalid_setup_anchor_ts_ms", "stage": "soft_deferral"}
+
+        synthetic_signal = {
+            "symbol": str(symbol),
+            "side": normalized_side,
+            "timeframe": str(timeframe),
+            "setup_anchor_ts_ms": anchor_ms,
+            "intent": "soft_deferral",
+            "reason": str(event.get("reason") or reason_code),
+            "condition_data": dict(condition_data),
+            "timestamp": anchor_ms,
+        }
+
+        return await self.incubate_signal(
+            strategy_name=str(strategy),
+            signal=synthetic_signal,
+            reason_code=str(reason_code),
+            refresh_policy="STRATEGY_RECHECK",
+            stage="soft_deferral",
+        )
+
     async def incubator_tick(self, max_items: Optional[int] = None, time_budget_ms: Optional[int] = None) -> int:
         if not self._incubator_enabled:
             return 0
@@ -1119,6 +1625,11 @@ class StrategyCoordinator:
         start_ms = self._now_ms()
         now_ms = start_ms
         processed = 0
+        checked = 0
+        skipped = 0
+        salvaged = 0
+        dropped = 0
+        due_total = 0
         price_cache: Dict[tuple[str, str], Optional[float]] = {}
 
         expired_items: List[Dict[str, Any]] = []
@@ -1142,8 +1653,11 @@ class StrategyCoordinator:
                 if now_ms >= next_check:
                     due_keys.append(key)
 
+            due_total = len(due_keys)
+
         for item in expired_items:
             self._emit_waiting_room_event("waiting_room_drop", item, drop_reason="ttl_expired")
+        dropped += len(expired_items)
 
         due_keys.sort(key=lambda k: int(self._incubator_items.get(k, {}).get("next_check_at_ms", now_ms) or now_ms))
         for dedupe_key in due_keys[:max_items]:
@@ -1157,11 +1671,9 @@ class StrategyCoordinator:
                     continue
                 payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
                 prev_ctx_hash = item.get("ctx_hash")
-                attempts = int(item.get("attempts", 0) or 0) + 1
-                item["attempts"] = attempts
-                item["last_attempt_ts_ms"] = now_ms
+                attempts = int(item.get("attempts", 0) or 0)
                 max_attempts = int(item.get("max_attempts", 0) or 0)
-                if max_attempts and attempts > max_attempts:
+                if max_attempts and attempts >= max_attempts:
                     self._incubator_items.pop(dedupe_key, None)
                     drop_item = dict(item)
                     item = None
@@ -1170,6 +1682,7 @@ class StrategyCoordinator:
 
             if drop_item is not None:
                 self._emit_waiting_room_event("waiting_room_drop", drop_item, drop_reason="max_attempts_exceeded")
+                dropped += 1
                 processed += 1
                 continue
 
@@ -1185,13 +1698,24 @@ class StrategyCoordinator:
             condition_met = False
             check_detail: Dict[str, Any] = {}
 
-            ctx_hash, ctx_detail = await self._compute_ctx_hash(payload, now_ms=now_ms, price_cache=price_cache)
+            ctx_hash, ctx_detail = await self._compute_ctx_hash(payload, now_ms=now_ms, price_cache=price_cache, reason_code=reason_code)
             if ctx_hash:
                 async with self._incubator_lock:
                     existing = self._incubator_items.get(dedupe_key)
                     if existing:
                         existing["ctx_hash"] = ctx_hash
                 check_detail["ctx"] = ctx_detail
+
+            heat_reason_codes = {
+                "risk.planner.heat_exhausted",
+                "risk.concurrent.portfolio_heat",
+                "risk.concurrent.portfolio_heat_exceeded",
+            }
+
+            if reason_code in heat_reason_codes and ctx_hash and ctx_hash == prev_ctx_hash:
+                # Optimization: for heat gates, only re-evaluate when portfolio or rounded-price context changes.
+                condition_met = False
+                check_detail["skip_reason"] = "ctx_hash_unchanged"
 
             if reason_code == "volume.low_vol_tight_stop" and ctx_hash and ctx_hash == prev_ctx_hash:
                 # Optimization: if symbol+price+candle open didn't change, skip heavy checks.
@@ -1218,9 +1742,43 @@ class StrategyCoordinator:
                     condition_met, volume_detail = await self._check_volume_release_condition(payload)
                     check_detail.update(volume_detail)
 
+            elif reason_code in heat_reason_codes:
+                if check_detail.get("skip_reason") != "ctx_hash_unchanged":
+                    condition_met = True
+
+            elif str(item.get("refresh_policy") or "").upper() == "STRATEGY_RECHECK":
+                condition_met = True
+
+            if not check_detail.get("skip_reason"):
+                async with self._incubator_lock:
+                    existing = self._incubator_items.get(dedupe_key)
+                    if existing:
+                        existing["attempts"] = int(existing.get("attempts", 0) or 0) + 1
+                        existing["last_attempt_ts_ms"] = now_ms
+                        item = existing
+                checked += 1
+            else:
+                skipped += 1
+
             self._emit_waiting_room_event("waiting_room_retry", item, check_detail=check_detail)
 
             if condition_met:
+                refresh_policy = str(item.get("refresh_policy") or "NONE")
+                if refresh_policy == "STRATEGY_RECHECK":
+                    async with self._incubator_lock:
+                        removed = self._incubator_items.pop(dedupe_key, None)
+                    if removed:
+                        self._emit_strategy_recheck_request(removed, check_detail=check_detail)
+                        self._emit_waiting_room_event(
+                            "waiting_room_drop",
+                            removed,
+                            drop_reason="strategy_recheck_requested",
+                            drop_kind="strategy_recheck",
+                        )
+                        salvaged += 1
+                    processed += 1
+                    continue
+
                 refreshed_signal = await self._apply_refresh_policy(dict(payload), str(item.get("refresh_policy") or "NONE"))
                 refreshed_signal["incubator_replay"] = True
                 try:
@@ -1228,18 +1786,76 @@ class StrategyCoordinator:
                 except Exception as exc:
                     result = {"status": "error", "reason": str(exc), "stage": "incubator_replay"}
 
-                status = str(result.get("status") or "")
-                if status == "accepted":
+                status_raw = result.get("status")
+                status = str(status_raw or "").strip().lower()
+                queued_statuses = {"queued", "enqueued"}
+                accepted_statuses = {"accepted", "active", "executing", "executed"}
+                success_statuses = queued_statuses | accepted_statuses
+                if status in success_statuses:
+                    success_kind = "queued" if status in queued_statuses else "accepted"
                     async with self._incubator_lock:
                         removed = self._incubator_items.pop(dedupe_key, None)
+                    item_for_telemetry = removed or item
+                    item_payload = item_for_telemetry.get("payload") if isinstance(item_for_telemetry, dict) else None
                     if removed:
                         self._emit_waiting_room_event("waiting_room_accept", removed)
+                        salvaged += 1
+                    parent_pending_id = None
+                    try:
+                        parent_pending_id = (
+                            item_for_telemetry.get("parent_pending_id") if isinstance(item_for_telemetry, dict) else None
+                        )
+                        pending_reason_code = (
+                            item_for_telemetry.get("pending_reason_code") if isinstance(item_for_telemetry, dict) else None
+                        )
+                        meta = item_payload.get("meta") if isinstance(item_payload, dict) else None
+                        if not parent_pending_id and isinstance(meta, dict):
+                            parent_pending_id = meta.get("parent_pending_id")
+                        if not pending_reason_code and isinstance(meta, dict):
+                            pending_reason_code = meta.get("pending_reason_code")
+                        if parent_pending_id and pending_reason_code:
+                            self._remember_soft_deferral_pending_reason(str(parent_pending_id), str(pending_reason_code))
+                    except Exception:
+                        parent_pending_id = None
+                    if parent_pending_id:
+                        try:
+                            salvage_signal_id = result.get("signal_id")
+                            if not salvage_signal_id and isinstance(item_payload, dict):
+                                salvage_signal_id = item_payload.get("signal_id")
+                            self._emit_soft_deferral_salvaged(
+                                parent_pending_id=parent_pending_id,
+                                signal_id=salvage_signal_id,
+                                final_status=status,
+                                signal_payload=item_payload if isinstance(item_payload, dict) else None,
+                            )
+                        except Exception:
+                            pass
+                    self._emit_waiting_room_event(
+                        "waiting_room_outcome",
+                        item_for_telemetry,
+                        outcome="success",
+                        success_kind=success_kind,
+                        final_status=status,
+                        final_reason=result.get("reason") or "queued",
+                        final_reason_code=result.get("reason_code"),
+                    )
                 elif status == "incubated":
                     # process_strategy_signal re-incubated/update the item; keep it
                     pass
                 else:
                     async with self._incubator_lock:
                         removed = self._incubator_items.pop(dedupe_key, None)
+                    item_for_telemetry = removed or item
+                    if status == "rejected":
+                        self._emit_waiting_room_event(
+                            "waiting_room_outcome",
+                            item_for_telemetry,
+                            outcome="failed_replay",
+                            success_kind="none",
+                            final_status=status,
+                            final_reason=result.get("reason"),
+                            final_reason_code=result.get("reason_code"),
+                        )
                     if removed:
                         self._emit_waiting_room_event(
                             "waiting_room_drop",
@@ -1249,6 +1865,7 @@ class StrategyCoordinator:
                             replay_stage=result.get("stage"),
                             replay_reason=result.get("reason"),
                         )
+                        dropped += 1
 
             else:
                 delay = min(max_delay_ms, max(250, int(base_delay_ms * (2 ** min(int(item.get("attempts", 1) or 1) - 1, 6)))))
@@ -1258,6 +1875,21 @@ class StrategyCoordinator:
                         existing["next_check_at_ms"] = self._now_ms() + delay
 
             processed += 1
+
+        if processed or dropped:
+            elapsed_ms = self._now_ms() - start_ms
+            async with self._incubator_lock:
+                pending = len(self._incubator_items)
+            logger.info(
+                "Incubator Tick: pending=%s, due=%s, checked=%s, skipped=%s, salvaged=%s, dropped=%s, elapsed_ms=%s",
+                pending,
+                due_total,
+                checked,
+                skipped,
+                salvaged,
+                dropped,
+                elapsed_ms,
+            )
 
         return processed
 
@@ -1309,7 +1941,109 @@ class StrategyCoordinator:
         *,
         now_ms: Optional[int] = None,
         price_cache: Optional[Dict[tuple[str, str], Optional[float]]] = None,
+        reason_code: Optional[str] = None,
     ) -> Tuple[Optional[str], Dict[str, Any]]:
+        heat_reason_codes = {
+            "risk.planner.heat_exhausted",
+            "risk.concurrent.portfolio_heat",
+            "risk.concurrent.portfolio_heat_exceeded",
+        }
+        if reason_code in heat_reason_codes:
+            symbol = payload.get("symbol")
+            timeframe = payload.get("timeframe") or "5m"
+
+            summary: Any = None
+            try:
+                risk_mgr = getattr(self, "risk_manager", None)
+                if risk_mgr is not None and hasattr(risk_mgr, "get_portfolio_summary"):
+                    summary = risk_mgr.get_portfolio_summary(portfolio_manager=getattr(self, "portfolio_manager", None))
+                elif hasattr(self.portfolio_manager, "get_portfolio_summary"):
+                    summary = self.portfolio_manager.get_portfolio_summary()
+            except Exception as exc:
+                summary = {"error": str(exc)}
+
+            if not isinstance(summary, dict):
+                summary = {"value": str(summary)}
+
+            active_positions_val = summary.get("active_positions")
+            total_risk_val = summary.get("total_risk")
+            portfolio_heat_val = summary.get("portfolio_heat")
+
+            try:
+                active_positions = int(active_positions_val) if active_positions_val is not None else None
+            except Exception:
+                active_positions = None
+
+            try:
+                total_risk = float(total_risk_val) if total_risk_val is not None else None
+            except Exception:
+                total_risk = None
+
+            try:
+                portfolio_heat = float(portfolio_heat_val) if portfolio_heat_val is not None else None
+            except Exception:
+                portfolio_heat = None
+
+            max_heat = None
+            try:
+                limits = getattr(self.risk_manager, "concurrent_limits", None)
+                max_heat = getattr(limits, "max_total_risk_pct", None) if limits is not None else None
+            except Exception:
+                max_heat = None
+
+            cache_key = None
+            if symbol:
+                cache_key = (str(symbol), str(timeframe))
+            last_price_val = (
+                price_cache.get(cache_key)
+                if (price_cache is not None and cache_key is not None)
+                else None
+            )
+            if last_price_val is None:
+                last_price = None
+                if self.market_data_pipeline and symbol:
+                    try:
+                        last_price = await self.market_data_pipeline.get_latest_price(str(symbol), timeframe=str(timeframe))
+                    except Exception:
+                        last_price = None
+                if last_price is None:
+                    last_price = payload.get("entry") or payload.get("entry_price") or payload.get("price")
+
+                try:
+                    last_price_val = float(last_price) if last_price is not None else None
+                except Exception:
+                    last_price_val = None
+
+                if price_cache is not None and cache_key is not None:
+                    price_cache[cache_key] = last_price_val
+
+            last_price_rounded = None
+            if last_price_val is not None:
+                try:
+                    last_price_rounded = float(round(float(last_price_val), 2))
+                except Exception:
+                    last_price_rounded = None
+
+            heat_tag = "none" if portfolio_heat is None else f"{portfolio_heat:.6f}"
+            risk_tag = "none" if total_risk is None else f"{total_risk:.2f}"
+            positions_tag = "none" if active_positions is None else str(active_positions)
+            price_tag = "none" if last_price_rounded is None else f"{last_price_rounded:.2f}"
+            ctx_hash = f"portfolio:{positions_tag}:{heat_tag}:{risk_tag}:price:{price_tag}"
+            return ctx_hash, {
+                "portfolio": {
+                    "active_positions": active_positions,
+                    "portfolio_heat": portfolio_heat,
+                    "total_risk": total_risk,
+                    "max_total_risk_pct": max_heat,
+                },
+                "price": {
+                    "symbol": str(symbol) if symbol else None,
+                    "timeframe": str(timeframe) if timeframe else None,
+                    "last_price": last_price_val,
+                    "last_price_rounded": last_price_rounded,
+                },
+            }
+
         symbol = payload.get("symbol")
         timeframe = payload.get("timeframe") or "5m"
         timeframe_ms = self._parse_timeframe_ms(timeframe) or 300_000
@@ -2391,12 +3125,24 @@ class StrategyCoordinator:
                 async with self._incubator_lock:
                     existing = self._incubator_items.get(dedupe_key)
                     if existing:
+                        if not existing.get("pending_id"):
+                            existing["pending_id"] = uuid.uuid4().hex
+
+                        pending_id_existing = existing.get("pending_id")
+
                         safe_payload = self._json_sanitize(signal)
                         if isinstance(safe_payload, dict):
                             safe_payload.setdefault("strategy_name", strategy_name)
+                            if not safe_payload.get("signal_id"):
+                                self._ensure_signal_id(strategy_name, safe_payload)
                             safe_payload["dedupe_key"] = dedupe_key
                             safe_payload["setup_anchor_ts_ms"] = int(self._derive_setup_anchor_ts_ms(safe_payload))
+
+                            incoming_signal_id = safe_payload.get("signal_id")
+                            if not incoming_signal_id or (pending_id_existing and str(incoming_signal_id) == str(pending_id_existing)):
+                                safe_payload["signal_id"] = uuid.uuid4().hex
                         existing["payload"] = safe_payload
+                        existing["ctx_hash"] = None
                         existing["next_check_at_ms"] = self._now_ms()
                         refreshed = dict(existing)
 
@@ -2866,6 +3612,34 @@ class StrategyCoordinator:
                         }
                     return incubated
 
+                if risk_reason_code in (
+                    "risk.planner.heat_exhausted",
+                    "risk.concurrent.portfolio_heat",
+                    "risk.concurrent.portfolio_heat_exceeded",
+                ):
+                    logger.warning(
+                        "🕒 %s DEFERRED (Risk Heat) | reason_code=%s | reason=%s",
+                        log_prefix,
+                        risk_reason_code,
+                        risk_reason,
+                    )
+                    incubated = await self.incubate_signal(
+                        strategy_name=strategy_name,
+                        signal=enriched_signal,
+                        reason_code=str(risk_reason_code),
+                        refresh_policy="REPRICE_AND_RESIZE",
+                        stage="risk_assessment",
+                    )
+                    if incubated.get("status") == "incubated":
+                        return {
+                            "status": "incubated",
+                            "reason_code": str(risk_reason_code),
+                            "reason": risk_reason,
+                            "stage": "risk_assessment",
+                            "dedupe_key": incubated.get("dedupe_key"),
+                        }
+                    return incubated
+
                 self.processing_stats['rejected_signals'] += 1
                 # --- TELEMETRİ: Ret Sebebi (DÜZELTİLDİ) ---
                 logger.warning(f"🛡️  {log_prefix} REJECTED (Risk Check): {risk_assessment['reason']}")
@@ -2987,6 +3761,19 @@ class StrategyCoordinator:
                 'signal_id': signal_id, 'strategy_name': strategy_name,
                 'symbol': enriched_signal.get('symbol'), 'timestamp': datetime.now(timezone.utc), 'status': 'accepted'
             })
+
+            try:
+                meta = enriched_signal.get("meta") if isinstance(enriched_signal, dict) else None
+                parent_pending_id = meta.get("parent_pending_id") if isinstance(meta, dict) else None
+            except Exception:
+                parent_pending_id = None
+            if parent_pending_id:
+                self._emit_soft_deferral_salvaged(
+                    parent_pending_id=parent_pending_id,
+                    signal_id=signal_id,
+                    final_status="accepted",
+                    signal_payload=enriched_signal,
+                )
 
             # Bu log aslında gereksiz çünkü yukarıda daha detaylı ENQUEUED log'u var.
             # Ama yine de hatayı düzeltelim. (DÜZELTİLDİ)
