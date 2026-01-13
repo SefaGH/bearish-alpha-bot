@@ -3,6 +3,21 @@
 
 set -euo pipefail
 
+cat <<'EOF' >&2
+DEPRECATED: Fluent Bit-based ingestion is retired for this environment.
+
+This script previously installed/started Fluent Bit on the VM. The pipeline was
+removed due to operational risk (retry/log-flood when misconfigured) and secret
+hygiene concerns.
+
+If you really intend to re-enable it, you must explicitly opt in:
+  export I_UNDERSTAND_FLUENT_BIT_IS_RETIRED=1
+EOF
+
+if [[ "${I_UNDERSTAND_FLUENT_BIT_IS_RETIRED:-0}" != "1" ]]; then
+  exit 1
+fi
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run as root (sudo)." >&2
   exit 1

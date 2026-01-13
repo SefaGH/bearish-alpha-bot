@@ -1,5 +1,14 @@
 version: "3.9"
 
+# NOTE: DEPRECATED / RETIRED
+#
+# This compose file includes a Fluent Bit-based reporting pipeline.
+# In the current production environment this pipeline is retired due to:
+# - operational risk (retry/log-flood when misconfigured)
+# - secret hygiene concerns from earlier deployments
+#
+# Keep for historical reference only unless you explicitly decide to restore it.
+
 services:
   log-parser:
     image: ghcr.io/example/bearish-log-parser:latest  # TODO: update with actual image

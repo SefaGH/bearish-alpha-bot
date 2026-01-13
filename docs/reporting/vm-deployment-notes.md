@@ -1,5 +1,12 @@
 # VM Deployment Notes for Reporting Pipeline
 
+> IMPORTANT (DEPRECATED / RETIRED)
+>
+> The VM-side Fluent Bit / parser reporting pipeline is retired in the current production environment.
+> It previously contributed to VM disk exhaustion and instability when misconfigured.
+>
+> Keep this document for historical reference only unless you explicitly decide to restore the pipeline.
+
 1. **Prerequisites**
    - Docker / Docker Compose installed (`sudo apt-get install docker-compose-plugin`).
    - Directories exist: `/mnt/bearish/logs`, `/mnt/bearish/data/parsed` (match volume mounts).

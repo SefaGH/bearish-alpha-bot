@@ -1,8 +1,26 @@
 #!/bin/bash
 set -euo pipefail
 
-if [ -z "${EVENT_HUB_CONNECTION_STRING:-}" ]; then
-    echo "Error: EVENT_HUB_CONNECTION_STRING is not set."
+cat <<'EOF' >&2
+DEPRECATED: This script deploys a Fluent Bit -> Event Hubs (Kafka) pipeline.
+
+This pipeline has been retired because it caused VM instability (retry/log-flood
+behavior when the broker DNS/endpoint is misconfigured) and previously embedded
+secrets into config files.
+
+If you really intend to re-enable it, you must explicitly opt in:
+    export I_UNDERSTAND_FLUENT_BIT_IS_RETIRED=1
+
+Recommended: keep Fluent Bit/Event Hubs disabled and use the current reporting
+automation path instead.
+EOF
+
+if [[ "${I_UNDERSTAND_FLUENT_BIT_IS_RETIRED:-0}" != "1" ]]; then
+    exit 1
+fi
+
+if [[ -z "${EVENT_HUB_CONNECTION_STRING:-}" ]]; then
+    echo "Error: EVENT_HUB_CONNECTION_STRING is not set." >&2
     exit 1
 fi
 
@@ -25,7 +43,7 @@ cat > /etc/fluent-bit/parsers.conf <<'EOF'
 EOF
 
 # Write fluent-bit.conf
-cat > /etc/fluent-bit/fluent-bit.conf <<EOF
+cat > /etc/fluent-bit/fluent-bit.conf <<'EOF'
 [SERVICE]
     Flush        5
     Daemon       Off
@@ -52,8 +70,8 @@ cat > /etc/fluent-bit/fluent-bit.conf <<EOF
     Topics      parsed-events
     rdkafka.security.protocol   SASL_SSL
     rdkafka.sasl.mechanism      PLAIN
-    rdkafka.sasl.username       \$ConnectionString
-    rdkafka.sasl.password       $EVENT_HUB_CONNECTION_STRING
+    rdkafka.sasl.username       $ConnectionString
+    rdkafka.sasl.password       ${EVENT_HUB_CONNECTION_STRING}
     rdkafka.request.required.acks 1
 EOF
 

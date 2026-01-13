@@ -1,5 +1,10 @@
 # Docker Image Deployment Runbook - All Phases (Strategy Variables)
 
+> NOTE (Reporting Sidecars Retired)
+>
+> In the current production environment, the reporting sidecars (log-parser / fluent-bit) are retired.
+> This runbook should be followed for the main `bearish-bot` container lifecycle only.
+
 **Date**: December 8, 2025  
 **Image**: `bearishalphabot.azurecr.io/bearish-bot:strategy-config-v1`  
 **Status**: Building... (ETA 10-15 minutes)
@@ -115,8 +120,8 @@ Stopping bearish-bot ... done
 Removing bearish-bot ... done
 
 Creating bearish-bot ... done
-Creating log-parser ... done
-Creating fluent-bit ... done
+Creating log-parser ... (retired / not expected)
+Creating fluent-bit ... (retired / not expected)
 
 CONTAINER ID   IMAGE                                                   STATUS
 abc123def      bearishalphabot.azurecr.io/bearish-bot:strategy-c...   Up 2 seconds
@@ -275,7 +280,7 @@ az vm run-command invoke --resource-group TRADEBOT --name BearishAlphaBot-VM-01 
 - [ ] Image built and tagged as `strategy-config-v1`
 - [ ] Old image (13.8GB) removed from VM
 - [ ] New image pulled successfully
-- [ ] Containers running (all 3: bearish-bot, log-parser, fluent-bit)
+- [ ] Containers running (bearish-bot; reporting sidecars retired)
 - [ ] Logs show config loading from App Configuration
 - [ ] 64 settings loaded (26 base + 38 strategy)
 - [ ] No errors in first 5 minutes of logs
