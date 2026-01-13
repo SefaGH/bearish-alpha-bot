@@ -1286,6 +1286,9 @@ class ProductionCoordinator:
         emitted_signal_id = None
         error_code = None
         error_detail = None
+        limit_requested_by_tf: Dict[str, int] = {}
+        rows_returned_by_tf: Dict[str, int] = {}
+        strategy_recheck_debug: Optional[Dict[str, Any]] = None
         try:
             if not symbol or not strategy:
                 error_code = "invalid_args"
@@ -1351,21 +1354,46 @@ class ProductionCoordinator:
             df_30m_hybrid = None
             df_1h = None
             if not is_mean_reversion:
-                df_30m_closed = await self.market_data_pipeline.get_latest_ohlcv(symbol, "30m", include_forming=False)
+                limit_30m = 1000 if parent_pending_id_str else None
+                limit_1h = 1000 if parent_pending_id_str else None
+                if limit_30m is not None:
+                    limit_requested_by_tf["30m"] = int(limit_30m)
+                if limit_1h is not None:
+                    limit_requested_by_tf["1h"] = int(limit_1h)
+
+                df_30m_closed = await self.market_data_pipeline.get_latest_ohlcv(
+                    symbol,
+                    "30m",
+                    limit=limit_30m,
+                    include_forming=False,
+                )
                 if df_30m_closed is None or getattr(df_30m_closed, "empty", False):
                     error_code = "missing_ohlcv_30m"
                     return False
+                try:
+                    rows_returned_by_tf["30m"] = int(len(df_30m_closed))
+                except Exception:
+                    rows_returned_by_tf["30m"] = 0
 
                 try:
                     if strategy in {"adaptive_ob", "adaptive_str"}:
-                        df_30m_hybrid = await self.market_data_pipeline.get_latest_ohlcv(symbol, "30m", include_forming=True)
+                        df_30m_hybrid = await self.market_data_pipeline.get_latest_ohlcv(
+                            symbol,
+                            "30m",
+                            limit=limit_30m,
+                            include_forming=True,
+                        )
                 except Exception:
                     df_30m_hybrid = None
 
-                df_1h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "1h")
+                df_1h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "1h", limit=limit_1h)
                 if df_1h is None or getattr(df_1h, "empty", False):
                     error_code = "missing_ohlcv_1h"
                     return False
+                try:
+                    rows_returned_by_tf["1h"] = int(len(df_1h))
+                except Exception:
+                    rows_returned_by_tf["1h"] = 0
 
                 strategy_df_30m = df_30m_closed
                 if df_30m_hybrid is not None and not getattr(df_30m_hybrid, "empty", True):
@@ -1389,11 +1417,40 @@ class ProductionCoordinator:
                 except Exception:
                     sig_limit = None
 
-                df_vwap = await self.market_data_pipeline.get_latest_ohlcv(symbol, str(vwap_tf), limit=vwap_limit)
-                df_sig = await self.market_data_pipeline.get_latest_ohlcv(symbol, str(signal_tf), limit=sig_limit)
+                # STRATEGY_RECHECK guardrail: never undercut a safe baseline with tiny explicit limits.
+                # For rechecks we default to >= 1000 bars unless the strategy requires more.
+                if parent_pending_id_str:
+                    try:
+                        vwap_limit_int = int(vwap_limit or 0)
+                    except Exception:
+                        vwap_limit_int = 0
+                    try:
+                        sig_limit_int = int(sig_limit or 0)
+                    except Exception:
+                        sig_limit_int = 0
+                    vwap_limit = max(vwap_limit_int, 1000)
+                    sig_limit = max(sig_limit_int, 1000)
+
+                vwap_tf_str = str(vwap_tf)
+                signal_tf_str = str(signal_tf)
+                if vwap_limit is not None:
+                    limit_requested_by_tf[vwap_tf_str] = int(vwap_limit)
+                if sig_limit is not None:
+                    limit_requested_by_tf[signal_tf_str] = int(sig_limit)
+
+                df_vwap = await self.market_data_pipeline.get_latest_ohlcv(symbol, vwap_tf_str, limit=vwap_limit)
+                df_sig = await self.market_data_pipeline.get_latest_ohlcv(symbol, signal_tf_str, limit=sig_limit)
                 if df_vwap is None or getattr(df_vwap, "empty", False) or df_sig is None or getattr(df_sig, "empty", False):
                     error_code = "missing_ohlcv_mean_reversion"
                     return False
+                try:
+                    rows_returned_by_tf[vwap_tf_str] = int(len(df_vwap))
+                except Exception:
+                    rows_returned_by_tf[vwap_tf_str] = 0
+                try:
+                    rows_returned_by_tf[signal_tf_str] = int(len(df_sig))
+                except Exception:
+                    rows_returned_by_tf[signal_tf_str] = 0
 
                 signal_kwargs.update({"df_vwap": df_vwap, "df_sig": df_sig})
 
@@ -1454,6 +1511,13 @@ class ProductionCoordinator:
                     except Exception:
                         pass
 
+                    try:
+                        meta = signal.get("meta")
+                        if isinstance(meta, dict) and isinstance(meta.get("recheck_debug"), dict):
+                            strategy_recheck_debug = dict(meta.get("recheck_debug") or {})
+                    except Exception:
+                        strategy_recheck_debug = None
+
                 if parent_pending_id_str and signal.get("event_type") == "soft_deferral_event":
                     outcome = "error"
                     error_code = "loop_prevented"
@@ -1497,7 +1561,24 @@ class ProductionCoordinator:
                     "pending_reason_code": pending_reason_code,
                     "outcome": outcome,
                     "elapsed_ms": elapsed_ms,
+                    "limit_requested": dict(limit_requested_by_tf),
+                    "rows_returned": dict(rows_returned_by_tf),
+                    "rows_by_tf": dict(rows_returned_by_tf),
                 }
+                if strategy_recheck_debug:
+                    # Strategy-owned diagnostics (post-cleaning, repair fetch, etc.)
+                    if "rows_used_after_clean" in strategy_recheck_debug:
+                        event_out["rows_used_after_clean"] = strategy_recheck_debug.get("rows_used_after_clean")
+                    if "used_fallback_fetch" in strategy_recheck_debug:
+                        event_out["used_fallback_fetch"] = strategy_recheck_debug.get("used_fallback_fetch")
+                    if "rows_by_tf" in strategy_recheck_debug and isinstance(strategy_recheck_debug.get("rows_by_tf"), dict):
+                        event_out["rows_by_tf"] = dict(strategy_recheck_debug.get("rows_by_tf") or {})
+                    if "sig_clean_rows" in strategy_recheck_debug:
+                        event_out["sig_clean_rows"] = strategy_recheck_debug.get("sig_clean_rows")
+                    if "vwap_clean_rows" in strategy_recheck_debug:
+                        event_out["vwap_clean_rows"] = strategy_recheck_debug.get("vwap_clean_rows")
+                    if "repair_reason" in strategy_recheck_debug:
+                        event_out["repair_reason"] = strategy_recheck_debug.get("repair_reason")
                 if outcome == "signal_emitted":
                     if emitted_signal_id:
                         event_out["signal_id"] = emitted_signal_id

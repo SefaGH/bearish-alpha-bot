@@ -90,6 +90,23 @@ class VWAPMeanReversion(BaseStrategy):
             return value * 86_400_000
         return 300_000
 
+    @staticmethod
+    def _subset_dropna(df: pd.DataFrame, subset: list[str]) -> pd.DataFrame:
+        cols = [c for c in subset if c in df.columns]
+        if cols:
+            return df.dropna(subset=cols)
+        return df.dropna()
+
+    def _clean_vwap_df(self, df_vwap: pd.DataFrame) -> pd.DataFrame:
+        # Only require columns used for VWAP-band context.
+        subset = ["close", "volume", "vwap", "vwap_upper", "vwap_lower"]
+        return self._subset_dropna(df_vwap, subset)
+
+    def _clean_sig_df(self, df_sig: pd.DataFrame) -> pd.DataFrame:
+        # Only require columns used for signal evaluation (avoid collateral NaNs from unused indicators).
+        subset = ["close", "adx"]
+        return self._subset_dropna(df_sig, subset)
+
     async def signal(self, symbol: str, market_data: Optional[Dict[str, Any]] = None, ml_context=None, **kwargs) -> Optional[Dict[str, Any]]:
         """Interface method expected by ProductionCoordinator."""
         rows_hint = 0
@@ -164,25 +181,87 @@ class VWAPMeanReversion(BaseStrategy):
             logger.warning(f"[MeanReversion] Missing volume column in VWAP dataframe for {symbol}")
             return None
 
-        logger.info(f"[MeanReversion] Data rows: vwap={len(df_vwap)}, signal_tf={len(df_sig)}, "
-                    f"min_vwap={self.min_rows}, min_signal={self.min_signal_rows}")
-        if self.market_data_pipeline and (len(df_vwap) < self.min_rows or len(df_sig) < self.min_signal_rows):
+        logger.info(
+            f"[MeanReversion] Data rows: vwap={len(df_vwap)}, signal_tf={len(df_sig)}, "
+            f"min_vwap={self.min_rows}, min_signal={self.min_signal_rows}"
+        )
+
+        repair_attempted = False
+        used_fallback_fetch = False
+        repair_reason = None
+
+        def _safe_int(value: Any, default: int) -> int:
             try:
-                vwap_limit = max(self.min_rows, 2100)
-                refreshed_vwap = await self.market_data_pipeline.get_latest_ohlcv(
-                    symbol=symbol, timeframe=self.vwap_tf, limit=vwap_limit
-                )
+                return int(value)
+            except Exception:
+                return int(default)
+
+        is_recheck = bool(parent_pending_id)
+        safe_sig_min = max(1000, 255, _safe_int(getattr(self, "min_signal_rows", 0) or 0, 0))
+        safe_vwap_min = max(1000, _safe_int(getattr(self, "min_rows", 0) or 0, 0))
+        try:
+            # Optional warmup-aware bump (min_periods for VWAP/std is lookback//2).
+            safe_vwap_min = max(safe_vwap_min, int(max(int(self.vwap_lookback or 0) // 2, 0) + 50))
+        except Exception:
+            pass
+
+        target_sig_min = safe_sig_min if is_recheck else int(self.min_signal_rows)
+        target_vwap_min = safe_vwap_min if is_recheck else int(self.min_rows)
+
+        clean_vwap = self._clean_vwap_df(df_vwap)
+        clean_sig = self._clean_sig_df(df_sig)
+
+        async def _maybe_repair_fetch(reason: str) -> None:
+            nonlocal df_vwap, df_sig, clean_vwap, clean_sig, repair_attempted, used_fallback_fetch, repair_reason
+            if repair_attempted:
+                return
+            if not self.market_data_pipeline:
+                return
+            repair_attempted = True
+            repair_reason = reason
+            try:
+                refreshed_vwap = None
+                refreshed_sig = None
+                try:
+                    refreshed_vwap = await self.market_data_pipeline.get_latest_ohlcv(
+                        symbol,
+                        self.vwap_tf,
+                        limit=int(target_vwap_min),
+                    )
+                except Exception:
+                    refreshed_vwap = None
+                try:
+                    refreshed_sig = await self.market_data_pipeline.get_latest_ohlcv(
+                        symbol,
+                        self.signal_tf,
+                        limit=int(target_sig_min),
+                    )
+                except Exception:
+                    refreshed_sig = None
                 if refreshed_vwap is not None and not refreshed_vwap.empty:
                     df_vwap = refreshed_vwap
-                sig_limit = max(self.min_signal_rows, 1000)
-                refreshed_sig = await self.market_data_pipeline.get_latest_ohlcv(
-                    symbol=symbol, timeframe=self.signal_tf, limit=sig_limit
-                )
                 if refreshed_sig is not None and not refreshed_sig.empty:
                     df_sig = refreshed_sig
-                logger.info(f"[MeanReversion] Refreshed from pipeline: vwap={len(df_vwap)}, sig={len(df_sig)}")
+                used_fallback_fetch = True
+                if not df_vwap.index.is_monotonic_increasing:
+                    df_vwap = df_vwap.sort_index()
+                if not df_sig.index.is_monotonic_increasing:
+                    df_sig = df_sig.sort_index()
+                clean_vwap = self._clean_vwap_df(df_vwap)
+                clean_sig = self._clean_sig_df(df_sig)
+                logger.info(f"[MeanReversion] Repair fetch: vwap={len(df_vwap)}, sig={len(df_sig)} reason={reason}")
             except Exception as e:
-                logger.warning(f"[MeanReversion] Pipeline refresh failed: {e}")
+                logger.warning(f"[MeanReversion] Repair fetch failed: {e}")
+
+        if is_recheck:
+            if len(df_vwap) < target_vwap_min or len(df_sig) < target_sig_min:
+                await _maybe_repair_fetch("injected_too_small")
+            elif clean_vwap.empty or clean_sig.empty:
+                await _maybe_repair_fetch("clean_empty")
+        else:
+            if self.market_data_pipeline and (len(df_vwap) < self.min_rows or len(df_sig) < self.min_signal_rows):
+                await _maybe_repair_fetch("min_rows_insufficient")
+
         if len(df_vwap) < self.min_rows:
             logger.warning(f"[MeanReversion] VWAP data insufficient. Have vwap={len(df_vwap)}, "
                            f"Need>={self.min_rows}. Aborting.")
@@ -192,17 +271,33 @@ class VWAPMeanReversion(BaseStrategy):
                            f"Need>={self.min_signal_rows}. Aborting.")
             return None
 
-        clean_vwap = df_vwap.dropna()
-        clean_sig = df_sig.dropna()
         if clean_vwap.empty:
-            logger.warning(f"[MeanReversion] Indicator calculation resulted in empty VWAP dataframe after dropna "
-                           f"(input rows={len(df_vwap)}).")
+            logger.warning(
+                f"[MeanReversion] Indicator calculation resulted in empty VWAP dataframe after dropna "
+                f"(input rows={len(df_vwap)})."
+            )
             logger.debug(f"[MeanReversion] VWAP columns: {list(df_vwap.columns)}")
+            if is_recheck:
+                logger.info(
+                    "[MeanReversion] Recheck debug: vwap_clean_rows=0 sig_clean_rows=%s used_fallback_fetch=%s repair_reason=%s",
+                    len(clean_sig),
+                    used_fallback_fetch,
+                    repair_reason,
+                )
             return None
         if clean_sig.empty:
-            logger.warning(f"[MeanReversion] Indicator calculation resulted in empty signal dataframe after dropna "
-                           f"(input rows={len(df_sig)}).")
+            logger.warning(
+                f"[MeanReversion] Indicator calculation resulted in empty signal dataframe after dropna "
+                f"(input rows={len(df_sig)})."
+            )
             logger.debug(f"[MeanReversion] Signal columns: {list(df_sig.columns)}")
+            if is_recheck:
+                logger.info(
+                    "[MeanReversion] Recheck debug: vwap_clean_rows=%s sig_clean_rows=0 used_fallback_fetch=%s repair_reason=%s",
+                    len(clean_vwap),
+                    used_fallback_fetch,
+                    repair_reason,
+                )
             return None
 
         last_vwap = clean_vwap.iloc[-1]
@@ -469,6 +564,26 @@ class VWAPMeanReversion(BaseStrategy):
                 meta = {}
                 signal["meta"] = meta
             meta.setdefault("parent_pending_id", parent_pending_id)
+            try:
+                meta.setdefault(
+                    "recheck_debug",
+                    {
+                        "rows_by_tf": {
+                            str(self.vwap_tf): int(len(df_vwap)),
+                            str(self.signal_tf): int(len(df_sig)),
+                        },
+                        "rows_used_after_clean": {
+                            str(self.vwap_tf): int(len(clean_vwap)),
+                            str(self.signal_tf): int(len(clean_sig)),
+                        },
+                        "vwap_clean_rows": int(len(clean_vwap)),
+                        "sig_clean_rows": int(len(clean_sig)),
+                        "used_fallback_fetch": bool(used_fallback_fetch),
+                        "repair_reason": str(repair_reason) if repair_reason else None,
+                    },
+                )
+            except Exception:
+                pass
         if controller_decision is not None:
             signal["mr_controller"] = {
                 "band_multiplier": controller_decision.band_multiplier,

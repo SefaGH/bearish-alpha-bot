@@ -641,3 +641,205 @@ async def test_soft_deferral_recheck_dropped_deduped_outcomes_emitted(monkeypatc
     reasons = {d.get("dropped_reason") for d in parsed}
     assert "deduped_older_ts" in reasons
     assert "over_capacity" in reasons
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_strategy_recheck_dispatch_uses_safe_ohlcv_limits(monkeypatch):
+    symbol = "BTC/USDT:USDT"
+    pending_id = "p" * 32
+
+    idx_1m = pd.date_range("2026-01-01", periods=1000, freq="min", tz="UTC")
+    idx_5m = pd.date_range("2026-01-01", periods=1000, freq="5min", tz="UTC")
+    df_vwap = pd.DataFrame(
+        {
+            "vwap": [100.0] * len(idx_1m),
+            "vwap_lower": [99.0] * len(idx_1m),
+            "vwap_upper": [101.0] * len(idx_1m),
+            "volume": [1.0] * len(idx_1m),
+        },
+        index=idx_1m,
+    )
+    df_sig = pd.DataFrame({"close": [98.5] * len(idx_5m), "adx": [10.0] * len(idx_5m)}, index=idx_5m)
+
+    observed: list[tuple[str, int | None]] = []
+
+    class DummyPipeline:
+        async def get_latest_ohlcv(self, _symbol: str, timeframe: str, limit=None, include_forming=False, **_kwargs):
+            observed.append((str(timeframe), int(limit) if limit is not None else None))
+            if timeframe == "1m":
+                return df_vwap
+            if timeframe == "5m":
+                return df_sig
+            return df_sig
+
+    strategy = VWAPMeanReversion(
+        {
+            "timeframe": "1m",
+            "signal_timeframe": "5m",
+            "min_rows": 2,
+            "min_signal_rows": 50,  # bug baseline; coordinator must still request >= 1000
+            "dynamic_controller": {"enabled": False},
+        }
+    )
+    portfolio = DummyPortfolioManager()
+    portfolio.strategies = {"mean_reversion": strategy}
+
+    coordinator = StrategyCoordinator(
+        portfolio,
+        risk_manager=object(),
+        config={"risk": {"queue": {"ttl_seconds": 5}}},
+    )
+
+    async def fake_process_strategy_signal(strategy_name: str, signal: dict):
+        return {"status": "accepted", "signal_id": "child_sig_1"}
+
+    monkeypatch.setattr(coordinator, "process_strategy_signal", fake_process_strategy_signal)
+
+    prod = ProductionCoordinator.__new__(ProductionCoordinator)
+    prod.strategy_coordinator = coordinator
+    prod.portfolio_manager = portfolio
+    prod.market_data_pipeline = DummyPipeline()
+    prod.ml_integration = None
+    prod.config = {}
+
+    await prod._handle_strategy_recheck_request(
+        {
+            "event": "strategy_recheck_request",
+            "strategy": "mean_reversion",
+            "symbol": symbol,
+            "parent_pending_id": pending_id,
+            "side": "BUY",
+            "timeframe": "5m",
+            "pending_reason_code": "strategy.mean_reversion.near_miss",
+        }
+    )
+
+    limits_by_tf = {tf: lim for tf, lim in observed if lim is not None}
+    assert limits_by_tf.get("5m", 0) >= 1000
+    assert limits_by_tf.get("1m", 0) >= 1000
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_mean_reversion_subset_dropna_ignores_unused_nan_indicators(caplog):
+    caplog.set_level(logging.INFO)
+
+    strategy = VWAPMeanReversion(
+        {
+            "timeframe": "1m",
+            "signal_timeframe": "5m",
+            "min_rows": 2,
+            "min_signal_rows": 2,
+            "soft_deferral_threshold": 0.005,
+            "dynamic_controller": {"enabled": False},
+        }
+    )
+    symbol = "BTC/USDT:USDT"
+    idx = pd.to_datetime(["2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"])
+    df_vwap = pd.DataFrame(
+        {
+            "vwap": [100.0, 100.0],
+            "vwap_lower": [99.0, 99.0],
+            "vwap_upper": [101.0, 101.0],
+            "volume": [1.0, 1.0],
+        },
+        index=idx,
+    )
+
+    nan = float("nan")
+    df_sig = pd.DataFrame(
+        {
+            "close": [99.2, 99.2],
+            "adx": [10.0, 10.0],
+            # simulate pipeline-added indicators still warming up
+            "ema200": [nan, nan],
+            "vwap": [nan, nan],
+            "vwap_upper": [nan, nan],
+            "vwap_lower": [nan, nan],
+        },
+        index=idx,
+    )
+
+    caplog.clear()
+    event = await strategy.generate_signal(symbol=symbol, df_vwap=df_vwap, df_sig=df_sig)
+    assert isinstance(event, dict)
+    assert event.get("event_type") == "soft_deferral_event"
+
+    empty_msgs = [r.message for r in caplog.records if "empty signal dataframe after dropna" in str(r.message)]
+    assert not empty_msgs, "Subset-based dropna should not wipe df_sig due to unused NaN columns"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_mean_reversion_recheck_repair_fetch_is_single_attempt_and_sets_debug_meta(monkeypatch):
+    symbol = "BTC/USDT:USDT"
+    pending_id = "p" * 32
+
+    idx_small = pd.date_range("2026-01-01", periods=50, freq="5min", tz="UTC")
+    df_vwap_small = pd.DataFrame(
+        {
+            "vwap": [100.0] * len(idx_small),
+            "vwap_lower": [99.0] * len(idx_small),
+            "vwap_upper": [101.0] * len(idx_small),
+            "volume": [1.0] * len(idx_small),
+        },
+        index=idx_small,
+    )
+    df_sig_small = pd.DataFrame({"close": [98.5] * len(idx_small), "adx": [10.0] * len(idx_small)}, index=idx_small)
+
+    idx_big_1m = pd.date_range("2026-01-01", periods=1000, freq="min", tz="UTC")
+    idx_big_5m = pd.date_range("2026-01-01", periods=1000, freq="5min", tz="UTC")
+    df_vwap_big = pd.DataFrame(
+        {
+            "vwap": [100.0] * len(idx_big_1m),
+            "vwap_lower": [99.0] * len(idx_big_1m),
+            "vwap_upper": [101.0] * len(idx_big_1m),
+            "volume": [1.0] * len(idx_big_1m),
+        },
+        index=idx_big_1m,
+    )
+    df_sig_big = pd.DataFrame({"close": [98.5] * len(idx_big_5m), "adx": [10.0] * len(idx_big_5m)}, index=idx_big_5m)
+
+    calls: list[tuple[str, int | None]] = []
+
+    class DummyPipeline:
+        async def get_latest_ohlcv(self, _symbol: str, timeframe: str, limit=None, include_forming=False, **_kwargs):
+            calls.append((str(timeframe), int(limit) if limit is not None else None))
+            if timeframe == "1m":
+                return df_vwap_big
+            if timeframe == "5m":
+                return df_sig_big
+            return df_sig_big
+
+    strategy = VWAPMeanReversion(
+        {
+            "timeframe": "1m",
+            "signal_timeframe": "5m",
+            "min_rows": 2,
+            "min_signal_rows": 50,
+            "dynamic_controller": {"enabled": False},
+        }
+    )
+    strategy.set_market_data_pipeline(DummyPipeline())
+
+    signal = await strategy.generate_signal(
+        symbol=symbol,
+        df_vwap=df_vwap_small,
+        df_sig=df_sig_small,
+        parent_pending_id=pending_id,
+    )
+    assert isinstance(signal, dict), "Expected a real signal after repair fetch"
+    meta = signal.get("meta")
+    assert isinstance(meta, dict)
+    assert meta.get("parent_pending_id") == pending_id
+    debug = meta.get("recheck_debug")
+    assert isinstance(debug, dict)
+    assert debug.get("used_fallback_fetch") is True
+    assert debug.get("repair_reason") == "injected_too_small"
+
+    # Single "repair attempt": one fetch per timeframe (vwap + sig), no loops.
+    assert len(calls) == 2
+    limits = {tf: lim for tf, lim in calls if lim is not None}
+    assert limits.get("5m", 0) >= 1000
+    assert limits.get("1m", 0) >= 1000
