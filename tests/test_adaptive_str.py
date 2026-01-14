@@ -239,7 +239,7 @@ def test_mtf_1h_hard_veto_can_be_bypassed_on_extreme_move(base_config):
         "enabled": True,
         "min_directional_move_pct": 0.02,
         "min_abs_move_pct": 0.0,
-        "min_atr_pct": 0.0,
+        "min_atr_pct": 0.005,
         "rsi_oversold_threshold": 0.0,
         "rsi_overbought_threshold": 0.0,
     }
@@ -287,6 +287,71 @@ def test_mtf_1h_hard_veto_can_be_bypassed_on_extreme_move(base_config):
     signal = strategy.signal(df_30m=df_30m, df_1h=df_1h_bullish, symbol="BTC/USDT")
     assert signal is not None
     assert signal["features"]["mtf_1h"]["bypass"] is True
+
+
+def test_mtf_1h_hard_veto_bypass_blocked_when_atr_missing(base_config):
+    cfg = copy.deepcopy(base_config)
+
+    mtf_cfg = _default_mtf_cfg()
+    mtf_cfg.update(
+        {
+            "15m_mode": "off",
+            "1h_mode": "hard",
+            "require_1h_bearish_ema_stack": True,
+        }
+    )
+    mtf_cfg["extreme_bypass"] = {
+        "enabled": True,
+        "min_directional_move_pct": 0.02,
+        "min_abs_move_pct": 0.0,
+        "min_atr_pct": 0.005,
+        "rsi_oversold_threshold": 0.0,
+        "rsi_overbought_threshold": 0.0,
+    }
+
+    cfg["mtf_confirmation"] = mtf_cfg
+    cfg["mtf_confirmation_effective"] = build_str_mtf_config(mtf_cfg)
+    strategy = AdaptiveShortTheRip(cfg)
+
+    # Intentionally omit the 'atr' column so the strategy's upstream fallback
+    # (close*0.02) is treated as unsafe for bypass decisions.
+    df_30m = pd.DataFrame(
+        [
+            {
+                "close": 100.0,
+                "rsi": 70.0,
+                "ema_fast": 99.0,
+                "ema21": 98.0,
+                "ema50": 90.0,
+                "ema200": 110.0,
+                "volume": 1000.0,
+            },
+            {
+                "close": 103.0,  # +3% directional move would normally satisfy min_directional_move_pct
+                "rsi": 75.0,
+                "ema_fast": 99.0,
+                "ema21": 98.0,
+                "ema50": 90.0,
+                "ema200": 110.0,
+                "volume": 1000.0,
+            },
+        ]
+    )
+
+    df_1h_bullish = pd.DataFrame(
+        [
+            {
+                "close": 103.0,
+                "rsi": 55.0,
+                "ema21": 120.0,
+                "ema50": 100.0,
+                "ema200": 90.0,
+            }
+        ]
+    )
+
+    signal = strategy.signal(df_30m=df_30m, df_1h=df_1h_bullish, symbol="BTC/USDT")
+    assert signal is None
 
 
 def test_mtf_missing_15m_skip_allows_signal(base_config, sample_df_30m, sample_df_1h_bearish):

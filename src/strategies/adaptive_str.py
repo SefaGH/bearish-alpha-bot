@@ -5,6 +5,8 @@ Dynamically adjusts parameters based on market conditions.
 
 import pandas as pd
 import logging
+import math
+import json
 from collections import OrderedDict
 from typing import Optional, Dict, Tuple, ClassVar, Any
 from .short_the_rip import ShortTheRip
@@ -737,28 +739,68 @@ class AdaptiveShortTheRip(ShortTheRip):
         except Exception:
             atr_pct = None
 
+        # Safety gate: if ATR isn't present/finite in the evaluation frame, treat it as fallback
+        # (the strategy may substitute close*0.02 upstream). We do not allow bypass decisions
+        # to hinge on fallback ATR.
+        atr_is_fallback = True
+        try:
+            if (
+                df_eval is not None
+                and hasattr(df_eval, "__len__")
+                and len(df_eval) >= 1
+                and "atr" in df_eval.columns
+            ):
+                last_atr = df_eval["atr"].iloc[-1]
+                if last_atr is not None:
+                    last_atr_f = float(last_atr)
+                    if last_atr_f > 0 and math.isfinite(last_atr_f):
+                        atr_is_fallback = False
+        except Exception:
+            atr_is_fallback = True
+
+        def _meets_threshold(metric: Optional[float], threshold: float) -> bool:
+            if threshold <= 0:
+                return False
+            if metric is None:
+                return False
+            try:
+                return float(metric) >= float(threshold)
+            except Exception:
+                return False
+
+        # Two-factor bypass: require ATR validity and at least 2 independent signals.
+        # This avoids low-threshold directional blips (like ~0.4-0.5%) bypassing 1h hard veto.
+        rsi_oversold_ok = (
+            side in ("buy", "long")
+            and rsi_oversold_threshold > 0
+            and rsi_value <= rsi_oversold_threshold
+        )
+        rsi_overbought_ok = (
+            side in ("sell", "short")
+            and rsi_overbought_threshold > 0
+            and rsi_value >= rsi_overbought_threshold
+        )
+        directional_ok = _meets_threshold(directional_move_pct, min_directional_move_pct)
+        abs_ok = _meets_threshold(abs_move_pct, min_abs_move_pct)
+        atr_ok = (not atr_is_fallback) and _meets_threshold(atr_pct, min_atr_pct)
+
+        factor_hits = [
+            ("rsi_oversold", rsi_oversold_ok),
+            ("rsi_overbought", rsi_overbought_ok),
+            ("directional_move_pct", directional_ok),
+            ("abs_move_pct", abs_ok),
+            ("atr_pct", atr_ok),
+        ]
+        hit_reasons = [name for name, ok in factor_hits if ok]
+
         triggered = False
         reason = None
-
-        if side in ("buy", "long") and rsi_oversold_threshold > 0 and rsi_value <= rsi_oversold_threshold:
+        if atr_is_fallback:
+            triggered = False
+            reason = None
+        elif len(hit_reasons) >= 2:
             triggered = True
-            reason = f"rsi_oversold:{rsi_value:.2f}<={rsi_oversold_threshold:.2f}"
-        elif side in ("sell", "short") and rsi_overbought_threshold > 0 and rsi_value >= rsi_overbought_threshold:
-            triggered = True
-            reason = f"rsi_overbought:{rsi_value:.2f}>={rsi_overbought_threshold:.2f}"
-        elif (
-            min_directional_move_pct > 0
-            and directional_move_pct is not None
-            and directional_move_pct >= min_directional_move_pct
-        ):
-            triggered = True
-            reason = f"directional_move_pct:{directional_move_pct:.4f}>={min_directional_move_pct:.4f}"
-        elif min_abs_move_pct > 0 and abs_move_pct is not None and abs_move_pct >= min_abs_move_pct:
-            triggered = True
-            reason = f"abs_move_pct:{abs_move_pct:.4f}>={min_abs_move_pct:.4f}"
-        elif min_atr_pct > 0 and atr_pct is not None and atr_pct >= min_atr_pct:
-            triggered = True
-            reason = f"atr_pct:{atr_pct:.4f}>={min_atr_pct:.4f}"
+            reason = "+".join(hit_reasons)
 
         meta = {
             "timeframe": timeframe,
@@ -767,8 +809,11 @@ class AdaptiveShortTheRip(ShortTheRip):
             "prev_close": prev_close,
             "close": float(close_price),
             "move_pct": move_pct,
+            "abs_move_pct": abs_move_pct,
+            "directional_move_pct": directional_move_pct,
             "atr": float(atr_value),
             "atr_pct": atr_pct,
+            "atr_is_fallback": atr_is_fallback,
             "thresholds": {
                 "min_directional_move_pct": min_directional_move_pct,
                 "min_abs_move_pct": min_abs_move_pct,
@@ -1111,6 +1156,44 @@ class AdaptiveShortTheRip(ShortTheRip):
                             meta_15m["bypass"] = True
                             meta_15m["bypass_reason"] = bypass_reason
                             meta_15m["bypass_meta"] = bypass_meta
+                            try:
+                                bypass_ctx = {
+                                    "event": "mtf_hard_veto_bypass_ctx",
+                                    "strategy": self.strategy_name,
+                                    "symbol": symbol_display,
+                                    "timeframe": "15m",
+                                    "failure_kind": (
+                                        "missing-data" if meta_15m.get("status") == "missing" else "threshold"
+                                    ),
+                                    "side": signal.get("side"),
+                                    "bypass_reason": bypass_reason,
+                                    "bypass_meta": bypass_meta,
+                                    "eval": {
+                                        "eval_tf": "30m",
+                                        "eval_source": eval_source,
+                                        "includes_forming": includes_forming,
+                                        "used_forming": used_forming,
+                                        "merge_action": merge_action,
+                                        "fallback_reason": fallback_reason,
+                                        "forming_ts": forming_ts,
+                                        "forming_last_update_ts": forming_last_update_ts,
+                                        "forming_update_age_ms": forming_update_age_ms,
+                                        "rsi_source": rsi_source,
+                                        "trigger_price_source": trigger_price_source,
+                                    },
+                                    "snapshot": {
+                                        "close": float(close_price),
+                                        "rsi": float(rsi_val),
+                                        "atr_value": float(atr_value),
+                                        "atr_pct": (float(atr_value) / float(close_price)) if close_price else None,
+                                    },
+                                }
+                                logger.info(
+                                    "mtf_hard_veto_bypass_ctx %s",
+                                    json.dumps(bypass_ctx, separators=(",", ":"), default=str),
+                                )
+                            except Exception:
+                                pass
                             logger.warning(
                                 "🚨 %s MTF-15m hard veto BYPASSED | code=%s | bypass=%s",
                                 log_prefix,
@@ -1168,6 +1251,44 @@ class AdaptiveShortTheRip(ShortTheRip):
                             meta_1h["bypass"] = True
                             meta_1h["bypass_reason"] = bypass_reason
                             meta_1h["bypass_meta"] = bypass_meta
+                            try:
+                                bypass_ctx = {
+                                    "event": "mtf_hard_veto_bypass_ctx",
+                                    "strategy": self.strategy_name,
+                                    "symbol": symbol_display,
+                                    "timeframe": "1h",
+                                    "failure_kind": (
+                                        "missing-data" if meta_1h.get("status") == "missing" else "threshold"
+                                    ),
+                                    "side": signal.get("side"),
+                                    "bypass_reason": bypass_reason,
+                                    "bypass_meta": bypass_meta,
+                                    "eval": {
+                                        "eval_tf": "30m",
+                                        "eval_source": eval_source,
+                                        "includes_forming": includes_forming,
+                                        "used_forming": used_forming,
+                                        "merge_action": merge_action,
+                                        "fallback_reason": fallback_reason,
+                                        "forming_ts": forming_ts,
+                                        "forming_last_update_ts": forming_last_update_ts,
+                                        "forming_update_age_ms": forming_update_age_ms,
+                                        "rsi_source": rsi_source,
+                                        "trigger_price_source": trigger_price_source,
+                                    },
+                                    "snapshot": {
+                                        "close": float(close_price),
+                                        "rsi": float(rsi_val),
+                                        "atr_value": float(atr_value),
+                                        "atr_pct": (float(atr_value) / float(close_price)) if close_price else None,
+                                    },
+                                }
+                                logger.info(
+                                    "mtf_hard_veto_bypass_ctx %s",
+                                    json.dumps(bypass_ctx, separators=(",", ":"), default=str),
+                                )
+                            except Exception:
+                                pass
                             logger.warning(
                                 "🚨 %s MTF-1h hard veto BYPASSED | code=%s | bypass=%s",
                                 log_prefix,
