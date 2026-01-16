@@ -16,6 +16,7 @@ from .execution_env import (
     get_bingx_env,
     get_execution_backend,
     get_trading_mode,
+    is_bingx_leverage_fail_fast,
     is_vst_fullbot_canary_enabled,
     is_vst_fullbot_canary_force_market,
     is_real_execution_enabled,
@@ -488,6 +489,29 @@ class SmartOrderManager:
 
                 if getattr(client, "name", None) == "bingx" and bingx_env == "vst":
                     client.ensure_bingx_hedge_mode(symbol, require_hedged=True)
+
+                # Best-effort: apply signal leverage to the exchange BEFORE entry.
+                # BingX/CCXT leverage setting is per-symbol (and sometimes cached exchange-side),
+                # so we do it right before creating the order.
+                try:
+                    signal = order_request.get('signal') if isinstance(order_request.get('signal'), dict) else {}
+                    leverage = signal.get('leverage') if isinstance(signal, dict) else None
+                    reduce_only = bool(ccxt_params.get('reduceOnly') or ccxt_params.get('reduce_only'))
+                    if leverage and not reduce_only and callable(getattr(client, 'set_leverage', None)):
+                        side_hint = None
+                        raw_side = ccxt_params.get('positionSide') or ccxt_params.get('position_side')
+                        if raw_side:
+                            side_hint = str(raw_side).strip().upper()
+                        elif normalized_side == "buy":
+                            side_hint = "LONG"
+                        elif normalized_side == "sell":
+                            side_hint = "SHORT"
+                        strict = is_bingx_leverage_fail_fast()
+                        client.set_leverage(symbol, leverage, side=side_hint, strict=strict)
+                except Exception as exc:
+                    logger.warning("[REAL EXECUTION] set_leverage failed (continuing): %s", exc)
+                    if is_bingx_leverage_fail_fast():
+                        raise
 
                 logger.warning(f"🟢 [REAL EXECUTION] Submitting MARKET order via CCXT ({exchange})")
 

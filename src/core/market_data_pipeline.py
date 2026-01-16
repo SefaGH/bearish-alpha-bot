@@ -873,6 +873,13 @@ class MarketDataPipeline:
         
         Technical indicators are added consistently before returning.
         """
+        if not timeframe:
+            logger.warning(
+                "[MKT] get_latest_ohlcv called with empty timeframe; defaulting to 5m | sym=%s",
+                symbol,
+            )
+            timeframe = "5m"
+
         df = None
         limit_override = limit
         merge_action = "none"
@@ -1787,6 +1794,67 @@ class MarketDataPipeline:
         except Exception as e:
             logger.error(f"[REST-PRICE] REST API price fetch failed for {symbol}: {e}")
             return None
+
+    async def get_latest_price_cache_only(
+        self,
+        symbol: str,
+        timeframe: str = "1m",
+        exchange: Optional[str] = None,
+    ) -> Optional[float]:
+        """
+        Return the latest price using cache-only sources (WebSocket collector/ticker/forming candle).
+        Never falls back to REST.
+        """
+        if not symbol:
+            return None
+
+        ws_exchange = exchange or (next(iter(self.exchanges.keys())) if self.exchanges else self.DEFAULT_EXCHANGE)
+
+        forming_close = None
+        try:
+            forming_close = self.get_realtime_price(symbol, timeframe=timeframe, exchange=ws_exchange)
+        except Exception:
+            forming_close = None
+
+        price = None
+        try:
+            price, _source, _fallback = self.get_live_trigger_price(
+                symbol,
+                timeframe,
+                source="mid",
+                exchange=ws_exchange,
+                forming_close=forming_close,
+            )
+        except Exception:
+            price = forming_close
+
+        try:
+            if price is not None:
+                price = float(price)
+        except Exception:
+            price = None
+
+        if price is not None and price > 0:
+            return price
+
+        # Fallback to latest closed candle from WS collector (still cache-only).
+        if self.websocket_manager:
+            try:
+                ws_data = self.websocket_manager.get_latest_data(symbol, timeframe, exchange=ws_exchange)
+            except Exception:
+                ws_data = None
+            ohlcv = ws_data.get("ohlcv") if isinstance(ws_data, dict) else None
+            if isinstance(ohlcv, list) and ohlcv:
+                latest = ohlcv[-1]
+                if isinstance(latest, list) and len(latest) >= 5:
+                    try:
+                        price = float(latest[4])
+                    except Exception:
+                        price = None
+                    if price is not None and price > 0:
+                        return price
+
+        return None
     
     def get_realtime_price(self, symbol: str, timeframe: str = '1m', exchange: str = None) -> Optional[float]:
         """

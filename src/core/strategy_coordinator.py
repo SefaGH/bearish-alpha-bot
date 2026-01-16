@@ -571,6 +571,8 @@ class StrategyCoordinator:
         self.risk_manager = risk_manager
         self.market_data_pipeline = market_data_pipeline
         self.config = config or {}
+        callback = kwargs.get("recheck_ready_callback")
+        self._recheck_ready_callback = callback if callable(callback) else None
         self._initial_equity = self._derive_initial_equity()
 
         va_cfg = self.config.get('volume_analyzer') if isinstance(self.config, dict) else {}
@@ -714,6 +716,41 @@ class StrategyCoordinator:
         self._incubator_lock = asyncio.Lock()
         self._incubator_items: Dict[str, Dict[str, Any]] = {}
         self._incubator_policies = self._build_incubator_policies(incubator_cfg)
+
+        fast_watch_cfg = self.config.get("fast_watch", {}) if isinstance(self.config, dict) else {}
+        self._fast_watch_enabled = bool(fast_watch_cfg.get("enabled", False))
+        try:
+            self._fast_watch_interval_ms = int(fast_watch_cfg.get("interval_ms", 3000) or 3000)
+        except Exception:
+            self._fast_watch_interval_ms = 3000
+        self._fast_watch_interval_ms = max(250, self._fast_watch_interval_ms)
+        try:
+            self._fast_watch_max_items_per_tick = int(fast_watch_cfg.get("max_items_per_tick", 50) or 50)
+        except Exception:
+            self._fast_watch_max_items_per_tick = 50
+        self._fast_watch_max_items_per_tick = max(1, self._fast_watch_max_items_per_tick)
+        try:
+            self._fast_watch_time_budget_ms = int(fast_watch_cfg.get("time_budget_ms", 75) or 75)
+        except Exception:
+            self._fast_watch_time_budget_ms = 75
+        self._fast_watch_time_budget_ms = max(10, self._fast_watch_time_budget_ms)
+        try:
+            self._fast_watch_max_checks_default = int(fast_watch_cfg.get("max_checks_default", 9) or 9)
+        except Exception:
+            self._fast_watch_max_checks_default = 9
+        self._fast_watch_max_checks_default = max(1, self._fast_watch_max_checks_default)
+        try:
+            self._fast_watch_ttl_ms_default = int(fast_watch_cfg.get("ttl_ms_default", 30000) or 30000)
+        except Exception:
+            self._fast_watch_ttl_ms_default = 30000
+        self._fast_watch_ttl_ms_default = max(1000, self._fast_watch_ttl_ms_default)
+        try:
+            self._fast_watch_check_sample_rate = int(fast_watch_cfg.get("check_sample_rate", 20) or 20)
+        except Exception:
+            self._fast_watch_check_sample_rate = 20
+        self._fast_watch_check_sample_rate = max(0, self._fast_watch_check_sample_rate)
+        self._fast_watch_check_counter = 0
+        self._fast_watch_task: Optional[asyncio.Task] = None
 
         # Dedupe registry: prevents duplicate orders/setup collisions between incubator + active pipeline
         self._active_dedupe_by_key: Dict[str, str] = {}
@@ -995,6 +1032,13 @@ class StrategyCoordinator:
                 "max_delay_ms": 15_000,
                 "refresh_policy": "STRATEGY_RECHECK",
             },
+            "strategy.fast_watch": {
+                "ttl_seconds": 30,
+                "max_attempts": 9,
+                "base_delay_ms": 3000,
+                "max_delay_ms": 3000,
+                "refresh_policy": "FAST_PRICE_WATCH",
+            },
             "volume.low_vol_tight_stop": {
                 "ttl_seconds": 300,
                 "max_attempts": 120,
@@ -1016,6 +1060,27 @@ class StrategyCoordinator:
     def _emit_waiting_room_event(self, event: str, item: Dict[str, Any], **extra_fields: Any) -> None:
         payload = item.get("payload", {}) if isinstance(item, dict) else {}
         safe_extra = self._json_sanitize(extra_fields) if extra_fields else {}
+        refresh_policy = item.get("refresh_policy") if isinstance(item, dict) else None
+        if refresh_policy and event in ("waiting_room_add", "waiting_room_drop"):
+            refresh_policy_str = str(refresh_policy)
+            if not isinstance(safe_extra, dict):
+                safe_extra = {}
+            safe_extra.setdefault("refresh_policy", refresh_policy_str)
+            if refresh_policy_str.upper() == "FAST_PRICE_WATCH" and isinstance(payload, dict):
+                condition_data = payload.get("condition_data")
+                if isinstance(condition_data, dict):
+                    near_val = condition_data.get("near")
+                    try:
+                        near_str = str(near_val) if near_val is not None else "unknown"
+                    except Exception:
+                        near_str = "unknown"
+                    if not near_str.strip():
+                        near_str = "unknown"
+                    safe_extra.setdefault("near", near_str)
+                    if event == "waiting_room_add":
+                        for key in ("watch_interval_ms", "max_checks", "ttl_ms", "trigger_price"):
+                            if condition_data.get(key) is not None:
+                                safe_extra.setdefault(key, condition_data.get(key))
         ts_ms = self._now_ms()
         signal_id_for_log = None
         parent_pending_id = None
@@ -1288,6 +1353,10 @@ class StrategyCoordinator:
             fallback_policy = self._incubator_policies.get("strategy.soft_deferral", {})
             if isinstance(fallback_policy, dict):
                 policy = {**fallback_policy, **policy}
+        if str(refresh_policy).upper() == "FAST_PRICE_WATCH":
+            fallback_policy = self._incubator_policies.get("strategy.fast_watch", {})
+            if isinstance(fallback_policy, dict):
+                policy = {**fallback_policy, **policy}
         ttl_seconds = int(policy.get("ttl_seconds", 300) or 300)
         max_attempts = int(policy.get("max_attempts", 20) or 20)
         base_delay_ms = int(policy.get("base_delay_ms", 1000) or 1000)
@@ -1299,6 +1368,26 @@ class StrategyCoordinator:
                 self._ensure_signal_id(strategy_name, safe_payload)
             safe_payload["dedupe_key"] = dedupe_key
             safe_payload["setup_anchor_ts_ms"] = int(self._derive_setup_anchor_ts_ms(safe_payload))
+
+            if str(refresh_policy).upper() == "FAST_PRICE_WATCH":
+                condition_data = safe_payload.get("condition_data") if isinstance(safe_payload.get("condition_data"), dict) else {}
+                if isinstance(condition_data, dict):
+                    ttl_ms = condition_data.get("ttl_ms") or condition_data.get("watch_ttl_ms")
+                    if ttl_ms is not None:
+                        try:
+                            ttl_ms = int(ttl_ms)
+                        except Exception:
+                            ttl_ms = None
+                        if ttl_ms and ttl_ms > 0:
+                            ttl_seconds = max(1, int(ttl_ms / 1000))
+                    max_checks = condition_data.get("max_checks")
+                    if max_checks is not None:
+                        try:
+                            max_checks = int(max_checks)
+                        except Exception:
+                            max_checks = None
+                        if max_checks and max_checks > 0:
+                            max_attempts = max_checks
 
         parent_pending_id = None
         pending_reason_code = None
@@ -1396,6 +1485,18 @@ class StrategyCoordinator:
 
                     pending_id_existing = existing.get("pending_id")
                     if isinstance(safe_payload, dict):
+                        existing_payload = existing.get("payload") if isinstance(existing.get("payload"), dict) else None
+                        if isinstance(existing_payload, dict):
+                            existing_condition = existing_payload.get("condition_data")
+                            incoming_condition = safe_payload.get("condition_data")
+                            if isinstance(existing_condition, dict):
+                                if not isinstance(incoming_condition, dict) or not incoming_condition:
+                                    safe_payload["condition_data"] = dict(existing_condition)
+                                else:
+                                    merged_condition = dict(existing_condition)
+                                    merged_condition.update(incoming_condition)
+                                    safe_payload["condition_data"] = merged_condition
+
                         incoming_signal_id = safe_payload.get("signal_id")
                         if not incoming_signal_id or (pending_id_existing and str(incoming_signal_id) == str(pending_id_existing)):
                             safe_payload["signal_id"] = uuid.uuid4().hex
@@ -1529,6 +1630,7 @@ class StrategyCoordinator:
         setup_anchor_ts_ms = event.get("setup_anchor_ts_ms")
         reason_code = event.get("reason_code") or "strategy.soft_deferral"
         condition_data = event.get("condition_data") if isinstance(event.get("condition_data"), dict) else {}
+        refresh_policy = event.get("refresh_policy")
 
         missing = []
         if not strategy:
@@ -1557,6 +1659,12 @@ class StrategyCoordinator:
                 missing_fields=missing,
             )
             return {"status": "rejected", "reason": "invalid_schema", "stage": "soft_deferral", "missing": missing}
+
+        if not refresh_policy:
+            if self._fast_watch_enabled and isinstance(condition_data, dict) and condition_data.get("trigger_price") is not None:
+                refresh_policy = "FAST_PRICE_WATCH"
+            else:
+                refresh_policy = "STRATEGY_RECHECK"
 
         normalized_side = self._normalize_side(side) or str(side).strip().lower()
         if normalized_side not in ("long", "short"):
@@ -1609,7 +1717,7 @@ class StrategyCoordinator:
             strategy_name=str(strategy),
             signal=synthetic_signal,
             reason_code=str(reason_code),
-            refresh_policy="STRATEGY_RECHECK",
+            refresh_policy=str(refresh_policy),
             stage="soft_deferral",
         )
 
@@ -1631,6 +1739,7 @@ class StrategyCoordinator:
         dropped = 0
         due_total = 0
         price_cache: Dict[tuple[str, str], Optional[float]] = {}
+        fast_watch_active = bool(self._fast_watch_task and not self._fast_watch_task.done())
 
         expired_items: List[Dict[str, Any]] = []
         due_keys: List[str] = []
@@ -1644,6 +1753,9 @@ class StrategyCoordinator:
                 if expires_at and now_ms >= expires_at:
                     expired_items.append(item)
                     self._incubator_items.pop(key, None)
+                    continue
+
+                if fast_watch_active and str(item.get("refresh_policy") or "").upper() == "FAST_PRICE_WATCH":
                     continue
 
                 try:
@@ -1694,6 +1806,10 @@ class StrategyCoordinator:
             policy = self._incubator_policies.get(reason_code, {})
             base_delay_ms = int(policy.get("base_delay_ms", 1000) or 1000)
             max_delay_ms = int(policy.get("max_delay_ms", 10_000) or 10_000)
+            refresh_policy = str(item.get("refresh_policy") or "NONE").upper()
+            if refresh_policy == "FAST_PRICE_WATCH" and not fast_watch_active:
+                self._emit_fast_watch_downgrade(item, reason="watcher_inactive")
+                refresh_policy = "STRATEGY_RECHECK"
 
             condition_met = False
             check_detail: Dict[str, Any] = {}
@@ -1746,7 +1862,7 @@ class StrategyCoordinator:
                 if check_detail.get("skip_reason") != "ctx_hash_unchanged":
                     condition_met = True
 
-            elif str(item.get("refresh_policy") or "").upper() == "STRATEGY_RECHECK":
+            elif refresh_policy == "STRATEGY_RECHECK":
                 condition_met = True
 
             if not check_detail.get("skip_reason"):
@@ -1763,7 +1879,6 @@ class StrategyCoordinator:
             self._emit_waiting_room_event("waiting_room_retry", item, check_detail=check_detail)
 
             if condition_met:
-                refresh_policy = str(item.get("refresh_policy") or "NONE")
                 if refresh_policy == "STRATEGY_RECHECK":
                     async with self._incubator_lock:
                         removed = self._incubator_items.pop(dedupe_key, None)
@@ -1892,6 +2007,657 @@ class StrategyCoordinator:
             )
 
         return processed
+
+    def set_recheck_ready_callback(self, callback: Optional[Callable[[], None]]) -> None:
+        self._recheck_ready_callback = callback if callable(callback) else None
+
+    def _notify_recheck_ready(self) -> None:
+        callback = getattr(self, "_recheck_ready_callback", None)
+        if callback:
+            try:
+                callback()
+            except Exception as exc:
+                logger.debug("[FAST-WATCH] Recheck wakeup callback failed: %s", exc)
+
+    def start_fast_watcher(self) -> bool:
+        if not self._fast_watch_enabled:
+            return False
+        task = getattr(self, "_fast_watch_task", None)
+        if task and not task.done():
+            return True
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("[FAST-WATCH] No running event loop; watcher not started")
+            return False
+        self._fast_watch_task = loop.create_task(self._fast_watch_loop())
+        return True
+
+    def stop_fast_watcher(self) -> None:
+        task = getattr(self, "_fast_watch_task", None)
+        if task and not task.done():
+            task.cancel()
+        self._fast_watch_task = None
+
+    async def _fast_watch_loop(self) -> None:
+        logger.info(
+            "[FAST-WATCH] Started | interval_ms=%s max_items=%s time_budget_ms=%s",
+            self._fast_watch_interval_ms,
+            self._fast_watch_max_items_per_tick,
+            self._fast_watch_time_budget_ms,
+        )
+        try:
+            while True:
+                start_ms = self._now_ms()
+                try:
+                    await self._fast_watch_tick()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning("[FAST-WATCH] Tick failed: %s", exc)
+                elapsed_ms = self._now_ms() - start_ms
+                sleep_ms = max(0, int(self._fast_watch_interval_ms) - int(elapsed_ms))
+                if sleep_ms:
+                    await asyncio.sleep(sleep_ms / 1000)
+        except asyncio.CancelledError:
+            logger.info("[FAST-WATCH] Stopped")
+            raise
+
+    async def _fast_watch_tick(self) -> int:
+        if not self._fast_watch_enabled:
+            return 0
+
+        start_ms = self._now_ms()
+        now_ms = start_ms
+        max_items = self._fast_watch_max_items_per_tick
+        time_budget_ms = self._fast_watch_time_budget_ms
+        due_items: List[Dict[str, Any]] = []
+        expired_items: List[Tuple[Dict[str, Any], Dict[str, Any], Optional[int], Optional[str], int]] = []
+
+        async with self._incubator_lock:
+            for dedupe_key, item in list(self._incubator_items.items()):
+                if self._now_ms() - start_ms >= time_budget_ms:
+                    break
+                if str(item.get("refresh_policy") or "").upper() != "FAST_PRICE_WATCH":
+                    continue
+                payload = item.get("payload") if isinstance(item.get("payload"), dict) else None
+                if not isinstance(payload, dict):
+                    continue
+                condition_data = payload.get("condition_data") if isinstance(payload.get("condition_data"), dict) else {}
+                if not isinstance(condition_data, dict):
+                    continue
+                symbol = payload.get("symbol")
+                side = payload.get("side")
+                timeframe = payload.get("timeframe") or payload.get("tf")
+                trigger_price = condition_data.get("trigger_price")
+                if not symbol or not side or not timeframe or trigger_price is None:
+                    continue
+
+                expires_at_ms, expire_reason, created_ts_ms = self._resolve_fast_watch_expiry(item, payload, condition_data, now_ms)
+                if created_ts_ms:
+                    item.setdefault("fast_created_ts_ms", created_ts_ms)
+                if expire_reason:
+                    item["fast_expire_reason"] = expire_reason
+                if expires_at_ms and expires_at_ms != item.get("expires_at_ms"):
+                    item["expires_at_ms"] = expires_at_ms
+                    item["fast_expires_at_ms"] = expires_at_ms
+                if expires_at_ms and now_ms >= expires_at_ms:
+                    removed = self._incubator_items.pop(dedupe_key, None)
+                    if removed:
+                        expired_items.append((removed, condition_data, expires_at_ms, expire_reason, created_ts_ms))
+                    continue
+
+                try:
+                    next_check_at_ms = int(item.get("next_check_at_ms") or 0)
+                except Exception:
+                    next_check_at_ms = 0
+                if now_ms >= next_check_at_ms:
+                    due_items.append(
+                        {
+                            "dedupe_key": dedupe_key,
+                            "symbol": str(symbol),
+                            "side": str(side),
+                            "timeframe": str(timeframe),
+                            "trigger_price": trigger_price,
+                            "trigger_kind": str(condition_data.get("trigger_kind") or ""),
+                            "eps_bps": condition_data.get("eps_bps"),
+                            "exchange": payload.get("exchange") or payload.get("exchange_name"),
+                            "condition_data": dict(condition_data),
+                            "created_ts_ms": created_ts_ms,
+                            "expires_at_ms": expires_at_ms,
+                            "expire_reason": expire_reason,
+                        }
+                    )
+                    if len(due_items) >= max_items:
+                        break
+
+        for removed, condition_data, expires_at_ms, expire_reason, created_ts_ms in expired_items:
+            self._emit_fast_watch_outcome(
+                removed,
+                condition_data=condition_data,
+                outcome="expired",
+                checks_done=int(removed.get("fast_checks_done") or removed.get("attempts", 0) or 0),
+                price=None,
+                created_ts_ms=created_ts_ms,
+                now_ts_ms=now_ms,
+                expires_at_ms=expires_at_ms,
+                expire_reason=expire_reason or "expired",
+                cache_hit=False,
+                cache_source=None,
+                miss_count=int(removed.get("fast_miss_count") or 0),
+            )
+            self._emit_fast_watch_waiting_room_compat(removed, outcome="expired", expire_reason=expire_reason)
+
+        if not due_items:
+            return 0
+
+        price_by_key: Dict[Tuple[str, str, Optional[str]], Tuple[Optional[float], Optional[str]]] = {}
+        for item in due_items:
+            key = (item["symbol"], item["timeframe"], item.get("exchange"))
+            if key in price_by_key:
+                continue
+            price_by_key[key] = await self._get_cache_only_price(
+                item["symbol"],
+                timeframe=item["timeframe"],
+                exchange=item.get("exchange"),
+            )
+
+        outcomes: List[Dict[str, Any]] = []
+        triggers: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+        cache_hits = 0
+        cache_misses = 0
+
+        async with self._incubator_lock:
+            for item in due_items:
+                if self._now_ms() - start_ms >= time_budget_ms:
+                    break
+                dedupe_key = item["dedupe_key"]
+                live_item = self._incubator_items.get(dedupe_key)
+                if not live_item:
+                    continue
+                payload = live_item.get("payload") if isinstance(live_item.get("payload"), dict) else None
+                if not isinstance(payload, dict):
+                    continue
+                condition_data = payload.get("condition_data") if isinstance(payload.get("condition_data"), dict) else {}
+                if not isinstance(condition_data, dict):
+                    continue
+
+                expires_at_ms, expire_reason, created_ts_ms = self._resolve_fast_watch_expiry(live_item, payload, condition_data, now_ms)
+                if created_ts_ms:
+                    live_item.setdefault("fast_created_ts_ms", created_ts_ms)
+                if expire_reason:
+                    live_item["fast_expire_reason"] = expire_reason
+                if expires_at_ms and now_ms >= expires_at_ms:
+                    removed = self._incubator_items.pop(dedupe_key, None)
+                    if removed:
+                        outcomes.append(
+                            {
+                                "item": removed,
+                                "condition_data": condition_data,
+                                "outcome": "expired",
+                                "checks_done": int(removed.get("fast_checks_done") or removed.get("attempts", 0) or 0),
+                                "price": None,
+                                "created_ts_ms": created_ts_ms,
+                                "expires_at_ms": expires_at_ms,
+                                "expire_reason": expire_reason or "expired",
+                                "cache_hit": False,
+                                "cache_source": None,
+                                "miss_count": int(removed.get("fast_miss_count") or 0),
+                            }
+                        )
+                    continue
+
+                price_key = (item["symbol"], item["timeframe"], item.get("exchange"))
+                price, cache_source = price_by_key.get(price_key, (None, None))
+                cache_hit = price is not None
+                if not cache_hit:
+                    cache_misses += 1
+                else:
+                    cache_hits += 1
+
+                interval_ms = self._resolve_fast_watch_interval_ms(condition_data)
+                max_checks = self._resolve_fast_watch_max_checks(condition_data, live_item)
+
+                checks_done = int(live_item.get("fast_checks_done") or live_item.get("attempts", 0) or 0)
+                miss_count = int(live_item.get("fast_miss_count") or 0)
+                if not cache_hit:
+                    miss_count += 1
+                    live_item["fast_miss_count"] = miss_count
+                    live_item["next_check_at_ms"] = self._now_ms() + interval_ms
+                    outcomes.append(
+                        {
+                            "item": live_item,
+                            "condition_data": condition_data,
+                            "outcome": "cache_miss",
+                            "checks_done": checks_done,
+                            "price": None,
+                            "created_ts_ms": created_ts_ms,
+                            "expires_at_ms": expires_at_ms,
+                            "expire_reason": "cache_miss",
+                            "cache_hit": False,
+                            "cache_source": cache_source,
+                            "miss_count": miss_count,
+                        }
+                    )
+                    continue
+
+                checks_done += 1
+                live_item["fast_checks_done"] = checks_done
+                live_item["attempts"] = checks_done
+                live_item["last_attempt_ts_ms"] = now_ms
+
+                trigger_price = self._coerce_float(condition_data.get("trigger_price"))
+                eps_bps = self._coerce_float(condition_data.get("eps_bps")) or 0.0
+                trigger_kind = str(condition_data.get("trigger_kind") or "")
+                side = str(payload.get("side") or "")
+                if trigger_price is None or trigger_price <= 0:
+                    removed = self._incubator_items.pop(dedupe_key, None)
+                    if removed:
+                        outcomes.append(
+                            {
+                                "item": removed,
+                                "condition_data": condition_data,
+                                "outcome": "expired",
+                                "checks_done": checks_done,
+                                "price": price,
+                                "created_ts_ms": created_ts_ms,
+                                "expires_at_ms": expires_at_ms,
+                                "expire_reason": "expired",
+                                "cache_hit": True,
+                                "cache_source": cache_source,
+                                "miss_count": miss_count,
+                            }
+                        )
+                    continue
+
+                eps = abs(trigger_price) * (eps_bps / 10000.0) if eps_bps else 0.0
+                hit = price is not None and self._fast_watch_hit(
+                    price=price,
+                    trigger_price=trigger_price,
+                    eps=eps,
+                    trigger_kind=trigger_kind,
+                    side=side,
+                )
+
+                if hit:
+                    removed = self._incubator_items.pop(dedupe_key, None)
+                    if removed:
+                        check_detail = {
+                            "fast_watch": {
+                                "price": price,
+                                "trigger_price": trigger_price,
+                                "eps_bps": eps_bps,
+                                "trigger_kind": trigger_kind,
+                            }
+                        }
+                        triggers.append((removed, check_detail))
+                        outcomes.append(
+                            {
+                                "item": removed,
+                                "condition_data": condition_data,
+                                "outcome": "triggered",
+                                "checks_done": checks_done,
+                                "price": price,
+                                "created_ts_ms": created_ts_ms,
+                                "expires_at_ms": expires_at_ms,
+                                "expire_reason": "hit",
+                                "cache_hit": True,
+                                "cache_source": cache_source,
+                                "miss_count": miss_count,
+                            }
+                        )
+                    continue
+
+                if max_checks and checks_done >= max_checks:
+                    removed = self._incubator_items.pop(dedupe_key, None)
+                    if removed:
+                        outcomes.append(
+                            {
+                                "item": removed,
+                                "condition_data": condition_data,
+                                "outcome": "max_checks",
+                                "checks_done": checks_done,
+                                "price": price,
+                                "created_ts_ms": created_ts_ms,
+                                "expires_at_ms": expires_at_ms,
+                                "expire_reason": "max_checks",
+                                "cache_hit": True,
+                                "cache_source": cache_source,
+                                "miss_count": miss_count,
+                            }
+                        )
+                    continue
+
+                live_item["next_check_at_ms"] = self._now_ms() + interval_ms
+
+        for outcome in outcomes:
+            self._emit_fast_watch_outcome(
+                outcome["item"],
+                condition_data=outcome.get("condition_data") or {},
+                outcome=outcome.get("outcome") or "expired",
+                checks_done=int(outcome.get("checks_done") or 0),
+                price=outcome.get("price"),
+                created_ts_ms=outcome.get("created_ts_ms"),
+                now_ts_ms=now_ms,
+                expires_at_ms=outcome.get("expires_at_ms"),
+                expire_reason=outcome.get("expire_reason"),
+                cache_hit=outcome.get("cache_hit"),
+                cache_source=outcome.get("cache_source"),
+                miss_count=outcome.get("miss_count"),
+            )
+            if outcome.get("outcome") in ("triggered", "expired", "max_checks"):
+                self._emit_fast_watch_waiting_room_compat(
+                    outcome["item"],
+                    outcome=str(outcome.get("outcome")),
+                    expire_reason=outcome.get("expire_reason"),
+                )
+
+        for removed, check_detail in triggers:
+            self._emit_strategy_recheck_request(removed, check_detail=check_detail)
+            self._notify_recheck_ready()
+
+        self._fast_watch_check_counter += 1
+        if self._fast_watch_check_sample_rate and self._fast_watch_check_counter % self._fast_watch_check_sample_rate == 0:
+            try:
+                run_id = get_current_run_id()
+            except Exception:
+                run_id = None
+            sample = {
+                "event": "fast_watch_check_sampled",
+                "ts_ms": self._now_ms(),
+                "run_id": run_id,
+                "due_items": len(due_items),
+                "cache_hits": cache_hits,
+                "cache_misses": cache_misses,
+            }
+            safe_sample = self._json_sanitize(sample)
+            try:
+                logger.info("fast_watch_check_sampled %s", json.dumps(safe_sample, ensure_ascii=False, sort_keys=True))
+            except Exception:
+                logger.info("fast_watch_check_sampled %s", safe_sample)
+
+        return len(due_items)
+
+    def _resolve_fast_watch_expiry(
+        self,
+        item: Dict[str, Any],
+        payload: Dict[str, Any],
+        condition_data: Dict[str, Any],
+        now_ms: int,
+    ) -> Tuple[Optional[int], Optional[str], int]:
+        created_ts_ms = self._coerce_int(
+            item.get("fast_created_ts_ms")
+            or item.get("first_seen_ts_ms")
+            or payload.get("timestamp")
+            or payload.get("setup_anchor_ts_ms")
+        )
+        if created_ts_ms is None or created_ts_ms <= 0:
+            created_ts_ms = now_ms
+
+        ttl_raw = condition_data.get("ttl_ms") or condition_data.get("watch_ttl_ms")
+        ttl_val = self._coerce_int(ttl_raw) if ttl_raw is not None else None
+        if ttl_val is None or ttl_val <= 0:
+            ttl_val = self._fast_watch_ttl_ms_default
+
+        expires_at_ms: Optional[int] = None
+        expire_reason: Optional[str] = None
+
+        if ttl_val and ttl_val > 0:
+            expires_at_ms = created_ts_ms + int(ttl_val)
+            expire_reason = "ttl"
+
+        raw_exp = condition_data.get("expires_at_ms") or condition_data.get("watch_expires_at_ms")
+        exp_override = self._coerce_int(raw_exp)
+        if exp_override and exp_override > now_ms:
+            if expires_at_ms is None or exp_override < expires_at_ms:
+                expires_at_ms = exp_override
+                expire_reason = "explicit"
+
+        timeframe = payload.get("timeframe") or payload.get("tf")
+        tf_ms = self._parse_timeframe_ms(timeframe) or 0
+        if tf_ms:
+            next_boundary = int(now_ms - (now_ms % int(tf_ms)) + int(tf_ms))
+            if next_boundary > now_ms:
+                if expires_at_ms is None or next_boundary < expires_at_ms:
+                    expires_at_ms = next_boundary
+                    expire_reason = "candle_boundary"
+
+        if expires_at_ms is not None and expires_at_ms <= created_ts_ms:
+            if ttl_val and ttl_val > 0:
+                expires_at_ms = created_ts_ms + int(ttl_val)
+                expire_reason = "ttl"
+            elif self._fast_watch_ttl_ms_default:
+                expires_at_ms = created_ts_ms + int(self._fast_watch_ttl_ms_default)
+                expire_reason = "ttl"
+
+        return expires_at_ms, expire_reason, int(created_ts_ms)
+
+    def _resolve_fast_watch_interval_ms(self, condition_data: Dict[str, Any]) -> int:
+        interval_ms = condition_data.get("watch_interval_ms") or condition_data.get("interval_ms")
+        interval_val = self._coerce_int(interval_ms)
+        if interval_val is None or interval_val <= 0:
+            interval_val = self._fast_watch_interval_ms
+        return max(250, int(interval_val))
+
+    def _resolve_fast_watch_max_checks(self, condition_data: Dict[str, Any], item: Dict[str, Any]) -> int:
+        raw = condition_data.get("max_checks")
+        max_checks = self._coerce_int(raw)
+        if max_checks is None or max_checks <= 0:
+            max_checks = self._coerce_int(item.get("max_attempts"))
+        if max_checks is None or max_checks <= 0:
+            max_checks = self._fast_watch_max_checks_default
+        return max(1, int(max_checks))
+
+    async def _get_cache_only_price(
+        self,
+        symbol: str,
+        *,
+        timeframe: str,
+        exchange: Optional[str] = None,
+    ) -> Tuple[Optional[float], Optional[str]]:
+        pipeline = getattr(self, "market_data_pipeline", None)
+        if pipeline and hasattr(pipeline, "get_latest_price_cache_only"):
+            try:
+                price = await pipeline.get_latest_price_cache_only(symbol, timeframe=timeframe, exchange=exchange)
+                return price, "cache_only"
+            except Exception:
+                return None, "cache_only"
+        if pipeline and hasattr(pipeline, "get_realtime_price"):
+            try:
+                price = pipeline.get_realtime_price(symbol, timeframe=timeframe, exchange=exchange)
+                return price, "forming_candle"
+            except Exception:
+                return None, "forming_candle"
+        return None, None
+
+    def _emit_fast_watch_outcome(
+        self,
+        item: Dict[str, Any],
+        *,
+        condition_data: Dict[str, Any],
+        outcome: str,
+        checks_done: int,
+        price: Optional[float],
+        created_ts_ms: Optional[int] = None,
+        now_ts_ms: Optional[int] = None,
+        expires_at_ms: Optional[int] = None,
+        expire_reason: Optional[str] = None,
+        cache_hit: Optional[bool] = None,
+        cache_source: Optional[str] = None,
+        miss_count: Optional[int] = None,
+    ) -> None:
+        payload = item.get("payload", {}) if isinstance(item, dict) else {}
+        ts_ms = now_ts_ms if now_ts_ms is not None else self._now_ms()
+        try:
+            run_id = get_current_run_id()
+        except Exception:
+            run_id = None
+
+        parent_pending_id = item.get("parent_pending_id") if isinstance(item, dict) else None
+        if parent_pending_id is not None:
+            try:
+                parent_pending_id = str(parent_pending_id)
+            except Exception:
+                parent_pending_id = None
+
+        trigger_price = self._coerce_float(condition_data.get("trigger_price"))
+        eps_bps = self._coerce_float(condition_data.get("eps_bps"))
+        near_val = condition_data.get("near") if isinstance(condition_data, dict) else None
+        try:
+            near_str = str(near_val) if near_val is not None else "unknown"
+        except Exception:
+            near_str = "unknown"
+        if not near_str.strip():
+            near_str = "unknown"
+        if created_ts_ms is None:
+            created_ts_ms = self._coerce_int(item.get("fast_created_ts_ms") or item.get("first_seen_ts_ms"))
+        if expires_at_ms is None:
+            expires_at_ms = self._coerce_int(item.get("fast_expires_at_ms") or item.get("expires_at_ms"))
+        if expire_reason is None:
+            expire_reason = item.get("fast_expire_reason")
+        if cache_hit is None:
+            cache_hit = price is not None
+        if miss_count is None:
+            miss_count = self._coerce_int(item.get("fast_miss_count") or 0) or 0
+
+        out = {
+            "event": "fast_watch_outcome",
+            "ts_ms": ts_ms,
+            "now_ts_ms": ts_ms,
+            "created_ts_ms": created_ts_ms,
+            "expires_at_ms": expires_at_ms,
+            "expire_reason": expire_reason,
+            "run_id": run_id,
+            "pending_id": item.get("pending_id") if isinstance(item, dict) else None,
+            "parent_pending_id": parent_pending_id,
+            "signal_id": payload.get("signal_id") if isinstance(payload, dict) else None,
+            "strategy": payload.get("strategy_name") or payload.get("strategy"),
+            "symbol": payload.get("symbol"),
+            "side": payload.get("side"),
+            "timeframe": payload.get("timeframe") or payload.get("tf"),
+            "outcome": str(outcome),
+            "checks_done": int(checks_done),
+            "elapsed_ms": ts_ms - int(item.get("first_seen_ts_ms", ts_ms) or ts_ms),
+            "price": price,
+            "trigger_price": trigger_price,
+            "eps_bps": eps_bps,
+            "near": near_str,
+            "cache_hit": cache_hit,
+            "cache_source": cache_source,
+            "miss_count": miss_count,
+        }
+        safe_out = self._json_sanitize(out)
+        try:
+            logger.info("fast_watch_outcome %s", json.dumps(safe_out, ensure_ascii=False, sort_keys=True))
+        except Exception:
+            logger.info("fast_watch_outcome %s", safe_out)
+
+    def _emit_fast_watch_waiting_room_compat(
+        self,
+        item: Dict[str, Any],
+        *,
+        outcome: str,
+        expire_reason: Optional[str] = None,
+    ) -> None:
+        if not item or outcome not in ("triggered", "expired", "max_checks"):
+            return
+        payload = item.get("payload", {}) if isinstance(item, dict) else {}
+        near_str = "unknown"
+        if isinstance(payload, dict):
+            condition_data = payload.get("condition_data")
+            if isinstance(condition_data, dict):
+                near_val = condition_data.get("near")
+                try:
+                    near_str = str(near_val) if near_val is not None else "unknown"
+                except Exception:
+                    near_str = "unknown"
+                if not near_str.strip():
+                    near_str = "unknown"
+        drop_reason = outcome
+        if outcome == "triggered":
+            drop_reason = "hit"
+        elif outcome == "max_checks":
+            drop_reason = "max_checks"
+        elif outcome == "expired":
+            drop_reason = "expired"
+        extra = {"drop_kind": "fast_watch", "drop_reason": drop_reason, "fast_watch_outcome": outcome, "near": near_str}
+        if expire_reason:
+            extra["expire_reason"] = expire_reason
+        self._emit_waiting_room_event("waiting_room_drop", item, **extra)
+
+    def _emit_fast_watch_downgrade(self, item: Dict[str, Any], *, reason: str) -> None:
+        payload = item.get("payload", {}) if isinstance(item, dict) else {}
+        condition_data = payload.get("condition_data") if isinstance(payload, dict) else None
+        trigger_price = None
+        if isinstance(condition_data, dict):
+            trigger_price = condition_data.get("trigger_price")
+        out = {
+            "event": "fast_watch_downgrade",
+            "ts_ms": self._now_ms(),
+            "run_id": get_current_run_id(),
+            "pending_id": item.get("pending_id") if isinstance(item, dict) else None,
+            "parent_pending_id": item.get("parent_pending_id") if isinstance(item, dict) else None,
+            "signal_id": payload.get("signal_id") if isinstance(payload, dict) else None,
+            "strategy": payload.get("strategy_name") or payload.get("strategy"),
+            "symbol": payload.get("symbol"),
+            "side": payload.get("side"),
+            "timeframe": payload.get("timeframe") or payload.get("tf"),
+            "reason_code": item.get("reason_code") if isinstance(item, dict) else None,
+            "pending_reason_code": item.get("pending_reason_code") if isinstance(item, dict) else None,
+            "dedupe_key": item.get("dedupe_key") if isinstance(item, dict) else None,
+            "refresh_policy": item.get("refresh_policy") if isinstance(item, dict) else None,
+            "downgrade_reason": str(reason),
+            "trigger_price": trigger_price,
+        }
+        safe_out = self._json_sanitize(out)
+        try:
+            logger.warning("fast_watch_downgrade %s", json.dumps(safe_out, ensure_ascii=False, sort_keys=True))
+        except Exception:
+            logger.warning("fast_watch_downgrade %s", safe_out)
+
+    @staticmethod
+    def _coerce_int(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _coerce_float(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _fast_watch_hit(
+        *,
+        price: float,
+        trigger_price: float,
+        eps: float,
+        trigger_kind: str,
+        side: str,
+    ) -> bool:
+        kind = (trigger_kind or "").strip().lower()
+        side_norm = (side or "").strip().lower()
+        if "lower" in kind:
+            return price <= trigger_price + eps
+        if "upper" in kind:
+            return price >= trigger_price - eps
+        if kind in ("leq", "lte", "below"):
+            return price <= trigger_price + eps
+        if kind in ("geq", "gte", "above"):
+            return price >= trigger_price - eps
+        if kind in ("band_touch", "touch", "cross"):
+            if side_norm in ("long", "buy"):
+                return price <= trigger_price + eps
+            if side_norm in ("short", "sell"):
+                return price >= trigger_price - eps
+        return abs(price - trigger_price) <= eps
 
     def _check_concurrent_release_condition(self, payload: Dict[str, Any], reason_code: str) -> Tuple[bool, Dict[str, Any]]:
         limits = getattr(self.risk_manager, "concurrent_limits", None)
@@ -2275,6 +3041,14 @@ class StrategyCoordinator:
 
         candidate_exists = any(_matches(p) for p in open_positions if isinstance(p, dict))
 
+        def _matches_symbol_side(pos: Dict[str, Any]) -> bool:
+            pos_side = str(pos.get("side", "")).lower()
+            return (not side or pos_side == side)
+
+        candidate_exists_symbol_side = any(
+            _matches_symbol_side(p) for p in open_positions if isinstance(p, dict)
+        )
+
         # DCA signals should stay as scale_in regardless of pyramiding toggle (v1).
         if is_dca_signal:
             if not candidate_exists:
@@ -2295,7 +3069,9 @@ class StrategyCoordinator:
                 )
             return INTENT_ENTRY
 
-        if candidate_exists:
+        # When pyramiding is enabled, treat any existing same-side position as a scale-in candidate.
+        # Risk is shared at symbol+side level, even if the opening strategy differs.
+        if candidate_exists_symbol_side:
             return INTENT_SCALE_IN
         return INTENT_ENTRY
     

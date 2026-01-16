@@ -171,6 +171,7 @@ class ProductionCoordinator:
         self._monitoring_task: Optional[asyncio.Task] = None
         self._watchdog_task: Optional[asyncio.Task] = None
         self._rl_telemetry_task: Optional[asyncio.Task] = None
+        self._recheck_wakeup_event: Optional[asyncio.Event] = asyncio.Event()
         
         # --- DEĞİŞİKLİK 2: Kendi config'ini yüklemek yerine dışarıdan gelen config'i kullan ---
         # Eğer dışarıdan bir config gelmezse, eski davranışa geri dön (güvenlik için)
@@ -1187,6 +1188,41 @@ class ProductionCoordinator:
             except Exception as exc:
                 logger.debug("[SOFT-DEFERRAL] strategy_recheck_request handling failed: %s", exc, exc_info=True)
 
+    def notify_recheck_ready(self) -> None:
+        event = getattr(self, "_recheck_wakeup_event", None)
+        if event is not None:
+            try:
+                event.set()
+            except Exception:
+                pass
+
+    async def _sleep_with_recheck_wakeup(self, sleep_time: float) -> None:
+        if sleep_time <= 0:
+            return
+        event = getattr(self, "_recheck_wakeup_event", None)
+        if event is None:
+            await asyncio.sleep(sleep_time)
+            return
+        deadline = time.monotonic() + float(sleep_time)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait_for(event.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                break
+            except Exception:
+                break
+            try:
+                event.clear()
+            except Exception:
+                pass
+            try:
+                await self._drain_strategy_recheck_requests()
+            except Exception as exc:
+                logger.debug("[PROCESS] strategy_recheck_request drain failed: %s", exc)
+
     async def _handle_strategy_recheck_request(self, event: Any) -> bool:
         if not isinstance(event, dict):
             logger.debug("[SOFT-DEFERRAL] Ignoring invalid strategy_recheck_request: %s", event)
@@ -1209,8 +1245,16 @@ class ProductionCoordinator:
                 pending_reason_code = str(pending_reason_code)
             except Exception:
                 pending_reason_code = None
+        pending_id = event.get("pending_id")
+        if pending_id is not None:
+            try:
+                pending_id = str(pending_id)
+            except Exception:
+                pending_id = None
         side = event.get("side")
         timeframe = event.get("timeframe") or event.get("tf")
+        condition_data = event.get("condition_data") if isinstance(event.get("condition_data"), dict) else None
+        check_detail = event.get("check_detail") if isinstance(event.get("check_detail"), dict) else None
 
         dispatcher = getattr(self, "dispatch_strategy", None)
         if not callable(dispatcher):
@@ -1221,9 +1265,12 @@ class ProductionCoordinator:
             str(symbol),
             str(strategy),
             parent_pending_id=parent_pending_id,
+            pending_id=pending_id,
             side=side,
             timeframe=timeframe,
             pending_reason_code=pending_reason_code,
+            condition_data=condition_data,
+            check_detail=check_detail,
         )
         dispatched = await result if inspect.iscoroutine(result) else bool(result)
         if dispatched:
@@ -1236,9 +1283,12 @@ class ProductionCoordinator:
         strategy: str,
         *,
         parent_pending_id: Optional[str] = None,
+        pending_id: Optional[str] = None,
         side: Optional[str] = None,
         timeframe: Optional[str] = None,
         pending_reason_code: Optional[str] = None,
+        condition_data: Optional[Dict[str, Any]] = None,
+        check_detail: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Trigger a targeted strategy evaluation for a single symbol."""
         start_monotonic = time.monotonic()
@@ -1349,6 +1399,13 @@ class ProductionCoordinator:
                 signal_kwargs["parent_pending_id"] = parent_pending_id_str
             if pending_reason_code:
                 signal_kwargs["pending_reason_code"] = str(pending_reason_code)
+            if is_mean_reversion and parent_pending_id_str:
+                if pending_id:
+                    signal_kwargs["pending_id"] = pending_id
+                if condition_data is not None:
+                    signal_kwargs["condition_data"] = condition_data
+                if check_detail is not None:
+                    signal_kwargs["check_detail"] = check_detail
 
             df_30m_closed = None
             df_30m_hybrid = None
@@ -2339,9 +2396,16 @@ class ProductionCoordinator:
                 portfolio_manager=self.portfolio_manager,
                 risk_manager=self.risk_manager,
                 market_data_pipeline=self.market_data_pipeline,
-                config=self.config
+                config=self.config,
+                recheck_ready_callback=self.notify_recheck_ready,
             )
             logger.info("✓ Strategy coordinator initialized")
+
+            if hasattr(self.strategy_coordinator, "start_fast_watcher"):
+                try:
+                    self.strategy_coordinator.start_fast_watcher()
+                except Exception as exc:
+                    logger.warning("[FAST-WATCH] Failed to start watcher: %s", exc)
             
             # === STEP 11: INITIALIZE CIRCUIT BREAKER ===
             self.circuit_breaker = CircuitBreakerSystem(
@@ -3659,10 +3723,10 @@ class ProductionCoordinator:
                         # Sleep for minimum of loop_interval or remaining time
                         sleep_time = min(self.loop_interval, remaining)
                         logger.debug(f"Sleeping for {sleep_time:.1f}s (remaining: {remaining:.1f}s)")
-                        await asyncio.sleep(sleep_time)
+                        await self._sleep_with_recheck_wakeup(sleep_time)
                     else:
                         # No duration limit or continuous mode - use full loop_interval
-                        await asyncio.sleep(self.loop_interval)
+                        await self._sleep_with_recheck_wakeup(self.loop_interval)
                     
                 except KeyboardInterrupt:
                     logger.info("Keyboard interrupt received - stopping gracefully")
@@ -4492,6 +4556,13 @@ class ProductionCoordinator:
             try:
                 await self._rl_telemetry_task
             except asyncio.CancelledError:
+                pass
+
+        coordinator = getattr(self, "strategy_coordinator", None)
+        if coordinator and hasattr(coordinator, "stop_fast_watcher"):
+            try:
+                coordinator.stop_fast_watcher()
+            except Exception:
                 pass
         
         # Stop trading engine (but keep connections alive)

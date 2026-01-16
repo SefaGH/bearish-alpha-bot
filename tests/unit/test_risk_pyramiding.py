@@ -17,6 +17,8 @@ class _StubPnlProvider:
         for p in self.positions:
             if p.get("symbol") != symbol:
                 continue
+            if side and p.get("side") and str(p.get("side")).lower() != str(side).lower():
+                continue
             snapshot = dict(p)
             if "unrealized_pnl_pct" not in snapshot and "pnl_pct" in snapshot:
                 snapshot["unrealized_pnl_pct"] = snapshot.get("pnl_pct")
@@ -223,6 +225,55 @@ def test_scale_in_rejected_with_negative_pnl_from_provider():
     assert allowed is False
     assert reason == "scale_in_pnl_below_threshold"
 
+def test_scale_in_pnl_gating_uses_symbol_and_side_not_strategy_name():
+    dynamic_cfg = {
+        "enabled": True,
+        "quality_threshold": 0.1,
+        "min_unrealized_pnl_pct": 0.005,
+        "min_distance_pct": 0.0,
+        "max_additional_positions": 2,
+    }
+    rm = _make_risk_manager(dynamic_cfg)
+
+    # Existing position is on the same symbol+side but from a different strategy.
+    positions = [
+        {
+            "symbol": "BTC/USDT:USDT",
+            "side": "long",
+            "strategy_name": "mean_reversion",
+            "entry_price": 100.0,
+            "unrealized_pnl_pct": 0.02,
+            "entry_time": 1,
+        }
+    ]
+    pm = _make_portfolio_manager(
+        positions,
+        cfg={
+            "pyramiding": {
+                "enabled": True,
+                "min_scale_in_quality": 0.1,
+                "min_scale_in_unrealized_pnl_pct": 0.005,
+                "min_scale_in_distance_pct": 0.0,
+                "max_layers_per_symbol": 3,
+            }
+        },
+    )
+    rm.set_pnl_provider(_StubPnlProvider(pm._positions))
+
+    # Scale-in signal comes from a different strategy but should still be allowed
+    # because PnL gating is symbol+side based.
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "side": "long",
+        "strategy_name": "adaptive_str",
+        "entry": 101.0,
+        "quality_score": 1.0,
+        "intent": INTENT_SCALE_IN,
+    }
+    allowed, reason = rm._check_concurrent_limits(signal, {}, pm)
+    assert allowed is True
+    assert reason.startswith("OK")
+
 
 def test_scale_in_rejected_when_pnl_data_unavailable():
     dynamic_cfg = {
@@ -332,3 +383,72 @@ def test_scale_in_rejected_when_position_manager_provider_has_no_pnl():
     allowed, reason = rm._check_concurrent_limits(signal, {}, pm)
     assert allowed is False
     assert reason == "scale_in_pnl_data_unavailable"
+
+
+def test_scale_in_rejected_when_add_quality_below_threshold_and_flag_enabled():
+    dynamic_cfg = {
+        "enabled": True,
+        "quality_threshold": 0.1,
+        "min_unrealized_pnl_pct": 0.001,
+        "min_distance_pct": 0.0,
+        "max_additional_positions": 2,
+    }
+    rm = _make_risk_manager(dynamic_cfg)
+    positions = [
+        {"symbol": "ETH/USDT", "side": "long", "entry_price": 100, "unrealized_pnl_pct": 0.02, "entry_time": 1}
+    ]
+    pm = _make_portfolio_manager(
+        positions,
+        cfg={
+            "pyramiding": {
+                "enabled": True,
+                "min_scale_in_quality": 0.1,
+                "min_scale_in_unrealized_pnl_pct": 0.001,
+                "experimental": {"use_add_quality_logic": True},
+                "min_add_quality": 0.85,
+                "add_quality_weights": {"signal": 1.0, "headroom": 0.0},
+            }
+        },
+    )
+    rm.set_pnl_provider(_StubPnlProvider(pm._positions))
+
+    signal = {"symbol": "ETH/USDT", "side": "long", "entry": 101, "quality_score": 0.60, "intent": INTENT_SCALE_IN}
+    risk_metrics = {}
+    allowed, reason = rm._check_concurrent_limits(signal, risk_metrics, pm)
+    assert allowed is False
+    assert reason == "scale_in_add_quality_below_threshold"
+    assert risk_metrics.get("reason_code") == "risk.scale_in.add_quality_below_threshold"
+    assert risk_metrics.get("blocked_by") == "RiskManager._can_dynamic_scale"
+
+
+def test_scale_in_allowed_when_add_quality_flag_disabled():
+    dynamic_cfg = {
+        "enabled": True,
+        "quality_threshold": 0.1,
+        "min_unrealized_pnl_pct": 0.001,
+        "min_distance_pct": 0.0,
+        "max_additional_positions": 2,
+    }
+    rm = _make_risk_manager(dynamic_cfg)
+    positions = [
+        {"symbol": "ETH/USDT", "side": "long", "entry_price": 100, "unrealized_pnl_pct": 0.02, "entry_time": 1}
+    ]
+    pm = _make_portfolio_manager(
+        positions,
+        cfg={
+            "pyramiding": {
+                "enabled": True,
+                "min_scale_in_quality": 0.1,
+                "min_scale_in_unrealized_pnl_pct": 0.001,
+                "experimental": {"use_add_quality_logic": False},
+                "min_add_quality": 0.99,
+                "add_quality_weights": {"signal": 1.0, "headroom": 0.0},
+            }
+        },
+    )
+    rm.set_pnl_provider(_StubPnlProvider(pm._positions))
+
+    signal = {"symbol": "ETH/USDT", "side": "long", "entry": 101, "quality_score": 0.60, "intent": INTENT_SCALE_IN}
+    allowed, reason = rm._check_concurrent_limits(signal, {}, pm)
+    assert allowed is True
+    assert reason.startswith("OK")

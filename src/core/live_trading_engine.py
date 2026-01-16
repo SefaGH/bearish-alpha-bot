@@ -1195,7 +1195,12 @@ class LiveTradingEngine:
                 try:
                     signals = await self.dca_watcher.run_once()
                     for sig in signals or []:
-                        await self.strategy_coordinator.process_strategy_signal("dca_watcher", sig)
+                        base_strategy = (
+                            (sig.get("strategy_name") if isinstance(sig, dict) else None)
+                            or ((sig.get("meta") or {}).get("base_strategy") if isinstance(sig, dict) else None)
+                            or "dca_watcher"
+                        )
+                        await self.strategy_coordinator.process_strategy_signal(base_strategy, sig)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:

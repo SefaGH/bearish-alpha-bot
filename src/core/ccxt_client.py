@@ -2,6 +2,8 @@ import ccxt
 import time
 import logging
 import requests
+import json
+import re
 from requests.adapters import HTTPAdapter
 import asyncio
 import inspect
@@ -582,38 +584,366 @@ class CcxtClient:
             raise RuntimeError(f"{self.name} CCXT adapter does not support create_trailing_percent_order()")
         return create_fn(native_symbol, type_, side, amount, price, trailing_percent, trigger_price, params or {})
 
+    @staticmethod
+    def _infer_bingx_hedge_mode(position_mode: Any) -> Optional[bool]:
+        def parse_bool(value: Any) -> Optional[bool]:
+            if value is None:
+                return None
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)) and value in (0, 1):
+                return bool(value)
+            if isinstance(value, str):
+                text = value.strip().lower()
+                if text in {
+                    "true",
+                    "1",
+                    "yes",
+                    "on",
+                    "hedge",
+                    "hedged",
+                    "dual",
+                    "dual_side",
+                    "dual-side",
+                    "dual side",
+                    "hedge_mode",
+                    "hedge-mode",
+                }:
+                    return True
+                if text in {
+                    "false",
+                    "0",
+                    "no",
+                    "off",
+                    "oneway",
+                    "one-way",
+                    "one_way",
+                    "single",
+                    "single_side",
+                    "single-side",
+                    "single side",
+                    "oneway_mode",
+                    "oneway-mode",
+                }:
+                    return False
+            return None
+
+        def parse_mode(value: Any) -> Optional[bool]:
+            if value is None:
+                return None
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)) and value in (0, 1):
+                return bool(value)
+            if isinstance(value, str):
+                text = value.strip().lower()
+                if text in {
+                    "hedge",
+                    "hedged",
+                    "dual",
+                    "dual_side",
+                    "dual-side",
+                    "dual side",
+                    "hedge_mode",
+                    "hedge-mode",
+                }:
+                    return True
+                if text in {
+                    "oneway",
+                    "one-way",
+                    "one_way",
+                    "single",
+                    "single_side",
+                    "single-side",
+                    "single side",
+                    "oneway_mode",
+                    "oneway-mode",
+                }:
+                    return False
+            return None
+
+        if not isinstance(position_mode, dict):
+            return None
+
+        bool_keys = (
+            "hedged",
+            "isHedged",
+            "is_hedged",
+            "dualSidePosition",
+            "dualSide",
+            "dual_side",
+            "dualSidePositionMode",
+        )
+        mode_keys = ("positionMode", "position_mode", "mode")
+
+        def scan(mapping: Dict[str, Any]) -> Optional[bool]:
+            for key in bool_keys:
+                if key in mapping:
+                    parsed = parse_bool(mapping.get(key))
+                    if parsed is not None:
+                        return parsed
+            for key in mode_keys:
+                if key in mapping:
+                    parsed = parse_mode(mapping.get(key))
+                    if parsed is not None:
+                        return parsed
+            return None
+
+        parsed = scan(position_mode)
+        if parsed is not None:
+            return parsed
+
+        info = position_mode.get("info")
+        if isinstance(info, dict):
+            parsed = scan(info)
+            if parsed is not None:
+                return parsed
+
+        data = position_mode.get("data")
+        if isinstance(data, dict):
+            parsed = scan(data)
+            if parsed is not None:
+                return parsed
+
+        return None
+
     def ensure_bingx_hedge_mode(self, symbol: str, require_hedged: bool = False) -> Optional[bool]:
         """
         Best-effort: fetch and cache BingX position mode (hedged vs one-way).
 
+        Returns True (hedged) or False (one-way) when detected, otherwise None.
         If require_hedged=True and the account is not hedged, raises RuntimeError.
         """
         if self.name != "bingx":
             return None
 
-        if self._bingx_is_hedged is not None:
-            if require_hedged and not self._bingx_is_hedged:
-                raise RuntimeError("BingX hedge mode required but account is not hedged (cached).")
-            return self._bingx_is_hedged
+        hedged = self._bingx_is_hedged
+        if hedged is None:
+            try:
+                position_mode = self.ex.fetch_position_mode(symbol)
+                hedged = self._infer_bingx_hedge_mode(position_mode)
+                self._bingx_position_mode = position_mode
+                if hedged is not None:
+                    self._bingx_is_hedged = hedged
+                self._bingx_position_mode_checked_at = datetime.utcnow().isoformat() + "Z"
+            except Exception as exc:
+                logger.warning("[BINGX-POSITION-MODE] fetch failed: %s", exc)
+                if require_hedged:
+                    raise RuntimeError(f"Unable to verify BingX hedge mode: {exc}") from exc
+                return None
 
-        try:
-            position_mode = self.ex.fetch_position_mode(symbol)
-            hedged = bool(position_mode.get("hedged"))
-            self._bingx_position_mode = position_mode
-            self._bingx_is_hedged = hedged
-            self._bingx_position_mode_checked_at = datetime.utcnow().isoformat() + "Z"
-            logger.info("[BINGX-POSITION-MODE] hedged=%s", hedged)
-            if require_hedged and not hedged:
+        logger.info(
+            "[BINGX-POSITION-MODE] symbol=%s hedged=%s require_hedged=%s",
+            symbol,
+            hedged,
+            require_hedged,
+        )
+        if require_hedged:
+            if hedged is None:
+                raise RuntimeError("Unable to verify BingX hedge mode.")
+            if not hedged:
                 raise RuntimeError("BingX hedge mode required but account is not hedged.")
-            return hedged
+        return hedged
+
+    @staticmethod
+    def _normalize_bingx_leverage_side(side: Optional[str]) -> Optional[str]:
+        if side is None:
+            return None
+        value = str(side).strip().upper()
+        if value in ("LONG", "SHORT", "BOTH"):
+            return value
+        if value == "BUY":
+            return "LONG"
+        if value == "SELL":
+            return "SHORT"
+        return None
+
+    @staticmethod
+    def _truncate_text(value: Optional[str], limit: int) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value)
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}..."
+
+    @staticmethod
+    def _scrub_sensitive_text(text: str) -> str:
+        if not text:
+            return text
+        patterns = [
+            (r"(?i)(apikey=)[^&\s]+", r"\1***"),
+            (r"(?i)(api_key=)[^&\s]+", r"\1***"),
+            (r"(?i)(signature=)[^&\s]+", r"\1***"),
+            (r"(?i)(secret=)[^&\s]+", r"\1***"),
+        ]
+        scrubbed = text
+        for pattern, repl in patterns:
+            scrubbed = re.sub(pattern, repl, scrubbed)
+        return scrubbed
+
+    @classmethod
+    def _redact_sensitive(cls, value: Any, depth: int = 0) -> Any:
+        if depth > 3:
+            return "<redacted>"
+        if isinstance(value, dict):
+            redacted: Dict[str, Any] = {}
+            for key, val in value.items():
+                key_str = str(key)
+                key_lower = key_str.lower()
+                if key_lower in ("url", "request", "request_url", "headers"):
+                    redacted[key_str] = "<redacted>"
+                    continue
+                if any(token in key_lower for token in ("apikey", "api_key", "secret", "signature", "password")):
+                    redacted[key_str] = "***"
+                    continue
+                redacted[key_str] = cls._redact_sensitive(val, depth + 1)
+            return redacted
+        if isinstance(value, list):
+            return [cls._redact_sensitive(item, depth + 1) for item in value[:50]]
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="ignore")
+        if isinstance(value, str):
+            return cls._scrub_sensitive_text(value)
+        return value
+
+    @classmethod
+    def _safe_serialize(cls, value: Any, limit: int) -> Optional[str]:
+        if value is None:
+            return None
+        redacted = cls._redact_sensitive(value)
+        try:
+            text = json.dumps(redacted, ensure_ascii=True, separators=(",", ":"))
+        except Exception:
+            text = str(redacted)
+        return cls._truncate_text(text, limit)
+
+    def _extract_ccxt_error_details(
+        self,
+        exc: Exception,
+        *,
+        max_raw_len: int,
+        max_msg_len: int,
+    ) -> Dict[str, Any]:
+        details: Dict[str, Any] = {
+            "exception_type": exc.__class__.__name__,
+            "exception_category": "unknown",
+            "code": None,
+            "http_status": None,
+            "message": None,
+            "raw": None,
+        }
+
+        if isinstance(exc, ccxt.NetworkError):
+            details["exception_category"] = "network"
+        elif isinstance(exc, ccxt.ExchangeError):
+            details["exception_category"] = "exchange"
+        elif isinstance(exc, ccxt.BaseError):
+            details["exception_category"] = "ccxt"
+
+        for attr in ("code", "error_code", "ret_code", "retCode"):
+            value = getattr(exc, attr, None)
+            if value is not None:
+                details["code"] = value
+                break
+
+        for attr in ("status", "status_code", "http_status", "statusCode"):
+            value = getattr(exc, attr, None)
+            if value is not None:
+                details["http_status"] = value
+                break
+
+        message = getattr(exc, "message", None) or str(exc)
+        message = self._scrub_sensitive_text(message)
+        details["message"] = self._truncate_text(message, max_msg_len)
+
+        raw = None
+        for attr in ("body", "response", "data"):
+            value = getattr(exc, attr, None)
+            if value:
+                raw = value
+                break
+        if raw is None:
+            for arg in getattr(exc, "args", []) or []:
+                if isinstance(arg, (dict, list)):
+                    raw = arg
+                    break
+        details["raw"] = self._safe_serialize(raw, max_raw_len)
+        return details
+
+    def _get_bingx_hedge_mode(self, symbol: str) -> Optional[bool]:
+        try:
+            return self.ensure_bingx_hedge_mode(symbol, require_hedged=False)
         except Exception as exc:
-            logger.warning("[BINGX-POSITION-MODE] fetch failed: %s", exc)
-            if require_hedged:
-                raise RuntimeError(f"Unable to verify BingX hedge mode: {exc}") from exc
+            logger.warning("[BINGX-LEVERAGE] Hedge mode check failed: %s", exc)
             return None
 
-    def set_leverage(self, symbol: str, leverage: float) -> Optional[Dict[str, Any]]:
-        """Best-effort leverage setter (exchange-side).
+    def _bingx_leverage_attempt_plan(self, symbol: str, side_hint: Optional[str], hedged: Optional[bool]) -> List[str]:
+        normalized = self._normalize_bingx_leverage_side(side_hint)
+        plan: List[str] = []
+
+        def add(value: Optional[str]) -> None:
+            if value and value not in plan:
+                plan.append(value)
+
+        if hedged is True:
+            if normalized in ("LONG", "SHORT"):
+                add(normalized)
+                add("BOTH")
+            elif normalized == "BOTH":
+                add("BOTH")
+                add("LONG")
+                add("SHORT")
+            else:
+                add("LONG")
+                add("SHORT")
+        elif hedged is False:
+            add("BOTH")
+            if normalized in ("LONG", "SHORT"):
+                add(normalized)
+        else:
+            if normalized in ("LONG", "SHORT"):
+                add(normalized)
+                add("BOTH")
+            else:
+                add("BOTH")
+                add("LONG")
+                add("SHORT")
+
+        return plan
+
+    @staticmethod
+    def _bingx_leverage_fallback_from_error(details: Dict[str, Any]) -> List[str]:
+        text_parts = [details.get("message") or "", details.get("raw") or ""]
+        combined = " ".join(text_parts).lower()
+        sides: List[str] = []
+        if "one-way" in combined or "one way" in combined or "only be set to both" in combined:
+            sides.append("BOTH")
+        if "hedge" in combined or "dual" in combined or ("side" in combined and "long" in combined and "short" in combined):
+            sides.extend(["LONG", "SHORT"])
+        if "side" in combined and "both" in combined:
+            if "BOTH" not in sides:
+                sides.append("BOTH")
+        return sides
+
+    @staticmethod
+    def _log_bingx_leverage_event(level: str, payload: Dict[str, Any]) -> None:
+        try:
+            serialized = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+        except Exception:
+            serialized = str(payload)
+        log_fn = logger.info if level == "info" else logger.warning
+        log_fn("%s", serialized)
+
+    def set_leverage(
+        self,
+        symbol: str,
+        leverage: float,
+        side: Optional[str] = None,
+        *,
+        strict: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Best-effort leverage setter (exchange-side) with BingX side handling.
 
         Notes:
         - Many exchanges require swap/futures market type (`options.defaultType=swap`) which we already set.
@@ -645,17 +975,155 @@ class CcxtClient:
             except Exception:
                 pass
 
-        last_exc: Optional[Exception] = None
-        for sym in candidates:
-            try:
-                resp = setter(leverage_int, sym)
-                logger.info("[%s] leverage set: symbol=%s leverage=%s", self.name, sym, leverage_int)
-                return resp if isinstance(resp, dict) else {"response": resp, "symbol": sym, "leverage": leverage_int}
-            except Exception as exc:
-                last_exc = exc
-                continue
+        if self.name == "bingx":
+            hedged = self._get_bingx_hedge_mode(symbol)
+            sides = self._bingx_leverage_attempt_plan(symbol, side, hedged)
+        else:
+            hedged = None
+            sides = [None]
 
-        logger.warning("[%s] set_leverage failed: symbol=%s leverage=%s err=%s", self.name, symbol, leverage_int, last_exc)
+        env_label = self.bingx_env if self.name == "bingx" else "n/a"
+        results: List[Dict[str, Any]] = []
+        attempted_sides: List[str] = []
+        last_exc: Optional[Exception] = None
+        last_details: Optional[Dict[str, Any]] = None
+        max_attempts = 3
+        allow_multi_success = self.name == "bingx" and side is None and hedged is True
+
+        side_index = 0
+        while side_index < len(sides) and len(attempted_sides) < max_attempts:
+            side_value = sides[side_index]
+            side_index += 1
+            if side_value in attempted_sides:
+                continue
+            attempted_sides.append(side_value)
+
+            params: Dict[str, Any] = {}
+            if self.name == "bingx" and side_value:
+                params["side"] = side_value
+
+            last_exc = None
+            side_success = False
+            for sym in candidates:
+                logger.info(
+                    "[LEVERAGE] %s set_leverage request: symbol=%s leverage=%s side=%s env=%s",
+                    self.name,
+                    sym,
+                    leverage_int,
+                    side_value or "n/a",
+                    env_label,
+                )
+                if self.name == "bingx":
+                    self._log_bingx_leverage_event(
+                        "info",
+                        {
+                            "event": "bingx_set_leverage_attempt",
+                            "attempt_index": len(attempted_sides),
+                            "side": side_value,
+                            "symbol": sym,
+                            "leverage": leverage_int,
+                            "env": env_label,
+                            "strict": strict,
+                        },
+                    )
+                try:
+                    if params:
+                        resp = setter(leverage_int, sym, params)
+                    else:
+                        resp = setter(leverage_int, sym)
+                    logger.info(
+                        "[%s] leverage set: symbol=%s leverage=%s side=%s",
+                        self.name,
+                        sym,
+                        leverage_int,
+                        side_value or "n/a",
+                    )
+                    normalized = resp if isinstance(resp, dict) else {
+                        "response": resp,
+                        "symbol": sym,
+                        "leverage": leverage_int,
+                        "side": side_value,
+                    }
+                    results.append(normalized)
+                    if self.name == "bingx":
+                        self._log_bingx_leverage_event(
+                            "info",
+                            {
+                                "event": "bingx_set_leverage_success",
+                                "used_side": side_value,
+                                "attempts_count": len(attempted_sides),
+                                "symbol": sym,
+                                "leverage": leverage_int,
+                                "env": env_label,
+                            },
+                        )
+                    last_exc = None
+                    side_success = True
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    last_details = self._extract_ccxt_error_details(
+                        exc,
+                        max_raw_len=800,
+                        max_msg_len=300,
+                    )
+                    if self.name == "bingx":
+                        self._log_bingx_leverage_event(
+                            "warning",
+                            {
+                                "event": "bingx_set_leverage_failed",
+                                "symbol": sym,
+                                "leverage": leverage_int,
+                                "attempted_side": side_value,
+                                "env": env_label,
+                                "strict": strict,
+                                "exception_type": last_details.get("exception_type"),
+                                "exception_category": last_details.get("exception_category"),
+                                "extracted_error_code": last_details.get("code"),
+                                "extracted_http_status": last_details.get("http_status"),
+                                "extracted_message": last_details.get("message"),
+                                "extracted_raw": last_details.get("raw"),
+                            },
+                        )
+                        for fallback_side in self._bingx_leverage_fallback_from_error(last_details):
+                            if fallback_side not in sides and len(sides) < max_attempts:
+                                sides.append(fallback_side)
+                    else:
+                        logger.warning(
+                            "[%s] set_leverage failed: symbol=%s leverage=%s err=%s",
+                            self.name,
+                            sym,
+                            leverage_int,
+                            exc,
+                        )
+                    continue
+
+            if side_success and not allow_multi_success:
+                break
+
+        if results:
+            if len(results) == 1:
+                return results[0]
+            return {"results": results, "symbol": symbol, "leverage": leverage_int, "sides": attempted_sides}
+
+        if self.name == "bingx":
+            self._log_bingx_leverage_event(
+                "warning",
+                {
+                    "event": "bingx_set_leverage_exhausted",
+                    "symbol": symbol,
+                    "leverage": leverage_int,
+                    "attempted_sides": attempted_sides,
+                    "env": env_label,
+                    "strict": strict,
+                    "last_error_code": (last_details or {}).get("code"),
+                    "last_http_status": (last_details or {}).get("http_status"),
+                    "last_message": (last_details or {}).get("message"),
+                },
+            )
+
+        if strict and last_exc is not None:
+            raise last_exc
         return None
 
     def fetch_ohlcv_bulk(self, symbol: str, timeframe: str, target_limit: int) -> List[List]:

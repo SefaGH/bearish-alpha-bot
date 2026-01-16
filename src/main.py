@@ -40,7 +40,7 @@ from core.sizing import position_size_usdt
 from core.limits import clamp_amount, meets_or_scale_notional
 from core.normalize import amount_to_precision
 from core.exec_engine import ExecEngine
-from core.execution_env import get_bingx_env, get_execution_backend, is_real_execution_enabled
+from core.execution_env import get_bingx_env, get_execution_backend, is_bingx_leverage_fail_fast, is_real_execution_enabled
 
 DATA_DIR = "data"
 logger = logging.getLogger(__name__)
@@ -498,12 +498,15 @@ async def main_live_trading():
                 set_fn = getattr(client, "set_leverage", None)
                 if not callable(set_fn):
                     continue
+                strict = is_bingx_leverage_fail_fast()
 
                 for sym in symbols:
                     try:
-                        set_fn(sym, trading_leverage)
+                        set_fn(sym, trading_leverage, side=None, strict=strict)
                     except Exception as exc:
                         logger.warning("[LEVERAGE] %s set_leverage failed (continuing): %s", ex_name, exc)
+                        if strict:
+                            raise
         except Exception as exc:
             logger.warning("[LEVERAGE] Bootstrap skipped due to error: %s", exc)
          

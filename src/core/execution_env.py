@@ -86,6 +86,10 @@ def is_vst_fullbot_canary_force_market() -> bool:
     return raw.strip().lower() in _TRUE_VALUES
 
 
+def is_bingx_leverage_fail_fast() -> bool:
+    return env_flag("BINGX_LEVERAGE_FAIL_FAST", False)
+
+
 def get_vst_fullbot_canary_max_closed_trades() -> int:
     value = env_int("VST_FULLBOT_CANARY_MAX_CLOSED_TRADES", 1)
     return max(1, value)

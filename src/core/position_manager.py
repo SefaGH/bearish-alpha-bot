@@ -981,6 +981,21 @@ class AdvancedPositionManager:
                     'amount': amount,
                     'exchange': exchange,  # Include exchange info in order
                 }
+
+                # CRITICAL: BingX hedge mode requires correct positionSide + reduceOnly for closes.
+                # Without these, a BUY used to close a SHORT can be interpreted as opening/increasing LONG,
+                # leaving the SHORT position open on the exchange.
+                try:
+                    exchange_name = str(exchange or "").lower().strip()
+                    if exchange_name == "bingx" and is_real_execution_enabled():
+                        position_side = self._bingx_position_side(side)
+                        if position_side:
+                            close_order_request["execution_params"] = {
+                                "reduceOnly": True,
+                                "positionSide": position_side,
+                            }
+                except Exception:
+                    pass
                 
                 max_attempts = _SHUTDOWN_CLOSE_MAX_ATTEMPTS
                 attempt_success = False

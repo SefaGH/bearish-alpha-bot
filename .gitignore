@@ -67,6 +67,7 @@ logs/gemma_workflow_verification_*.txt
 !PHASE35_GEMMA_VERIFICATION_REPORT.md
 logs/final_training/
 logs/Manifest.txt
+logs/dcahata.txt
 
 # OS
 .DS_Store

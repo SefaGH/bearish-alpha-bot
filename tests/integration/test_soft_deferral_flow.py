@@ -368,6 +368,8 @@ async def test_soft_deferral_recheck_near_miss_loop_prevented_emits_no_signal_ou
             "side": "BUY",
             "timeframe": "5m",
             "reason_code": "strategy.mean_reversion.near_miss",
+            "condition_data": {"near": "lower", "trigger_price": 99.0, "eps_bps": 10},
+            "check_detail": {"fast_watch": {"price": 99.2}},
         }
     )
     assert dispatched is False
@@ -381,6 +383,14 @@ async def test_soft_deferral_recheck_near_miss_loop_prevented_emits_no_signal_ou
     assert data.get("attempt") == 1
     assert data.get("side") == "long"
     assert data.get("timeframe") == "5m"
+
+    eval_events = [r.message for r in caplog.records if str(r.message).startswith("mr_recheck_eval ")]
+    assert eval_events, "Expected mr_recheck_eval telemetry for recheck"
+    _, json_blob = eval_events[-1].split(" ", 1)
+    eval_data = json.loads(json_blob)
+    assert eval_data.get("near") is not None
+    assert eval_data.get("action") == "HOLD"
+    assert eval_data.get("gate_reasons")
 
 
 @pytest.mark.asyncio

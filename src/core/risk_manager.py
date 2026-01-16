@@ -7,6 +7,7 @@ PHASE 3 REFACTOR: Transform into Rules Engine
 
 import logging
 import os
+import json
 from typing import Dict, List, Optional, Any, Tuple, Protocol
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -570,12 +571,37 @@ class RiskManager:
 
         is_high_quality = quality_score >= eff_quality_threshold
         if not is_high_quality:
-            logger.info(
-                "📉 [RISK-SCALING] Denied scale-in for %s | quality=%.2f < %.2f",
-                symbol,
-                quality_score,
-                eff_quality_threshold,
-            )
+            if intent == INTENT_SCALE_IN:
+                logger.info(
+                    "📉 [RISK-SCALING] Denied scale-in for %s | quality=%.2f < %.2f",
+                    symbol,
+                    quality_score,
+                    eff_quality_threshold,
+                )
+                logger.info(
+                    "scale_in_decision %s",
+                    json.dumps(
+                        {
+                            "event": "scale_in_decision",
+                            "symbol": symbol,
+                            "decision": "DENIED",
+                            "stage": "quality",
+                            "quality": quality_score,
+                            "quality_threshold": eff_quality_threshold,
+                        },
+                        sort_keys=True,
+                    ),
+                )
+            else:
+                logger.info(
+                    "📉 [RISK-SCALING] Denied dynamic scaling for %s | intent=%s | quality=%.2f < %.2f",
+                    symbol,
+                    intent,
+                    quality_score,
+                    eff_quality_threshold,
+                )
+                return False, "dynamic_scaling_quality_below_threshold", "risk.dynamic_scaling.quality_below_threshold"
+
             return False, "scale_in_quality_below_threshold", "risk.scale_in.quality_below_threshold"
 
         if max_extra == 0:
@@ -590,7 +616,8 @@ class RiskManager:
         try:
             positions: List[Dict[str, Any]] = pnl_provider.get_positions_for_symbol(
                 symbol,
-                strategy_name=signal.get("strategy_name") if isinstance(signal, dict) else None,
+                # NOTE: PnL gating must be evaluated at symbol+side level.
+                # The risk is shared regardless of which strategy opened the position.
                 side=signal.get("side") if isinstance(signal, dict) else None,
             )
         except Exception as exc:
@@ -649,6 +676,20 @@ class RiskManager:
                 avg_pnl_pct * 100,
                 eff_pnl_threshold * 100,
             )
+            logger.info(
+                "scale_in_decision %s",
+                json.dumps(
+                    {
+                        "event": "scale_in_decision",
+                        "symbol": symbol,
+                        "decision": "DENIED",
+                        "stage": "pnl",
+                        "avg_pnl_pct": avg_pnl_pct,
+                        "pnl_threshold_pct": eff_pnl_threshold,
+                    },
+                    sort_keys=True,
+                ),
+            )
             return False, "scale_in_pnl_below_threshold", "risk.scale_in.pnl_below_threshold"
 
         current_entry = None
@@ -678,6 +719,22 @@ class RiskManager:
                     price_diff_pct * 100,
                     eff_distance_pct * 100,
                 )
+                logger.info(
+                    "scale_in_decision %s",
+                    json.dumps(
+                        {
+                            "event": "scale_in_decision",
+                            "symbol": symbol,
+                            "decision": "DENIED",
+                            "stage": "distance",
+                            "last_entry_price": last_entry_price,
+                            "new_entry_price": current_entry,
+                            "distance_pct": price_diff_pct,
+                            "distance_threshold_pct": eff_distance_pct,
+                        },
+                        sort_keys=True,
+                    ),
+                )
                 return False, "scale_in_distance_below_threshold", "risk.scale_in.distance_below_threshold"
 
         max_allowed = limits.max_positions_per_symbol + max_extra
@@ -698,6 +755,68 @@ class RiskManager:
             if pyramiding_enabled and intent == INTENT_SCALE_IN and max_layers:
                 return False, "pyramiding_max_layers_reached", "risk.scale_in.max_layers_reached"
             return False, "", None
+
+        # Optional: Add-quality scoring (purpose-driven scoring) for pyramiding scale-ins.
+        # IMPORTANT: This runs only AFTER hard gates pass (quality/pnl/distance/slots).
+        # PnL remains a hard gate; it is not a score component.
+        if pyramiding_enabled and intent == INTENT_SCALE_IN and isinstance(pyramiding_cfg, dict):
+            experimental_cfg = pyramiding_cfg.get("experimental", {}) if isinstance(pyramiding_cfg.get("experimental", {}), dict) else {}
+            use_add_quality_logic = bool(experimental_cfg.get("use_add_quality_logic", False))
+            if use_add_quality_logic:
+                try:
+                    min_add_quality = float(pyramiding_cfg.get("min_add_quality", 0.50))
+                except (TypeError, ValueError):
+                    min_add_quality = 0.50
+
+                weights_cfg = pyramiding_cfg.get("add_quality_weights", {}) if isinstance(pyramiding_cfg.get("add_quality_weights", {}), dict) else {}
+                try:
+                    w_signal = float(weights_cfg.get("signal", 0.60))
+                except (TypeError, ValueError):
+                    w_signal = 0.60
+                try:
+                    w_headroom = float(weights_cfg.get("headroom", 0.40))
+                except (TypeError, ValueError):
+                    w_headroom = 0.40
+
+                denom = max(1, int(max_allowed) if isinstance(max_allowed, int) else 1)
+                remaining_slots = max(0, int(max_allowed) - int(symbol_count))
+                headroom_score = max(0.0, min(1.0, remaining_slots / float(denom)))
+
+                # Normalize weights to avoid accidental >1.0 totals.
+                w_sum = w_signal + w_headroom
+                if w_sum <= 0:
+                    w_signal, w_headroom, w_sum = 0.60, 0.40, 1.0
+                w_signal /= w_sum
+                w_headroom /= w_sum
+
+                add_quality = (w_signal * float(quality_score)) + (w_headroom * float(headroom_score))
+                add_quality = max(0.0, min(1.0, float(add_quality)))
+                breakdown = {
+                    "event": "scale_in_add_quality",
+                    "symbol": symbol,
+                    "add_quality": add_quality,
+                    "min_add_quality": min_add_quality,
+                    "components": {
+                        "signal_quality": float(quality_score),
+                        "headroom_score": float(headroom_score),
+                    },
+                    "weights": {
+                        "signal": float(w_signal),
+                        "headroom": float(w_headroom),
+                    },
+                    "slots": {"used": int(symbol_count), "max_allowed": int(max_allowed), "remaining": int(remaining_slots)},
+                }
+
+                if add_quality < min_add_quality:
+                    logger.info(
+                        "📉 [RISK-SCALING] Denied scale-in for %s | add_quality=%.2f < %.2f",
+                        symbol,
+                        add_quality,
+                        min_add_quality,
+                    )
+                    logger.info("scale_in_decision %s", json.dumps({**breakdown, "decision": "DENIED"}, sort_keys=True))
+                    return False, "scale_in_add_quality_below_threshold", "risk.scale_in.add_quality_below_threshold"
+                logger.info("scale_in_decision %s", json.dumps({**breakdown, "decision": "ALLOWED"}, sort_keys=True))
 
         if intent == INTENT_SCALE_IN and pyramiding_enabled:
             logger.info(
@@ -737,6 +856,27 @@ class RiskManager:
         dca_cfg = self._get_dca_cfg(portfolio_manager)
         if not dca_cfg or not dca_cfg.get("enabled"):
             return False, "dca_not_enabled"
+
+        # Strategy allowlist (defense-in-depth). Strategy is resolved from the signal/meta.
+        allowed = None
+        if isinstance(dca_cfg, dict):
+            allowed = (
+                dca_cfg.get("allowed_base_strategies")
+                or dca_cfg.get("allowed_strategies")
+                or dca_cfg.get("enabled_strategies")
+            )
+        if isinstance(allowed, str):
+            allowed = [s.strip() for s in allowed.split(",") if s.strip()]
+
+        if isinstance(allowed, list) and allowed:
+            base_strategy = None
+            if isinstance(signal, dict):
+                base_strategy = (
+                    (signal.get("strategy_name") or signal.get("strategy"))
+                    or ((signal.get("meta") or {}).get("base_strategy") if isinstance(signal.get("meta"), dict) else None)
+                )
+            if base_strategy and base_strategy not in allowed:
+                return False, "dca_strategy_not_allowed"
 
         strategy_cfg = dca_cfg.get("strategy", {}) if isinstance(dca_cfg, dict) else {}
         risk_cfg = dca_cfg.get("risk_limits", {}) if isinstance(dca_cfg, dict) else {}

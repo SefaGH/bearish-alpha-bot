@@ -301,6 +301,18 @@ volume_analyzer:
     - [0.85, "EXTREME"]
 
 # ==============================================================================
+# FAST PRICE WATCH (INCUBATOR)
+# ==============================================================================
+fast_watch:
+  enabled: true
+  interval_ms: 3000
+  max_items_per_tick: 50
+  time_budget_ms: 75
+  max_checks_default: 9
+  ttl_ms_default: 30000
+  check_sample_rate: 20
+
+# ==============================================================================
 # SIGNAL GENERATION & STRATEGIES
 # ==============================================================================
 signals:
@@ -430,12 +442,20 @@ signals:
       # Adaptive STR can continue by marking the MTF meta as bypassed.
       extreme_bypass:
         enabled: true                 # Override with: STRATEGY_STR_MTF_EXTREME_BYPASS_ENABLED
+        # If true, price/ATR-based bypass triggers require RSI extreme for the side.
+        # This prevents mild moves from bypassing higher-timeframe vetoes.
+        require_rsi_extreme: true
+        # Lookback bars for move calculation (uses the strategy eval timeframe, e.g., 30m).
+        # 1 = previous bar (default behavior).
+        move_lookback_bars: 1
         # Directional move in signal direction (sell -> up move, buy -> down move)
-        min_directional_move_pct: 0.004  # Override with: STRATEGY_STR_MTF_EXTREME_BYPASS_MIN_DIR_MOVE_PCT
+        min_directional_move_pct: 0.010  # Override with: STRATEGY_STR_MTF_EXTREME_BYPASS_MIN_DIR_MOVE_PCT
         # Absolute move magnitude (either direction)
         min_abs_move_pct: 0.008        # Override with: STRATEGY_STR_MTF_EXTREME_BYPASS_MIN_ABS_MOVE_PCT
         # Volatility proxy (ATR/price)
         min_atr_pct: 0.006             # Override with: STRATEGY_STR_MTF_EXTREME_BYPASS_MIN_ATR_PCT
+        # Move magnitude in ATR units (abs_move_pct / atr_pct). Example: 1.25 means move >= 1.25 * ATR.
+        min_move_atr_mult: 1.25
         # RSI triggers (optional; set to 0 to disable)
         rsi_oversold_threshold: 25.0    # Override with: STRATEGY_STR_MTF_EXTREME_BYPASS_RSI_OVERSOLD
         rsi_overbought_threshold: 75.0  # Override with: STRATEGY_STR_MTF_EXTREME_BYPASS_RSI_OVERBOUGHT
@@ -634,6 +654,14 @@ strategies:
         atr_squeeze_pct: 0.0015
         atr_expand_pct: 0.0040
         atr_hysteresis_pct: 0.0002
+    rsi_rebound_guard:
+      enabled: true
+      tf: "1m"
+      use_closed_only: true
+      activation_rsi: 25.0
+      activation_z_score: 2.2
+      rebound_rsi: 27.0
+      max_wait_s: 120
 
 # ==============================================================================
 # POSITION EXIT MANAGEMENT
@@ -657,15 +685,30 @@ position_management:
 pyramiding:
   enabled: true                      # Override with: PYRAMIDING_ENABLED (shadow: no behavior change)
   max_layers_per_symbol: 3            # Override with: PYRAMIDING_MAX_LAYERS_PER_SYMBOL
-  min_scale_in_quality: 0.80          # Override with: PYRAMIDING_MIN_SCALE_IN_QUALITY (future use)
+  min_scale_in_quality: 0.445         # Override with: PYRAMIDING_MIN_SCALE_IN_QUALITY
   min_scale_in_unrealized_pnl_pct: 0.005 # Override with: PYRAMIDING_MIN_SCALE_IN_PNL (future use)
   min_scale_in_distance_pct: 0.005    # Override with: PYRAMIDING_MIN_SCALE_IN_DISTANCE (future use)
+  experimental:
+    use_add_quality_logic: true        # Feature flag: purpose-driven scoring for scale-in (hard gates still apply)
+  min_add_quality: 0.50               # Add-quality threshold (0..1)
+  add_quality_weights:
+    signal: 0.60
+    headroom: 0.40
 
 # ==============================================================================
 # DCA (Dollar-Cost Averaging) - v1 (disabled by default; paper-mode first)
 # ==============================================================================
 dca:
   enabled: true                      # Override with: DCA_ENABLED
+
+  # DCA is only allowed for these base strategies (resolved from the anchor/base position).
+  # This matches the design decision: adaptive_str + adaptive_ob only.
+  allowed_base_strategies:
+    - adaptive_str
+    - adaptive_ob
+
+  # Fallback timeframe used for DCA enrichment/data-fetch when the base position does not carry a timeframe.
+  default_timeframe: "5m"
 
   strategy:
     max_layers: 3                     # initial entry + up to 2 DCA layers

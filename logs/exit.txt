@@ -1,0 +1,245 @@
+2026-01-14 17:10:55 - [core.live_trading_engine] - INFO - 📊 [MONITORING-SUMMARY] Active: 1, Total Unrealized P&L: $-1.70, Closed this cycle: 0
+2026-01-14 17:11:01 - [bearish-alpha-bot] - INFO - Shutdown requested (reason=signal, signal=SIGTERM)
+2026-01-14 17:11:01 - [core.production_coordinator] - INFO - Stopping production system...
+2026-01-14 17:11:01 - [core.production_coordinator] - INFO - Queue monitoring task cancelled
+2026-01-14 17:11:01 - [core.production_coordinator] - INFO - 🐕 [WATCHDOG] Task cancelled
+2026-01-14 17:11:01 - [core.production_coordinator] - INFO - RL telemetry monitor task cancelled
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO - Stopping live trading engine...
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO - Position monitoring loop cancelled
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO - Order management loop cancelled
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO - Performance reporting loop cancelled
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO - [DCA] Watch loop cancelled
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO - Signal processing loop cancelled
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO - 📌 [BRIDGE] Bridge loop cancelled. Stats: {'signals_transferred': 4, 'transfer_errors': 0, 'last_transfer_time': datetime.datetime(2026, 1, 14, 16, 2, 48, 357700, tzinfo=datetime.timezone.utc)}
+2026-01-14 17:11:01 - [core.position_manager] - INFO - 
+======================================================================
+2026-01-14 17:11:01 - [core.position_manager] - INFO - 📊 EXIT SUMMARY - Session Statistics
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ======================================================================
+2026-01-14 17:11:01 - [core.position_manager] - INFO - Total Exits: 3
+2026-01-14 17:11:01 - [core.position_manager] - INFO - 
+Exits by Reason:
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   🛑 Stop Loss:     2
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   🎯 Take Profit:   0
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   🚦 Trailing Stop: 1
+2026-01-14 17:11:01 - [core.position_manager] - INFO - 
+Win/Loss Breakdown:
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   ✅ Winning Trades: 1
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   ❌ Losing Trades:  2
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   📈 Win Rate:       33.33%
+2026-01-14 17:11:01 - [core.position_manager] - INFO - 
+P&L Summary:
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   Total P&L:    $-3.83
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   Total Wins:   $+1.06
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   Total Losses: $-4.89
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   Avg Win:      $+1.06
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   Avg Loss:     $-2.45
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ======================================================================
+
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ========================================================================================================================
+2026-01-14 17:11:01 - [core.position_manager] - INFO -  INDIVIDUAL TRADE HISTORY (Last 3)
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ========================================================================================================================
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ID       STRATEGY         SIDE   ENTRY       EXIT        P&L USD     P&L %   R:R   REASON         DUR(min) REGIME    CONF
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ------------------------------------------------------------------------------------------------------------------------
+2026-01-14 17:11:01 - [core.position_manager] - INFO - c059208a   adaptive_str     SHORT    95370.90   96006.70    -2.4160   -0.67% -1.04 STOP_LOSS           35.0 neutral   0.66
+2026-01-14 17:11:01 - [core.position_manager] - INFO - 982e75c8   adaptive_str     SHORT    95986.60   96714.40    -2.4745   -0.76% -1.11 STOP_LOSS            7.6 neutral   0.66
+2026-01-14 17:11:01 - [core.position_manager] - INFO - d9be986a   adaptive_str     SHORT    96867.20   96472.90     1.0646   +0.41%  0.50 TRAILING_STOP       34.5 neutral   0.38
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ------------------------------------------------------------------------------------------------------------------------
+2026-01-14 17:11:01 - [core.position_manager] - INFO - TOTAL P&L: -3.83 USDT  |  Win Rate: 33.3%  |  Avg Win: +1.06  |  Avg Loss: -2.45
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ========================================================================================================================
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO - Live trading engine stopped
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO -   Total signals generated: 4
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO -   Total signals executed: 4
+2026-01-14 17:11:01 - [core.production_coordinator] - INFO - Production system stopped (connections remain open for position closure)
+2026-01-14 17:11:01 - [bearish-alpha-bot] - INFO - 
+======================================================================
+2026-01-14 17:11:01 - [bearish-alpha-bot] - INFO - 🧹 STARTING GRACEFUL SHUTDOWN
+2026-01-14 17:11:01 - [bearish-alpha-bot] - INFO - ======================================================================
+2026-01-14 17:11:01 - [bearish-alpha-bot] - INFO - CRITICAL: Following correct shutdown order to prevent orphaned positions
+2026-01-14 17:11:01 - [bearish-alpha-bot] - INFO - ======================================================================
+2026-01-14 17:11:01 - [bearish-alpha-bot] - INFO - 
+Step 1: Stopping main trading loop (no new signals)...
+2026-01-14 17:11:01 - [core.production_coordinator] - INFO - Coordinator 'stop()' called, delegating to 'stop_system()'.
+2026-01-14 17:11:01 - [core.production_coordinator] - INFO - Stopping production system...
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO - Stopping live trading engine...
+2026-01-14 17:11:01 - [core.position_manager] - INFO - 
+======================================================================
+2026-01-14 17:11:01 - [core.position_manager] - INFO - 📊 EXIT SUMMARY - Session Statistics
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ======================================================================
+2026-01-14 17:11:01 - [core.position_manager] - INFO - Total Exits: 3
+2026-01-14 17:11:01 - [core.position_manager] - INFO - 
+Exits by Reason:
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   🛑 Stop Loss:     2
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   🎯 Take Profit:   0
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   🚦 Trailing Stop: 1
+2026-01-14 17:11:01 - [core.position_manager] - INFO - 
+Win/Loss Breakdown:
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   ✅ Winning Trades: 1
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   ❌ Losing Trades:  2
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   📈 Win Rate:       33.33%
+2026-01-14 17:11:01 - [core.position_manager] - INFO - 
+P&L Summary:
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   Total P&L:    $-3.83
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   Total Wins:   $+1.06
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   Total Losses: $-4.89
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   Avg Win:      $+1.06
+2026-01-14 17:11:01 - [core.position_manager] - INFO -   Avg Loss:     $-2.45
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ======================================================================
+
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ========================================================================================================================
+2026-01-14 17:11:01 - [core.position_manager] - INFO -  INDIVIDUAL TRADE HISTORY (Last 3)
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ========================================================================================================================
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ID       STRATEGY         SIDE   ENTRY       EXIT        P&L USD     P&L %   R:R   REASON         DUR(min) REGIME    CONF
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ------------------------------------------------------------------------------------------------------------------------
+2026-01-14 17:11:01 - [core.position_manager] - INFO - c059208a   adaptive_str     SHORT    95370.90   96006.70    -2.4160   -0.67% -1.04 STOP_LOSS           35.0 neutral   0.66
+2026-01-14 17:11:01 - [core.position_manager] - INFO - 982e75c8   adaptive_str     SHORT    95986.60   96714.40    -2.4745   -0.76% -1.11 STOP_LOSS            7.6 neutral   0.66
+2026-01-14 17:11:01 - [core.position_manager] - INFO - d9be986a   adaptive_str     SHORT    96867.20   96472.90     1.0646   +0.41%  0.50 TRAILING_STOP       34.5 neutral   0.38
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ------------------------------------------------------------------------------------------------------------------------
+2026-01-14 17:11:01 - [core.position_manager] - INFO - TOTAL P&L: -3.83 USDT  |  Win Rate: 33.3%  |  Avg Win: +1.06  |  Avg Loss: -2.45
+2026-01-14 17:11:01 - [core.position_manager] - INFO - ========================================================================================================================
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO - Live trading engine stopped
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO -   Total signals generated: 4
+2026-01-14 17:11:01 - [core.live_trading_engine] - INFO -   Total signals executed: 4
+2026-01-14 17:11:01 - [core.production_coordinator] - INFO - Production system stopped (connections remain open for position closure)
+2026-01-14 17:11:01 - [bearish-alpha-bot] - INFO - ✅ Main trading loop stopped - no new signals will be processed
+2026-01-14 17:11:01 - [bearish-alpha-bot] - INFO - 
+Stopping price prediction loop...
+2026-01-14 17:11:01 - [bearish-alpha-bot] - INFO - 
+Step 2: Closing all open positions (exchange connections ALIVE)...
+2026-01-14 17:11:01 - [bearish-alpha-bot] - INFO - 🔄 Attempting to close 1 open position(s)...
+2026-01-14 17:11:01 - [bearish-alpha-bot] - INFO - 🔑 Injecting 1 live exchange client(s) for position closure
+2026-01-14 17:11:01 - [core.position_manager] - WARNING - 🚨 Initiating closure of all 1 open positions. Reason: shutdown
+2026-01-14 17:11:01 - [core.position_manager] - INFO - Submitting market order to close pos_BTC/USDT:USDT_1768406569: buy 0.0025 BTC/USDT:USDT
+2026-01-14 17:11:01 - [core.order_manager] - INFO - Placing order: BTC/USDT:USDT buy 0.0025 using market algorithm
+2026-01-14 17:11:02 - [core.order_manager] - INFO - Executing market order: BTC/USDT:USDT buy 0.0025 @ ~97588.8 (TRADING_MODE=live, EXECUTION_BACKEND=ccxt)
+2026-01-14 17:11:02 - [core.ccxt_client] - INFO - [bingx] load_markets() wrapper called (reload=False)
+2026-01-14 17:11:02 - [core.ccxt_client] - INFO - [bingx] Using pre-set minimal market structure for 1 symbols.
+2026-01-14 17:11:02 - [core.order_manager] - WARNING - 🟢 [REAL EXECUTION] Submitting MARKET order via CCXT (bingx)
+2026-01-14 17:11:02 - [core.order_manager] - INFO - 🟢 [REAL EXECUTION] Exchange order (sanitized): {'id': '2011486226424532992', 'clientOrderId': None, 'symbol': 'BTC/USDT:USDT', 'type': 'market', 'side': 'buy', 'status': 'closed', 'timestamp': None, 'datetime': None, 'amount': 0.0025, 'filled': 0.0025, 'remaining': 0.0, 'price': 97586.8, 'average': 97586.8, 'cost': 243.967, 'reduceOnly': False, 'info': {'orderId': '2011486226424532992', 'orderID': '2011486226424532992', 'symbol': 'BTC-USDT', 'positionSide': 'LONG', 'side': 'BUY', 'type': 'MARKET', 'price': '0', 'quantity': '0.0025', 'quoteOrderQty': '0', 'stopPrice': '0', 'workingType': 'MARK_PRICE', 'clientOrderID': '', 'clientOrderId': '', 'timeInForce': 'GTC', 'priceRate': '0', 'stopLoss': '', 'takeProfit': '', 'reduceOnly': False, 'activationPrice': '0', 'closePosition': '', 'stopGuaranteed': '', 'status': 'FILLED', 'avgPrice': '97586.8', 'executedQty': '0.0025'}}
+2026-01-14 17:11:02 - [core.order_manager] - INFO - 🟢 [REAL EXECUTION] Market order result: id=2011486226424532992 avg=97586.8000 filled=0.0025 slippage=0.002%
+2026-01-14 17:11:02 - [core.risk_manager] - INFO - Position closed: pos_BTC/USDT:USDT_1768406569 - PnL: $-1.79, Portfolio: $94.38
+2026-01-14 17:11:02 - [core.portfolio_manager] - INFO - Position closed: pos_BTC/USDT:USDT_1768406569 - PnL: $-1.79, Portfolio: $94.38
+2026-01-14 17:11:02 - [core.position_manager] - INFO - 🚪 [SHUTDOWN]
+   Symbol: BTC/USDT:USDT
+   Entry: $96869.40, Exit: $97586.80
+   P&L: $-1.79 (-0.74%)
+   Reason: SHUTDOWN
+2026-01-14 17:11:02 - [core.position_manager] - INFO - TRADE_CLOSED {"event": "TRADE_CLOSED", "timestamp": "2026-01-14T17:11:02.735986Z", "run_id": "20260114_113012_104404", "trade_id": "647b72f9", "position_id": "pos_BTC/USDT:USDT_1768406569", "symbol": "BTC/USDT:USDT", "timeframe": null, "side": "SHORT", "strategy": "adaptive_str", "strategy_name": "adaptive_str", "entry_price": 96869.4, "entry_time": "2026-01-14T16:02:49.185105Z", "exit_price": 97586.8, "exit_order_id": "2011486226424532992", "exit_time": "2026-01-14T17:11:02.735986Z", "exit_reason": "shutdown", "entry_order_id": "2011469056814616576", "position_size": 0.0025, "pnl_usd": -1.7935, "realized_pnl_usd": -1.7935, "realized_pnl_usdt": -1.7935, "pnl_pct": -0.741, "native_hard_stop_order_id": null, "native_hard_stop_position_side": null, "native_hard_stop_working_type": null, "native_hard_stop_qty": null, "native_hard_stop_stop_price": null, "native_hard_stop_place_failed": null, "native_hard_stop_place_failed_reason": null, "native_hard_stop_place_failed_error_code": null, "native_trailing_stop_order_id": null, "native_trailing_stop_position_side": null, "native_trailing_stop_working_type": null, "native_trailing_stop_qty": null, "native_trailing_stop_trailing_percent": null, "prod_canary_0_abort_reason": null, "rr": -0.85, "rr_achieved": -0.85, "duration_min": 68.2, "rsi_at_entry": 75.44024599295871, "regime_at_entry": null, "regime_conf": 0.8769706005576993, "ml_price_score": 0.7511639073491096, "ml_price_score_normalized": 75.11639073491096, "ml_price_direction": "neutral", "ml_regime": "neutral", "ppo_action": null, "ml_position_modifier": null, "quality_score": 0.5072, "quality_breakdown": {"value": 0.5072, "components": {"ml_component": 0.5, "volume_component": 0.2535, "momentum_component": 0.5, "regime_component": 0.877, "ppo_rl_component": 0.5, "spread_component": 0.5}, "weights": {"ml": 0.25, "volume": 0.2, "momentum": 0.2, "regime": 0.15, "ppo_rl": 0.15, "spread": 0.05}, "rr_adjustment": 1.0, "reason": []}, "mfe_pct": 0.037, "mae_pct": -0.761, "volume_bucket_at_entry": "LOW", "volume_strength_at_entry": 0.2535060166623378, "volume_ctx_source": "cached", "momentum_strength_at_entry": 0.5102176165803103, "entry_metadata": {"entry_indicators": {}, "ml_metadata": {"consensus": 0.7511639073491096, "price_direction": "neutral", "regime": "neutral", "price_confidence": 0.8056370530073256, "uncertainty": 0.24125373363494873, "forecast_price": 95990.87111134242, "ml_price_score_normalized": 75.11639073491096, "regime_confidence": 0.8769706005576993}, "regime_data": {}}}
+2026-01-14 17:11:02 - [core.position_manager] - INFO - ✅ Position closure summary: Closed=1, Errors=0
+2026-01-14 17:11:02 - [bearish-alpha-bot] - INFO - ✅ Position closure completed. Result: {'success': True, 'closed_count': 1, 'errors': []}
+2026-01-14 17:11:02 - [bearish-alpha-bot] - INFO - ✅ All positions successfully closed
+2026-01-14 17:11:02 - [bearish-alpha-bot] - INFO - 
+📊 Posting individual trade history table...
+2026-01-14 17:11:02 - [core.position_manager] - INFO - 
+======================================================================
+2026-01-14 17:11:02 - [core.position_manager] - INFO - 📊 EXIT SUMMARY - Session Statistics
+2026-01-14 17:11:02 - [core.position_manager] - INFO - ======================================================================
+2026-01-14 17:11:02 - [core.position_manager] - INFO - Total Exits: 4
+2026-01-14 17:11:02 - [core.position_manager] - INFO - 
+Exits by Reason:
+2026-01-14 17:11:02 - [core.position_manager] - INFO -   🛑 Stop Loss:     2
+2026-01-14 17:11:02 - [core.position_manager] - INFO -   🎯 Take Profit:   0
+2026-01-14 17:11:02 - [core.position_manager] - INFO -   🚦 Trailing Stop: 1
+2026-01-14 17:11:02 - [core.position_manager] - INFO -   🔄 Shutdown: 1
+2026-01-14 17:11:02 - [core.position_manager] - INFO - 
+Win/Loss Breakdown:
+2026-01-14 17:11:02 - [core.position_manager] - INFO -   ✅ Winning Trades: 1
+2026-01-14 17:11:02 - [core.position_manager] - INFO -   ❌ Losing Trades:  3
+2026-01-14 17:11:02 - [core.position_manager] - INFO -   📈 Win Rate:       25.00%
+2026-01-14 17:11:02 - [core.position_manager] - INFO - 
+P&L Summary:
+2026-01-14 17:11:02 - [core.position_manager] - INFO -   Total P&L:    $-5.62
+2026-01-14 17:11:02 - [core.position_manager] - INFO -   Total Wins:   $+1.06
+2026-01-14 17:11:02 - [core.position_manager] - INFO -   Total Losses: $-6.68
+2026-01-14 17:11:02 - [core.position_manager] - INFO -   Avg Win:      $+1.06
+2026-01-14 17:11:02 - [core.position_manager] - INFO -   Avg Loss:     $-2.23
+2026-01-14 17:11:02 - [core.position_manager] - INFO - ======================================================================
+
+2026-01-14 17:11:02 - [core.position_manager] - INFO - ========================================================================================================================
+2026-01-14 17:11:02 - [core.position_manager] - INFO -  INDIVIDUAL TRADE HISTORY (Last 4)
+2026-01-14 17:11:02 - [core.position_manager] - INFO - ========================================================================================================================
+2026-01-14 17:11:02 - [core.position_manager] - INFO - ID       STRATEGY         SIDE   ENTRY       EXIT        P&L USD     P&L %   R:R   REASON         DUR(min) REGIME    CONF
+2026-01-14 17:11:02 - [core.position_manager] - INFO - ------------------------------------------------------------------------------------------------------------------------
+2026-01-14 17:11:02 - [core.position_manager] - INFO - c059208a   adaptive_str     SHORT    95370.90   96006.70    -2.4160   -0.67% -1.04 STOP_LOSS           35.0 neutral   0.66
+2026-01-14 17:11:02 - [core.position_manager] - INFO - 982e75c8   adaptive_str     SHORT    95986.60   96714.40    -2.4745   -0.76% -1.11 STOP_LOSS            7.6 neutral   0.66
+2026-01-14 17:11:02 - [core.position_manager] - INFO - d9be986a   adaptive_str     SHORT    96867.20   96472.90     1.0646   +0.41%  0.50 TRAILING_STOP       34.5 neutral   0.38
+2026-01-14 17:11:02 - [core.position_manager] - INFO - 647b72f9   adaptive_str     SHORT    96869.40   97586.80    -1.7935   -0.74% -0.85 SHUTDOWN            68.2 neutral   0.88
+2026-01-14 17:11:02 - [core.position_manager] - INFO - ------------------------------------------------------------------------------------------------------------------------
+2026-01-14 17:11:02 - [core.position_manager] - INFO - TOTAL P&L: -5.62 USDT  |  Win Rate: 25.0%  |  Avg Win: +1.06  |  Avg Loss: -2.23
+2026-01-14 17:11:02 - [core.position_manager] - INFO - ========================================================================================================================
+2026-01-14 17:11:02 - [bearish-alpha-bot] - INFO - 
+Step 3: Stopping WebSocket streams...
+2026-01-14 17:11:02 - [bearish-alpha-bot] - INFO - [WS-OPT] Stopping WebSocket streams...
+2026-01-14 17:11:02 - [core.bingx_websocket] - INFO - Stopping WebSocket client...
+2026-01-14 17:11:03 - [core.bingx_websocket] - INFO - WebSocket client stop command issued.
+2026-01-14 17:11:03 - [core.bingx_websocket] - WARNING - WebSocket connection closed: None - None
+2026-01-14 17:11:03 - [core.websocket_client_bingx] - INFO - BingX WebSocket client wrapper closed successfully.
+2026-01-14 17:11:03 - [core.websocket_manager] - INFO - WebSocketManager closed successfully.
+2026-01-14 17:11:03 - [bearish-alpha-bot] - INFO - [WS-OPT] ✅ WebSocket streams stopped
+2026-01-14 17:11:03 - [bearish-alpha-bot] - INFO - ✅ WebSocket streams stopped
+2026-01-14 17:11:03 - [bearish-alpha-bot] - INFO - 
+Step 5: Closing exchange connections...
+2026-01-14 17:11:03 - [bearish-alpha-bot] - INFO - ✅ bingx exchange connection closed
+2026-01-14 17:11:03 - [bearish-alpha-bot] - INFO - 
+======================================================================
+2026-01-14 17:11:03 - [bearish-alpha-bot] - INFO - ✅ GRACEFUL SHUTDOWN COMPLETED SUCCESSFULLY
+2026-01-14 17:11:03 - [bearish-alpha-bot] - INFO - ✅ All positions closed, all connections terminated
+2026-01-14 17:11:03 - [bearish-alpha-bot] - INFO - 📊 Report will be generated by Logic App (bearish-bot-orchestrator)
+2026-01-14 17:11:03 - [bearish-alpha-bot] - INFO - ======================================================================
+2026-01-14 17:11:07 - [core.production_coordinator] - INFO - 
+Shutting down production trading loop...
+2026-01-14 17:11:07 - [core.live_trading_engine] - INFO - Stopping live trading engine...
+2026-01-14 17:11:07 - [core.position_manager] - INFO - 
+======================================================================
+2026-01-14 17:11:07 - [core.position_manager] - INFO - 📊 EXIT SUMMARY - Session Statistics
+2026-01-14 17:11:07 - [core.position_manager] - INFO - ======================================================================
+2026-01-14 17:11:07 - [core.position_manager] - INFO - Total Exits: 4
+2026-01-14 17:11:07 - [core.position_manager] - INFO - 
+Exits by Reason:
+2026-01-14 17:11:07 - [core.position_manager] - INFO -   🛑 Stop Loss:     2
+2026-01-14 17:11:07 - [core.position_manager] - INFO -   🎯 Take Profit:   0
+2026-01-14 17:11:07 - [core.position_manager] - INFO -   🚦 Trailing Stop: 1
+2026-01-14 17:11:07 - [core.position_manager] - INFO -   🔄 Shutdown: 1
+2026-01-14 17:11:07 - [core.position_manager] - INFO - 
+Win/Loss Breakdown:
+2026-01-14 17:11:07 - [core.position_manager] - INFO -   ✅ Winning Trades: 1
+2026-01-14 17:11:07 - [core.position_manager] - INFO -   ❌ Losing Trades:  3
+2026-01-14 17:11:07 - [core.position_manager] - INFO -   📈 Win Rate:       25.00%
+2026-01-14 17:11:07 - [core.position_manager] - INFO - 
+P&L Summary:
+2026-01-14 17:11:07 - [core.position_manager] - INFO -   Total P&L:    $-5.62
+2026-01-14 17:11:07 - [core.position_manager] - INFO -   Total Wins:   $+1.06
+2026-01-14 17:11:07 - [core.position_manager] - INFO -   Total Losses: $-6.68
+2026-01-14 17:11:07 - [core.position_manager] - INFO -   Avg Win:      $+1.06
+2026-01-14 17:11:07 - [core.position_manager] - INFO -   Avg Loss:     $-2.23
+2026-01-14 17:11:07 - [core.position_manager] - INFO - ======================================================================
+
+2026-01-14 17:11:07 - [core.position_manager] - INFO - ========================================================================================================================
+2026-01-14 17:11:07 - [core.position_manager] - INFO -  INDIVIDUAL TRADE HISTORY (Last 4)
+2026-01-14 17:11:07 - [core.position_manager] - INFO - ========================================================================================================================
+2026-01-14 17:11:07 - [core.position_manager] - INFO - ID       STRATEGY         SIDE   ENTRY       EXIT        P&L USD     P&L %   R:R   REASON         DUR(min) REGIME    CONF
+2026-01-14 17:11:07 - [core.position_manager] - INFO - ------------------------------------------------------------------------------------------------------------------------
+2026-01-14 17:11:07 - [core.position_manager] - INFO - c059208a   adaptive_str     SHORT    95370.90   96006.70    -2.4160   -0.67% -1.04 STOP_LOSS           35.0 neutral   0.66
+2026-01-14 17:11:07 - [core.position_manager] - INFO - 982e75c8   adaptive_str     SHORT    95986.60   96714.40    -2.4745   -0.76% -1.11 STOP_LOSS            7.6 neutral   0.66
+2026-01-14 17:11:07 - [core.position_manager] - INFO - d9be986a   adaptive_str     SHORT    96867.20   96472.90     1.0646   +0.41%  0.50 TRAILING_STOP       34.5 neutral   0.38
+2026-01-14 17:11:07 - [core.position_manager] - INFO - 647b72f9   adaptive_str     SHORT    96869.40   97586.80    -1.7935   -0.74% -0.85 SHUTDOWN            68.2 neutral   0.88
+2026-01-14 17:11:07 - [core.position_manager] - INFO - ------------------------------------------------------------------------------------------------------------------------
+2026-01-14 17:11:07 - [core.position_manager] - INFO - TOTAL P&L: -5.62 USDT  |  Win Rate: 25.0%  |  Avg Win: +1.06  |  Avg Loss: -2.23
+2026-01-14 17:11:07 - [core.position_manager] - INFO - ========================================================================================================================
+2026-01-14 17:11:07 - [core.live_trading_engine] - INFO - Live trading engine stopped
+2026-01-14 17:11:07 - [core.live_trading_engine] - INFO -   Total signals generated: 4
+2026-01-14 17:11:07 - [core.live_trading_engine] - INFO -   Total signals executed: 4
+2026-01-14 17:11:07 - [core.production_coordinator] - INFO - Production trading loop stopped
+2026-01-14 17:11:07 - [bearish-alpha-bot] - INFO - 🔍 [LAUNCHER-DEBUG] coordinator.run_production_loop() RETURNED
+2026-01-14 17:11:07 - [bearish-alpha-bot] - INFO - 
+======================================================================
+2026-01-14 17:11:07 - [bearish-alpha-bot] - INFO - INITIATING GRACEFUL SHUTDOWN
+2026-01-14 17:11:07 - [bearish-alpha-bot] - INFO - ======================================================================
+2026-01-14 17:11:07 - [bearish-alpha-bot] - INFO - Cleanup already completed, skipping.
+2026-01-14 17:11:07 - [ml.price_predictor] - INFO - 🧠 [PRICE-ENGINE] Prediction loop cancelled
+2026-01-14 17:11:07 - [ml.price_predictor] - INFO - 🧠 [PRICE-ENGINE] Prediction loop stopped
+2026-01-14 17:11:07 - [core.bingx_websocket] - INFO - Event queue processor cancelled.
+2026-01-14 17:11:09,673 INFO ========================================
+2026-01-14 17:11:09,674 INFO ✅ Bearish Alpha Bot completed successfully (exit code 0)
+2026-01-14 17:11:09,674 INFO (Analysis is based on logs; use diagnostics/log_analyzer_auto_plus.py or helper scripts after stop, regardless of reason)
+2026-01-14 17:11:09,674 INFO ========================================
+ *  Terminal will be reused by tasks, press any key to close it. 

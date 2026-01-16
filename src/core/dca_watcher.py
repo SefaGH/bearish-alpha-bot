@@ -25,6 +25,9 @@ class DCAWatcher:
     ):
         self.cfg = cfg or {}
         self.dca_cfg = (self.cfg.get("dca") or {}) if isinstance(self.cfg, dict) else {}
+        self._default_timeframe = (
+            (self.dca_cfg.get("default_timeframe") if isinstance(self.dca_cfg, dict) else None) or "5m"
+        )
         self.position_manager = position_manager
         self.portfolio_manager = portfolio_manager
         self.market_data_pipeline = market_data_pipeline
@@ -112,7 +115,7 @@ class DCAWatcher:
                 "last_trigger_ts": 0.0,
                 "stop_loss": base.get("stop_loss"),
                 "take_profit": base.get("take_profit"),
-                "timeframe": base.get("timeframe") or base.get("tf"),
+                "timeframe": base.get("timeframe") or base.get("tf") or self._default_timeframe,
                 "strategy_name": base.get("strategy_name") or base.get("strategy") or "unknown",
                 "leverage": base_leverage,
             }
@@ -130,6 +133,7 @@ class DCAWatcher:
         positions: List[Dict[str, Any]],
         state: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
+        base = None
         # Per-strategy/profile gating: allow DCA only when enabled for the base strategy.
         try:
             base_positions = [p for p in positions if not self._is_dca_position(p)]
@@ -156,6 +160,28 @@ class DCAWatcher:
         current_price = await self._get_current_price(symbol)
         if current_price is None:
             return None
+
+        # Hard requirement: DCA only when the anchored/base position is losing.
+        # (Explicit check to match the intended design, even if adverse-move math already implies it.)
+        try:
+            base_entry = None
+            base_side = None
+            if isinstance(base, dict):
+                base_entry = base.get("entry_price") or base.get("entry") or base.get("price")
+                base_side = (base.get("side") or base.get("direction") or "").lower()
+            if base_entry is None:
+                base_entry = state.get("anchor_price")
+            if base_side:
+                direction_for_pnl = base_side
+            else:
+                direction_for_pnl = (state.get("direction") or "long").lower()
+
+            pnl_pct = self._compute_unrealized_pnl_pct(base_entry, current_price, direction_for_pnl)
+            if pnl_pct is not None and pnl_pct >= 0:
+                return None
+        except Exception:
+            # If we can't compute PnL reliably, fall back to adverse-move gating.
+            pass
 
         anchor_price = state.get("anchor_price")
         direction = (state.get("direction") or "long").lower()
@@ -188,6 +214,20 @@ class DCAWatcher:
             positions=positions,
         )
 
+    @staticmethod
+    def _compute_unrealized_pnl_pct(entry_price: Optional[float], current_price: Optional[float], direction: str) -> Optional[float]:
+        try:
+            entry_val = float(entry_price) if entry_price is not None else None
+            current_val = float(current_price) if current_price is not None else None
+        except (TypeError, ValueError):
+            return None
+        if not entry_val or entry_val <= 0 or not current_val or current_val <= 0:
+            return None
+        direction = (direction or "").lower()
+        if direction in ("short", "sell"):
+            return (entry_val - current_val) / entry_val
+        return (current_val - entry_val) / entry_val
+
     def _is_dca_enabled_for_base_position(self, base_position: Dict[str, Any]) -> bool:
         """
         Decide whether DCA is enabled for this base position's strategy/profile.
@@ -217,6 +257,22 @@ class DCAWatcher:
         )
         if not base_strategy or base_strategy == "unknown":
             return True
+
+        # Optional allowlist (preferred): if configured, only these base strategies can emit DCA.
+        allowed = None
+        if isinstance(self.dca_cfg, dict):
+            allowed = (
+                self.dca_cfg.get("allowed_base_strategies")
+                or self.dca_cfg.get("allowed_strategies")
+                or self.dca_cfg.get("enabled_strategies")
+            )
+
+        if isinstance(allowed, str):
+            allowed = [s.strip() for s in allowed.split(",") if s.strip()]
+
+        if isinstance(allowed, list) and allowed:
+            if base_strategy not in allowed:
+                return False
 
         strategies_cfg = self.cfg.get("strategies", {}) if isinstance(self.cfg, dict) else {}
         strat_cfg = strategies_cfg.get(base_strategy, {}) if isinstance(strategies_cfg, dict) else {}
@@ -273,7 +329,7 @@ class DCAWatcher:
             "price": current_price,
             "reason": reason,
             "strategy_name": strategy_name,
-            "timeframe": state.get("timeframe"),
+            "timeframe": state.get("timeframe") or self._default_timeframe,
             "amount": amount,
             "notional": volume_usdt,
             "stop": state.get("stop_loss"),
