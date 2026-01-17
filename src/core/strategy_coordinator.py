@@ -7,6 +7,7 @@ import asyncio
 import heapq
 import itertools
 import logging
+import math
 import re
 import threading
 import time
@@ -749,6 +750,25 @@ class StrategyCoordinator:
         except Exception:
             self._fast_watch_check_sample_rate = 20
         self._fast_watch_check_sample_rate = max(0, self._fast_watch_check_sample_rate)
+        try:
+            self._fast_watch_max_rearms = int(fast_watch_cfg.get("max_rearms", 1) or 1)
+        except Exception:
+            self._fast_watch_max_rearms = 1
+        self._fast_watch_max_rearms = max(0, self._fast_watch_max_rearms)
+        try:
+            self._fast_watch_rearm_backoff_mult = float(fast_watch_cfg.get("rearm_backoff_mult", 2.0) or 2.0)
+        except Exception:
+            self._fast_watch_rearm_backoff_mult = 2.0
+        if not math.isfinite(self._fast_watch_rearm_backoff_mult) or self._fast_watch_rearm_backoff_mult <= 0:
+            self._fast_watch_rearm_backoff_mult = 2.0
+        try:
+            self._fast_watch_rearm_max_interval_ms = int(
+                fast_watch_cfg.get("rearm_max_interval_ms", self._fast_watch_interval_ms * 4)
+                or self._fast_watch_interval_ms * 4
+            )
+        except Exception:
+            self._fast_watch_rearm_max_interval_ms = self._fast_watch_interval_ms * 4
+        self._fast_watch_rearm_max_interval_ms = max(self._fast_watch_interval_ms, self._fast_watch_rearm_max_interval_ms)
         self._fast_watch_check_counter = 0
         self._fast_watch_task: Optional[asyncio.Task] = None
 
@@ -1286,11 +1306,23 @@ class StrategyCoordinator:
         pending_reason_code = None
         if isinstance(item, dict):
             pending_reason_code = item.get("pending_reason_code") or item.get("reason_code")
+        refresh_policy = item.get("refresh_policy") if isinstance(item, dict) else None
         if parent_pending_id is not None and pending_reason_code is not None:
             try:
                 self._remember_soft_deferral_pending_reason(str(parent_pending_id), str(pending_reason_code))
             except Exception:
                 pass
+        detail = check_detail or {}
+        if str(refresh_policy or "").upper() == "FAST_PRICE_WATCH" and isinstance(item, dict):
+            fast_meta = {
+                "rearm_count": item.get("rearm_count", 0),
+                "max_rearms": item.get("max_rearms", self._fast_watch_max_rearms),
+                "expires_at_ms": item.get("expires_at_ms") or item.get("fast_expires_at_ms"),
+                "created_ts_ms": item.get("fast_created_ts_ms") or item.get("first_seen_ts_ms"),
+                "watch_interval_ms": item.get("fast_watch_interval_ms"),
+            }
+            detail = dict(detail) if isinstance(detail, dict) else {}
+            detail.setdefault("fast_watch_meta", fast_meta)
         out = {
             "event": "strategy_recheck_request",
             "ts_ms": ts_ms,
@@ -1309,7 +1341,8 @@ class StrategyCoordinator:
             "pending_reason_code": pending_reason_code,
             "dedupe_key": item.get("dedupe_key") if isinstance(item, dict) else None,
             "condition_data": payload.get("condition_data") if isinstance(payload, dict) else None,
-            "check_detail": check_detail or {},
+            "refresh_policy": refresh_policy,
+            "check_detail": detail,
         }
         safe_out = self._json_sanitize(out)
         try:
@@ -1452,6 +1485,19 @@ class StrategyCoordinator:
             "ctx_hash": None,
             "stage": stage,
         }
+        if str(refresh_policy).upper() == "FAST_PRICE_WATCH":
+            condition_data = safe_payload.get("condition_data") if isinstance(safe_payload.get("condition_data"), dict) else {}
+            watch_interval_ms = self._resolve_fast_watch_interval_ms(condition_data)
+            max_rearms = condition_data.get("max_rearms")
+            try:
+                max_rearms = int(max_rearms)
+            except Exception:
+                max_rearms = self._fast_watch_max_rearms
+            max_rearms = max(0, int(max_rearms))
+            new_item.setdefault("state", "watching")
+            new_item.setdefault("rearm_count", 0)
+            new_item.setdefault("max_rearms", max_rearms)
+            new_item.setdefault("fast_watch_interval_ms", watch_interval_ms)
 
         emit_add: Optional[Dict[str, Any]] = None
         emit_drop: Optional[Dict[str, Any]] = None
@@ -1522,6 +1568,19 @@ class StrategyCoordinator:
                         existing["pending_reason_code"] = pending_reason_code_str
                     if not existing.get("parent_pending_id") and parent_pending_id_str:
                         existing["parent_pending_id"] = parent_pending_id_str
+                    if str(refresh_policy).upper() == "FAST_PRICE_WATCH":
+                        condition_data = safe_payload.get("condition_data") if isinstance(safe_payload.get("condition_data"), dict) else {}
+                        watch_interval_ms = self._resolve_fast_watch_interval_ms(condition_data)
+                        max_rearms = condition_data.get("max_rearms")
+                        try:
+                            max_rearms = int(max_rearms)
+                        except Exception:
+                            max_rearms = self._fast_watch_max_rearms
+                        max_rearms = max(0, int(max_rearms))
+                        existing.setdefault("state", "watching")
+                        existing.setdefault("rearm_count", 0)
+                        existing.setdefault("max_rearms", max_rearms)
+                        existing.setdefault("fast_watch_interval_ms", watch_interval_ms)
 
                     try:
                         cache_key = existing_parent_pending_id or (
@@ -2078,10 +2137,10 @@ class StrategyCoordinator:
             for dedupe_key, item in list(self._incubator_items.items()):
                 if self._now_ms() - start_ms >= time_budget_ms:
                     break
-                if str(item.get("refresh_policy") or "").upper() != "FAST_PRICE_WATCH":
-                    continue
                 payload = item.get("payload") if isinstance(item.get("payload"), dict) else None
                 if not isinstance(payload, dict):
+                    continue
+                if str(item.get("refresh_policy") or "").upper() != "FAST_PRICE_WATCH":
                     continue
                 condition_data = payload.get("condition_data") if isinstance(payload.get("condition_data"), dict) else {}
                 if not isinstance(condition_data, dict):
@@ -2105,6 +2164,10 @@ class StrategyCoordinator:
                     removed = self._incubator_items.pop(dedupe_key, None)
                     if removed:
                         expired_items.append((removed, condition_data, expires_at_ms, expire_reason, created_ts_ms))
+                    continue
+
+                state = str(item.get("state") or "watching").strip().lower()
+                if state != "watching":
                     continue
 
                 try:
@@ -2174,6 +2237,9 @@ class StrategyCoordinator:
                 dedupe_key = item["dedupe_key"]
                 live_item = self._incubator_items.get(dedupe_key)
                 if not live_item:
+                    continue
+                state = str(live_item.get("state") or "watching").strip().lower()
+                if state != "watching":
                     continue
                 payload = live_item.get("payload") if isinstance(live_item.get("payload"), dict) else None
                 if not isinstance(payload, dict):
@@ -2280,32 +2346,32 @@ class StrategyCoordinator:
                 )
 
                 if hit:
-                    removed = self._incubator_items.pop(dedupe_key, None)
-                    if removed:
-                        check_detail = {
-                            "fast_watch": {
-                                "price": price,
-                                "trigger_price": trigger_price,
-                                "eps_bps": eps_bps,
-                                "trigger_kind": trigger_kind,
-                            }
+                    live_item["state"] = "awaiting_recheck"
+                    live_item["fast_watch_last_trigger_ts_ms"] = now_ms
+                    check_detail = {
+                        "fast_watch": {
+                            "price": price,
+                            "trigger_price": trigger_price,
+                            "eps_bps": eps_bps,
+                            "trigger_kind": trigger_kind,
                         }
-                        triggers.append((removed, check_detail))
-                        outcomes.append(
-                            {
-                                "item": removed,
-                                "condition_data": condition_data,
-                                "outcome": "triggered",
-                                "checks_done": checks_done,
-                                "price": price,
-                                "created_ts_ms": created_ts_ms,
-                                "expires_at_ms": expires_at_ms,
-                                "expire_reason": "hit",
-                                "cache_hit": True,
-                                "cache_source": cache_source,
-                                "miss_count": miss_count,
-                            }
-                        )
+                    }
+                    triggers.append((live_item, check_detail))
+                    outcomes.append(
+                        {
+                            "item": live_item,
+                            "condition_data": condition_data,
+                            "outcome": "triggered",
+                            "checks_done": checks_done,
+                            "price": price,
+                            "created_ts_ms": created_ts_ms,
+                            "expires_at_ms": expires_at_ms,
+                            "expire_reason": "hit",
+                            "cache_hit": True,
+                            "cache_source": cache_source,
+                            "miss_count": miss_count,
+                        }
+                    )
                     continue
 
                 if max_checks and checks_done >= max_checks:
@@ -2345,7 +2411,7 @@ class StrategyCoordinator:
                 cache_source=outcome.get("cache_source"),
                 miss_count=outcome.get("miss_count"),
             )
-            if outcome.get("outcome") in ("triggered", "expired", "max_checks"):
+            if outcome.get("outcome") in ("expired", "max_checks"):
                 self._emit_fast_watch_waiting_room_compat(
                     outcome["item"],
                     outcome=str(outcome.get("outcome")),
@@ -2552,6 +2618,39 @@ class StrategyCoordinator:
         except Exception:
             logger.info("fast_watch_outcome %s", safe_out)
 
+    def _emit_fast_watch_rearm(
+        self,
+        item: Dict[str, Any],
+        *,
+        interval_ms: int,
+        rearm_count: int,
+        remaining_ttl_ms: Optional[int],
+        reason: str,
+    ) -> None:
+        payload = item.get("payload", {}) if isinstance(item, dict) else {}
+        out = {
+            "event": "fast_watch_rearm",
+            "ts_ms": self._now_ms(),
+            "run_id": get_current_run_id(),
+            "pending_id": item.get("pending_id") if isinstance(item, dict) else None,
+            "parent_pending_id": item.get("parent_pending_id") if isinstance(item, dict) else None,
+            "signal_id": payload.get("signal_id") if isinstance(payload, dict) else None,
+            "strategy": payload.get("strategy_name") or payload.get("strategy"),
+            "symbol": payload.get("symbol"),
+            "side": payload.get("side"),
+            "timeframe": payload.get("timeframe") or payload.get("tf"),
+            "dedupe_key": item.get("dedupe_key"),
+            "interval_ms": int(interval_ms),
+            "rearm_count": int(rearm_count),
+            "remaining_ttl_ms": remaining_ttl_ms,
+            "reason": str(reason),
+        }
+        safe_out = self._json_sanitize(out)
+        try:
+            logger.info("fast_watch_rearm %s", json.dumps(safe_out, ensure_ascii=False, sort_keys=True))
+        except Exception:
+            logger.info("fast_watch_rearm %s", safe_out)
+
     def _emit_fast_watch_waiting_room_compat(
         self,
         item: Dict[str, Any],
@@ -2584,6 +2683,110 @@ class StrategyCoordinator:
         if expire_reason:
             extra["expire_reason"] = expire_reason
         self._emit_waiting_room_event("waiting_room_drop", item, **extra)
+
+    async def on_recheck_result(
+        self,
+        pending_id: Optional[str],
+        *,
+        rearm: bool,
+        interval_hint_ms: Optional[int] = None,
+        decision_meta: Optional[Dict[str, Any]] = None,
+        final_reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not pending_id:
+            return {"status": "error", "reason": "missing_pending_id"}
+        pending_id_str = str(pending_id)
+        item = None
+        dedupe_key = None
+        async with self._incubator_lock:
+            for key, cand in self._incubator_items.items():
+                cand_pending = cand.get("pending_id")
+                if cand_pending is not None and str(cand_pending) == pending_id_str:
+                    item = cand
+                    dedupe_key = key
+                    break
+        if not item or not dedupe_key:
+            return {"status": "missing", "reason": "pending_not_found"}
+        if str(item.get("refresh_policy") or "").upper() != "FAST_PRICE_WATCH":
+            return {"status": "ignored", "reason": "not_fast_watch"}
+
+        now_ms = self._now_ms()
+        expires_at_ms = self._coerce_int(item.get("expires_at_ms") or item.get("fast_expires_at_ms"))
+        remaining_ttl_ms = None
+        if expires_at_ms:
+            remaining_ttl_ms = int(expires_at_ms - now_ms)
+        rearm_count = int(item.get("rearm_count") or 0)
+        max_rearms = int(item.get("max_rearms") or self._fast_watch_max_rearms)
+
+        if rearm:
+            if expires_at_ms and now_ms >= expires_at_ms:
+                rearm = False
+                final_reason = final_reason or "expired"
+            elif rearm_count >= max_rearms:
+                rearm = False
+                final_reason = final_reason or "max_rearms"
+
+        if rearm:
+            base_interval = int(item.get("fast_watch_interval_ms") or self._fast_watch_interval_ms)
+            interval_ms = base_interval
+            if interval_hint_ms is not None:
+                try:
+                    interval_ms = int(interval_hint_ms)
+                except Exception:
+                    interval_ms = base_interval
+            else:
+                interval_ms = int(base_interval * self._fast_watch_rearm_backoff_mult)
+            interval_ms = max(1, interval_ms)
+            if self._fast_watch_rearm_max_interval_ms:
+                interval_ms = min(interval_ms, int(self._fast_watch_rearm_max_interval_ms))
+
+            async with self._incubator_lock:
+                live_item = self._incubator_items.get(dedupe_key)
+                if live_item:
+                    live_item["state"] = "watching"
+                    live_item["rearm_count"] = rearm_count + 1
+                    live_item["fast_watch_interval_ms"] = interval_ms
+                    live_item["next_check_at_ms"] = now_ms + interval_ms
+            self._emit_fast_watch_rearm(
+                item,
+                interval_ms=interval_ms,
+                rearm_count=rearm_count + 1,
+                remaining_ttl_ms=remaining_ttl_ms,
+                reason=str(decision_meta.get("rearm_reason") if isinstance(decision_meta, dict) else "rearm"),
+            )
+            return {
+                "status": "rearmed",
+                "dedupe_key": dedupe_key,
+                "rearm_count": rearm_count + 1,
+                "remaining_ttl_ms": remaining_ttl_ms,
+                "next_interval_ms": interval_ms,
+                "expires_at_ms": expires_at_ms,
+            }
+
+        drop_reason = final_reason or "recheck_hold"
+        if drop_reason == "rearm_limit":
+            drop_reason = "max_rearms"
+        if rearm_count >= max_rearms:
+            drop_reason = "max_rearms"
+        async with self._incubator_lock:
+            removed = self._incubator_items.pop(dedupe_key, None)
+        if removed:
+            removed["state"] = "finalized"
+            self._emit_waiting_room_event(
+                "waiting_room_drop",
+                removed,
+                drop_kind="fast_watch_final",
+                drop_reason=drop_reason,
+                rearm_count=rearm_count,
+                remaining_ttl_ms=remaining_ttl_ms,
+            )
+        return {
+            "status": "finalized",
+            "dedupe_key": dedupe_key,
+            "drop_reason": drop_reason,
+            "rearm_count": rearm_count,
+            "remaining_ttl_ms": remaining_ttl_ms,
+        }
 
     def _emit_fast_watch_downgrade(self, item: Dict[str, Any], *, reason: str) -> None:
         payload = item.get("payload", {}) if isinstance(item, dict) else {}

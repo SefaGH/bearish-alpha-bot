@@ -1,8 +1,10 @@
 import asyncio
+import asyncio
 import pytest
 from types import SimpleNamespace
+from datetime import datetime, timezone, timedelta
 
-from core.position_manager import AdvancedPositionManager
+from core.position_manager import AdvancedPositionManager, ExitReason
 
 
 class DummyRiskManager:
@@ -47,10 +49,11 @@ class DummyRiskManager:
 
 
 class DummyPortfolioManager:
-    def __init__(self):
+    def __init__(self, cfg=None):
         self.trade_count = 0
         self.registered = {}
         self.closed = []
+        self.cfg = cfg or {}
 
     def increment_trade_count(self):
         self.trade_count += 1
@@ -69,9 +72,9 @@ class DummyPortfolioManager:
         return dict(self.registered)
 
 
-def make_manager():
+def make_manager(cfg=None):
     risk_manager = DummyRiskManager()
-    portfolio_manager = DummyPortfolioManager()
+    portfolio_manager = DummyPortfolioManager(cfg=cfg)
     manager = AdvancedPositionManager(
         risk_manager=risk_manager,
         order_manager=object(),
@@ -233,3 +236,118 @@ async def test_close_position_notifies_dispatcher():
     await asyncio.sleep(0)
 
     assert calls, "Dispatcher notifier should be invoked after closing a position"
+
+
+def _exit_settings_cfg(*, max_hold_seconds=900, trigger_pct=0.0014, offset_pct=0.0012):
+    return {
+        "strategies": {
+            "mean_reversion": {
+                "exit_settings": {
+                    "max_hold_seconds": max_hold_seconds,
+                    "fee_lock_trigger_pct": trigger_pct,
+                    "fee_lock_offset_pct": offset_pct,
+                }
+            }
+        },
+        "position_management": {
+            "exit_monitoring": {"enabled": True, "check_frequency": 0.05}
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_fee_lock_updates_stop_loss():
+    cfg = _exit_settings_cfg(trigger_pct=0.0010, offset_pct=0.0012)
+    manager, _, _ = make_manager(cfg=cfg)
+    signal = {
+        'symbol': 'BTC/USDT:USDT',
+        'side': 'buy',
+        'tp_pct': 0.03,
+        'sl_pct': 0.01,
+        'strategy_name': 'mean_reversion',
+    }
+    execution_result = {
+        'success': True,
+        'avg_price': 100.0,
+        'filled_amount': 1.0,
+    }
+
+    result = await manager.open_position(signal, execution_result)
+    position_id = result['position_id']
+
+    await manager.monitor_position_pnl(position_id, current_price=100.2)
+    position = manager.positions[position_id]
+
+    assert position['fee_lock_armed'] is True
+    assert position['stop_loss'] == pytest.approx(100.12, rel=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_fee_lock_allows_trailing_to_improve_stop():
+    cfg = _exit_settings_cfg(trigger_pct=0.0010, offset_pct=0.0012)
+    manager, _, _ = make_manager(cfg=cfg)
+    signal = {
+        'symbol': 'BTC/USDT:USDT',
+        'side': 'buy',
+        'tp_pct': 0.03,
+        'sl_pct': 0.01,
+        'strategy_name': 'mean_reversion',
+    }
+    execution_result = {
+        'success': True,
+        'avg_price': 100.0,
+        'filled_amount': 1.0,
+    }
+
+    result = await manager.open_position(signal, execution_result)
+    position_id = result['position_id']
+    position = result['position']
+    position['trailing_stop_enabled'] = True
+    position['trailing_stop_distance'] = 0.005
+    position['trailing_stop_activation_threshold'] = 0.0
+
+    await manager.monitor_position_pnl(position_id, current_price=100.2)
+    await manager.monitor_position_pnl(position_id, current_price=101.0)
+
+    position = manager.positions[position_id]
+    assert position['fee_lock_armed'] is True
+    assert position['stop_loss'] == pytest.approx(100.495, rel=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_time_stop_triggers_execute_close_position():
+    cfg = _exit_settings_cfg(max_hold_seconds=1, trigger_pct=0.0014, offset_pct=0.0012)
+    manager, _, _ = make_manager(cfg=cfg)
+    signal = {
+        'symbol': 'BTC/USDT:USDT',
+        'side': 'buy',
+        'tp_pct': 0.03,
+        'sl_pct': 0.01,
+        'strategy_name': 'mean_reversion',
+    }
+    execution_result = {
+        'success': True,
+        'avg_price': 100.0,
+        'filled_amount': 1.0,
+    }
+
+    result = await manager.open_position(signal, execution_result)
+    position_id = result['position_id']
+    position = manager.positions[position_id]
+    position['opened_at'] = datetime.now(timezone.utc) - timedelta(seconds=10)
+    position['current_price'] = position['entry_price']
+
+    called = asyncio.Event()
+
+    async def fake_execute(pid, reason):
+        if pid == position_id and reason == ExitReason.TIME_EXIT.value:
+            called.set()
+        return {'success': True}
+
+    manager.execute_close_position = fake_execute
+
+    await manager.start_exit_monitoring()
+    await asyncio.wait_for(called.wait(), timeout=1.0)
+    await manager.stop_exit_monitoring()
+
+    assert called.is_set()

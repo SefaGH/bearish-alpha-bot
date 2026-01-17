@@ -311,6 +311,8 @@ fast_watch:
   max_checks_default: 9
   ttl_ms_default: 30000
   check_sample_rate: 20
+  max_rearms: 3
+  rearm_backoff_mult: 1.5
 
 # ==============================================================================
 # SIGNAL GENERATION & STRATEGIES
@@ -662,6 +664,10 @@ strategies:
       activation_z_score: 2.2
       rebound_rsi: 27.0
       max_wait_s: 120
+    exit_settings:
+      max_hold_seconds: 900          # Time-stop: close stale trades that never reached fee-lock
+      fee_lock_trigger_pct: 0.0014   # Fee-lock trigger (price pct)
+      fee_lock_offset_pct: 0.0012    # Fee-lock stop offset from entry (price pct)
 
 # ==============================================================================
 # POSITION EXIT MANAGEMENT

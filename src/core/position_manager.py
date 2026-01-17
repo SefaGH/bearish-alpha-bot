@@ -51,6 +51,17 @@ except ModuleNotFoundError:
             # Unknown module missing, re-raise
             raise
 
+try:
+    from core.limits import clamp_price
+except ModuleNotFoundError:
+    try:
+        from src.core.limits import clamp_price
+    except ModuleNotFoundError as e:
+        if e.name in ('src', 'src.core', 'src.core.limits'):
+            from .limits import clamp_price
+        else:
+            raise
+
 logger = logging.getLogger(__name__)
 
 
@@ -558,6 +569,7 @@ class AdvancedPositionManager:
         position.setdefault("trailing_stop_distance", 0.02)
         position.setdefault("trailing_stop_activation_threshold", 0.0)
         position.setdefault("trailing_stop_activated", False)
+        position.setdefault("fee_lock_armed", False)
 
         # Price excursion defaults
         position.setdefault("highest_price", current_price or entry_price)
@@ -855,6 +867,73 @@ class AdvancedPositionManager:
             return None
         return pct / 100.0 if pct > 1 else pct
 
+    def _get_unrealized_pnl_pct(self, position: Dict[str, Any], current_price: Optional[float] = None) -> Optional[float]:
+        raw = self._safe_float(position.get('unrealized_pnl_pct'))
+        if raw is not None:
+            return raw / 100.0 if abs(raw) > 10 else raw
+
+        pnl_pct = self._safe_float(position.get('pnl_pct'))
+        if pnl_pct is not None:
+            return pnl_pct / 100.0
+
+        entry_price = self._safe_float(position.get('entry_price'))
+        amount = self._safe_float(position.get('amount'))
+        price = self._safe_float(current_price) if current_price is not None else self._safe_float(position.get('current_price'))
+        side = position.get('side', 'long')
+
+        if entry_price and amount and price:
+            pnl = calculate_unrealized_pnl(side, entry_price, price, amount)
+            pct = calculate_pnl_percentage(pnl, entry_price, amount)
+            return pct / 100.0
+        return None
+
+    def _resolve_exit_settings(self, position: Dict[str, Any]) -> Dict[str, Any]:
+        defaults = {
+            'max_hold_seconds': 900.0,
+            'fee_lock_trigger_pct': 0.0014,
+            'fee_lock_offset_pct': 0.0012,
+        }
+
+        cfg = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
+        strategy_name = (position.get('strategy_name') or position.get('strategy') or '').strip()
+        exit_cfg = {}
+        if isinstance(cfg, dict) and strategy_name:
+            strategies_cfg = cfg.get('strategies', {}) if isinstance(cfg.get('strategies', {}), dict) else {}
+            strat_cfg = strategies_cfg.get(strategy_name, {}) if isinstance(strategies_cfg, dict) else {}
+            if isinstance(strat_cfg, dict):
+                exit_cfg = strat_cfg.get('exit_settings', {}) if isinstance(strat_cfg.get('exit_settings', {}), dict) else {}
+
+        enabled = bool(exit_cfg) or strategy_name == 'mean_reversion'
+        if not enabled:
+            return {'enabled': False}
+
+        time_cfg = {}
+        if isinstance(cfg, dict):
+            time_cfg = cfg.get('position_management', {}).get('time_based_exit', {}) if isinstance(cfg.get('position_management', {}), dict) else {}
+
+        max_hold_seconds = self._safe_float(exit_cfg.get('max_hold_seconds')) if exit_cfg else None
+        if max_hold_seconds is None:
+            max_hold_seconds = self._safe_float(time_cfg.get('max_hold_seconds')) if time_cfg else None
+        if max_hold_seconds is None:
+            max_hold_seconds = self._safe_float(time_cfg.get('max_position_duration')) if time_cfg else None
+        if max_hold_seconds is None or max_hold_seconds <= 0:
+            max_hold_seconds = defaults['max_hold_seconds']
+
+        fee_lock_trigger_pct = self._normalize_pct(exit_cfg.get('fee_lock_trigger_pct')) if exit_cfg else None
+        if fee_lock_trigger_pct is None:
+            fee_lock_trigger_pct = defaults['fee_lock_trigger_pct']
+
+        fee_lock_offset_pct = self._normalize_pct(exit_cfg.get('fee_lock_offset_pct')) if exit_cfg else None
+        if fee_lock_offset_pct is None:
+            fee_lock_offset_pct = defaults['fee_lock_offset_pct']
+
+        return {
+            'enabled': True,
+            'max_hold_seconds': max_hold_seconds,
+            'fee_lock_trigger_pct': fee_lock_trigger_pct,
+            'fee_lock_offset_pct': fee_lock_offset_pct,
+        }
+
     def _derive_take_profit(self, signal: Dict[str, Any], entry_price: float,
                             stop_loss: Optional[float], is_long: bool) -> float:
         explicit_tp = self._extract_price_field(signal, ['target', 'take_profit', 'tp_price'])
@@ -1139,6 +1218,7 @@ class AdvancedPositionManager:
                 'trailing_stop_distance': 0.02,
                 'trailing_stop_activation_threshold': 0.0,
                 'trailing_stop_activated': False,
+                'fee_lock_armed': False,
                 'native_hard_stop_order_id': None,
                 'native_hard_stop_stop_price': None,
                 'native_hard_stop_qty': None,
@@ -1800,6 +1880,47 @@ class AdvancedPositionManager:
                     position['lowest_price'] = position['current_price']
 
             stop_updated = False
+            exit_cfg = self._resolve_exit_settings(position)
+            if exit_cfg.get('enabled'):
+                fee_trigger = exit_cfg.get('fee_lock_trigger_pct')
+                fee_offset = exit_cfg.get('fee_lock_offset_pct')
+                current_pnl_pct = normalized_unrealized_pct
+                if current_pnl_pct is None:
+                    current_pnl_pct = self._get_unrealized_pnl_pct(position, position.get('current_price'))
+
+                if (
+                    fee_trigger is not None
+                    and fee_offset is not None
+                    and current_pnl_pct is not None
+                    and current_pnl_pct >= fee_trigger
+                    and not position.get('fee_lock_armed', False)
+                ):
+                    candidate = entry_price * (1 + fee_offset) if is_long else entry_price * (1 - fee_offset)
+                    if candidate and candidate > 0:
+                        symbol = position.get('symbol')
+                        client = self._get_exchange_client(position.get('exchange'))
+                        if client and symbol:
+                            candidate = clamp_price(client, symbol, candidate)
+
+                        current_stop = self._safe_float(position.get('stop_loss'), 0.0) or 0.0
+                        more_protective = True if current_stop <= 0 else (
+                            candidate > current_stop if is_long else candidate < current_stop
+                        )
+
+                        if more_protective:
+                            position['stop_loss'] = candidate
+                            position['fee_lock_armed'] = True
+                            stop_updated = True
+                            logger.info(
+                                "FEE_LOCK_ARMED %s symbol=%s side=%s entry=%.4f stop=%.4f pnl_pct=%.4f",
+                                position_id,
+                                symbol or 'UNKNOWN',
+                                side,
+                                entry_price,
+                                candidate,
+                                current_pnl_pct,
+                            )
+
             if position.get('trailing_stop_enabled'):
                 trailing_distance = self._safe_float(position.get('trailing_stop_distance'), 0.02) or 0.02
                 was_active = bool(position.get('trailing_stop_activated', False))
@@ -1919,7 +2040,7 @@ class AdvancedPositionManager:
                                     )
                                     position['last_trail_log_ts'] = now_ts
 
-            # Persist snapshot only when stop-loss was updated by trailing logic (throttled).
+            # Persist snapshot only when stop-loss was updated by fee-lock/trailing logic (throttled).
             if stop_updated:
                 self._save_positions_snapshot(force=False)
             
@@ -2290,21 +2411,40 @@ class AdvancedPositionManager:
         else:  # short
             return current_price <= take_profit
     
-    def _check_timeout_exit(self, position: Dict) -> bool:
+    def _check_timeout_exit(
+        self,
+        position: Dict,
+        *,
+        max_hold_seconds: Optional[float] = None,
+        current_pnl_pct: Optional[float] = None,
+        fee_lock_trigger_pct: Optional[float] = None,
+    ) -> bool:
         """Check if position should exit due to timeout."""
-        # Get configuration
-        config = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
-        position_config = config.get('position_management', {}).get('time_based_exit', {})
-        max_duration = position_config.get('max_position_duration', 3600)
-        
+        if max_hold_seconds is None:
+            config = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
+            position_config = config.get('position_management', {}).get('time_based_exit', {})
+            max_hold_seconds = self._safe_float(position_config.get('max_hold_seconds'))
+            if max_hold_seconds is None:
+                max_hold_seconds = self._safe_float(position_config.get('max_position_duration'))
+            if max_hold_seconds is None or max_hold_seconds <= 0:
+                max_hold_seconds = 900.0
+
+        if max_hold_seconds <= 0:
+            return False
+
         opened_at = position.get('opened_at')
         if not opened_at:
             return False
-        
+
         current_time = datetime.now(timezone.utc)
         duration = (current_time - opened_at).total_seconds()
-        
-        return duration >= max_duration
+        if duration < max_hold_seconds:
+            return False
+
+        if current_pnl_pct is None or fee_lock_trigger_pct is None:
+            return False
+
+        return current_pnl_pct < fee_lock_trigger_pct
 
     def _is_trailing_stop_active(self, position: Dict, current_price: float, entry_price: float, is_long: bool) -> bool:
         activation_threshold = self._safe_float(position.get('trailing_stop_activation_threshold'), 0.0)
@@ -2592,6 +2732,21 @@ class AdvancedPositionManager:
                         'exit_price': current_price
                     }
             
+            exit_cfg = self._resolve_exit_settings(position)
+            if exit_cfg.get('enabled'):
+                current_pnl_pct = self._get_unrealized_pnl_pct(position, current_price)
+                if self._check_timeout_exit(
+                    position,
+                    max_hold_seconds=exit_cfg.get('max_hold_seconds'),
+                    current_pnl_pct=current_pnl_pct,
+                    fee_lock_trigger_pct=exit_cfg.get('fee_lock_trigger_pct'),
+                ):
+                    return {
+                        'should_exit': True,
+                        'exit_reason': ExitReason.TIME_EXIT.value,
+                        'exit_price': current_price
+                    }
+
             # Check trailing stop (if enabled)
             if position.get('trailing_stop_enabled', False):
                 trailing_distance = self._safe_float(position.get('trailing_stop_distance'), 0.02) or 0.02

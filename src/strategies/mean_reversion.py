@@ -241,10 +241,12 @@ class VWAPMeanReversion(BaseStrategy):
             vwap_std: Optional[float] = None,
             z: Optional[float] = None,
             side_value: Optional[str] = None,
+            rearm_recommended: Optional[bool] = None,
+            rearm_reason: Optional[str] = None,
         ) -> None:
             nonlocal recheck_eval_emitted
             if not is_recheck or recheck_eval_emitted:
-                return
+                return None
             recheck_eval_emitted = True
             reasons = gate_reasons or []
             if not reasons:
@@ -290,11 +292,14 @@ class VWAPMeanReversion(BaseStrategy):
                 "action": str(action),
                 "gate_reasons": list(reasons),
                 "primary_gate_reason": reasons[0] if reasons else "unknown",
+                "rearm_recommended": rearm_recommended,
+                "rearm_reason": rearm_reason,
             }
             try:
                 logger.info("mr_recheck_eval %s", json.dumps(out, ensure_ascii=True, sort_keys=True))
             except Exception:
                 logger.info("mr_recheck_eval %s", out)
+            return out
 
         df_vwap = None
         df_sig = None
@@ -641,7 +646,55 @@ class VWAPMeanReversion(BaseStrategy):
                     symbol,
                     parent_pending_id,
                 )
-                _emit_recheck_eval(
+                now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                eps_bps_val = _coerce_float(condition_data.get("eps_bps"))
+                dist_to_trigger_bps = _bps_delta(price, trigger_price)
+                fw_meta = check_detail.get("fast_watch_meta") if isinstance(check_detail, dict) else None
+                rearm_count = 0
+                max_rearms = 1
+                expires_at_ms = None
+                if isinstance(fw_meta, dict):
+                    try:
+                        rearm_count = int(fw_meta.get("rearm_count", 0) or 0)
+                    except Exception:
+                        rearm_count = 0
+                    try:
+                        max_rearms = int(fw_meta.get("max_rearms", 1) or 1)
+                    except Exception:
+                        max_rearms = 1
+                    expires_at_ms = fw_meta.get("expires_at_ms")
+                if expires_at_ms is None:
+                    expires_at_ms = condition_data.get("expires_at_ms")
+                remaining_ttl_ms = None
+                if expires_at_ms is not None:
+                    try:
+                        remaining_ttl_ms = int(expires_at_ms) - int(now_ms)
+                    except Exception:
+                        remaining_ttl_ms = None
+
+                rearm_recommended = False
+                rearm_reason = "not_near"
+                min_remaining_ms = 3000
+                if eps_bps_val is None or not math.isfinite(float(eps_bps_val)) or float(eps_bps_val) <= 0:
+                    rearm_recommended = False
+                    rearm_reason = "eps_missing"
+                elif dist_to_trigger_bps is None:
+                    rearm_recommended = False
+                    rearm_reason = "dist_missing"
+                elif abs(float(dist_to_trigger_bps)) > float(eps_bps_val) * 1.5:
+                    rearm_recommended = False
+                    rearm_reason = "not_near"
+                elif remaining_ttl_ms is not None and remaining_ttl_ms < min_remaining_ms:
+                    rearm_recommended = False
+                    rearm_reason = "ttl_low"
+                elif rearm_count >= max_rearms:
+                    rearm_recommended = False
+                    rearm_reason = "rearm_limit"
+                else:
+                    rearm_recommended = True
+                    rearm_reason = "still_near"
+
+                eval_out = _emit_recheck_eval(
                     action="HOLD",
                     gate_reasons=["in_band"],
                     px=price,
@@ -652,7 +705,28 @@ class VWAPMeanReversion(BaseStrategy):
                     vwap_std=vwap_std_val,
                     z=z_val,
                     side_value=None,
+                    rearm_recommended=rearm_recommended,
+                    rearm_reason=rearm_reason,
                 )
+                if is_recheck:
+                    decision_meta = {
+                        "action": "HOLD",
+                        "rearm_fast_watch": bool(rearm_recommended),
+                        "rearm_reason": rearm_reason,
+                        "dist_to_trigger_bps": dist_to_trigger_bps,
+                        "eps_bps": eps_bps_val,
+                        "remaining_ttl_ms": remaining_ttl_ms,
+                        "rearm_count": rearm_count,
+                        "max_rearms": max_rearms,
+                        "trigger_price": trigger_price,
+                        "near": near_str,
+                    }
+                    if isinstance(eval_out, dict):
+                        decision_meta.setdefault("mr_recheck_eval", eval_out)
+                    return {
+                        "event_type": "strategy_recheck_decision",
+                        "decision_meta": decision_meta,
+                    }
                 return None
             threshold = float(self.soft_deferral_threshold)
             if threshold > 0 and adx_ok and math.isfinite(threshold):

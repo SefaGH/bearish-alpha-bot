@@ -1255,6 +1255,7 @@ class ProductionCoordinator:
         timeframe = event.get("timeframe") or event.get("tf")
         condition_data = event.get("condition_data") if isinstance(event.get("condition_data"), dict) else None
         check_detail = event.get("check_detail") if isinstance(event.get("check_detail"), dict) else None
+        refresh_policy = event.get("refresh_policy")
 
         dispatcher = getattr(self, "dispatch_strategy", None)
         if not callable(dispatcher):
@@ -1271,10 +1272,60 @@ class ProductionCoordinator:
             pending_reason_code=pending_reason_code,
             condition_data=condition_data,
             check_detail=check_detail,
+            return_detail=True,
         )
-        dispatched = await result if inspect.iscoroutine(result) else bool(result)
+        detail = await result if inspect.iscoroutine(result) else result
+        if isinstance(detail, dict):
+            dispatched = bool(detail.get("dispatched"))
+            rearm_fast_watch = bool(detail.get("rearm_fast_watch"))
+            decision_meta = detail.get("decision_meta") if isinstance(detail.get("decision_meta"), dict) else {}
+            interval_hint_ms = detail.get("rearm_interval_ms")
+            final_reason = detail.get("final_reason")
+        else:
+            dispatched = bool(detail)
+            rearm_fast_watch = False
+            decision_meta = {}
+            interval_hint_ms = None
+            final_reason = None
+
         if dispatched:
             logger.info("Soft Deferral Recheck Dispatched: %s %s", str(strategy), str(symbol))
+
+        coordinator = getattr(self, "strategy_coordinator", None)
+        if (
+            coordinator
+            and str(refresh_policy or "").upper() == "FAST_PRICE_WATCH"
+            and hasattr(coordinator, "on_recheck_result")
+            and pending_id
+        ):
+            rearm_result = await coordinator.on_recheck_result(
+                pending_id,
+                rearm=bool(rearm_fast_watch),
+                interval_hint_ms=interval_hint_ms,
+                decision_meta=decision_meta if isinstance(decision_meta, dict) else None,
+                final_reason=final_reason,
+            )
+            if rearm_fast_watch:
+                out = {
+                    "event": "soft_deferral_rearm",
+                    "ts_ms": int(time.time() * 1000),
+                    "run_id": get_current_run_id(),
+                    "pending_id": pending_id,
+                    "parent_pending_id": parent_pending_id,
+                    "strategy": str(strategy),
+                    "symbol": str(symbol),
+                    "side": side,
+                    "timeframe": timeframe,
+                    "near": decision_meta.get("near"),
+                    "dist_to_trigger_bps": decision_meta.get("dist_to_trigger_bps"),
+                    "eps_bps": decision_meta.get("eps_bps"),
+                    "rearm_count": rearm_result.get("rearm_count") if isinstance(rearm_result, dict) else None,
+                    "remaining_ttl_ms": rearm_result.get("remaining_ttl_ms") if isinstance(rearm_result, dict) else None,
+                    "next_interval_ms": rearm_result.get("next_interval_ms") if isinstance(rearm_result, dict) else None,
+                }
+                safe_out = coordinator._json_sanitize(out) if hasattr(coordinator, "_json_sanitize") else out
+                logger.info("soft_deferral_rearm %s", json.dumps(safe_out, ensure_ascii=False, sort_keys=True))
+
         return dispatched
 
     async def dispatch_strategy(
@@ -1289,6 +1340,7 @@ class ProductionCoordinator:
         pending_reason_code: Optional[str] = None,
         condition_data: Optional[Dict[str, Any]] = None,
         check_detail: Optional[Dict[str, Any]] = None,
+        return_detail: bool = False,
     ) -> bool:
         """Trigger a targeted strategy evaluation for a single symbol."""
         start_monotonic = time.monotonic()
@@ -1339,22 +1391,26 @@ class ProductionCoordinator:
         limit_requested_by_tf: Dict[str, int] = {}
         rows_returned_by_tf: Dict[str, int] = {}
         strategy_recheck_debug: Optional[Dict[str, Any]] = None
+        rearm_fast_watch = False
+        decision_meta: Dict[str, Any] = {}
+        rearm_interval_ms = None
+        final_reason = None
         try:
             if not symbol or not strategy:
                 error_code = "invalid_args"
-                return False
+                return {"dispatched": False, "rearm_fast_watch": False} if return_detail else False
 
             if not getattr(self, "portfolio_manager", None) or not hasattr(self.portfolio_manager, "strategies"):
                 error_code = "missing_portfolio_manager"
-                return False
+                return {"dispatched": False, "rearm_fast_watch": False} if return_detail else False
 
             if not getattr(self, "market_data_pipeline", None):
                 error_code = "missing_market_data_pipeline"
-                return False
+                return {"dispatched": False, "rearm_fast_watch": False} if return_detail else False
 
             if not getattr(self, "strategy_coordinator", None):
                 error_code = "missing_strategy_coordinator"
-                return False
+                return {"dispatched": False, "rearm_fast_watch": False} if return_detail else False
 
             strategies = getattr(self.portfolio_manager, "strategies", {}) or {}
             strategy_instance = strategies.get(strategy)
@@ -1367,14 +1423,14 @@ class ProductionCoordinator:
 
             if strategy_instance is None or not hasattr(strategy_instance, "signal") or not callable(getattr(strategy_instance, "signal")):
                 error_code = "strategy_unavailable"
-                return False
+                return {"dispatched": False, "rearm_fast_watch": False} if return_detail else False
 
             try:
                 if hasattr(self.portfolio_manager, "strategy_metadata"):
                     meta = self.portfolio_manager.strategy_metadata.get(strategy, {}) or {}
                     if not meta.get("active", True):
                         error_code = "strategy_inactive"
-                        return False
+                        return {"dispatched": False, "rearm_fast_watch": False} if return_detail else False
             except Exception:
                 pass
 
@@ -1426,7 +1482,7 @@ class ProductionCoordinator:
                 )
                 if df_30m_closed is None or getattr(df_30m_closed, "empty", False):
                     error_code = "missing_ohlcv_30m"
-                    return False
+                    return {"dispatched": False, "rearm_fast_watch": False} if return_detail else False
                 try:
                     rows_returned_by_tf["30m"] = int(len(df_30m_closed))
                 except Exception:
@@ -1446,7 +1502,7 @@ class ProductionCoordinator:
                 df_1h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "1h", limit=limit_1h)
                 if df_1h is None or getattr(df_1h, "empty", False):
                     error_code = "missing_ohlcv_1h"
-                    return False
+                    return {"dispatched": False, "rearm_fast_watch": False} if return_detail else False
                 try:
                     rows_returned_by_tf["1h"] = int(len(df_1h))
                 except Exception:
@@ -1499,7 +1555,7 @@ class ProductionCoordinator:
                 df_sig = await self.market_data_pipeline.get_latest_ohlcv(symbol, signal_tf_str, limit=sig_limit)
                 if df_vwap is None or getattr(df_vwap, "empty", False) or df_sig is None or getattr(df_sig, "empty", False):
                     error_code = "missing_ohlcv_mean_reversion"
-                    return False
+                    return {"dispatched": False, "rearm_fast_watch": False} if return_detail else False
                 try:
                     rows_returned_by_tf[vwap_tf_str] = int(len(df_vwap))
                 except Exception:
@@ -1542,15 +1598,23 @@ class ProductionCoordinator:
 
             raw = strategy_instance.signal(**signal_kwargs)
             signal = await raw if inspect.iscoroutine(raw) else raw
+            if isinstance(signal, dict) and signal.get("event_type") == "strategy_recheck_decision":
+                decision_meta = signal.get("decision_meta") if isinstance(signal.get("decision_meta"), dict) else {}
+                rearm_fast_watch = bool(decision_meta.get("rearm_fast_watch"))
+                rearm_interval_ms = decision_meta.get("rearm_backoff_ms")
+                outcome = "rearmed" if rearm_fast_watch else "no_signal"
+                final_reason = decision_meta.get("rearm_reason") or "recheck_hold"
+                return {"dispatched": False, "rearm_fast_watch": rearm_fast_watch, "decision_meta": decision_meta, "rearm_interval_ms": rearm_interval_ms, "final_reason": final_reason} if return_detail else False
             if not signal:
                 outcome = "no_signal"
+                final_reason = "recheck_hold"
                 logger.info(
                     "Soft Deferral Recheck yielded NO SIGNAL for pending_id=%s strategy=%s symbol=%s",
                     str(parent_pending_id_str),
                     str(strategy),
                     str(symbol),
                 )
-                return False
+                return {"dispatched": False, "rearm_fast_watch": False, "decision_meta": {}, "final_reason": final_reason} if return_detail else False
 
             if isinstance(signal, dict):
                 signal.setdefault("symbol", symbol)
@@ -1579,7 +1643,7 @@ class ProductionCoordinator:
                     outcome = "error"
                     error_code = "loop_prevented"
                     error_detail = "soft_deferral_returned_on_recheck"
-                    return False
+                    return {"dispatched": False, "rearm_fast_watch": False} if return_detail else False
 
             route_result = await self._route_strategy_output(strategy, signal)
             if isinstance(route_result, dict) and route_result.get("signal_id"):
@@ -1593,13 +1657,14 @@ class ProductionCoordinator:
                 except Exception:
                     emitted_signal_id = signal.get("signal_id")
             outcome = "signal_emitted"
-            return True
+            final_reason = "signal_emitted"
+            return {"dispatched": True, "rearm_fast_watch": False, "decision_meta": {}, "final_reason": final_reason} if return_detail else True
         except Exception as exc:
             outcome = "error"
             error_code = "exception"
             error_detail = str(exc)
             logger.debug("[SOFT-DEFERRAL] dispatch_strategy failed: %s", exc, exc_info=True)
-            return False
+            return {"dispatched": False, "rearm_fast_watch": False} if return_detail else False
         finally:
             if parent_pending_id_str:
                 elapsed_ms = int((time.monotonic() - start_monotonic) * 1000)
@@ -1622,6 +1687,10 @@ class ProductionCoordinator:
                     "rows_returned": dict(rows_returned_by_tf),
                     "rows_by_tf": dict(rows_returned_by_tf),
                 }
+                if rearm_fast_watch:
+                    event_out["rearm_fast_watch"] = True
+                if final_reason:
+                    event_out["final_reason"] = final_reason
                 if strategy_recheck_debug:
                     # Strategy-owned diagnostics (post-cleaning, repair fetch, etc.)
                     if "rows_used_after_clean" in strategy_recheck_debug:
