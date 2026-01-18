@@ -2475,6 +2475,11 @@ class ProductionCoordinator:
                     self.strategy_coordinator.start_fast_watcher()
                 except Exception as exc:
                     logger.warning("[FAST-WATCH] Failed to start watcher: %s", exc)
+            if hasattr(self.strategy_coordinator, "start_micro_gate_watcher"):
+                try:
+                    self.strategy_coordinator.start_micro_gate_watcher()
+                except Exception as exc:
+                    logger.warning("[MICRO-GATE] Failed to start watcher: %s", exc)
             
             # === STEP 11: INITIALIZE CIRCUIT BREAKER ===
             self.circuit_breaker = CircuitBreakerSystem(
@@ -4631,6 +4636,11 @@ class ProductionCoordinator:
         if coordinator and hasattr(coordinator, "stop_fast_watcher"):
             try:
                 coordinator.stop_fast_watcher()
+            except Exception:
+                pass
+        if coordinator and hasattr(coordinator, "stop_micro_gate_watcher"):
+            try:
+                coordinator.stop_micro_gate_watcher()
             except Exception:
                 pass
         

@@ -52,6 +52,9 @@ VOLUME_NORMALIZATION_MAX = 2.0  # Maximum volume ratio before normalization
 VOLUME_NORMALIZATION_DIVISOR = 2.0  # Divisor for volume strength normalization
 MOMENTUM_PRICE_CHANGE_OFFSET = 0.1  # Offset for momentum calculation
 MOMENTUM_PRICE_CHANGE_RANGE = 0.2  # Range for momentum normalization
+LOW_VOL_TIGHT_STOP_THRESHOLD = 0.0015  # 0.15%
+LOW_VOL_WIDE_STOP_THRESHOLD = 0.005  # 0.50%
+LOW_VOL_MICRO_GATE_MARGIN_BPS = 5.0
 
 
 class SignalPriority(Enum):
@@ -772,6 +775,42 @@ class StrategyCoordinator:
         self._fast_watch_check_counter = 0
         self._fast_watch_task: Optional[asyncio.Task] = None
 
+        micro_watch_cfg = self.config.get("micro_gate_watch", {}) if isinstance(self.config, dict) else {}
+        self._micro_gate_watch_enabled = bool(micro_watch_cfg.get("enabled", True))
+        try:
+            self._micro_gate_watch_loop_interval_ms = int(micro_watch_cfg.get("loop_interval_ms", 1000) or 1000)
+        except Exception:
+            self._micro_gate_watch_loop_interval_ms = 1000
+        self._micro_gate_watch_loop_interval_ms = max(250, self._micro_gate_watch_loop_interval_ms)
+        try:
+            self._micro_gate_watch_max_items_per_tick = int(micro_watch_cfg.get("max_items_per_tick", 50) or 50)
+        except Exception:
+            self._micro_gate_watch_max_items_per_tick = 50
+        self._micro_gate_watch_max_items_per_tick = max(1, self._micro_gate_watch_max_items_per_tick)
+        try:
+            self._micro_gate_watch_time_budget_ms = int(micro_watch_cfg.get("time_budget_ms", 75) or 75)
+        except Exception:
+            self._micro_gate_watch_time_budget_ms = 75
+        self._micro_gate_watch_time_budget_ms = max(10, self._micro_gate_watch_time_budget_ms)
+        try:
+            self._micro_gate_watch_interval_ms_default = int(
+                micro_watch_cfg.get("watch_interval_ms_default", 10_000) or 10_000
+            )
+        except Exception:
+            self._micro_gate_watch_interval_ms_default = 10_000
+        self._micro_gate_watch_interval_ms_default = max(250, self._micro_gate_watch_interval_ms_default)
+        try:
+            self._micro_gate_watch_max_checks_default = int(micro_watch_cfg.get("max_checks_default", 2) or 2)
+        except Exception:
+            self._micro_gate_watch_max_checks_default = 2
+        self._micro_gate_watch_max_checks_default = max(1, self._micro_gate_watch_max_checks_default)
+        try:
+            self._micro_gate_watch_ttl_ms_default = int(micro_watch_cfg.get("ttl_ms_default", 25_000) or 25_000)
+        except Exception:
+            self._micro_gate_watch_ttl_ms_default = 25_000
+        self._micro_gate_watch_ttl_ms_default = max(1_000, self._micro_gate_watch_ttl_ms_default)
+        self._micro_gate_watch_task: Optional[asyncio.Task] = None
+
         # Dedupe registry: prevents duplicate orders/setup collisions between incubator + active pipeline
         self._active_dedupe_by_key: Dict[str, str] = {}
         self._active_dedupe_by_signal_id: Dict[str, str] = {}
@@ -1060,10 +1099,10 @@ class StrategyCoordinator:
                 "refresh_policy": "FAST_PRICE_WATCH",
             },
             "volume.low_vol_tight_stop": {
-                "ttl_seconds": 300,
-                "max_attempts": 120,
-                "base_delay_ms": 60_000,
-                "max_delay_ms": 300_000,
+                "ttl_seconds": 25,
+                "max_attempts": 2,
+                "base_delay_ms": 10_000,
+                "max_delay_ms": 10_000,
                 "refresh_policy": "REPRICE_AND_RESIZE",
             },
         }
@@ -1393,6 +1432,7 @@ class StrategyCoordinator:
         ttl_seconds = int(policy.get("ttl_seconds", 300) or 300)
         max_attempts = int(policy.get("max_attempts", 20) or 20)
         base_delay_ms = int(policy.get("base_delay_ms", 1000) or 1000)
+        micro_watch: Optional[Dict[str, Any]] = None
 
         safe_payload = self._json_sanitize(signal)
         if isinstance(safe_payload, dict):
@@ -1421,6 +1461,10 @@ class StrategyCoordinator:
                             max_checks = None
                         if max_checks and max_checks > 0:
                             max_attempts = max_checks
+            micro_watch = self._resolve_micro_gate_watch_settings(safe_payload)
+            if micro_watch:
+                ttl_seconds = max(1, int(int(micro_watch["ttl_ms"]) / 1000))
+                max_attempts = max(1, int(micro_watch["max_checks"]))
 
         parent_pending_id = None
         pending_reason_code = None
@@ -1498,9 +1542,24 @@ class StrategyCoordinator:
             new_item.setdefault("rearm_count", 0)
             new_item.setdefault("max_rearms", max_rearms)
             new_item.setdefault("fast_watch_interval_ms", watch_interval_ms)
+        if micro_watch:
+            new_item["watch_kind"] = "micro_gate_watch"
+            new_item.setdefault("watch_created_ts_ms", now_ms)
+            new_item.setdefault("watch_interval_ms", micro_watch["interval_ms"])
+            new_item.setdefault("max_checks", micro_watch["max_checks"])
+            new_item.setdefault("watch_ttl_ms", micro_watch["ttl_ms"])
+            new_item.setdefault("checks_done", 0)
+            new_item["next_check_at_ms"] = now_ms + int(micro_watch["interval_ms"])
+            new_item["expires_at_ms"] = int(new_item["watch_created_ts_ms"] + int(micro_watch["ttl_ms"]))
+            new_item["ttl_seconds"] = max(1, int(int(micro_watch["ttl_ms"]) / 1000))
+            new_item["max_attempts"] = max(1, int(micro_watch["max_checks"]))
 
         emit_add: Optional[Dict[str, Any]] = None
         emit_drop: Optional[Dict[str, Any]] = None
+        emit_drop_reason: Optional[str] = None
+        emit_drop_extra: Dict[str, Any] = {}
+        emit_micro_gate_dedupe_drop: Optional[Dict[str, Any]] = None
+        incoming_signal_id = safe_payload.get("signal_id") if isinstance(safe_payload, dict) else None
 
         async with self._incubator_lock:
             active_signal_id = self._active_dedupe_by_key.get(dedupe_key)
@@ -1510,87 +1569,126 @@ class StrategyCoordinator:
                     "first_seen_ts_ms": now_ms,
                     "attempts": 0,
                 }
+                emit_drop_reason = "incubator.dedupe.active_exists"
+                emit_drop_extra = {"active_signal_id": active_signal_id}
             else:
                 existing = self._incubator_items.get(dedupe_key)
                 if existing:
-                    if not existing.get("pending_id"):
-                        existing["pending_id"] = uuid.uuid4().hex
+                    if micro_watch and str(existing.get("watch_kind") or "").lower() == "micro_gate_watch":
+                        emit_drop = {
+                            **new_item,
+                            "first_seen_ts_ms": now_ms,
+                            "attempts": 0,
+                        }
+                        emit_drop_reason = "micro_watch_active"
+                        emit_drop_extra = {
+                            "existing_pending_id": existing.get("pending_id"),
+                            "incoming_signal_id": incoming_signal_id,
+                        }
+                        emit_micro_gate_dedupe_drop = {
+                            "dedupe_key": dedupe_key,
+                            "existing_pending_id": existing.get("pending_id"),
+                            "incoming_signal_id": incoming_signal_id,
+                            "reason": "micro_watch_active",
+                        }
+                    else:
+                        if not existing.get("pending_id"):
+                            existing["pending_id"] = uuid.uuid4().hex
 
-                    existing_parent_pending_id = existing.get("parent_pending_id")
-                    if existing_parent_pending_id:
-                        try:
-                            existing_parent_pending_id = str(existing_parent_pending_id)
-                        except Exception:
-                            existing_parent_pending_id = None
-                    existing_pending_reason = existing.get("pending_reason_code")
-                    if existing_pending_reason:
-                        try:
-                            existing_pending_reason = str(existing_pending_reason)
-                        except Exception:
-                            existing_pending_reason = None
-
-                    pending_id_existing = existing.get("pending_id")
-                    if isinstance(safe_payload, dict):
-                        existing_payload = existing.get("payload") if isinstance(existing.get("payload"), dict) else None
-                        if isinstance(existing_payload, dict):
-                            existing_condition = existing_payload.get("condition_data")
-                            incoming_condition = safe_payload.get("condition_data")
-                            if isinstance(existing_condition, dict):
-                                if not isinstance(incoming_condition, dict) or not incoming_condition:
-                                    safe_payload["condition_data"] = dict(existing_condition)
-                                else:
-                                    merged_condition = dict(existing_condition)
-                                    merged_condition.update(incoming_condition)
-                                    safe_payload["condition_data"] = merged_condition
-
-                        incoming_signal_id = safe_payload.get("signal_id")
-                        if not incoming_signal_id or (pending_id_existing and str(incoming_signal_id) == str(pending_id_existing)):
-                            safe_payload["signal_id"] = uuid.uuid4().hex
-
-                        # Preserve immutable parent correlation data across dedupe updates.
-                        if existing_pending_reason:
-                            safe_payload["pending_reason_code"] = existing_pending_reason
-                            meta = safe_payload.get("meta")
-                            if not isinstance(meta, dict):
-                                meta = {}
-                                safe_payload["meta"] = meta
-                            meta["pending_reason_code"] = existing_pending_reason
+                        existing_parent_pending_id = existing.get("parent_pending_id")
                         if existing_parent_pending_id:
-                            meta = safe_payload.get("meta")
-                            if not isinstance(meta, dict):
-                                meta = {}
-                                safe_payload["meta"] = meta
-                            meta["parent_pending_id"] = existing_parent_pending_id
+                            try:
+                                existing_parent_pending_id = str(existing_parent_pending_id)
+                            except Exception:
+                                existing_parent_pending_id = None
+                        existing_pending_reason = existing.get("pending_reason_code")
+                        if existing_pending_reason:
+                            try:
+                                existing_pending_reason = str(existing_pending_reason)
+                            except Exception:
+                                existing_pending_reason = None
 
-                    existing["payload"] = safe_payload
-                    existing["ctx_hash"] = None
-                    if not existing.get("pending_reason_code") and pending_reason_code_str:
-                        existing["pending_reason_code"] = pending_reason_code_str
-                    if not existing.get("parent_pending_id") and parent_pending_id_str:
-                        existing["parent_pending_id"] = parent_pending_id_str
-                    if str(refresh_policy).upper() == "FAST_PRICE_WATCH":
-                        condition_data = safe_payload.get("condition_data") if isinstance(safe_payload.get("condition_data"), dict) else {}
-                        watch_interval_ms = self._resolve_fast_watch_interval_ms(condition_data)
-                        max_rearms = condition_data.get("max_rearms")
+                        pending_id_existing = existing.get("pending_id")
+                        if isinstance(safe_payload, dict):
+                            existing_payload = existing.get("payload") if isinstance(existing.get("payload"), dict) else None
+                            if isinstance(existing_payload, dict):
+                                existing_condition = existing_payload.get("condition_data")
+                                incoming_condition = safe_payload.get("condition_data")
+                                if isinstance(existing_condition, dict):
+                                    if not isinstance(incoming_condition, dict) or not incoming_condition:
+                                        safe_payload["condition_data"] = dict(existing_condition)
+                                    else:
+                                        merged_condition = dict(existing_condition)
+                                        merged_condition.update(incoming_condition)
+                                        safe_payload["condition_data"] = merged_condition
+
+                            incoming_signal_id = safe_payload.get("signal_id")
+                            if not incoming_signal_id or (
+                                pending_id_existing and str(incoming_signal_id) == str(pending_id_existing)
+                            ):
+                                safe_payload["signal_id"] = uuid.uuid4().hex
+
+                            # Preserve immutable parent correlation data across dedupe updates.
+                            if existing_pending_reason:
+                                safe_payload["pending_reason_code"] = existing_pending_reason
+                                meta = safe_payload.get("meta")
+                                if not isinstance(meta, dict):
+                                    meta = {}
+                                    safe_payload["meta"] = meta
+                                meta["pending_reason_code"] = existing_pending_reason
+                            if existing_parent_pending_id:
+                                meta = safe_payload.get("meta")
+                                if not isinstance(meta, dict):
+                                    meta = {}
+                                    safe_payload["meta"] = meta
+                                meta["parent_pending_id"] = existing_parent_pending_id
+
+                        existing["payload"] = safe_payload
+                        existing["ctx_hash"] = None
+                        if not existing.get("pending_reason_code") and pending_reason_code_str:
+                            existing["pending_reason_code"] = pending_reason_code_str
+                        if not existing.get("parent_pending_id") and parent_pending_id_str:
+                            existing["parent_pending_id"] = parent_pending_id_str
+                        if str(refresh_policy).upper() == "FAST_PRICE_WATCH":
+                            condition_data = (
+                                safe_payload.get("condition_data") if isinstance(safe_payload.get("condition_data"), dict) else {}
+                            )
+                            watch_interval_ms = self._resolve_fast_watch_interval_ms(condition_data)
+                            max_rearms = condition_data.get("max_rearms")
+                            try:
+                                max_rearms = int(max_rearms)
+                            except Exception:
+                                max_rearms = self._fast_watch_max_rearms
+                            max_rearms = max(0, int(max_rearms))
+                            existing.setdefault("state", "watching")
+                            existing.setdefault("rearm_count", 0)
+                            existing.setdefault("max_rearms", max_rearms)
+                            existing.setdefault("fast_watch_interval_ms", watch_interval_ms)
+                        if micro_watch:
+                            existing.setdefault("watch_kind", "micro_gate_watch")
+                            existing.setdefault("watch_interval_ms", micro_watch["interval_ms"])
+                            existing.setdefault("max_checks", micro_watch["max_checks"])
+                            existing.setdefault("watch_ttl_ms", micro_watch["ttl_ms"])
+                            existing.setdefault("watch_created_ts_ms", existing.get("first_seen_ts_ms") or now_ms)
+                            existing.setdefault("checks_done", int(existing.get("checks_done", 0) or 0))
+                            existing.setdefault("ttl_seconds", max(1, int(int(micro_watch["ttl_ms"]) / 1000)))
+                            existing.setdefault("max_attempts", max(1, int(micro_watch["max_checks"])))
+                            if not existing.get("expires_at_ms"):
+                                existing["expires_at_ms"] = int(existing["watch_created_ts_ms"] + int(micro_watch["ttl_ms"]))
+                            if not existing.get("next_check_at_ms"):
+                                existing["next_check_at_ms"] = self._now_ms() + int(
+                                    existing.get("watch_interval_ms") or micro_watch["interval_ms"]
+                                )
+
                         try:
-                            max_rearms = int(max_rearms)
+                            cache_key = existing_parent_pending_id or (
+                                str(pending_id_existing) if str(refresh_policy).upper() == "STRATEGY_RECHECK" else None
+                            )
+                            cache_reason = existing_pending_reason or pending_reason_code_str
+                            if cache_key and cache_reason:
+                                self._remember_soft_deferral_pending_reason(str(cache_key), str(cache_reason))
                         except Exception:
-                            max_rearms = self._fast_watch_max_rearms
-                        max_rearms = max(0, int(max_rearms))
-                        existing.setdefault("state", "watching")
-                        existing.setdefault("rearm_count", 0)
-                        existing.setdefault("max_rearms", max_rearms)
-                        existing.setdefault("fast_watch_interval_ms", watch_interval_ms)
-
-                    try:
-                        cache_key = existing_parent_pending_id or (
-                            str(pending_id_existing) if str(refresh_policy).upper() == "STRATEGY_RECHECK" else None
-                        )
-                        cache_reason = existing_pending_reason or pending_reason_code_str
-                        if cache_key and cache_reason:
-                            self._remember_soft_deferral_pending_reason(str(cache_key), str(cache_reason))
-                    except Exception:
-                        pass
+                            pass
                 else:
                     self._incubator_items[dedupe_key] = new_item
                     emit_add = new_item
@@ -1602,21 +1700,27 @@ class StrategyCoordinator:
                         pass
 
         if emit_drop is not None:
+            if not emit_drop_reason:
+                emit_drop_reason = "incubator.dedupe.active_exists"
+            if emit_micro_gate_dedupe_drop:
+                self._emit_micro_gate_watch_dedupe_drop_incoming(**emit_micro_gate_dedupe_drop)
             self._emit_waiting_room_event(
                 "waiting_room_drop",
                 emit_drop,
-                drop_reason="incubator.dedupe.active_exists",
-                active_signal_id=active_signal_id,
+                drop_reason=emit_drop_reason,
+                **emit_drop_extra,
             )
             return {
                 "status": "dropped",
-                "reason": "incubator.dedupe.active_exists",
+                "reason": emit_drop_reason,
                 "stage": stage or "incubator",
                 "dedupe_key": dedupe_key,
             }
 
         if emit_add is not None:
             self._emit_waiting_room_event("waiting_room_add", emit_add)
+            if str(emit_add.get("watch_kind") or "").lower() == "micro_gate_watch":
+                self._emit_micro_gate_watch_add(emit_add)
 
         return {"status": "incubated", "reason_code": reason_code, "stage": stage or "incubator", "dedupe_key": dedupe_key}
 
@@ -1799,6 +1903,7 @@ class StrategyCoordinator:
         due_total = 0
         price_cache: Dict[tuple[str, str], Optional[float]] = {}
         fast_watch_active = bool(self._fast_watch_task and not self._fast_watch_task.done())
+        micro_watch_active = bool(self._micro_gate_watch_task and not self._micro_gate_watch_task.done())
 
         expired_items: List[Dict[str, Any]] = []
         due_keys: List[str] = []
@@ -1815,6 +1920,9 @@ class StrategyCoordinator:
                     continue
 
                 if fast_watch_active and str(item.get("refresh_policy") or "").upper() == "FAST_PRICE_WATCH":
+                    continue
+
+                if micro_watch_active and str(item.get("watch_kind") or "").lower() == "micro_gate_watch":
                     continue
 
                 try:
@@ -2098,6 +2206,26 @@ class StrategyCoordinator:
             task.cancel()
         self._fast_watch_task = None
 
+    def start_micro_gate_watcher(self) -> bool:
+        if not self._micro_gate_watch_enabled:
+            return False
+        task = getattr(self, "_micro_gate_watch_task", None)
+        if task and not task.done():
+            return True
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("[MICRO-GATE] No running event loop; watcher not started")
+            return False
+        self._micro_gate_watch_task = loop.create_task(self._micro_gate_watch_loop())
+        return True
+
+    def stop_micro_gate_watcher(self) -> None:
+        task = getattr(self, "_micro_gate_watch_task", None)
+        if task and not task.done():
+            task.cancel()
+        self._micro_gate_watch_task = None
+
     async def _fast_watch_loop(self) -> None:
         logger.info(
             "[FAST-WATCH] Started | interval_ms=%s max_items=%s time_budget_ms=%s",
@@ -2120,6 +2248,30 @@ class StrategyCoordinator:
                     await asyncio.sleep(sleep_ms / 1000)
         except asyncio.CancelledError:
             logger.info("[FAST-WATCH] Stopped")
+            raise
+
+    async def _micro_gate_watch_loop(self) -> None:
+        logger.info(
+            "[MICRO-GATE] Started | loop_interval_ms=%s max_items=%s time_budget_ms=%s",
+            self._micro_gate_watch_loop_interval_ms,
+            self._micro_gate_watch_max_items_per_tick,
+            self._micro_gate_watch_time_budget_ms,
+        )
+        try:
+            while True:
+                start_ms = self._now_ms()
+                try:
+                    await self._micro_gate_watch_tick()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning("[MICRO-GATE] Tick failed: %s", exc)
+                elapsed_ms = self._now_ms() - start_ms
+                sleep_ms = max(0, int(self._micro_gate_watch_loop_interval_ms) - int(elapsed_ms))
+                if sleep_ms:
+                    await asyncio.sleep(sleep_ms / 1000)
+        except asyncio.CancelledError:
+            logger.info("[MICRO-GATE] Stopped")
             raise
 
     async def _fast_watch_tick(self) -> int:
@@ -2454,6 +2606,301 @@ class StrategyCoordinator:
 
         return len(due_items)
 
+    async def _micro_gate_watch_tick(self) -> int:
+        if not self._micro_gate_watch_enabled:
+            return 0
+
+        start_ms = self._now_ms()
+        now_ms = start_ms
+        max_items = self._micro_gate_watch_max_items_per_tick
+        time_budget_ms = self._micro_gate_watch_time_budget_ms
+        due_items: List[Dict[str, Any]] = []
+        expired_items: List[Tuple[Dict[str, Any], int, int]] = []
+
+        async with self._incubator_lock:
+            for dedupe_key, item in list(self._incubator_items.items()):
+                if self._now_ms() - start_ms >= time_budget_ms:
+                    break
+                if str(item.get("watch_kind") or "").lower() != "micro_gate_watch":
+                    continue
+                payload = item.get("payload") if isinstance(item.get("payload"), dict) else None
+                if not isinstance(payload, dict):
+                    continue
+
+                expires_at_ms, created_ts_ms = self._resolve_micro_gate_watch_expiry(item, payload, now_ms)
+                if expires_at_ms and now_ms >= expires_at_ms:
+                    removed = self._incubator_items.pop(dedupe_key, None)
+                    if removed:
+                        expired_items.append((removed, expires_at_ms, created_ts_ms))
+                    continue
+
+                try:
+                    next_check_at_ms = int(item.get("next_check_at_ms") or 0)
+                except Exception:
+                    next_check_at_ms = 0
+                if now_ms >= next_check_at_ms:
+                    due_items.append(
+                        {
+                            "dedupe_key": dedupe_key,
+                            "pending_id": item.get("pending_id"),
+                            "payload": dict(payload),
+                            "watch_interval_ms": item.get("watch_interval_ms"),
+                            "max_checks": item.get("max_checks"),
+                            "checks_done": int(item.get("checks_done", 0) or 0),
+                            "expires_at_ms": expires_at_ms,
+                            "created_ts_ms": created_ts_ms,
+                        }
+                    )
+                    if len(due_items) >= max_items:
+                        break
+
+        for removed, expires_at_ms, created_ts_ms in expired_items:
+            payload = removed.get("payload") if isinstance(removed.get("payload"), dict) else {}
+            price_ctx = self._build_micro_gate_watch_price_context(
+                removed,
+                payload,
+                price=None,
+                price_source=None,
+                now_ts_ms=now_ms,
+            )
+            remaining_ttl_ms = None
+            if expires_at_ms:
+                remaining_ttl_ms = int(expires_at_ms - now_ms)
+            self._emit_micro_gate_watch_outcome(
+                removed,
+                outcome="expired",
+                drop_reason="ttl",
+                checks_done=int(removed.get("checks_done", 0) or removed.get("attempts", 0) or 0),
+                max_checks=removed.get("max_checks"),
+                interval_ms=removed.get("watch_interval_ms"),
+                remaining_ttl_ms=remaining_ttl_ms,
+                price_ctx=price_ctx,
+                gate_detail=None,
+            )
+            extra = {
+                "drop_kind": "micro_gate_watch",
+                "drop_reason": "ttl",
+                "price": price_ctx.get("price"),
+                "price_source": price_ctx.get("price_source"),
+            }
+            if price_ctx.get("price_imputed"):
+                extra["price_imputed"] = True
+                extra["imputed_from"] = price_ctx.get("imputed_from")
+                if price_ctx.get("last_price_age_ms") is not None:
+                    extra["last_price_age_ms"] = price_ctx.get("last_price_age_ms")
+            self._emit_waiting_room_event("waiting_room_drop", removed, **extra)
+
+        if not due_items:
+            return 0
+
+        price_by_key: Dict[Tuple[str, str, Optional[str]], Tuple[Optional[float], Optional[str]]] = {}
+        for item in due_items:
+            payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+            symbol = payload.get("symbol")
+            timeframe = payload.get("timeframe") or "5m"
+            exchange = payload.get("exchange") or payload.get("exchange_name")
+            if not symbol:
+                continue
+            key = (str(symbol), str(timeframe), str(exchange) if exchange else None)
+            if key in price_by_key:
+                continue
+            price_by_key[key] = await self._get_micro_gate_watch_price(
+                str(symbol),
+                timeframe=str(timeframe),
+                exchange=str(exchange) if exchange else None,
+            )
+
+        processed = 0
+
+        for entry in due_items:
+            if self._now_ms() - start_ms >= time_budget_ms:
+                break
+            dedupe_key = entry.get("dedupe_key")
+            pending_id = entry.get("pending_id")
+            payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            if not dedupe_key or not isinstance(payload, dict):
+                continue
+            symbol = payload.get("symbol")
+            timeframe = payload.get("timeframe") or "5m"
+            exchange = payload.get("exchange") or payload.get("exchange_name")
+            key = (str(symbol), str(timeframe), str(exchange) if exchange else None)
+            raw_price, raw_source = price_by_key.get(key, (None, None))
+
+            async with self._incubator_lock:
+                live_item = self._incubator_items.get(dedupe_key)
+                if not live_item:
+                    continue
+                if pending_id is not None and str(live_item.get("pending_id")) != str(pending_id):
+                    continue
+                if str(live_item.get("watch_kind") or "").lower() != "micro_gate_watch":
+                    continue
+                interval_ms = int(live_item.get("watch_interval_ms") or self._micro_gate_watch_interval_ms_default)
+                max_checks = int(live_item.get("max_checks") or self._micro_gate_watch_max_checks_default)
+                checks_done = int(live_item.get("checks_done", 0) or 0)
+                expires_at_ms = live_item.get("expires_at_ms") or entry.get("expires_at_ms")
+                if not expires_at_ms:
+                    expires_at_ms, _ = self._resolve_micro_gate_watch_expiry(live_item, payload, now_ms)
+                remaining_ttl_ms = None
+                if expires_at_ms:
+                    remaining_ttl_ms = int(expires_at_ms - now_ms)
+
+            price_ctx = self._build_micro_gate_watch_price_context(
+                live_item,
+                payload,
+                price=raw_price,
+                price_source=raw_source,
+                now_ts_ms=now_ms,
+            )
+            if raw_price is not None and raw_source:
+                async with self._incubator_lock:
+                    live_item = self._incubator_items.get(dedupe_key)
+                    if live_item and str(live_item.get("watch_kind") or "").lower() == "micro_gate_watch":
+                        live_item["last_known_price"] = price_ctx.get("price")
+                        live_item["last_known_ts_ms"] = now_ms
+            if not live_item:
+                continue
+
+            checks_done += 1
+            gate_clear = False
+            gate_detail: Dict[str, Any] = {}
+            if symbol:
+                gate_clear, gate_detail = await self._check_micro_gate_watch_release_condition(
+                    payload,
+                    price=price_ctx.get("price"),
+                    price_source=price_ctx.get("price_source"),
+                )
+
+            interval_policy = "timer_only"
+            next_check_in_ms: Optional[int] = None
+            if not gate_clear and checks_done < max_checks:
+                next_check_in_ms = int(interval_ms)
+                if remaining_ttl_ms is not None:
+                    next_check_in_ms = max(0, min(int(interval_ms), int(remaining_ttl_ms)))
+
+            tick_detail = {
+                "micro_gate_watch": {
+                    "checks_done": checks_done,
+                    "max_checks": max_checks,
+                    "interval_ms": interval_ms,
+                    "price": price_ctx.get("price"),
+                    "price_source": price_ctx.get("price_source"),
+                    "price_imputed": price_ctx.get("price_imputed"),
+                }
+            }
+            self._emit_micro_gate_watch_tick(
+                live_item,
+                checks_done=checks_done,
+                max_checks=max_checks,
+                interval_ms=interval_ms,
+                remaining_ttl_ms=remaining_ttl_ms,
+                price_ctx=price_ctx,
+                gate_detail=gate_detail,
+                check_detail=tick_detail,
+                interval_policy=interval_policy,
+                next_check_in_ms=next_check_in_ms,
+            )
+
+            if gate_clear:
+                refreshed_signal = await self._apply_refresh_policy(
+                    dict(payload),
+                    str(live_item.get("refresh_policy") or "NONE"),
+                    price_override=price_ctx.get("price"),
+                    price_source=price_ctx.get("price_source"),
+                )
+                refreshed_signal["incubator_replay"] = True
+                strategy_name = payload.get("strategy_name") or payload.get("strategy") or ""
+                try:
+                    result = await self.process_strategy_signal(strategy_name=str(strategy_name), signal=refreshed_signal)
+                except Exception as exc:
+                    result = {"status": "error", "reason": str(exc), "stage": "micro_gate_watch_replay"}
+
+                status_raw = result.get("status")
+                status = str(status_raw or "").strip().lower()
+                replay_reason_code = str(result.get("reason_code") or "")
+                replay_blocked = status == "incubated" and replay_reason_code == "volume.low_vol_tight_stop"
+                if replay_blocked:
+                    gate_detail = dict(gate_detail or {})
+                    gate_detail["replay_status"] = status
+                    gate_detail["replay_reason_code"] = replay_reason_code
+                else:
+                    queued_statuses = {"queued", "enqueued"}
+                    accepted_statuses = {"accepted", "active", "executing", "executed"}
+                    success_statuses = queued_statuses | accepted_statuses
+                    drop_reason = None
+                    outcome = "accepted" if status in success_statuses else "dropped"
+                    if outcome == "dropped":
+                        drop_reason = result.get("reason_code") or result.get("reason") or "replay_failed"
+
+                    async with self._incubator_lock:
+                        live_item = self._incubator_items.get(dedupe_key)
+                        if live_item and str(live_item.get("watch_kind") or "").lower() == "micro_gate_watch":
+                            if pending_id is None or str(live_item.get("pending_id")) == str(pending_id):
+                                self._incubator_items.pop(dedupe_key, None)
+
+                    self._emit_micro_gate_watch_outcome(
+                        live_item or entry,
+                        outcome=outcome,
+                        drop_reason=drop_reason,
+                        checks_done=checks_done,
+                        max_checks=max_checks,
+                        interval_ms=interval_ms,
+                        remaining_ttl_ms=remaining_ttl_ms,
+                        price_ctx=price_ctx,
+                        gate_detail=gate_detail,
+                    )
+                    if outcome == "accepted":
+                        self._emit_waiting_room_event("waiting_room_accept", live_item or entry)
+                    else:
+                        self._emit_waiting_room_event(
+                            "waiting_room_drop",
+                            live_item or entry,
+                            drop_kind="micro_gate_watch",
+                            drop_reason=drop_reason or "replay_failed",
+                        )
+                    processed += 1
+                    continue
+
+            if checks_done >= max_checks:
+                async with self._incubator_lock:
+                    live_item = self._incubator_items.get(dedupe_key)
+                    if live_item and str(live_item.get("watch_kind") or "").lower() == "micro_gate_watch":
+                        if pending_id is None or str(live_item.get("pending_id")) == str(pending_id):
+                            self._incubator_items.pop(dedupe_key, None)
+                self._emit_micro_gate_watch_outcome(
+                    live_item or entry,
+                    outcome="dropped",
+                    drop_reason="gate_still_blocked",
+                    checks_done=checks_done,
+                    max_checks=max_checks,
+                    interval_ms=interval_ms,
+                    remaining_ttl_ms=remaining_ttl_ms,
+                    price_ctx=price_ctx,
+                    gate_detail=gate_detail,
+                )
+                self._emit_waiting_room_event(
+                    "waiting_room_drop",
+                    live_item or entry,
+                    drop_kind="micro_gate_watch",
+                    drop_reason="gate_still_blocked",
+                    checks_done=checks_done,
+                    max_checks=max_checks,
+                    interval_ms=interval_ms,
+                )
+                processed += 1
+            else:
+                async with self._incubator_lock:
+                    live_item = self._incubator_items.get(dedupe_key)
+                    if live_item and str(live_item.get("watch_kind") or "").lower() == "micro_gate_watch":
+                        if pending_id is None or str(live_item.get("pending_id")) == str(pending_id):
+                            live_item["checks_done"] = checks_done
+                            live_item["attempts"] = checks_done
+                            live_item["last_attempt_ts_ms"] = now_ms
+                            next_delay_ms = int(next_check_in_ms) if next_check_in_ms is not None else int(interval_ms)
+                            live_item["next_check_at_ms"] = now_ms + next_delay_ms
+                processed += 1
+
+        return processed
+
     def _resolve_fast_watch_expiry(
         self,
         item: Dict[str, Any],
@@ -2524,6 +2971,81 @@ class StrategyCoordinator:
             max_checks = self._fast_watch_max_checks_default
         return max(1, int(max_checks))
 
+    def _resolve_micro_gate_watch_settings(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return None
+        condition_data = payload.get("condition_data") if isinstance(payload.get("condition_data"), dict) else {}
+        watch_kind = None
+        if isinstance(condition_data, dict):
+            watch_kind = condition_data.get("watch_kind")
+        if watch_kind is None:
+            watch_kind = payload.get("watch_kind")
+        if str(watch_kind or "").lower() != "micro_gate_watch":
+            return None
+        interval_ms = self._resolve_micro_gate_watch_interval_ms(condition_data if isinstance(condition_data, dict) else {})
+        max_checks = self._resolve_micro_gate_watch_max_checks(condition_data if isinstance(condition_data, dict) else {})
+        ttl_ms = self._resolve_micro_gate_watch_ttl_ms(condition_data if isinstance(condition_data, dict) else {})
+        return {
+            "watch_kind": "micro_gate_watch",
+            "interval_ms": interval_ms,
+            "max_checks": max_checks,
+            "ttl_ms": ttl_ms,
+        }
+
+    def _resolve_micro_gate_watch_interval_ms(self, condition_data: Dict[str, Any]) -> int:
+        interval_ms = condition_data.get("watch_interval_ms") or condition_data.get("interval_ms")
+        interval_val = self._coerce_int(interval_ms)
+        if interval_val is None or interval_val <= 0:
+            interval_val = self._micro_gate_watch_interval_ms_default
+        return max(250, int(interval_val))
+
+    def _resolve_micro_gate_watch_max_checks(self, condition_data: Dict[str, Any]) -> int:
+        raw = condition_data.get("max_checks")
+        max_checks = self._coerce_int(raw)
+        if max_checks is None or max_checks <= 0:
+            max_checks = self._micro_gate_watch_max_checks_default
+        return max(1, int(max_checks))
+
+    def _resolve_micro_gate_watch_ttl_ms(self, condition_data: Dict[str, Any]) -> int:
+        ttl_ms = condition_data.get("ttl_ms") or condition_data.get("watch_ttl_ms")
+        ttl_val = self._coerce_int(ttl_ms)
+        if ttl_val is None or ttl_val <= 0:
+            ttl_val = self._micro_gate_watch_ttl_ms_default
+        return max(1_000, int(ttl_val))
+
+    def _resolve_micro_gate_watch_expiry(
+        self,
+        item: Dict[str, Any],
+        payload: Dict[str, Any],
+        now_ms: int,
+    ) -> Tuple[Optional[int], int]:
+        created_ts_ms = self._coerce_int(
+            item.get("watch_created_ts_ms")
+            or item.get("first_seen_ts_ms")
+            or payload.get("timestamp")
+            or payload.get("setup_anchor_ts_ms")
+        )
+        if created_ts_ms is None or created_ts_ms <= 0:
+            created_ts_ms = now_ms
+
+        condition_data = payload.get("condition_data") if isinstance(payload.get("condition_data"), dict) else {}
+        ttl_val = self._coerce_int(item.get("watch_ttl_ms")) if item.get("watch_ttl_ms") is not None else None
+        if ttl_val is None or ttl_val <= 0:
+            ttl_val = self._resolve_micro_gate_watch_ttl_ms(condition_data if isinstance(condition_data, dict) else {})
+
+        expires_at_ms = self._coerce_int(item.get("expires_at_ms"))
+        if expires_at_ms is None or expires_at_ms <= 0:
+            expires_at_ms = created_ts_ms + int(ttl_val)
+
+        if expires_at_ms <= created_ts_ms:
+            expires_at_ms = created_ts_ms + int(ttl_val)
+
+        item.setdefault("watch_created_ts_ms", created_ts_ms)
+        item.setdefault("watch_ttl_ms", ttl_val)
+        item.setdefault("expires_at_ms", expires_at_ms)
+
+        return expires_at_ms, int(created_ts_ms)
+
     async def _get_cache_only_price(
         self,
         symbol: str,
@@ -2544,6 +3066,25 @@ class StrategyCoordinator:
                 return price, "forming_candle"
             except Exception:
                 return None, "forming_candle"
+        return None, None
+
+    async def _get_micro_gate_watch_price(
+        self,
+        symbol: str,
+        *,
+        timeframe: str,
+        exchange: Optional[str] = None,
+    ) -> Tuple[Optional[float], Optional[str]]:
+        price, source = await self._get_cache_only_price(symbol, timeframe=timeframe, exchange=exchange)
+        if price is not None:
+            return price, source
+        pipeline = getattr(self, "market_data_pipeline", None)
+        if pipeline and hasattr(pipeline, "get_latest_price"):
+            try:
+                price = await pipeline.get_latest_price(symbol, timeframe=timeframe)
+                return price, "market_price"
+            except Exception:
+                return None, "market_price"
         return None, None
 
     def _build_fast_watch_price_context(
@@ -2573,6 +3114,57 @@ class StrategyCoordinator:
             "last_price_ts_ms": last_price_ts_ms,
             "price_imputed": price_imputed,
             "imputed_from": imputed_from,
+            "last_price_age_ms": last_price_age_ms,
+        }
+
+    def _build_micro_gate_watch_price_context(
+        self,
+        item: Dict[str, Any],
+        payload: Dict[str, Any],
+        *,
+        price: Optional[float],
+        price_source: Optional[str],
+        now_ts_ms: Optional[int],
+    ) -> Dict[str, Any]:
+        ts_ms = int(now_ts_ms if now_ts_ms is not None else self._now_ms())
+        last_price = self._coerce_float(item.get("last_known_price") if isinstance(item, dict) else None)
+        last_price_ts_ms = self._coerce_int(item.get("last_known_ts_ms") if isinstance(item, dict) else None)
+        price_used = price
+        price_src = price_source
+        price_imputed = False
+        imputed_from = None
+        if price_used is None:
+            if last_price is not None:
+                price_used = last_price
+                price_src = "last_known_price"
+                price_imputed = True
+                imputed_from = "last_known_price"
+            else:
+                entry_val = None
+                if isinstance(payload, dict):
+                    entry_val = self._coerce_float(
+                        payload.get("entry") or payload.get("entry_price") or payload.get("price")
+                    )
+                if entry_val is not None:
+                    price_used = entry_val
+                    price_src = "payload_entry"
+                    price_imputed = True
+                    imputed_from = "payload_entry"
+
+        last_price_age_ms = None
+        if price_imputed and last_price_ts_ms is not None:
+            try:
+                last_price_age_ms = max(0, int(ts_ms - int(last_price_ts_ms)))
+            except Exception:
+                last_price_age_ms = None
+
+        return {
+            "price": price_used,
+            "price_source": price_src,
+            "price_imputed": price_imputed,
+            "imputed_from": imputed_from,
+            "last_price": last_price,
+            "last_price_ts_ms": last_price_ts_ms,
             "last_price_age_ms": last_price_age_ms,
         }
 
@@ -2758,6 +3350,248 @@ class StrategyCoordinator:
             extra["expire_reason"] = expire_reason
         self._emit_waiting_room_event("waiting_room_drop", item, **extra)
 
+    def _emit_micro_gate_watch_add(self, item: Dict[str, Any]) -> None:
+        payload = item.get("payload", {}) if isinstance(item, dict) else {}
+        ts_ms = self._now_ms()
+        try:
+            run_id = get_current_run_id()
+        except Exception:
+            run_id = None
+        expires_at_ms = self._coerce_int(item.get("expires_at_ms"))
+        remaining_ttl_ms = int(expires_at_ms - ts_ms) if expires_at_ms else None
+        out = {
+            "event": "micro_gate_watch_add",
+            "ts_ms": ts_ms,
+            "run_id": run_id,
+            "pending_id": item.get("pending_id") if isinstance(item, dict) else None,
+            "dedupe_key": item.get("dedupe_key") if isinstance(item, dict) else None,
+            "reason_code": item.get("reason_code") if isinstance(item, dict) else None,
+            "checks_done": int(item.get("checks_done", 0) or 0),
+            "max_checks": item.get("max_checks"),
+            "interval_ms": item.get("watch_interval_ms"),
+            "remaining_ttl_ms": remaining_ttl_ms,
+            "symbol": payload.get("symbol") if isinstance(payload, dict) else None,
+            "side": payload.get("side") if isinstance(payload, dict) else None,
+            "timeframe": payload.get("timeframe") if isinstance(payload, dict) else None,
+        }
+        condition_data = payload.get("condition_data") if isinstance(payload, dict) else None
+        if isinstance(condition_data, dict):
+            for key in ("gate_margin_bps", "gate_threshold", "stop_distance", "stop_pct"):
+                if condition_data.get(key) is not None:
+                    out[key] = condition_data.get(key)
+        safe_out = self._json_sanitize(out)
+        try:
+            logger.info("micro_gate_watch_add %s", json.dumps(safe_out, ensure_ascii=False, sort_keys=True))
+        except Exception:
+            logger.info("micro_gate_watch_add %s", safe_out)
+
+    def _emit_micro_gate_watch_dedupe_drop_incoming(
+        self,
+        *,
+        dedupe_key: Optional[str],
+        existing_pending_id: Optional[str],
+        incoming_signal_id: Optional[str],
+        reason: str,
+    ) -> None:
+        ts_ms = self._now_ms()
+        try:
+            run_id = get_current_run_id()
+        except Exception:
+            run_id = None
+        out = {
+            "event": "micro_gate_watch_dedupe_drop_incoming",
+            "ts_ms": ts_ms,
+            "run_id": run_id,
+            "dedupe_key": dedupe_key,
+            "existing_pending_id": existing_pending_id,
+            "incoming_signal_id": incoming_signal_id,
+            "reason": reason,
+        }
+        safe_out = self._json_sanitize(out)
+        try:
+            logger.info("micro_gate_watch_dedupe_drop_incoming %s", json.dumps(safe_out, ensure_ascii=False, sort_keys=True))
+        except Exception:
+            logger.info("micro_gate_watch_dedupe_drop_incoming %s", safe_out)
+
+    def _emit_micro_gate_watch_tick(
+        self,
+        item: Dict[str, Any],
+        *,
+        checks_done: int,
+        max_checks: int,
+        interval_ms: int,
+        remaining_ttl_ms: Optional[int],
+        price_ctx: Dict[str, Any],
+        gate_detail: Optional[Dict[str, Any]],
+        check_detail: Optional[Dict[str, Any]] = None,
+        interval_policy: Optional[str] = None,
+        next_check_in_ms: Optional[int] = None,
+    ) -> None:
+        payload = item.get("payload", {}) if isinstance(item, dict) else {}
+        ts_ms = self._now_ms()
+        try:
+            run_id = get_current_run_id()
+        except Exception:
+            run_id = None
+        out = {
+            "event": "micro_gate_watch_tick",
+            "ts_ms": ts_ms,
+            "run_id": run_id,
+            "pending_id": item.get("pending_id") if isinstance(item, dict) else None,
+            "dedupe_key": item.get("dedupe_key") if isinstance(item, dict) else None,
+            "reason_code": item.get("reason_code") if isinstance(item, dict) else None,
+            "checks_done": checks_done,
+            "max_checks": max_checks,
+            "interval_ms": interval_ms,
+            "remaining_ttl_ms": remaining_ttl_ms,
+            "price": price_ctx.get("price"),
+            "price_source": price_ctx.get("price_source"),
+            "symbol": payload.get("symbol") if isinstance(payload, dict) else None,
+            "side": payload.get("side") if isinstance(payload, dict) else None,
+            "timeframe": payload.get("timeframe") if isinstance(payload, dict) else None,
+        }
+        if interval_policy:
+            out["interval_policy"] = interval_policy
+        if next_check_in_ms is not None:
+            out["next_check_in_ms"] = int(next_check_in_ms)
+        if price_ctx.get("price_imputed"):
+            out["price_imputed"] = True
+            out["imputed_from"] = price_ctx.get("imputed_from")
+            if price_ctx.get("last_price_age_ms") is not None:
+                out["last_price_age_ms"] = price_ctx.get("last_price_age_ms")
+        if gate_detail:
+            out.update(gate_detail)
+        if check_detail:
+            out["check_detail"] = check_detail
+        safe_out = self._json_sanitize(out)
+        try:
+            logger.info("micro_gate_watch_tick %s", json.dumps(safe_out, ensure_ascii=False, sort_keys=True))
+        except Exception:
+            logger.info("micro_gate_watch_tick %s", safe_out)
+
+    def _emit_micro_gate_watch_outcome(
+        self,
+        item: Dict[str, Any],
+        *,
+        outcome: str,
+        drop_reason: Optional[str],
+        checks_done: int,
+        max_checks: Optional[int],
+        interval_ms: Optional[int],
+        remaining_ttl_ms: Optional[int],
+        price_ctx: Dict[str, Any],
+        gate_detail: Optional[Dict[str, Any]],
+    ) -> None:
+        payload = item.get("payload", {}) if isinstance(item, dict) else {}
+        ts_ms = self._now_ms()
+        try:
+            run_id = get_current_run_id()
+        except Exception:
+            run_id = None
+        out = {
+            "event": "micro_gate_watch_outcome",
+            "ts_ms": ts_ms,
+            "run_id": run_id,
+            "pending_id": item.get("pending_id") if isinstance(item, dict) else None,
+            "dedupe_key": item.get("dedupe_key") if isinstance(item, dict) else None,
+            "reason_code": item.get("reason_code") if isinstance(item, dict) else None,
+            "outcome": outcome,
+            "drop_reason": drop_reason,
+            "checks_done": checks_done,
+            "max_checks": max_checks,
+            "interval_ms": interval_ms,
+            "remaining_ttl_ms": remaining_ttl_ms,
+            "price": price_ctx.get("price"),
+            "price_source": price_ctx.get("price_source"),
+            "symbol": payload.get("symbol") if isinstance(payload, dict) else None,
+            "side": payload.get("side") if isinstance(payload, dict) else None,
+            "timeframe": payload.get("timeframe") if isinstance(payload, dict) else None,
+        }
+        if price_ctx.get("price_imputed"):
+            out["price_imputed"] = True
+            out["imputed_from"] = price_ctx.get("imputed_from")
+            if price_ctx.get("last_price_age_ms") is not None:
+                out["last_price_age_ms"] = price_ctx.get("last_price_age_ms")
+        if gate_detail:
+            out.update(gate_detail)
+        safe_out = self._json_sanitize(out)
+        try:
+            logger.info("micro_gate_watch_outcome %s", json.dumps(safe_out, ensure_ascii=False, sort_keys=True))
+        except Exception:
+            logger.info("micro_gate_watch_outcome %s", safe_out)
+
+    async def _check_micro_gate_watch_release_condition(
+        self,
+        payload: Dict[str, Any],
+        *,
+        price: Optional[float],
+        price_source: Optional[str],
+    ) -> Tuple[bool, Dict[str, Any]]:
+        symbol = payload.get("symbol") if isinstance(payload, dict) else None
+        timeframe = (payload.get("timeframe") or "5m") if isinstance(payload, dict) else "5m"
+        detail: Dict[str, Any] = {}
+
+        bucket_label = None
+        bucket_rank = None
+        normal_rank = None
+        if symbol and self.volume_analyzer:
+            try:
+                ctx = await self.volume_analyzer.compute_context(symbol, timeframe)
+                bucket = getattr(ctx, "bucket", None) if ctx else None
+                bucket_label = str(bucket or "").upper() if bucket is not None else None
+                if bucket_label:
+                    bucket_rank = get_bucket_rank(bucket_label)
+                    normal_rank = get_bucket_rank("NORMAL")
+            except Exception as exc:
+                detail["volume_error"] = str(exc)
+        else:
+            detail["volume_error"] = "missing_symbol_or_volume_analyzer"
+
+        if bucket_label is not None:
+            detail["bucket"] = bucket_label
+        if bucket_rank is not None:
+            detail["bucket_rank"] = bucket_rank
+        if normal_rank is not None:
+            detail["normal_rank"] = normal_rank
+
+        stop_pct, stop_distance, entry_used = self._calc_stop_metrics(payload, price_override=price)
+        gate_threshold_bps = LOW_VOL_TIGHT_STOP_THRESHOLD * 10000.0
+        gate_margin_bps = None
+        if stop_pct is not None and math.isfinite(stop_pct):
+            gate_margin_bps = max(0.0, (LOW_VOL_TIGHT_STOP_THRESHOLD - stop_pct) * 10000.0)
+        px_used = price if price is not None else entry_used
+        px_source = price_source if price is not None else ("entry_price" if entry_used is not None else None)
+        market_price = None
+        if price is not None and price_source in ("market_price", "cache_only", "forming_candle"):
+            market_price = price
+
+        detail.update(
+            {
+                "gate_threshold": LOW_VOL_TIGHT_STOP_THRESHOLD,
+                "gate_threshold_bps": gate_threshold_bps,
+                "gate_margin_bps": gate_margin_bps,
+                "stop_distance": stop_distance,
+                "stop_pct": stop_pct,
+                "market_price": market_price,
+                "px_used": px_used,
+                "px_source": px_source,
+            }
+        )
+
+        volume_ok = bool(bucket_rank is not None and normal_rank is not None and bucket_rank >= normal_rank)
+        stop_ok = bool(stop_pct is not None and stop_pct >= LOW_VOL_TIGHT_STOP_THRESHOLD)
+        detail["volume_ok"] = volume_ok
+        detail["stop_ok"] = stop_ok
+
+        if volume_ok:
+            detail["gate_reason"] = "volume_bucket_normal"
+        elif stop_ok:
+            detail["gate_reason"] = "stop_distance_ok"
+        else:
+            detail["gate_reason"] = "gate_still_blocked"
+
+        return volume_ok or stop_ok, detail
+
     async def on_recheck_result(
         self,
         pending_id: Optional[str],
@@ -2909,6 +3743,24 @@ class StrategyCoordinator:
             return float(value)
         except Exception:
             return None
+
+    def _calc_stop_metrics(
+        self, signal: Dict[str, Any], *, price_override: Optional[float] = None
+    ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        entry_val = self._coerce_float(price_override) if price_override is not None else None
+        if entry_val is None:
+            entry_val = self._coerce_float(
+                signal.get("entry") or signal.get("entry_price") or signal.get("price")
+            )
+        stop_val = self._coerce_float(signal.get("stop") or signal.get("stop_loss"))
+        stop_distance = None
+        stop_pct = None
+        if entry_val is not None and entry_val > 0 and stop_val is not None and stop_val > 0:
+            stop_distance = abs(entry_val - stop_val)
+            stop_pct = stop_distance / entry_val if entry_val else None
+        else:
+            stop_pct = self._coerce_float(signal.get("stop_loss_pct"))
+        return stop_pct, stop_distance, entry_val
 
     @staticmethod
     def _fast_watch_hit(
@@ -3145,14 +3997,21 @@ class StrategyCoordinator:
             return False, {"bucket": bucket_label, "error": "bucket_rank_unavailable"}
         return bucket_rank >= normal_rank, {"bucket": bucket_label, "bucket_rank": bucket_rank, "normal_rank": normal_rank}
 
-    async def _apply_refresh_policy(self, payload: Dict[str, Any], refresh_policy: str) -> Dict[str, Any]:
+    async def _apply_refresh_policy(
+        self,
+        payload: Dict[str, Any],
+        refresh_policy: str,
+        *,
+        price_override: Optional[float] = None,
+        price_source: Optional[str] = None,
+    ) -> Dict[str, Any]:
         if refresh_policy != "REPRICE_AND_RESIZE":
             return payload
 
         symbol = payload.get("symbol")
         timeframe = payload.get("timeframe") or "5m"
-        latest_price = None
-        if self.market_data_pipeline and symbol:
+        latest_price = price_override
+        if latest_price is None and self.market_data_pipeline and symbol:
             try:
                 latest_price = await self.market_data_pipeline.get_latest_price(symbol, timeframe=timeframe)
             except Exception:
@@ -4175,6 +5034,10 @@ class StrategyCoordinator:
 
                 # If an identical setup is already waiting, refresh its payload and prompt a near-term recheck.
                 refreshed = None
+                dedupe_drop = None
+                dedupe_drop_reason = None
+                dedupe_drop_extra: Dict[str, Any] = {}
+                dedupe_micro_drop = None
                 async with self._incubator_lock:
                     existing = self._incubator_items.get(dedupe_key)
                     if existing:
@@ -4194,10 +5057,46 @@ class StrategyCoordinator:
                             incoming_signal_id = safe_payload.get("signal_id")
                             if not incoming_signal_id or (pending_id_existing and str(incoming_signal_id) == str(pending_id_existing)):
                                 safe_payload["signal_id"] = uuid.uuid4().hex
-                        existing["payload"] = safe_payload
-                        existing["ctx_hash"] = None
-                        existing["next_check_at_ms"] = self._now_ms()
-                        refreshed = dict(existing)
+                        if str(existing.get("watch_kind") or "").lower() == "micro_gate_watch":
+                            dedupe_drop = {
+                                "payload": safe_payload,
+                                "first_seen_ts_ms": self._now_ms(),
+                                "attempts": 0,
+                                "reason_code": "micro_watch_active",
+                                "dedupe_key": dedupe_key,
+                            }
+                            dedupe_drop_reason = "micro_watch_active"
+                            dedupe_drop_extra = {
+                                "existing_pending_id": existing.get("pending_id"),
+                                "incoming_signal_id": safe_payload.get("signal_id") if isinstance(safe_payload, dict) else None,
+                            }
+                            dedupe_micro_drop = {
+                                "dedupe_key": dedupe_key,
+                                "existing_pending_id": existing.get("pending_id"),
+                                "incoming_signal_id": safe_payload.get("signal_id") if isinstance(safe_payload, dict) else None,
+                                "reason": "micro_watch_active",
+                            }
+                        else:
+                            existing["payload"] = safe_payload
+                            existing["ctx_hash"] = None
+                            existing["next_check_at_ms"] = self._now_ms()
+                            refreshed = dict(existing)
+
+                if dedupe_drop is not None:
+                    if dedupe_micro_drop:
+                        self._emit_micro_gate_watch_dedupe_drop_incoming(**dedupe_micro_drop)
+                    self._emit_waiting_room_event(
+                        "waiting_room_drop",
+                        dedupe_drop,
+                        drop_reason=dedupe_drop_reason,
+                        **dedupe_drop_extra,
+                    )
+                    return {
+                        "status": "dropped",
+                        "reason": dedupe_drop_reason,
+                        "stage": "incubator_dedupe",
+                        "dedupe_key": dedupe_key,
+                    }
 
                 if refreshed:
                     return {
@@ -4448,8 +5347,9 @@ class StrategyCoordinator:
             is_low_bucket = volume_bucket_label == 'LOW'
             is_deferred = bool((enriched_signal.get('queue_meta') or {}).get('is_deferred'))
 
-            TIGHT_STOP_THRESHOLD = 0.0015  # 0.15%
-            WIDE_STOP_THRESHOLD = 0.005  # 0.50%
+            tight_stop_threshold = LOW_VOL_TIGHT_STOP_THRESHOLD
+            wide_stop_threshold = LOW_VOL_WIDE_STOP_THRESHOLD
+            micro_gate_margin_bps = LOW_VOL_MICRO_GATE_MARGIN_BPS
             RESCUE_MULTIPLIER = 0.25
             LOW_LIMIT_MULTIPLIER = 0.35
             COOLDOWN_SECONDS = 300  # 1 bar
@@ -4460,11 +5360,12 @@ class StrategyCoordinator:
                     if volume_rank is not None and volume_rank >= normal_rank:
                         logger.info(f"?? {log_prefix} Deferred signal resumed at {volume_bucket_label} volume (standard profile).")
                     elif is_low_bucket:
-                        stop_pct = _calc_stop_pct(enriched_signal) or 0.0
-                        adjusted_pct = max(stop_pct, TIGHT_STOP_THRESHOLD)
+                        stop_pct, _, _ = self._calc_stop_metrics(enriched_signal)
+                        stop_pct = stop_pct or 0.0
+                        adjusted_pct = max(stop_pct, tight_stop_threshold)
 
                         entry_val = float(enriched_signal.get('entry') or 0.0)
-                        if entry_val > 0 and stop_pct < TIGHT_STOP_THRESHOLD:
+                        if entry_val > 0 and stop_pct < tight_stop_threshold:
                             side_val = (enriched_signal.get('side') or '').lower()
                             if side_val in ['short', 'sell']:
                                 enriched_signal['stop'] = entry_val * (1 + adjusted_pct)
@@ -4490,15 +5391,68 @@ class StrategyCoordinator:
                     if volume_rank >= normal_rank:
                         pass  # Standard profile, proceed
                     elif is_low_bucket:
-                        stop_pct = _calc_stop_pct(enriched_signal)
-                        tight_stop = stop_pct is not None and stop_pct < TIGHT_STOP_THRESHOLD
-                        wide_stop = stop_pct is not None and stop_pct > WIDE_STOP_THRESHOLD
+                        stop_pct, stop_distance, stop_px_used = self._calc_stop_metrics(enriched_signal)
+                        tight_stop = stop_pct is not None and stop_pct < tight_stop_threshold
+                        wide_stop = stop_pct is not None and stop_pct > wide_stop_threshold
 
                         if tight_stop:
+                            gate_margin_bps = None
+                            if stop_pct is not None and math.isfinite(stop_pct):
+                                gate_margin_bps = max(0.0, (tight_stop_threshold - stop_pct) * 10000.0)
+                            if gate_margin_bps is not None and gate_margin_bps > micro_gate_margin_bps:
+                                self.processing_stats['rejected_signals'] += 1
+                                drop_item = {
+                                    "payload": self._json_sanitize(enriched_signal),
+                                    "first_seen_ts_ms": self._now_ms(),
+                                    "attempts": 0,
+                                    "reason_code": "volume.low_vol_tight_stop_far",
+                                    "dedupe_key": enriched_signal.get("dedupe_key"),
+                                    "stage": "volume_policy",
+                                }
+                                self._emit_waiting_room_event(
+                                    "waiting_room_drop",
+                                    drop_item,
+                                    drop_reason="gate_far_from_pass",
+                                    gate_margin_bps=gate_margin_bps,
+                                    gate_threshold=tight_stop_threshold,
+                                    gate_threshold_bps=tight_stop_threshold * 10000.0,
+                                    stop_distance=stop_distance,
+                                    stop_pct=stop_pct,
+                                    px_used=stop_px_used,
+                                    px_source="entry_price" if stop_px_used is not None else None,
+                                )
+                                logger.warning(
+                                    "??  %s DROPPED (Low Vol Tight Stop Far) | margin_bps=%.2f threshold_bps=%.2f",
+                                    log_prefix,
+                                    gate_margin_bps,
+                                    tight_stop_threshold * 10000.0,
+                                )
+                                return {
+                                    "status": "dropped",
+                                    "reason": "gate_far_from_pass",
+                                    "reason_code": "volume.low_vol_tight_stop_far",
+                                    "stage": "volume_policy",
+                                }
                             logger.warning(
                                 f"{log_prefix} Signal DEFERRED due to Low Volatility (tight stop). "
                                 f"Reason=volume.low_vol_tight_stop strategy={strategy_name} symbol={symbol}"
                             )
+                            condition_data = enriched_signal.get("condition_data")
+                            if not isinstance(condition_data, dict):
+                                condition_data = {}
+                            condition_data.update(
+                                {
+                                    "gate_margin_bps": gate_margin_bps,
+                                    "gate_threshold": tight_stop_threshold,
+                                    "stop_distance": stop_distance,
+                                    "stop_pct": stop_pct,
+                                    "watch_kind": "micro_gate_watch",
+                                    "watch_interval_ms": self._micro_gate_watch_interval_ms_default,
+                                    "max_checks": self._micro_gate_watch_max_checks_default,
+                                    "ttl_ms": self._micro_gate_watch_ttl_ms_default,
+                                }
+                            )
+                            enriched_signal["condition_data"] = condition_data
                             incubated = await self.incubate_signal(
                                 strategy_name=strategy_name,
                                 signal=enriched_signal,

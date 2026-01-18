@@ -41,6 +41,42 @@ class DummyCacheOnlyPipeline:
         raise AssertionError("REST fallback should not be called")
 
 
+class DummyMicroPricePipeline:
+    def __init__(self, prices):
+        self._prices = list(prices)
+
+    async def get_latest_price(self, _symbol: str, timeframe: str = "5m"):
+        if self._prices:
+            return self._prices.pop(0)
+        return None
+
+
+class DummyVolumeContext:
+    def __init__(self, bucket: str):
+        self.bucket = bucket
+        self.volume_strength = 1.0
+        self.ratio_short = 1.0
+        self.ratio_medium = 1.0
+        self.ratio_combined = 1.0
+        self.short_baseline_volume = 1.0
+        self.medium_baseline_volume = 1.0
+        self.current_window_volume = 1.0
+
+
+class DummyVolumeAnalyzer:
+    def __init__(self, buckets):
+        self._buckets = list(buckets)
+        self._last_bucket = None
+
+    async def compute_context(self, _symbol: str, _timeframe: str):
+        if self._buckets:
+            bucket = self._buckets.pop(0)
+            self._last_bucket = bucket
+        else:
+            bucket = self._last_bucket or "LOW"
+        return DummyVolumeContext(bucket)
+
+
 def _build_fast_watch_signal(
     anchor_ms: int,
     trigger_price: float,
@@ -588,3 +624,297 @@ async def test_fast_watch_rearm_limit_finalize(caplog):
     _, json_blob = drop_events[-1].split(" ", 1)
     data = json.loads(json_blob)
     assert data.get("drop_reason") == "max_rearms"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_micro_gate_watch_clears_on_second_check(caplog):
+    caplog.set_level(logging.INFO)
+
+    analyzer = DummyVolumeAnalyzer(["LOW", "LOW", "NORMAL"])
+    pipeline = DummyMicroPricePipeline([100.0, 101.0])
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline,
+        config={"micro_gate_watch": {"enabled": True, "loop_interval_ms": 1, "time_budget_ms": 500}},
+        volume_analyzer=analyzer,
+    )
+
+    anchor_ms = coordinator._now_ms()
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "side": "long",
+        "timeframe": "5m",
+        "entry": 100.0,
+        "stop": 99.86,
+        "target": 101.0,
+        "setup_anchor_ts_ms": anchor_ms,
+        "timestamp": anchor_ms,
+    }
+    signal_dupe = dict(signal)
+
+    result = await coordinator.process_strategy_signal("mean_reversion", signal)
+    assert result.get("status") == "incubated"
+    dedupe_key = result.get("dedupe_key")
+    assert dedupe_key in coordinator._incubator_items
+    assert coordinator._incubator_items[dedupe_key].get("watch_kind") == "micro_gate_watch"
+
+    reprice_calls = {}
+    original_apply = coordinator._apply_refresh_policy
+
+    async def _apply_spy(payload, refresh_policy, **kwargs):
+        reprice_calls["refresh_policy"] = refresh_policy
+        reprice_calls["price_override"] = kwargs.get("price_override")
+        return await original_apply(payload, refresh_policy, **kwargs)
+
+    coordinator._apply_refresh_policy = _apply_spy
+
+    async def _fake_process_strategy_signal(*_args, **_kwargs):
+        return {"status": "accepted"}
+
+    coordinator.process_strategy_signal = _fake_process_strategy_signal
+
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+    await coordinator._micro_gate_watch_tick()
+    assert dedupe_key in coordinator._incubator_items
+    assert coordinator._incubator_items[dedupe_key].get("checks_done") == 1
+
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+    await coordinator._micro_gate_watch_tick()
+    assert dedupe_key not in coordinator._incubator_items
+    assert reprice_calls.get("refresh_policy") == "REPRICE_AND_RESIZE"
+    assert reprice_calls.get("price_override") == pytest.approx(101.0)
+
+    outcome_events = [r.message for r in caplog.records if str(r.message).startswith("micro_gate_watch_outcome ")]
+    assert outcome_events, "Expected micro_gate_watch_outcome telemetry"
+    _, json_blob = outcome_events[-1].split(" ", 1)
+    data = json.loads(json_blob)
+    assert data.get("outcome") == "accepted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_micro_gate_watch_drops_after_max_checks(caplog):
+    caplog.set_level(logging.INFO)
+
+    analyzer = DummyVolumeAnalyzer(["LOW", "LOW", "LOW"])
+    pipeline = DummyMicroPricePipeline([100.0, 100.0])
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline,
+        config={"micro_gate_watch": {"enabled": True, "loop_interval_ms": 1, "time_budget_ms": 500}},
+        volume_analyzer=analyzer,
+    )
+
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "side": "long",
+        "timeframe": "5m",
+        "entry": 100.0,
+        "stop": 99.86,
+        "target": 101.0,
+    }
+
+    result = await coordinator.process_strategy_signal("mean_reversion", signal)
+    assert result.get("status") == "incubated"
+    dedupe_key = result.get("dedupe_key")
+    item = coordinator._incubator_items[dedupe_key]
+    ttl_ms = item.get("expires_at_ms") - item.get("first_seen_ts_ms")
+    assert ttl_ms == pytest.approx(25_000, abs=2_000)
+
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+    await coordinator._micro_gate_watch_tick()
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+    await coordinator._micro_gate_watch_tick()
+    assert dedupe_key not in coordinator._incubator_items
+
+    outcome_events = [r.message for r in caplog.records if str(r.message).startswith("micro_gate_watch_outcome ")]
+    assert outcome_events, "Expected micro_gate_watch_outcome telemetry"
+    _, json_blob = outcome_events[-1].split(" ", 1)
+    data = json.loads(json_blob)
+    assert data.get("drop_reason") == "gate_still_blocked"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_micro_gate_watch_interval_timer_only_no_candle_clamp(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+
+    base_ms = 1_000_000
+    analyzer = DummyVolumeAnalyzer(["LOW"])
+    pipeline = DummyMicroPricePipeline([100.0])
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline,
+        config={"micro_gate_watch": {"enabled": True, "loop_interval_ms": 1, "time_budget_ms": 500}},
+        volume_analyzer=analyzer,
+    )
+    monkeypatch.setattr(coordinator, "_now_ms", lambda: base_ms)
+
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "side": "long",
+        "timeframe": "5m",
+        "entry": 100.0,
+        "stop": 99.86,
+        "target": 101.0,
+    }
+
+    result = await coordinator.process_strategy_signal("mean_reversion", signal)
+    assert result.get("status") == "incubated"
+    dedupe_key = result.get("dedupe_key")
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+
+    caplog.clear()
+    await coordinator._micro_gate_watch_tick()
+
+    item = coordinator._incubator_items[dedupe_key]
+    assert item.get("next_check_at_ms") == base_ms + 10_000
+    tf_ms = 300_000
+    next_boundary = base_ms - (base_ms % tf_ms) + tf_ms
+    assert item.get("next_check_at_ms") != next_boundary
+
+    tick_events = [r.message for r in caplog.records if str(r.message).startswith("micro_gate_watch_tick ")]
+    assert tick_events, "Expected micro_gate_watch_tick telemetry"
+    _, json_blob = tick_events[-1].split(" ", 1)
+    data = json.loads(json_blob)
+    assert data.get("interval_policy") == "timer_only"
+    assert data.get("next_check_in_ms") == 10_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_micro_gate_watch_dedupe_drop_incoming_no_ttl_extend(caplog):
+    caplog.set_level(logging.INFO)
+
+    analyzer = DummyVolumeAnalyzer(["LOW", "LOW"])
+    pipeline = DummyMicroPricePipeline([100.0, 100.0])
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline,
+        config={"micro_gate_watch": {"enabled": True, "loop_interval_ms": 1, "time_budget_ms": 500}},
+        volume_analyzer=analyzer,
+    )
+
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "side": "long",
+        "timeframe": "5m",
+        "entry": 100.0,
+        "stop": 99.86,
+        "target": 101.0,
+    }
+
+    result = await coordinator.process_strategy_signal("mean_reversion", signal)
+    assert result.get("status") == "incubated"
+    dedupe_key = result.get("dedupe_key")
+    item = coordinator._incubator_items[dedupe_key]
+    pending_id = item.get("pending_id")
+    expires_at_ms = item.get("expires_at_ms")
+
+    caplog.clear()
+    result = await coordinator.process_strategy_signal("mean_reversion", signal)
+    assert result.get("status") == "dropped"
+    assert result.get("reason") == "micro_watch_active"
+
+    item = coordinator._incubator_items[dedupe_key]
+    assert item.get("pending_id") == pending_id
+    assert item.get("expires_at_ms") == expires_at_ms
+
+    dedupe_events = [
+        r.message for r in caplog.records if str(r.message).startswith("micro_gate_watch_dedupe_drop_incoming ")
+    ]
+    assert dedupe_events, "Expected micro_gate_watch_dedupe_drop_incoming telemetry"
+    _, json_blob = dedupe_events[-1].split(" ", 1)
+    data = json.loads(json_blob)
+    assert data.get("dedupe_key") == dedupe_key
+    assert data.get("existing_pending_id") == pending_id
+    assert data.get("incoming_signal_id")
+    assert data.get("reason") == "micro_watch_active"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_micro_gate_watch_far_from_pass_drops_immediately(caplog):
+    caplog.set_level(logging.INFO)
+
+    analyzer = DummyVolumeAnalyzer(["LOW"])
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=DummyMicroPricePipeline([]),
+        config={"micro_gate_watch": {"enabled": True, "loop_interval_ms": 1, "time_budget_ms": 500}},
+        volume_analyzer=analyzer,
+    )
+
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "side": "long",
+        "timeframe": "5m",
+        "entry": 100.0,
+        "stop": 99.99,
+        "target": 101.0,
+    }
+
+    result = await coordinator.process_strategy_signal("mean_reversion", signal)
+    assert result.get("status") == "dropped"
+    assert result.get("reason_code") == "volume.low_vol_tight_stop_far"
+    assert not coordinator._incubator_items
+
+    drop_events = [r.message for r in caplog.records if str(r.message).startswith("waiting_room_drop ")]
+    assert drop_events, "Expected waiting_room_drop telemetry"
+    _, json_blob = drop_events[-1].split(" ", 1)
+    data = json.loads(json_blob)
+    assert data.get("drop_reason") == "gate_far_from_pass"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_micro_gate_watch_expiry_imputes_last_price(caplog):
+    caplog.set_level(logging.INFO)
+
+    analyzer = DummyVolumeAnalyzer(["LOW", "LOW"])
+    pipeline = DummyMicroPricePipeline([100.0])
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline,
+        config={"micro_gate_watch": {"enabled": True, "loop_interval_ms": 1, "time_budget_ms": 500}},
+        volume_analyzer=analyzer,
+    )
+
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "side": "long",
+        "timeframe": "5m",
+        "entry": 100.0,
+        "stop": 99.86,
+        "target": 101.0,
+    }
+
+    result = await coordinator.process_strategy_signal("mean_reversion", signal)
+    dedupe_key = result.get("dedupe_key")
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+    await coordinator._micro_gate_watch_tick()
+
+    item = coordinator._incubator_items[dedupe_key]
+    assert item.get("last_known_price") == 100.0
+    now_ms = coordinator._now_ms()
+    item["watch_created_ts_ms"] = now_ms - 30_000
+    item["expires_at_ms"] = item["watch_created_ts_ms"] + 25_000
+
+    caplog.clear()
+    await coordinator._micro_gate_watch_tick()
+
+    outcome_events = [r.message for r in caplog.records if str(r.message).startswith("micro_gate_watch_outcome ")]
+    assert outcome_events, "Expected micro_gate_watch_outcome telemetry"
+    _, json_blob = outcome_events[-1].split(" ", 1)
+    data = json.loads(json_blob)
+    assert data.get("outcome") == "expired"
+    assert data.get("price") == 100.0
+    assert data.get("price_imputed") is True
+    assert data.get("imputed_from") == "last_known_price"

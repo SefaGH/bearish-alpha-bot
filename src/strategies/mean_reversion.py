@@ -222,10 +222,14 @@ class VWAPMeanReversion(BaseStrategy):
         eps_bps = _coerce_float(condition_data.get("eps_bps"))
         condition_price = _coerce_float(condition_data.get("price"))
         fast_watch_price = None
+        micro_gate_watch_price = None
         if isinstance(check_detail, dict):
             fast_watch = check_detail.get("fast_watch")
             if isinstance(fast_watch, dict):
                 fast_watch_price = _coerce_float(fast_watch.get("price"))
+            micro_gate_watch = check_detail.get("micro_gate_watch")
+            if isinstance(micro_gate_watch, dict):
+                micro_gate_watch_price = _coerce_float(micro_gate_watch.get("price"))
 
         market_price = None
         recheck_eval_emitted = False
@@ -261,10 +265,19 @@ class VWAPMeanReversion(BaseStrategy):
                         and px == fast_watch_price
                     ):
                         px_source_val = "fast_watch"
+                    elif (
+                        is_recheck
+                        and micro_gate_watch_price is not None
+                        and math.isfinite(micro_gate_watch_price)
+                        and px == micro_gate_watch_price
+                    ):
+                        px_source_val = "micro_gate_watch"
                     else:
                         px_source_val = "market_price"
                 elif fast_watch_price is not None:
                     px_source_val = "fast_watch"
+                elif micro_gate_watch_price is not None:
+                    px_source_val = "micro_gate_watch"
                 elif condition_price is not None:
                     px_source_val = "condition_data_price"
                 else:
@@ -288,6 +301,7 @@ class VWAPMeanReversion(BaseStrategy):
                 "trigger_price": trigger_price,
                 "market_price": market_price,
                 "fast_watch_price": fast_watch_price,
+                "micro_gate_watch_price": micro_gate_watch_price,
                 "eps_bps": eps_bps,
                 "px": px,
                 "px_used": px,
@@ -547,7 +561,10 @@ class VWAPMeanReversion(BaseStrategy):
             except Exception:
                 vwap_std_val = None
         px_source = "market_price"
-        if is_recheck and fast_watch_price is not None and math.isfinite(fast_watch_price):
+        if is_recheck and micro_gate_watch_price is not None and math.isfinite(micro_gate_watch_price):
+            price = float(micro_gate_watch_price)
+            px_source = "micro_gate_watch"
+        elif is_recheck and fast_watch_price is not None and math.isfinite(fast_watch_price):
             price = float(fast_watch_price)
             px_source = "fast_watch"
 
