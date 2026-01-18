@@ -2209,7 +2209,13 @@ class StrategyCoordinator:
                 cache_source=None,
                 miss_count=int(removed.get("fast_miss_count") or 0),
             )
-            self._emit_fast_watch_waiting_room_compat(removed, outcome="expired", expire_reason=expire_reason)
+            self._emit_fast_watch_waiting_room_compat(
+                removed,
+                outcome="expired",
+                expire_reason=expire_reason,
+                price=None,
+                now_ts_ms=now_ms,
+            )
 
         if not due_items:
             return 0
@@ -2280,6 +2286,8 @@ class StrategyCoordinator:
                     cache_misses += 1
                 else:
                     cache_hits += 1
+                    live_item["last_known_price"] = price
+                    live_item["last_known_ts_ms"] = now_ms
 
                 interval_ms = self._resolve_fast_watch_interval_ms(condition_data)
                 max_checks = self._resolve_fast_watch_max_checks(condition_data, live_item)
@@ -2416,6 +2424,8 @@ class StrategyCoordinator:
                     outcome["item"],
                     outcome=str(outcome.get("outcome")),
                     expire_reason=outcome.get("expire_reason"),
+                    price=outcome.get("price"),
+                    now_ts_ms=now_ms,
                 )
 
         for removed, check_detail in triggers:
@@ -2536,6 +2546,36 @@ class StrategyCoordinator:
                 return None, "forming_candle"
         return None, None
 
+    def _build_fast_watch_price_context(
+        self,
+        item: Dict[str, Any],
+        price: Optional[float],
+        *,
+        now_ts_ms: Optional[int],
+        outcome: str,
+    ) -> Dict[str, Any]:
+        ts_ms = int(now_ts_ms if now_ts_ms is not None else self._now_ms())
+        last_price = self._coerce_float(item.get("last_known_price") if isinstance(item, dict) else None)
+        last_price_ts_ms = self._coerce_int(item.get("last_known_ts_ms") if isinstance(item, dict) else None)
+        price_used = price
+        price_imputed = False
+        imputed_from = None
+        last_price_age_ms = None
+        if price is None and outcome == "expired" and last_price is not None:
+            price_used = last_price
+            price_imputed = True
+            imputed_from = "last_known_price"
+            if last_price_ts_ms is not None:
+                last_price_age_ms = max(0, int(ts_ms - last_price_ts_ms))
+        return {
+            "price": price_used,
+            "last_price": last_price,
+            "last_price_ts_ms": last_price_ts_ms,
+            "price_imputed": price_imputed,
+            "imputed_from": imputed_from,
+            "last_price_age_ms": last_price_age_ms,
+        }
+
     def _emit_fast_watch_outcome(
         self,
         item: Dict[str, Any],
@@ -2586,6 +2626,12 @@ class StrategyCoordinator:
         if miss_count is None:
             miss_count = self._coerce_int(item.get("fast_miss_count") or 0) or 0
 
+        price_ctx = self._build_fast_watch_price_context(
+            item,
+            price,
+            now_ts_ms=ts_ms,
+            outcome=str(outcome),
+        )
         out = {
             "event": "fast_watch_outcome",
             "ts_ms": ts_ms,
@@ -2604,7 +2650,9 @@ class StrategyCoordinator:
             "outcome": str(outcome),
             "checks_done": int(checks_done),
             "elapsed_ms": ts_ms - int(item.get("first_seen_ts_ms", ts_ms) or ts_ms),
-            "price": price,
+            "price": price_ctx.get("price"),
+            "last_price": price_ctx.get("last_price"),
+            "last_price_ts_ms": price_ctx.get("last_price_ts_ms"),
             "trigger_price": trigger_price,
             "eps_bps": eps_bps,
             "near": near_str,
@@ -2612,6 +2660,11 @@ class StrategyCoordinator:
             "cache_source": cache_source,
             "miss_count": miss_count,
         }
+        if price_ctx.get("price_imputed"):
+            out["price_imputed"] = True
+            out["imputed_from"] = price_ctx.get("imputed_from")
+            if price_ctx.get("last_price_age_ms") is not None:
+                out["last_price_age_ms"] = price_ctx.get("last_price_age_ms")
         safe_out = self._json_sanitize(out)
         try:
             logger.info("fast_watch_outcome %s", json.dumps(safe_out, ensure_ascii=False, sort_keys=True))
@@ -2657,6 +2710,8 @@ class StrategyCoordinator:
         *,
         outcome: str,
         expire_reason: Optional[str] = None,
+        price: Optional[float] = None,
+        now_ts_ms: Optional[int] = None,
     ) -> None:
         if not item or outcome not in ("triggered", "expired", "max_checks"):
             return
@@ -2679,7 +2734,26 @@ class StrategyCoordinator:
             drop_reason = "max_checks"
         elif outcome == "expired":
             drop_reason = "expired"
-        extra = {"drop_kind": "fast_watch", "drop_reason": drop_reason, "fast_watch_outcome": outcome, "near": near_str}
+        price_ctx = self._build_fast_watch_price_context(
+            item,
+            price,
+            now_ts_ms=now_ts_ms,
+            outcome=str(outcome),
+        )
+        extra = {
+            "drop_kind": "fast_watch",
+            "drop_reason": drop_reason,
+            "fast_watch_outcome": outcome,
+            "near": near_str,
+            "price": price_ctx.get("price"),
+            "last_price": price_ctx.get("last_price"),
+            "last_price_ts_ms": price_ctx.get("last_price_ts_ms"),
+        }
+        if price_ctx.get("price_imputed"):
+            extra["price_imputed"] = True
+            extra["imputed_from"] = price_ctx.get("imputed_from")
+            if price_ctx.get("last_price_age_ms") is not None:
+                extra["last_price_age_ms"] = price_ctx.get("last_price_age_ms")
         if expire_reason:
             extra["expire_reason"] = expire_reason
         self._emit_waiting_room_event("waiting_room_drop", item, **extra)

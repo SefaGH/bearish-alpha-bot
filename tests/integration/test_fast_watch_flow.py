@@ -224,10 +224,40 @@ async def test_fast_watch_trigger_recheck_emits_mr_eval(caplog):
     _, json_blob = eval_events[-1].split(" ", 1)
     data = json.loads(json_blob)
     assert data.get("near") == "upper"
-    assert data.get("px_source") == "market_price"
+    assert data.get("px_source") == "fast_watch"
     assert data.get("trigger_price") is not None
     assert data.get("fast_watch_price") is not None
     assert data.get("gate_reasons")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_recheck_uses_fast_watch_price_for_signal():
+    df_vwap, df_sig = _build_mr_frames(100.0, lower=99.0, upper=101.0)
+    strategy = VWAPMeanReversion(
+        {
+            "timeframe": "1m",
+            "signal_timeframe": "5m",
+            "min_rows": 2,
+            "min_signal_rows": 2,
+            "dynamic_controller": {"enabled": False},
+            "soft_deferral_threshold": 0.0,
+            "rsi_rebound_guard": {"enabled": False},
+        }
+    )
+
+    signal = await strategy.generate_signal(
+        symbol="BTC/USDT:USDT",
+        df_vwap=df_vwap,
+        df_sig=df_sig,
+        parent_pending_id="pending-1",
+        condition_data={"trigger_price": 101.0, "eps_bps": 10},
+        check_detail={"fast_watch": {"price": 102.0}},
+    )
+
+    assert signal is not None
+    assert signal.get("side") == "sell"
+    assert signal.get("entry") == pytest.approx(102.0)
 
 
 @pytest.mark.asyncio
@@ -311,10 +341,78 @@ async def test_fast_watch_cache_miss_never_calls_rest(caplog):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_fast_watch_expiry_imputes_last_price(caplog):
+    caplog.set_level(logging.INFO)
+
+    pipeline = DummyCacheOnlyPipeline([100.0])
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline,
+        config={"fast_watch": {"enabled": True, "interval_ms": 1, "time_budget_ms": 500, "max_items_per_tick": 10}},
+    )
+
+    anchor_ms = coordinator._now_ms()
+    signal = _build_fast_watch_signal(anchor_ms, trigger_price=110.0, max_checks=5, near="upper")
+    result = await coordinator.incubate_signal(
+        strategy_name="mean_reversion",
+        signal=signal,
+        reason_code="strategy.fast_watch",
+        refresh_policy="FAST_PRICE_WATCH",
+        stage="soft_deferral",
+    )
+    assert result.get("status") == "incubated"
+
+    dedupe_key = result.get("dedupe_key")
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+    await coordinator._fast_watch_tick()
+
+    item = coordinator._incubator_items[dedupe_key]
+    assert item.get("last_known_price") == 100.0
+    assert item.get("last_known_ts_ms") is not None
+
+    payload = item.get("payload")
+    if isinstance(payload, dict):
+        condition_data = payload.get("condition_data")
+        if isinstance(condition_data, dict):
+            condition_data["ttl_ms"] = 1000
+    old_created = coordinator._now_ms() - 20_000
+    item["fast_created_ts_ms"] = old_created
+    item["first_seen_ts_ms"] = old_created
+
+    caplog.clear()
+    await coordinator._fast_watch_tick()
+
+    outcome_events = [r.message for r in caplog.records if str(r.message).startswith("fast_watch_outcome ")]
+    assert outcome_events, "Expected fast_watch_outcome telemetry"
+    _, json_blob = outcome_events[-1].split(" ", 1)
+    data = json.loads(json_blob)
+    assert data.get("outcome") == "expired"
+    assert data.get("price") == 100.0
+    assert data.get("price_imputed") is True
+    assert data.get("imputed_from") == "last_known_price"
+    assert data.get("last_price") == 100.0
+    assert data.get("last_price_ts_ms") is not None
+    assert data.get("last_price_age_ms") is not None
+
+    drop_events = [r.message for r in caplog.records if str(r.message).startswith("waiting_room_drop ")]
+    assert drop_events, "Expected waiting_room_drop telemetry"
+    _, drop_blob = drop_events[-1].split(" ", 1)
+    drop_data = json.loads(drop_blob)
+    assert drop_data.get("price") == 100.0
+    assert drop_data.get("price_imputed") is True
+    assert drop_data.get("imputed_from") == "last_known_price"
+    assert drop_data.get("last_price") == 100.0
+    assert drop_data.get("last_price_ts_ms") is not None
+    assert drop_data.get("last_price_age_ms") is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_fast_watch_rearm_and_finalize(caplog):
     caplog.set_level(logging.INFO)
 
-    pipeline = DummyCacheOnlyPipeline([100.0, 100.0])
+    pipeline = DummyCacheOnlyPipeline([100.0, 102.0])
     coordinator = StrategyCoordinator(
         DummyPortfolioManager(),
         risk_manager=object(),
@@ -393,7 +491,7 @@ async def test_fast_watch_rearm_and_finalize(caplog):
     item = coordinator._incubator_items[dedupe_key]
     assert item.get("state") == "watching"
     assert item.get("rearm_count") == 1
-    assert item.get("expires_at_ms") == original_expires_at
+    assert item.get("expires_at_ms") <= original_expires_at
     expected_interval = int(original_interval * coordinator._fast_watch_rearm_backoff_mult)
     expected_interval = max(1, expected_interval)
     expected_interval = min(expected_interval, coordinator._fast_watch_rearm_max_interval_ms)

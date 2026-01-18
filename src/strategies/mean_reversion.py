@@ -227,6 +227,7 @@ class VWAPMeanReversion(BaseStrategy):
             if isinstance(fast_watch, dict):
                 fast_watch_price = _coerce_float(fast_watch.get("price"))
 
+        market_price = None
         recheck_eval_emitted = False
 
         def _emit_recheck_eval(
@@ -253,9 +254,17 @@ class VWAPMeanReversion(BaseStrategy):
                 reasons = ["unknown"]
             if px_source is None:
                 if px is not None:
-                    px_source_val = "market_price"
+                    if (
+                        is_recheck
+                        and fast_watch_price is not None
+                        and math.isfinite(fast_watch_price)
+                        and px == fast_watch_price
+                    ):
+                        px_source_val = "fast_watch"
+                    else:
+                        px_source_val = "market_price"
                 elif fast_watch_price is not None:
-                    px_source_val = "fast_watch_price"
+                    px_source_val = "fast_watch"
                 elif condition_price is not None:
                     px_source_val = "condition_data_price"
                 else:
@@ -277,9 +286,11 @@ class VWAPMeanReversion(BaseStrategy):
                 "parent_pending_id": str(parent_pending_id) if parent_pending_id is not None else None,
                 "near": near_str,
                 "trigger_price": trigger_price,
+                "market_price": market_price,
                 "fast_watch_price": fast_watch_price,
                 "eps_bps": eps_bps,
                 "px": px,
+                "px_used": px,
                 "px_source": px_source_val,
                 "lower": lower,
                 "upper": upper,
@@ -496,6 +507,7 @@ class VWAPMeanReversion(BaseStrategy):
             return None
 
         price = float(last_sig["close"])
+        market_price = price
         vwap_main = float(last_vwap["vwap"])
         vwap_lower = float(last_vwap["vwap_lower"])
         vwap_upper = float(last_vwap["vwap_upper"])
@@ -534,6 +546,11 @@ class VWAPMeanReversion(BaseStrategy):
                     vwap_std_val = float(last_vwap["vwap_std"])
             except Exception:
                 vwap_std_val = None
+        px_source = "market_price"
+        if is_recheck and fast_watch_price is not None and math.isfinite(fast_watch_price):
+            price = float(fast_watch_price)
+            px_source = "fast_watch"
+
         z_val = None
         if vwap_std_val is not None and math.isfinite(vwap_std_val) and vwap_std_val > 0:
             try:
@@ -698,7 +715,7 @@ class VWAPMeanReversion(BaseStrategy):
                     action="HOLD",
                     gate_reasons=["in_band"],
                     px=price,
-                    px_source="market_price",
+                    px_source=px_source,
                     lower=lower,
                     upper=upper,
                     vwap=vwap_target,
@@ -845,7 +862,7 @@ class VWAPMeanReversion(BaseStrategy):
                 action="HOLD",
                 gate_reasons=["adx_veto"],
                 px=price,
-                px_source="market_price",
+                px_source=px_source,
                 lower=lower,
                 upper=upper,
                 vwap=vwap_target,
@@ -860,7 +877,7 @@ class VWAPMeanReversion(BaseStrategy):
                 action="HOLD",
                 gate_reasons=["rsi_guard_blocked"],
                 px=price,
-                px_source="market_price",
+                px_source=px_source,
                 lower=lower,
                 upper=upper,
                 vwap=vwap_target,
@@ -892,7 +909,7 @@ class VWAPMeanReversion(BaseStrategy):
                 action="HOLD",
                 gate_reasons=["in_band"],
                 px=price,
-                px_source="market_price",
+                px_source=px_source,
                 lower=lower,
                 upper=upper,
                 vwap=vwap_target,
