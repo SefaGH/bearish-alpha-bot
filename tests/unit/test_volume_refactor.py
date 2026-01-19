@@ -159,3 +159,138 @@ async def test_volume_gating_allow_low_override(mock_deps):
     result = await coordinator.process_strategy_signal('test_strat', base_signal)
     assert result['status'] == 'accepted'
 
+
+@pytest.mark.asyncio
+async def test_volume_gating_allow_low_override_requires_reversal_confirmation(mock_deps):
+    pm, rm, mdp, va = mock_deps
+
+    config = {
+        'strategies': {
+            'test_strat': {
+                'volume_filters': {
+                    'enabled': True,
+                    'min_bucket': 'NORMAL'
+                },
+                'allow_low_volume': True,
+                'low_volume_requires_reversal_confirmation': True,
+            }
+        },
+        'volume_analyzer': {'enabled': True}
+    }
+
+    coordinator = StrategyCoordinator(pm, rm, mdp, config=config, volume_analyzer=va)
+
+    # Mock internal methods
+    coordinator._validate_signal_format = MagicMock(return_value={'valid': True})
+    coordinator._enrich_signal = AsyncMock()
+    coordinator.validate_duplicate = MagicMock(return_value=(True, "OK"))
+    coordinator._check_signal_conflicts = AsyncMock(return_value={'has_conflict': False})
+    coordinator._assess_signal_risk = AsyncMock(return_value={'acceptable': True, 'position_size': 10.0})
+    coordinator._route_signal = MagicMock(return_value={})
+    coordinator._generate_signal_id = MagicMock(return_value="sig_1")
+    coordinator.signal_queue = AsyncMock()
+    coordinator.signal_queue.put.return_value = (True, None)
+
+    base_signal = {'symbol': 'BTC/USDT', 'entry': 100.0, 'stop': 90.0, 'target': 110.0, 'side': 'buy'}
+
+    # Case 1: Missing confirmation -> reject
+    coordinator._enrich_signal.return_value = {
+        **base_signal,
+        'volume_bucket': 'LOW',
+        'volume_strength': 0.2,
+        'meta': {},
+    }
+    result = await coordinator.process_strategy_signal('test_strat', base_signal)
+    assert result['status'] == 'rejected'
+
+    # Case 2: Confirmation present -> accept
+    coordinator._enrich_signal.return_value = {
+        **base_signal,
+        'volume_bucket': 'LOW',
+        'volume_strength': 0.2,
+        'meta': {'low_volume_reversal_confirmed': True},
+    }
+    result = await coordinator.process_strategy_signal('test_strat', base_signal)
+    assert result['status'] == 'accepted'
+
+
+@pytest.mark.asyncio
+async def test_low_volume_downtrend_requires_strong_reversal_and_allows_extreme_bypass(mock_deps):
+    pm, rm, mdp, va = mock_deps
+
+    config = {
+        'strategies': {
+            'test_strat': {
+                'volume_filters': {
+                    'enabled': True,
+                    'min_bucket': 'NORMAL'
+                },
+                'allow_low_volume': True,
+                'low_volume_requires_reversal_confirmation': True,
+                'adaptive_ob_require_reversal_confirmation_in_downtrend': True,
+                'downtrend_guard_adx_threshold': 30.0,
+            }
+        },
+        'volume_analyzer': {'enabled': True}
+    }
+
+    coordinator = StrategyCoordinator(pm, rm, mdp, config=config, volume_analyzer=va)
+
+    # Mock internal methods
+    coordinator._validate_signal_format = MagicMock(return_value={'valid': True})
+    coordinator._enrich_signal = AsyncMock()
+    coordinator.validate_duplicate = MagicMock(return_value=(True, "OK"))
+    coordinator._check_signal_conflicts = AsyncMock(return_value={'has_conflict': False})
+    coordinator._assess_signal_risk = AsyncMock(return_value={'acceptable': True, 'position_size': 10.0})
+    coordinator._route_signal = MagicMock(return_value={})
+    coordinator._generate_signal_id = MagicMock(return_value="sig_1")
+    coordinator.signal_queue = AsyncMock()
+    coordinator.signal_queue.put.return_value = (True, None)
+
+    base_signal = {'symbol': 'BTC/USDT', 'entry': 100.0, 'stop': 90.0, 'target': 110.0, 'side': 'buy'}
+
+    # Case 1: LOW volume + downtrend active + confirmation ok but NOT strong -> reject
+    coordinator._enrich_signal.return_value = {
+        **base_signal,
+        'volume_bucket': 'LOW',
+        'volume_strength': 0.2,
+        'meta': {
+            'low_volume_reversal_confirmed': True,
+            'downtrend_context': {'active': True, 'adx': 38.0},
+            'reversal_confirmation': {'confirmed': True, 'strong_confirmed': False},
+        },
+    }
+    result = await coordinator.process_strategy_signal('test_strat', base_signal)
+    assert result['status'] == 'rejected'
+
+    # Case 2: Same but extreme_bypass -> accept
+    coordinator._enrich_signal.return_value = {
+        **base_signal,
+        'volume_bucket': 'LOW',
+        'volume_strength': 0.2,
+        'extreme_bypass': True,
+        'meta': {
+            'low_volume_reversal_confirmed': True,
+            'downtrend_context': {'active': True, 'adx': 38.0},
+            'reversal_confirmation': {'confirmed': True, 'strong_confirmed': False},
+        },
+    }
+    result = await coordinator.process_strategy_signal('test_strat', base_signal)
+    assert result['status'] in {'accepted', 'dropped'}
+    assert result.get('stage') != 'volume_gating'
+
+    # Case 3: Strong reversal -> accept
+    coordinator._enrich_signal.return_value = {
+        **base_signal,
+        'volume_bucket': 'LOW',
+        'volume_strength': 0.2,
+        'meta': {
+            'low_volume_reversal_confirmed': True,
+            'downtrend_context': {'active': True, 'adx': 38.0},
+            'reversal_confirmation': {'confirmed': True, 'strong_confirmed': True},
+        },
+    }
+    result = await coordinator.process_strategy_signal('test_strat', base_signal)
+    assert result['status'] in {'accepted', 'dropped'}
+    assert result.get('stage') != 'volume_gating'
+
