@@ -936,6 +936,141 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 adaptive_rsi_threshold = 25.0
             # -------------------------------------------------------------------------
 
+            # --- Low-volume / downtrend reversal confirmation (optional guardrail) ---
+            reversal_confirmed = False
+            reversal_meta: Dict[str, Any] = {
+                "used_forming": used_forming,
+                "bullish_candle": None,
+                "close_above_prev_close": None,
+                "close_in_upper_range": None,
+                "two_consecutive_bullish_closes": None,
+                "close_above_ema_fast": None,
+                "strong_confirmed": False,
+                "confirmed": False,
+            }
+            try:
+                if used_forming and forming_row is not None:
+                    f_open = float(forming_row.get('open')) if 'open' in forming_row else None
+                    f_close = float(forming_row.get('close')) if 'close' in forming_row else None
+                    f_low = float(forming_row.get('low')) if 'low' in forming_row else None
+                    f_high = float(forming_row.get('high')) if 'high' in forming_row else None
+
+                    bullish = (f_open is not None and f_close is not None and f_close > f_open)
+                    prev_close = float(close_price)
+                    close_above_prev = (f_close is not None and f_close > prev_close)
+                    close_in_upper = None
+                    if f_close is not None and f_low is not None and f_high is not None and f_high > f_low:
+                        close_in_upper = ((f_close - f_low) / (f_high - f_low)) >= 0.60
+
+                    close_above_ema_fast = None
+                    if f_close is not None and ema_fast is not None and ema_fast > 0:
+                        close_above_ema_fast = f_close > float(ema_fast)
+
+                    two_bullish = None
+                    try:
+                        if len(df_closed) >= 2:
+                            last_closed = df_closed.iloc[-1]
+                            prev_closed = df_closed.iloc[-2]
+                            l_open = float(last_closed.get('open')) if 'open' in last_closed else None
+                            l_close = float(last_closed.get('close')) if 'close' in last_closed else None
+                            p_open = float(prev_closed.get('open')) if 'open' in prev_closed else None
+                            p_close = float(prev_closed.get('close')) if 'close' in prev_closed else None
+                            two_bullish = bool(
+                                l_open is not None and l_close is not None and l_close > l_open
+                                and p_open is not None and p_close is not None and p_close > p_open
+                            )
+                    except Exception:
+                        two_bullish = None
+
+                    reversal_confirmed = bool(bullish and close_above_prev and (close_in_upper is not False))
+                    strong_confirmed = bool(
+                        reversal_confirmed
+                        and (
+                            close_in_upper is True
+                            or close_above_ema_fast is True
+                            or two_bullish is True
+                        )
+                    )
+                    reversal_meta.update(
+                        {
+                            "bullish_candle": bullish,
+                            "close_above_prev_close": close_above_prev,
+                            "close_in_upper_range": close_in_upper,
+                            "two_consecutive_bullish_closes": two_bullish,
+                            "close_above_ema_fast": close_above_ema_fast,
+                            "strong_confirmed": strong_confirmed,
+                            "confirmed": reversal_confirmed,
+                        }
+                    )
+                else:
+                    # Closed-only fallback: require last closed candle to be bullish and above previous close.
+                    last_row = df_closed.iloc[-1]
+                    prev_row = df_closed.iloc[-2] if len(df_closed) >= 2 else None
+                    last_open = float(last_row.get('open')) if 'open' in last_row else None
+                    last_close = float(last_row.get('close')) if 'close' in last_row else None
+                    prev_close = float(prev_row.get('close')) if prev_row is not None and 'close' in prev_row else None
+
+                    bullish = (
+                        last_open is not None and last_close is not None and last_close > last_open
+                    )
+                    close_above_prev = (
+                        prev_close is not None and last_close is not None and last_close > prev_close
+                    )
+                    reversal_confirmed = bool(bullish and close_above_prev)
+                    close_above_ema_fast = None
+                    if last_close is not None and ema_fast is not None and ema_fast > 0:
+                        close_above_ema_fast = last_close > float(ema_fast)
+
+                    two_bullish = None
+                    try:
+                        if len(df_closed) >= 2:
+                            last_closed = df_closed.iloc[-1]
+                            prev_closed = df_closed.iloc[-2]
+                            l_open = float(last_closed.get('open')) if 'open' in last_closed else None
+                            l_close = float(last_closed.get('close')) if 'close' in last_closed else None
+                            p_open = float(prev_closed.get('open')) if 'open' in prev_closed else None
+                            p_close = float(prev_closed.get('close')) if 'close' in prev_closed else None
+                            two_bullish = bool(
+                                l_open is not None and l_close is not None and l_close > l_open
+                                and p_open is not None and p_close is not None and p_close > p_open
+                            )
+                    except Exception:
+                        two_bullish = None
+
+                    strong_confirmed = bool(
+                        reversal_confirmed
+                        and (
+                            close_above_ema_fast is True
+                            or two_bullish is True
+                        )
+                    )
+                    reversal_meta.update(
+                        {
+                            "bullish_candle": bullish,
+                            "close_above_prev_close": close_above_prev,
+                            "close_in_upper_range": None,
+                            "two_consecutive_bullish_closes": two_bullish,
+                            "close_above_ema_fast": close_above_ema_fast,
+                            "strong_confirmed": strong_confirmed,
+                            "confirmed": reversal_confirmed,
+                        }
+                    )
+            except Exception:
+                reversal_confirmed = False
+                reversal_meta["confirmed"] = False
+
+            downtrend_context = bool(
+                adx_val is not None
+                and not pd.isna(adx_val)
+                and ema_long
+                and ema_long > 0
+                and price_ref < ema_long
+                and adx_val > 30.0
+            )
+
+            # NOTE: Downtrend+LOW-volume guardrails are enforced downstream (StrategyCoordinator)
+            # because volume_bucket is computed there. Here we only emit metadata.
+
             # 1. RSI Condition Check
             if rsi_val > adaptive_rsi_threshold:
                 logger.info(f"🚫 {log_prefix} No Signal: RSI ({rsi_val:.2f}) is above the threshold ({adaptive_rsi_threshold:.2f}).")
@@ -1210,6 +1345,15 @@ class AdaptiveOversoldBounce(OversoldBounce):
                     'rsi_source': rsi_source,
                     'trigger_price_source': trigger_price_source,
                     'fallback_reason': fallback_reason,
+                    # Volume gating can optionally require this when allow_low_volume overrides min_bucket.
+                    'low_volume_reversal_confirmed': bool(reversal_confirmed),
+                    'reversal_confirmation': reversal_meta,
+                    'downtrend_context': {
+                        'active': downtrend_context,
+                        'adx': adx_val,
+                        'ema_mid': ema_long,
+                        'price_ref': price_ref,
+                    },
                 }
             )
             if trend_bias_active:

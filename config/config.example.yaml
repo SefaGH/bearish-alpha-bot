@@ -603,6 +603,9 @@ strategies:
   adaptive_ob:
     execution_profile: "standard_mode"  # Hybrid: DCA+pyramiding enabled
     allow_low_volume: true         # Override with: STRATEGY_OB_ALLOW_LOW_VOLUME
+    low_volume_requires_reversal_confirmation: true  # Guardrail: require reversal confirmation when overriding LOW volume
+    adaptive_ob_require_reversal_confirmation_in_downtrend: true  # Guardrail: only for LOW/very_low volume; require strong reversal in downtrend
+    downtrend_guard_adx_threshold: 30.0  # Optional: tune "strong trend" threshold (default 30)
     volume_filters:
       enabled: true                 # Override with: STRATEGY_OB_VOLUME_FILTERS_ENABLED
       min_bucket: "NORMAL"          # Override with: STRATEGY_OB_VOLUME_FILTERS_MIN_BUCKET

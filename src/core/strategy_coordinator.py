@@ -5251,10 +5251,64 @@ class StrategyCoordinator:
                         # Check for override
                         allow_low = strat_cfg.get('allow_low_volume', False)
                         if allow_low:
-                            logger.info(
-                                f"⚠️ [VOLUME-OVERRIDE] {log_prefix} | Bucket '{volume_bucket}' < min '{min_bucket}' "
-                                f"but allow_low_volume=True. Accepting."
+                            require_confirmation = bool(
+                                strat_cfg.get('low_volume_requires_reversal_confirmation', False)
+                                or strat_cfg.get('low_volume_requires_confirmation', False)
                             )
+                            confirmation_ok = True
+                            if require_confirmation and volume_bucket.lower() in {'low', 'very_low'}:
+                                meta = enriched_signal.get('meta') or {}
+                                confirmation_ok = bool(
+                                    meta.get('low_volume_reversal_confirmed')
+                                    or meta.get('reversal_confirmed')
+                                    or meta.get('reversal_confirmation', {}).get('confirmed')
+                                )
+
+                            # Optional: Downtrend guard only applies on LOW/very_low volume.
+                            # This is deliberately downstream so we can use `volume_bucket`.
+                            if confirmation_ok and volume_bucket.lower() in {'low', 'very_low'}:
+                                extreme_bypass = bool(
+                                    enriched_signal.get('extreme_bypass')
+                                    or (enriched_signal.get('features') or {}).get('extreme_bypass')
+                                    or (enriched_signal.get('meta') or {}).get('extreme_bypass')
+                                )
+
+                                require_strong_in_downtrend = bool(
+                                    strat_cfg.get('adaptive_ob_require_reversal_confirmation_in_downtrend', False)
+                                    or strat_cfg.get('downtrend_low_volume_requires_strong_reversal', False)
+                                )
+                                adx_threshold = float(strat_cfg.get('downtrend_guard_adx_threshold', 30.0))
+
+                                if require_strong_in_downtrend and not extreme_bypass:
+                                    downtrend_ctx = (meta.get('downtrend_context') or {})
+                                    downtrend_active = bool(downtrend_ctx.get('active'))
+                                    adx_val = downtrend_ctx.get('adx')
+                                    try:
+                                        adx_ok = (adx_val is not None) and (float(adx_val) >= adx_threshold)
+                                    except Exception:
+                                        adx_ok = False
+
+                                    if downtrend_active and adx_ok:
+                                        rev = (meta.get('reversal_confirmation') or {})
+                                        strong_ok = bool(rev.get('strong_confirmed'))
+                                        if not strong_ok:
+                                            decision = "rejected_low_bucket"
+                                            rejection_reason = (
+                                                f"LOW volume downtrend guard: strong reversal confirmation missing "
+                                                f"(ADX>={adx_threshold})"
+                                            )
+
+                            if confirmation_ok:
+                                logger.info(
+                                    f"⚠️ [VOLUME-OVERRIDE] {log_prefix} | Bucket '{volume_bucket}' < min '{min_bucket}' "
+                                    f"but allow_low_volume=True. Accepting."
+                                )
+                            else:
+                                decision = "rejected_low_bucket"
+                                rejection_reason = (
+                                    f"Volume bucket '{volume_bucket}' < min '{min_bucket}' and "
+                                    "low-volume reversal confirmation missing"
+                                )
                         else:
                             decision = "rejected_low_bucket"
                             rejection_reason = f"Volume bucket '{volume_bucket}' < min '{min_bucket}' and allow_low_volume=False"
