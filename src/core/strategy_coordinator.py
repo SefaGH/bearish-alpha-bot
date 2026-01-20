@@ -4781,6 +4781,26 @@ class StrategyCoordinator:
         if quality_score <= 0.0:
             logger.warning(f"⚠️ [QUALITY-ALERT] Signal quality is 0.0 for {signal.get('symbol')}! Reasons: {quality_result.get('reason')}")
 
+        def _sf(v: Any) -> Optional[float]:
+            try:
+                return float(v) if v is not None else None
+            except Exception:
+                return None
+
+        entry_price = _sf(signal.get("entry_price") or signal.get("entry") or signal.get("price"))
+        stop_price = _sf(
+            signal.get("stop_price")
+            or signal.get("stop")
+            or signal.get("stop_loss")
+            or signal.get("stop_loss_price")
+        )
+        target_price = _sf(
+            signal.get("target_price")
+            or signal.get("target")
+            or signal.get("take_profit")
+            or signal.get("take_profit_price")
+        )
+
         breakdown = {
             "event": "signal_breakdown",
             "signal_id": signal.get("signal_id"),
@@ -4793,8 +4813,34 @@ class StrategyCoordinator:
             "ml_score": signal.get("ml_confidence"),
             "ml_regime": signal.get("predicted_regime"),
             "ml_metadata": signal.get("ml_metadata"),
+            "entry_price": entry_price,
+            "stop_price": stop_price,
+            "target_price": target_price,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+
+        # Advanced volatility telemetry (best-effort): strategies may populate
+        # `signal["meta"]["vol_telemetry"]` but logs previously omitted it.
+        meta = signal.get("meta") if isinstance(signal, dict) else {}
+        if not isinstance(meta, dict):
+            meta = {}
+        vol_tel = meta.get("vol_telemetry")
+        if isinstance(vol_tel, dict):
+            breakdown["volatility"] = {
+                "timeframe": signal.get("timeframe"),
+                "window": (self.config.get("indicators", {}).get("advanced_volatility", {}) or {}).get("window")
+                if isinstance(getattr(self, "config", None), dict)
+                else None,
+                "ddof": (self.config.get("indicators", {}).get("advanced_volatility", {}) or {}).get("ddof")
+                if isinstance(getattr(self, "config", None), dict)
+                else None,
+                "selected_estimator": meta.get("vol_selected_estimator") or signal.get("vol_selected_estimator") or "std",
+                "vol_rs_bps": _sf(vol_tel.get("rs_bps")),
+                "vol_gk_bps": _sf(vol_tel.get("gk_bps")),
+                "vol_yz_bps": _sf(vol_tel.get("yz_bps")),
+                "vol_atr_bps": _sf(vol_tel.get("atr_bps")),
+                "vol_std_bps": _sf(vol_tel.get("std_bps")),
+            }
         logger.info(f"SIGNAL_BREAKDOWN {json.dumps(breakdown)}")
 
     def _compute_signal_quality(self, signal: Dict[str, Any]) -> Dict[str, Any]:

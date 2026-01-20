@@ -4,6 +4,7 @@ import json
 import asyncio
 import logging
 from .data_validator import validate_kline_timestamp
+from .execution_env import get_bingx_env
 import time
 import hmac
 import hashlib
@@ -57,7 +58,16 @@ class BingXWebSocket:
         self.collector = collector  # ✅ PATCH 4: Store collector reference
         
         # Select appropriate endpoint
-        self.ws_url = self.WS_PUBLIC_SWAP if futures else self.WS_PUBLIC_SPOT
+        env = "prod"
+        try:
+            env = get_bingx_env()
+        except Exception:
+            env = "prod"
+        if futures:
+            self.ws_url = self.WS_VST_SWAP if env == "vst" else self.WS_PUBLIC_SWAP
+        else:
+            self.ws_url = self.WS_PUBLIC_SPOT
+        logger.info("[WS] Initializing BingX WebSocket env=%s futures=%s url=%s", env, futures, self.ws_url)
         
         # --- Connection & Task Management (websocket-client uyumlu) ---
         self.ws: Optional[websocket.WebSocketApp] = None

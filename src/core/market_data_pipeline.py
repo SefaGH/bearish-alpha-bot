@@ -665,6 +665,7 @@ class MarketDataPipeline:
                 self.failed_requests += 1
                 return False
 
+            df.attrs["timeframe"] = timeframe
             df = add_indicators(df, self.config.get('indicators'))
         
             logger.info(f"✅ [PRIME] Loaded {len(df)} historical candles for {exchange_name} {symbol} {timeframe}")
@@ -784,6 +785,7 @@ class MarketDataPipeline:
                         break
                     
                     # Add indicators
+                    df.attrs["timeframe"] = timeframe
                     df = add_indicators(df, self.config.get('indicators'))
                     
                     # Store data - DEFENSIVE checks before WebSocket injection
@@ -924,6 +926,7 @@ class MarketDataPipeline:
                                 f"gap_count={state.get('gap_count')}"
                             )
                         # İndikatörleri ekle ve hemen döndür. REST API'ye gitme.
+                        closed_df.attrs["timeframe"] = timeframe
                         closed_df = add_indicators(closed_df, self.config.get('indicators'))
                         closed_df.attrs.setdefault("includes_forming", False)
                         closed_df.attrs["ohlcv_source"] = "ws"
@@ -1067,6 +1070,7 @@ class MarketDataPipeline:
                 return None
             
             # İndikatörleri ekle
+            ohlcv_df.attrs["timeframe"] = timeframe
             df = add_indicators(ohlcv_df, self.config.get('indicators'))
             df.attrs["ohlcv_source"] = "rest"
             df.attrs["retrieved_at"] = datetime.now(timezone.utc).isoformat()

@@ -1,9 +1,14 @@
 # src/core/indicators.py (compat version)
 # Adds EMA alias columns (ema_fast/ema_mid/ema_slow) so legacy strategies using 'ema_mid' won't crash.
 from __future__ import annotations
+import logging
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, Tuple
+
+from .volatility_estimators import VolatilityEstimators
+
+logger = logging.getLogger(__name__)
 
 REQUIRED_COLS = ("open", "high", "low", "close")
 
@@ -135,5 +140,42 @@ def add_indicators(df: pd.DataFrame, cfg: Dict[str, Any] | None = None) -> pd.Da
 
     cols = ["rsi", "atr", "ema21", "ema50", "ema200", "ema_fast", "ema_mid", "ema_slow"]
     cols += ["vwap", "vwap_std", "vwap_upper", "vwap_lower", "adx"]
+
+    cfg_dict = cfg if isinstance(cfg, dict) else {}
+    adv = cfg_dict.get("advanced_volatility")
+    if adv is None:
+        ind_block = cfg_dict.get("indicators")
+        adv = ind_block.get("advanced_volatility") if isinstance(ind_block, dict) else {}
+    if isinstance(adv, dict) and bool(adv.get("enabled", False)):
+        tf = out.attrs.get("timeframe")
+        enabled_tfs = adv.get("enabled_timeframes", [])
+        if isinstance(enabled_tfs, str):
+            enabled_tfs = [x.strip() for x in enabled_tfs.split(",") if x.strip()]
+        allow_without_tf = bool(adv.get("allow_without_timeframe", False))
+        if not enabled_tfs:
+            logger.debug("[ADV-VOL] enabled_timeframes empty; skipping advanced volatility compute")
+        elif tf is None and not allow_without_tf:
+            logger.debug("[ADV-VOL] attrs.timeframe missing and allow_without_timeframe=false; skipping")
+        elif tf is not None and tf not in enabled_tfs:
+            logger.debug("[ADV-VOL] timeframe=%s not in enabled_timeframes=%s; skipping", tf, enabled_tfs)
+        else:
+            try:
+                window = int(adv.get("window", 14) or 14)
+                ddof = int(adv.get("ddof", 1) or 1)
+
+                if window < 2:
+                    logger.debug("[ADV-VOL] window < 2 (window=%s); skipping", window)
+                elif ddof < 0 or ddof >= window:
+                    logger.debug("[ADV-VOL] invalid ddof (ddof=%s window=%s); skipping", ddof, window)
+                else:
+                    vol = VolatilityEstimators.compute_all(out, window=window, ddof=ddof)
+                    out["vol_rs_bps"] = vol.vol_rs_bps
+                    out["vol_gk_bps"] = vol.vol_gk_bps
+                    out["vol_yz_bps"] = vol.vol_yz_bps
+                    out["vol_atr_bps"] = vol.vol_atr_bps
+                    out["vol_std_bps"] = vol.vol_std_bps
+                    cols += ["vol_rs_bps", "vol_gk_bps", "vol_yz_bps", "vol_atr_bps", "vol_std_bps"]
+            except Exception:
+                logger.exception("[ADV-VOL] compute_all failed (tf=%s)", tf)
     out[cols] = out[cols].replace([np.inf, -np.inf], np.nan)
     return out

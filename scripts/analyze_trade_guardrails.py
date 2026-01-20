@@ -47,6 +47,7 @@ TRADE_IDS_DEFAULT = [
 class TradeRecord:
     trade_id: str
     strategy: Optional[str] = None
+    symbol: Optional[str] = None
     entry_time: Optional[str] = None
     exit_time: Optional[str] = None
     entry_price: Optional[float] = None
@@ -55,6 +56,14 @@ class TradeRecord:
     pnl_pct: Optional[float] = None
     exit_reason: Optional[str] = None
     volume_bucket_at_entry: Optional[str] = None
+
+    # Best-effort evidence from existing logs near entry
+    ingress_reason: Optional[str] = None
+    ingress_rsi: Optional[float] = None
+    signal_id: Optional[str] = None
+    quality_score: Optional[float] = None
+    quality_volume_component: Optional[float] = None
+    quality_momentum_component: Optional[float] = None
 
     # Derived from nearby log context
     downtrend_veto_seen: bool = False
@@ -194,6 +203,15 @@ def _extract_extreme_bypass_value(line: str) -> Optional[bool]:
     return None
 
 
+def _extract_ingress_rsi_and_reason(line: str) -> Tuple[Optional[float], Optional[str]]:
+    # Example: "... Signal ingress | ... | reason=Adaptive RSI 31.0 <= 32.0"
+    m = re.search(r"reason=(.*)$", line)
+    reason = m.group(1).strip() if m else None
+    rsi_match = re.search(r"Adaptive RSI\s+(\d+(?:\.\d+)?)\s+<=", line)
+    rsi = float(rsi_match.group(1)) if rsi_match else None
+    return rsi, reason
+
+
 def _parse_trade_closed_from_lines(lines: List[str], trade_id: str) -> Optional[TradeRecord]:
     """Locate and parse a TRADE_CLOSED JSON payload for a given trade_id."""
     for line in lines:
@@ -212,6 +230,7 @@ def _parse_trade_closed_from_lines(lines: List[str], trade_id: str) -> Optional[
 
         rec = TradeRecord(trade_id=trade_id)
         rec.strategy = payload.get("strategy") or payload.get("strategy_name")
+        rec.symbol = payload.get("symbol")
         rec.entry_time = payload.get("entry_time")
         rec.exit_time = payload.get("exit_time")
         rec.entry_price = _to_float(payload.get("entry_price"))
@@ -254,6 +273,33 @@ def analyze_log(
     text = log_path.read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines()
 
+    # Pre-index TRADE_CLOSED payloads once (avoids O(N * trades) scans).
+    trade_id_set = set(trade_ids)
+    closed_by_id: Dict[str, TradeRecord] = {}
+    for line in lines:
+        if "TRADE_CLOSED" not in line:
+            continue
+        payload = _try_parse_json_from_log_line(line)
+        if not payload:
+            continue
+        if str(payload.get("event", "")).upper() != "TRADE_CLOSED":
+            continue
+        tid = payload.get("trade_id")
+        if not tid or tid not in trade_id_set:
+            continue
+        rec = TradeRecord(trade_id=str(tid))
+        rec.strategy = payload.get("strategy") or payload.get("strategy_name")
+        rec.symbol = payload.get("symbol")
+        rec.entry_time = payload.get("entry_time")
+        rec.exit_time = payload.get("exit_time")
+        rec.entry_price = _to_float(payload.get("entry_price"))
+        rec.exit_price = _to_float(payload.get("exit_price"))
+        rec.pnl_usd = _to_float(payload.get("pnl_usd"))
+        rec.pnl_pct = _to_float(payload.get("pnl_pct"))
+        rec.exit_reason = payload.get("exit_reason")
+        rec.volume_bucket_at_entry = payload.get("volume_bucket_at_entry")
+        closed_by_id[str(tid)] = rec
+
     # Build a searchable timeline of log line timestamps for entry_time anchoring.
     ts_points: List[Tuple[datetime, int]] = []
     for i, line in enumerate(lines):
@@ -267,7 +313,7 @@ def analyze_log(
     results: List[TradeRecord] = []
 
     for trade_id in trade_ids:
-        rec = _parse_trade_closed_from_lines(lines, trade_id) or TradeRecord(trade_id=trade_id)
+        rec = closed_by_id.get(trade_id) or _parse_trade_closed_from_lines(lines, trade_id) or TradeRecord(trade_id=trade_id)
 
         # Prefer anchoring around entry_time (trade_id is often missing from entry logs).
         anchor: Optional[int] = None
@@ -287,44 +333,92 @@ def analyze_log(
             anchor = closed_indexes[0] if closed_indexes else None
 
         # Build a context window near entry_time to avoid picking up unrelated config dumps.
-        if context_seconds and entry_dt is not None:
+        # Use bisect over the timestamp index for speed and determinism.
+        if context_seconds and entry_dt is not None and ts_points:
             start_dt = entry_dt - timedelta(seconds=context_seconds)
             end_dt = entry_dt + timedelta(seconds=max(30, context_seconds // 4))
 
-            # Walk around anchor and collect only timestamped lines within the window.
-            window_lines: List[str] = []
-            if anchor is None:
-                anchor = 0
-            i = anchor
-            while i >= 0:
-                dt = _parse_line_ts(lines[i])
-                if dt is not None and dt < start_dt:
-                    break
-                i -= 1
-            lo = max(0, i)
-            j = anchor
-            while j < len(lines):
-                dt = _parse_line_ts(lines[j])
-                if dt is not None and dt > end_dt:
-                    break
-                j += 1
-            hi = min(len(lines), j)
-            window = lines[lo:hi]
+            lo_pos = bisect_left(ts_times, start_dt)
+            hi_pos = bisect_left(ts_times, end_dt)
+
+            lo_line = ts_idxs[lo_pos] if lo_pos < len(ts_idxs) else 0
+            hi_line = ts_idxs[hi_pos] if hi_pos < len(ts_idxs) else (len(lines) - 1)
+            if hi_line < lo_line:
+                lo_line, hi_line = hi_line, lo_line
+            window = lines[lo_line : hi_line + 1]
         else:
             lo = max(0, (anchor or 0) - context_lines)
             hi = min(len(lines), (anchor or 0) + context_lines)
             window = lines[lo:hi]
 
         # Detect context signals
-        downtrend_lines = [ln for ln in window if "Downtrend Veto" in ln]
+        symbol_token = rec.symbol or ""
+        strat_token = (rec.strategy or strategy_filter or "").lower()
+
+        downtrend_lines = [
+            ln
+            for ln in window
+            if ("Downtrend Veto" in ln)
+            and (not symbol_token or symbol_token in ln)
+            and (not strat_token or strat_token in ln.lower())
+        ]
         rec.downtrend_veto_seen = bool(downtrend_lines)
         if downtrend_lines:
             rec.downtrend_adx = _extract_adx_from_downtrend_veto(downtrend_lines[-1])
 
-        rec.volume_override_seen = any("[VOLUME-OVERRIDE]" in ln for ln in window)
+        rec.volume_override_seen = any(
+            ("[VOLUME-OVERRIDE]" in ln)
+            and (not symbol_token or symbol_token in ln)
+            and (not strat_token or strat_token in ln.lower())
+            for ln in window
+        )
 
         # Only treat extreme_bypass as present when it's explicitly True.
-        rec.extreme_bypass_seen = any(_extract_extreme_bypass_value(ln) is True for ln in window)
+        rec.extreme_bypass_seen = any(
+            (_extract_extreme_bypass_value(ln) is True)
+            and (not symbol_token or symbol_token in ln)
+            and (not strat_token or strat_token in ln.lower())
+            for ln in window
+        )
+
+        # Pull nearby ingress + quality breakdown evidence (helps judge reversal plausibility)
+        ingress_lines = [
+            ln
+            for ln in window
+            if ("Signal ingress" in ln)
+            and (not symbol_token or symbol_token in ln)
+            and (not strat_token or strat_token in ln.lower())
+        ]
+        if ingress_lines:
+            rsi, reason = _extract_ingress_rsi_and_reason(ingress_lines[-1])
+            rec.ingress_rsi = rsi
+            rec.ingress_reason = reason
+
+        breakdown_lines = [
+            ln
+            for ln in window
+            if ("SIGNAL_BREAKDOWN" in ln)
+            and (not symbol_token or symbol_token in ln)
+            and (not strat_token or strat_token in ln.lower())
+        ]
+        for ln in reversed(breakdown_lines):
+            payload = _try_parse_json_from_log_line(ln)
+            if not payload:
+                continue
+            if str(payload.get("event", "")) != "signal_breakdown":
+                continue
+            if strategy_filter and str(payload.get("strategy")) != strategy_filter:
+                continue
+            if rec.symbol and str(payload.get("symbol")) != rec.symbol:
+                continue
+
+            rec.signal_id = payload.get("signal_id")
+            rec.quality_score = _to_float(payload.get("quality_score"))
+            comps = payload.get("quality_components") or {}
+            if isinstance(comps, dict):
+                rec.quality_volume_component = _to_float(comps.get("volume_component"))
+                rec.quality_momentum_component = _to_float(comps.get("momentum_component"))
+            break
 
         # Determine volume bucket at entry (best effort)
         vol_bucket = (rec.volume_bucket_at_entry or "").strip()
@@ -380,6 +474,9 @@ def _format_table(rows: List[TradeRecord]) -> str:
         "reason",
         "vol",
         "override",
+        "rsi",
+        "q",
+        "mom",
         "downtrend",
         "extreme",
         "rule1(low->rev)",
@@ -404,6 +501,9 @@ def _format_table(rows: List[TradeRecord]) -> str:
                 fmt(r.exit_reason),
                 fmt(r.volume_bucket_at_entry),
                 fmt(r.volume_override_seen),
+                fmt(r.ingress_rsi),
+                fmt(r.quality_score),
+                fmt(r.quality_momentum_component),
                 fmt(r.downtrend_veto_seen),
                 fmt(r.extreme_bypass_seen),
                 fmt(r.rule1_low_volume_requires_reversal_applies),
@@ -453,6 +553,7 @@ def main() -> int:
         context_seconds=(int(args.context_seconds) if int(args.context_seconds) > 0 else None),
     )
 
+    print()
     print(_format_table(rows))
 
     if args.json_out:

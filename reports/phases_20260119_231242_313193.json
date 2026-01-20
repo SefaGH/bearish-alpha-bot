@@ -1,0 +1,17 @@
+[
+  {
+    "phase_name": "Sessiz Bekleyiş (Quiet)",
+    "start_time": "2026-01-19 23:13:00",
+    "end_time": "2026-01-20 01:00:00"
+  },
+  {
+    "phase_name": "Kırılım ve Panik (Dump)",
+    "start_time": "2026-01-20 01:00:00",
+    "end_time": "2026-01-20 02:15:00"
+  },
+  {
+    "phase_name": "Tepki ve Testere (Chop)",
+    "start_time": "2026-01-20 02:15:00",
+    "end_time": "2026-01-20 05:12:00"
+  }
+]

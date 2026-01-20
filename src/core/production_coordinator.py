@@ -197,6 +197,91 @@ class ProductionCoordinator:
         
         logger.info("ProductionCoordinator created")
 
+    @staticmethod
+    def _sf(value: Any) -> Optional[float]:
+        try:
+            return float(value) if value is not None else None
+        except Exception:
+            return None
+
+    def _emit_signal_breakdown(self, signal: Dict[str, Any]) -> None:
+        """Emit a StrategyCoordinator-compatible SIGNAL_BREAKDOWN line.
+
+        Some deployments route signals directly from ProductionCoordinator (without
+        StrategyCoordinator). This keeps observability and downstream parsers
+        consistent.
+        """
+        if not isinstance(signal, dict):
+            return
+
+        meta = signal.get("meta") if isinstance(signal.get("meta"), dict) else {}
+        vol_tel = meta.get("vol_telemetry")
+
+        # Best-effort price levels (used by runtime Faz-0 tables)
+        entry_price = (
+            self._sf(signal.get("entry_price"))
+            or self._sf(signal.get("entry"))
+            or self._sf(signal.get("price"))
+        )
+        stop_price = (
+            self._sf(signal.get("stop_price"))
+            or self._sf(signal.get("stop"))
+            or self._sf(signal.get("stop_loss"))
+            or self._sf(signal.get("stop_loss_price"))
+        )
+        target_price = (
+            self._sf(signal.get("target_price"))
+            or self._sf(signal.get("target"))
+            or self._sf(signal.get("take_profit"))
+            or self._sf(signal.get("take_profit_price"))
+        )
+
+        # Config snapshot (best-effort)
+        cfg = self.config if isinstance(getattr(self, "config", None), dict) else {}
+        ind_cfg = cfg.get("indicators") if isinstance(cfg.get("indicators"), dict) else {}
+        adv_cfg = ind_cfg.get("advanced_volatility") if isinstance(ind_cfg.get("advanced_volatility"), dict) else {}
+
+        signal_id = signal.get("signal_id")
+        if not signal_id:
+            symbol = str(signal.get("symbol") or "").replace("/", "_").replace(":", "_")
+            strategy = str(signal.get("strategy") or signal.get("strategy_name") or "unknown")
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+            signal_id = f"{strategy}_{symbol}_{ts}"
+
+        side_raw = signal.get("side") or signal.get("action")
+        side = str(side_raw).lower() if side_raw is not None else None
+
+        breakdown: Dict[str, Any] = {
+            "event": "signal_breakdown",
+            "signal_id": signal_id,
+            "symbol": signal.get("symbol"),
+            "strategy": signal.get("strategy") or signal.get("strategy_name"),
+            "side": side,
+            "reason": signal.get("reason"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "entry_price": entry_price,
+            "stop_price": stop_price,
+            "target_price": target_price,
+        }
+
+        if isinstance(vol_tel, dict):
+            breakdown["volatility"] = {
+                "timeframe": signal.get("timeframe") or vol_tel.get("timeframe"),
+                "window": adv_cfg.get("window"),
+                "ddof": adv_cfg.get("ddof"),
+                "selected_estimator": meta.get("vol_selected_estimator") or signal.get("vol_selected_estimator") or "std",
+                "vol_rs_bps": self._sf(vol_tel.get("rs_bps")),
+                "vol_gk_bps": self._sf(vol_tel.get("gk_bps")),
+                "vol_yz_bps": self._sf(vol_tel.get("yz_bps")),
+                "vol_atr_bps": self._sf(vol_tel.get("atr_bps")),
+                "vol_std_bps": self._sf(vol_tel.get("std_bps")),
+            }
+
+        try:
+            logger.info(f"SIGNAL_BREAKDOWN {json.dumps(breakdown, default=str)}")
+        except Exception:
+            logger.debug("Failed to emit SIGNAL_BREAKDOWN", exc_info=True)
+
     async def verify_indicator_health(self) -> bool:
         """
         Perform real-time indicator health check during trading loop.
@@ -553,6 +638,8 @@ class ProductionCoordinator:
                                 'price_direction': ml_context.price_direction,
                                 'consensus': ml_context.consensus_score
                             }
+
+                        self._emit_signal_breakdown(signal)
                         
                         logger.info(f"📊 Signal from {strategy_name} for {symbol}: {signal.get('reason')}")
                         return signal # İlk sinyali bul ve döngüden çık
@@ -681,6 +768,7 @@ class ProductionCoordinator:
                         
                         if strategy_signal:
                             strategy_signal['strategy'] = strategy_name
+                            self._emit_signal_breakdown(strategy_signal)
                             logger.info(f"📊 Signal from {strategy_name} for {symbol}: {strategy_signal}")
                             signal = strategy_signal
                             break  # Use first signal found

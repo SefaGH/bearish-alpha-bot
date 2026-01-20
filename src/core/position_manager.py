@@ -827,6 +827,51 @@ class AdvancedPositionManager:
         if not isinstance(entry_indicators, dict):
             entry_indicators = {}
 
+        # ------------------------------------------------------------------
+        # Advanced volatility telemetry (fail-closed):
+        # Strategies (e.g., MeanReversion) may attach vol telemetry under
+        # `signal["meta"]["vol_telemetry"]`, but runtime logs and downstream
+        # reporting expect `entry_metadata.entry_indicators` to be populated.
+        # Map it here so TRADE_CLOSED always carries numeric vol_* values.
+        # ------------------------------------------------------------------
+        meta = signal.get("meta") if isinstance(signal, dict) else {}
+        if not isinstance(meta, dict):
+            meta = {}
+        vol_tel = meta.get("vol_telemetry")
+        if isinstance(vol_tel, dict):
+            mapped = {
+                "vol_rs_bps": self._safe_float(vol_tel.get("rs_bps")),
+                "vol_gk_bps": self._safe_float(vol_tel.get("gk_bps")),
+                "vol_yz_bps": self._safe_float(vol_tel.get("yz_bps")),
+                "vol_atr_bps": self._safe_float(vol_tel.get("atr_bps")),
+                "vol_std_bps": self._safe_float(vol_tel.get("std_bps")),
+            }
+            for k, v in mapped.items():
+                if v is not None:
+                    entry_indicators.setdefault(k, v)
+
+        # Volatility config snapshot (best-effort) for runtime auditability
+        cfg = getattr(getattr(self, "portfolio_manager", None), "cfg", None)
+        cfg = cfg if isinstance(cfg, dict) else {}
+        adv = cfg.get("advanced_volatility")
+        if adv is None:
+            ind_block = cfg.get("indicators")
+            adv = ind_block.get("advanced_volatility") if isinstance(ind_block, dict) else None
+        adv = adv if isinstance(adv, dict) else {}
+        vol_selected = meta.get("vol_selected_estimator") or signal.get("vol_selected_estimator") or "std"
+        volatility_meta = {
+            "timeframe": signal.get("timeframe"),
+            "window": adv.get("window"),
+            "ddof": adv.get("ddof"),
+            "selected_estimator": vol_selected,
+        }
+
+        entry_levels = {
+            "entry_price": self._extract_price_field(signal, ["entry_price", "entry", "price"]),
+            "stop_price": self._extract_price_field(signal, ["stop_price", "stop", "stop_loss", "stop_loss_price"]),
+            "target_price": self._extract_price_field(signal, ["target_price", "target", "take_profit", "take_profit_price"]),
+        }
+
         return {
             'rsi_at_entry': self._safe_float(entry_indicators.get('rsi'))
                              or self._safe_float(signal.get('rsi'))
@@ -844,6 +889,8 @@ class AdvancedPositionManager:
             'quality_breakdown': signal.get('quality_breakdown'),
             'regime_data': regime_info if isinstance(regime_info, dict) else None,
             'entry_indicators': entry_indicators,
+            'volatility': volatility_meta,
+            'entry_levels': entry_levels,
             'ml_metadata': ml_metadata
         }
 
@@ -2312,6 +2359,7 @@ class AdvancedPositionManager:
                 'entry_metadata': {
                     'entry_indicators': entry_meta.get('entry_indicators'),
                     'ml_metadata': entry_meta.get('ml_metadata'),
+                    'volatility': entry_meta.get('volatility'),
                     'regime_data': {
                         k: (str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v)
                         for k, v in regime_data.items()

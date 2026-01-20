@@ -31,6 +31,24 @@ class VWAPMeanReversion(BaseStrategy):
         self.vwap_lookback = int(cfg.get("vwap_lookback", 1440))
         self.adx_threshold = float(cfg.get("adx_threshold", 30))
         self.min_rr_ratio = float(cfg.get("min_rr_ratio", 1.0))
+
+        net_profit_cfg = cfg.get("net_profit_filter", {})
+        if net_profit_cfg is not None and not isinstance(net_profit_cfg, dict):
+            net_profit_cfg = {}
+        net_profit_cfg = dict(net_profit_cfg) if isinstance(net_profit_cfg, dict) else {}
+        self.net_profit_filter_enabled = bool(net_profit_cfg.get("enabled", False))
+        try:
+            self.net_profit_cost_bps = float(net_profit_cfg.get("cost_bps_assumed", cfg.get("cost_bps_assumed", 6.0)))
+        except Exception:
+            self.net_profit_cost_bps = 6.0
+        if not math.isfinite(self.net_profit_cost_bps) or self.net_profit_cost_bps < 0:
+            self.net_profit_cost_bps = 6.0
+        try:
+            self.min_net_reward_bps = float(net_profit_cfg.get("min_net_reward_bps", 0.0))
+        except Exception:
+            self.min_net_reward_bps = 0.0
+        if not math.isfinite(self.min_net_reward_bps):
+            self.min_net_reward_bps = 0.0
         self.soft_deferral_threshold = float(cfg.get("soft_deferral_threshold", 0.005))
         if not math.isfinite(self.soft_deferral_threshold) or self.soft_deferral_threshold < 0:
             self.soft_deferral_threshold = 0.005
@@ -1001,6 +1019,49 @@ class VWAPMeanReversion(BaseStrategy):
         stop = stop_loss_price
         target = take_profit_price
 
+        # Optional: Reject signals that are net-unprofitable vs assumed costs.
+        # This addresses the "target too close" (e.g., LOW regime) issue where reward is below costs.
+        reward_bps = None
+        risk_bps = None
+        net_reward_bps = None
+        rr_net = None
+        try:
+            if price and target and math.isfinite(float(price)) and math.isfinite(float(target)) and float(price) > 0:
+                reward_bps = abs(float(target) - float(price)) / float(price) * 10000.0
+            if price and stop and math.isfinite(float(price)) and math.isfinite(float(stop)) and float(price) > 0:
+                risk_bps = abs(float(price) - float(stop)) / float(price) * 10000.0
+            if reward_bps is not None and math.isfinite(float(reward_bps)):
+                net_reward_bps = float(reward_bps) - float(self.net_profit_cost_bps)
+            if net_reward_bps is not None and risk_bps and math.isfinite(float(risk_bps)) and float(risk_bps) > 0:
+                rr_net = float(net_reward_bps) / float(risk_bps)
+        except Exception:
+            pass
+
+        if self.net_profit_filter_enabled and net_reward_bps is not None and math.isfinite(float(net_reward_bps)):
+            if float(net_reward_bps) <= float(self.min_net_reward_bps):
+                logger.info(
+                    "[MeanReversion] Net-profit veto for %s: side=%s reward_bps=%.2f net_reward_bps=%.2f (cost_bps=%.2f) risk_bps=%s",
+                    symbol,
+                    side,
+                    float(reward_bps) if reward_bps is not None else float('nan'),
+                    float(net_reward_bps),
+                    float(self.net_profit_cost_bps),
+                    f"{float(risk_bps):.2f}" if risk_bps is not None else "nan",
+                )
+                _emit_recheck_eval(
+                    action="HOLD",
+                    gate_reasons=["net_profit_veto"],
+                    px=price,
+                    px_source=px_source,
+                    lower=lower,
+                    upper=upper,
+                    vwap=vwap_target,
+                    vwap_std=vwap_std_val,
+                    z=z_val,
+                    side_value="long" if side == "buy" else "short",
+                )
+                return None
+
         signal = {
             "strategy_name": self.strategy_name,
             "symbol": symbol,
@@ -1009,6 +1070,10 @@ class VWAPMeanReversion(BaseStrategy):
             "entry": price,
             "stop": stop,
             "target": target,
+            "reward_bps": reward_bps,
+            "risk_bps": risk_bps,
+            "net_reward_bps": net_reward_bps,
+            "rr_net": rr_net,
             "stop_loss_price": stop_loss_price,
             "take_profit_price": take_profit_price,
             "reason": reason,
@@ -1027,6 +1092,34 @@ class VWAPMeanReversion(BaseStrategy):
             signal["rsi_guard_status"] = guard_status or "bypassed_low_z"
             signal["rsi_val"] = guard_rsi_val
             signal["z_score_val"] = z_val
+
+        meta_data = signal.get("meta", {})
+        if not isinstance(meta_data, dict):
+            meta_data = {}
+        try:
+            last_row = last_vwap if isinstance(last_vwap, pd.Series) else None
+            if last_row is None and isinstance(last_sig, pd.Series):
+                last_row = last_sig
+
+            if last_row is not None:
+                def _safe_float(value: Any) -> Optional[float]:
+                    try:
+                        if value is not None and pd.notna(value):
+                            return float(value)
+                    except Exception:
+                        return None
+                    return None
+
+                meta_data["vol_telemetry"] = {
+                    "rs_bps": _safe_float(last_row.get("vol_rs_bps")),
+                    "yz_bps": _safe_float(last_row.get("vol_yz_bps")),
+                    "gk_bps": _safe_float(last_row.get("vol_gk_bps")),
+                    "atr_bps": _safe_float(last_row.get("vol_atr_bps")),
+                    "std_bps": _safe_float(last_row.get("vol_std_bps")),
+                }
+        except Exception:
+            pass
+        signal["meta"] = meta_data
         if parent_pending_id:
             meta = signal.get("meta")
             if not isinstance(meta, dict):

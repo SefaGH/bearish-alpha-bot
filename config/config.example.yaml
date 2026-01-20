@@ -269,6 +269,16 @@ indicators:
   vwap_lookback: 1440                 # Override with: INDICATOR_VWAP_LOOKBACK (bars in that timeframe)
   vwap_band_multiplier: 2.0           # Override with: INDICATOR_VWAP_BAND_MULTIPLIER
   adx_period: 14                      # Override with: INDICATOR_ADX_PERIOD
+  advanced_volatility:
+    enabled: true
+    allow_without_timeframe: false
+    # NOTE: If `enabled=true` but `enabled_timeframes` is empty, the hook will NOT run.
+    # Local override tip: keep this disabled in the tracked example config; enable it only in an untracked
+    # `config/config.yaml` (or via AppConfig/ENV overrides) when you explicitly want RS/GK/YZ telemetry.
+    enabled_timeframes:
+      - "1m"
+    window: 14
+    ddof: 1
 
 # ============================================================================== 
 # VALIDATOR
@@ -284,10 +294,10 @@ validator:
 # ==============================================================================
 volume_analyzer:
   enabled: true                      # Override with: VOLUME_ANALYZER_ENABLED
-  baseline_short_tf: "1h"            # Override with: VOLUME_ANALYZER_BASELINE_SHORT_TF
-  baseline_medium_tf: "4h"           # Override with: VOLUME_ANALYZER_BASELINE_MEDIUM_TF
-  short_lookback: 168                # Override with: VOLUME_ANALYZER_SHORT_LOOKBACK
-  medium_lookback: 180               # Override with: VOLUME_ANALYZER_MEDIUM_LOOKBACK
+  baseline_short_tf: "5m"            # Override with: VOLUME_ANALYZER_BASELINE_SHORT_TF
+  baseline_medium_tf: "30m"          # Override with: VOLUME_ANALYZER_BASELINE_MEDIUM_TF
+  short_lookback: 576                # Override with: VOLUME_ANALYZER_SHORT_LOOKBACK
+  medium_lookback: 1440              # Override with: VOLUME_ANALYZER_MEDIUM_LOOKBACK
   window_bars: 3                     # Override with: VOLUME_ANALYZER_WINDOW_BARS
   weight_short: 0.6
   weight_medium: 0.4
@@ -633,10 +643,14 @@ strategies:
     execution_profile: "sniper_mode"  # Hybrid: NO DCA/NO pyramiding (sniper MR)
     timeframe: "1m"           # VWAP calculation window
     signal_timeframe: "5m"    # Decision timeframe
-    vwap_lookback: 1440       # Rolling 24h (1m bars)
+    vwap_lookback: 1440       # 1440 bars in VWAP timeframe (timeframe=1m => ~24h)
     band_multiplier: 2.0
     stop_loss_std_delta: 1.0  # Override with: STRATEGIES__MEAN_REVERSION__STOP_LOSS_STD_DELTA ; Z-score stop distance beyond the active band (in sigmas)
     adx_threshold: 25
+    net_profit_filter:
+      enabled: true
+      cost_bps_assumed: 6.0
+      min_net_reward_bps: 2.0
     allocation_pct: 0.20
     dynamic_controller:
       enabled: true
@@ -652,10 +666,11 @@ strategies:
       adx_freeze_threshold: 32.0     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__ADX_FREEZE_THRESHOLD ; Looser freeze (old: 25 froze too early)
       dynamic_lookback:
         enabled: true                # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__DYNAMIC_LOOKBACK__ENABLED ; Vital: adapt lookback instead of fixed 1440 bars
-        # NOTE: lookback_* values are bars in the VWAP timeframe (not minutes).
+        # NOTE: lookback_* values are BARS in the VWAP timeframe (strategies.mean_reversion.timeframe), not minutes.
+        # Example: timeframe=1m -> 120 bars ≈ 120 minutes; timeframe=5m -> 120 bars ≈ 10 hours.
         lookback_static: 1440
-        lookback_min: 120            # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__LOOKBACK_MIN ; ~10 hours (5m bars)
-        lookback_max: 480            # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__LOOKBACK_MAX ; ~40 hours (more responsive than old 5 days)
+        lookback_min: 720            # Floor to prevent micro-STD in squeeze (timeframe=1m => ~12h)
+        lookback_max: 2880           # Upper bound (timeframe=1m => ~48h). Requires df_vwap to contain this many bars.
         atr_squeeze_pct: 0.0015
         atr_expand_pct: 0.0040
         atr_hysteresis_pct: 0.0002
