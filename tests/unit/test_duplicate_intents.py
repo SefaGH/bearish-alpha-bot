@@ -90,3 +90,104 @@ def test_bypass_threshold_used_instead_of_min_price_change():
     ok, reason = coordinator.validate_duplicate(third, "strat")
     assert ok is True
     assert "bypass" in reason.lower()
+
+
+def test_better_price_bypasses_cooldown_for_long_with_noise_filter():
+    cfg_override = {
+        "cooldown_seconds": 60,
+        "price_delta_bypass_enabled": True,
+        "price_delta_bypass_threshold": 0.02,  # keep high so only better-price can accept
+    }
+    coordinator = _build_coordinator(cfg_override)
+    symbol = "BTC/USDT"
+
+    first = {"symbol": symbol, "entry": 100.0, "side": "long"}
+    assert coordinator.validate_duplicate(first, "strat")[0] is True
+
+    # Within cooldown, microscopic improvement should NOT bypass (noise filter).
+    micro = {"symbol": symbol, "entry": 99.995, "side": "long"}
+    ok, reason = coordinator.validate_duplicate(micro, "strat")
+    assert ok is False
+    assert "price change" in reason.lower()
+
+    # Within cooldown, meaningful improvement should bypass.
+    second = {"symbol": symbol, "entry": 99.98, "side": "long"}
+    ok, reason = coordinator.validate_duplicate(second, "strat")
+    assert ok is True
+    assert "better price" in reason.lower()
+
+
+def test_better_price_bypasses_cooldown_for_short_with_noise_filter():
+    cfg_override = {
+        "cooldown_seconds": 60,
+        "price_delta_bypass_enabled": True,
+        "price_delta_bypass_threshold": 0.02,  # keep high so only better-price can accept
+    }
+    coordinator = _build_coordinator(cfg_override)
+    symbol = "ETH/USDT"
+
+    first = {"symbol": symbol, "entry": 100.0, "side": "short"}
+    assert coordinator.validate_duplicate(first, "strat")[0] is True
+
+    # Within cooldown, microscopic improvement should NOT bypass (noise filter).
+    micro = {"symbol": symbol, "entry": 100.005, "side": "short"}
+    ok, reason = coordinator.validate_duplicate(micro, "strat")
+    assert ok is False
+    assert "price change" in reason.lower()
+
+    # Within cooldown, meaningful improvement should bypass.
+    second = {"symbol": symbol, "entry": 100.02, "side": "short"}
+    ok, reason = coordinator.validate_duplicate(second, "strat")
+    assert ok is True
+    assert "better price" in reason.lower()
+
+
+def test_rsi_session_anchor_used_for_price_delta_reference():
+    cfg_override = {
+        "cooldown_seconds": 60,
+        "price_delta_bypass_enabled": True,
+        "price_delta_bypass_threshold": 0.00062,
+        "rsi_session_oversold_threshold": 30.0,
+    }
+    coordinator = _build_coordinator(cfg_override)
+    symbol = "SOL/USDT"
+
+    # First signal seeds history
+    first = {"symbol": symbol, "entry": 100.0, "side": "long", "rsi": 25.0}
+    assert coordinator.validate_duplicate(first, "strat")[0] is True
+
+    # Small dip is below better-price threshold, so it is rejected,
+    # but it should start/update the RSI session anchor.
+    dip = {"symbol": symbol, "entry": 99.995, "side": "long", "rsi": 25.0}
+    ok, reason = coordinator.validate_duplicate(dip, "strat")
+    assert ok is False
+    assert symbol in coordinator.rsi_session_state
+    assert coordinator.rsi_session_state[symbol]["anchor_price"] == pytest.approx(99.995)
+
+    # Bounce is accepted because price_delta is computed vs the anchor (99.995),
+    # which makes the delta slightly larger than vs the last accepted price (100.0).
+    bounce = {"symbol": symbol, "entry": 100.06, "side": "long", "rsi": 25.0}
+    ok, reason = coordinator.validate_duplicate(bounce, "strat")
+    assert ok is True
+    assert "bypass" in reason.lower()
+
+
+def test_rsi_session_resets_when_rsi_recovers():
+    cfg_override = {
+        "cooldown_seconds": 60,
+        "price_delta_bypass_enabled": True,
+        "price_delta_bypass_threshold": 0.5,  # prevent bypass; we only care about state reset
+        "rsi_session_oversold_threshold": 30.0,
+    }
+    coordinator = _build_coordinator(cfg_override)
+    symbol = "ADA/USDT"
+
+    # Seed history
+    assert coordinator.validate_duplicate({"symbol": symbol, "entry": 10.0, "side": "long", "rsi": 25.0}, "strat")[0] is True
+    # Create session during cooldown
+    coordinator.validate_duplicate({"symbol": symbol, "entry": 9.9995, "side": "long", "rsi": 25.0}, "strat")
+    assert symbol in coordinator.rsi_session_state
+
+    # RSI recovers; session should be cleared.
+    coordinator.validate_duplicate({"symbol": symbol, "entry": 10.0, "side": "long", "rsi": 31.0}, "strat")
+    assert symbol not in coordinator.rsi_session_state

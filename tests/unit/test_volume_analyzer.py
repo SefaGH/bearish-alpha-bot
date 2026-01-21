@@ -11,9 +11,32 @@ class FakeMDP:
     def __init__(self, data_map):
         self.data_map = data_map
 
-    async def get_latest_ohlcv(self, symbol: str, timeframe: str):
+    async def get_latest_ohlcv(self, symbol: str, timeframe: str, limit: int = None, **kwargs):
         df = self.data_map.get((symbol, timeframe))
-        return df.copy() if df is not None else None
+        if df is None:
+            return None
+        out = df.copy()
+        if limit is not None:
+            return out.tail(limit)
+        return out
+
+
+class FakeCollector:
+    def __init__(self, data_map):
+        self.data_map = data_map
+
+    def get_latest_ohlcv(self, exchange: str, symbol: str, timeframe: str, limit: int = None):
+        data = self.data_map.get((exchange, symbol, timeframe))
+        if not data:
+            return None
+        if limit is None:
+            return data
+        return data[-limit:]
+
+
+class FakeWSManager:
+    def __init__(self, collector):
+        self.collector = collector
 
 
 @pytest.mark.asyncio
@@ -51,6 +74,52 @@ async def test_compute_context_bucket_and_strength():
     assert ctx.bucket == "NORMAL"
     assert 0.5 <= ctx.volume_strength <= 0.7
     assert ctx.last_updated_ts == 123.0
+
+
+@pytest.mark.asyncio
+async def test_compute_context_prefers_stream_collector_buffers():
+    symbol = "BTC/USDT:USDT"
+    exchange = "bingx"
+    tf = "5m"
+    ts0 = 1_700_000_000_000
+    candles = [[ts0 + i * 300_000, 1.0, 1.0, 1.0, 1.0, 100.0] for i in range(6)]
+
+    collector = FakeCollector({(exchange, symbol, tf): candles})
+
+    class MDPCollectorOnly:
+        def __init__(self):
+            self.websocket_manager = FakeWSManager(collector)
+            self.exchanges = {exchange: object()}
+            self.DEFAULT_EXCHANGE = exchange
+
+        async def get_latest_ohlcv(self, *args, **kwargs):
+            raise AssertionError("compute_context should use StreamDataCollector, not pipeline")
+
+    cfg = {
+        "baseline_short_tf": tf,
+        "baseline_medium_tf": tf,
+        "short_lookback": 5,
+        "medium_lookback": 5,
+        "window_bars": 2,
+        "weight_short": 0.6,
+        "weight_medium": 0.4,
+        "sigmoid_alpha": 1.2,
+        "min_ratio": 0.1,
+        "max_ratio": 10.0,
+        "buckets": [
+            (0.0, "LOW"),
+            (0.3, "NORMAL"),
+            (0.6, "HIGH"),
+            (0.85, "EXTREME"),
+        ],
+    }
+
+    analyzer = VolumeAnalyzer(MDPCollectorOnly(), cfg)
+    ctx = await analyzer.compute_context(symbol, trade_timeframe=tf, as_of_ts=123.0)
+
+    assert ctx is not None
+    assert ctx.volume_data_sources == {"trade": "collector", "short": "collector", "medium": "collector"}
+    assert ctx.volume_data_limits == {"trade": 2, "short": 6, "medium": 6}
 
 
 @pytest.mark.asyncio

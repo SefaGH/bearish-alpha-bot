@@ -8,7 +8,8 @@ import pandas as pd
 import logging
 import math
 import time
-from typing import Optional, Dict, Any, Tuple
+from datetime import datetime, timezone
+from typing import Optional, Dict, Any, Tuple, List
 from .oversold_bounce import OversoldBounce
 from core.strategy_shadow_eval import (
     shadow_enabled,
@@ -18,6 +19,7 @@ from core.strategy_shadow_eval import (
 )
 from core.data_validator import TIMEFRAME_SECONDS
 from core.indicators import rsi
+from core.resistance_band import compute_band
 
 # Default market regime for fallback
 DEFAULT_MARKET_REGIME = {
@@ -1280,12 +1282,305 @@ class AdaptiveOversoldBounce(OversoldBounce):
             # This safety net ensures we never exceed max_sl_pct even with rounding errors
             # or edge cases in the logic above (defensive programming for financial systems)
             stop_price = max(stop_price, entry_price * (1 - max_sl_pct))
-            
-            target_price = entry_price * (1 + actual_tp_pct)
-            
-            # Ensure minimum TP
-            target_price = max(target_price, entry_price * (1 + min_tp_pct))
-            
+
+            # Baseline TP (ATR-based) - kept as fallback/reference
+            baseline_tp_pct = float(actual_tp_pct)
+            baseline_target_price = entry_price * (1 + baseline_tp_pct)
+            baseline_target_price = max(baseline_target_price, entry_price * (1 + min_tp_pct))
+
+            target_price = float(baseline_target_price)
+            tp_mode = "atr"
+            tp_band_meta: Optional[Dict[str, Any]] = None
+
+            # Optional: resistance-band-based TP candidate (feature-flagged; default off)
+            tp_band_cfg = self.strategy_config.get("tp_band") or {}
+            if isinstance(tp_band_cfg, dict) and tp_band_cfg.get("enabled", False):
+                mode = str(tp_band_cfg.get("mode", "shadow")).lower()
+                timeframes = tp_band_cfg.get("timeframes", ["1m", "5m", "30m"])
+                if isinstance(timeframes, str):
+                    timeframes = [x.strip() for x in timeframes.split(",") if x.strip()]
+                elif isinstance(timeframes, (list, tuple)):
+                    timeframes = [str(x).strip() for x in timeframes if str(x).strip()]
+                else:
+                    timeframes = ["1m", "5m", "30m"]
+
+                select_policy = str(tp_band_cfg.get("select_policy", "closest_level")).lower()
+                method = str(tp_band_cfg.get("method", "kmeans")).lower()
+
+                pivot_left = int(tp_band_cfg.get("pivot_left", 3) or 3)
+                pivot_right = int(tp_band_cfg.get("pivot_right", 3) or 3)
+                lookback_bars = int(tp_band_cfg.get("lookback_bars", 300) or 300)
+                band_pct = float(tp_band_cfg.get("band_pct", 0.003) or 0.003)
+                smc_cluster_pct = float(tp_band_cfg.get("smc_cluster_pct", 0.0015) or 0.0015)
+                min_cluster_n = int(tp_band_cfg.get("min_cluster_n", 2) or 2)
+                kmin = int(tp_band_cfg.get("kmin", 3) or 3)
+                kmax = int(tp_band_cfg.get("kmax", 8) or 8)
+                random_state = int(tp_band_cfg.get("random_state", 42) or 42)
+
+                require_band_low_above_entry = bool(tp_band_cfg.get("require_band_low_above_entry", True))
+                min_distance_atr_mult = float(tp_band_cfg.get("min_distance_atr_mult", 0.0) or 0.0)
+                min_width_atr_mult = float(tp_band_cfg.get("min_width_atr_mult", 0.0) or 0.0)
+
+                def _clamp(v: float, lo: float, hi: float) -> float:
+                    return max(lo, min(hi, float(v)))
+
+                # Spread snapshot (WS ticker) without async.
+                spread_pct = None
+                bid = ask = mid = None
+                ticker_age_ms = None
+                try:
+                    pipeline = getattr(self, "market_data_pipeline", None)
+                    ws_manager = getattr(pipeline, "websocket_manager", None) if pipeline else None
+                    collector = getattr(ws_manager, "collector", None) if ws_manager else None
+                    exchange = str(tp_band_cfg.get("exchange", getattr(pipeline, "DEFAULT_EXCHANGE", "bingx")) or "bingx").lower()
+                    ticker_sample = collector.get_latest_ticker_sample(exchange, symbol_display) if collector else None
+                    ticker = ticker_sample.get("data") if isinstance(ticker_sample, dict) else None
+                    sample_ts = ticker_sample.get("timestamp") if isinstance(ticker_sample, dict) else None
+                    if isinstance(sample_ts, datetime):
+                        try:
+                            ticker_age_ms = max(0, int((datetime.now(timezone.utc) - sample_ts).total_seconds() * 1000))
+                        except Exception:
+                            ticker_age_ms = None
+                    if isinstance(ticker, dict):
+                        for k in ("bestBid", "bid", "bidPrice", "best_bid", "B"):
+                            if k in ticker and bid is None:
+                                try:
+                                    bid = float(ticker[k])
+                                except Exception:
+                                    bid = None
+                        for k in ("bestAsk", "ask", "askPrice", "best_ask", "A"):
+                            if k in ticker and ask is None:
+                                try:
+                                    ask = float(ticker[k])
+                                except Exception:
+                                    ask = None
+                    if bid is not None and ask is not None and bid > 0 and ask > 0 and ask >= bid:
+                        mid = (bid + ask) / 2.0
+                        if mid > 0:
+                            spread_pct = (ask - bid) / mid
+                except Exception:
+                    spread_pct = None
+
+                # Momentum/volume strength (fallback approximation) for quantile auto-selection.
+                momentum_strength = None
+                volume_strength = None
+                strength_tf = None
+                try:
+                    df_fast = None
+                    if isinstance(market_data, dict):
+                        for tf in ("5m", "1m", "30m"):
+                            candidate = market_data.get(tf)
+                            if isinstance(candidate, pd.DataFrame) and not candidate.empty and "close" in candidate.columns:
+                                df_fast = candidate
+                                strength_tf = tf
+                                break
+                    if isinstance(df_fast, pd.DataFrame) and not df_fast.empty:
+                        try:
+                            includes_forming_fast = bool(getattr(df_fast, "attrs", {}).get("includes_forming", False))
+                        except Exception:
+                            includes_forming_fast = False
+                        df_fast_closed = df_fast.iloc[:-1] if includes_forming_fast and len(df_fast) >= 2 else df_fast
+                        closes = df_fast_closed["close"].astype(float)
+                        if len(closes) >= 11:
+                            price_change_pct = float(closes.pct_change(10).iloc[-1])
+                            # Mirror StrategyCoordinator defaults
+                            momentum_strength = _clamp((price_change_pct + 0.1) / 0.2, 0.0, 1.0)
+                        if "volume" in df_fast_closed.columns and len(df_fast_closed) >= 20:
+                            recent_vol = float(df_fast_closed["volume"].astype(float).tail(5).mean())
+                            avg_vol = float(df_fast_closed["volume"].astype(float).tail(20).mean())
+                            if avg_vol > 0:
+                                volume_strength = _clamp(min(recent_vol / avg_vol, 2.0) / 2.0, 0.0, 1.0)
+                except Exception:
+                    momentum_strength = None
+                    volume_strength = None
+
+                volatility_bps = None
+                try:
+                    if entry_price > 0 and atr_value > 0:
+                        volatility_bps = float((atr_value / entry_price) * 10_000.0)
+                except Exception:
+                    volatility_bps = None
+
+                quantile_raw = tp_band_cfg.get("quantile", 0.5)
+                quantile_mode = "fixed"
+                if isinstance(quantile_raw, str) and quantile_raw.strip().lower() == "auto":
+                    quantile_mode = "auto"
+                    q_low = 0.25
+                    q_mid = 0.50
+                    q_high = 0.75
+                    low_thr = float(tp_band_cfg.get("low_strength_threshold", 0.33) or 0.33)
+                    high_thr = float(tp_band_cfg.get("high_strength_threshold", 0.66) or 0.66)
+                    spread_low_thr = tp_band_cfg.get("spread_low_threshold_pct", None)
+                    try:
+                        spread_low_thr = float(spread_low_thr) if spread_low_thr is not None else None
+                    except Exception:
+                        spread_low_thr = None
+
+                    mom = float(momentum_strength) if momentum_strength is not None else 0.5
+                    vol_s = float(volume_strength) if volume_strength is not None else 0.5
+                    q = q_mid
+                    if (mom < low_thr) and (vol_s < low_thr):
+                        q = q_low
+                    elif (mom > high_thr) and (vol_s > high_thr) and (
+                        spread_low_thr is None or (spread_pct is not None and float(spread_pct) < spread_low_thr)
+                    ):
+                        q = q_high
+
+                    vol_bps_thr = tp_band_cfg.get("volatility_bps_high_threshold", None)
+                    try:
+                        vol_bps_thr = float(vol_bps_thr) if vol_bps_thr is not None else None
+                    except Exception:
+                        vol_bps_thr = None
+                    if vol_bps_thr is not None and volatility_bps is not None and float(volatility_bps) >= float(vol_bps_thr):
+                        if q >= q_high:
+                            q = q_mid
+                        elif q >= q_mid:
+                            q = q_low
+                    quantile = float(q)
+                else:
+                    try:
+                        quantile = float(quantile_raw)
+                    except Exception:
+                        quantile = 0.5
+                    quantile = _clamp(quantile, 0.0, 1.0)
+
+                band_candidates: List[Tuple[str, Any]] = []
+                for tf in timeframes:
+                    df_tf = None
+                    if isinstance(market_data, dict):
+                        df_tf = market_data.get(tf) or market_data.get(f"df_{tf}")
+                    if df_tf is None and tf == "30m":
+                        df_tf = df_30m
+                    if not isinstance(df_tf, pd.DataFrame) or df_tf.empty:
+                        continue
+
+                    band = compute_band(
+                        df=df_tf,
+                        timeframe=tf,
+                        price=entry_price,
+                        side="buy",
+                        method=method,
+                        pivot_left=pivot_left,
+                        pivot_right=pivot_right,
+                        lookback_bars=lookback_bars,
+                        band_pct=band_pct,
+                        smc_cluster_pct=smc_cluster_pct,
+                        min_cluster_n=min_cluster_n,
+                        kmin=kmin,
+                        kmax=kmax,
+                        random_state=random_state,
+                    )
+                    if band is None:
+                        continue
+
+                    if require_band_low_above_entry and float(band.band_low) <= float(entry_price):
+                        continue
+                    if min_width_atr_mult > 0 and atr_value > 0 and (float(band.band_high) - float(band.band_low)) < (min_width_atr_mult * float(atr_value)):
+                        continue
+                    if min_distance_atr_mult > 0 and atr_value > 0 and (float(band.band_low) - float(entry_price)) < (min_distance_atr_mult * float(atr_value)):
+                        continue
+
+                    band_candidates.append((tf, band))
+
+                selected_tf = None
+                selected_band = None
+                if band_candidates:
+                    if select_policy == "prefer_tf_order":
+                        order = {tf: i for i, tf in enumerate(timeframes)}
+                        selected_tf, selected_band = min(band_candidates, key=lambda x: order.get(x[0], 10_000))
+                    else:
+                        selected_tf, selected_band = min(
+                            band_candidates,
+                            key=lambda x: float(x[1].level) - float(entry_price),
+                        )
+
+                tp_candidate = None
+                if selected_band is not None:
+                    tp_candidate = float(selected_band.band_low) + float(quantile) * (
+                        float(selected_band.band_high) - float(selected_band.band_low)
+                    )
+                    if tp_candidate <= entry_price:
+                        tp_candidate = None
+
+                tp_band_meta = {
+                    "enabled": True,
+                    "mode": mode,
+                    "selected_tf": selected_tf,
+                    "select_policy": select_policy,
+                    "method": method,
+                    "quantile_mode": quantile_mode,
+                    "quantile": float(quantile),
+                    "band": (
+                        {
+                            "level": float(selected_band.level),
+                            "band_low": float(selected_band.band_low),
+                            "band_high": float(selected_band.band_high),
+                            "meta": selected_band.meta,
+                        }
+                        if selected_band is not None
+                        else None
+                    ),
+                    "tp_candidate_raw": tp_candidate,
+                    "tp_candidate_applied": None,
+                    "target_applied": None,
+                    "inputs": {
+                        "momentum_strength": momentum_strength,
+                        "volume_strength": volume_strength,
+                        "strength_tf": strength_tf,
+                        "spread_pct": spread_pct,
+                        "bid": bid,
+                        "ask": ask,
+                        "mid": mid,
+                        "ticker_age_ms": ticker_age_ms,
+                        "volatility_bps": volatility_bps,
+                    },
+                    "filters": {
+                        "require_band_low_above_entry": require_band_low_above_entry,
+                        "min_distance_atr_mult": min_distance_atr_mult,
+                        "min_width_atr_mult": min_width_atr_mult,
+                        "pivot_left": pivot_left,
+                        "pivot_right": pivot_right,
+                        "lookback_bars": lookback_bars,
+                        "band_pct": band_pct,
+                        "smc_cluster_pct": smc_cluster_pct,
+                        "min_cluster_n": min_cluster_n,
+                        "kmin": kmin,
+                        "kmax": kmax,
+                        "random_state": random_state,
+                    },
+                }
+
+                tp_candidate_applied = None
+                if tp_candidate is not None and selected_band is not None:
+                    tp_candidate_applied = float(tp_candidate)
+                    # Do NOT push TP beyond the selected band's high just to satisfy min_tp_pct.
+                    # If min_tp_pct is higher than band_high, keep TP inside the band and let RR veto it.
+                    min_tp_target = float(entry_price * (1 + min_tp_pct))
+                    if tp_candidate_applied < min_tp_target and min_tp_target <= float(selected_band.band_high):
+                        tp_candidate_applied = float(min_tp_target)
+                    tp_band_meta["tp_candidate_applied"] = tp_candidate_applied
+                    if mode == "apply":
+                        target_price = float(tp_candidate_applied)
+                        tp_mode = "band"
+                        tp_band_meta["target_applied"] = float(target_price)
+
+                if selected_band is not None:
+                    logger.info(
+                        f"?? {log_prefix} [OB TP-BAND] mode={mode} tf={selected_tf} method={method} "
+                        f"band_low={float(selected_band.band_low):.2f} band_high={float(selected_band.band_high):.2f} "
+                        f"q={float(quantile):.2f} tp_raw={(tp_candidate if tp_candidate is not None else 'N/A')} "
+                        f"tp_apply={(tp_candidate_applied if tp_candidate_applied is not None else 'N/A')} "
+                        f"spread_pct={(spread_pct if spread_pct is not None else 'N/A')} "
+                        f"mom={(momentum_strength if momentum_strength is not None else 'N/A')} "
+                        f"vol={(volume_strength if volume_strength is not None else 'N/A')} "
+                        f"vol_bps={(volatility_bps if volatility_bps is not None else 'N/A')}"
+                    )
+                else:
+                    logger.info(f"?? {log_prefix} [OB TP-BAND] mode={mode} no_band_found (tfs={timeframes})")
+
+            # Final TP pct for logging/RR calculation (may be overridden by TP-band apply mode)
+            actual_tp_pct = (target_price / entry_price) - 1.0 if entry_price > 0 else 0.0
+
             # Calculate final R/R
             rr_numerator = target_price - entry_price
             rr_denominator = entry_price - stop_price
@@ -1296,7 +1591,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 f"🔎 {log_prefix} [OB R/R] Entry=${entry_price:.2f}, "
                 f"Stop=${stop_price:.2f} (-{actual_sl_pct:.1%}), "
                 f"Target=${target_price:.2f} (+{actual_tp_pct:.1%}), "
-                f"R/R={rr_ratio:.2f}"
+                f"R/R={rr_ratio:.2f} tp_mode={tp_mode}"
             )
 
             # 4. R/R Ratio Check
@@ -1356,6 +1651,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
                     },
                 }
             )
+            if tp_band_meta is not None:
+                meta["tp_band"] = tp_band_meta
             if trend_bias_active:
                 meta['trend_confirmation'] = {
                     'ema_fast': ema_fast,

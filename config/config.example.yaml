@@ -79,6 +79,11 @@ risk:
   # NEW: Dynamic Risk/Reward System
   rr_dynamic:
     enabled: true                     # Override with: RR_DYNAMIC_ENABLED
+
+    # Model selector (default: v1 for backward compatibility)
+    # - v1: ML/RL relaxation + regime tightening + PPO multiplier
+    # - v2: v1 + volume_strength/momentum_strength contributions (same PPO application point)
+    model_version: "v1"               # v1|v2
     
     # Base Configuration
     base_target_rr: 2.0              # Override with: RR_BASE_TARGET
@@ -346,6 +351,7 @@ signals:
     cooldown_seconds: 20              # Override with: DUPLICATE_PREVENTION_COOLDOWN
     price_delta_bypass_threshold: 0.0015 # Override with: PRICE_DELTA_BYPASS_THRESHOLD
     price_delta_bypass_enabled: false # Override with: PRICE_DELTA_BYPASS_ENABLED
+    rsi_session_oversold_threshold: 30  # RSI <= this starts/updates low-anchor session used for duplicate price-delta reference
     # Optional scale-in specific thresholds (defaults mirror entry for safety)
     scale_in_min_price_change_pct: 0.0005
     scale_in_cooldown_seconds: 20
@@ -370,6 +376,20 @@ signals:
     sl_atr_mult: 1.2                  # Override with: STRATEGY_OB_SL_ATR_MULT
     min_tp_pct: 0.008                 # Override with: STRATEGY_OB_MIN_TP_PCT
     max_sl_pct: 0.015                 # Override with: STRATEGY_OB_MAX_SL_PCT
+
+    # Optional: TP candidate inside nearest resistance band (lookahead-safe).
+    # SL stays unchanged; Risk layer still vetoes if RR_actual < RR_required (PPO included).
+    tp_band:
+      enabled: true
+      mode: "apply"                   # shadow | apply
+      timeframes:
+        - "1m"
+        - "5m"
+        - "30m"
+      method: "kmeans"                # kmeans | smc
+      quantile: "auto"                # 0..1 or "auto"
+      min_distance_atr_mult: 0.8
+      min_width_atr_mult: 0.35
     trend_confirmation_ema_gap_pct_min: 0.0020 # EMA gap minimum for trend RSI penalty (0.0020 = 0.20%)
     trend_confirmation_ema_gap_pct_on: 0.0020  # Optional hysteresis on-threshold (0.20%)
     trend_confirmation_ema_gap_pct_off: 0.0015 # Optional hysteresis off-threshold (0.15%)
@@ -643,6 +663,7 @@ strategies:
     execution_profile: "sniper_mode"  # Hybrid: NO DCA/NO pyramiding (sniper MR)
     timeframe: "1m"           # VWAP calculation window
     signal_timeframe: "5m"    # Decision timeframe
+    price_source: "mid"       # Options: signal_close, forming_close, mid, mark, last
     vwap_lookback: 1440       # 1440 bars in VWAP timeframe (timeframe=1m => ~24h)
     band_multiplier: 2.0
     stop_loss_std_delta: 1.0  # Override with: STRATEGIES__MEAN_REVERSION__STOP_LOSS_STD_DELTA ; Z-score stop distance beyond the active band (in sigmas)

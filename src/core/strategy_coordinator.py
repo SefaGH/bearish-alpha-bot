@@ -631,6 +631,7 @@ class StrategyCoordinator:
         self.signal_price_history = defaultdict(list)  # symbol -> [(timestamp, price), ...]
         self._dca_last_signal_time = defaultdict(float)  # symbol -> ts
         self._dca_recent_layers = defaultdict(dict)  # symbol -> {layer_index: ts}
+        self.rsi_session_state = {}  # symbol -> {'active': True, 'anchor_price': float, 'side': 'long'}
 
         # Strategy+symbol cooldowns (non-blocking deferral replacement)
         self._strategy_cooldowns: Dict[str, datetime] = {}
@@ -4320,6 +4321,42 @@ class StrategyCoordinator:
         except (TypeError, ValueError):
             current_rsi = None
 
+        # RSI session-based low-point tracking (symbol-scoped).
+        # When RSI is oversold, track the lowest price seen and optionally use it as the
+        # reference for price-delta comparisons during cooldown (to avoid expensive lookbacks).
+        ref_price_override = None
+        try:
+            rsi_limit = float(dup_config.get("rsi_session_oversold_threshold", 30.0))
+        except (TypeError, ValueError, AttributeError):
+            rsi_limit = 30.0
+
+        if symbol and entry_price > 0 and current_rsi is not None:
+            signal_side = self._normalize_side(signal.get("side")) or "long"
+            if signal_side == "long":
+                session = self.rsi_session_state.get(symbol)
+                if current_rsi > rsi_limit and session:
+                    self.rsi_session_state.pop(symbol, None)
+                    session = None
+
+                if current_rsi <= rsi_limit:
+                    if not session:
+                        session = {"active": True, "anchor_price": float(entry_price), "side": "long"}
+                        self.rsi_session_state[symbol] = session
+                    else:
+                        try:
+                            anchor = float(session.get("anchor_price", entry_price))
+                        except (TypeError, ValueError):
+                            anchor = float(entry_price)
+                        if entry_price < anchor:
+                            session["anchor_price"] = float(entry_price)
+                        session["active"] = True
+                        session["side"] = "long"
+
+                    try:
+                        ref_price_override = float(self.rsi_session_state[symbol].get("anchor_price"))
+                    except (TypeError, ValueError, KeyError):
+                        ref_price_override = None
+
         dynamic_cfg = dup_config.get('dynamic_cooldown', {}) if isinstance(dup_config, dict) else {}
         if current_rsi is not None and dynamic_cfg.get('enabled', True):
             last_rsi = self.last_signal_rsi.get(signal_key, current_rsi)
@@ -4404,55 +4441,98 @@ class StrategyCoordinator:
                 )
                 return True, "OK (scale_in_soft_guard)"
             # Step 3a: Get last price from history
-            if symbol in self.signal_price_history and entry_price > 0 and price_delta_bypass_enabled:
+            if symbol in self.signal_price_history and entry_price > 0:
                 # Find last price for this symbol
                 if self.signal_price_history[symbol]:
                     last_timestamp, last_price = self.signal_price_history[symbol][-1]
-                    
-                    # Step 3b: Calculate price_delta (in decimal, e.g., 0.0005 = 0.05%)
-                    # TODO (pyramiding/DCA): consider signed delta for certain strategies
-                    price_delta = abs(entry_price - last_price) / last_price
-                    
-                    # Step 3c: IF price_delta >= threshold, BYPASS
-                    if price_delta >= price_delta_bypass_threshold:
-                        # Log bypass event with details
+
+                    # Use RSI-session anchor as reference during cooldown (when available).
+                    ref_price = ref_price_override if ref_price_override is not None else last_price
+
+                    # Directional better-price bypass: accept immediately if price improved for the signal side.
+                    # Noise filter: require a meaningful improvement (0.01%) to avoid microscopic tick spam.
+                    signal_side = self._normalize_side(signal.get("side")) or "long"
+                    IMPROVEMENT_THRESHOLD = 0.0001  # 0.01%
+                    is_better_price = False
+                    if last_price > 0:
+                        if signal_side == "long" and entry_price < (last_price * (1 - IMPROVEMENT_THRESHOLD)):
+                            is_better_price = True
+                        elif signal_side == "short" and entry_price > (last_price * (1 + IMPROVEMENT_THRESHOLD)):
+                            is_better_price = True
+
+                    if is_better_price:
                         logger.info(
-                            f"✅ [DUPLICATE-BYPASS] Cooldown bypassed\n"
+                            f"✅ [DUPLICATE-BYPASS] Better price found\n"
                             f"   Symbol: {symbol}\n"
                             f"   Strategy: {strategy_name}\n"
                             f"   Intent: {intent}\n"
+                            f"   Side: {signal_side}\n"
                             f"   Last Price: ${last_price:.2f}\n"
                             f"   New Price: ${entry_price:.2f}\n"
-                            f"   Delta: {price_delta*100:.2f}% (>= {price_delta_bypass_threshold*100:.2f}%)\n"
+                            f"   Better Price Threshold: {IMPROVEMENT_THRESHOLD*100:.2f}%\n"
                             f"   Cooldown Remaining: {remaining:.1f}s\n"
                             f"   ✅ SIGNAL ACCEPTED"
                         )
-                        
-                        # Update statistics
-                        self.processing_stats['cooldown_bypasses'] += 1
-                        self.processing_stats['last_bypass_time'] = current_time
-                        
-                        # Update running average
-                        bypass_count = self.processing_stats['cooldown_bypasses']
-                        current_avg = self.processing_stats['avg_bypass_price_delta']
-                        new_avg = ((current_avg * (bypass_count - 1)) + (price_delta * 100)) / bypass_count
-                        self.processing_stats['avg_bypass_price_delta'] = new_avg
-                        
-                        # Update bypass success rate
-                        total_signals = self.processing_stats['total_signals']
-                        if total_signals > 0:
-                            self.processing_stats['bypass_success_rate'] = (bypass_count / total_signals) * 100
-                        
-                        # Update tracking
+
+                        # Update tracking (treat as accepted)
                         self.last_signal_time[signal_key] = current_time
                         self.signal_price_history[symbol].append((current_time, entry_price))
                         if current_rsi is not None:
                             self.last_signal_rsi[signal_key] = current_rsi
-                        
-                        return True, f"OK (price delta bypass: {price_delta*100:.2f}%)"
-                    
-                    # Step 3d: ELSE, reject with price delta info
-                    else:
+
+                        return (
+                            True,
+                            f"Better price found (diff > {IMPROVEMENT_THRESHOLD*100:.2f}%) "
+                            f"({signal_side}: {last_price:.2f} -> {entry_price:.2f})",
+                        )
+
+                    if price_delta_bypass_enabled:
+                        # Step 3b: Calculate price_delta (in decimal, e.g., 0.0005 = 0.05%)
+                        # TODO (pyramiding/DCA): consider signed delta for certain strategies
+                        if ref_price > 0:
+                            price_delta = abs(entry_price - ref_price) / ref_price
+                        else:
+                            price_delta = 0.0
+
+                        # Step 3c: IF price_delta >= threshold, BYPASS
+                        if price_delta >= price_delta_bypass_threshold:
+                            # Log bypass event with details
+                            logger.info(
+                                f"✅ [DUPLICATE-BYPASS] Cooldown bypassed\n"
+                                f"   Symbol: {symbol}\n"
+                                f"   Strategy: {strategy_name}\n"
+                                f"   Intent: {intent}\n"
+                                f"   Ref Price: ${ref_price:.2f}\n"
+                                f"   New Price: ${entry_price:.2f}\n"
+                                f"   Delta: {price_delta*100:.2f}% (>= {price_delta_bypass_threshold*100:.2f}%)\n"
+                                f"   Cooldown Remaining: {remaining:.1f}s\n"
+                                f"   ✅ SIGNAL ACCEPTED"
+                            )
+
+                            # Update statistics
+                            self.processing_stats['cooldown_bypasses'] += 1
+                            self.processing_stats['last_bypass_time'] = current_time
+
+                            # Update running average
+                            bypass_count = self.processing_stats['cooldown_bypasses']
+                            current_avg = self.processing_stats['avg_bypass_price_delta']
+                            new_avg = ((current_avg * (bypass_count - 1)) + (price_delta * 100)) / bypass_count
+                            self.processing_stats['avg_bypass_price_delta'] = new_avg
+
+                            # Update bypass success rate
+                            total_signals = self.processing_stats['total_signals']
+                            if total_signals > 0:
+                                self.processing_stats['bypass_success_rate'] = (bypass_count / total_signals) * 100
+
+                            # Update tracking
+                            self.last_signal_time[signal_key] = current_time
+                            self.signal_price_history[symbol].append((current_time, entry_price))
+                            if current_rsi is not None:
+                                self.last_signal_rsi[signal_key] = current_rsi
+
+                            return True, f"OK (price delta bypass: {price_delta*100:.2f}%)"
+
+                        # Step 3d: ELSE, reject with price delta info
                         logger.warning(
                             f"❌ [DUPLICATE-REJECT] Signal rejected - insufficient price movement\n"
                             f"   Symbol: {symbol}\n"
@@ -4462,12 +4542,15 @@ class StrategyCoordinator:
                             f"   Cooldown Remaining: {remaining:.1f}s\n"
                             f"   ❌ SIGNAL REJECTED"
                         )
-                        
+
                         self.processing_stats['rejected_price_delta'] += 1
                         if current_rsi is not None:
                             self.last_signal_rsi[signal_key] = current_rsi
-                        
-                        return False, f"Duplicate prevention: Signal cooldown: {remaining:.0f}s remaining (price change {price_delta*100:.2f}% < threshold)"
+
+                        return (
+                            False,
+                            f"Duplicate prevention: Signal cooldown: {remaining:.0f}s remaining (price change {price_delta*100:.2f}% < threshold)",
+                        )
             
             # No price history or bypass disabled
             logger.warning(

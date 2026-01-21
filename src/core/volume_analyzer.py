@@ -237,10 +237,26 @@ class VolumeAnalyzer:
 
         return normalized
 
-    def _log_readiness(self, symbol: str, trade_tf: str, short_tf: str, medium_tf: str,
-                       trade_len: int, short_len: int, medium_len: int,
-                       window_bars: int, short_lb: int, med_lb: int,
-                       will_return: bool) -> None:
+    def _log_readiness(
+        self,
+        symbol: str,
+        trade_tf: str,
+        short_tf: str,
+        medium_tf: str,
+        trade_len: int,
+        short_len: int,
+        medium_len: int,
+        window_bars: int,
+        short_lb: int,
+        med_lb: int,
+        will_return: bool,
+        trade_source: Optional[str] = None,
+        short_source: Optional[str] = None,
+        medium_source: Optional[str] = None,
+        trade_limit: Optional[int] = None,
+        short_limit: Optional[int] = None,
+        medium_limit: Optional[int] = None,
+    ) -> None:
         """Emit a limited readiness log to show bar availability."""
         key = f"{symbol}:{trade_tf}:{short_tf}:{medium_tf}"
         count = self._readiness_emitted.get(key, 0)
@@ -263,6 +279,12 @@ class VolumeAnalyzer:
             "required_medium_bars": med_lb,
             "ready": trade_len >= window_bars and short_len >= short_lb and medium_len >= med_lb,
             "will_return_context": will_return,
+            "trade_source": trade_source,
+            "short_source": short_source,
+            "medium_source": medium_source,
+            "trade_limit": trade_limit,
+            "short_limit": short_limit,
+            "medium_limit": medium_limit,
         }
         logging.getLogger(__name__).info(payload)
 
@@ -294,18 +316,46 @@ class VolumeAnalyzer:
             return volumes
 
     @staticmethod
-    def _extract_volume_series_with_ts(df: Any) -> (List[float], Optional[float]):
-        """Extract volume series and last timestamp (if available) from an OHLCV buffer."""
+    def _normalize_ts_seconds(ts: Optional[float]) -> Optional[float]:
+        """Normalize epoch timestamps to UTC seconds (accepts ms or seconds)."""
+        if ts is None:
+            return None
+        try:
+            value = float(ts)
+        except Exception:
+            return None
+        return value / 1000.0 if value > 10_000_000_000 else value
+
+    @staticmethod
+    def _extract_volume_series_with_ts(df: Any) -> tuple[List[float], Optional[float]]:
+        """Extract volume series and last timestamp (UTC seconds) from an OHLCV buffer."""
         if df is None:
             return [], None
 
-        last_ts: Optional[float] = None
+        # StreamDataCollector path: list of lists [[ts_ms, o, h, l, c, v], ...]
+        if isinstance(df, list) and df and isinstance(df[0], (list, tuple)) and len(df[0]) >= 6:
+            volumes: List[float] = []
+            last_ts: Optional[float] = None
+            for row in df:
+                if not isinstance(row, (list, tuple)) or len(row) < 6:
+                    continue
+                try:
+                    volumes.append(float(row[5]))
+                except Exception:
+                    continue
+                try:
+                    last_ts = float(row[0])
+                except Exception:
+                    pass
+            return volumes, VolumeAnalyzer._normalize_ts_seconds(last_ts)
+
+        # Pandas DataFrame path
         try:
-            # Pandas DataFrame path
             volumes = df["volume"].tolist()
+            last_ts: Optional[float] = None
             ts_col = None
             for col in ("timestamp", "ts", "time"):
-                if col in df.columns:
+                if col in getattr(df, "columns", ()):
                     ts_col = col
                     break
             if ts_col:
@@ -317,35 +367,71 @@ class VolumeAnalyzer:
                         last_ts = float(idx[-1].timestamp())
                 except Exception:
                     pass
-            return volumes, last_ts
+            return volumes, VolumeAnalyzer._normalize_ts_seconds(last_ts)
         except Exception:
-            volumes = []
-            ts_candidate = None
-            for row in df:
-                try:
-                    vol = getattr(row, "volume", row.get("volume"))
-                except Exception:
-                    vol = None
-                try:
-                    ts_candidate = getattr(row, "timestamp", None)
-                    if ts_candidate is None and isinstance(row, dict):
-                        ts_candidate = row.get("timestamp") or row.get("ts") or row.get("time")
-                except Exception:
-                    ts_candidate = None
+            pass
 
-                if vol is not None:
-                    volumes.append(float(vol))
-                    if ts_candidate is not None:
-                        last_ts = float(ts_candidate)
+        # Generic iterable of dict/object rows
+        volumes: List[float] = []
+        last_ts: Optional[float] = None
+        for row in df:
+            try:
+                vol = getattr(row, "volume", row.get("volume"))
+            except Exception:
+                vol = None
+            try:
+                ts_candidate = getattr(row, "timestamp", None)
+                if ts_candidate is None and isinstance(row, dict):
+                    ts_candidate = row.get("timestamp") or row.get("ts") or row.get("time")
+            except Exception:
+                ts_candidate = None
 
-            return volumes, last_ts
+            if vol is None:
+                continue
+            try:
+                volumes.append(float(vol))
+            except Exception:
+                continue
+            if ts_candidate is not None:
+                try:
+                    last_ts = float(ts_candidate)
+                except Exception:
+                    pass
+
+        return volumes, VolumeAnalyzer._normalize_ts_seconds(last_ts)
+
+    async def _get_latest_ohlcv_buffer(self, symbol: str, timeframe: str, limit: int) -> tuple[Any, str]:
+        """
+        Prefer reading raw OHLCV from StreamDataCollector to avoid MarketDataPipeline's
+        indicator-driven limit (~255) and avoid recomputing indicators.
+
+        Falls back to MarketDataPipeline.get_latest_ohlcv when the collector is unavailable.
+        """
+        try:
+            ws_mgr = getattr(self._mdp, "websocket_manager", None)
+            collector = getattr(ws_mgr, "collector", None) if ws_mgr else None
+            if collector and hasattr(collector, "get_latest_ohlcv"):
+                exchanges = getattr(self._mdp, "exchanges", None)
+                exchange = None
+                if isinstance(exchanges, dict) and exchanges:
+                    exchange = next(iter(exchanges.keys()))
+                exchange = exchange or getattr(self._mdp, "DEFAULT_EXCHANGE", None) or "bingx"
+                result = collector.get_latest_ohlcv(exchange, symbol, timeframe, limit)
+                if result is not None:
+                    return result, "collector"
+        except Exception:
+            pass
+
+        try:
+            try:
+                return await self._mdp.get_latest_ohlcv(symbol, timeframe, limit=limit), "pipeline"
+            except TypeError:
+                return await self._mdp.get_latest_ohlcv(symbol, timeframe), "pipeline"
+        except Exception:
+            return None, "none"
 
     async def _compute_baseline(self, symbol: str, baseline_tf: str, lookback: int) -> Optional[float]:
-        """Compute median volume baseline for given timeframe.
-
-        If there are fewer than ``lookback`` bars available, uses all
-        available bars. Returns None if no data is available.
-        """
+        """Compute median volume baseline for given timeframe."""
         series = await self._get_volume_series(symbol, baseline_tf)
         if not series:
             return None
@@ -403,11 +489,18 @@ class VolumeAnalyzer:
         medium_tf: str = cfg["baseline_medium_tf"]
         short_lb: int = int(cfg["short_lookback"])
         med_lb: int = int(cfg["medium_lookback"])
+        window_bars: int = int(cfg["window_bars"])
 
-        # Pull raw series (and last timestamps) to measure availability for readiness logging
-        df_short = await self._mdp.get_latest_ohlcv(symbol, short_tf)
-        df_medium = await self._mdp.get_latest_ohlcv(symbol, medium_tf)
-        df_trade = await self._mdp.get_latest_ohlcv(symbol, trade_timeframe)
+        # Pull raw series (and last timestamps) to measure availability for readiness logging.
+        # NOTE: We need at least lookback+1 bars for baselines because we intentionally
+        # drop the latest (potentially forming) bar from baseline calculation.
+        trade_limit = max(1, window_bars)
+        short_limit = max(2, short_lb + 1)
+        medium_limit = max(2, med_lb + 1)
+
+        df_short, short_source = await self._get_latest_ohlcv_buffer(symbol, short_tf, short_limit)
+        df_medium, medium_source = await self._get_latest_ohlcv_buffer(symbol, medium_tf, medium_limit)
+        df_trade, trade_source = await self._get_latest_ohlcv_buffer(symbol, trade_timeframe, trade_limit)
 
         series_short, ts_short_last = self._extract_volume_series_with_ts(df_short)
         series_medium, ts_medium_last = self._extract_volume_series_with_ts(df_medium)
@@ -432,10 +525,14 @@ class VolumeAnalyzer:
                 short_lb,
                 med_lb,
                 False,
+                trade_source=trade_source,
+                short_source=short_source,
+                medium_source=medium_source,
+                trade_limit=trade_limit,
+                short_limit=short_limit,
+                medium_limit=medium_limit,
             )
             return None
-
-        window_bars: int = int(cfg["window_bars"])
 
         tf_minutes = self._get_tf_minutes(trade_timeframe)
         if tf_minutes <= 0:
@@ -546,6 +643,8 @@ class VolumeAnalyzer:
         ctx.baseline_short_last_bar_ts = ts_short_last
         ctx.baseline_medium_last_bar_ts = ts_medium_last
         ctx.baseline_calc_mode = "closed_only"  # last (forming) bar excluded from baseline
+        ctx.volume_data_sources = {"trade": trade_source, "short": short_source, "medium": medium_source}
+        ctx.volume_data_limits = {"trade": trade_limit, "short": short_limit, "medium": medium_limit}
 
         self._log_readiness(
             symbol,
@@ -559,6 +658,12 @@ class VolumeAnalyzer:
             short_lb,
             med_lb,
             True,
+            trade_source=trade_source,
+            short_source=short_source,
+            medium_source=medium_source,
+            trade_limit=trade_limit,
+            short_limit=short_limit,
+            medium_limit=medium_limit,
         )
 
         return ctx

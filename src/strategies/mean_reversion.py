@@ -24,6 +24,22 @@ class VWAPMeanReversion(BaseStrategy):
         super().__init__(strategy_name="mean_reversion", config=cfg)
         self.vwap_tf = cfg.get("timeframe", "1m")
         self.signal_tf = cfg.get("signal_timeframe", "5m")
+        raw_price_source = cfg.get("price_source", "signal_close")
+        try:
+            raw_price_source = str(raw_price_source or "").strip().lower()
+        except Exception:
+            raw_price_source = "signal_close"
+        if raw_price_source in ("close", "closed", "closed_close", "candle_close", "signal_close", ""):
+            raw_price_source = "signal_close"
+        allowed_price_sources = {"signal_close", "forming_close", "mid", "mark", "last"}
+        if raw_price_source not in allowed_price_sources:
+            logger.warning(
+                "[MeanReversion] Unsupported price_source=%r; falling back to 'signal_close' (allowed=%s)",
+                raw_price_source,
+                sorted(allowed_price_sources),
+            )
+            raw_price_source = "signal_close"
+        self.price_source = raw_price_source
         self.band_mult = float(cfg.get("band_multiplier", 2.0))
         self.stop_loss_std_delta = float(cfg.get("stop_loss_std_delta", 0.5))
         if not math.isfinite(self.stop_loss_std_delta) or self.stop_loss_std_delta < 0:
@@ -538,8 +554,47 @@ class VWAPMeanReversion(BaseStrategy):
             _emit_recheck_eval(action="HOLD", gate_reasons=["missing_adx"])
             return None
 
-        price = float(last_sig["close"])
-        market_price = price
+        sig_close_price = float(last_sig["close"])
+        price = sig_close_price
+        px_source = "signal_close"
+        market_price_source = "signal_close"
+        market_price_fallback_chain = None
+        market_price = sig_close_price
+
+        if self.price_source != "signal_close" and self.market_data_pipeline:
+            forming_close = None
+            try:
+                forming_close = self.market_data_pipeline.get_realtime_price(symbol, timeframe=self.signal_tf)
+            except Exception:
+                forming_close = None
+
+            live_price = None
+            resolved_source = None
+            fallback_chain = None
+            try:
+                if self.price_source == "forming_close":
+                    live_price = forming_close
+                    resolved_source = "forming_close"
+                    fallback_chain = "forming_close"
+                else:
+                    live_price, resolved_source, fallback_chain = self.market_data_pipeline.get_live_trigger_price(
+                        symbol=symbol,
+                        timeframe=self.signal_tf,
+                        source=self.price_source,
+                        forming_close=forming_close,
+                    )
+            except Exception:
+                live_price = None
+
+            try:
+                if live_price is not None and math.isfinite(float(live_price)) and float(live_price) > 0:
+                    market_price = float(live_price)
+                    market_price_source = str(resolved_source or self.price_source)
+                    market_price_fallback_chain = fallback_chain
+                    price = market_price
+                    px_source = market_price_source
+            except Exception:
+                pass
         vwap_main = float(last_vwap["vwap"])
         vwap_lower = float(last_vwap["vwap_lower"])
         vwap_upper = float(last_vwap["vwap_upper"])
@@ -578,7 +633,6 @@ class VWAPMeanReversion(BaseStrategy):
                     vwap_std_val = float(last_vwap["vwap_std"])
             except Exception:
                 vwap_std_val = None
-        px_source = "market_price"
         if is_recheck and micro_gate_watch_price is not None and math.isfinite(micro_gate_watch_price):
             price = float(micro_gate_watch_price)
             px_source = "micro_gate_watch"
@@ -1096,6 +1150,17 @@ class VWAPMeanReversion(BaseStrategy):
         meta_data = signal.get("meta", {})
         if not isinstance(meta_data, dict):
             meta_data = {}
+        meta_data.setdefault(
+            "price_meta",
+            {
+                "sig_close": sig_close_price,
+                "market_price": market_price,
+                "market_price_source": market_price_source,
+                "market_price_fallback_chain": market_price_fallback_chain,
+                "price_used": price,
+                "price_used_source": px_source,
+            },
+        )
         try:
             last_row = last_vwap if isinstance(last_vwap, pd.Series) else None
             if last_row is None and isinstance(last_sig, pd.Series):

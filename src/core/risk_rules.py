@@ -732,12 +732,34 @@ class RiskRewardRatioRule(BaseRiskRule):
         weights = config['weights']
         fallback = config['fallback']
         regime_mults = config['regime_multipliers']
+
+        symbol = signal.get('symbol', 'UNKNOWN')
+        model_version = str(
+            signal.get('rr_model_version')
+            or config.get('model_version')
+            or 'v1'
+        ).strip().lower()
+        if model_version not in ('v1', 'v2'):
+            model_version = 'v1'
+
+        def _safe_float(value: Any, default: float) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _clamp01(value: float) -> float:
+            if value < 0.0:
+                return 0.0
+            if value > 1.0:
+                return 1.0
+            return value
         
         # Extract intelligence metrics with fallbacks
-        ml_conf = float(signal.get('ml_confidence', fallback['missing_ml_default']))
+        ml_conf = _safe_float(signal.get('ml_confidence'), _safe_float(fallback.get('missing_ml_default', 0.5), 0.5))
         rl_agree = 1.0 if signal.get('rl_is_agree', False) else 0.0
-        rl_prob = float(signal.get('rl_action_prob', fallback['missing_rl_default']))
-        regime_conf = float(signal.get('regime_confidence', fallback.get('missing_regime_default', 0.3)))
+        rl_prob = _safe_float(signal.get('rl_action_prob'), _safe_float(fallback.get('missing_rl_default', 0.5), 0.5))
+        regime_conf = _safe_float(signal.get('regime_confidence'), _safe_float(fallback.get('missing_regime_default', 0.3), 0.3))
         regime_name = signal.get('regime_name', 'neutral').lower()
         
         # Get regime_weight (soft-weighting), default to 1.0 if not available
@@ -746,13 +768,28 @@ class RiskRewardRatioRule(BaseRiskRule):
         #   - regime_weight = regime_conf / 0.60 if 0.30 <= regime_conf < 0.60
         #   - regime_weight = 1.0 if regime_conf >= 0.60
         # Legacy signals without regime_weight are assumed to have full confidence (1.0)
-        regime_weight = float(signal.get('regime_weight', 1.0))
+        regime_weight = _safe_float(signal.get('regime_weight', 1.0), 1.0)
         
         # Calculate relaxation (reduces required R/R for high confidence)
-        relaxation = (
-            weights['ml_confidence'] * ml_conf +
-            weights['rl_agreement'] * rl_agree * rl_prob
+        base_relaxation = (
+            weights['ml_confidence'] * ml_conf
+            + weights['rl_agreement'] * rl_agree * rl_prob
         )
+
+        vol_raw = signal.get('volume_strength')
+        mom_raw = signal.get('momentum_strength')
+        neutral_strength = _safe_float(fallback.get('missing_ml_default', 0.5), 0.5)
+        vol_strength = _clamp01(_safe_float(vol_raw, neutral_strength))
+        mom_strength = _clamp01(_safe_float(mom_raw, neutral_strength))
+
+        vol_weight = float(weights.get('volume_strength', 0.0) or 0.0)
+        mom_weight = float(weights.get('momentum_strength', 0.0) or 0.0)
+        vol_contrib = vol_weight * vol_strength
+        mom_contrib = mom_weight * mom_strength
+
+        relaxation = base_relaxation
+        if model_version == 'v2':
+            relaxation += (vol_contrib + mom_contrib)
         
         # Calculate tightening (increases required R/R for uncertainty)
         # Apply regime_weight to tightening effect
@@ -787,9 +824,26 @@ class RiskRewardRatioRule(BaseRiskRule):
         final_target *= max(0.1, ppo_rr_multiplier)
         
         # Detailed logging
-        logger.info(f"📊 [Dynamic R/R Calc] Base={base_rr:.2f} - Relax={relaxation:.2f} + Tight={tightening:.2f} "
-                   f"× Regime({regime_name}, mult={regime_mult:.1f}, weight={regime_weight:.2f})={regime_adjustment:.2f} "
-               f"= {dynamic_target:.2f} × PPO({ppo_rr_multiplier:.2f}) → Final={final_target:.2f}")
+        logger.info(
+            f"📊 [Dynamic R/R Calc] Base={base_rr:.2f} - Relax={relaxation:.2f} + Tight={tightening:.2f} "
+            f"× Regime({regime_name}, mult={regime_mult:.1f}, weight={regime_weight:.2f})={regime_adjustment:.2f} "
+            f"= {dynamic_target:.2f} × PPO({ppo_rr_multiplier:.2f}) → Final={final_target:.2f}"
+        )
+
+        if model_version == 'v2':
+            logger.info(
+                "📊 [Dynamic R/R v2 Factors] %s: volume_strength raw=%s norm=%.2f weight=%.3f contrib=%.4f | "
+                "momentum_strength raw=%s norm=%.2f weight=%.3f contrib=%.4f",
+                symbol,
+                vol_raw,
+                vol_strength,
+                vol_weight,
+                vol_contrib,
+                mom_raw,
+                mom_strength,
+                mom_weight,
+                mom_contrib,
+            )
         
         return final_target
 

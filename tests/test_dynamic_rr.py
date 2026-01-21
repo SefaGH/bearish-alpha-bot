@@ -30,6 +30,7 @@ class TestDynamicRRConfiguration:
     def test_default_config_loaded(self):
         """Test that default dynamic R/R config is loaded correctly."""
         config = RiskConfiguration({
+            'equity_usd': 10000,
             'rr_dynamic': {
                 'enabled': True,
                 'base_target_rr': 1.5,
@@ -64,6 +65,7 @@ class TestDynamicRRConfiguration:
         os.environ['RR_BASE_TARGET'] = '2.0'
         try:
             config = RiskConfiguration({
+                'equity_usd': 10000,
                 'rr_dynamic': {
                     'base_target_rr': 1.5
                 }
@@ -79,6 +81,7 @@ class TestDynamicRRCalculation:
     def test_high_confidence_relaxes_rr(self):
         """High ML/RL confidence should reduce R/R requirement."""
         config = RiskConfiguration({
+            'equity_usd': 10000,
             'rr_dynamic': {
                 'enabled': True,
                 'base_target_rr': 1.5,
@@ -132,6 +135,7 @@ class TestDynamicRRCalculation:
     def test_low_confidence_tightens_rr(self):
         """Low confidence should increase R/R requirement."""
         config = RiskConfiguration({
+            'equity_usd': 10000,
             'rr_dynamic': {
                 'enabled': True,
                 'base_target_rr': 1.5,
@@ -185,6 +189,7 @@ class TestDynamicRRCalculation:
     def test_ppo_rr_multiplier_increases_requirement(self):
         """PPO RR multiplier should tighten the required R/R threshold."""
         config = RiskConfiguration({
+            'equity_usd': 10000,
             'rr_dynamic': {
                 'enabled': True,
                 'base_target_rr': 1.0,
@@ -235,6 +240,7 @@ class TestDynamicRRCalculation:
     def test_respects_bounds(self):
         """Dynamic target should stay within configured bounds."""
         config = RiskConfiguration({
+            'equity_usd': 10000,
             'rr_dynamic': {
                 'enabled': True,
                 'base_target_rr': 1.5,
@@ -282,6 +288,7 @@ class TestDynamicRRCalculation:
     def test_respects_strategy_minimum(self):
         """Dynamic R/R should never go below strategy's minimum."""
         config = RiskConfiguration({
+            'equity_usd': 10000,
             'rr_dynamic': {
                 'enabled': True,
                 'base_target_rr': 1.5,
@@ -324,6 +331,50 @@ class TestDynamicRRCalculation:
         target_rr = rule._calculate_dynamic_target(signal)
         assert target_rr >= 1.5  # Should respect strategy minimum
 
+    def test_v2_includes_volume_and_momentum(self):
+        """RR model v2 should include volume_strength and momentum_strength contributions."""
+        base_rr_cfg = {
+            'enabled': True,
+            'base_target_rr': 2.0,
+            'lower_bound_rr': 0.0,
+            'upper_bound_rr': 10.0,
+            'weights': {
+                'ml_confidence': 0.0,
+                'rl_agreement': 0.0,
+                'regime_clarity': 0.0,
+                'volume_strength': 0.1,
+                'momentum_strength': 0.1,
+            },
+            'fallback': {
+                'missing_ml_default': 0.5,
+                'missing_rl_default': 0.5,
+                'missing_regime_default': 0.3,
+            },
+            'regime_multipliers': {
+                'neutral': 1.0,
+            },
+        }
+
+        cfg_v1 = RiskConfiguration({'equity_usd': 10000, 'rr_dynamic': {**base_rr_cfg, 'model_version': 'v1'}})
+        cfg_v2 = RiskConfiguration({'equity_usd': 10000, 'rr_dynamic': {**base_rr_cfg, 'model_version': 'v2'}})
+        rule_v1 = RiskRewardRatioRule(config=cfg_v1)
+        rule_v2 = RiskRewardRatioRule(config=cfg_v2)
+
+        signal = {
+            'symbol': 'BTC/USDT',
+            'entry': 100,
+            'stop': 99,
+            'target': 102,
+            'regime_name': 'neutral',
+            'regime_confidence': 1.0,
+            'strategy_min_rr': 0.0,
+            'volume_strength': 1.0,
+            'momentum_strength': 1.0,
+        }
+
+        assert rule_v1._calculate_dynamic_target(signal) == pytest.approx(2.0, rel=1e-6)
+        assert rule_v2._calculate_dynamic_target(signal) == pytest.approx(1.8, rel=1e-6)
+
 
 class TestDynamicRRValidation:
     """Test R/R validation with dynamic thresholds."""
@@ -331,6 +382,7 @@ class TestDynamicRRValidation:
     def test_valid_rr_passes(self):
         """Signal with R/R above dynamic threshold should pass."""
         config = RiskConfiguration({
+            'equity_usd': 10000,
             'rr_dynamic': {
                 'enabled': True,
                 'base_target_rr': 1.5,
@@ -380,6 +432,7 @@ class TestDynamicRRValidation:
     def test_disabled_dynamic_uses_static(self):
         """When dynamic R/R is disabled, should use static threshold."""
         config = RiskConfiguration({
+            'equity_usd': 10000,
             'rr_dynamic': {
                 'enabled': False,
                 'base_target_rr': 1.5
@@ -404,7 +457,7 @@ class TestDynamicRRValidation:
     
     def test_missing_price_data_fails(self):
         """Signal with missing price data should fail validation."""
-        config = RiskConfiguration({'rr_dynamic': {'enabled': True}})
+        config = RiskConfiguration({'equity_usd': 10000, 'rr_dynamic': {'enabled': True}})
         rule = RiskRewardRatioRule(config=config)
         portfolio = MockPortfolioManager()
         
@@ -420,7 +473,7 @@ class TestDynamicRRValidation:
     
     def test_zero_risk_fails(self):
         """Signal with zero risk (stop = entry) should fail."""
-        config = RiskConfiguration({'rr_dynamic': {'enabled': True}})
+        config = RiskConfiguration({'equity_usd': 10000, 'rr_dynamic': {'enabled': True}})
         rule = RiskRewardRatioRule(config=config)
         portfolio = MockPortfolioManager()
         
@@ -442,6 +495,7 @@ class TestRegimeMultipliers:
     def test_bullish_regime_reduces_rr(self):
         """Bullish regime should have multiplier < 1.0."""
         config = RiskConfiguration({
+            'equity_usd': 10000,
             'rr_dynamic': {
                 'enabled': True,
                 'base_target_rr': 1.5,
@@ -483,6 +537,7 @@ class TestRegimeMultipliers:
     def test_volatile_regime_increases_rr(self):
         """Volatile regime should have multiplier > 1.0."""
         config = RiskConfiguration({
+            'equity_usd': 10000,
             'rr_dynamic': {
                 'enabled': True,
                 'base_target_rr': 1.5,
@@ -527,6 +582,7 @@ class TestStrategyOverrides:
 
     def _build_base_config(self):
         return RiskConfiguration({
+            'equity_usd': 10000,
             'rr_dynamic': {
                 'enabled': True,
                 'base_target_rr': 1.5,
@@ -578,6 +634,7 @@ class TestStrategyOverrides:
 
     def test_strategy_override_can_change_weights(self):
         config = RiskConfiguration({
+            'equity_usd': 10000,
             'rr_dynamic': {
                 'enabled': True,
                 'base_target_rr': 1.5,

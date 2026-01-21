@@ -669,6 +669,16 @@ Portfolio Heat Cap: {self.risk_limits.max_portfolio_risk:.1%} = ${self.max_portf
             'enabled': self._get_env_or_config('RR_DYNAMIC_ENABLED', 
                                               rr_config.get('enabled', True), 
                                               bool),
+
+            # Dynamic R/R model selector (default: v1 for backward compatibility)
+            # NOTE: `RiskConfiguration` does not read env vars directly; `env_key` is ignored.
+            'model_version': str(
+                self._get_env_or_config(
+                    'RR_MODEL_VERSION',
+                    rr_config.get('model_version', 'v1'),
+                    str,
+                )
+            ).strip().lower() or 'v1',
             
             'base_target_rr': self._get_env_or_config('RR_BASE_TARGET',
                                                      rr_config.get('base_target_rr', 1.5),
