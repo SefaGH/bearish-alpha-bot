@@ -444,11 +444,41 @@ class LiveTradingEngine:
             except (TypeError, ValueError):
                 return default
 
+        def _normalize_dynamic_steps(value: Any) -> List[Dict[str, float]]:
+            if not isinstance(value, list):
+                return []
+            steps: List[Dict[str, float]] = []
+            for raw in value:
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    activation_pnl = raw.get("activation_pnl", raw.get("activation_pnl_pct", None))
+                    new_delta_pct = raw.get("new_delta_pct", None)
+                    if activation_pnl is None or new_delta_pct is None:
+                        continue
+                    activation_pnl_f = float(activation_pnl)
+                    new_delta_f = float(new_delta_pct)
+                    if activation_pnl_f < 0:
+                        activation_pnl_f = 0.0
+                    if new_delta_f < 0:
+                        new_delta_f = 0.0
+                    steps.append(
+                        {
+                            "activation_pnl": activation_pnl_f,
+                            "new_delta_pct": new_delta_f,
+                        }
+                    )
+                except (TypeError, ValueError):
+                    continue
+            steps.sort(key=lambda s: s.get("activation_pnl", 0.0))
+            return steps
+
         # --- Global defaults (fallback) ---
         trailing_global = _as_dict(_as_dict(cfg.get("position_management")).get("trailing_stop"))
         global_trailing_enabled = bool(trailing_global.get("trailing_stop_enabled", False))
         global_delta = _safe_float(trailing_global.get("trailing_stop_distance", 0.02), 0.02)
         global_activation = _safe_float(trailing_global.get("activation_threshold", 0.0), 0.0)
+        global_dynamic_steps = _normalize_dynamic_steps(trailing_global.get("dynamic_steps"))
 
         dca_global = _as_dict(cfg.get("dca"))
         dca_strategy = _as_dict(dca_global.get("strategy"))
@@ -462,6 +492,7 @@ class LiveTradingEngine:
                 "enabled": global_trailing_enabled,
                 "delta_pct": max(0.0, global_delta),
                 "activation_threshold_pct": max(0.0, global_activation),
+                "dynamic_steps": list(global_dynamic_steps),
             },
             "dca": {
                 "enabled": global_dca_enabled,
@@ -488,6 +519,8 @@ class LiveTradingEngine:
                         resolved["trailing_stop"]["delta_pct"] = max(0.0, _safe_float(profile_ts.get("delta_pct"), resolved["trailing_stop"]["delta_pct"]))
                     if "activation_threshold_pct" in profile_ts:
                         resolved["trailing_stop"]["activation_threshold_pct"] = max(0.0, _safe_float(profile_ts.get("activation_threshold_pct"), resolved["trailing_stop"]["activation_threshold_pct"]))
+                    if "dynamic_steps" in profile_ts:
+                        resolved["trailing_stop"]["dynamic_steps"] = _normalize_dynamic_steps(profile_ts.get("dynamic_steps"))
 
                 profile_dca = _as_dict(profile_cfg.get("dca"))
                 if profile_dca:
@@ -513,6 +546,8 @@ class LiveTradingEngine:
                 resolved["trailing_stop"]["enabled"] = bool(ts_override.get("enabled"))
             if "delta_pct" in ts_override:
                 resolved["trailing_stop"]["delta_pct"] = max(0.0, _safe_float(ts_override.get("delta_pct"), resolved["trailing_stop"]["delta_pct"]))
+            if "dynamic_steps" in ts_override:
+                resolved["trailing_stop"]["dynamic_steps"] = _normalize_dynamic_steps(ts_override.get("dynamic_steps"))
             # Support activation_threshold as alias for activation_threshold_pct
             if "activation_threshold_pct" in ts_override:
                 resolved["trailing_stop"]["activation_threshold_pct"] = max(0.0, _safe_float(ts_override.get("activation_threshold_pct"), resolved["trailing_stop"]["activation_threshold_pct"]))

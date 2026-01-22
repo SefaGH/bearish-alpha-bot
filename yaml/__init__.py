@@ -62,18 +62,51 @@ def _parse_block(lines: List[_Line], index: int, current_indent: int) -> Tuple[A
             raise ValueError(f"Unexpected indentation at line {index + 1}: {line.content!r}")
 
         if container is None:
-            container = [] if line.content.startswith("- ") else {}
+            container = [] if (line.content == "-" or line.content.startswith("- ")) else {}
 
         if isinstance(container, list):
-            if not line.content.startswith("- "):
+            if not (line.content == "-" or line.content.startswith("- ")):
                 raise ValueError(f"Mixed list/dict entries at line {index + 1}: {line.content!r}")
-            value_text = line.content[2:].strip()
+            value_text = line.content[1:].lstrip()
             index += 1
-            if value_text:
-                container.append(_parse_scalar(value_text))
-            else:
+            if not value_text:
                 value, index = _parse_block(lines, index, current_indent + 2)
                 container.append(value if value is not None else {})
+                continue
+
+            # Support a minimal YAML subset for list-of-maps:
+            #   - activation_pnl: 0.0075
+            #     new_delta_pct: 0.0025
+            # We only treat the value as a map entry when the first ':' is followed by whitespace.
+            is_inline_map = False
+            for idx, ch in enumerate(value_text):
+                if ch == ":":
+                    if idx + 1 == len(value_text) or value_text[idx + 1].isspace():
+                        is_inline_map = True
+                    break
+
+            if is_inline_map:
+                key_text, value_part = _split_key_value(value_text)
+                key = key_text.strip().strip('"').strip("'")
+                value_part = value_part.strip()
+                item: Any
+                if value_part:
+                    item = {key: _parse_scalar(value_part)}
+                else:
+                    nested, index = _parse_block(lines, index, current_indent + 4)
+                    item = {key: nested if nested is not None else {}}
+
+                if index < len(lines) and lines[index].indent == current_indent + 2:
+                    extra, index = _parse_block(lines, index, current_indent + 2)
+                    if isinstance(extra, dict):
+                        item.update(extra)
+                    else:
+                        raise ValueError(
+                            f"Expected mapping continuation at line {index + 1}: {lines[index].content!r}"
+                        )
+                container.append(item)
+            else:
+                container.append(_parse_scalar(value_text))
         else:  # dict
             key_text, value_part = _split_key_value(line.content)
             key = key_text.strip().strip('"').strip("'")

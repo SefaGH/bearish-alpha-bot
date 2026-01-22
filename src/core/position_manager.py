@@ -1986,6 +1986,17 @@ class AdvancedPositionManager:
                     )
 
                 if is_active:
+                    dyn = self._update_dynamic_trailing(
+                        position_id,
+                        position,
+                        current_pnl_pct=normalized_unrealized_pct,
+                        is_long=is_long,
+                        entry_price=entry_price,
+                    )
+                    if dyn.get("updated"):
+                        trailing_distance = float(dyn.get("new_dist", trailing_distance))
+                        stop_updated = True
+
                     config = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
                     trailing_cfg = config.get('position_management', {}).get('trailing_stop', {})
                     min_step_bps = self._safe_float(trailing_cfg.get('min_trail_step_bps'), 0.0) or 0.0
@@ -2510,6 +2521,88 @@ class AdvancedPositionManager:
             position['trailing_stop_activated'] = True
             return True
         return False
+
+    def _update_dynamic_trailing(
+        self,
+        position_id: str,
+        position: Dict[str, Any],
+        *,
+        current_pnl_pct: Optional[float],
+        is_long: bool,
+        entry_price: float,
+    ) -> Dict[str, Any]:
+        if not position.get("trailing_stop_enabled", False):
+            return {"updated": False}
+        if current_pnl_pct is None or current_pnl_pct <= 0:
+            return {"updated": False}
+
+        current_dist = self._safe_float(position.get("trailing_stop_distance"), 0.02) or 0.02
+        if current_dist < 0:
+            current_dist = 0.0
+
+        execution = position.get("execution") if isinstance(position.get("execution"), dict) else {}
+        trailing_cfg = execution.get("trailing_stop") if isinstance(execution.get("trailing_stop"), dict) else {}
+        steps = trailing_cfg.get("dynamic_steps")
+        if not isinstance(steps, list) or not steps:
+            return {"updated": False}
+
+        best_dist = current_dist
+        for raw in steps:
+            if not isinstance(raw, dict):
+                continue
+            activation_pnl = raw.get("activation_pnl", raw.get("activation_pnl_pct", None))
+            new_delta = raw.get("new_delta_pct", None)
+            if activation_pnl is None or new_delta is None:
+                continue
+            try:
+                activation_pnl_f = float(activation_pnl)
+                new_delta_f = float(new_delta)
+            except (TypeError, ValueError):
+                continue
+
+            if activation_pnl_f < 0:
+                activation_pnl_f = 0.0
+            if new_delta_f < 0:
+                new_delta_f = 0.0
+
+            if current_pnl_pct >= activation_pnl_f and new_delta_f < best_dist:
+                best_dist = new_delta_f
+
+        if best_dist >= current_dist:
+            return {"updated": False}
+
+        position["trailing_stop_distance"] = best_dist
+        stop_updated = False
+
+        if entry_price > 0:
+            if is_long:
+                highest = self._safe_float(position.get("highest_price"), entry_price) or entry_price
+                new_stop = highest * (1 - best_dist)
+                current_stop = self._safe_float(position.get("stop_loss"), 0.0) or 0.0
+                if new_stop > 0 and (current_stop <= 0 or new_stop > current_stop):
+                    position["stop_loss"] = new_stop
+                    stop_updated = True
+            else:
+                lowest = self._safe_float(position.get("lowest_price"), entry_price) or entry_price
+                new_stop = lowest * (1 + best_dist)
+                current_stop = self._safe_float(position.get("stop_loss"), 0.0) or 0.0
+                if new_stop > 0 and (current_stop <= 0 or new_stop < current_stop):
+                    position["stop_loss"] = new_stop
+                    stop_updated = True
+
+        logger.info(
+            "Dynamic Trailing tightened: %.4f -> %.4f (PnL: %.2f%%) position_id=%s",
+            current_dist,
+            best_dist,
+            current_pnl_pct * 100.0,
+            position_id,
+        )
+        return {
+            "updated": True,
+            "old_dist": current_dist,
+            "new_dist": best_dist,
+            "stop_updated": stop_updated,
+        }
     
     async def manage_position_exits(self, position_id: str) -> Dict[str, Any]:
         """

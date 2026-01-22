@@ -558,8 +558,19 @@ execution_profiles:
   scalp_tight:
     trailing_stop:
       enabled: true
-      delta_pct: 0.002                # 0.2%
-      activation_threshold_pct: 0.003  # 0.3%
+      activation_threshold_pct: 0.0030  # %0.30 kârda takibe başla (Değişmedi)
+      # DEĞİŞİKLİK 1: Başlangıç alanı GENİŞLETİLDİ (%0.20 -> %0.35)
+      # Amaç: İlk geri çekilmelerde (silkelemelerde) hayatta kalmak.
+      delta_pct: 0.0035
+      dynamic_steps:
+        # Adım 1: Kâr %0.75'e ulaşırsa, mesafeyi "Normal"e (%0.25) çek.
+        # Mantık: "Tamam trend oturdu, artık o kadar boşluk bırakmaya gerek yok."
+        - activation_pnl: 0.0075
+          new_delta_pct: 0.0025
+        # Adım 2: Kâr %1.50'ye ulaşırsa (Büyük hareket), mesafeyi "Çok Sıkı"ya (%0.10) çek.
+        # Mantık: "Büyük balığı yakaladık, artık geri dönüşe tahammül yok. Kilitle."
+        - activation_pnl: 0.0150
+          new_delta_pct: 0.0010
     dca:
       enabled: true
       max_layers: 3
@@ -578,8 +589,13 @@ execution_profiles:
   sniper_mode:
     trailing_stop:
       enabled: true
-      delta_pct: 0.002
-      activation_threshold_pct: 0.003
+      activation_threshold_pct: 0.0030
+      delta_pct: 0.0035
+      dynamic_steps:
+        - activation_pnl: 0.0075
+          new_delta_pct: 0.0025
+        - activation_pnl: 0.0150
+          new_delta_pct: 0.0010
     dca:
       enabled: false
     pyramiding:
@@ -589,8 +605,13 @@ execution_profiles:
   standard_mode:
     trailing_stop:
       enabled: true
-      delta_pct: 0.002
-      activation_threshold_pct: 0.003
+      activation_threshold_pct: 0.0030
+      delta_pct: 0.0035
+      dynamic_steps:
+        - activation_pnl: 0.0075
+          new_delta_pct: 0.0025
+        - activation_pnl: 0.0150
+          new_delta_pct: 0.0010
     dca:
       enabled: true
       max_layers: 3

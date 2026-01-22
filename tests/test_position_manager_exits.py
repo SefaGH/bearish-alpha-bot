@@ -315,6 +315,88 @@ async def test_fee_lock_allows_trailing_to_improve_stop():
 
 
 @pytest.mark.asyncio
+async def test_dynamic_trailing_tightens_long():
+    manager, _, _ = make_manager()
+    signal = {
+        'symbol': 'BTC/USDT:USDT',
+        'side': 'buy',
+        'tp_pct': 0.03,
+        'sl_pct': 0.01,
+    }
+    execution_result = {
+        'success': True,
+        'avg_price': 100.0,
+        'filled_amount': 1.0,
+    }
+
+    result = await manager.open_position(signal, execution_result)
+    position_id = result['position_id']
+    position = result['position']
+    position['trailing_stop_enabled'] = True
+    position['trailing_stop_distance'] = 0.002
+    position['trailing_stop_activation_threshold'] = 0.0
+    position['execution'] = {
+        'trailing_stop': {
+            'dynamic_steps': [
+                {'activation_pnl': 0.0060, 'new_delta_pct': 0.0015},
+                {'activation_pnl': 0.0120, 'new_delta_pct': 0.0010},
+            ]
+        }
+    }
+
+    await manager.monitor_position_pnl(position_id, current_price=100.61)
+    position = manager.positions[position_id]
+    assert position['trailing_stop_distance'] == pytest.approx(0.0015, rel=1e-12)
+    assert position['stop_loss'] == pytest.approx(100.61 * (1 - 0.0015), rel=1e-6)
+
+    await manager.monitor_position_pnl(position_id, current_price=101.20)
+    position = manager.positions[position_id]
+    assert position['trailing_stop_distance'] == pytest.approx(0.0010, rel=1e-12)
+    assert position['stop_loss'] == pytest.approx(101.20 * (1 - 0.0010), rel=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_trailing_tightens_short():
+    manager, _, _ = make_manager()
+    signal = {
+        'symbol': 'BTC/USDT:USDT',
+        'side': 'sell',
+        'tp_pct': 0.03,
+        'sl_pct': 0.01,
+    }
+    execution_result = {
+        'success': True,
+        'avg_price': 100.0,
+        'filled_amount': 1.0,
+    }
+
+    result = await manager.open_position(signal, execution_result)
+    position_id = result['position_id']
+    position = result['position']
+    position['trailing_stop_enabled'] = True
+    position['trailing_stop_distance'] = 0.002
+    position['trailing_stop_activation_threshold'] = 0.0
+    position['execution'] = {
+        'trailing_stop': {
+            'dynamic_steps': [
+                {'activation_pnl': 0.0060, 'new_delta_pct': 0.0015},
+                {'activation_pnl': 0.0120, 'new_delta_pct': 0.0010},
+            ]
+        }
+    }
+
+    await manager.monitor_position_pnl(position_id, current_price=99.39)
+    position = manager.positions[position_id]
+    assert position['trailing_stop_distance'] == pytest.approx(0.0015, rel=1e-12)
+    assert position['stop_loss'] == pytest.approx(99.39 * (1 + 0.0015), rel=1e-6)
+
+    await manager.monitor_position_pnl(position_id, current_price=98.80)
+    position = manager.positions[position_id]
+    assert position['trailing_stop_distance'] == pytest.approx(0.0010, rel=1e-12)
+    assert position['stop_loss'] == pytest.approx(98.80 * (1 + 0.0010), rel=1e-6)
+
+
+@pytest.mark.asyncio
 async def test_time_stop_triggers_execute_close_position():
     cfg = _exit_settings_cfg(max_hold_seconds=1, trigger_pct=0.0014, offset_pct=0.0012)
     manager, _, _ = make_manager(cfg=cfg)

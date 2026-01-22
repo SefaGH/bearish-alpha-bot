@@ -1121,7 +1121,14 @@ class AdaptiveShortTheRip(ShortTheRip):
                     and (df_1h_local is None or (hasattr(df_1h_local, 'empty') and df_1h_local.empty))
                     and market_data
                 ):
-                    df_1h_local = market_data.get("df_1h") or market_data.get("1h")
+                    df_1h_local = market_data.get("df_1h")
+                    if df_1h_local is None:
+                        df_1h_local = market_data.get("1h")
+
+                    if df_1h_local is None:
+                        logger.warning("[Adaptive_STR] Missing 1h dataframe (df_1h/1h).")
+                    elif hasattr(df_1h_local, "empty") and df_1h_local.empty:
+                        logger.warning("[Adaptive_STR] Empty 1h dataframe.")
 
                 if tf_15m.mode == "off":
                     mtf_meta_15m = {"timeframe": "15m", "mode": "off", "status": "skipped"}

@@ -1448,9 +1448,19 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 for tf in timeframes:
                     df_tf = None
                     if isinstance(market_data, dict):
-                        df_tf = market_data.get(tf) or market_data.get(f"df_{tf}")
+                        df_tf = market_data.get(tf)
+                        if df_tf is None:
+                            df_tf = market_data.get(f"df_{tf}")
                     if df_tf is None and tf == "30m":
                         df_tf = df_30m
+
+                    if df_tf is None:
+                        logger.warning(f"[Adaptive_OB] Missing dataframe for tf={tf}. Skipping.")
+                        continue
+
+                    if hasattr(df_tf, "empty") and df_tf.empty:
+                        logger.warning(f"[Adaptive_OB] Empty dataframe for tf={tf}. Skipping.")
+                        continue
                     if not isinstance(df_tf, pd.DataFrame) or df_tf.empty:
                         continue
 
