@@ -219,6 +219,11 @@ websocket:
   #   true (opt-in): more responsive but less deterministic. Within grace, accept prev-bucket forming updates only if fresh
   #   (forming_update_age_ms <= forming_update_stale_ms). This can revise the most recent candle briefly.
   pivot_grace_accept_prev_bucket: false
+  # (Hybrid) Optional: enable prev-bucket accept ONLY when fast-gate is ARMED (per-call override).
+  # This is a safer alternative to flipping pivot_grace_accept_prev_bucket globally.
+  pivot_grace_accept_prev_bucket_on_shock: true
+  # Freshness window (ms) for the ARMED-only pivot grace override.
+  pivot_grace_override_forming_update_stale_ms: 3000
   # hybrid_pivot_grace_ms_by_tf:       # (Hybrid) Optional per-timeframe override (values are milliseconds)
   #   30m: 90000
   #   15m: 60000
@@ -309,6 +314,10 @@ volume_analyzer:
   sigmoid_alpha: 1.2                 # Override with: VOLUME_ANALYZER_SIGMOID_ALPHA
   min_ratio: 0.1                     # Override with: VOLUME_ANALYZER_MIN_RATIO
   max_ratio: 10.0                    # Override with: VOLUME_ANALYZER_MAX_RATIO
+  # (Shock) Optional: add prorated forming volume to current window numerator when shock_state=ARMED.
+  include_forming_numerator_when_armed: true
+  forming_update_stale_ms: 3000
+  forming_volume_cap_ratio: 0.6
   buckets:                           # Override with: VOLUME_ANALYZER_BUCKETS ; Intentionally stringified pairs (VolumeAnalyzer normalizes via `ast.literal_eval`)
     - [0.0, "LOW"]
     - [0.3, "NORMAL"]
@@ -345,6 +354,11 @@ signals:
   # If enabled and an opposite signal arrives while a position is open on the same symbol,
   # the signal can be tagged as intent=reverse so the engine closes then reopens atomically.
   allow_auto_reversal: true          # Override with: SIGNAL_ALLOW_AUTO_REVERSAL
+
+  # Optional: volume gating behavior tweaks
+  volume_policy:
+    # If true and signal.meta.shock_state == ARMED, LOW-bucket rejects are short-incubated instead.
+    defer_on_shock_low_bucket: true
   
   duplicate_prevention:
     min_price_change_pct: 0.0005      # Override with: DUPLICATE_PREVENTION_THRESHOLD
@@ -418,6 +432,8 @@ signals:
         lookback_bars: 5
         price_move_pct: 0.006        # Absolute move over lookback (closed-only)
         arm_score_threshold: 0.60    # Score threshold to enter ARMED (0..1)
+      # Optional: use forming close for shock-score computation when fresh (0 disables).
+      max_forming_update_age_ms: 3000
 
       armed:
         ttl_s: 600

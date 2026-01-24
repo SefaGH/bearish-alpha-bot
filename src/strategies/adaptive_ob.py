@@ -81,6 +81,9 @@ class AdaptiveOversoldBounce(OversoldBounce):
         self._dyn_last_fast_status_log_ts: Dict[Tuple[str, str], float] = {}
         self._dyn_last_fast_status_snapshot: Dict[Tuple[str, str], Tuple[bool, bool, bool]] = {}
         self._dyn_last_seen_ts: Dict[str, int] = {}
+        self._dyn_last_shock_score_by_symbol: Dict[str, float] = {}
+        self._dyn_last_shock_tf_by_symbol: Dict[str, Optional[str]] = {}
+        self._dyn_last_shock_close_source_by_symbol: Dict[str, str] = {}
         self._trend_penalty_state_by_symbol: Dict[str, bool] = {}
 
         # Minimum R/R oranını başlangıçta, bir kez olmak üzere config'den oku.
@@ -98,6 +101,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
         df_30m: pd.DataFrame,
         now_ms: int,
         slow_fallback_reason: Optional[str],
+        bypass_perf_gate: bool = False,
     ) -> None:
         """Phase 0 shadow telemetry for dynamic RSI gate (no decision impact)."""
         try:
@@ -119,7 +123,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 return
 
             gate = float(cfg.get("compute_fast_only_if_rsi_slow_within", 0.0) or 0.0)
-            if gate > 0:
+            if gate > 0 and not bypass_perf_gate:
                 rsi_val = None
                 try:
                     if df_30m is not None and not df_30m.empty:
@@ -150,6 +154,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
             lookback_bars = int(shock_cfg.get("lookback_bars", 5) or 0)
             price_move_pct = float(shock_cfg.get("price_move_pct", 0.0) or 0.0)
             arm_threshold = float(shock_cfg.get("arm_score_threshold", 1.0) or 1.0)
+            max_forming_update_age_ms = int(cfg.get("max_forming_update_age_ms", 0) or 0)
 
             armed_cfg = cfg.get("armed", {}) or {}
             ttl_s = int(armed_cfg.get("ttl_s", 0) or 0)
@@ -162,6 +167,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
 
             best_shock_score = None
             best_tf = None
+            best_last_close_source = "closed"
 
             for tf in fast_tfs:
                 ohlcv_list = collector.get_latest_ohlcv(
@@ -236,9 +242,38 @@ class AdaptiveOversoldBounce(OversoldBounce):
                         and price_move_pct > 0
                     ):
                         shock_score = 0.0
+                        last_close_source = "closed"
                         try:
                             base = float(ohlcv_list[-(lookback_bars + 1)][4])
-                            last = float(ohlcv_list[-1][4])
+                            last = None
+                            # Prefer forming close (when fresh) to arm shock earlier during intrabar moves.
+                            if (
+                                max_forming_update_age_ms > 0
+                                and since_last_kline_update_ms is not None
+                                and int(since_last_kline_update_ms) <= int(max_forming_update_age_ms)
+                                and hasattr(collector, "get_forming_ohlcv")
+                            ):
+                                try:
+                                    forming = collector.get_forming_ohlcv(exchange, symbol, tf)
+                                except Exception:
+                                    forming = None
+                                if isinstance(forming, (list, tuple)) and len(forming) >= 6:
+                                    try:
+                                        forming_open_ms = int(forming[0])
+                                        forming_close = float(forming[4])
+                                        # Basic bucket sanity: forming should be current (or near-current) bucket.
+                                        if last_closed_ts is not None and tf_ms > 0:
+                                            expected_forming_open = int(last_closed_ts) + int(tf_ms)
+                                            if abs(forming_open_ms - expected_forming_open) <= int(tf_ms):
+                                                last = forming_close
+                                                last_close_source = "forming_close"
+                                        else:
+                                            last = forming_close
+                                            last_close_source = "forming_close"
+                                    except Exception:
+                                        last = None
+                            if last is None:
+                                last = float(ohlcv_list[-1][4])
                             if base != 0:
                                 move_pct = abs((last - base) / base)
                                 shock_score = max(0.0, min(move_pct / price_move_pct, 1.0))
@@ -246,6 +281,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
                             shock_score = 0.0
                         best_shock_score = shock_score
                         best_tf = tf
+                        best_last_close_source = last_close_source
 
             state = self._dyn_state_by_symbol.get(symbol, "DISARMED")
             armed_until = int(self._dyn_armed_until_ms_by_symbol.get(symbol, 0) or 0)
@@ -259,6 +295,9 @@ class AdaptiveOversoldBounce(OversoldBounce):
 
             shock_score = best_shock_score if best_shock_score is not None else 0.0
             shock_ready = best_shock_score is not None and shock_score >= arm_threshold
+            self._dyn_last_shock_score_by_symbol[symbol] = float(shock_score)
+            self._dyn_last_shock_tf_by_symbol[symbol] = best_tf
+            self._dyn_last_shock_close_source_by_symbol[symbol] = str(best_last_close_source or "closed")
 
             if state == "DISARMED":
                 if shock_ready:
@@ -290,6 +329,43 @@ class AdaptiveOversoldBounce(OversoldBounce):
             self._dyn_last_seen_ts[symbol] = now_ms
 
             if new_state != state:
+                # Unified eval telemetry (low-noise): only on state transitions.
+                try:
+                    slow_attrs = getattr(df_30m, "attrs", {}) or {}
+                    slow_includes_forming = bool(slow_attrs.get("includes_forming", False))
+                    slow_forming_open_time = slow_attrs.get("forming_open_time") or slow_attrs.get("forming_ts")
+                    slow_forming_update_age_ms = slow_attrs.get("forming_update_age_ms")
+                    slow_rsi = None
+                    try:
+                        if df_30m is not None and not df_30m.empty:
+                            row = df_30m.iloc[-2] if slow_includes_forming and len(df_30m) >= 2 else df_30m.iloc[-1]
+                            if "rsi" in row:
+                                slow_rsi = float(row["rsi"])
+                    except Exception:
+                        slow_rsi = None
+                    eval_payload = {
+                        "event": "ob_dyn_fast_gate_eval",
+                        "symbol": symbol,
+                        "armed_state": new_state,
+                        "state_from": state,
+                        "state_to": new_state,
+                        "reason": reason,
+                        "shock_score": shock_score if best_shock_score is not None else None,
+                        "shock_tf": best_tf,
+                        "shock_last_close_source": best_last_close_source,
+                        "policy": "closed_only" if max_forming_update_age_ms <= 0 else "closed_plus_forming_shock",
+                        "max_forming_update_age_ms": max_forming_update_age_ms if max_forming_update_age_ms > 0 else None,
+                        "slow_rsi": slow_rsi,
+                        "slow_includes_forming": slow_includes_forming,
+                        "slow_fallback_reason": slow_fallback_reason,
+                        "slow_forming_open_time": slow_forming_open_time,
+                        "slow_forming_update_age_ms": slow_forming_update_age_ms,
+                        "ts_ms": now_ms,
+                    }
+                    logger.info(json.dumps(eval_payload, separators=(",", ":")))
+                except Exception:
+                    pass
+
                 ttl_left_s = max(0, int((armed_until - now_ms) / 1000)) if armed_until else 0
                 cooldown_left_s = max(0, int((cooldown_until - now_ms) / 1000)) if cooldown_until else 0
                 payload = {
@@ -307,6 +383,22 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 logger.info(json.dumps(payload, separators=(",", ":")))
         except Exception:
             return
+
+    def update_dyn_gate(self, *, symbol: str, df_30m: pd.DataFrame, now_ms: int, slow_fallback_reason: Optional[str]) -> None:
+        """Public wrapper to update fast-gate state before hybrid fetch decisions."""
+        self._update_dyn_shadow(symbol, df_30m, now_ms, slow_fallback_reason, bypass_perf_gate=True)
+
+    def get_dyn_gate_state(self, symbol: str) -> str:
+        return str(self._dyn_state_by_symbol.get(symbol, "DISARMED") or "DISARMED")
+
+    def get_dyn_gate_snapshot(self, symbol: str) -> Dict[str, Any]:
+        return {
+            "state": self.get_dyn_gate_state(symbol),
+            "shock_score": self._dyn_last_shock_score_by_symbol.get(symbol),
+            "shock_tf": self._dyn_last_shock_tf_by_symbol.get(symbol),
+            "shock_last_close_source": self._dyn_last_shock_close_source_by_symbol.get(symbol),
+            "last_seen_ts_ms": self._dyn_last_seen_ts.get(symbol),
+        }
 
     def _validate_input_data(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame, regime_data: Dict, symbol: str) -> tuple[bool, str]:
         """Gerekli tüm verilerin varlığını ve geçerliliğini kontrol eder."""

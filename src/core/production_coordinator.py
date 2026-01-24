@@ -931,9 +931,66 @@ class ProductionCoordinator:
                     df_30m_closed = await self.market_data_pipeline.get_latest_ohlcv(
                         symbol, "30m", include_forming=False
                     )
+                    shock_snapshot = None
+                    shock_state = None
+                    if hybrid_strategies and df_30m_closed is not None and not df_30m_closed.empty:
+                        # Pre-evaluate fast shock gate using closed 30m (cheap) so we can decide whether
+                        # to request a more responsive hybrid merge at the TF boundary.
+                        try:
+                            now_ms = int(time.time() * 1000)
+                            slow_fallback_reason = None
+                            try:
+                                slow_fallback_reason = df_30m_closed.attrs.get("fallback_reason")
+                            except Exception:
+                                slow_fallback_reason = None
+
+                            shock_source = None
+                            for name, instance in strategies_to_run:
+                                if (name == "adaptive_ob") or (getattr(instance, "strategy_name", "") == "adaptive_ob"):
+                                    shock_source = instance
+                                    break
+
+                            if shock_source and hasattr(shock_source, "update_dyn_gate"):
+                                shock_source.update_dyn_gate(
+                                    symbol=symbol,
+                                    df_30m=df_30m_closed,
+                                    now_ms=now_ms,
+                                    slow_fallback_reason=slow_fallback_reason,
+                                )
+                                if hasattr(shock_source, "get_dyn_gate_snapshot"):
+                                    shock_snapshot = shock_source.get_dyn_gate_snapshot(symbol)
+                                    if isinstance(shock_snapshot, dict):
+                                        shock_state = shock_snapshot.get("state")
+                        except Exception:
+                            shock_snapshot = None
+                            shock_state = None
+
                     if hybrid_strategies:
+                        ws_cfg = self.config.get("websocket", {}) if isinstance(self.config, dict) else {}
+                        enable_pivot_grace_override = bool(ws_cfg.get("pivot_grace_accept_prev_bucket_on_shock", False))
+                        hybrid_policy = None
+                        if enable_pivot_grace_override and str(shock_state or "").upper() == "ARMED":
+                            # Override pivot-grace downgrade for allowlisted strategies when fast-gate is ARMED.
+                            override_stale_ms = ws_cfg.get("pivot_grace_override_forming_update_stale_ms", None)
+                            if override_stale_ms is None:
+                                # Default to a tighter freshness window than websocket.forming_update_stale_ms
+                                # to minimize repaint/flicker risk at the bucket boundary.
+                                override_stale_ms = 3000
+                            try:
+                                override_stale_ms = int(override_stale_ms)
+                            except Exception:
+                                override_stale_ms = 3000
+
+                            hybrid_policy = {
+                                "pivot_grace_accept_prev_bucket": True,
+                                "forming_update_stale_ms": max(0, override_stale_ms),
+                            }
+
                         df_30m_hybrid = await self.market_data_pipeline.get_latest_ohlcv(
-                            symbol, "30m", include_forming=True
+                            symbol,
+                            "30m",
+                            include_forming=True,
+                            hybrid_policy=hybrid_policy,
                         )
                     # Default view for downstream logging
                     df_30m = (
@@ -972,6 +1029,7 @@ class ProductionCoordinator:
                 '30m_closed': df_30m_closed,
                 '30m_hybrid': df_30m_hybrid,
                 '1h': df_1h,
+                'shock': shock_snapshot,
             }
             if mtf_15m_enabled:
                 market_data['15m'] = df_15m
@@ -1010,6 +1068,21 @@ class ProductionCoordinator:
                             signal = result
                         
                         if signal:
+                            # Propagate fast shock state (from adaptive_ob dyn gate) downstream so central
+                            # gating modules (volume/incubator) can make ARMED-specific decisions.
+                            if isinstance(shock_snapshot, dict) and shock_snapshot:
+                                try:
+                                    meta = signal.get("meta") if isinstance(signal, dict) else None
+                                    if not isinstance(meta, dict):
+                                        meta = {}
+                                        if isinstance(signal, dict):
+                                            signal["meta"] = meta
+                                    meta.setdefault("shock_state", shock_snapshot.get("state"))
+                                    meta.setdefault("shock_score", shock_snapshot.get("shock_score"))
+                                    meta.setdefault("shock_tf", shock_snapshot.get("shock_tf"))
+                                    meta.setdefault("shock_last_close_source", shock_snapshot.get("shock_last_close_source"))
+                                except Exception:
+                                    pass
                             logger.info(f"💡 Signal generated by '{strategy_name}' for {symbol}. Forwarding to StrategyCoordinator.")
                             await self._route_strategy_output(strategy_name, signal)
                     else:

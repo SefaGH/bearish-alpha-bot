@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -120,6 +121,77 @@ async def test_compute_context_prefers_stream_collector_buffers():
     assert ctx is not None
     assert ctx.volume_data_sources == {"trade": "collector", "short": "collector", "medium": "collector"}
     assert ctx.volume_data_limits == {"trade": 2, "short": 6, "medium": 6}
+
+
+@pytest.mark.asyncio
+async def test_compute_context_includes_forming_numerator_when_armed():
+    symbol = "BTC/USDT:USDT"
+    exchange = "bingx"
+    tf = "5m"
+    interval_ms = 300_000
+    ts0 = 1_700_000_000_000
+
+    candles = [[ts0 + i * interval_ms, 1.0, 1.0, 1.0, 1.0, 10.0] for i in range(6)]
+    forming_open_ms = ts0 + 6 * interval_ms
+    forming = [forming_open_ms, 1.0, 1.0, 1.0, 1.0, 100.0]
+    now_ms = forming_open_ms + (interval_ms // 2)
+
+    class CollectorWithForming(FakeCollector):
+        def get_forming_ohlcv(self, exchange: str, symbol: str, timeframe: str):
+            return forming
+
+        def get_state(self, exchange: str, symbol: str, timeframe: str):
+            return {"forming_last_update_ts": now_ms - 200, "last_closed_ts": candles[-1][0]}
+
+    collector = CollectorWithForming({(exchange, symbol, tf): candles})
+
+    class MDPCollectorOnly:
+        def __init__(self):
+            self.websocket_manager = FakeWSManager(collector)
+            self.exchanges = {exchange: object()}
+            self.DEFAULT_EXCHANGE = exchange
+
+        async def get_latest_ohlcv(self, *args, **kwargs):
+            raise AssertionError("compute_context should use StreamDataCollector, not pipeline")
+
+    cfg = {
+        "baseline_short_tf": tf,
+        "baseline_medium_tf": tf,
+        "short_lookback": 3,
+        "medium_lookback": 3,
+        "window_bars": 2,
+        "weight_short": 0.6,
+        "weight_medium": 0.4,
+        "sigmoid_alpha": 1.2,
+        "min_ratio": 0.1,
+        "max_ratio": 10.0,
+        "buckets": [
+            (0.0, "LOW"),
+            (0.3, "NORMAL"),
+            (0.6, "HIGH"),
+            (0.85, "EXTREME"),
+        ],
+        "forming_update_stale_ms": 3000,
+        "forming_volume_cap_ratio": 0.6,
+    }
+
+    analyzer = VolumeAnalyzer(MDPCollectorOnly(), cfg)
+
+    with patch("src.core.volume_analyzer.time.time", return_value=now_ms / 1000.0):
+        ctx = await analyzer.compute_context(
+            symbol,
+            trade_timeframe=tf,
+            shock_state="ARMED",
+            include_forming_trade=True,
+        )
+
+    assert ctx is not None
+    assert ctx.current_window_volume_closed == 20.0
+    assert ctx.forming_volume_raw == 100.0
+    assert 0.45 <= float(ctx.forming_elapsed_ratio) <= 0.55
+    assert 49.0 <= float(ctx.forming_volume_added) <= 51.0
+    assert 69.0 <= float(ctx.current_window_volume) <= 71.0
+    assert ctx.current_window_volume_mode == "closed_plus_forming_numerator"
 
 
 @pytest.mark.asyncio

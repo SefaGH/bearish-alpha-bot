@@ -1106,6 +1106,13 @@ class StrategyCoordinator:
                 "max_delay_ms": 10_000,
                 "refresh_policy": "REPRICE_AND_RESIZE",
             },
+            "volume.shock_low_bucket": {
+                "ttl_seconds": 30,
+                "max_attempts": 3,
+                "base_delay_ms": 5000,
+                "max_delay_ms": 10_000,
+                "refresh_policy": "REPRICE_AND_RESIZE",
+            },
         }
 
         overrides = incubator_cfg.get("policies", {}) if isinstance(incubator_cfg, dict) else {}
@@ -5859,6 +5866,50 @@ class StrategyCoordinator:
                 logger.info(f"volume_decision_check {json.dumps(audit_payload)}")
 
                 if decision != "accepted":
+                    # Optional: during fast shock states, avoid hard rejects on LOW buckets.
+                    # Instead, short-incubate so the signal can be repriced/resized as volume confirms.
+                    try:
+                        vol_policy_cfg = (
+                            (self.config.get("signals", {}) or {}).get("volume_policy", {})
+                            if isinstance(self.config, dict)
+                            else {}
+                        )
+                    except Exception:
+                        vol_policy_cfg = {}
+                    defer_on_shock_low = bool(
+                        (vol_policy_cfg.get("defer_on_shock_low_bucket", False) if isinstance(vol_policy_cfg, dict) else False)
+                    )
+                    shock_state = None
+                    try:
+                        meta = enriched_signal.get("meta") if isinstance(enriched_signal, dict) else None
+                        if isinstance(meta, dict):
+                            shock_state = meta.get("shock_state") or meta.get("shock_status")
+                    except Exception:
+                        shock_state = None
+
+                    if defer_on_shock_low and str(shock_state or "").upper() == "ARMED":
+                        logger.warning(
+                            "⚠️  %s DEFERRED (Shock Low Bucket) | decision=%s reason=%s",
+                            log_prefix,
+                            decision,
+                            rejection_reason,
+                        )
+                        incubated = await self.incubate_signal(
+                            strategy_name=strategy_name,
+                            signal=enriched_signal,
+                            reason_code="volume.shock_low_bucket",
+                            refresh_policy="REPRICE_AND_RESIZE",
+                            stage="volume_gating",
+                        )
+                        if incubated.get("status") == "incubated":
+                            return {
+                                "status": "incubated",
+                                "reason_code": "volume.shock_low_bucket",
+                                "stage": "volume_gating",
+                                "dedupe_key": incubated.get("dedupe_key"),
+                            }
+                        return incubated
+
                     self.processing_stats['rejected_signals'] += 1
                     logger.warning(f"🛡️  {log_prefix} REJECTED (Volume Gating): {rejection_reason}")
                     return {'status': 'rejected', 'reason': rejection_reason, 'stage': 'volume_gating'}
@@ -7901,10 +7952,27 @@ class StrategyCoordinator:
                     computed_by_analyzer = True
                     volume_ctx_log = None  # already logged in first enrichment
                 else:
+                    shock_state = None
+                    try:
+                        meta = signal.get("meta") if isinstance(signal, dict) else None
+                        if isinstance(meta, dict):
+                            shock_state = meta.get("shock_state") or meta.get("shock_status")
+                    except Exception:
+                        shock_state = None
+
+                    include_forming_trade = False
+                    try:
+                        vol_cfg = self.config.get("volume_analyzer", {}) if isinstance(self.config, dict) else {}
+                        include_forming_trade = bool(vol_cfg.get("include_forming_numerator_when_armed", False))
+                    except Exception:
+                        include_forming_trade = False
+
                     ctx = await self.volume_analyzer.compute_context(
                         symbol=symbol,
                         trade_timeframe=trade_tf,
                         as_of_ts=as_of_ts,
+                        shock_state=shock_state,
+                        include_forming_trade=include_forming_trade,
                     )
                     if ctx:
                         volume_strength = float(ctx.volume_strength)

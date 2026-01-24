@@ -856,14 +856,37 @@ class MarketDataPipeline:
         pass
     
     # ------------------- DÜZELTİLMİŞ METOT -------------------
-    async def get_candles(self, symbol: str, timeframe: str, exchange: str = None, limit: int = None, include_forming: bool = False) -> Optional[pd.DataFrame]:
+    async def get_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        exchange: str = None,
+        limit: int = None,
+        include_forming: bool = False,
+        hybrid_policy: Optional[Dict[str, Any]] = None,
+    ) -> Optional[pd.DataFrame]:
         """
         Return closed-only OHLCV candles for a symbol/timeframe.
         This is an alias to get_latest_ohlcv to make intent explicit.
         """
-        return await self.get_latest_ohlcv(symbol, timeframe, exchange, limit=limit, include_forming=include_forming)
+        return await self.get_latest_ohlcv(
+            symbol,
+            timeframe,
+            exchange,
+            limit=limit,
+            include_forming=include_forming,
+            hybrid_policy=hybrid_policy,
+        )
 
-    async def get_latest_ohlcv(self, symbol: str, timeframe: str, exchange: str = None, limit: int = None, include_forming: bool = False) -> Optional[pd.DataFrame]:
+    async def get_latest_ohlcv(
+        self,
+        symbol: str,
+        timeframe: str,
+        exchange: str = None,
+        limit: int = None,
+        include_forming: bool = False,
+        hybrid_policy: Optional[Dict[str, Any]] = None,
+    ) -> Optional[pd.DataFrame]:
         """
         Get latest CLOSED OHLCV data with a robust WebSocket-first approach.
         (GÜNCELLENDİ: WebSocket verisini doğru işler ve REST fallback'i sadece gerektiğinde kullanır.)
@@ -987,6 +1010,7 @@ class MarketDataPipeline:
                                 symbol,
                                 timeframe,
                                 forming_last_update_ts=(state.get("forming_last_update_ts") if state else None),
+                                hybrid_policy=hybrid_policy,
                             )
 
                         if sm_enabled:
@@ -1114,6 +1138,7 @@ class MarketDataPipeline:
         symbol: str,
         timeframe: str,
         forming_last_update_ts: Optional[int] = None,
+        hybrid_policy: Optional[Dict[str, Any]] = None,
     ) -> tuple[pd.DataFrame, str, Optional[str]]:
         """Append/replace closed_df with forming candle while keeping volatility from closed bars.
 
@@ -1196,15 +1221,32 @@ class MarketDataPipeline:
         # else: hard reject
         accepted_prev_bucket = False
 
+        policy = hybrid_policy if isinstance(hybrid_policy, dict) else {}
+        pivot_accept_prev_bucket_cfg = bool(ws_config.get('pivot_grace_accept_prev_bucket', False))
+        pivot_accept_prev_bucket_override = policy.get("pivot_grace_accept_prev_bucket")
+        pivot_accept_prev_bucket = (
+            bool(pivot_accept_prev_bucket_override)
+            if pivot_accept_prev_bucket_override is not None
+            else pivot_accept_prev_bucket_cfg
+        )
+        pivot_grace_overridden = (
+            pivot_accept_prev_bucket_override is not None
+            and bool(pivot_accept_prev_bucket_override) != pivot_accept_prev_bucket_cfg
+        )
+
         if bucket_delta_ms == interval_ms:
             within_grace = bool(pivot_enabled and now_ms <= (expected_open + max(pivot_grace_ms, 0)))
-            accept_prev_bucket = bool(ws_config.get('pivot_grace_accept_prev_bucket', False))
 
             # Conservative default: within grace still downgrades to closed-only for determinism.
             # Opt-in: accept prev-bucket forming updates within grace if they are fresh.
-            if within_grace and accept_prev_bucket:
+            if within_grace and pivot_accept_prev_bucket:
                 # Only accept if the update age is known and within staleness threshold.
-                forming_update_stale_ms = int(ws_config.get('forming_update_stale_ms', 15000))
+                forming_update_stale_ms_override = policy.get("forming_update_stale_ms")
+                forming_update_stale_ms = (
+                    int(forming_update_stale_ms_override)
+                    if forming_update_stale_ms_override is not None
+                    else int(ws_config.get('forming_update_stale_ms', 15000))
+                )
                 age_ok = (
                     forming_update_age_ms is not None
                     and forming_update_stale_ms > 0
@@ -1217,6 +1259,13 @@ class MarketDataPipeline:
                         f"pivot_grace_ms={pivot_grace_ms} forming_update_age_ms={forming_update_age_ms}"
                     )
                     accepted_prev_bucket = True
+                    if pivot_grace_overridden:
+                        closed_df.attrs["pivot_grace_override"] = True
+                        closed_df.attrs["pivot_grace_original_reason"] = "pivot_grace_prev_bucket"
+                        closed_df.attrs["pivot_grace_override_policy"] = {
+                            "pivot_grace_accept_prev_bucket": True,
+                            "forming_update_stale_ms": forming_update_stale_ms,
+                        }
                     # Proceed with merge logic below (treat as acceptable)
                 else:
                     fallback_reason = "pivot_grace_prev_bucket"

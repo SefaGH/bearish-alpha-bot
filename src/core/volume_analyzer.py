@@ -48,8 +48,10 @@ This module does not handle caching by default; callers can wrap
 from __future__ import annotations
 
 import ast
+import json
 import math
 import statistics
+import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Sequence, List
 import logging
@@ -462,6 +464,8 @@ class VolumeAnalyzer:
         symbol: str,
         trade_timeframe: str,
         as_of_ts: Optional[float] = None,
+        shock_state: Optional[str] = None,
+        include_forming_trade: bool = False,
     ) -> Optional[VolumeContext]:
         """Compute a :class:`VolumeContext` for the given symbol/timeframe.
 
@@ -562,7 +566,78 @@ class VolumeAnalyzer:
         current_window = series_trade[-window_bars:] if len(series_trade) >= window_bars else series_trade
         if not current_window:
             return None
-        current_volume = float(sum(current_window))
+        current_volume_closed = float(sum(current_window))
+
+        forming_volume_raw: Optional[float] = None
+        forming_volume_added = 0.0
+        forming_elapsed_ratio: Optional[float] = None
+        forming_update_age_ms: Optional[int] = None
+        forming_open_ms: Optional[int] = None
+        current_volume_mode = "closed_only"
+
+        if include_forming_trade and str(shock_state or "").upper() == "ARMED":
+            try:
+                ws_mgr = getattr(self._mdp, "websocket_manager", None)
+                collector = getattr(ws_mgr, "collector", None) if ws_mgr else None
+                if collector and hasattr(collector, "get_forming_ohlcv"):
+                    exchanges = getattr(self._mdp, "exchanges", None)
+                    exchange = None
+                    if isinstance(exchanges, dict) and exchanges:
+                        exchange = next(iter(exchanges.keys()))
+                    exchange = exchange or getattr(self._mdp, "DEFAULT_EXCHANGE", None) or "bingx"
+                    forming = collector.get_forming_ohlcv(exchange, symbol, trade_timeframe)
+                    if isinstance(forming, (list, tuple)) and len(forming) >= 6:
+                        forming_open_ms = int(forming[0])
+                        forming_volume_raw = float(forming[5])
+
+                        now_ms = int(time.time() * 1000)
+                        interval_ms = int(tf_minutes * 60 * 1000)
+                        if interval_ms > 0:
+                            forming_elapsed_ratio = max(0.0, min((now_ms - forming_open_ms) / interval_ms, 1.0))
+
+                        try:
+                            if hasattr(collector, "get_state"):
+                                state = collector.get_state(exchange, symbol, trade_timeframe) or {}
+                                last_update_ts = state.get("forming_last_update_ts")
+                                if last_update_ts is not None:
+                                    forming_update_age_ms = max(0, int(now_ms - int(last_update_ts)))
+                        except Exception:
+                            forming_update_age_ms = None
+
+                        forming_stale_ms = cfg.get("forming_update_stale_ms")
+                        try:
+                            forming_stale_ms = int(forming_stale_ms) if forming_stale_ms is not None else 3000
+                        except Exception:
+                            forming_stale_ms = 3000
+
+                        cap_ratio_raw = cfg.get("forming_volume_cap_ratio", 0.6)
+                        try:
+                            cap_ratio = float(cap_ratio_raw)
+                        except Exception:
+                            cap_ratio = 0.6
+                        cap_ratio = max(0.0, min(cap_ratio, 1.0))
+
+                        already_included = False
+                        try:
+                            if ts_trade_last is not None and forming_open_ms is not None:
+                                last_ts_ms = int(float(ts_trade_last) * 1000)
+                                if interval_ms > 0 and abs(last_ts_ms - int(forming_open_ms)) <= (interval_ms // 2):
+                                    already_included = True
+                        except Exception:
+                            already_included = False
+
+                        fresh_ok = (
+                            forming_update_age_ms is None
+                            or forming_stale_ms <= 0
+                            or int(forming_update_age_ms) <= int(forming_stale_ms)
+                        )
+                        if not already_included and fresh_ok and forming_elapsed_ratio is not None:
+                            forming_volume_added = float(forming_volume_raw or 0.0) * min(float(forming_elapsed_ratio), cap_ratio)
+                            current_volume_mode = "closed_plus_forming_numerator"
+            except Exception:
+                pass
+
+        current_volume = float(current_volume_closed + forming_volume_added)
 
         min_r = float(cfg.get("min_ratio", 0.1))
         max_r = float(cfg.get("max_ratio", 10.0))
@@ -643,6 +718,14 @@ class VolumeAnalyzer:
         ctx.baseline_short_last_bar_ts = ts_short_last
         ctx.baseline_medium_last_bar_ts = ts_medium_last
         ctx.baseline_calc_mode = "closed_only"  # last (forming) bar excluded from baseline
+        ctx.current_window_volume_closed = current_volume_closed
+        ctx.current_window_volume_mode = current_volume_mode
+        ctx.forming_volume_raw = forming_volume_raw
+        ctx.forming_volume_added = forming_volume_added
+        ctx.forming_elapsed_ratio = forming_elapsed_ratio
+        ctx.forming_update_age_ms = forming_update_age_ms
+        ctx.forming_open_ms = forming_open_ms
+        ctx.shock_state = shock_state
         ctx.volume_data_sources = {"trade": trade_source, "short": short_source, "medium": medium_source}
         ctx.volume_data_limits = {"trade": trade_limit, "short": short_limit, "medium": medium_limit}
 
@@ -665,5 +748,36 @@ class VolumeAnalyzer:
             short_limit=short_limit,
             medium_limit=medium_limit,
         )
+
+        if include_forming_trade:
+            try:
+                dbg = {
+                    "event": "volume_analyzer_debug",
+                    "run_id": get_current_run_id(),
+                    "symbol": symbol,
+                    "trade_timeframe": trade_timeframe,
+                    "shock_state": shock_state,
+                    "current_window_volume_closed": current_volume_closed,
+                    "forming_volume_raw": forming_volume_raw,
+                    "forming_elapsed_ratio": forming_elapsed_ratio,
+                    "forming_volume_added": forming_volume_added,
+                    "current_window_volume_with_forming": current_volume,
+                    "short_baseline_volume": short_baseline_scaled,
+                    "medium_baseline_volume": medium_baseline_scaled,
+                    "ratio_short": ratio_short,
+                    "ratio_medium": ratio_medium,
+                    "ratio_combined": ratio_combined,
+                    "volume_strength": volume_strength,
+                    "volume_bucket": bucket_name,
+                    "window_bars": window_bars,
+                    "trade_bars_available": len(series_trade),
+                    "trade_source": trade_source,
+                    "forming_update_age_ms": forming_update_age_ms,
+                    "forming_open_ms": forming_open_ms,
+                    "mode": current_volume_mode,
+                }
+                self.logger.info("volume_analyzer_debug %s", json.dumps(dbg, separators=(",", ":")))
+            except Exception:
+                pass
 
         return ctx

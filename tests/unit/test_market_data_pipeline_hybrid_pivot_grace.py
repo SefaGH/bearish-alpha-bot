@@ -138,3 +138,83 @@ def test_pivot_grace_accept_prev_bucket_flag_allows_merge_when_fresh():
     assert out_df.attrs.get("fallback_reason") is None
     assert reason is None
     assert merge_action in ("replaced_last", "appended")
+
+
+def test_pivot_grace_accept_prev_bucket_per_call_policy_override_allows_merge_when_fresh():
+    interval_ms = 30 * 60 * 1000
+    expected_open = 2 * interval_ms
+    now_ms = expected_open + 1000  # within grace
+    forming_open_ms = expected_open - interval_ms
+
+    closed_df = _make_closed_df(forming_open_ms)
+    forming = [forming_open_ms, 100.0, 101.0, 99.0, 100.2, 5.0]
+
+    ws = _WSStub(forming)
+    pipeline = MarketDataPipeline(
+        exchanges={},
+        config={
+            "websocket": {
+                "hybrid_pivot_grace_enabled": True,
+                "hybrid_pivot_grace_ms": 90000,
+                "pivot_grace_accept_prev_bucket": False,
+                "forming_update_stale_ms": 15000,
+            }
+        },
+        websocket_manager=ws,
+    )
+
+    with patch("time.time", return_value=now_ms / 1000.0):
+        out_df, merge_action, reason = pipeline._merge_forming_candle(
+            closed_df,
+            exchange="bingx",
+            symbol="BTC/USDT:USDT",
+            timeframe="30m",
+            forming_last_update_ts=now_ms - 500,  # fresh
+            hybrid_policy={"pivot_grace_accept_prev_bucket": True, "forming_update_stale_ms": 2000},
+        )
+
+    assert out_df.attrs.get("includes_forming") is True
+    assert out_df.attrs.get("fallback_reason") is None
+    assert reason is None
+    assert merge_action in ("replaced_last", "appended")
+    assert out_df.attrs.get("pivot_grace_override") is True
+    assert out_df.attrs.get("pivot_grace_original_reason") == "pivot_grace_prev_bucket"
+
+
+def test_pivot_grace_per_call_policy_override_respects_freshness_window():
+    interval_ms = 30 * 60 * 1000
+    expected_open = 2 * interval_ms
+    now_ms = expected_open + 1000  # within grace
+    forming_open_ms = expected_open - interval_ms
+
+    closed_df = _make_closed_df(forming_open_ms)
+    forming = [forming_open_ms, 100.0, 101.0, 99.0, 100.2, 5.0]
+
+    ws = _WSStub(forming)
+    pipeline = MarketDataPipeline(
+        exchanges={},
+        config={
+            "websocket": {
+                "hybrid_pivot_grace_enabled": True,
+                "hybrid_pivot_grace_ms": 90000,
+                "pivot_grace_accept_prev_bucket": False,
+                "forming_update_stale_ms": 15000,
+            }
+        },
+        websocket_manager=ws,
+    )
+
+    with patch("time.time", return_value=now_ms / 1000.0):
+        out_df, merge_action, reason = pipeline._merge_forming_candle(
+            closed_df,
+            exchange="bingx",
+            symbol="BTC/USDT:USDT",
+            timeframe="30m",
+            forming_last_update_ts=now_ms - 5000,  # stale under override
+            hybrid_policy={"pivot_grace_accept_prev_bucket": True, "forming_update_stale_ms": 2000},
+        )
+
+    assert out_df.attrs.get("includes_forming") is False
+    assert out_df.attrs.get("fallback_reason") == "pivot_grace_prev_bucket"
+    assert reason == "pivot_grace_prev_bucket"
+    assert merge_action == "none"
