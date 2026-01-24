@@ -892,6 +892,8 @@ class MarketDataPipeline:
             try:
                 # Determine which exchange to use
                 ws_exchange = exchange if exchange else (next(iter(self.exchanges.keys())) if self.exchanges else self.DEFAULT_EXCHANGE)
+                if isinstance(ws_exchange, str):
+                    ws_exchange = ws_exchange.lower()
                 canonical_exchange_id = self._canonical_exchange_id(ws_exchange)
                 
                 # Get required number of candles for indicators
@@ -1393,6 +1395,10 @@ class MarketDataPipeline:
             return forming_close, "forming_close", "no_ws"
 
         ws_exchange = exchange or (next(iter(self.exchanges.keys())) if self.exchanges else self.DEFAULT_EXCHANGE)
+        if isinstance(ws_exchange, str):
+            ws_exchange = ws_exchange.lower()
+        if isinstance(ws_exchange, str):
+            ws_exchange = ws_exchange.lower()
         ws_config = self.config.get('websocket', {}) if isinstance(self.config, dict) else {}
         ticker_stale_ms = int(ws_config.get('ticker_stale_ms', 5000))
         diag_interval = max(1, int(ws_config.get('trigger_diag_interval_sec', 60)))
@@ -1813,6 +1819,8 @@ class MarketDataPipeline:
             return None
 
         ws_exchange = exchange or (next(iter(self.exchanges.keys())) if self.exchanges else self.DEFAULT_EXCHANGE)
+        if isinstance(ws_exchange, str):
+            ws_exchange = ws_exchange.lower()
 
         forming_close = None
         try:
@@ -1866,6 +1874,8 @@ class MarketDataPipeline:
         """
         if self.websocket_manager and getattr(self.websocket_manager, "collector", None):
             ws_exchange = exchange if exchange else (next(iter(self.exchanges.keys())) if self.exchanges else self.DEFAULT_EXCHANGE)
+            if isinstance(ws_exchange, str):
+                ws_exchange = ws_exchange.lower()
             forming = self.websocket_manager.collector.get_forming_ohlcv(ws_exchange, symbol, timeframe)
             if forming and isinstance(forming, list) and len(forming) >= 5:
                 price = float(forming[4])

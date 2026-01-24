@@ -181,11 +181,12 @@ Deferral/izleme başlatıldığında.
 FAST_PRICE_WATCH tick sonucu.
 
 Kritik alanlar:
-- `outcome`: `triggered | expired`
+- `outcome`: `triggered | expired | max_checks | cache_miss | stale_skip`
 - `expire_reason`: `hit | ttl | max_checks`
 - `price`: (cache fail olursa imputed)
 - `price_imputed`, `imputed_from`, `last_price_age_ms`
 - `checks_done`, `rearm_count`, `max_rearms`, `remaining_ttl_ms`
+- (FastWatch v2 opt-in) `near_hit`, `touch_candidate`, `touch_confirmed`, `trigger_action`, `stale_reason`, `ticker_age_ms`, `px_used`, `touch_eps_bps`, `dist_to_band_bps`
 
 ### 4.3 strategy_recheck_request
 Recheck tetiklendiğinde.

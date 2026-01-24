@@ -2331,6 +2331,7 @@ class StrategyCoordinator:
                     due_items.append(
                         {
                             "dedupe_key": dedupe_key,
+                            "strategy": payload.get("strategy_name") or payload.get("strategy"),
                             "symbol": str(symbol),
                             "side": str(side),
                             "timeframe": str(timeframe),
@@ -2347,26 +2348,54 @@ class StrategyCoordinator:
                     if len(due_items) >= max_items:
                         break
 
+        expired_price_by_key: Dict[Tuple[str, str, Optional[str]], Tuple[Optional[float], Optional[str]]] = {}
+        for removed, _condition_data, _expires_at_ms, _expire_reason, _created_ts_ms in expired_items:
+            payload = removed.get("payload") if isinstance(removed.get("payload"), dict) else {}
+            symbol = payload.get("symbol")
+            timeframe = payload.get("timeframe") or payload.get("tf") or "5m"
+            exchange = payload.get("exchange") or payload.get("exchange_name")
+            if not symbol:
+                continue
+            key = (str(symbol), str(timeframe), str(exchange) if exchange else None)
+            if key in expired_price_by_key:
+                continue
+            expired_price_by_key[key] = await self._get_cache_only_price(
+                str(symbol),
+                timeframe=str(timeframe),
+                exchange=str(exchange) if exchange else None,
+            )
+
         for removed, condition_data, expires_at_ms, expire_reason, created_ts_ms in expired_items:
+            payload = removed.get("payload") if isinstance(removed.get("payload"), dict) else {}
+            symbol = payload.get("symbol")
+            timeframe = payload.get("timeframe") or payload.get("tf") or "5m"
+            exchange = payload.get("exchange") or payload.get("exchange_name")
+            price = None
+            cache_source = None
+            if symbol:
+                price_key = (str(symbol), str(timeframe), str(exchange) if exchange else None)
+                price, cache_source = expired_price_by_key.get(price_key, (None, None))
+            cache_hit = price is not None
+
             self._emit_fast_watch_outcome(
                 removed,
                 condition_data=condition_data,
                 outcome="expired",
                 checks_done=int(removed.get("fast_checks_done") or removed.get("attempts", 0) or 0),
-                price=None,
+                price=price,
                 created_ts_ms=created_ts_ms,
                 now_ts_ms=now_ms,
                 expires_at_ms=expires_at_ms,
                 expire_reason=expire_reason or "expired",
-                cache_hit=False,
-                cache_source=None,
+                cache_hit=cache_hit,
+                cache_source=cache_source,
                 miss_count=int(removed.get("fast_miss_count") or 0),
             )
             self._emit_fast_watch_waiting_room_compat(
                 removed,
                 outcome="expired",
                 expire_reason=expire_reason,
-                price=None,
+                price=price,
                 now_ts_ms=now_ms,
             )
 
@@ -2374,6 +2403,7 @@ class StrategyCoordinator:
             return 0
 
         price_by_key: Dict[Tuple[str, str, Optional[str]], Tuple[Optional[float], Optional[str]]] = {}
+        bidask_by_key: Dict[Tuple[str, str, Optional[str]], Optional[Dict[str, Any]]] = {}
         for item in due_items:
             key = (item["symbol"], item["timeframe"], item.get("exchange"))
             if key in price_by_key:
@@ -2442,12 +2472,18 @@ class StrategyCoordinator:
                     live_item["last_known_price"] = price
                     live_item["last_known_ts_ms"] = now_ms
 
+                strategy_name = item.get("strategy")
+                v2 = self._resolve_fast_watch_v2_settings(
+                    strategy_name=str(strategy_name) if strategy_name else None,
+                    condition_data=condition_data,
+                )
+
                 interval_ms = self._resolve_fast_watch_interval_ms(condition_data)
                 max_checks = self._resolve_fast_watch_max_checks(condition_data, live_item)
 
                 checks_done = int(live_item.get("fast_checks_done") or live_item.get("attempts", 0) or 0)
                 miss_count = int(live_item.get("fast_miss_count") or 0)
-                if not cache_hit:
+                if not cache_hit and not v2:
                     miss_count += 1
                     live_item["fast_miss_count"] = miss_count
                     live_item["next_check_at_ms"] = self._now_ms() + interval_ms
@@ -2467,11 +2503,9 @@ class StrategyCoordinator:
                         }
                     )
                     continue
-
-                checks_done += 1
-                live_item["fast_checks_done"] = checks_done
-                live_item["attempts"] = checks_done
-                live_item["last_attempt_ts_ms"] = now_ms
+                if not cache_hit and v2:
+                    miss_count += 1
+                    live_item["fast_miss_count"] = miss_count
 
                 trigger_price = self._coerce_float(condition_data.get("trigger_price"))
                 eps_bps = self._coerce_float(condition_data.get("eps_bps")) or 0.0
@@ -2497,24 +2531,216 @@ class StrategyCoordinator:
                         )
                     continue
 
-                eps = abs(trigger_price) * (eps_bps / 10000.0) if eps_bps else 0.0
-                hit = price is not None and self._fast_watch_hit(
-                    price=price,
-                    trigger_price=trigger_price,
-                    eps=eps,
-                    trigger_kind=trigger_kind,
-                    side=side,
-                )
+                near_hit = None
+                touch_candidate = None
+                touch_confirmed = None
+                trigger_action = "none"
+                stale_reason = None
+                refresh_attempted = False
+                ticker_age_ms = None
+                bid = ask = None
+                px_used = None
+                dist_to_band_bps = None
+                touch_eps_bps_used = None
+
+                hit = False
+                if v2:
+                    side_norm = str(side or "").strip().lower()
+                    exchange = self._normalize_exchange_key(payload.get("exchange") or payload.get("exchange_name"))
+                    bidask_key = (item["symbol"], item["timeframe"], exchange)
+                    metrics = bidask_by_key.get(bidask_key)
+                    if bidask_key not in bidask_by_key:
+                        metrics = await self._get_bidask_metrics(str(payload.get("symbol")), exchange=exchange)
+                        bidask_by_key[bidask_key] = metrics
+
+                    if isinstance(metrics, dict):
+                        bid = metrics.get("bid")
+                        ask = metrics.get("ask")
+                        try:
+                            bid = float(bid) if bid is not None else None
+                        except Exception:
+                            bid = None
+                        try:
+                            ask = float(ask) if ask is not None else None
+                        except Exception:
+                            ask = None
+                        age_val = metrics.get("age_ms")
+                        try:
+                            ticker_age_ms = int(age_val) if age_val is not None else None
+                        except Exception:
+                            ticker_age_ms = None
+
+                    if side_norm in ("long", "buy"):
+                        px_used = bid
+                    elif side_norm in ("short", "sell"):
+                        px_used = ask
+                    else:
+                        px_used = None
+                        stale_reason = "side_invalid"
+
+                    try:
+                        touch_eps_bps_used = float(v2["touch_eps_bps"])
+                    except Exception:
+                        touch_eps_bps_used = None
+
+                    if px_used is None:
+                        near_hit = False
+                        touch_candidate = False
+                        touch_confirmed = False
+                        if stale_reason is None:
+                            stale_reason = "bidask_missing"
+                    else:
+                        try:
+                            if side_norm in ("long", "buy"):
+                                dist_to_band_bps = (float(px_used) - float(trigger_price)) / float(trigger_price) * 10000.0
+                            else:
+                                dist_to_band_bps = (float(trigger_price) - float(px_used)) / float(trigger_price) * 10000.0
+                        except Exception:
+                            dist_to_band_bps = None
+                        near_hit = bool(dist_to_band_bps is not None and float(dist_to_band_bps) <= float(v2["near_bps"]))
+                        touch_candidate = bool(dist_to_band_bps is not None and float(dist_to_band_bps) <= float(v2["touch_eps_bps"]))
+
+                    if touch_candidate:
+                        max_age = int(v2.get("max_ticker_age_ms") or 0)
+                        if ticker_age_ms is None:
+                            touch_confirmed = False
+                            stale_reason = "ticker_age_missing"
+                            trigger_action = "skip_stale"
+                        elif max_age and int(ticker_age_ms) > max_age:
+                            touch_confirmed = False
+                            stale_reason = "ticker_stale"
+                            trigger_action = "skip_stale"
+                        elif side_norm in ("long", "buy") and bid is None:
+                            touch_confirmed = False
+                            stale_reason = "bid_missing"
+                            trigger_action = "no_touch"
+                        elif side_norm in ("short", "sell") and ask is None:
+                            touch_confirmed = False
+                            stale_reason = "ask_missing"
+                            trigger_action = "no_touch"
+                        else:
+                            eps_px = abs(float(trigger_price)) * (float(v2["touch_eps_bps"]) / 10000.0)
+                            if side_norm in ("long", "buy"):
+                                touch_confirmed = bool(float(bid) <= float(trigger_price) + eps_px) if bid is not None else False
+                            else:
+                                touch_confirmed = bool(float(ask) >= float(trigger_price) - eps_px) if ask is not None else False
+                            trigger_action = "recheck" if touch_confirmed else "no_touch"
+
+                        if touch_confirmed:
+                            last_ts = self._coerce_int(live_item.get("fast_watch_last_trigger_ts_ms"))
+                            cooldown_ms = int(v2.get("recheck_cooldown_ms") or 0)
+                            if cooldown_ms and last_ts and now_ms - int(last_ts) < cooldown_ms:
+                                outcomes.append(
+                                    {
+                                        "item": live_item,
+                                        "condition_data": condition_data,
+                                        "outcome": "cooldown_skip",
+                                        "checks_done": checks_done,
+                                        "price": px_used,
+                                        "created_ts_ms": created_ts_ms,
+                                        "expires_at_ms": expires_at_ms,
+                                        "expire_reason": "cooldown",
+                                        "cache_hit": True,
+                                        "cache_source": cache_source,
+                                        "miss_count": miss_count,
+                                        "extra": {
+                                            "near_hit": near_hit,
+                                            "touch_candidate": touch_candidate,
+                                            "touch_confirmed": touch_confirmed,
+                                            "trigger_action": "cooldown",
+                                            "stale_reason": None,
+                                            "ticker_age_ms": ticker_age_ms,
+                                            "px_used": px_used,
+                                            "touch_eps_bps": touch_eps_bps_used,
+                                            "dist_to_band_bps": dist_to_band_bps,
+                                            "bid": bid,
+                                            "ask": ask,
+                                        },
+                                    }
+                                )
+                                live_item["next_check_at_ms"] = self._now_ms() + interval_ms
+                                continue
+
+                            hit = True
+
+                        if trigger_action == "skip_stale":
+                            refresh_attempted = True
+                            metrics2 = await self._get_bidask_metrics(str(payload.get("symbol")), exchange=exchange)
+                            if isinstance(metrics2, dict):
+                                age_val = metrics2.get("age_ms")
+                                try:
+                                    ticker_age_ms = int(age_val) if age_val is not None else None
+                                except Exception:
+                                    ticker_age_ms = None
+                            outcomes.append(
+                                {
+                                    "item": live_item,
+                                    "condition_data": condition_data,
+                                    "outcome": "stale_skip",
+                                    "checks_done": checks_done,
+                                    "price": px_used,
+                                    "created_ts_ms": created_ts_ms,
+                                    "expires_at_ms": expires_at_ms,
+                                    "expire_reason": "stale",
+                                    "cache_hit": True,
+                                    "cache_source": cache_source,
+                                    "miss_count": miss_count,
+                                    "extra": {
+                                        "near_hit": near_hit,
+                                        "touch_candidate": touch_candidate,
+                                        "touch_confirmed": False,
+                                        "trigger_action": "skip_stale",
+                                        "stale_reason": stale_reason,
+                                        "refresh_attempted": refresh_attempted,
+                                        "ticker_age_ms": ticker_age_ms,
+                                        "px_used": px_used,
+                                        "touch_eps_bps": touch_eps_bps_used,
+                                        "dist_to_band_bps": dist_to_band_bps,
+                                        "bid": bid,
+                                        "ask": ask,
+                                    },
+                                }
+                            )
+                            live_item["next_check_at_ms"] = self._now_ms() + interval_ms
+                            continue
+
+                if not v2:
+                    eps = abs(trigger_price) * (eps_bps / 10000.0) if eps_bps else 0.0
+                    hit = price is not None and self._fast_watch_hit(
+                        price=price,
+                        trigger_price=trigger_price,
+                        eps=eps,
+                        trigger_kind=trigger_kind,
+                        side=side,
+                    )
+
+                checks_done += 1
+                live_item["fast_checks_done"] = checks_done
+                live_item["attempts"] = checks_done
+                live_item["last_attempt_ts_ms"] = now_ms
 
                 if hit:
                     live_item["state"] = "awaiting_recheck"
                     live_item["fast_watch_last_trigger_ts_ms"] = now_ms
                     check_detail = {
                         "fast_watch": {
-                            "price": price,
+                            "price": px_used if v2 else price,
                             "trigger_price": trigger_price,
                             "eps_bps": eps_bps,
                             "trigger_kind": trigger_kind,
+                            "near_hit": near_hit,
+                            "touch_candidate": touch_candidate,
+                            "touch_confirmed": touch_confirmed,
+                            "trigger_action": trigger_action,
+                            "stale_reason": stale_reason,
+                            "refresh_attempted": refresh_attempted,
+                            "ticker_age_ms": ticker_age_ms,
+                            "bid": bid,
+                            "ask": ask,
+                            "px_used": px_used,
+                            "touch_eps_bps": touch_eps_bps_used,
+                            "dist_to_band_bps": dist_to_band_bps,
+                            "allow_touch_entry": (v2.get("allow_touch_entry") if v2 else None),
                         }
                     }
                     triggers.append((live_item, check_detail))
@@ -2524,13 +2750,29 @@ class StrategyCoordinator:
                             "condition_data": condition_data,
                             "outcome": "triggered",
                             "checks_done": checks_done,
-                            "price": price,
+                            "price": px_used if v2 else price,
                             "created_ts_ms": created_ts_ms,
                             "expires_at_ms": expires_at_ms,
                             "expire_reason": "hit",
                             "cache_hit": True,
                             "cache_source": cache_source,
                             "miss_count": miss_count,
+                            "extra": {
+                                "near_hit": near_hit,
+                                "touch_candidate": touch_candidate,
+                                "touch_confirmed": touch_confirmed,
+                                "trigger_action": trigger_action,
+                                "stale_reason": stale_reason,
+                                "refresh_attempted": refresh_attempted,
+                                "ticker_age_ms": ticker_age_ms,
+                                "px_used": px_used,
+                                "touch_eps_bps": touch_eps_bps_used,
+                                "dist_to_band_bps": dist_to_band_bps,
+                                "bid": bid,
+                                "ask": ask,
+                            }
+                            if v2
+                            else None,
                         }
                     )
                     continue
@@ -2571,6 +2813,7 @@ class StrategyCoordinator:
                 cache_hit=outcome.get("cache_hit"),
                 cache_source=outcome.get("cache_source"),
                 miss_count=outcome.get("miss_count"),
+                extra=outcome.get("extra"),
             )
             if outcome.get("outcome") in ("expired", "max_checks"):
                 self._emit_fast_watch_waiting_room_compat(
@@ -3088,6 +3331,136 @@ class StrategyCoordinator:
                 return None, "market_price"
         return None, None
 
+    @staticmethod
+    def _normalize_exchange_key(exchange: Optional[str]) -> Optional[str]:
+        if exchange is None:
+            return None
+        try:
+            ex = str(exchange).strip().lower()
+        except Exception:
+            return None
+        return ex or None
+
+    def _get_strategy_fast_watch_v2_cfg(self, strategy_name: Optional[str]) -> Dict[str, Any]:
+        if not strategy_name:
+            return {}
+        cfg = self.config if isinstance(self.config, dict) else {}
+        strat_cfg = cfg.get("strategies", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(strat_cfg, dict):
+            return {}
+        entry = strat_cfg.get(str(strategy_name))
+        if not isinstance(entry, dict):
+            return {}
+        fw = entry.get("fast_watch")
+        if fw is None:
+            return {}
+        if not isinstance(fw, dict):
+            return {}
+        return dict(fw)
+
+    def _resolve_fast_watch_v2_settings(
+        self,
+        *,
+        strategy_name: Optional[str],
+        condition_data: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        base = self._get_strategy_fast_watch_v2_cfg(strategy_name)
+        override = condition_data.get("fast_watch")
+        if override is not None and not isinstance(override, dict):
+            override = None
+        merged = {**(base or {}), **(override or {})}
+
+        v2_keys = {
+            "near_bps",
+            "touch_eps_bps",
+            "touch_price_source",
+            "recheck_freshness_ms",
+            "max_ticker_age_ms",
+            "recheck_cooldown_ms",
+            "allow_touch_entry",
+        }
+        if not any(k in merged for k in v2_keys):
+            return None
+
+        def _coerce_float_local(val: Any) -> Optional[float]:
+            try:
+                fval = float(val)
+                if not math.isfinite(fval):
+                    return None
+                return fval
+            except Exception:
+                return None
+
+        def _coerce_int_local(val: Any) -> Optional[int]:
+            try:
+                ival = int(val)
+                return ival
+            except Exception:
+                return None
+
+        near_bps = _coerce_float_local(merged.get("near_bps"))
+        if near_bps is None:
+            near_bps = _coerce_float_local(condition_data.get("eps_bps"))
+        if near_bps is None:
+            near_bps = 10.0
+        near_bps = max(0.0, float(near_bps))
+
+        touch_eps_bps = _coerce_float_local(merged.get("touch_eps_bps"))
+        if touch_eps_bps is None:
+            touch_eps_bps = 3.0
+        touch_eps_bps = max(0.0, float(touch_eps_bps))
+
+        freshness_ms = _coerce_int_local(merged.get("max_ticker_age_ms"))
+        if freshness_ms is None:
+            freshness_ms = _coerce_int_local(merged.get("recheck_freshness_ms"))
+        if freshness_ms is None:
+            freshness_ms = 500
+        freshness_ms = max(0, int(freshness_ms))
+
+        cooldown_ms = _coerce_int_local(merged.get("recheck_cooldown_ms"))
+        if cooldown_ms is None:
+            cooldown_ms = 1000
+        cooldown_ms = max(0, int(cooldown_ms))
+
+        try:
+            src = str(merged.get("touch_price_source", "bidask") or "").strip().lower()
+        except Exception:
+            src = "bidask"
+        if not src:
+            src = "bidask"
+
+        try:
+            allow_touch_entry = bool(merged.get("allow_touch_entry", True))
+        except Exception:
+            allow_touch_entry = True
+
+        return {
+            "near_bps": near_bps,
+            "touch_eps_bps": touch_eps_bps,
+            "touch_price_source": src,
+            "max_ticker_age_ms": freshness_ms,
+            "recheck_cooldown_ms": cooldown_ms,
+            "allow_touch_entry": allow_touch_entry,
+        }
+
+    async def _get_bidask_metrics(
+        self,
+        symbol: str,
+        *,
+        exchange: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        pipeline = getattr(self, "market_data_pipeline", None)
+        if not pipeline or not hasattr(pipeline, "get_spread_metrics"):
+            return None
+        try:
+            return await pipeline.get_spread_metrics(
+                symbol,
+                exchange=exchange,
+                allow_rest_fallback=False,
+            )
+        except Exception:
+            return None
+
     def _build_fast_watch_price_context(
         self,
         item: Dict[str, Any],
@@ -3184,6 +3557,7 @@ class StrategyCoordinator:
         cache_hit: Optional[bool] = None,
         cache_source: Optional[str] = None,
         miss_count: Optional[int] = None,
+        extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         payload = item.get("payload", {}) if isinstance(item, dict) else {}
         ts_ms = now_ts_ms if now_ts_ms is not None else self._now_ms()
@@ -3253,6 +3627,8 @@ class StrategyCoordinator:
             "cache_source": cache_source,
             "miss_count": miss_count,
         }
+        if isinstance(extra, dict) and extra:
+            out.update(extra)
         if price_ctx.get("price_imputed"):
             out["price_imputed"] = True
             out["imputed_from"] = price_ctx.get("imputed_from")

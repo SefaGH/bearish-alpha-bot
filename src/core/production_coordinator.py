@@ -193,7 +193,7 @@ class ProductionCoordinator:
         self.debug_logging = self.config.get('debug', {}).get('strategy_logging', False)
         
         # Market regime analyzer başlat
-        self.market_regime_analyzer = None #MarketRegimeAnalyzer()
+        self.market_regime_analyzer = MarketRegimeAnalyzer()
         
         logger.info("ProductionCoordinator created")
 
@@ -600,6 +600,18 @@ class ProductionCoordinator:
             if self.market_regime_analyzer:
                 try:
                     regime = self.market_regime_analyzer.analyze_market_regime(df_30m, df_1h, df_4h)
+                    try:
+                        trend_strength = float(regime.get("trend_strength", 0.0) or 0.0)
+                    except Exception:
+                        trend_strength = 0.0
+                    logger.info(
+                        "[REGIME] %s | Trend=%s | Trend Strength (ADX)=%.1f | Vol=%s | Momentum=%s",
+                        symbol,
+                        str(regime.get("trend", "neutral")).upper(),
+                        trend_strength,
+                        regime.get("volatility", "normal"),
+                        regime.get("momentum", "sideways"),
+                    )
                     metadata = {'regime': regime}
                 except Exception as e:
                     logger.warning(f"[REGIME] Regime analysis failed for {symbol}: {e}")

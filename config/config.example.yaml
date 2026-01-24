@@ -574,7 +574,7 @@ execution_profiles:
     dca:
       enabled: true
       max_layers: 3
-      step_pct: 0.01                  # Kept < min(max_sl_pct)=0.015 so at least 1 DCA layer can trigger before SL
+      step_pct: 0.004                  # Kept < min(max_sl_pct)=0.015 so at least 1 DCA layer can trigger before SL
 
   # Loose trend-following defaults (example; used by future TrendPullback)
   trend_loose:
@@ -615,7 +615,7 @@ execution_profiles:
     dca:
       enabled: true
       max_layers: 3
-      step_pct: 0.01
+      step_pct: 0.004
     pyramiding:
       enabled: true
 
@@ -678,6 +678,10 @@ strategies:
       high_volume_min_bucket: "HIGH" # Override with: STRATEGY_STR_VOLUME_FILTERS_HIGH_VOL_MIN_BUCKET
       use_volume_strength_in_score: true  # Override with: STRATEGY_STR_VOLUME_FILTERS_USE_STRENGTH
       volume_score_weight: 0.15     # Override with: STRATEGY_STR_VOLUME_FILTERS_WEIGHT
+    panic_veto:
+      volume_5m_enabled: true
+      volume_5m_mult: 3.0
+      volume_5m_window: 20
 
   mean_reversion:
     enabled: true
@@ -685,6 +689,19 @@ strategies:
     timeframe: "1m"           # VWAP calculation window
     signal_timeframe: "5m"    # Decision timeframe
     price_source: "mid"       # Options: signal_close, forming_close, mid, mark, last
+    # Proximity gate for MR near-miss → waiting-room (FAST_PRICE_WATCH)
+    # Unit: fractional distance to band (e.g., 0.0010 = 10 bps). Lower = fewer "far_from_trigger" pendings.
+    soft_deferral_threshold: 0.0010
+    fast_watch_eps_bps: 10
+    # Optional (opt-in): FastWatch v2 - split "near monitoring" vs "touch trigger" + bid/ask touch confirm + freshness guard.
+    # When unset, legacy behavior remains (eps_bps drives trigger as well).
+    # fast_watch:
+    #   near_bps: 10              # Defaults to fast_watch_eps_bps when omitted
+    #   touch_eps_bps: 3          # Typical: 2-3 bps
+    #   touch_price_source: "bidask"  # Confirmation requires bid/ask (no mid-touch)
+    #   max_ticker_age_ms: 500        # Applies ONLY to recheck trigger (strict freshness)
+    #   recheck_cooldown_ms: 1000     # Per pending_id DoS guard
+    #   allow_touch_entry: true       # Default in Phase 1: touch overrides in-band veto
     vwap_lookback: 1440       # 1440 bars in VWAP timeframe (timeframe=1m => ~24h)
     band_multiplier: 2.0
     stop_loss_std_delta: 1.0  # Override with: STRATEGIES__MEAN_REVERSION__STOP_LOSS_STD_DELTA ; Z-score stop distance beyond the active band (in sigmas)
@@ -778,7 +795,7 @@ dca:
 
   strategy:
     max_layers: 3                     # initial entry + up to 2 DCA layers
-    step_pct: 0.01                    # adverse move per layer (1.0%) - kept < min(max_sl_pct)=0.015 so DCA can trigger before SL
+    step_pct: 0.004                   # adverse move per layer (1.0%) - kept < min(max_sl_pct)=0.015 so DCA can trigger before SL
     step_scale: 1.0                   # constant step spacing in v1
     position_weights:                 # decreasing sizes; no martingale (block list avoids minimal-YAML inline-list stringification)
       - 1.0

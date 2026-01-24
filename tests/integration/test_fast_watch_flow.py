@@ -106,6 +106,20 @@ def _build_fast_watch_signal(
     }
 
 
+class DummyBidAskPipeline(DummyCacheOnlyPipeline):
+    def __init__(self, prices, spread_metrics):
+        super().__init__(prices)
+        self._spread_metrics = list(spread_metrics)
+        self.spread_calls = 0
+
+    async def get_spread_metrics(self, _symbol: str, exchange=None, allow_rest_fallback: bool = True):
+        assert allow_rest_fallback is False
+        self.spread_calls += 1
+        if self._spread_metrics:
+            return self._spread_metrics.pop(0)
+        return None
+
+
 def _build_mr_frames(price: float, *, lower: float = 99.0, upper: float = 101.0) -> tuple[pd.DataFrame, pd.DataFrame]:
     idx = pd.to_datetime(["2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"])
     df_vwap = pd.DataFrame(
@@ -441,6 +455,396 @@ async def test_fast_watch_expiry_imputes_last_price(caplog):
     assert drop_data.get("last_price") == 100.0
     assert drop_data.get("last_price_ts_ms") is not None
     assert drop_data.get("last_price_age_ms") is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_fast_watch_expiry_refreshes_price_when_available(caplog):
+    caplog.set_level(logging.INFO)
+
+    pipeline = DummyCacheOnlyPipeline([100.0, 101.0])
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline,
+        config={"fast_watch": {"enabled": True, "interval_ms": 1, "time_budget_ms": 500, "max_items_per_tick": 10}},
+    )
+
+    anchor_ms = coordinator._now_ms()
+    signal = _build_fast_watch_signal(anchor_ms, trigger_price=110.0, max_checks=5, near="upper")
+    result = await coordinator.incubate_signal(
+        strategy_name="mean_reversion",
+        signal=signal,
+        reason_code="strategy.fast_watch",
+        refresh_policy="FAST_PRICE_WATCH",
+        stage="soft_deferral",
+    )
+    assert result.get("status") == "incubated"
+
+    dedupe_key = result.get("dedupe_key")
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+    await coordinator._fast_watch_tick()
+
+    item = coordinator._incubator_items[dedupe_key]
+    assert item.get("last_known_price") == 100.0
+    assert item.get("last_known_ts_ms") is not None
+
+    payload = item.get("payload")
+    if isinstance(payload, dict):
+        condition_data = payload.get("condition_data")
+        if isinstance(condition_data, dict):
+            condition_data["ttl_ms"] = 1000
+    old_created = coordinator._now_ms() - 20_000
+    item["fast_created_ts_ms"] = old_created
+    item["first_seen_ts_ms"] = old_created
+
+    caplog.clear()
+    await coordinator._fast_watch_tick()
+
+    assert pipeline.rest_calls == 0
+    assert pipeline.cache_calls >= 2
+
+    outcome_events = [r.message for r in caplog.records if str(r.message).startswith("fast_watch_outcome ")]
+    assert outcome_events, "Expected fast_watch_outcome telemetry"
+    _, json_blob = outcome_events[-1].split(" ", 1)
+    data = json.loads(json_blob)
+    assert data.get("outcome") == "expired"
+    assert data.get("price") == 101.0
+    assert data.get("price_imputed") is None
+    assert data.get("last_price") == 100.0
+
+    drop_events = [r.message for r in caplog.records if str(r.message).startswith("waiting_room_drop ")]
+    assert drop_events, "Expected waiting_room_drop telemetry"
+    _, drop_blob = drop_events[-1].split(" ", 1)
+    drop_data = json.loads(drop_blob)
+    assert drop_data.get("price") == 101.0
+    assert drop_data.get("price_imputed") is None
+    assert drop_data.get("last_price") == 100.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_fast_watch_v2_within_near_not_touch_does_not_recheck(caplog):
+    caplog.set_level(logging.INFO)
+
+    pipeline = DummyBidAskPipeline([None], spread_metrics=[{"source": "ws", "bid": 100.05, "ask": 100.10, "mid": 100.075, "age_ms": 0}])
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline,
+        config={
+            "fast_watch": {"enabled": True, "interval_ms": 1, "time_budget_ms": 500, "max_items_per_tick": 10},
+            "strategies": {"mean_reversion": {"fast_watch": {"near_bps": 10, "touch_eps_bps": 3, "max_ticker_age_ms": 500}}},
+        },
+    )
+
+    anchor_ms = coordinator._now_ms()
+    signal = _build_fast_watch_signal(anchor_ms, trigger_price=100.0, max_checks=5, near="lower", eps_bps=10)
+    result = await coordinator.incubate_signal(
+        strategy_name="mean_reversion",
+        signal=signal,
+        reason_code="strategy.fast_watch",
+        refresh_policy="FAST_PRICE_WATCH",
+        stage="soft_deferral",
+    )
+    assert result.get("status") == "incubated"
+
+    dedupe_key = result.get("dedupe_key")
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+
+    caplog.clear()
+    await coordinator._fast_watch_tick()
+
+    assert pipeline.spread_calls == 1
+    assert dedupe_key in coordinator._incubator_items
+
+    recheck_events = [r.message for r in caplog.records if str(r.message).startswith("strategy_recheck_request ")]
+    assert not recheck_events
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_fast_watch_v2_touch_candidate_but_stale_skips_recheck(caplog):
+    caplog.set_level(logging.INFO)
+
+    stale_metrics = [
+        {"source": "ws", "bid": 99.99, "ask": 100.01, "mid": 100.0, "age_ms": 2500},
+        {"source": "ws", "bid": 99.99, "ask": 100.01, "mid": 100.0, "age_ms": 2500},
+    ]
+    pipeline = DummyBidAskPipeline([100.0], spread_metrics=stale_metrics)
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline,
+        config={
+            "fast_watch": {"enabled": True, "interval_ms": 1, "time_budget_ms": 500, "max_items_per_tick": 10},
+            "strategies": {"mean_reversion": {"fast_watch": {"near_bps": 10, "touch_eps_bps": 3, "max_ticker_age_ms": 500}}},
+        },
+    )
+
+    anchor_ms = coordinator._now_ms()
+    signal = _build_fast_watch_signal(anchor_ms, trigger_price=100.0, max_checks=5, near="lower", eps_bps=10)
+    result = await coordinator.incubate_signal(
+        strategy_name="mean_reversion",
+        signal=signal,
+        reason_code="strategy.fast_watch",
+        refresh_policy="FAST_PRICE_WATCH",
+        stage="soft_deferral",
+    )
+    assert result.get("status") == "incubated"
+
+    dedupe_key = result.get("dedupe_key")
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+
+    caplog.clear()
+    await coordinator._fast_watch_tick()
+
+    assert pipeline.spread_calls == 2
+    item = coordinator._incubator_items[dedupe_key]
+    assert item.get("state") == "watching"
+    assert int(item.get("fast_checks_done") or 0) == 0
+
+    recheck_events = [r.message for r in caplog.records if str(r.message).startswith("strategy_recheck_request ")]
+    assert not recheck_events
+
+    outcome_events = [r.message for r in caplog.records if str(r.message).startswith("fast_watch_outcome ")]
+    assert outcome_events
+    _, json_blob = outcome_events[-1].split(" ", 1)
+    data = json.loads(json_blob)
+    assert data.get("outcome") == "stale_skip"
+    assert data.get("trigger_action") == "skip_stale"
+    assert data.get("refresh_attempted") is True
+    assert data.get("stale_reason") in ("ticker_stale", "ticker_age_missing")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_fast_watch_v2_touch_confirmed_long_uses_bid(caplog):
+    caplog.set_level(logging.INFO)
+
+    fresh_metrics = [{"source": "ws", "bid": 100.01, "ask": 100.50, "mid": 100.25, "age_ms": 0}]
+    pipeline = DummyBidAskPipeline([None], spread_metrics=fresh_metrics)
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline,
+        config={
+            "fast_watch": {"enabled": True, "interval_ms": 1, "time_budget_ms": 500, "max_items_per_tick": 10},
+            "strategies": {"mean_reversion": {"fast_watch": {"touch_eps_bps": 3, "max_ticker_age_ms": 500}}},
+        },
+    )
+
+    anchor_ms = coordinator._now_ms()
+    signal = _build_fast_watch_signal(anchor_ms, trigger_price=100.0, max_checks=5, near="lower", eps_bps=10)
+    result = await coordinator.incubate_signal(
+        strategy_name="mean_reversion",
+        signal=signal,
+        reason_code="strategy.fast_watch",
+        refresh_policy="FAST_PRICE_WATCH",
+        stage="soft_deferral",
+    )
+    assert result.get("status") == "incubated"
+
+    dedupe_key = result.get("dedupe_key")
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+
+    caplog.clear()
+    await coordinator._fast_watch_tick()
+
+    recheck_events = [r.message for r in caplog.records if str(r.message).startswith("strategy_recheck_request ")]
+    assert recheck_events
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_fast_watch_v2_touch_confirmed_short_uses_ask(caplog):
+    caplog.set_level(logging.INFO)
+
+    fresh_metrics = [{"source": "ws", "bid": 99.50, "ask": 99.99, "mid": 99.75, "age_ms": 0}]
+    pipeline = DummyBidAskPipeline([None], spread_metrics=fresh_metrics)
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline,
+        config={
+            "fast_watch": {"enabled": True, "interval_ms": 1, "time_budget_ms": 500, "max_items_per_tick": 10},
+            "strategies": {"mean_reversion": {"fast_watch": {"touch_eps_bps": 3, "max_ticker_age_ms": 500}}},
+        },
+    )
+
+    anchor_ms = coordinator._now_ms()
+    signal = _build_fast_watch_signal(anchor_ms, trigger_price=100.0, max_checks=5, near="upper", eps_bps=10)
+    signal["side"] = "short"
+    result = await coordinator.incubate_signal(
+        strategy_name="mean_reversion",
+        signal=signal,
+        reason_code="strategy.fast_watch",
+        refresh_policy="FAST_PRICE_WATCH",
+        stage="soft_deferral",
+    )
+    assert result.get("status") == "incubated"
+
+    dedupe_key = result.get("dedupe_key")
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+
+    caplog.clear()
+    await coordinator._fast_watch_tick()
+
+    recheck_events = [r.message for r in caplog.records if str(r.message).startswith("strategy_recheck_request ")]
+    assert recheck_events
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_fast_watch_v2_touch_threshold_bps_boundary():
+    pipeline = DummyBidAskPipeline(
+        [None],
+        spread_metrics=[{"source": "ws", "bid": 100.031, "ask": 100.20, "mid": 100.115, "age_ms": 0}],
+    )
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline,
+        config={
+            "fast_watch": {"enabled": True, "interval_ms": 1, "time_budget_ms": 500, "max_items_per_tick": 10},
+            "strategies": {"mean_reversion": {"fast_watch": {"near_bps": 10, "touch_eps_bps": 3, "max_ticker_age_ms": 500}}},
+        },
+    )
+
+    anchor_ms = coordinator._now_ms()
+    signal = _build_fast_watch_signal(anchor_ms, trigger_price=100.0, max_checks=5, near="lower", eps_bps=10)
+    result = await coordinator.incubate_signal(
+        strategy_name="mean_reversion",
+        signal=signal,
+        reason_code="strategy.fast_watch",
+        refresh_policy="FAST_PRICE_WATCH",
+        stage="soft_deferral",
+    )
+    assert result.get("status") == "incubated"
+    dedupe_key = result.get("dedupe_key")
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+
+    await coordinator._fast_watch_tick()
+    assert coordinator.strategy_recheck_queue.empty()
+
+    pipeline2 = DummyBidAskPipeline(
+        [None],
+        spread_metrics=[{"source": "ws", "bid": 100.029, "ask": 100.20, "mid": 100.1145, "age_ms": 0}],
+    )
+    coordinator2 = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline2,
+        config={
+            "fast_watch": {"enabled": True, "interval_ms": 1, "time_budget_ms": 500, "max_items_per_tick": 10},
+            "strategies": {"mean_reversion": {"fast_watch": {"near_bps": 10, "touch_eps_bps": 3, "max_ticker_age_ms": 500}}},
+        },
+    )
+    anchor_ms = coordinator2._now_ms()
+    signal2 = _build_fast_watch_signal(anchor_ms, trigger_price=100.0, max_checks=5, near="lower", eps_bps=10)
+    result2 = await coordinator2.incubate_signal(
+        strategy_name="mean_reversion",
+        signal=signal2,
+        reason_code="strategy.fast_watch",
+        refresh_policy="FAST_PRICE_WATCH",
+        stage="soft_deferral",
+    )
+    assert result2.get("status") == "incubated"
+    dedupe_key2 = result2.get("dedupe_key")
+    coordinator2._incubator_items[dedupe_key2]["next_check_at_ms"] = 0
+    await coordinator2._fast_watch_tick()
+    assert not coordinator2.strategy_recheck_queue.empty()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_fast_watch_v2_recheck_cooldown(monkeypatch):
+    now_ms = 1_000_000
+
+    def _fake_now():
+        return now_ms
+
+    pipeline = DummyBidAskPipeline(
+        [None, None],
+        spread_metrics=[
+            {"source": "ws", "bid": 100.0, "ask": 100.1, "mid": 100.05, "age_ms": 0},
+            {"source": "ws", "bid": 100.0, "ask": 100.1, "mid": 100.05, "age_ms": 0},
+        ],
+    )
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        market_data_pipeline=pipeline,
+        config={
+            "fast_watch": {"enabled": True, "interval_ms": 1, "time_budget_ms": 500, "max_items_per_tick": 10},
+            "strategies": {"mean_reversion": {"fast_watch": {"touch_eps_bps": 3, "max_ticker_age_ms": 500, "recheck_cooldown_ms": 1000}}},
+        },
+    )
+    monkeypatch.setattr(coordinator, "_now_ms", _fake_now)
+
+    anchor_ms = coordinator._now_ms()
+    signal = _build_fast_watch_signal(anchor_ms, trigger_price=100.0, max_checks=5, near="lower", eps_bps=10)
+    result = await coordinator.incubate_signal(
+        strategy_name="mean_reversion",
+        signal=signal,
+        reason_code="strategy.fast_watch",
+        refresh_policy="FAST_PRICE_WATCH",
+        stage="soft_deferral",
+    )
+    assert result.get("status") == "incubated"
+    dedupe_key = result.get("dedupe_key")
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+
+    await coordinator._fast_watch_tick()
+    assert not coordinator.strategy_recheck_queue.empty()
+    coordinator.strategy_recheck_queue.get_nowait()
+
+    coordinator._incubator_items[dedupe_key]["state"] = "watching"
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+    now_ms += 200
+    await coordinator._fast_watch_tick()
+    assert coordinator.strategy_recheck_queue.empty()
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_mr_touch_confirmed_allows_entry_only_when_enabled():
+    df_vwap, df_sig = _build_mr_frames(100.0, lower=99.0, upper=101.0)
+    base_cfg = {
+        "timeframe": "1m",
+        "signal_timeframe": "5m",
+        "min_rows": 2,
+        "min_signal_rows": 2,
+        "dynamic_controller": {"enabled": False},
+        "soft_deferral_threshold": 0.0,
+        "rsi_rebound_guard": {"enabled": False},
+        "fast_watch": {"touch_eps_bps": 3, "max_ticker_age_ms": 500, "allow_touch_entry": True},
+    }
+    strategy = VWAPMeanReversion(base_cfg)
+
+    signal = await strategy.generate_signal(
+        symbol="BTC/USDT:USDT",
+        df_vwap=df_vwap,
+        df_sig=df_sig,
+        parent_pending_id="pending-1",
+        side="long",
+        condition_data={"trigger_price": 99.0, "eps_bps": 10},
+        check_detail={"fast_watch": {"price": 99.02, "px_used": 99.02, "touch_eps_bps": 3.0, "touch_confirmed": True}},
+    )
+    assert signal is not None
+    assert signal.get("side") == "buy"
+
+    strategy2 = VWAPMeanReversion({**base_cfg, "fast_watch": {"touch_eps_bps": 3, "max_ticker_age_ms": 500, "allow_touch_entry": False}})
+    out2 = await strategy2.generate_signal(
+        symbol="BTC/USDT:USDT",
+        df_vwap=df_vwap,
+        df_sig=df_sig,
+        parent_pending_id="pending-1",
+        side="long",
+        condition_data={"trigger_price": 99.0, "eps_bps": 10},
+        check_detail={"fast_watch": {"price": 99.02, "px_used": 99.02, "touch_eps_bps": 3.0, "touch_confirmed": True}},
+    )
+    assert isinstance(out2, dict)
+    assert out2.get("event_type") == "strategy_recheck_decision"
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Tuple, Optional, List
 import logging
+from core.indicators import adx as calc_adx
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,8 @@ class MarketRegimeAnalyzer:
         self.current_regime = {
             'trend': 'neutral',
             'volatility': 'normal',
-            'momentum': 'sideways'
+            'momentum': 'sideways',
+            'trend_strength': 0.0,
         }
         
     def detect_primary_trend_4h(self, ohlcv_4h: pd.DataFrame) -> str:
@@ -252,6 +254,23 @@ class MarketRegimeAnalyzer:
         
         # Analyze micro-trends
         micro_metrics = self.analyze_micro_trends_30m(df_30m)
+
+        # Trend strength (ADX) calculation
+        adx_value = 0.0
+        try:
+            adx_df = None
+            if df_1h is not None and not df_1h.empty:
+                adx_df = df_1h
+            elif df_30m is not None and not df_30m.empty:
+                adx_df = df_30m
+
+            if adx_df is not None and not adx_df.empty:
+                adx_series = calc_adx(adx_df, period=14)
+                adx_series = adx_series.dropna()
+                if not adx_series.empty:
+                    adx_value = float(adx_series.iloc[-1])
+        except Exception as e:
+            logger.warning("ADX calculation failed: %s", e)
         
         # Classify volatility (use 4h for longer-term view)
         volatility_class, risk_mult = self.classify_volatility_regime(df_4h)
@@ -260,7 +279,8 @@ class MarketRegimeAnalyzer:
         self.current_regime = {
             'trend': trend,
             'volatility': volatility_class,
-            'momentum': momentum
+            'momentum': momentum,
+            'trend_strength': adx_value,
         }
         
         return {
@@ -270,6 +290,7 @@ class MarketRegimeAnalyzer:
             'risk_multiplier': risk_mult,
             'micro_trend_strength': micro_metrics['trend_strength'],
             'entry_score': micro_metrics['entry_score'],
+            'trend_strength': adx_value,
             'timestamp': pd.Timestamp.now()
         }
     

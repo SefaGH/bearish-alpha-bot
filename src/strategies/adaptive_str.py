@@ -24,6 +24,7 @@ DEFAULT_MARKET_REGIME = {
     'trend': 'neutral',
     'momentum': 'sideways', 
     'volatility': 'normal',
+    'trend_strength': 0.0,
     'micro_trend_strength': 0.5,
     'entry_score': 0.5,
     'risk_multiplier': 1.0
@@ -192,6 +193,11 @@ class AdaptiveShortTheRip(ShortTheRip):
 
         trend = market_regime.get('trend', 'neutral')
         momentum = market_regime.get('momentum', 'sideways')
+        trend_strength_raw = market_regime.get('trend_strength', market_regime.get('adx', 0.0))
+        try:
+            trend_strength = float(trend_strength_raw or 0.0)
+        except Exception:
+            trend_strength = 0.0
         threshold = base_rsi
         adjustment_reason = None
 
@@ -209,8 +215,17 @@ class AdaptiveShortTheRip(ShortTheRip):
                 threshold = base_rsi + 3.0  # Target ~71
                 adjustment_reason = "Bullish trend: raising RSI threshold"
 
+        strong_trend = trend_strength > 30.0
+        strong_trend_floor = 85.0
+        if strong_trend:
+            threshold = max(threshold, strong_trend_floor)
+            adjustment_reason = "Strong trend override: forcing higher RSI threshold"
+
         min_threshold = max(60, base_rsi - adapt_range)
-        max_threshold = min(90, base_rsi + adapt_range)
+        if strong_trend:
+            max_threshold = 90.0
+        else:
+            max_threshold = min(90, base_rsi + adapt_range)
         clamped_threshold = max(min_threshold, min(max_threshold, threshold))
 
         if adjustment_reason is None and clamped_threshold != base_rsi:
@@ -223,7 +238,8 @@ class AdaptiveShortTheRip(ShortTheRip):
             'base_threshold': base_rsi,
             'reason': adjustment_reason,
             'trend': trend,
-            'momentum': momentum
+            'momentum': momentum,
+            'trend_strength': trend_strength,
         }
     
     def calculate_dynamic_position_size(self, volatility_regime: str, 
@@ -907,11 +923,26 @@ class AdaptiveShortTheRip(ShortTheRip):
             ema50 = float(last30.get('ema50', 0))
             ema200 = float(last30.get('ema200', 0))
             long_ema_value = ema50
-            
+
+            adx_val = None
+            try:
+                adx_val = float(last30.get("adx")) if last30 is not None and "adx" in last30 else None
+            except Exception:
+                adx_val = None
+
+            trend_strength = regime_data.get('trend_strength')
+            if trend_strength is None:
+                trend_strength = regime_data.get('adx')
+            try:
+                trend_strength = float(trend_strength or 0.0)
+            except Exception:
+                trend_strength = 0.0
+
             market_regime = {
                 'trend': regime_data.get('trend', 'neutral'),
                 'momentum': regime_data.get('momentum', 'sideways'),
-                'volatility': regime_data.get('volatility', 'normal')
+                'volatility': regime_data.get('volatility', 'normal'),
+                'trend_strength': trend_strength,
             }
 
             used_row_ts = None
@@ -971,12 +1002,6 @@ class AdaptiveShortTheRip(ShortTheRip):
             # Purpose: In strong uptrends (Price > EMA50 and ADX > 25),
             # force the RSI threshold to a minimum of 75.0 to prevent premature shorts.
             # -------------------------------------------------------------------------
-            try:
-                # Safely fetch ADX (returns None if missing)
-                adx_val = float(last30.get("adx")) if last30 is not None and "adx" in last30 else None
-            except Exception:
-                adx_val = None
-
             # 'ema50' variable is assumed to be defined earlier in the method
             ema_long = ema50 
 
@@ -1047,6 +1072,70 @@ class AdaptiveShortTheRip(ShortTheRip):
                 except Exception:
                     return
 
+            # --- Panic/Pump detector for shorts ---
+            side = (signal.get("side") or "").lower()
+            if side in ("sell", "short"):
+                current_volume = None
+                avg_volume = None
+                if df_eval is not None and hasattr(df_eval, "columns") and "volume" in df_eval.columns:
+                    try:
+                        current_volume = float(last30.get("volume"))
+                    except Exception:
+                        current_volume = None
+                    try:
+                        vol_series = df_eval["volume"].dropna()
+                        if not vol_series.empty:
+                            avg_volume = float(vol_series.tail(20).mean())
+                    except Exception:
+                        avg_volume = None
+
+                if (
+                    current_volume is not None
+                    and avg_volume is not None
+                    and avg_volume > 0
+                    and current_volume > (avg_volume * 3.0)
+                ):
+                    logger.info(
+                        f"{log_prefix} Panic veto: volume spike (current={current_volume:.2f}, avg20={avg_volume:.2f})."
+                    )
+                    _shadow_str("no_signal_volume", "volume_spike")
+                    return None
+
+                panic_cfg = self.strategy_config.get("panic_veto") or {}
+                volume_5m_enabled = bool(panic_cfg.get("volume_5m_enabled", True))
+                volume_5m_mult = float(panic_cfg.get("volume_5m_mult", 3.0))
+                volume_5m_window = int(panic_cfg.get("volume_5m_window", 20))
+
+                df_5m = None
+                if market_data and isinstance(market_data, dict):
+                    df_5m = market_data.get("5m")
+                if (
+                    volume_5m_enabled
+                    and df_5m is not None
+                    and hasattr(df_5m, "empty")
+                    and not df_5m.empty
+                ):
+                    try:
+                        vol_series_5m = df_5m["volume"].dropna()
+                        if not vol_series_5m.empty:
+                            current_volume_5m = float(vol_series_5m.iloc[-1])
+                            avg_volume_5m = float(vol_series_5m.tail(volume_5m_window).mean())
+                            if avg_volume_5m > 0 and current_volume_5m > (avg_volume_5m * volume_5m_mult):
+                                logger.info(
+                                    f"{log_prefix} Panic veto: 5m volume spike (current={current_volume_5m:.2f}, avg{volume_5m_window}={avg_volume_5m:.2f})."
+                                )
+                                _shadow_str("no_signal_volume_5m", "volume_spike_5m")
+                                return None
+                    except Exception:
+                        pass
+
+                if ema50 > 0 and close_price > (ema50 * 1.02):
+                    logger.info(
+                        f"{log_prefix} Panic veto: price {close_price:.2f} > EMA50*1.02 ({ema50:.2f})."
+                    )
+                    _shadow_str("no_signal_parabolic", "parabolic_pump")
+                    return None
+
             # --- Core Signal Condition Checks with Tracing ---
             if self.debug_logging:
                 # Calculate EMA alignment for debug log
@@ -1063,7 +1152,11 @@ class AdaptiveShortTheRip(ShortTheRip):
                 logger.info(f"   EMA Align: {ema_aligned} (21={ema21:.1f}, 50={ema50:.1f}, 200={ema200:.1f})")
                 logger.info(f"   Volume: {vol:.2f}")
                 logger.info(f"   ATR: {atr_val:.4f}")
-                logger.info(f"   Regime: {market_regime['trend']}, Volatility: {market_regime['volatility']}")
+                logger.info(
+                    f"   Regime: {market_regime['trend']}, "
+                    f"Trend Strength (ADX): {market_regime.get('trend_strength', 0.0):.1f}, "
+                    f"Volatility: {market_regime['volatility']}"
+                )
 
             # 1. RSI Condition Check
             if rsi_val < adaptive_rsi_threshold:

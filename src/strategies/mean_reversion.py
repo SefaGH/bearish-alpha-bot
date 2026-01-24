@@ -73,6 +73,57 @@ class VWAPMeanReversion(BaseStrategy):
         except Exception:
             self.fast_watch_eps_bps = 10
         self.fast_watch_eps_bps = max(0, self.fast_watch_eps_bps)
+
+        mr_fast_watch_cfg = cfg.get("fast_watch", {})
+        if mr_fast_watch_cfg is not None and not isinstance(mr_fast_watch_cfg, dict):
+            mr_fast_watch_cfg = {}
+        mr_fast_watch_cfg = dict(mr_fast_watch_cfg) if isinstance(mr_fast_watch_cfg, dict) else {}
+        self._fast_watch_v2_cfg = mr_fast_watch_cfg
+        v2_keys = {"near_bps", "touch_eps_bps", "touch_price_source", "recheck_freshness_ms", "allow_touch_entry"}
+        self._fast_watch_v2_enabled = any(k in mr_fast_watch_cfg for k in v2_keys)
+
+        self._fast_watch_near_bps_default: Optional[float] = None
+        self._fast_watch_touch_eps_bps_default: Optional[float] = None
+        self._fast_watch_recheck_freshness_ms_default: Optional[int] = None
+        self._fast_watch_touch_price_source_default: Optional[str] = None
+        self._fast_watch_allow_touch_entry_default: Optional[bool] = None
+
+        if self._fast_watch_v2_enabled:
+            try:
+                near_bps = mr_fast_watch_cfg.get("near_bps")
+                self._fast_watch_near_bps_default = float(near_bps) if near_bps is not None else float(self.fast_watch_eps_bps)
+            except Exception:
+                self._fast_watch_near_bps_default = float(self.fast_watch_eps_bps)
+
+            try:
+                touch_eps_bps = mr_fast_watch_cfg.get("touch_eps_bps")
+                self._fast_watch_touch_eps_bps_default = float(touch_eps_bps) if touch_eps_bps is not None else 2.0
+            except Exception:
+                self._fast_watch_touch_eps_bps_default = 2.0
+            if self._fast_watch_touch_eps_bps_default is not None:
+                self._fast_watch_touch_eps_bps_default = max(0.0, float(self._fast_watch_touch_eps_bps_default))
+
+            try:
+                fresh_ms = mr_fast_watch_cfg.get("recheck_freshness_ms")
+                self._fast_watch_recheck_freshness_ms_default = int(fresh_ms) if fresh_ms is not None else 1000
+            except Exception:
+                self._fast_watch_recheck_freshness_ms_default = 1000
+            if self._fast_watch_recheck_freshness_ms_default is not None:
+                self._fast_watch_recheck_freshness_ms_default = max(0, int(self._fast_watch_recheck_freshness_ms_default))
+
+            try:
+                raw_src = mr_fast_watch_cfg.get("touch_price_source", "bidask")
+                raw_src = str(raw_src or "").strip().lower()
+            except Exception:
+                raw_src = "bidask"
+            if not raw_src:
+                raw_src = "bidask"
+            self._fast_watch_touch_price_source_default = raw_src
+
+            try:
+                self._fast_watch_allow_touch_entry_default = bool(mr_fast_watch_cfg.get("allow_touch_entry", True))
+            except Exception:
+                self._fast_watch_allow_touch_entry_default = True
         try:
             self.fast_watch_interval_ms = int(cfg.get("fast_watch_interval_ms", 3000) or 3000)
         except Exception:
@@ -257,10 +308,16 @@ class VWAPMeanReversion(BaseStrategy):
         condition_price = _coerce_float(condition_data.get("price"))
         fast_watch_price = None
         micro_gate_watch_price = None
+        fast_watch_touch_confirmed = False
+        fast_watch_touch_eps_bps = None
+        fast_watch_px_used = None
         if isinstance(check_detail, dict):
             fast_watch = check_detail.get("fast_watch")
             if isinstance(fast_watch, dict):
                 fast_watch_price = _coerce_float(fast_watch.get("price"))
+                fast_watch_touch_confirmed = bool(fast_watch.get("touch_confirmed", False))
+                fast_watch_touch_eps_bps = _coerce_float(fast_watch.get("touch_eps_bps"))
+                fast_watch_px_used = _coerce_float(fast_watch.get("px_used"))
             micro_gate_watch = check_detail.get("micro_gate_watch")
             if isinstance(micro_gate_watch, dict):
                 micro_gate_watch_price = _coerce_float(micro_gate_watch.get("price"))
@@ -640,6 +697,38 @@ class VWAPMeanReversion(BaseStrategy):
             price = float(fast_watch_price)
             px_source = "fast_watch"
 
+        fw_override = condition_data.get("fast_watch") if isinstance(condition_data, dict) else None
+        if fw_override is not None and not isinstance(fw_override, dict):
+            fw_override = None
+
+        allow_touch_entry = bool(self._fast_watch_allow_touch_entry_default) if self._fast_watch_v2_enabled else False
+        near_bps_for_rearm = eps_bps
+        if self._fast_watch_v2_enabled:
+            if self._fast_watch_near_bps_default is not None:
+                near_bps_for_rearm = float(self._fast_watch_near_bps_default)
+            if isinstance(fw_override, dict) and fw_override.get("near_bps") is not None:
+                try:
+                    near_bps_for_rearm = float(fw_override.get("near_bps"))
+                except Exception:
+                    pass
+            if isinstance(fw_override, dict) and fw_override.get("allow_touch_entry") is not None:
+                try:
+                    allow_touch_entry = bool(fw_override.get("allow_touch_entry"))
+                except Exception:
+                    pass
+
+        touch_entry_allowed = False
+        if is_recheck and fast_watch_touch_confirmed and allow_touch_entry:
+            px_for_touch = fast_watch_px_used if fast_watch_px_used is not None else fast_watch_price
+            eps_bps_for_touch = fast_watch_touch_eps_bps
+            if px_for_touch is not None and trigger_price is not None and eps_bps_for_touch is not None:
+                eps_px = abs(float(trigger_price)) * (float(eps_bps_for_touch) / 10000.0)
+                side_norm = str(side_hint or "").strip().lower()
+                if side_norm in ("long", "buy"):
+                    touch_entry_allowed = bool(float(px_for_touch) <= float(trigger_price) + eps_px)
+                elif side_norm in ("short", "sell"):
+                    touch_entry_allowed = bool(float(px_for_touch) >= float(trigger_price) - eps_px)
+
         z_val = None
         if vwap_std_val is not None and math.isfinite(vwap_std_val) and vwap_std_val > 0:
             try:
@@ -745,7 +834,7 @@ class VWAPMeanReversion(BaseStrategy):
                         if entry_long:
                             guard_block_long = True
 
-        if in_band:
+        if in_band and not touch_entry_allowed:
             if parent_pending_id:
                 logger.info(
                     "[MeanReversion] Recheck context; skipping soft deferral near-miss for %s (parent_pending_id=%s)",
@@ -753,7 +842,7 @@ class VWAPMeanReversion(BaseStrategy):
                     parent_pending_id,
                 )
                 now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-                eps_bps_val = _coerce_float(condition_data.get("eps_bps"))
+                eps_bps_val = near_bps_for_rearm
                 dist_to_trigger_bps = _bps_delta(price, trigger_price)
                 fw_meta = check_detail.get("fast_watch_meta") if isinstance(check_detail, dict) else None
                 rearm_count = 0
@@ -826,6 +915,8 @@ class VWAPMeanReversion(BaseStrategy):
                         "max_rearms": max_rearms,
                         "trigger_price": trigger_price,
                         "near": near_str,
+                        "touch_confirmed": bool(fast_watch_touch_confirmed),
+                        "allow_touch_entry": bool(allow_touch_entry),
                     }
                     if isinstance(eval_out, dict):
                         decision_meta.setdefault("mr_recheck_eval", eval_out)
@@ -926,6 +1017,19 @@ class VWAPMeanReversion(BaseStrategy):
                             "ttl_ms": self.fast_watch_ttl_ms,
                             "expires_at_ms": expires_at_ms,
                             "band_snapshot_ts_ms": setup_anchor_ts_ms,
+                            **(
+                                {
+                                    "fast_watch": {
+                                        "near_bps": self._fast_watch_near_bps_default,
+                                        "touch_eps_bps": self._fast_watch_touch_eps_bps_default,
+                                        "touch_price_source": self._fast_watch_touch_price_source_default,
+                                        "recheck_freshness_ms": self._fast_watch_recheck_freshness_ms_default,
+                                        "allow_touch_entry": self._fast_watch_allow_touch_entry_default,
+                                    }
+                                }
+                                if self._fast_watch_v2_enabled
+                                else {}
+                            ),
                         },
                     }
             logger.info(
@@ -934,6 +1038,13 @@ class VWAPMeanReversion(BaseStrategy):
                 f"adx={adx_val:.1f}, adx_th={self.adx_threshold:.1f}"
             )
             return None
+
+        if touch_entry_allowed and in_band and adx_ok:
+            side_norm = str(side_hint or "").strip().lower()
+            if side_norm in ("long", "buy"):
+                entry_long = True
+            elif side_norm in ("short", "sell"):
+                entry_short = True
 
         if not adx_ok:
             if price > upper:
