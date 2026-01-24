@@ -711,13 +711,13 @@ strategies:
     fast_watch_eps_bps: 10
     # Optional (opt-in): FastWatch v2 - split "near monitoring" vs "touch trigger" + bid/ask touch confirm + freshness guard.
     # When unset, legacy behavior remains (eps_bps drives trigger as well).
-    # fast_watch:
-    #   near_bps: 10              # Defaults to fast_watch_eps_bps when omitted
-    #   touch_eps_bps: 3          # Typical: 2-3 bps
-    #   touch_price_source: "bidask"  # Confirmation requires bid/ask (no mid-touch)
-    #   max_ticker_age_ms: 500        # Applies ONLY to recheck trigger (strict freshness)
-    #   recheck_cooldown_ms: 1000     # Per pending_id DoS guard
-    #   allow_touch_entry: true       # Default in Phase 1: touch overrides in-band veto
+    fast_watch:
+      near_bps: 10              # Passive monitoring threshold
+      touch_eps_bps: 3          # Touch trigger epsilon (bid/ask confirmed)
+      touch_price_source: "bidask"  # Confirmation requires bid/ask (no mid-touch)
+      max_ticker_age_ms: 500        # Applies ONLY to recheck trigger (strict freshness)
+      recheck_cooldown_ms: 1000     # Per pending_id DoS guard
+      allow_touch_entry: true       # Touch can override MR in-band veto when confirmed
     vwap_lookback: 1440       # 1440 bars in VWAP timeframe (timeframe=1m => ~24h)
     band_multiplier: 2.0
     stop_loss_std_delta: 1.0  # Override with: STRATEGIES__MEAN_REVERSION__STOP_LOSS_STD_DELTA ; Z-score stop distance beyond the active band (in sigmas)
