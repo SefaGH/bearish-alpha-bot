@@ -45,7 +45,7 @@ def sample_df_30m():
             'atr': 1.0,
             'ema_fast': 99.0,
             'ema21': 98.0,
-            'ema50': 90.0,
+            'ema50': 99.0,
             'ema200': 110.0,
             'volume': 1000.0,
         }
@@ -108,7 +108,7 @@ def test_signal_includes_volatility_stop_metadata(base_config):
 
     df_30m = pd.DataFrame([
         {
-            'close': 87000.0,
+            'close': 86650.0,
             'rsi': 75.0,
             'atr': 80.0,
             'ema_fast': 86000.0,
@@ -138,7 +138,7 @@ def test_signal_logs_volatility_stop_metadata(base_config, caplog):
 
     df_30m = pd.DataFrame([
         {
-            'close': 87500.0,
+            'close': 86600.0,
             'rsi': 78.0,
             'atr': 140.0,
             'ema_fast': 86000.0,
@@ -256,7 +256,7 @@ def test_mtf_1h_hard_veto_can_be_bypassed_on_extreme_move(base_config):
                 "atr": 1.0,
                 "ema_fast": 99.0,
                 "ema21": 98.0,
-                "ema50": 90.0,
+                "ema50": 101.0,
                 "ema200": 110.0,
                 "volume": 1000.0,
             },
@@ -266,7 +266,7 @@ def test_mtf_1h_hard_veto_can_be_bypassed_on_extreme_move(base_config):
                 "atr": 1.0,
                 "ema_fast": 99.0,
                 "ema21": 98.0,
-                "ema50": 90.0,
+                "ema50": 101.0,
                 "ema200": 110.0,
                 "volume": 1000.0,
             },
@@ -322,7 +322,7 @@ def test_mtf_1h_hard_veto_bypass_blocked_when_atr_missing(base_config):
                 "rsi": 70.0,
                 "ema_fast": 99.0,
                 "ema21": 98.0,
-                "ema50": 90.0,
+                "ema50": 101.0,
                 "ema200": 110.0,
                 "volume": 1000.0,
             },
@@ -331,7 +331,7 @@ def test_mtf_1h_hard_veto_bypass_blocked_when_atr_missing(base_config):
                 "rsi": 75.0,
                 "ema_fast": 99.0,
                 "ema21": 98.0,
-                "ema50": 90.0,
+                "ema50": 101.0,
                 "ema200": 110.0,
                 "volume": 1000.0,
             },
@@ -352,6 +352,122 @@ def test_mtf_1h_hard_veto_bypass_blocked_when_atr_missing(base_config):
 
     signal = strategy.signal(df_30m=df_30m, df_1h=df_1h_bullish, symbol="BTC/USDT")
     assert signal is None
+
+
+def test_rsi_rollover_guard_blocks_risky_short_when_not_rolling_over(base_config, sample_df_1h_bearish):
+    cfg = copy.deepcopy(base_config)
+    cfg["mtf_confirmation_effective"] = _build_mtf_policy(**{"15m_mode": "off", "1h_mode": "off"})
+    cfg["rsi_rollover_guard"] = {"enabled": True, "eps": 0.2}
+    strategy = AdaptiveShortTheRip(cfg)
+
+    df_closed = pd.DataFrame(
+        [
+            {
+                "close": 101.0,
+                "rsi": 70.0,
+                "atr": 1.0,
+                "ema_fast": 100.5,
+                "ema21": 99.0,
+                "ema50": 100.0,
+                "ema200": 110.0,
+                "volume": 1000.0,
+            }
+        ]
+    )
+    df_hybrid = pd.DataFrame(
+        [
+            {
+                "close": 101.0,
+                "rsi": 70.0,
+                "atr": 1.0,
+                "ema_fast": 100.5,
+                "ema21": 99.0,
+                "ema50": 100.0,
+                "ema200": 110.0,
+                "volume": 1000.0,
+            },
+            {
+                "close": 101.0,
+                "rsi": 70.0,  # not rolling over vs prev (within eps)
+                "atr": 1.0,
+                "ema_fast": 100.5,
+                "ema21": 99.0,
+                "ema50": 100.0,
+                "ema200": 110.0,
+                "volume": 1000.0,
+            },
+        ]
+    )
+    df_hybrid.attrs["includes_forming"] = True
+    df_hybrid.attrs["fallback_reason"] = None
+    df_hybrid.attrs["merge_action"] = "appended"
+
+    signal = strategy.signal(
+        df_30m=df_closed,
+        df_1h=sample_df_1h_bearish,
+        symbol="BTC/USDT",
+        market_data={"30m_closed": df_closed, "30m_hybrid": df_hybrid},
+    )
+    assert signal is None
+    assert strategy._guard_telemetry["guard_rollover_defer_count"] == 1
+
+
+def test_rsi_rollover_guard_allows_risky_short_when_rsi_rolls_over(base_config, sample_df_1h_bearish):
+    cfg = copy.deepcopy(base_config)
+    cfg["mtf_confirmation_effective"] = _build_mtf_policy(**{"15m_mode": "off", "1h_mode": "off"})
+    cfg["rsi_rollover_guard"] = {"enabled": True, "eps": 0.2}
+    strategy = AdaptiveShortTheRip(cfg)
+
+    df_closed = pd.DataFrame(
+        [
+            {
+                "close": 101.0,
+                "rsi": 70.0,
+                "atr": 1.0,
+                "ema_fast": 100.5,
+                "ema21": 99.0,
+                "ema50": 100.0,
+                "ema200": 110.0,
+                "volume": 1000.0,
+            }
+        ]
+    )
+    df_hybrid = pd.DataFrame(
+        [
+            {
+                "close": 101.0,
+                "rsi": 70.0,
+                "atr": 1.0,
+                "ema_fast": 100.5,
+                "ema21": 99.0,
+                "ema50": 100.0,
+                "ema200": 110.0,
+                "volume": 1000.0,
+            },
+            {
+                "close": 101.0,
+                "rsi": 69.6,  # rolling over (prev - now >= eps)
+                "atr": 1.0,
+                "ema_fast": 100.5,
+                "ema21": 99.0,
+                "ema50": 100.0,
+                "ema200": 110.0,
+                "volume": 1000.0,
+            },
+        ]
+    )
+    df_hybrid.attrs["includes_forming"] = True
+    df_hybrid.attrs["fallback_reason"] = None
+    df_hybrid.attrs["merge_action"] = "appended"
+
+    signal = strategy.signal(
+        df_30m=df_closed,
+        df_1h=sample_df_1h_bearish,
+        symbol="BTC/USDT",
+        market_data={"30m_closed": df_closed, "30m_hybrid": df_hybrid},
+    )
+    assert signal is not None
+    assert strategy._guard_telemetry["guard_rollover_defer_count"] == 0
 
 
 def test_mtf_missing_15m_skip_allows_signal(base_config, sample_df_30m, sample_df_1h_bearish):

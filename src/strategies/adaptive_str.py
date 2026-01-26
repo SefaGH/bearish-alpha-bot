@@ -116,12 +116,27 @@ class AdaptiveShortTheRip(ShortTheRip):
             'mtf_1h_fallback_computed': 0,
             'mtf_1h_cache_hit': 0,
         }
+        self._guard_telemetry = {
+            "guard_rollover_defer_count": 0,
+            "guard_rollover_skip_count": 0,
+        }
         self._mtf_policy: Optional[MtfConfirmationConfig] = None
         mtf_effective = self.strategy_config.get("mtf_confirmation_effective")
         if isinstance(mtf_effective, MtfConfirmationConfig):
             self._mtf_policy = mtf_effective
         elif isinstance(self.strategy_config.get("mtf_confirmation"), MtfConfirmationConfig):
             self._mtf_policy = self.strategy_config.get("mtf_confirmation")
+
+    def _inc_guard_telemetry(self, key: str, amount: int = 1) -> None:
+        try:
+            amount = int(amount)
+        except Exception:
+            amount = 1
+        try:
+            current = int(self._guard_telemetry.get(key, 0))
+        except Exception:
+            current = 0
+        self._guard_telemetry[key] = current + amount
 
     def _validate_input_data(self, df_30m: pd.DataFrame, df_1h: pd.DataFrame, regime_data: Dict, symbol: str) -> tuple[bool, str]:
         """Gerekli tüm verilerin varlığını ve geçerliliğini kontrol eder."""
@@ -1462,7 +1477,111 @@ class AdaptiveShortTheRip(ShortTheRip):
             # --- Final Risk/Reward and Position Sizing ---
             volatility = regime_data.get('volatility', 'normal')
             position_mult = self.calculate_dynamic_position_size(volatility) * position_size_modifier
-            
+
+            # --- Smart Guard: RSI rollover check for risky shorts ---
+            # Risky context = forming-trigger evaluation and/or MTF soft-fail.
+            # This prevents "top-tick" shorts when RSI is still rising/flat during formation.
+            rollover_cfg = self.strategy_config.get("rsi_rollover_guard") if isinstance(self.strategy_config, dict) else None
+            if rollover_cfg is True:
+                rollover_cfg = {"enabled": True}
+            if not isinstance(rollover_cfg, dict):
+                rollover_cfg = {}
+
+            rollover_enabled = bool(rollover_cfg.get("enabled", True))
+            if rollover_enabled:
+                eps = rollover_cfg.get("eps", 0.2)
+                try:
+                    eps = float(eps)
+                except Exception:
+                    eps = 0.2
+                eps = max(0.0, eps)
+
+                require_risky_context = bool(rollover_cfg.get("require_risky_context", True))
+
+                side_norm = str(signal.get("side") or "").strip().lower()
+                is_forming_trigger = str(trigger_price_source or "") == "forming_close"
+                mtf_soft_fail = bool(isinstance(mtf_meta_15m, dict) and mtf_meta_15m.get("soft_fail"))
+                risky_context = bool(is_forming_trigger or mtf_soft_fail)
+
+                if side_norm in ("sell", "short") and (risky_context or not require_risky_context):
+                    rsi_prev = None
+                    rsi_now = None
+                    rsi_pair_source = "unknown"
+
+                    # Preferred: prev from CLOSED, now from HYBRID (forming).
+                    if used_forming:
+                        try:
+                            if (
+                                df_30m_closed is not None
+                                and hasattr(df_30m_closed, "columns")
+                                and "rsi" in df_30m_closed.columns
+                                and len(df_30m_closed) >= 1
+                            ):
+                                rsi_prev = float(df_30m_closed["rsi"].iloc[-1])
+                                rsi_pair_source = "closed_prev"
+                        except Exception:
+                            rsi_prev = None
+                        try:
+                            if (
+                                df_eval is not None
+                                and hasattr(df_eval, "columns")
+                                and "rsi" in df_eval.columns
+                                and len(df_eval) >= 1
+                            ):
+                                rsi_now = float(df_eval["rsi"].iloc[-1])
+                                rsi_pair_source = f"{rsi_pair_source}+eval_now"
+                        except Exception:
+                            rsi_now = None
+
+                    # Fallback: use last two RSI values from the eval series (closed or hybrid).
+                    if rsi_prev is None or rsi_now is None:
+                        try:
+                            if (
+                                df_eval is not None
+                                and hasattr(df_eval, "columns")
+                                and "rsi" in df_eval.columns
+                                and len(df_eval) >= 2
+                            ):
+                                rsi_prev = float(df_eval["rsi"].iloc[-2])
+                                rsi_now = float(df_eval["rsi"].iloc[-1])
+                                rsi_pair_source = "eval_last2"
+                        except Exception:
+                            rsi_prev = None
+                            rsi_now = None
+
+                    if rsi_prev is None or rsi_now is None:
+                        # Fail-open: do not kill the signal on missing/NaN RSI history.
+                        self._inc_guard_telemetry("guard_rollover_skip_count")
+                        logger.info(
+                            f"{log_prefix} [GUARD] Skip RSI rollover (fail-open): insufficient/NaN RSI history "
+                            f"trigger={trigger_price_source} mtf_soft_fail={mtf_soft_fail}"
+                        )
+                    else:
+                        # Guard: require RSI to be actually falling (rollover)
+                        if float(rsi_now) >= (float(rsi_prev) - float(eps)):
+                            self._inc_guard_telemetry("guard_rollover_defer_count")
+                            logger.info(
+                                f"{log_prefix} [GUARD] Defer Risky SHORT: RSI not rolling over. "
+                                f"rsi_prev={float(rsi_prev):.2f} rsi_now={float(rsi_now):.2f} eps={float(eps):.2f} "
+                                f"trigger_price_source={trigger_price_source} mtf_soft_fail={mtf_soft_fail} "
+                                f"reason=guard.rsi_rollover_defer rsi_pair={rsi_pair_source} "
+                                f"guard_rollover_defer_count={self._guard_telemetry.get('guard_rollover_defer_count', 0)}"
+                            )
+                            _shadow_str(
+                                "guard_rollover_defer",
+                                "guard.rsi_rollover_defer",
+                                {
+                                    "rsi_prev": float(rsi_prev),
+                                    "rsi_now": float(rsi_now),
+                                    "eps": float(eps),
+                                    "trigger_price_source": trigger_price_source,
+                                    "mtf_soft_fail": mtf_soft_fail,
+                                    "rsi_pair_source": rsi_pair_source,
+                                    "guard_rollover_defer_count": int(self._guard_telemetry.get("guard_rollover_defer_count", 0) or 0),
+                                },
+                            )
+                            return None
+             
             entry_price = close_price
             atr_pct = (atr_value / entry_price) if entry_price else 0.0
             
@@ -1606,5 +1725,6 @@ class AdaptiveShortTheRip(ShortTheRip):
         return {
             'strategy': 'adaptive_short_the_rip',
             'base_config': self.base_cfg,
-            'has_regime_analyzer': self.regime_analyzer is not None
+            'has_regime_analyzer': self.regime_analyzer is not None,
+            'guard_telemetry': dict(self._guard_telemetry) if isinstance(getattr(self, "_guard_telemetry", None), dict) else {},
         }

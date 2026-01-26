@@ -534,6 +534,14 @@ signals:
       "BTC/USDT:USDT":
         rsi_threshold: 55             # Override with: RSI_THRESHOLD_BTC
 
+    # Smart Guard: RSI rollover check for risky shorts
+    # When trading off forming-candle data (trigger_price_source=form­ing_close) or after an MTF soft-fail,
+    # require RSI to be rolling over (falling) to avoid "top-tick" shorts.
+    rsi_rollover_guard:
+      enabled: true
+      eps: 0.2
+      require_risky_context: true
+
 # ==============================================================================
 # FAST TREND VALIDATION (TrendGuard Veto)
 # ==============================================================================
