@@ -903,7 +903,7 @@ class ProductionCoordinator:
 
         for symbol in self.active_symbols:
             logger.info(f"⚙️ [PROCESS] Processing symbol: {symbol}")
-            
+
             # --- DATA FETCHING STAGE ---
             ml_context = None
             df_30m = None
@@ -911,7 +911,9 @@ class ProductionCoordinator:
             df_30m_hybrid = None
             df_1h = None
             df_15m = None
-            
+            df_1m = None
+            df_5m = None
+
             try:
                 # 1. Get ML Context first
                 if self.ml_integration:
@@ -920,7 +922,7 @@ class ProductionCoordinator:
                     if not ml_context or not ml_context.get('is_healthy'):
                         reason = ml_context.get('reason', 'unknown') if ml_context else 'unknown'
                         logger.warning(f"🧠 [ML] {symbol}: ML context is unhealthy. Reason: {reason}")
-                
+
                 # --- PPO MONITORING (Shadow Mode) ---
                 # Force PPO inference for telemetry even if no signal is generated
                 if self.strategy_coordinator:
@@ -1003,6 +1005,25 @@ class ProductionCoordinator:
                     df_1h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "1h")
                     if mtf_15m_enabled:
                         df_15m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "15m")
+
+                    # Provide fast timeframes (e.g. for Adaptive_OB TP-Band) to avoid "Missing dataframe" ghost-data.
+                    needs_fast_mtf = any(
+                        (name == "adaptive_ob") or (getattr(instance, "strategy_name", "") == "adaptive_ob")
+                        for name, instance in strategies_to_run
+                    )
+                    if needs_fast_mtf:
+                        fast_limit = 350
+                        try:
+                            ob_cfg = signals_config.get("oversold_bounce", {}) if isinstance(signals_config, dict) else {}
+                            tp_band_cfg = ob_cfg.get("tp_band", {}) if isinstance(ob_cfg, dict) else {}
+                            lookback_raw = tp_band_cfg.get("lookback_bars") if isinstance(tp_band_cfg, dict) else None
+                            if lookback_raw is not None:
+                                fast_limit = max(fast_limit, int(lookback_raw) + 50)
+                        except Exception:
+                            fast_limit = 350
+
+                        df_1m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "1m", limit=fast_limit)
+                        df_5m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "5m", limit=fast_limit)
                 else:
                     logger.error("❌ MarketDataPipeline is not available in ProductionCoordinator.")
                     error_count += 1
@@ -1022,7 +1043,7 @@ class ProductionCoordinator:
                 continue
 
             processed_count += 1
-            
+
             # --- STRATEGY EXECUTION AND SIGNAL FORWARDING STAGE ---
             market_data = {
                 '30m': df_30m,
@@ -1031,6 +1052,12 @@ class ProductionCoordinator:
                 '1h': df_1h,
                 'shock': shock_snapshot,
             }
+            if df_1m is not None:
+                market_data["1m"] = df_1m
+                market_data["df_1m"] = df_1m
+            if df_5m is not None:
+                market_data["5m"] = df_5m
+                market_data["df_5m"] = df_5m
             if mtf_15m_enabled:
                 market_data['15m'] = df_15m
 
@@ -1635,10 +1662,12 @@ class ProductionCoordinator:
                     signal_kwargs["condition_data"] = condition_data
                 if check_detail is not None:
                     signal_kwargs["check_detail"] = check_detail
-
+ 
             df_30m_closed = None
             df_30m_hybrid = None
             df_1h = None
+            df_1m = None
+            df_5m = None
             if not is_mean_reversion:
                 limit_30m = 1000 if parent_pending_id_str else None
                 limit_1h = 1000 if parent_pending_id_str else None
@@ -1646,7 +1675,7 @@ class ProductionCoordinator:
                     limit_requested_by_tf["30m"] = int(limit_30m)
                 if limit_1h is not None:
                     limit_requested_by_tf["1h"] = int(limit_1h)
-
+ 
                 df_30m_closed = await self.market_data_pipeline.get_latest_ohlcv(
                     symbol,
                     "30m",
@@ -1685,10 +1714,25 @@ class ProductionCoordinator:
                 if df_30m_hybrid is not None and not getattr(df_30m_hybrid, "empty", True):
                     strategy_df_30m = df_30m_hybrid
 
+                # Ensure Adaptive_OB can access fast timeframes during recheck decisions.
+                if strategy in {"adaptive_ob", "adaptive_str"}:
+                    fast_limit = 350
+                    try:
+                        limit_requested_by_tf["1m"] = int(fast_limit)
+                        limit_requested_by_tf["5m"] = int(fast_limit)
+                    except Exception:
+                        pass
+                    try:
+                        df_1m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "1m", limit=fast_limit)
+                        df_5m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "5m", limit=fast_limit)
+                    except Exception:
+                        df_1m = None
+                        df_5m = None
+
                 signal_kwargs.update(
                     {
                         "df_30m": strategy_df_30m,
-                        "df_1h": df_1h,
+                         "df_1h": df_1h,
                     }
                 )
             else:
@@ -1763,6 +1807,10 @@ class ProductionCoordinator:
                                 "30m_closed": df_30m_closed,
                                 "30m_hybrid": df_30m_hybrid,
                                 "1h": df_1h,
+                                "1m": df_1m,
+                                "5m": df_5m,
+                                "df_1m": df_1m,
+                                "df_5m": df_5m,
                             }
                         )
                     signal_kwargs["market_data"] = market_data
