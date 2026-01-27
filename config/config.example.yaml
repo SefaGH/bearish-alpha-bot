@@ -543,6 +543,34 @@ signals:
       require_risky_context: true
 
 # ==============================================================================
+# SAFETY OVERRIDE (Adaptive/Aggressive Mode)
+# ==============================================================================
+# Coordinator-level safety layer for strategies that dynamically *lower* thresholds.
+# Activates only when a strategy reports: current_threshold < base_threshold.
+safety_override:
+  enabled: true
+  apply_to_strategies:
+    - "adaptive_str"
+  apply_to_sides:
+    - "sell"
+    - "short"
+  aggressive_threshold_delta_min: 0.1
+  min_passes: 2
+  fail_closed_on_insufficient_context: true
+  gates:
+    trend:
+      enabled: true
+      rsi_floor: 65.0
+    volume:
+      enabled: true
+      low_bucket: "LOW"
+      require_bearish_if_low: true
+      volume_confirm_mult: 1.0
+    resistance:
+      enabled: true
+      max_distance_bps: 25.0
+
+# ==============================================================================
 # FAST TREND VALIDATION (TrendGuard Veto)
 # ==============================================================================
 trend_guard:

@@ -26,6 +26,7 @@ from copy import deepcopy
 from src.quality.quality_calculator import compute_quality
 from core.volume_analyzer import VolumeAnalyzer
 from src.safety.trend_guard import TrendGuard
+from src.safety.safety_override import SafetyOverride
 from src.core.interfaces import PositionSizingProtocol
 from src.utils.volume_utils import get_bucket_rank
 from core.logger import get_current_run_id
@@ -589,6 +590,10 @@ class StrategyCoordinator:
         tg_cfg = self.config.get("trend_guard", {}) if isinstance(self.config, dict) else {}
         tg_enabled = bool(tg_cfg.get("enabled", False)) if isinstance(tg_cfg, dict) else False
         self.trend_guard = TrendGuard(tg_cfg) if tg_enabled else None
+
+        so_cfg = self.config.get("safety_override", {}) if isinstance(self.config, dict) else {}
+        so_enabled = bool(so_cfg.get("enabled", False)) if isinstance(so_cfg, dict) else False
+        self.safety_override = SafetyOverride(so_cfg) if so_enabled else None
 
         strategies_cfg = self.config.get('strategies', {}) or {}
         self.regime_routing_rules = strategies_cfg.get('regime_routing', {}) or {}
@@ -5743,6 +5748,35 @@ class StrategyCoordinator:
                             )
                 except Exception as exc:
                     logger.warning("[TREND-GUARD] Evaluation failed: %s", exc)
+
+            # --- Safety Override (Adaptive/Aggressive Mode) ---
+            if self.safety_override and intent in (INTENT_ENTRY, INTENT_REENTRY, INTENT_REVERSE):
+                try:
+                    if self.safety_override.should_check(strategy_name, enriched_signal):
+                        guard_result = self.safety_override.check_veto(strategy_name, enriched_signal)
+                        enriched_signal.setdefault("meta", {})["safety_override"] = guard_result.meta_data
+                        if guard_result.is_vetoed:
+                            self.processing_stats['rejected_signals'] += 1
+                            self.processing_stats.setdefault('safety_override_blocks', 0)
+                            self.processing_stats['safety_override_blocks'] += 1
+                            # INFO-level so operators can see blocks in normal live logs.
+                            logger.info(
+                                "??  [%s/%s] REJECTED (SafetyOverride): %s | reason=%s score=%s passes=%s fails=%s",
+                                strategy_name.upper(),
+                                symbol,
+                                guard_result.reason,
+                                (guard_result.meta_data or {}).get("reason"),
+                                (guard_result.meta_data or {}).get("score"),
+                                (guard_result.meta_data or {}).get("passes"),
+                                (guard_result.meta_data or {}).get("fails"),
+                            )
+                            return {
+                                'status': 'rejected',
+                                'reason': guard_result.reason,
+                                'stage': 'safety_override',
+                            }
+                except Exception as exc:
+                    logger.warning("[SAFETY-OVERRIDE] Evaluation failed: %s", exc)
              
             # --- Volume Gating (Issue #450) ---
             strat_cfg = self.config.get('strategies', {}).get(strategy_name, {})

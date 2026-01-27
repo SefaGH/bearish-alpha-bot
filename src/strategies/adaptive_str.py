@@ -986,9 +986,11 @@ class AdaptiveShortTheRip(ShortTheRip):
                 self._last_hybrid_meta_state = meta_state
             
             # --- Adaptive Threshold Calculation ---
+            base_threshold_for_meta = None
             adaptive_rsi_threshold = self.get_symbol_specific_threshold(symbol_display)
             if adaptive_rsi_threshold is not None:
                 base_threshold = float(self.base_cfg.get('adaptive_rsi_base', 68.0))
+                base_threshold_for_meta = float(base_threshold)
                 logger.info(
                     f"⚠️ {log_prefix} Symbol-specific RSI threshold active: base {base_threshold:.2f} → {adaptive_rsi_threshold:.2f}."
                 )
@@ -998,6 +1000,10 @@ class AdaptiveShortTheRip(ShortTheRip):
                     return_reason=True
                 )
                 meta_base = threshold_meta.get('base_threshold', adaptive_rsi_threshold)
+                try:
+                    base_threshold_for_meta = float(meta_base)
+                except Exception:
+                    base_threshold_for_meta = None
                 reason = threshold_meta.get('reason')
                 if reason and abs(adaptive_rsi_threshold - meta_base) >= 0.1:
                     logger.info(
@@ -1684,6 +1690,83 @@ class AdaptiveShortTheRip(ShortTheRip):
             })
             if volatility_stop_meta:
                 signal['volatility_stop_meta'] = volatility_stop_meta
+
+            # Coordinator-level safety layers (e.g., SafetyOverride) rely on a small snapshot in signal meta.
+            try:
+                ema_fast = None
+                try:
+                    ema_fast = float(last30.get("ema_fast")) if last30 is not None and "ema_fast" in last30 else None
+                except Exception:
+                    ema_fast = None
+
+                candle_open = None
+                candle_close = None
+                try:
+                    candle_open = float(last30.get("open")) if last30 is not None and "open" in last30 else None
+                except Exception:
+                    candle_open = None
+                try:
+                    candle_close = float(last30.get("close")) if last30 is not None and "close" in last30 else None
+                except Exception:
+                    candle_close = None
+
+                current_volume = None
+                volume_ma20 = None
+                if df_eval is not None and hasattr(df_eval, "columns") and "volume" in df_eval.columns:
+                    try:
+                        current_volume = float(last30.get("volume"))
+                    except Exception:
+                        current_volume = None
+                    try:
+                        vol_series = df_eval["volume"].dropna()
+                        if not vol_series.empty:
+                            volume_ma20 = float(vol_series.tail(20).mean())
+                    except Exception:
+                        volume_ma20 = None
+
+                resistance_level = None
+                resistance_distance_bps = None
+                try:
+                    if df_30m_closed is not None and hasattr(df_30m_closed, "columns") and "high" in df_30m_closed.columns:
+                        highs = df_30m_closed["high"].dropna()
+                        if not highs.empty:
+                            resistance_level = float(highs.tail(20).max())
+                            if close_price and close_price > 0:
+                                resistance_distance_bps = ((resistance_level - float(close_price)) / float(close_price)) * 10000.0
+                except Exception:
+                    resistance_level = None
+                    resistance_distance_bps = None
+
+                mtf_soft_fail = bool(isinstance(mtf_meta_15m, dict) and mtf_meta_15m.get("soft_fail"))
+
+                base_thr = float(base_threshold_for_meta) if base_threshold_for_meta is not None else None
+                cur_thr = float(adaptive_rsi_threshold) if adaptive_rsi_threshold is not None else None
+                delta_thr = (base_thr - cur_thr) if (base_thr is not None and cur_thr is not None) else None
+
+                signal_meta = signal.setdefault("meta", {})
+                signal_meta["adaptive_threshold"] = {
+                    "base_threshold": base_thr,
+                    "current_threshold": cur_thr,
+                    "delta": delta_thr,
+                    "lowered": bool(delta_thr is not None and delta_thr > 0),
+                }
+                signal_meta["safety_snapshot"] = {
+                    "close": float(close_price) if close_price is not None else None,
+                    "rsi": float(rsi_val) if rsi_val is not None else None,
+                    "ema_fast": ema_fast,
+                    "ema21": float(ema21) if ema21 is not None else None,
+                    "ema50": float(ema50) if ema50 is not None else None,
+                    "candle_open": candle_open,
+                    "candle_close": candle_close,
+                    "volume": current_volume,
+                    "volume_ma20": volume_ma20,
+                    "resistance_level": resistance_level,
+                    "resistance_distance_bps": resistance_distance_bps,
+                    "trigger_price_source": trigger_price_source,
+                    "mtf_soft_fail": mtf_soft_fail,
+                }
+            except Exception:
+                pass
             
             if ml_enhanced:
                 signal['ml_consensus'] = ml_context.get('consensus_score')
