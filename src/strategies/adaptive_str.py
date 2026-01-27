@@ -1513,9 +1513,66 @@ class AdaptiveShortTheRip(ShortTheRip):
                     rsi_prev = None
                     rsi_now = None
                     rsi_pair_source = "unknown"
+                    guard_anchor_tf = None
+                    guard_anchor_source = None
+
+                    def _try_fast_anchor(tf_key: str) -> bool:
+                        """
+                        Use a faster TF RSI last2 as the rollover reference.
+                        Prefer closed-only RSI values: if the TF dataframe includes a forming row,
+                        exclude it before selecting last2.
+                        """
+                        nonlocal rsi_prev, rsi_now, rsi_pair_source, guard_anchor_tf, guard_anchor_source
+
+                        if not market_data or not isinstance(market_data, dict):
+                            return False
+
+                        df_fast = market_data.get(tf_key)
+                        if df_fast is None or not isinstance(df_fast, pd.DataFrame) or df_fast.empty:
+                            return False
+                        if "rsi" not in df_fast.columns:
+                            return False
+
+                        series = df_fast["rsi"]
+                        try:
+                            includes_fast_forming = bool(getattr(df_fast, "attrs", {}).get("includes_forming", False))
+                        except Exception:
+                            includes_fast_forming = False
+
+                        guard_anchor_tf = tf_key
+                        if includes_fast_forming and len(series) >= 2:
+                            # Exclude last row (forming) to avoid mixing intrabar updates into reference.
+                            series = series.iloc[:-1]
+                            guard_anchor_source = "hybrid_excl_forming"
+                        else:
+                            guard_anchor_source = "closed_only"
+
+                        series = series.dropna()
+                        if len(series) < 2:
+                            guard_anchor_tf = None
+                            guard_anchor_source = None
+                            return False
+
+                        try:
+                            rsi_prev = float(series.iloc[-2])
+                            rsi_now = float(series.iloc[-1])
+                        except Exception:
+                            rsi_prev = None
+                            rsi_now = None
+                            guard_anchor_tf = None
+                            guard_anchor_source = None
+                            return False
+
+                        rsi_pair_source = f"fast_{tf_key}_last2"
+                        return True
+
+                    # If signal is based on forming_close, prefer a fast RSI anchor to avoid stale 30m prev.
+                    if is_forming_trigger:
+                        if not _try_fast_anchor("5m"):
+                            _try_fast_anchor("15m")
 
                     # Preferred: prev from CLOSED, now from HYBRID (forming).
-                    if used_forming:
+                    if (rsi_prev is None or rsi_now is None) and used_forming:
                         try:
                             if (
                                 df_30m_closed is not None
@@ -1571,6 +1628,7 @@ class AdaptiveShortTheRip(ShortTheRip):
                                 f"rsi_prev={float(rsi_prev):.2f} rsi_now={float(rsi_now):.2f} eps={float(eps):.2f} "
                                 f"trigger_price_source={trigger_price_source} mtf_soft_fail={mtf_soft_fail} "
                                 f"reason=guard.rsi_rollover_defer rsi_pair={rsi_pair_source} "
+                                f"guard_anchor_tf={guard_anchor_tf} guard_anchor_source={guard_anchor_source} "
                                 f"guard_rollover_defer_count={self._guard_telemetry.get('guard_rollover_defer_count', 0)}"
                             )
                             _shadow_str(
@@ -1583,6 +1641,8 @@ class AdaptiveShortTheRip(ShortTheRip):
                                     "trigger_price_source": trigger_price_source,
                                     "mtf_soft_fail": mtf_soft_fail,
                                     "rsi_pair_source": rsi_pair_source,
+                                    "guard_anchor_tf": guard_anchor_tf,
+                                    "guard_anchor_source": guard_anchor_source,
                                     "guard_rollover_defer_count": int(self._guard_telemetry.get("guard_rollover_defer_count", 0) or 0),
                                 },
                             )

@@ -470,6 +470,136 @@ def test_rsi_rollover_guard_allows_risky_short_when_rsi_rolls_over(base_config, 
     assert strategy._guard_telemetry["guard_rollover_defer_count"] == 0
 
 
+def test_rsi_rollover_guard_prefers_fast_5m_anchor_and_excludes_forming_row(
+    base_config, sample_df_1h_bearish
+):
+    """
+    When trigger uses forming_close, the guard should compare against a fast RSI series (5m)
+    and ignore any forming row in that fast dataframe (closed-only reference).
+    """
+    cfg = copy.deepcopy(base_config)
+    cfg["mtf_confirmation_effective"] = _build_mtf_policy(**{"15m_mode": "off", "1h_mode": "off"})
+    cfg["rsi_rollover_guard"] = {"enabled": True, "eps": 0.2}
+    strategy = AdaptiveShortTheRip(cfg)
+
+    df_closed = pd.DataFrame(
+        [
+            {
+                "close": 101.0,
+                "rsi": 70.0,
+                "atr": 1.0,
+                "ema_fast": 100.5,
+                "ema21": 99.0,
+                "ema50": 100.0,
+                "ema200": 110.0,
+                "volume": 1000.0,
+            }
+        ]
+    )
+    # 30m hybrid rolls over (would allow under old "closed vs forming" logic).
+    df_hybrid = pd.DataFrame(
+        [
+            {
+                "close": 101.0,
+                "rsi": 70.0,
+                "atr": 1.0,
+                "ema_fast": 100.5,
+                "ema21": 99.0,
+                "ema50": 100.0,
+                "ema200": 110.0,
+                "volume": 1000.0,
+            },
+            {
+                "close": 101.0,
+                "rsi": 69.6,  # rolling over on 30m forming
+                "atr": 1.0,
+                "ema_fast": 100.5,
+                "ema21": 99.0,
+                "ema50": 100.0,
+                "ema200": 110.0,
+                "volume": 1000.0,
+            },
+        ]
+    )
+    df_hybrid.attrs["includes_forming"] = True
+    df_hybrid.attrs["fallback_reason"] = None
+    df_hybrid.attrs["merge_action"] = "appended"
+
+    # 5m RSI does NOT roll over on the last two CLOSED points.
+    # Add a forming row with a big drop to ensure it is excluded by the guard.
+    df_5m = pd.DataFrame(
+        [
+            {"close": 100.0, "rsi": 70.0, "volume": 1.0},
+            {"close": 100.0, "rsi": 70.0, "volume": 1.0},
+            {"close": 100.0, "rsi": 50.0, "volume": 1.0},  # forming (should be ignored)
+        ]
+    )
+    df_5m.attrs["includes_forming"] = True
+
+    signal = strategy.signal(
+        df_30m=df_closed,
+        df_1h=sample_df_1h_bearish,
+        symbol="BTC/USDT",
+        market_data={
+            "30m_closed": df_closed,
+            "30m_hybrid": df_hybrid,
+            "5m": df_5m,
+        },
+    )
+    assert signal is None
+    assert strategy._guard_telemetry["guard_rollover_defer_count"] == 1
+
+
+def test_rsi_rollover_guard_uses_15m_anchor_when_5m_missing(
+    base_config, sample_df_1h_bearish
+):
+    cfg = copy.deepcopy(base_config)
+    cfg["mtf_confirmation_effective"] = _build_mtf_policy(**{"15m_mode": "off", "1h_mode": "off"})
+    cfg["rsi_rollover_guard"] = {"enabled": True, "eps": 0.2}
+    strategy = AdaptiveShortTheRip(cfg)
+
+    df_closed = pd.DataFrame(
+        [
+            {
+                "close": 101.0,
+                "rsi": 70.0,
+                "atr": 1.0,
+                "ema_fast": 100.5,
+                "ema21": 99.0,
+                "ema50": 100.0,
+                "ema200": 110.0,
+                "volume": 1000.0,
+            }
+        ]
+    )
+    df_hybrid = df_closed.copy()
+    df_hybrid = pd.concat([df_hybrid, df_closed], ignore_index=True)
+    df_hybrid.iloc[-1, df_hybrid.columns.get_loc("rsi")] = 69.6
+    df_hybrid.attrs["includes_forming"] = True
+    df_hybrid.attrs["fallback_reason"] = None
+    df_hybrid.attrs["merge_action"] = "appended"
+
+    df_15m = pd.DataFrame(
+        [
+            {"close": 100.0, "rsi": 70.0, "volume": 1.0},
+            {"close": 100.0, "rsi": 70.05, "volume": 1.0},
+        ]
+    )
+
+    signal = strategy.signal(
+        df_30m=df_closed,
+        df_1h=sample_df_1h_bearish,
+        symbol="BTC/USDT",
+        market_data={
+            "30m_closed": df_closed,
+            "30m_hybrid": df_hybrid,
+            "15m": df_15m,
+        },
+    )
+    assert signal is None
+    assert strategy._guard_telemetry["guard_rollover_defer_count"] == 1
+
+
 def test_mtf_missing_15m_skip_allows_signal(base_config, sample_df_30m, sample_df_1h_bearish):
     cfg = copy.deepcopy(base_config)
     cfg["mtf_confirmation_effective"] = _build_mtf_policy(

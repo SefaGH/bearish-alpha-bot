@@ -594,6 +594,17 @@ class StrategyCoordinator:
         so_cfg = self.config.get("safety_override", {}) if isinstance(self.config, dict) else {}
         so_enabled = bool(so_cfg.get("enabled", False)) if isinstance(so_cfg, dict) else False
         self.safety_override = SafetyOverride(so_cfg) if so_enabled else None
+        if self.safety_override:
+            try:
+                logger.info(
+                    "[SAFETY-OVERRIDE] enabled=true apply_to_strategies=%s apply_to_sides=%s min_passes=%s delta_min=%s",
+                    (so_cfg.get("apply_to_strategies") or []),
+                    (so_cfg.get("apply_to_sides") or []),
+                    so_cfg.get("min_passes"),
+                    so_cfg.get("aggressive_threshold_delta_min"),
+                )
+            except Exception:
+                logger.info("[SAFETY-OVERRIDE] enabled=true")
 
         strategies_cfg = self.config.get('strategies', {}) or {}
         self.regime_routing_rules = strategies_cfg.get('regime_routing', {}) or {}
@@ -5775,6 +5786,24 @@ class StrategyCoordinator:
                                 'reason': guard_result.reason,
                                 'stage': 'safety_override',
                             }
+                        else:
+                            # Emit a trace for PASS (only when aggressive mode is active) so live ops can confirm
+                            # the guard is running even when it doesn't block.
+                            try:
+                                meta = guard_result.meta_data or {}
+                                if bool(meta.get("aggressive", False)):
+                                    logger.info(
+                                        "✓  [%s/%s] SafetyOverride PASSED | reason=%s score=%s passes=%s fails=%s na=%s",
+                                        strategy_name.upper(),
+                                        symbol,
+                                        meta.get("reason", guard_result.reason),
+                                        meta.get("score"),
+                                        meta.get("passes"),
+                                        meta.get("fails"),
+                                        meta.get("na"),
+                                    )
+                            except Exception:
+                                pass
                 except Exception as exc:
                     logger.warning("[SAFETY-OVERRIDE] Evaluation failed: %s", exc)
              
