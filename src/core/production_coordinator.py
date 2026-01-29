@@ -889,6 +889,14 @@ class ProductionCoordinator:
             if (name in hybrid_allowlist) or (getattr(instance, "strategy_name", "") in hybrid_allowlist)
         }
 
+        mean_reversion_strategy_key = None
+        mean_reversion_instance = None
+        for name, instance in strategies_to_run:
+            if (str(name).strip().lower() == "mean_reversion") or (getattr(instance, "strategy_name", "") == "mean_reversion"):
+                mean_reversion_strategy_key = name
+                mean_reversion_instance = instance
+                break
+
         signals_config = self.config.get('signals', {}) or {}
         mtf_cfg = (signals_config.get('short_the_rip', {}) or {}).get('mtf_confirmation', {}) or {}
         mode_15m_raw = mtf_cfg.get("15m_mode")
@@ -1061,6 +1069,68 @@ class ProductionCoordinator:
             if mtf_15m_enabled:
                 market_data['15m'] = df_15m
 
+            mr_market_data_base = None
+            if mean_reversion_instance is not None and self.market_data_pipeline:
+                try:
+                    mr_vwap_tf = str(getattr(mean_reversion_instance, "vwap_tf", None) or "1m")
+                except Exception:
+                    mr_vwap_tf = "1m"
+                try:
+                    mr_signal_tf = str(getattr(mean_reversion_instance, "signal_tf", None) or "5m")
+                except Exception:
+                    mr_signal_tf = "5m"
+                try:
+                    mr_vwap_limit = int(getattr(mean_reversion_instance, "min_rows", 0) or 0)
+                except Exception:
+                    mr_vwap_limit = 0
+                try:
+                    mr_sig_limit = int(getattr(mean_reversion_instance, "min_signal_rows", 0) or 0)
+                except Exception:
+                    mr_sig_limit = 0
+
+                mr_vwap_limit = mr_vwap_limit if mr_vwap_limit > 0 else 2100
+                mr_sig_limit = mr_sig_limit if mr_sig_limit > 0 else 50
+
+                df_mr_vwap = None
+                df_mr_sig = None
+                try:
+                    candidate = market_data.get(mr_vwap_tf)
+                    if candidate is not None and not getattr(candidate, "empty", True) and len(candidate) >= mr_vwap_limit:
+                        df_mr_vwap = candidate
+                    else:
+                        df_mr_vwap = await self.market_data_pipeline.get_latest_ohlcv(symbol, mr_vwap_tf, limit=mr_vwap_limit)
+                except Exception:
+                    df_mr_vwap = None
+                try:
+                    candidate = market_data.get(mr_signal_tf)
+                    if candidate is not None and not getattr(candidate, "empty", True) and len(candidate) >= mr_sig_limit:
+                        df_mr_sig = candidate
+                    else:
+                        df_mr_sig = await self.market_data_pipeline.get_latest_ohlcv(
+                            symbol,
+                            mr_signal_tf,
+                            limit=max(mr_sig_limit, 350),
+                        )
+                except Exception:
+                    df_mr_sig = None
+
+                if (
+                    df_mr_vwap is not None
+                    and not getattr(df_mr_vwap, "empty", True)
+                    and df_mr_sig is not None
+                    and not getattr(df_mr_sig, "empty", True)
+                ):
+                    mr_market_data_base = dict(market_data)
+                    mr_market_data_base.update(
+                        {
+                            "df_vwap": df_mr_vwap,
+                            "df_sig": df_mr_sig,
+                            mr_vwap_tf: df_mr_vwap,
+                            mr_signal_tf: df_mr_sig,
+                            symbol: {mr_vwap_tf: df_mr_vwap, mr_signal_tf: df_mr_sig},
+                        }
+                    )
+
             for strategy_name, strategy_instance in strategies_to_run:
                 try:
                     if not self.portfolio_manager.strategy_metadata.get(strategy_name, {}).get('active', False):
@@ -1083,7 +1153,17 @@ class ProductionCoordinator:
                         if market_data is not None:
                             try:
                                 if 'market_data' in inspect.signature(strategy_instance.signal).parameters:
-                                    strategy_market_data = dict(market_data)
+                                    if (
+                                        mr_market_data_base is not None
+                                        and (
+                                            (strategy_name == mean_reversion_strategy_key)
+                                            or (getattr(strategy_instance, "strategy_name", "") == "mean_reversion")
+                                            or (str(strategy_name).strip().lower() == "mean_reversion")
+                                        )
+                                    ):
+                                        strategy_market_data = dict(mr_market_data_base)
+                                    else:
+                                        strategy_market_data = dict(market_data)
                                     strategy_market_data['30m'] = strategy_df_30m
                                     signal_kwargs['market_data'] = strategy_market_data
                             except (TypeError, ValueError):
