@@ -417,7 +417,9 @@ class AdvancedPositionManager:
 
         # Dispatch notifier wiring (StrategyCoordinator -> LiveTradingEngine bridge wake-up)
         self._dispatch_notifier: Optional[Callable[[], Awaitable[Any]]] = None
-        
+        # Trade-closed notifier wiring (PositionManager -> StrategyCoordinator telemetry/state)
+        self._trade_closed_notifier: Optional[Callable[[Dict[str, Any]], Awaitable[Any]]] = None
+         
         logger.info("AdvancedPositionManager initialized")
 
     def _ensure_trade_history_path(self):
@@ -775,6 +777,13 @@ class AdvancedPositionManager:
         """Register async callback that wakes the coordinator dispatch loop."""
         self._dispatch_notifier = notifier
 
+    def set_trade_closed_notifier(
+        self,
+        notifier: Optional[Callable[[Dict[str, Any]], Awaitable[Any]]],
+    ) -> None:
+        """Register async callback invoked when a TRADE_CLOSED payload is emitted."""
+        self._trade_closed_notifier = notifier
+
     def _schedule_dispatch_nudge(self) -> None:
         if not self._dispatch_notifier:
             return
@@ -789,6 +798,25 @@ class AdvancedPositionManager:
             result = self._dispatch_notifier()
         except Exception as exc:
             logger.debug("Dispatch notifier callable failed: %s", exc)
+            return
+
+        if asyncio.iscoroutine(result):
+            loop.create_task(result)
+
+    def _schedule_trade_closed_nudge(self, payload: Dict[str, Any]) -> None:
+        if not self._trade_closed_notifier:
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("Trade-closed notifier skipped; no running loop detected")
+            return
+
+        try:
+            result = self._trade_closed_notifier(payload)
+        except Exception as exc:
+            logger.debug("Trade-closed notifier callable failed: %s", exc)
             return
 
         if asyncio.iscoroutine(result):
@@ -2380,6 +2408,7 @@ class AdvancedPositionManager:
             logger.debug("TRADE_CLOSED payload prepared for position %s", position_id)
             logger.info("TRADE_CLOSED %s", json.dumps(payload))
             self._append_trade_history(payload)
+            self._schedule_trade_closed_nudge(payload)
 
             self._schedule_dispatch_nudge()
 

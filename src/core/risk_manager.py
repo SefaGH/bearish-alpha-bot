@@ -260,10 +260,36 @@ class RiskManager:
         )
         
         # Add daily trade limit rule if configured
+        daily_limit_cfg = {}
+        try:
+            if hasattr(self.risk_config, "get_flat_risk_settings"):
+                risk_section = self.risk_config.get_flat_risk_settings() or {}
+                candidate = risk_section.get("daily_trade_limit")
+                if isinstance(candidate, dict):
+                    daily_limit_cfg = candidate
+        except Exception:
+            daily_limit_cfg = {}
+
         daily_max_trades = self._get_daily_max_trades_from_config()
+        if daily_max_trades is None and isinstance(daily_limit_cfg, dict):
+            for key in ("base_max_trades", "max_daily_trades", "max_trades"):
+                try:
+                    raw = daily_limit_cfg.get(key)
+                    if raw is None:
+                        continue
+                    daily_max_trades = int(raw)
+                    break
+                except Exception:
+                    continue
+
         if daily_max_trades is not None and daily_max_trades > 0:
-            rules.append(DailyTradeLimitRule(max_daily_trades=daily_max_trades))
-            logger.info(f"✅ Daily trade limit rule added: {daily_max_trades} trades/day")
+            rules.append(
+                DailyTradeLimitRule(
+                    max_daily_trades=int(daily_max_trades),
+                    dynamic_config=daily_limit_cfg,
+                )
+            )
+            logger.info(f"✅ Daily trade limit rule added: {int(daily_max_trades)} trades/day")
         else:
             logger.info("ℹ️ Daily trade limit not configured or disabled")
         

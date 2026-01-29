@@ -652,7 +652,11 @@ class StrategyCoordinator:
         # Strategy+symbol cooldowns (non-blocking deferral replacement)
         self._strategy_cooldowns: Dict[str, datetime] = {}
         self._strategy_cooldowns_lock = threading.Lock()
-        
+
+        # Stop-loss driven entry guards (Crash Guard cooldown/reversal-only modes)
+        self._stop_loss_cooldown_streak: Dict[str, Dict[str, Any]] = {}
+        self._stop_loss_reversal_required: Dict[str, float] = {}
+         
         # Signal processing stats
         self.processing_stats = {
             'total_signals': 0,
@@ -838,8 +842,14 @@ class StrategyCoordinator:
             self._incubator_enabled,
         )
 
-    def _set_strategy_cooldown(self, strategy_name: str, symbol: str, duration_seconds: float) -> None:
-        """Activate a cooldown for a specific strategy+symbol pair."""
+    def _set_strategy_cooldown(
+        self,
+        strategy_name: str,
+        symbol: str,
+        duration_seconds: float,
+        side: Optional[str] = None,
+    ) -> None:
+        """Activate a cooldown for a specific strategy+symbol(+side) key."""
         if not strategy_name or not symbol:
             return
         try:
@@ -847,40 +857,335 @@ class StrategyCoordinator:
         except (TypeError, ValueError):
             duration = 0.0
         expiry_time = datetime.now(timezone.utc) + timedelta(seconds=duration)
-        key = f"{strategy_name}:{symbol}"
+        side_norm = self._normalize_side(side) if side else None
+        key = f"{strategy_name}:{symbol}:{side_norm}" if side_norm else f"{strategy_name}:{symbol}"
         with self._strategy_cooldowns_lock:
             self._strategy_cooldowns[key] = expiry_time
 
-    def _is_strategy_in_cooldown(self, strategy_name: str, symbol: str, return_expiry: bool = False):
+    def _is_strategy_in_cooldown(
+        self,
+        strategy_name: str,
+        symbol: str,
+        side: Optional[str] = None,
+        return_expiry: bool = False,
+    ):
         """
         Return True if strategy+symbol is in cooldown; auto-cleans expired keys.
         
         Args:
             strategy_name: Strategy identifier
             symbol: Trading symbol
+            side: Optional side (long/short/buy/sell) for side-scoped cooldowns
             return_expiry: When True, also returns the expiry datetime for logging/telemetry
         """
         if not strategy_name or not symbol:
             return (False, None) if return_expiry else False
 
         now = datetime.now(timezone.utc)
-        key = f"{strategy_name}:{symbol}"
+        side_norm = self._normalize_side(side) if side else None
+        key_side = f"{strategy_name}:{symbol}:{side_norm}" if side_norm else None
+        key_plain = f"{strategy_name}:{symbol}"
         cooldown_hit = False
         expiry_time = None
+        used_key = None
 
         with self._strategy_cooldowns_lock:
-            expiry_time = self._strategy_cooldowns.get(key)
+            expiry_time = self._strategy_cooldowns.get(key_side) if key_side else None
+            used_key = key_side if expiry_time is not None else None
+            if expiry_time is None:
+                expiry_time = self._strategy_cooldowns.get(key_plain)
+                used_key = key_plain if expiry_time is not None else None
             if expiry_time is None:
                 cooldown_hit = False
             elif now < expiry_time:
                 cooldown_hit = True
             else:
-                self._strategy_cooldowns.pop(key, None)
+                if used_key:
+                    self._strategy_cooldowns.pop(used_key, None)
                 expiry_time = None
 
         if return_expiry:
             return cooldown_hit, expiry_time
         return cooldown_hit
+
+    def _get_crash_guard_cfg(self, strategy_name: str) -> Dict[str, Any]:
+        try:
+            strategies_cfg = self.config.get("strategies", {}) if isinstance(self.config, dict) else {}
+            strat_cfg = strategies_cfg.get(strategy_name, {}) if isinstance(strategies_cfg, dict) else {}
+            crash_cfg = strat_cfg.get("crash_guard", {}) if isinstance(strat_cfg, dict) else {}
+            return crash_cfg if isinstance(crash_cfg, dict) else {}
+        except Exception:
+            return {}
+
+    async def _compute_panic_state(
+        self,
+        *,
+        symbol: str,
+        volume_bucket: Optional[str],
+        crash_cfg: Dict[str, Any],
+    ) -> Tuple[bool, Dict[str, Any]]:
+        meta: Dict[str, Any] = {
+            "enabled": bool(crash_cfg.get("enabled", False)),
+            "volume_bucket": volume_bucket,
+            "tf": None,
+            "close": None,
+            "atr": None,
+            "ema_fast": None,
+            "ema_fast_gap_atr": None,
+            "fast_drop_pct": None,
+            "atr_pct": None,
+            "bearish_body_ratio": None,
+            "fast_drop": False,
+            "high_atr": False,
+            "bearish_body": False,
+            "is_panic_state": False,
+        }
+
+        bucket = str(volume_bucket or "").upper().strip()
+        if not bucket:
+            return False, meta
+
+        allowed_buckets = crash_cfg.get("panic_volume_buckets") or ["HIGH", "EXTREME"]
+        try:
+            allowed = {str(b).upper().strip() for b in allowed_buckets if b}
+        except Exception:
+            allowed = {"HIGH", "EXTREME"}
+
+        if bucket not in allowed:
+            return False, meta
+
+        tf = str(crash_cfg.get("panic_tf", "5m") or "5m").strip()
+        meta["tf"] = tf
+
+        if not self.market_data_pipeline:
+            return False, meta
+
+        try:
+            limit = int(crash_cfg.get("panic_lookback_bars", 3) or 3)
+        except Exception:
+            limit = 3
+        limit = max(3, limit)
+
+        try:
+            df = await self.market_data_pipeline.get_latest_ohlcv(
+                symbol=symbol,
+                timeframe=tf,
+                limit=limit,
+                include_forming=True,
+            )
+        except Exception:
+            df = None
+
+        if df is None or not hasattr(df, "empty") or df.empty or len(df) < 2:
+            return False, meta
+
+        try:
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+        except Exception:
+            return False, meta
+
+        close_now = None
+        prev_close = None
+        try:
+            close_now = float(last.get("close"))
+        except Exception:
+            close_now = None
+        try:
+            prev_close = float(prev.get("close"))
+        except Exception:
+            prev_close = None
+
+        meta["close"] = close_now
+        try:
+            meta["atr"] = float(last.get("atr")) if "atr" in df.columns else None
+        except Exception:
+            meta["atr"] = None
+        try:
+            meta["ema_fast"] = float(last.get("ema_fast")) if "ema_fast" in df.columns else None
+        except Exception:
+            meta["ema_fast"] = None
+        try:
+            if (
+                meta.get("ema_fast") is not None
+                and meta.get("atr") is not None
+                and close_now is not None
+                and float(meta.get("atr") or 0.0) > 0
+            ):
+                meta["ema_fast_gap_atr"] = (float(meta["ema_fast"]) - float(close_now)) / float(meta["atr"])
+        except Exception:
+            meta["ema_fast_gap_atr"] = None
+
+        # fast_drop: short-TF close-to-close drop
+        try:
+            fast_drop_th = float(crash_cfg.get("panic_fast_drop_pct", 0.0) or 0.0)
+        except Exception:
+            fast_drop_th = 0.0
+        fast_drop = False
+        fast_drop_pct = None
+        try:
+            if prev_close and prev_close > 0 and close_now is not None:
+                fast_drop_pct = max(0.0, (prev_close - close_now) / prev_close)
+                if fast_drop_th > 0:
+                    fast_drop = fast_drop_pct >= fast_drop_th
+        except Exception:
+            fast_drop = False
+        meta["fast_drop_pct"] = fast_drop_pct
+        meta["fast_drop"] = bool(fast_drop)
+
+        # high_atr: ATR/price high AND price is down (avoid killing pumps on volatility alone)
+        try:
+            atr_th = float(crash_cfg.get("panic_atr_pct", 0.0) or 0.0)
+        except Exception:
+            atr_th = 0.0
+        atr_pct = None
+        high_atr = False
+        try:
+            atr_val = float(last.get("atr")) if "atr" in df.columns else None
+            if close_now and close_now > 0 and atr_val is not None:
+                atr_pct = atr_val / close_now
+                if atr_th > 0 and atr_pct >= atr_th and prev_close is not None and close_now < prev_close:
+                    high_atr = True
+        except Exception:
+            high_atr = False
+        meta["atr_pct"] = atr_pct
+        meta["high_atr"] = bool(high_atr)
+
+        # bearish_body: down candle with large body / range
+        try:
+            bear_body_th = float(crash_cfg.get("panic_bear_body_ratio", 0.0) or 0.0)
+        except Exception:
+            bear_body_th = 0.0
+        bearish_body = False
+        body_ratio = None
+        try:
+            if {"open", "high", "low", "close"}.issubset(set(df.columns)):
+                o = float(last.get("open"))
+                h = float(last.get("high"))
+                l = float(last.get("low"))
+                c = float(last.get("close"))
+                rng = max(0.0, h - l)
+                if rng > 0:
+                    body_ratio = abs(c - o) / rng
+                    if bear_body_th > 0 and c < o and body_ratio >= bear_body_th:
+                        bearish_body = True
+        except Exception:
+            bearish_body = False
+        meta["bearish_body_ratio"] = body_ratio
+        meta["bearish_body"] = bool(bearish_body)
+
+        # ema_fast_gap panic: when price is far below EMA on high volume, treat as panic even if drop/atr/body
+        # thresholds do not trip yet (catches early waterfall phase).
+        try:
+            gap_th = float(crash_cfg.get("panic_ema_gap_atr_threshold", 0.0) or 0.0)
+        except Exception:
+            gap_th = 0.0
+        ema_gap_panic = False
+        try:
+            gap_val = meta.get("ema_fast_gap_atr")
+            if gap_th > 0 and gap_val is not None and float(gap_val) >= gap_th:
+                ema_gap_panic = True
+        except Exception:
+            ema_gap_panic = False
+        meta["ema_gap_panic"] = bool(ema_gap_panic)
+
+        is_panic_state = bool(fast_drop or high_atr or bearish_body or ema_gap_panic)
+        meta["is_panic_state"] = is_panic_state
+        return is_panic_state, meta
+
+    async def handle_trade_closed(self, payload: Dict[str, Any]) -> None:
+        """Receive TRADE_CLOSED events and apply stop-loss-driven cooldown policies (Crash Guard)."""
+        try:
+            if not isinstance(payload, dict):
+                return
+
+            exit_reason = str(payload.get("exit_reason") or "").strip().lower()
+            if exit_reason != "stop_loss":
+                return
+
+            strategy_name = payload.get("strategy_name") or payload.get("strategy")
+            symbol = payload.get("symbol")
+            side = self._normalize_side(payload.get("side"))
+            if not strategy_name or not symbol or not side:
+                return
+
+            crash_cfg = self._get_crash_guard_cfg(str(strategy_name))
+            if not bool(crash_cfg.get("enabled", False)):
+                return
+
+            mode = str(crash_cfg.get("cooldown_mode", "off") or "off").strip().lower()
+            if mode == "off":
+                return
+
+            volume_bucket = payload.get("volume_bucket_at_entry") or payload.get("volume_bucket")
+            is_panic_state, panic_meta = await self._compute_panic_state(
+                symbol=str(symbol),
+                volume_bucket=str(volume_bucket) if volume_bucket is not None else None,
+                crash_cfg=crash_cfg,
+            )
+
+            if mode in {"panic_only", "escalating"} and not is_panic_state:
+                return
+
+            key = f"{strategy_name}:{symbol}:{side}"
+            now_ts = time.time()
+
+            if mode == "reversal_only":
+                with self._strategy_cooldowns_lock:
+                    self._stop_loss_reversal_required[key] = float(now_ts)
+                logger.info(
+                    "[CRASH-GUARD] Armed reversal-only reentry guard | strategy=%s symbol=%s side=%s panic=%s",
+                    strategy_name,
+                    symbol,
+                    side,
+                    bool(is_panic_state),
+                )
+                return
+
+            try:
+                base_seconds = float(crash_cfg.get("cooldown_seconds", 30.0) or 30.0)
+            except Exception:
+                base_seconds = 30.0
+            cooldown_seconds = max(0.0, base_seconds)
+
+            if mode == "escalating":
+                steps = crash_cfg.get("cooldown_escalation_steps") or [30, 90, 180]
+                try:
+                    window_s = float(crash_cfg.get("cooldown_escalation_window_seconds", 600.0) or 600.0)
+                except Exception:
+                    window_s = 600.0
+                window_s = max(0.0, window_s)
+
+                with self._strategy_cooldowns_lock:
+                    state = self._stop_loss_cooldown_streak.get(key) or {}
+                    last_ts = float(state.get("last_ts", 0.0) or 0.0)
+                    count = int(state.get("count", 0) or 0)
+                    if last_ts and window_s and (now_ts - last_ts) > window_s:
+                        count = 0
+                    count += 1
+                    self._stop_loss_cooldown_streak[key] = {"count": count, "last_ts": float(now_ts)}
+
+                try:
+                    steps_f = [float(x) for x in steps if x is not None]
+                except Exception:
+                    steps_f = []
+                if steps_f:
+                    idx = min(max(count - 1, 0), len(steps_f) - 1)
+                    cooldown_seconds = max(0.0, float(steps_f[idx]))
+
+            self._set_strategy_cooldown(str(strategy_name), str(symbol), float(cooldown_seconds), side=side)
+            logger.info(
+                "[CRASH-GUARD] Stop-loss cooldown set | strategy=%s symbol=%s side=%s seconds=%.1f panic=%s bucket=%s tf=%s",
+                strategy_name,
+                symbol,
+                side,
+                float(cooldown_seconds),
+                bool(is_panic_state),
+                volume_bucket,
+                panic_meta.get("tf"),
+            )
+        except Exception as exc:
+            logger.debug("[CRASH-GUARD] handle_trade_closed failed: %s", exc)
 
     @staticmethod
     def _now_ms() -> int:
@@ -2613,15 +2918,83 @@ class StrategyCoordinator:
                         if stale_reason is None:
                             stale_reason = "bidask_missing"
                     else:
+                        sigma_used = self._coerce_float(condition_data.get("trigger_sigma"))
+                        if sigma_used is not None and sigma_used <= 0:
+                            sigma_used = None
+
+                        touch_sigma_delta_used = v2.get("touch_sigma_delta")
+                        near_sigma_delta_used = v2.get("near_sigma_delta")
+
+                        bps_near_eps_px = abs(float(trigger_price)) * (float(v2["near_bps"]) / 10000.0)
+                        bps_touch_eps_px = abs(float(trigger_price)) * (float(v2["touch_eps_bps"]) / 10000.0)
+
+                        def _clamp_eps(val: Optional[float], *, min_abs_px: Any, max_abs_px: Any) -> Optional[float]:
+                            if val is None:
+                                return None
+                            out = float(val)
+                            if not math.isfinite(out):
+                                return None
+                            min_v = self._coerce_float(min_abs_px)
+                            if min_v is not None and min_v > 0:
+                                out = max(out, float(min_v))
+                            max_v = self._coerce_float(max_abs_px)
+                            if max_v is not None and max_v > 0:
+                                out = min(out, float(max_v))
+                            return out
+
+                        sigma_touch_eps_px = None
+                        if sigma_used is not None and touch_sigma_delta_used is not None:
+                            try:
+                                sigma_touch_eps_px = float(sigma_used) * float(touch_sigma_delta_used)
+                            except Exception:
+                                sigma_touch_eps_px = None
+                            sigma_touch_eps_px = _clamp_eps(
+                                sigma_touch_eps_px,
+                                min_abs_px=v2.get("min_touch_abs_px"),
+                                max_abs_px=v2.get("max_touch_abs_px"),
+                            )
+
+                        sigma_near_eps_px = None
+                        if sigma_used is not None and near_sigma_delta_used is not None:
+                            try:
+                                sigma_near_eps_px = float(sigma_used) * float(near_sigma_delta_used)
+                            except Exception:
+                                sigma_near_eps_px = None
+                            sigma_near_eps_px = _clamp_eps(
+                                sigma_near_eps_px,
+                                min_abs_px=v2.get("min_near_abs_px"),
+                                max_abs_px=v2.get("max_near_abs_px"),
+                            )
+
+                        effective_touch_eps_px = (
+                            max(float(bps_touch_eps_px), float(sigma_touch_eps_px))
+                            if sigma_touch_eps_px is not None
+                            else float(bps_touch_eps_px)
+                        )
+                        effective_near_eps_px = (
+                            max(float(bps_near_eps_px), float(sigma_near_eps_px))
+                            if sigma_near_eps_px is not None
+                            else float(bps_near_eps_px)
+                        )
+
+                        dist_to_band_px = None
                         try:
                             if side_norm in ("long", "buy"):
-                                dist_to_band_bps = (float(px_used) - float(trigger_price)) / float(trigger_price) * 10000.0
+                                dist_to_band_px = float(px_used) - float(trigger_price)
                             else:
-                                dist_to_band_bps = (float(trigger_price) - float(px_used)) / float(trigger_price) * 10000.0
+                                dist_to_band_px = float(trigger_price) - float(px_used)
+                        except Exception:
+                            dist_to_band_px = None
+
+                        try:
+                            dist_to_band_bps = (
+                                (float(dist_to_band_px) / float(trigger_price) * 10000.0) if dist_to_band_px is not None else None
+                            )
                         except Exception:
                             dist_to_band_bps = None
-                        near_hit = bool(dist_to_band_bps is not None and float(dist_to_band_bps) <= float(v2["near_bps"]))
-                        touch_candidate = bool(dist_to_band_bps is not None and float(dist_to_band_bps) <= float(v2["touch_eps_bps"]))
+
+                        near_hit = bool(dist_to_band_px is not None and float(dist_to_band_px) <= float(effective_near_eps_px))
+                        touch_candidate = bool(dist_to_band_px is not None and float(dist_to_band_px) <= float(effective_touch_eps_px))
 
                     if touch_candidate:
                         max_age = int(v2.get("max_ticker_age_ms") or 0)
@@ -2642,11 +3015,14 @@ class StrategyCoordinator:
                             stale_reason = "ask_missing"
                             trigger_action = "no_touch"
                         else:
-                            eps_px = abs(float(trigger_price)) * (float(v2["touch_eps_bps"]) / 10000.0)
                             if side_norm in ("long", "buy"):
-                                touch_confirmed = bool(float(bid) <= float(trigger_price) + eps_px) if bid is not None else False
+                                touch_confirmed = (
+                                    bool(float(bid) <= float(trigger_price) + float(effective_touch_eps_px)) if bid is not None else False
+                                )
                             else:
-                                touch_confirmed = bool(float(ask) >= float(trigger_price) - eps_px) if ask is not None else False
+                                touch_confirmed = (
+                                    bool(float(ask) >= float(trigger_price) - float(effective_touch_eps_px)) if ask is not None else False
+                                )
                             trigger_action = "recheck" if touch_confirmed else "no_touch"
 
                         if touch_confirmed:
@@ -3396,6 +3772,12 @@ class StrategyCoordinator:
         v2_keys = {
             "near_bps",
             "touch_eps_bps",
+            "near_sigma_delta",
+            "touch_sigma_delta",
+            "min_touch_abs_px",
+            "max_touch_abs_px",
+            "min_near_abs_px",
+            "max_near_abs_px",
             "touch_price_source",
             "recheck_freshness_ms",
             "max_ticker_age_ms",
@@ -3433,6 +3815,30 @@ class StrategyCoordinator:
             touch_eps_bps = 3.0
         touch_eps_bps = max(0.0, float(touch_eps_bps))
 
+        near_sigma_delta = _coerce_float_local(merged.get("near_sigma_delta"))
+        if near_sigma_delta is not None:
+            near_sigma_delta = max(0.0, float(near_sigma_delta))
+
+        touch_sigma_delta = _coerce_float_local(merged.get("touch_sigma_delta"))
+        if touch_sigma_delta is not None:
+            touch_sigma_delta = max(0.0, float(touch_sigma_delta))
+
+        min_touch_abs_px = _coerce_float_local(merged.get("min_touch_abs_px"))
+        if min_touch_abs_px is not None:
+            min_touch_abs_px = max(0.0, float(min_touch_abs_px))
+
+        max_touch_abs_px = _coerce_float_local(merged.get("max_touch_abs_px"))
+        if max_touch_abs_px is not None:
+            max_touch_abs_px = max(0.0, float(max_touch_abs_px))
+
+        min_near_abs_px = _coerce_float_local(merged.get("min_near_abs_px"))
+        if min_near_abs_px is not None:
+            min_near_abs_px = max(0.0, float(min_near_abs_px))
+
+        max_near_abs_px = _coerce_float_local(merged.get("max_near_abs_px"))
+        if max_near_abs_px is not None:
+            max_near_abs_px = max(0.0, float(max_near_abs_px))
+
         freshness_ms = _coerce_int_local(merged.get("max_ticker_age_ms"))
         if freshness_ms is None:
             freshness_ms = _coerce_int_local(merged.get("recheck_freshness_ms"))
@@ -3460,6 +3866,12 @@ class StrategyCoordinator:
         return {
             "near_bps": near_bps,
             "touch_eps_bps": touch_eps_bps,
+            "near_sigma_delta": near_sigma_delta,
+            "touch_sigma_delta": touch_sigma_delta,
+            "min_touch_abs_px": min_touch_abs_px,
+            "max_touch_abs_px": max_touch_abs_px,
+            "min_near_abs_px": min_near_abs_px,
+            "max_near_abs_px": max_near_abs_px,
             "touch_price_source": src,
             "max_ticker_age_ms": freshness_ms,
             "recheck_cooldown_ms": cooldown_ms,
@@ -5510,7 +5922,7 @@ class StrategyCoordinator:
             )
 
             cooldown_active, cooldown_until = self._is_strategy_in_cooldown(
-                strategy_name, symbol, return_expiry=True
+                strategy_name, symbol, side=signal.get("side"), return_expiry=True
             )
             if symbol and symbol != 'UNKNOWN' and cooldown_active:
                 self.processing_stats['rejected_signals'] += 1
@@ -5523,7 +5935,7 @@ class StrategyCoordinator:
                 )
                 return {
                     'status': 'dropped',
-                    'reason': 'cooldown_active',
+                    'reason': 'stop_loss_cooldown_active',
                     'stage': 'cooldown',
                     'cooldown_until': until_str
                 }
@@ -5976,6 +6388,226 @@ class StrategyCoordinator:
                     self.processing_stats['rejected_signals'] += 1
                     logger.warning(f"🛡️  {log_prefix} REJECTED (Volume Gating): {rejection_reason}")
                     return {'status': 'rejected', 'reason': rejection_reason, 'stage': 'volume_gating'}
+
+            # --- Crash Guard (Panic / Falling-Knife Protection) ---
+            crash_cfg = self._get_crash_guard_cfg(strategy_name)
+            crash_enabled = bool(crash_cfg.get("enabled", False))
+            if (
+                crash_enabled
+                and strategy_name == "adaptive_ob"
+                and intent in (INTENT_ENTRY, INTENT_REENTRY, INTENT_SCALE_IN)
+            ):
+                side_norm = str(enriched_signal.get("side") or "").lower().strip()
+                if side_norm in {"long", "buy"}:
+                    cooldown_mode = str(crash_cfg.get("cooldown_mode", "off") or "off").strip().lower()
+                    if cooldown_mode == "reversal_only":
+                        sl_key = f"{strategy_name}:{symbol}:{side_norm}"
+                        with self._strategy_cooldowns_lock:
+                            armed_since = self._stop_loss_reversal_required.get(sl_key)
+                        if armed_since:
+                            meta = enriched_signal.get("meta") or {}
+                            if not isinstance(meta, dict):
+                                meta = {}
+                            rsi_hook = bool(meta.get("rsi_hook"))
+                            bull_candle = bool(meta.get("bull_candle"))
+                            reclaim = bool(meta.get("reclaim"))
+                            reversal_ok = bool(rsi_hook and (bull_candle or reclaim))
+                            if not reversal_ok:
+                                self.processing_stats['rejected_signals'] += 1
+                                logger.warning(
+                                    "🛡️  %s REJECTED (StopLoss Guard): stop_loss_reversal_required | missing_reversal=%s",
+                                    log_prefix,
+                                    "rsi_hook" if not rsi_hook else "bull_candle_or_reclaim",
+                                )
+                                return {
+                                    "status": "rejected",
+                                    "reason": "stop_loss_reversal_required",
+                                    "reason_code": "stop_loss_reversal_required",
+                                    "stage": "cooldown",
+                                    "armed_since_ts": armed_since,
+                                }
+
+                    is_panic_state, panic_meta = await self._compute_panic_state(
+                        symbol=symbol,
+                        volume_bucket=volume_bucket,
+                        crash_cfg=crash_cfg,
+                    )
+                    enriched_signal.setdefault("meta", {})["panic_guard"] = panic_meta
+
+                    if is_panic_state:
+                        meta = enriched_signal.get("meta") or {}
+                        if not isinstance(meta, dict):
+                            meta = {}
+
+                        # --- TP/RR Phantom Fix (gated: only during panic states) ---
+                        rr_fix_mode = str(crash_cfg.get("tp_rr_fix_mode", "off") or "off").strip().lower()
+                        if rr_fix_mode != "off":
+                            try:
+                                gap_th = float(crash_cfg.get("tp_rr_fix_ema_gap_atr_threshold", 0.0) or 0.0)
+                            except Exception:
+                                gap_th = 0.0
+
+                            gap_atr = panic_meta.get("ema_fast_gap_atr")
+                            gap_atr_f = None
+                            try:
+                                if gap_atr is not None:
+                                    gap_atr_f = float(gap_atr)
+                            except Exception:
+                                gap_atr_f = None
+
+                            if gap_th > 0 and gap_atr_f is not None and gap_atr_f >= gap_th:
+                                try:
+                                    entry_val = float(enriched_signal.get("entry") or 0.0)
+                                except Exception:
+                                    entry_val = 0.0
+                                try:
+                                    stop_val = float(enriched_signal.get("stop") or 0.0)
+                                except Exception:
+                                    stop_val = 0.0
+                                try:
+                                    target_val = float(
+                                        enriched_signal.get("target")
+                                        or enriched_signal.get("take_profit")
+                                        or 0.0
+                                    )
+                                except Exception:
+                                    target_val = 0.0
+
+                                risk_val = abs(entry_val - stop_val) if entry_val > 0 and stop_val > 0 else 0.0
+
+                                rr_raw = None
+                                try:
+                                    rr_raw = float(enriched_signal.get("rr_ratio") or 0.0)
+                                except Exception:
+                                    rr_raw = None
+                                if rr_raw is None or rr_raw <= 0:
+                                    rr_raw = (
+                                        (abs(target_val - entry_val) / risk_val)
+                                        if (risk_val > 0 and target_val > 0)
+                                        else None
+                                    )
+
+                                fix_meta = {
+                                    "mode": rr_fix_mode,
+                                    "ema_fast_gap_atr": gap_atr_f,
+                                    "ema_fast_gap_atr_threshold": gap_th,
+                                    "rr_raw": rr_raw,
+                                    "applied": False,
+                                }
+
+                                if rr_fix_mode == "clamp_tp":
+                                    try:
+                                        max_tp_atr = float(crash_cfg.get("tp_rr_fix_max_tp_atr_mult", 0.0) or 0.0)
+                                    except Exception:
+                                        max_tp_atr = 0.0
+
+                                    atr_val = panic_meta.get("atr")
+                                    atr_f = None
+                                    try:
+                                        if atr_val is not None:
+                                            atr_f = float(atr_val)
+                                    except Exception:
+                                        atr_f = None
+
+                                    if (
+                                        max_tp_atr > 0
+                                        and atr_f is not None
+                                        and atr_f > 0
+                                        and entry_val > 0
+                                        and target_val > 0
+                                        and risk_val > 0
+                                    ):
+                                        max_target = entry_val + (max_tp_atr * atr_f)
+                                        if target_val > max_target:
+                                            enriched_signal["target"] = max_target
+                                            enriched_signal["rr_ratio"] = (max_target - entry_val) / risk_val
+                                            fix_meta.update(
+                                                {
+                                                    "applied": True,
+                                                    "max_tp_atr_mult": max_tp_atr,
+                                                    "atr": atr_f,
+                                                    "target_raw": target_val,
+                                                    "target_clamped": max_target,
+                                                    "rr_new": enriched_signal.get("rr_ratio"),
+                                                }
+                                            )
+
+                                elif rr_fix_mode == "penalize_rr":
+                                    try:
+                                        penalty = float(crash_cfg.get("tp_rr_fix_rr_penalty", 1.0) or 1.0)
+                                    except Exception:
+                                        penalty = 1.0
+                                    if rr_raw is not None and rr_raw > 0 and penalty > 0 and penalty != 1.0:
+                                        enriched_signal["rr_ratio"] = rr_raw * penalty
+                                        fix_meta.update(
+                                            {
+                                                "applied": True,
+                                                "rr_penalty": penalty,
+                                                "rr_new": enriched_signal.get("rr_ratio"),
+                                            }
+                                        )
+
+                                if fix_meta.get("applied"):
+                                    meta.setdefault("tp_rr_fix", fix_meta)
+
+                        rsi_hook = bool(meta.get("rsi_hook"))
+                        bull_candle = bool(meta.get("bull_candle"))
+                        reclaim = bool(meta.get("reclaim"))
+
+                        # Tiered acceptance:
+                        # - HIGH: rsi_hook AND (bull_candle OR reclaim)
+                        # - EXTREME (or very large EMA gap): rsi_hook AND reclaim
+                        volume_bucket_label = str(volume_bucket or "").upper().strip()
+                        ema_gap_atr = None
+                        try:
+                            ema_gap_atr = float(panic_meta.get("ema_fast_gap_atr")) if panic_meta.get("ema_fast_gap_atr") is not None else None
+                        except Exception:
+                            ema_gap_atr = None
+                        try:
+                            extreme_gap_th = float(crash_cfg.get("extreme_gap_atr_threshold", 0.0) or 0.0)
+                        except Exception:
+                            extreme_gap_th = 0.0
+                        strict_extreme = bool(volume_bucket_label == "EXTREME")
+                        if not strict_extreme and extreme_gap_th > 0 and ema_gap_atr is not None and ema_gap_atr >= extreme_gap_th:
+                            strict_extreme = True
+
+                        if strict_extreme:
+                            reversal_ok = bool(rsi_hook and reclaim)
+                        else:
+                            reversal_ok = bool(rsi_hook and (bull_candle or reclaim))
+
+                        if not reversal_ok:
+                            self.processing_stats['rejected_signals'] += 1
+                            missing = []
+                            if not rsi_hook:
+                                missing.append("rsi_hook")
+                            if strict_extreme:
+                                if not reclaim:
+                                    missing.append("reclaim")
+                            else:
+                                if not (bull_candle or reclaim):
+                                    missing.append("bull_candle_or_reclaim")
+
+                            logger.warning(
+                                "🛡️  %s REJECTED (PanicGuard): panic_veto_no_reversal | bucket=%s tf=%s drop=%s atr=%s bear_body=%s ema_gap_atr=%s strict_extreme=%s missing=%s",
+                                log_prefix,
+                                (volume_bucket or "n/a"),
+                                panic_meta.get("tf"),
+                                panic_meta.get("fast_drop_pct"),
+                                panic_meta.get("atr_pct"),
+                                panic_meta.get("bearish_body_ratio"),
+                                panic_meta.get("ema_fast_gap_atr"),
+                                bool(strict_extreme),
+                                ",".join(missing) if missing else "n/a",
+                            )
+                            return {
+                                "status": "rejected",
+                                "reason": "panic_veto_no_reversal",
+                                "reason_code": "panic_veto_no_reversal",
+                                "stage": "panic_guard",
+                                "panic_guard": panic_meta,
+                                "missing_reversal": missing,
+                            }
 
             # --- Volume Policy Matrix (Phase 3) ---
             def _calc_stop_pct(sig: Dict[str, Any]) -> Optional[float]:
@@ -8513,6 +9145,19 @@ class StrategyCoordinator:
         signal_entry['status'] = 'executed'
         signal_entry['execution_result'] = execution_result
         signal_entry['execution_time'] = datetime.now(timezone.utc)
+
+        # Clear stop-loss reversal-only guard once an entry is actually executed.
+        try:
+            sig = signal_entry.get("signal") or {}
+            strat = sig.get("strategy_name") or sig.get("strategy")
+            sym = sig.get("symbol")
+            s_norm = self._normalize_side(sig.get("side"))
+            if strat and sym and s_norm:
+                sl_key = f"{strat}:{sym}:{s_norm}"
+                with self._strategy_cooldowns_lock:
+                    self._stop_loss_reversal_required.pop(sl_key, None)
+        except Exception:
+            pass
 
         # Update history entry if present to reflect execution
         history_entry = self._signal_history_lookup.get(signal_id)

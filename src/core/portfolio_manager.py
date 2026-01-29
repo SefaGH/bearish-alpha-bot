@@ -69,6 +69,12 @@ class PortfolioManager:
         self.total_equity = float(self.portfolio_value)
         self.peak_portfolio_value = self.portfolio_value
         self.current_drawdown = 0.0
+
+        # Daily PnL tracking (used for dynamic daily trade limit policies).
+        # NOTE: Portfolio value is updated only by realized PnL in `close_position`.
+        self._initial_equity = float(self.portfolio_value)
+        self._day_start_equity = float(self.portfolio_value)
+        self._day_peak_equity = float(self.portfolio_value)
         
         # Portfolio state
         self.portfolio_state = {
@@ -84,6 +90,17 @@ class PortfolioManager:
         self.optimization_history = []
         
         logger.info(f"PortfolioManager initialized with portfolio value: ${self.portfolio_value:.2f}")
+
+    def _rollover_trading_day_if_needed(self) -> None:
+        """Reset per-day counters when UTC date changes."""
+        today = datetime.now(timezone.utc).date()
+        if today == self._last_trade_date:
+            return
+        self._todays_trade_count = 0
+        self._last_trade_date = today
+        self._day_start_equity = float(self.portfolio_value)
+        self._day_peak_equity = float(self.portfolio_value)
+        logger.info(f"📅 New trading day: {today}. Trade count reset to 0.")
 
     def set_execution_managers(self, order_manager, position_manager):
         """
@@ -107,13 +124,9 @@ class PortfolioManager:
         Returns:
             Current number of trades executed today
         """
-        today = datetime.now(timezone.utc).date()
-        if today != self._last_trade_date:
-            self._todays_trade_count = 0
-            self._last_trade_date = today
-            logger.info(f"📅 New trading day: {today}. Trade count reset to 0.")
+        self._rollover_trading_day_if_needed()
         return self._todays_trade_count
-    
+
     def increment_trade_count(self):
         """
         Increment the daily trade counter.
@@ -122,6 +135,29 @@ class PortfolioManager:
         self.get_todays_trade_count()  # Ensure day check is performed first
         self._todays_trade_count += 1
         logger.info(f"📊 Daily trade count incremented to: {self._todays_trade_count}")
+
+    def get_todays_pnl_usd(self) -> float:
+        """Return today's realized PnL in USD (UTC day, based on equity delta)."""
+        self._rollover_trading_day_if_needed()
+        return float(self.portfolio_value) - float(self._day_start_equity)
+
+    def get_todays_start_equity_usd(self) -> float:
+        """Return today's start-of-day equity in USD (UTC day)."""
+        self._rollover_trading_day_if_needed()
+        return float(self._day_start_equity)
+
+    def get_todays_drawdown_pct(self) -> float:
+        """Return today's drawdown as fraction (UTC day, realized-only equity)."""
+        self._rollover_trading_day_if_needed()
+        peak = float(self._day_peak_equity)
+        if peak <= 0:
+            return 0.0
+        equity = float(self.portfolio_value)
+        return max(0.0, (peak - equity) / peak)
+
+    def get_pnl_since_start_usd(self) -> float:
+        """Return total realized PnL since PortfolioManager initialization (USD)."""
+        return float(self.portfolio_value) - float(self._initial_equity)
     
     # PHASE 2: Portfolio state management methods (central source of truth)
     
@@ -216,12 +252,15 @@ class PortfolioManager:
             exit_price: Exit price
             realized_pnl: Realized profit/loss
         """
+        self._rollover_trading_day_if_needed()
         if position_id in self.active_positions:
             position = self.active_positions.pop(position_id)
             
             # Update portfolio value
             self.portfolio_value += realized_pnl
             self.portfolio_state['total_value'] = self.portfolio_value
+            if self.portfolio_value > self._day_peak_equity:
+                self._day_peak_equity = float(self.portfolio_value)
             
             # Update drawdown metrics
             if self.portfolio_value > self.peak_portfolio_value:

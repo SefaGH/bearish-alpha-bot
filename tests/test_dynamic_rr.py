@@ -236,6 +236,48 @@ class TestDynamicRRCalculation:
         is_valid, reason = rule.validate(signal, portfolio)
         assert is_valid is False
         assert "1.30" in reason
+
+    def test_ppo_multiplier_respects_upper_bound(self):
+        """Upper bound should remain a hard cap even after PPO multipliers."""
+        config = RiskConfiguration({
+            'equity_usd': 10000,
+            'rr_dynamic': {
+                'enabled': True,
+                'base_target_rr': 2.0,
+                'lower_bound_rr': 0.5,
+                'upper_bound_rr': 2.0,
+                'weights': {
+                    'ml_confidence': 0.0,
+                    'rl_agreement': 0.0,
+                    'regime_clarity': 0.0,
+                    'volume_strength': 0.0,
+                    'momentum_strength': 0.0
+                },
+                'fallback': {
+                    'missing_ml_default': 0.5,
+                    'missing_rl_default': 0.5,
+                    'missing_regime_default': 0.3
+                },
+                'regime_multipliers': {
+                    'neutral': 1.0
+                }
+            }
+        })
+
+        rule = RiskRewardRatioRule(config=config)
+        signal = {
+            'symbol': 'BTC/USDT',
+            'entry': 100,
+            'stop': 99,
+            'target': 102,  # Actual R/R = 2.0
+            'regime_name': 'neutral',
+            'regime_confidence': 1.0,
+            'strategy_min_rr': 0.5,
+            'ppo_rr_multiplier': 1.3
+        }
+
+        target_rr = rule._calculate_dynamic_target(signal)
+        assert target_rr == pytest.approx(2.0, rel=1e-6)
     
     def test_respects_bounds(self):
         """Dynamic target should stay within configured bounds."""

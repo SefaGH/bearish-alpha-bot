@@ -2809,6 +2809,14 @@ class ProductionCoordinator:
                 self.position_manager.set_dispatch_notifier(
                     lambda: self.trading_engine.trigger_coordinator_drain(timeout=0.0)
                 )
+
+            if (
+                hasattr(self.position_manager, "set_trade_closed_notifier")
+                and hasattr(self.strategy_coordinator, "handle_trade_closed")
+            ):
+                self.position_manager.set_trade_closed_notifier(
+                    lambda payload: self.strategy_coordinator.handle_trade_closed(payload)
+                )
             
             # === STEP 13: SET ACTIVE SYMBOLS ===
             self.active_symbols = trading_symbols or self._get_default_symbols()

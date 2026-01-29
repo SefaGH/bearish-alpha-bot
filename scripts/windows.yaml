@@ -1,0 +1,31 @@
+windows:
+  - name: crash
+    start: 2026-01-29T14:55:00Z
+    end: 2026-01-29T15:20:00Z
+    timezone: UTC
+    notes: "Jan 29, 2026 waterfall crash incident window (BTC/USDT:USDT)."
+    incident:
+      log: logs/live_trading_20260129_113646_906535.log
+      positions:
+        - pos_BTC/USDT:USDT_1769698862
+        - pos_BTC/USDT:USDT_1769699149
+        - pos_BTC/USDT:USDT_1769699438
+
+  - name: trend_up_high_vol
+    start: 2026-01-21T14:00:00Z
+    end: 2026-01-21T16:00:00Z
+    timezone: UTC
+    notes: "Trend-up, high-volume regime (guard should not over-block)."
+
+  - name: news_spike_pump
+    start: 2026-01-23T15:00:00Z
+    end: 2026-01-23T17:00:00Z
+    timezone: UTC
+    notes: "News-like spike/pump window (high/EXTREME volume but upward)."
+
+  - name: calm_range
+    start: 2026-01-24T10:00:00Z
+    end: 2026-01-24T12:00:00Z
+    timezone: UTC
+    notes: "Calm/range window (typically NORMAL volume; crash guard should be mostly inactive)."
+

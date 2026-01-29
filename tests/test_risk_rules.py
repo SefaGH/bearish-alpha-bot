@@ -17,7 +17,8 @@ from core.risk_rules import (
     PortfolioHeatRule,
     MaxDrawdownRule,
     RiskRewardRatioRule,
-    StrategyPerformanceRule
+    StrategyPerformanceRule,
+    DailyTradeLimitRule,
 )
 
 
@@ -41,6 +42,43 @@ class MockPortfolioManager:
     
     def get_open_positions(self):
         return self.positions
+
+
+class MockDailyLimitPortfolio:
+    def __init__(
+        self,
+        *,
+        trades_today: int,
+        todays_pnl_usd: float = 0.0,
+        pnl_since_start_usd: float = 0.0,
+        todays_start_equity_usd: float = 1000.0,
+        todays_drawdown_pct: float = 0.0,
+        current_drawdown: float = 0.0,
+    ):
+        self._trades_today = trades_today
+        self._todays_pnl_usd = todays_pnl_usd
+        self._pnl_since_start_usd = pnl_since_start_usd
+        self._todays_start_equity_usd = todays_start_equity_usd
+        self._todays_drawdown_pct = todays_drawdown_pct
+        self._current_drawdown = current_drawdown
+
+    def get_todays_trade_count(self) -> int:
+        return self._trades_today
+
+    def get_todays_pnl_usd(self) -> float:
+        return self._todays_pnl_usd
+
+    def get_todays_start_equity_usd(self) -> float:
+        return self._todays_start_equity_usd
+
+    def get_todays_drawdown_pct(self) -> float:
+        return self._todays_drawdown_pct
+
+    def get_current_drawdown(self) -> float:
+        return self._current_drawdown
+
+    def get_pnl_since_start_usd(self) -> float:
+        return self._pnl_since_start_usd
 
 
 class TestBaseRiskRule:
@@ -531,6 +569,111 @@ class TestRulesEngineIntegration:
         is_valid, reason = rule.validate(signal, portfolio)
         assert is_valid is True
         assert "disabled" in reason.lower()
+
+
+class TestDailyTradeLimitRule:
+    def test_allows_under_limit(self):
+        rule = DailyTradeLimitRule(max_daily_trades=2)
+        portfolio = MockDailyLimitPortfolio(trades_today=1)
+        signal = {"symbol": "BTC/USDT"}
+
+        is_valid, _ = rule.validate(signal, portfolio)
+        assert is_valid is True
+
+    def test_rejects_at_static_limit(self):
+        rule = DailyTradeLimitRule(max_daily_trades=2)
+        portfolio = MockDailyLimitPortfolio(trades_today=2)
+        signal = {"symbol": "BTC/USDT"}
+
+        is_valid, reason = rule.validate(signal, portfolio)
+        assert is_valid is False
+        assert "daily trade limit" in reason.lower()
+
+    def test_profit_unlock_allows_extra_trades(self):
+        rule = DailyTradeLimitRule(
+            max_daily_trades=2,
+            dynamic_config={
+                "profit_unlock": {
+                    "enabled": True,
+                    "pnl_source": "daily",
+                    "min_pnl_usd": 0.0,
+                    "extra_trades": 1,
+                }
+            },
+        )
+        portfolio = MockDailyLimitPortfolio(trades_today=2, todays_pnl_usd=10.0)
+        signal = {"symbol": "BTC/USDT"}
+
+        is_valid, reason = rule.validate(signal, portfolio)
+        assert is_valid is True, reason
+
+        portfolio_block = MockDailyLimitPortfolio(trades_today=3, todays_pnl_usd=10.0)
+        is_valid, reason = rule.validate(signal, portfolio_block)
+        assert is_valid is False
+        assert "3/3" in reason
+
+    def test_profit_unlock_since_start_source(self):
+        rule = DailyTradeLimitRule(
+            max_daily_trades=2,
+            dynamic_config={
+                "profit_unlock": {
+                    "enabled": True,
+                    "pnl_source": "since_start",
+                    "min_pnl_usd": 0.0,
+                    "extra_trades": 2,
+                }
+            },
+        )
+        portfolio = MockDailyLimitPortfolio(trades_today=3, pnl_since_start_usd=5.0)
+        signal = {"symbol": "BTC/USDT"}
+
+        is_valid, reason = rule.validate(signal, portfolio)
+        assert is_valid is True, reason
+
+    def test_profit_unlock_blocked_by_daily_drawdown(self):
+        rule = DailyTradeLimitRule(
+            max_daily_trades=2,
+            dynamic_config={
+                "profit_unlock": {
+                    "enabled": True,
+                    "pnl_source": "daily",
+                    "min_pnl_usd": 0.0,
+                    "max_drawdown_pct": 0.03,
+                    "drawdown_source": "daily",
+                    "extra_trades": 2,
+                }
+            },
+        )
+        portfolio = MockDailyLimitPortfolio(trades_today=2, todays_pnl_usd=10.0, todays_drawdown_pct=0.05)
+        signal = {"symbol": "BTC/USDT"}
+
+        is_valid, reason = rule.validate(signal, portfolio)
+        assert is_valid is False
+        assert "2/2" in reason
+
+    def test_profit_unlock_requires_min_pnl_pct(self):
+        rule = DailyTradeLimitRule(
+            max_daily_trades=2,
+            dynamic_config={
+                "profit_unlock": {
+                    "enabled": True,
+                    "pnl_source": "daily",
+                    "min_pnl_usd": 0.0,
+                    "min_pnl_pct": 0.02,  # +2%
+                    "extra_trades": 2,
+                }
+            },
+        )
+        signal = {"symbol": "BTC/USDT"}
+
+        portfolio_not_enough = MockDailyLimitPortfolio(trades_today=2, todays_pnl_usd=10.0, todays_start_equity_usd=1000.0)
+        is_valid, reason = rule.validate(signal, portfolio_not_enough)
+        assert is_valid is False
+        assert "2/2" in reason
+
+        portfolio_enough = MockDailyLimitPortfolio(trades_today=2, todays_pnl_usd=25.0, todays_start_equity_usd=1000.0)
+        is_valid, reason = rule.validate(signal, portfolio_enough)
+        assert is_valid is True, reason
 
 
 if __name__ == "__main__":

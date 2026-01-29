@@ -12,7 +12,8 @@ composable, extensible rules engine following the Open/Closed Principle.
 
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from typing import Dict, Tuple, Any
+import math
+from typing import Dict, Tuple, Any, Optional
 from datetime import datetime, timezone
 import logging
 
@@ -606,6 +607,7 @@ class RiskRewardRatioRule(BaseRiskRule):
             # This is only used for backward compatibility with legacy tests
             from config.risk_config import RiskConfiguration
             self.risk_config = RiskConfiguration({
+                'equity_usd': 10000,
                 'rr_dynamic': {
                     'enabled': False,
                     'base_target_rr': min_risk_reward
@@ -800,9 +802,9 @@ class RiskRewardRatioRule(BaseRiskRule):
         # Soft-weighted regime adjustment: interpolate between 1.0 (no effect) and regime_mult
         regime_adjustment = 1.0 + (regime_mult - 1.0) * regime_weight
         
-        # Calculate dynamic target
-        dynamic_target = (base_rr - relaxation + tightening) * regime_adjustment
-        
+        # Calculate dynamic target (pre-PPO)
+        dynamic_target_pre_ppo = (base_rr - relaxation + tightening) * regime_adjustment
+
         # Respect strategy's minimum (support both keys for interoperability):
         # - `strategy_min_rr` (common)
         # - `min_rr_ratio` (mean_reversion emits this)
@@ -815,19 +817,34 @@ class RiskRewardRatioRule(BaseRiskRule):
                 strategy_floor = float(strategy_floor_raw)
             except Exception:
                 strategy_floor = 0.5
-        dynamic_target = max(dynamic_target, strategy_floor)
-        
-        # Apply bounds
-        final_target = max(lower_bound, min(dynamic_target, upper_bound))
 
+        # Apply PPO multiplier BEFORE bounds so upper_bound_rr is a true hard cap.
         ppo_rr_multiplier = float(signal.get('ppo_rr_multiplier', 1.0))
-        final_target *= max(0.1, ppo_rr_multiplier)
+        dynamic_target = float(dynamic_target_pre_ppo) * max(0.1, ppo_rr_multiplier)
+
+        # Apply strategy floor after multipliers (PPO down-mults should not undercut strategy requirements).
+        dynamic_target = max(dynamic_target, strategy_floor)
+
+        effective_upper_bound = upper_bound
+        if strategy_floor > upper_bound:
+            logger.warning(
+                "[Dynamic R/R] Misconfiguration detected: Strategy floor %.2f exceeds Risk Cap (upper_bound_rr=%.2f) "
+                "for %s. Enforcing floor as effective cap.",
+                strategy_floor,
+                upper_bound,
+                symbol,
+            )
+            effective_upper_bound = strategy_floor
+
+        # Apply bounds (hard caps) after all multipliers
+        final_target = max(lower_bound, min(dynamic_target, effective_upper_bound))
         
         # Detailed logging
         logger.info(
             f"📊 [Dynamic R/R Calc] Base={base_rr:.2f} - Relax={relaxation:.2f} + Tight={tightening:.2f} "
             f"× Regime({regime_name}, mult={regime_mult:.1f}, weight={regime_weight:.2f})={regime_adjustment:.2f} "
-            f"= {dynamic_target:.2f} × PPO({ppo_rr_multiplier:.2f}) → Final={final_target:.2f}"
+            f"= {dynamic_target_pre_ppo:.2f} × PPO({ppo_rr_multiplier:.2f}) "
+            f"= {dynamic_target:.2f} → Final={final_target:.2f}"
         )
 
         if model_version == 'v2':
@@ -1020,20 +1037,149 @@ class DailyTradeLimitRule(BaseRiskRule):
     - Enforcing disciplined trading approach
     """
     
-    def __init__(self, max_daily_trades: int, rule_name: str = None):
+    def __init__(
+        self,
+        max_daily_trades: int,
+        *,
+        dynamic_config: Optional[Dict[str, Any]] = None,
+        rule_name: str = None,
+    ):
         """
         Initialize daily trade limit rule.
         
         Args:
             max_daily_trades: Maximum number of trades allowed per day
+            dynamic_config: Optional `risk.daily_trade_limit` config dict for dynamic cap policies
             rule_name: Optional custom rule name
         """
         super().__init__(rule_name or "DailyTradeLimitRule")
         self.max_daily_trades = max_daily_trades
+        self.dynamic_config = dynamic_config if isinstance(dynamic_config, dict) else {}
         
         if max_daily_trades <= 0:
             logger.warning(f"⚠️ DailyTradeLimitRule initialized with invalid limit: {max_daily_trades}. "
                          f"This rule will effectively block all trades.")
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            if value is None or isinstance(value, bool):
+                return default
+            return int(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+        try:
+            if value is None or isinstance(value, bool):
+                return default
+            return float(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _normalize_pct_threshold(value: Optional[float]) -> Optional[float]:
+        if value is None or not math.isfinite(value):
+            return None
+        # Accept percent-style inputs (e.g., 5 -> 5%)
+        if value > 1:
+            return value / 100.0
+        return value
+
+    def _get_dynamic_allowed_max(self, portfolio_manager) -> Tuple[int, Optional[float], str]:
+        """Return (allowed_max_trades, pnl_usd_used, policy_label)."""
+        base = int(self.max_daily_trades)
+        cfg = self.dynamic_config or {}
+        profit_cfg = cfg.get("profit_unlock") if isinstance(cfg.get("profit_unlock"), dict) else {}
+
+        enabled = bool(profit_cfg.get("enabled", False))
+        if not enabled:
+            return base, None, "static"
+
+        pnl_source = (profit_cfg.get("pnl_source") or "daily").strip().lower()
+        pnl_usd = None
+        if pnl_source == "since_start":
+            getter = getattr(portfolio_manager, "get_pnl_since_start_usd", None)
+            if callable(getter):
+                try:
+                    pnl_usd = float(getter())
+                except Exception:
+                    pnl_usd = None
+        else:
+            getter = getattr(portfolio_manager, "get_todays_pnl_usd", None)
+            if callable(getter):
+                try:
+                    pnl_usd = float(getter())
+                except Exception:
+                    pnl_usd = None
+
+        min_pnl_usd = self._safe_float(profit_cfg.get("min_pnl_usd"), default=0.0) or 0.0
+        if pnl_usd is None or not math.isfinite(pnl_usd) or pnl_usd < min_pnl_usd:
+            return base, pnl_usd, "profit_unlock:not_eligible"
+
+        # Optional: require pnl to exceed a fraction of start-of-day equity (safer unlock).
+        min_pnl_pct = self._normalize_pct_threshold(self._safe_float(profit_cfg.get("min_pnl_pct"), default=None))
+        if min_pnl_pct is not None and min_pnl_pct > 0:
+            start_equity = None
+            getter = getattr(portfolio_manager, "get_todays_start_equity_usd", None)
+            if callable(getter):
+                try:
+                    start_equity = float(getter())
+                except Exception:
+                    start_equity = None
+            if start_equity is None or not math.isfinite(start_equity) or start_equity <= 0:
+                return base, pnl_usd, "profit_unlock:not_eligible_missing_equity"
+            pnl_pct = pnl_usd / start_equity
+            if pnl_pct < float(min_pnl_pct):
+                return base, pnl_usd, "profit_unlock:not_eligible_min_pnl_pct"
+
+        # Optional: do not unlock if drawdown is elevated (tighten again intraday).
+        max_drawdown_pct = self._normalize_pct_threshold(self._safe_float(profit_cfg.get("max_drawdown_pct"), default=None))
+        if max_drawdown_pct is not None and max_drawdown_pct >= 0:
+            dd_source = (profit_cfg.get("drawdown_source") or "daily").strip().lower()
+            drawdown = None
+            if dd_source == "overall":
+                getter = getattr(portfolio_manager, "get_current_drawdown", None)
+                if callable(getter):
+                    try:
+                        drawdown = float(getter())
+                    except Exception:
+                        drawdown = None
+            else:
+                getter = getattr(portfolio_manager, "get_todays_drawdown_pct", None)
+                if callable(getter):
+                    try:
+                        drawdown = float(getter())
+                    except Exception:
+                        drawdown = None
+
+            if drawdown is None or not math.isfinite(drawdown):
+                return base, pnl_usd, "profit_unlock:not_eligible_missing_drawdown"
+            if drawdown >= float(max_drawdown_pct):
+                return base, pnl_usd, "profit_unlock:not_eligible_drawdown"
+
+        # If configured, scale extra trades with profits (step function).
+        pnl_step_usd = self._safe_float(profit_cfg.get("pnl_step_usd"), default=None)
+        extra_trades_per_step = self._safe_int(profit_cfg.get("extra_trades_per_step"), default=1)
+        if pnl_step_usd is not None and pnl_step_usd > 0 and extra_trades_per_step > 0:
+            steps = int(math.floor((pnl_usd - min_pnl_usd) / float(pnl_step_usd)))
+            extra_trades = max(0, steps * extra_trades_per_step)
+        else:
+            extra_trades = max(0, self._safe_int(profit_cfg.get("extra_trades"), default=0))
+
+        max_extra_trades = self._safe_int(profit_cfg.get("max_extra_trades"), default=0)
+        if max_extra_trades > 0:
+            extra_trades = min(extra_trades, max_extra_trades)
+
+        allowed = base + extra_trades
+
+        max_trades_cap = self._safe_int(profit_cfg.get("max_trades_cap"), default=0)
+        if max_trades_cap > 0:
+            allowed = min(allowed, max_trades_cap)
+
+        allowed = max(base, int(allowed))
+        return allowed, pnl_usd, "profit_unlock:eligible"
     
     def validate(self, signal: Dict, portfolio_manager) -> Tuple[bool, str]:
         """
@@ -1064,19 +1210,28 @@ class DailyTradeLimitRule(BaseRiskRule):
                 return (True, f"{self.rule_name}: cannot verify (missing method - fail-safe mode)")
             
             todays_trades = portfolio_manager.get_todays_trade_count()
+            allowed_max, pnl_usd, policy = self._get_dynamic_allowed_max(portfolio_manager)
             
-            logger.debug(f"[{self.rule_name}] {symbol}: Today's trades: {todays_trades}/{self.max_daily_trades}")
+            if pnl_usd is None:
+                logger.debug(
+                    f"[{self.rule_name}] {symbol}: Today's trades: {todays_trades}/{allowed_max} (policy={policy})"
+                )
+            else:
+                logger.debug(
+                    f"[{self.rule_name}] {symbol}: Today's trades: {todays_trades}/{allowed_max} "
+                    f"(policy={policy}, pnl_usd={pnl_usd:+.2f})"
+                )
             
-            if todays_trades >= self.max_daily_trades:
+            if todays_trades >= allowed_max:
                 logger.warning(
                     f"🚫 [{self.rule_name}] REJECTED: {symbol}\n"
-                    f"   Daily trade limit reached: {todays_trades}/{self.max_daily_trades}\n"
+                    f"   Daily trade limit reached: {todays_trades}/{allowed_max}\n"
                     f"   No more trades allowed until next trading day."
                 )
-                return (False, f"Daily trade limit reached: {todays_trades}/{self.max_daily_trades}")
+                return (False, f"Daily trade limit reached: {todays_trades}/{allowed_max}")
             
-            logger.debug(f"✅ [{self.rule_name}] PASSED: {symbol} ({todays_trades + 1}/{self.max_daily_trades})")
-            return (True, f"Daily trade limit check passed ({todays_trades + 1}/{self.max_daily_trades})")
+            logger.debug(f"✅ [{self.rule_name}] PASSED: {symbol} ({todays_trades + 1}/{allowed_max})")
+            return (True, f"Daily trade limit check passed ({todays_trades + 1}/{allowed_max})")
             
         except Exception as e:
             logger.error(f"[{self.rule_name}] Validation error: {e}", exc_info=True)

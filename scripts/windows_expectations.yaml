@@ -1,0 +1,19 @@
+expectations:
+  crash:
+    eligible_share: { min: 0.80, max: 1.00 }
+    blocked_rate: { min: 0.80, max: 1.00 }
+    strict_extreme_share: { min: 0.50, max: 1.00 }
+    incident:
+      panic_veto_no_reversal: { min: 3, max: 3 }
+      churn_drop_count: { min: 2, max: 2 }
+
+  trend_up_high_vol:
+    blocked_rate: { min: 0.00, max: 0.10 }
+
+  news_spike_pump:
+    blocked_rate: { min: 0.00, max: 0.10 }
+
+  calm_range:
+    eligible_share: { min: 0.00, max: 0.20 }
+    blocked_rate: { min: 0.00, max: 0.05 }
+

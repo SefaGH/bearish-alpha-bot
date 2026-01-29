@@ -74,7 +74,29 @@ risk:
   # Safety limits
   min_stop_pct: 0.005                 # Override with: MIN_STOP_PCT ; Override with: RISK_MIN_STOP_PCT
   
+  # Daily trade limit (static cap)
   daily_max_trades: 8                 # Override with: DAILY_MAX_TRADES
+
+  # Optional: Dynamic daily trade limit extension (profit-based)
+  # - Uses PortfolioManager equity delta as realized PnL proxy (UTC day)
+  # - When enabled AND pnl >= min_pnl_usd, cap is increased (within optional caps)
+  daily_trade_limit:
+    profit_unlock:
+      enabled: false
+      pnl_source: daily               # daily|since_start
+      min_pnl_usd: 0.0
+      # Optional: require a minimum profit as a fraction of start-of-day equity (e.g. 0.01 == +1%)
+      # min_pnl_pct: 0.01
+
+      # Optional safety: if drawdown is elevated, do NOT unlock extra trades (re-tighten intraday)
+      # max_drawdown_pct: 0.03         # 0.03 == 3% (also accepts 3 == 3%)
+      # drawdown_source: daily         # daily|overall
+      extra_trades: 4
+      # Optional: scale extra trades with profits
+      # pnl_step_usd: 50.0
+      # extra_trades_per_step: 1
+      # max_extra_trades: 8
+      # max_trades_cap: 20
   
   # NEW: Dynamic Risk/Reward System
   rr_dynamic:
@@ -136,6 +158,13 @@ risk:
   # - For R/R, `strategy_profiles.<name>.rr_dynamic` overrides global `rr_dynamic` settings.
   # - Backward compatible: `rr_dynamic.strategy_overrides` still works (and is merged first).
   strategy_profiles:
+    # Mean-reversion strategies (e.g., Order Block bounces) should cap required R/R to realistic ranges.
+    # NOTE: `upper_bound_rr` is a true hard cap (applied after PPO multipliers) as of 2026-01-29.
+    adaptive_ob:
+      rr_dynamic:
+        base_target_rr: 1.5
+        lower_bound_rr: 1.2
+        upper_bound_rr: 2.0
     mean_reversion:
       per_trade_risk_pct: 0.02  # Strategy override: per-trade risk fraction (2%); falls back to global `risk.per_trade_risk_pct` when omitted
       rr_dynamic:
@@ -404,6 +433,27 @@ signals:
       quantile: "auto"                # 0..1 or "auto"
       min_distance_atr_mult: 0.8
       min_width_atr_mult: 0.35
+
+    # Smart Recovery TP (Structural Targeting) - for post-crash consolidations
+    # - Activates during shock (drop) and/or resistance-band compression.
+    # - Builds a target pool (fibo/pivot/ATR/band) then filters by reachability + strategy min RR.
+    # - If no candidates pass, the trade is skipped (no "force TP upward").
+    smart_recovery:
+      enabled: true
+
+      activation:
+        drop_magnitude_pct: 0.012       # %1.2+ düşüşlerde "Shock" modu (fraction: 0.012 == 1.2%)
+        band_compression_ratio: 0.85   # Band/ATR < 0.85 ise "Sıkışma" modu
+
+      targets:
+        lookback_bars: 36              # 3 Saatlik pencere (5m x 36)
+        min_leg_atr_mult: 2.0          # Gürültü engelleme: Bacak boyu en az 2 ATR olmalı
+        fibo_levels: [0.236, 0.382]
+        atr_extensions: [1.8]          # Liste yerine tek ve güvenli bir ATR hedefi
+
+      filters:
+        max_reachability_atr: 3.0      # 3 ATR'den uzak hedefi ele
+        barrier_penalty: 1.0           # Pivot direnci varsa skordan 1 puan düş (Hafif ceza)
     trend_confirmation_ema_gap_pct_min: 0.0020 # EMA gap minimum for trend RSI penalty (0.0020 = 0.20%)
     trend_confirmation_ema_gap_pct_on: 0.0020  # Optional hysteresis on-threshold (0.20%)
     trend_confirmation_ema_gap_pct_off: 0.0015 # Optional hysteresis off-threshold (0.15%)
@@ -709,6 +759,7 @@ strategies:
     low_volume_requires_reversal_confirmation: true  # Guardrail: require reversal confirmation when overriding LOW volume
     adaptive_ob_require_reversal_confirmation_in_downtrend: true  # Guardrail: only for LOW/very_low volume; require strong reversal in downtrend
     downtrend_guard_adx_threshold: 30.0  # Optional: tune "strong trend" threshold (default 30)
+    hook_delta: 1.0  # RSI hook delta for reversal telemetry (used by crash guard)
     volume_filters:
       enabled: true                 # Override with: STRATEGY_OB_VOLUME_FILTERS_ENABLED
       min_bucket: "NORMAL"          # Override with: STRATEGY_OB_VOLUME_FILTERS_MIN_BUCKET
@@ -720,6 +771,31 @@ strategies:
     adaptive_ob_persistency_min_samples: 2          # Minimum ticks meeting condition
     adaptive_ob_trigger_price_source: "mid"        # mid -> mark -> forming_close fallback
     adaptive_ob_wick_closeness_k: 0.25              # Normalized closeness to low (bar_low_and_close)
+    crash_guard:
+      enabled: true
+      panic_volume_buckets: ["HIGH", "EXTREME"]
+      panic_tf: "5m"
+      # Crash structure is computed on `panic_tf` OHLCV with `include_forming=true` (last bar may be forming).
+      # Metrics compare the last bar vs previous; tune thresholds to manage false positives:
+      # - `panic_fast_drop_pct`: close-to-close drop fraction
+      # - `panic_atr_pct`: ATR/price (only counts as panic if price is down to avoid killing pumps)
+      # - `panic_bear_body_ratio`: |close-open|/(high-low) with close < open
+      # - `panic_ema_gap_atr_threshold`: (ema_fast - close)/ATR threshold (catches early waterfall phases)
+      # During panic_state, entries are allowed only if strategy meta shows reversal: rsi_hook && (bull_candle || reclaim).
+      panic_lookback_bars: 3
+      panic_fast_drop_pct: 0.008          # Fraction (0.8%) close-to-close drop over panic_tf
+      panic_atr_pct: 0.006                # ATR/price threshold (fraction)
+      panic_bear_body_ratio: 0.60         # |close-open|/(high-low) for bearish candles
+      panic_ema_gap_atr_threshold: 3.0    # Panic trigger: (ema_fast - close)/ATR >= threshold
+      extreme_gap_atr_threshold: 5.0      # When crossed, require stricter reversal even if bucket != EXTREME
+      cooldown_mode: "panic_only"         # off|panic_only|escalating|reversal_only
+      cooldown_seconds: 30
+      cooldown_escalation_steps: [30, 90, 180]
+      cooldown_escalation_window_seconds: 600
+      tp_rr_fix_mode: "penalize_rr"       # off|penalize_rr|clamp_tp
+      tp_rr_fix_ema_gap_atr_threshold: 2.0
+      tp_rr_fix_rr_penalty: 0.5
+      tp_rr_fix_max_tp_atr_mult: 2.0
 
   adaptive_str:                      # Renamed: AdaptiveShortTheRip emits `strategy_name=adaptive_str`; `adaptive_short_the_rip` would be ignored
     execution_profile: "standard_mode"  # Hybrid: DCA+pyramiding enabled
@@ -748,16 +824,34 @@ strategies:
     # Optional (opt-in): FastWatch v2 - split "near monitoring" vs "touch trigger" + bid/ask touch confirm + freshness guard.
     # When unset, legacy behavior remains (eps_bps drives trigger as well).
     fast_watch:
-      near_bps: 10              # Passive monitoring threshold
-      touch_eps_bps: 3          # Touch trigger epsilon (bid/ask confirmed)
+      # 1) Sigma delta (high-vol adaptive)
+      touch_sigma_delta: 0.12
+
+      # 2) Static BPS safety floor (low-vol backstop)
+      touch_eps_bps: 6
+
+      # 3) Waiting room / monitoring thresholds (wider)
+      near_sigma_delta: 0.35
+      near_bps: 15
+
+      # 4) Safety clamps (price units) for sigma component only
+      min_touch_abs_px: 5.0
+      max_touch_abs_px: 150.0
+      max_near_abs_px: 300.0
+
+      # Optional (volatility-adaptive): if `condition_data.trigger_sigma` is present, effective epsilon becomes:
+      # eps_px = max(trigger_price * touch_eps_bps/10000, clamp(trigger_sigma * touch_sigma_delta))
+      # (and similarly for near_*). This ensures sigma-mode never narrows the legacy bps tolerance.
       touch_price_source: "bidask"  # Confirmation requires bid/ask (no mid-touch)
       max_ticker_age_ms: 500        # Applies ONLY to recheck trigger (strict freshness)
-      recheck_cooldown_ms: 1000     # Per pending_id DoS guard
+      recheck_cooldown_ms: 1500     # Per pending_id DoS guard
       allow_touch_entry: true       # Touch can override MR in-band veto when confirmed
     vwap_lookback: 1440       # 1440 bars in VWAP timeframe (timeframe=1m => ~24h)
     band_multiplier: 2.0
     stop_loss_std_delta: 1.0  # Override with: STRATEGIES__MEAN_REVERSION__STOP_LOSS_STD_DELTA ; Z-score stop distance beyond the active band (in sigmas)
-    adx_threshold: 25
+    adx_threshold: 25.0
+    adx_slope_lookback: 5
+    adx_slope_eps: 0.0
     net_profit_filter:
       enabled: true
       cost_bps_assumed: 6.0
@@ -765,12 +859,12 @@ strategies:
     allocation_pct: 0.20
     dynamic_controller:
       enabled: true
-      target_outside_pct: 0.10
+      target_outside_pct: 0.15
       abs_z_window: 500
       warmup_samples: 50
       update_interval_sec: 300
       min_m_change: 0.05
-      m_min: 1.8                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MIN ; Raise entry selectivity (filters noise)
+      m_min: 1.6                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MIN ; Raise entry selectivity (filters noise)
       m_max: 3.5                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MAX
       log_every_update: true
       freeze_on_trend: true

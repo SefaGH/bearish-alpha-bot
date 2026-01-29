@@ -1,0 +1,217 @@
+{
+  "config": "config/config.example.yaml",
+  "exchange": "bingx",
+  "generated_at_utc": "2026-01-29T21:57:57.496995+00:00",
+  "schema": "golden_windows_v1",
+  "symbol": "BTC/USDT:USDT",
+  "windows": [
+    {
+      "bucket_counts": {
+        "EXTREME": 26
+      },
+      "end_utc": "2026-01-29T15:20:00+00:00",
+      "incident": {
+        "churn": {
+          "by_reason": {
+            "stop_loss_cooldown_active": 2
+          },
+          "drop_count": 2,
+          "pairs": 2
+        },
+        "entry": {
+          "accepted": 0,
+          "attempts": 3,
+          "blocked": 3,
+          "by_reason": {
+            "panic_veto_no_reversal": 3
+          }
+        },
+        "positions": [
+          {
+            "open_ts": "2026-01-29T15:01:02+00:00",
+            "position_id": "pos_BTC/USDT:USDT_1769698862",
+            "reason_code": "panic_veto_no_reversal",
+            "reversal_meta": {
+              "bull_candle": false,
+              "reclaim": false,
+              "rsi_hook": false
+            },
+            "status": "rejected",
+            "volume_bucket": "EXTREME"
+          },
+          {
+            "open_ts": "2026-01-29T15:05:49+00:00",
+            "position_id": "pos_BTC/USDT:USDT_1769699149",
+            "reason_code": "panic_veto_no_reversal",
+            "reversal_meta": {
+              "bull_candle": true,
+              "reclaim": false,
+              "rsi_hook": true
+            },
+            "status": "rejected",
+            "volume_bucket": "EXTREME"
+          },
+          {
+            "open_ts": "2026-01-29T15:10:38+00:00",
+            "position_id": "pos_BTC/USDT:USDT_1769699438",
+            "reason_code": "panic_veto_no_reversal",
+            "reversal_meta": {
+              "bull_candle": false,
+              "reclaim": false,
+              "rsi_hook": false
+            },
+            "status": "rejected",
+            "volume_bucket": "EXTREME"
+          }
+        ]
+      },
+      "metrics": {
+        "accepted_rate": 0.0,
+        "blocked_rate": 1.0,
+        "eligible_share": 1.0,
+        "missing_reclaim": 26,
+        "strict_extreme_share": 1.0
+      },
+      "mfe_mae": {
+        "10m": {
+          "mae_mean": null,
+          "mae_p50": null,
+          "mae_p90": null,
+          "mfe_mean": null,
+          "mfe_p50": null,
+          "mfe_p90": null,
+          "n": 0
+        },
+        "5m": {
+          "mae_mean": null,
+          "mae_p50": null,
+          "mae_p90": null,
+          "mfe_mean": null,
+          "mfe_p50": null,
+          "mfe_p90": null,
+          "n": 0
+        }
+      },
+      "name": "crash",
+      "notes": "Jan 29, 2026 waterfall crash incident window (BTC/USDT:USDT).",
+      "start_utc": "2026-01-29T14:55:00+00:00",
+      "timezone": "UTC"
+    },
+    {
+      "bucket_counts": {
+        "EXTREME": 95,
+        "HIGH": 26
+      },
+      "end_utc": "2026-01-21T16:00:00+00:00",
+      "incident": null,
+      "metrics": {
+        "accepted_rate": 0.9504132231404959,
+        "blocked_rate": 0.049586776859504134,
+        "eligible_share": 1.0,
+        "missing_reclaim": 5,
+        "strict_extreme_share": 0.8333333333333334
+      },
+      "mfe_mae": {
+        "10m": {
+          "mae_mean": -0.001989099656963717,
+          "mae_p50": -0.0014924855866139135,
+          "mae_p90": -0.00020716639567095154,
+          "mfe_mean": 0.0031734983366123585,
+          "mfe_p50": 0.003085548047587197,
+          "mfe_p90": 0.006161292981822814,
+          "n": 115
+        },
+        "5m": {
+          "mae_mean": -0.0015309073712166193,
+          "mae_p50": -0.0010775253462090367,
+          "mae_p90": -0.00020716639567095154,
+          "mfe_mean": 0.002224170959910446,
+          "mfe_p50": 0.0018206227304471206,
+          "mfe_p90": 0.004840813869550487,
+          "n": 115
+        }
+      },
+      "name": "trend_up_high_vol",
+      "notes": "Trend-up, high-volume regime (guard should not over-block).",
+      "start_utc": "2026-01-21T14:00:00+00:00",
+      "timezone": "UTC"
+    },
+    {
+      "bucket_counts": {
+        "EXTREME": 91,
+        "HIGH": 30
+      },
+      "end_utc": "2026-01-23T17:00:00+00:00",
+      "incident": null,
+      "metrics": {
+        "accepted_rate": 0.9752066115702479,
+        "blocked_rate": 0.024793388429752067,
+        "eligible_share": 1.0,
+        "missing_reclaim": 1,
+        "strict_extreme_share": 1.0
+      },
+      "mfe_mae": {
+        "10m": {
+          "mae_mean": -0.001629326351577644,
+          "mae_p50": -0.001287164325207842,
+          "mae_p90": -0.00013367738990160781,
+          "mfe_mean": 0.0028880170868904585,
+          "mfe_p50": 0.0024393610472872606,
+          "mfe_p90": 0.007101288906808009,
+          "n": 118
+        },
+        "5m": {
+          "mae_mean": -0.0011845874606894243,
+          "mae_p50": -0.0010003722584190954,
+          "mae_p90": -0.00012089036818203358,
+          "mfe_mean": 0.0018284360287352038,
+          "mfe_p50": 0.0012927571665544576,
+          "mfe_p90": 0.004969205464296554,
+          "n": 118
+        }
+      },
+      "name": "news_spike_pump",
+      "notes": "News-like spike/pump window (high/EXTREME volume but upward).",
+      "start_utc": "2026-01-23T15:00:00+00:00",
+      "timezone": "UTC"
+    },
+    {
+      "bucket_counts": {
+        "NORMAL": 121
+      },
+      "end_utc": "2026-01-24T12:00:00+00:00",
+      "incident": null,
+      "metrics": {
+        "accepted_rate": 0.0,
+        "blocked_rate": 0.0,
+        "eligible_share": 0.0,
+        "missing_reclaim": 0,
+        "strict_extreme_share": 0.0
+      },
+      "mfe_mae": {
+        "10m": {
+          "mae_mean": -0.00019886785195811905,
+          "mae_p50": -0.0001372872048325421,
+          "mae_p90": -2.232840619804064e-06,
+          "mfe_mean": 0.00018519170797453408,
+          "mfe_p50": 0.0001149820494043585,
+          "mfe_p90": 0.00042089045683915834,
+          "n": 121
+        },
+        "5m": {
+          "mae_mean": -0.00010814733850468361,
+          "mae_p50": -4.465591501086255e-05,
+          "mae_p90": -1.1160851304119677e-06,
+          "mfe_mean": 0.00011191341709850817,
+          "mfe_p50": 4.689483609693262e-05,
+          "mfe_p90": 0.00027577644467217873,
+          "n": 121
+        }
+      },
+      "name": "calm_range",
+      "notes": "Calm/range window (typically NORMAL volume; crash guard should be mostly inactive).",
+      "start_utc": "2026-01-24T10:00:00+00:00",
+      "timezone": "UTC"
+    }
+  ]
+}

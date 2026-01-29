@@ -151,6 +151,32 @@ class VWAPMeanReversion(BaseStrategy):
             controller_cfg = {}
         controller_cfg = dict(controller_cfg) if isinstance(controller_cfg, dict) else {}
         controller_cfg.setdefault("adx_freeze_threshold", self.adx_threshold)
+
+        # Regime-adaptive ADX veto support (squeeze exception + slope check).
+        # - Uses controller vol_state when available.
+        # - Uses dynamic_controller.adx_freeze_threshold as the relaxed ceiling in squeeze only.
+        # - Falls back to static adx_threshold when inputs are missing/invalid.
+        try:
+            self._adx_slope_lookback = int(cfg.get("adx_slope_lookback", 5) or 5)
+        except Exception:
+            self._adx_slope_lookback = 5
+        self._adx_slope_lookback = max(1, int(self._adx_slope_lookback))
+        try:
+            self._adx_slope_eps = float(cfg.get("adx_slope_eps", 0.0) or 0.0)
+        except Exception:
+            self._adx_slope_eps = 0.0
+        if not math.isfinite(self._adx_slope_eps):
+            self._adx_slope_eps = 0.0
+
+        self._adx_squeeze_threshold = None
+        try:
+            raw_squeeze_th = controller_cfg.get("adx_freeze_threshold")
+            if raw_squeeze_th is not None:
+                squeeze_th = float(raw_squeeze_th)
+                if math.isfinite(squeeze_th) and squeeze_th > 0:
+                    self._adx_squeeze_threshold = float(squeeze_th)
+        except Exception:
+            self._adx_squeeze_threshold = None
         self._mr_controller = DynamicMRController(
             controller_cfg,
             static_band_multiplier=self.band_mult,
@@ -737,7 +763,88 @@ class VWAPMeanReversion(BaseStrategy):
                 z_val = None
 
         in_band = lower <= price <= upper
-        adx_ok = adx_val < self.adx_threshold
+        vol_state = None
+        try:
+            vol_state = str(getattr(controller_decision, "vol_state", "") or "").strip().lower() or None
+        except Exception:
+            vol_state = None
+
+        eff_adx_threshold = float(self.adx_threshold)
+        adx_slope = None
+        adx_decision_reason = "strict"
+
+        if not math.isfinite(adx_val):
+            adx_ok = adx_val < float(self.adx_threshold)
+            adx_decision_reason = "adx_nan"
+        else:
+            adx_ok = float(adx_val) < float(self.adx_threshold)
+            adx_decision_reason = "strict_ok" if adx_ok else "strict_veto"
+
+            squeeze_threshold = None
+            try:
+                squeeze_threshold = float(getattr(self, "_adx_squeeze_threshold", None))
+            except Exception:
+                squeeze_threshold = None
+            if squeeze_threshold is not None and (not math.isfinite(squeeze_threshold) or squeeze_threshold <= 0):
+                squeeze_threshold = None
+
+            if (
+                vol_state == "squeeze"
+                and squeeze_threshold is not None
+                and float(squeeze_threshold) > float(self.adx_threshold)
+                and float(adx_val) <= float(squeeze_threshold)
+            ):
+                if float(adx_val) <= float(self.adx_threshold):
+                    # Already inside strict threshold.
+                    adx_ok = True
+                    eff_adx_threshold = float(self.adx_threshold)
+                    adx_decision_reason = "squeeze_inside_strict"
+                else:
+                    # Extended zone: allow only if ADX is flat/falling (slope <= eps).
+                    lookback = int(getattr(self, "_adx_slope_lookback", 5) or 5)
+                    eps = float(getattr(self, "_adx_slope_eps", 0.0) or 0.0)
+                    if lookback < 1:
+                        lookback = 1
+
+                    adx_series = None
+                    try:
+                        if isinstance(clean_sig, pd.DataFrame) and "adx" in clean_sig.columns:
+                            adx_series = pd.to_numeric(clean_sig["adx"], errors="coerce")
+                    except Exception:
+                        adx_series = None
+
+                    if adx_series is not None and len(adx_series) > lookback:
+                        try:
+                            cur = float(adx_series.iloc[-1])
+                            prev = float(adx_series.iloc[-1 - lookback])
+                            if math.isfinite(cur) and math.isfinite(prev):
+                                adx_slope = float(cur - prev)
+                        except Exception:
+                            adx_slope = None
+
+                    if adx_slope is not None and math.isfinite(float(adx_slope)) and float(adx_slope) <= float(eps):
+                        adx_ok = True
+                        eff_adx_threshold = float(squeeze_threshold)
+                        adx_decision_reason = "squeeze_extended_flat_ok"
+                    else:
+                        adx_ok = False
+                        eff_adx_threshold = float(self.adx_threshold)
+                        adx_decision_reason = "squeeze_extended_rising_veto"
+            elif vol_state == "squeeze" and squeeze_threshold is not None and float(adx_val) > float(squeeze_threshold):
+                # Even in squeeze, do not relax above the squeeze threshold.
+                adx_ok = False
+                eff_adx_threshold = float(self.adx_threshold)
+                adx_decision_reason = "squeeze_above_threshold_veto"
+
+        logger.debug(
+            "[MeanReversion] ADX veto eval %s vol_state=%s adx=%.4f adx_slope=%s eff_th=%.4f decision=%s",
+            symbol,
+            vol_state or "none",
+            float(adx_val) if math.isfinite(adx_val) else float("nan"),
+            f"{float(adx_slope):.4f}" if adx_slope is not None and math.isfinite(float(adx_slope)) else "nan",
+            float(eff_adx_threshold) if math.isfinite(eff_adx_threshold) else float("nan"),
+            adx_decision_reason,
+        )
         entry_long = price < lower and adx_ok
         entry_short = price > upper and adx_ok
 
@@ -1010,6 +1117,11 @@ class VWAPMeanReversion(BaseStrategy):
                             "threshold": threshold,
                             "near": "lower" if choose_lower else "upper",
                             "trigger_price": trigger_price,
+                            **(
+                                {"trigger_sigma": float(vwap_std_val)}
+                                if vwap_std_val is not None and math.isfinite(float(vwap_std_val)) and float(vwap_std_val) > 0
+                                else {}
+                            ),
                             "trigger_kind": "band_touch",
                             "eps_bps": self.fast_watch_eps_bps,
                             "watch_interval_ms": self.fast_watch_interval_ms,
@@ -1056,7 +1168,7 @@ class VWAPMeanReversion(BaseStrategy):
             logger.info(
                 f"[MeanReversion] Price outside bands but ADX veto for {symbol}. "
                 f"breach={breach}, px={price:.4f}, lower={lower:.4f}, upper={upper:.4f}, "
-                f"adx={adx_val:.1f}, adx_th={self.adx_threshold:.1f}"
+                f"adx={adx_val:.1f}, adx_th={eff_adx_threshold:.1f}, adx_reason={adx_decision_reason}"
             )
             _emit_recheck_eval(
                 action="HOLD",
@@ -1091,13 +1203,13 @@ class VWAPMeanReversion(BaseStrategy):
             side = "buy"
             reason = (
                 f"VWAP MR long (px {price:.4f} < lower {lower:.4f}, "
-                f"ADX {adx_val:.1f} < {self.adx_threshold})"
+                f"ADX {adx_val:.1f} < {eff_adx_threshold:.1f})"
             )
         elif entry_short:
             side = "sell"
             reason = (
                 f"VWAP MR short (px {price:.4f} > upper {upper:.4f}, "
-                f"ADX {adx_val:.1f} < {self.adx_threshold})"
+                f"ADX {adx_val:.1f} < {eff_adx_threshold:.1f})"
             )
         else:
             logger.info(

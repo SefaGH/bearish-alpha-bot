@@ -8,6 +8,7 @@ import pandas as pd
 import logging
 import math
 import time
+import numpy as np
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Tuple, List
 from .oversold_bounce import OversoldBounce
@@ -19,7 +20,7 @@ from core.strategy_shadow_eval import (
 )
 from core.data_validator import TIMEFRAME_SECONDS
 from core.indicators import rsi
-from core.resistance_band import compute_band
+from core.resistance_band import compute_band, confirmed_pivot_highs, confirmed_pivot_lows
 
 # Default market regime for fallback
 DEFAULT_MARKET_REGIME = {
@@ -640,6 +641,504 @@ class AdaptiveOversoldBounce(OversoldBounce):
         }
 
         return triggered, meta
+
+    @staticmethod
+    def _as_closed_df(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+        """Drop a trailing forming candle when present (lookahead-safe)."""
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return df
+        try:
+            includes_forming = bool(getattr(df, "attrs", {}).get("includes_forming", False))
+        except Exception:
+            includes_forming = False
+        if includes_forming and len(df) >= 2:
+            return df.iloc[:-1]
+        return df
+
+    def _detect_crash_leg(
+        self,
+        *,
+        df: pd.DataFrame,
+        timeframe: str,
+        lookback_bars: int,
+        pivot_left: int,
+        pivot_right: int,
+        min_drop_pct: float,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Detect the most recent "crash leg" (swing high -> swing low) using confirmed pivots.
+
+        This is used by Smart Recovery TP to anchor fibo retracements and structure targets.
+        """
+        df_closed = self._as_closed_df(df)
+        if not isinstance(df_closed, pd.DataFrame) or df_closed.empty:
+            return None
+
+        lookback = int(lookback_bars or 0)
+        if lookback > 0 and len(df_closed) > lookback:
+            df_window = df_closed.tail(lookback).copy()
+            offset = int(len(df_closed) - len(df_window))
+        else:
+            df_window = df_closed.copy()
+            offset = 0
+
+        high_col = "high" if "high" in df_window.columns else "close"
+        low_col = "low" if "low" in df_window.columns else "close"
+        try:
+            highs = df_window[high_col].astype(float).values
+            lows = df_window[low_col].astype(float).values
+        except Exception:
+            return None
+
+        left = int(pivot_left or 0)
+        right = int(pivot_right or 0)
+        n = int(len(df_window))
+        if n < max(10, left + right + 3):
+            return None
+
+        try:
+            piv_hi = confirmed_pivot_highs(highs, left=left, right=right)
+            piv_lo = confirmed_pivot_lows(lows, left=left, right=right)
+        except Exception:
+            return None
+
+        piv_hi_idx = np.flatnonzero(piv_hi)
+        piv_lo_idx = np.flatnonzero(piv_lo)
+
+        # Crash low: choose the lowest confirmed pivot low (prefer most recent if ties).
+        if piv_lo_idx.size > 0:
+            low_prices = lows[piv_lo_idx]
+            min_low = float(np.min(low_prices))
+            # Tolerance for float comparisons
+            tol = max(1e-9, abs(min_low) * 1e-9)
+            tied = [int(i) for i, lp in zip(piv_lo_idx.tolist(), low_prices.tolist()) if abs(float(lp) - min_low) <= tol]
+            crash_low_idx = int(tied[-1]) if tied else int(piv_lo_idx[int(np.argmin(low_prices))])
+        else:
+            crash_low_idx = int(np.argmin(lows))
+        crash_low = float(lows[crash_low_idx])
+
+        # Crash high: choose the most recent confirmed pivot high before the crash low.
+        crash_high_idx = None
+        if piv_hi_idx.size > 0:
+            prior = piv_hi_idx[piv_hi_idx < crash_low_idx]
+            if prior.size > 0:
+                crash_high_idx = int(prior[-1])
+        if crash_high_idx is None:
+            if crash_low_idx <= 0:
+                return None
+            crash_high_idx = int(np.argmax(highs[: crash_low_idx + 1]))
+        crash_high = float(highs[crash_high_idx])
+
+        if crash_high <= 0 or crash_high <= crash_low:
+            return None
+
+        drop_pct = float((crash_high - crash_low) / crash_high)
+        if float(min_drop_pct or 0.0) > 0 and drop_pct < float(min_drop_pct):
+            return None
+
+        ts_high = None
+        ts_low = None
+        try:
+            ts_high = df_window.index[crash_high_idx]
+        except Exception:
+            ts_high = None
+        try:
+            ts_low = df_window.index[crash_low_idx]
+        except Exception:
+            ts_low = None
+
+        return {
+            "timeframe": str(timeframe),
+            "high": float(crash_high),
+            "low": float(crash_low),
+            "drop_pct": float(drop_pct),
+            "idx_high": int(crash_high_idx + offset),
+            "idx_low": int(crash_low_idx + offset),
+            "ts_high": str(ts_high) if ts_high is not None else None,
+            "ts_low": str(ts_low) if ts_low is not None else None,
+            "source_cols": {"high": high_col, "low": low_col},
+            "pivots": {
+                "high_idx": [int(i + offset) for i in piv_hi_idx.tolist()],
+                "low_idx": [int(i + offset) for i in piv_lo_idx.tolist()],
+            },
+        }
+
+    def _normalize_smart_recovery_config(self, raw_cfg: Any) -> Dict[str, Any]:
+        """
+        Normalize Smart Recovery config into the internal schema used by the strategy.
+
+        Supports two schemas:
+        - Legacy/internal: smart_recovery.trigger/crash_leg/candidates/reachability/barrier/...
+        - User-friendly:  smart_recovery.activation/targets/filters (mapped to internal)
+        """
+        if not isinstance(raw_cfg, dict):
+            return {}
+
+        if not any(key in raw_cfg for key in ("activation", "targets", "filters")):
+            return raw_cfg
+
+        def _safe_float(value: Any, default: float) -> float:
+            try:
+                return float(value)
+            except Exception:
+                return float(default)
+
+        def _pct_or_fraction(value: Any, default_fraction: float) -> float:
+            v = _safe_float(value, default_fraction)
+            # If user passes "1.2" meaning 1.2%, normalize to 0.012.
+            return (v / 100.0) if v > 1.0 else v
+
+        activation = raw_cfg.get("activation") or {}
+        if not isinstance(activation, dict):
+            activation = {}
+        targets = raw_cfg.get("targets") or {}
+        if not isinstance(targets, dict):
+            targets = {}
+        filters = raw_cfg.get("filters") or {}
+        if not isinstance(filters, dict):
+            filters = {}
+
+        drop_magnitude_pct = activation.get("drop_magnitude_pct")
+        band_compression_ratio = activation.get("band_compression_ratio")
+
+        lookback_bars = int(targets.get("lookback_bars", 240) or 240)
+        min_leg_atr_mult = _safe_float(targets.get("min_leg_atr_mult", 2.0), 2.0)
+        fibo_levels = targets.get("fibo_levels", [0.236, 0.382])
+        atr_ext = targets.get("atr_extensions", [1.5, 2.0])
+
+        max_reachability_atr = _safe_float(filters.get("max_reachability_atr", 3.0), 3.0)
+        barrier_penalty = _safe_float(filters.get("barrier_penalty", 1.0), 1.0)
+        penalty_points = int(round(max(0.0, float(barrier_penalty))))
+
+        norm: Dict[str, Any] = {
+            "enabled": bool(raw_cfg.get("enabled", False)),
+            "trigger": {
+                "shock": {
+                    "enabled": True,
+                    "min_drop_pct": _pct_or_fraction(drop_magnitude_pct, 0.05),
+                    "min_shock_score": _safe_float(activation.get("min_shock_score", 0.60), 0.60),
+                    "require_dyn_gate_armed": bool(activation.get("require_dyn_gate_armed", False)),
+                },
+                "compression": {
+                    "enabled": True,
+                    "band_width_atr_ratio_max": _safe_float(band_compression_ratio, 1.20),
+                },
+            },
+            "crash_leg": {
+                "timeframe": str(targets.get("timeframe", "5m") or "5m").strip().lower(),
+                "lookback_bars": lookback_bars,
+                "pivot_left": int(targets.get("pivot_left", 3) or 3),
+                "pivot_right": int(targets.get("pivot_right", 3) or 3),
+                "min_leg_atr_mult": min_leg_atr_mult,
+            },
+            "candidates": {
+                "fibo_levels": fibo_levels,
+                "atr_mults": atr_ext,
+                "include_pivot": True,
+                "include_band": True,
+            },
+            "reachability": {
+                "max_atr_mult": max_reachability_atr,
+            },
+            "barrier": {
+                "penalty_points": penalty_points,
+            },
+            "logging": raw_cfg.get("logging", {"mode": "decisions"}),
+            "on_no_valid_candidates": raw_cfg.get("on_no_valid_candidates", "skip_trade"),
+        }
+        return norm
+
+    def _calculate_smart_recovery_tp(
+        self,
+        *,
+        symbol: str,
+        entry_price: float,
+        stop_price: float,
+        atr_value: float,
+        min_tp_pct: float,
+        baseline_target_price: float,
+        current_target_price: float,
+        tp_band_meta: Optional[Dict[str, Any]],
+        market_data: Optional[Dict[str, Any]],
+        cfg: Dict[str, Any],
+        crash_leg: Optional[Dict[str, Any]],
+        triggers: Dict[str, Any],
+    ) -> Tuple[Optional[float], Dict[str, Any]]:
+        """
+        Smart Recovery TP: structural target selection for post-crash consolidation.
+
+        Candidate pool:
+          - Fibo retracements of the crash leg (0.236, 0.382)
+          - ATR projections (Entry + k*ATR)
+          - Nearest pivot/liquidity levels (pivot highs)
+          - Optional: current/band targets as low-priority fallbacks
+
+        Filters:
+          - Reachability: distance_to_tp <= max_atr_mult * ATR
+          - Strategy min R/R: rr >= self.min_rr_ratio
+        """
+        risk = float(entry_price - stop_price)
+        if risk <= 0:
+            return None, {
+                "enabled": True,
+                "error": "invalid_risk_distance",
+                "entry": entry_price,
+                "stop": stop_price,
+            }
+
+        def _safe_float(value: Any, default: float) -> float:
+            try:
+                return float(value)
+            except Exception:
+                return float(default)
+
+        reach_cfg = cfg.get("reachability", {}) if isinstance(cfg.get("reachability", {}), dict) else {}
+        max_atr_mult = _safe_float(reach_cfg.get("max_atr_mult", 3.0), 3.0)
+        max_distance = float(max_atr_mult) * float(atr_value) if atr_value and atr_value > 0 else None
+
+        cand_cfg = cfg.get("candidates", {}) if isinstance(cfg.get("candidates", {}), dict) else {}
+        fibo_levels = cand_cfg.get("fibo_levels", [0.236, 0.382])
+        if isinstance(fibo_levels, str):
+            fibo_levels = [x.strip() for x in fibo_levels.split(",") if x.strip()]
+        fibo_levels = [float(x) for x in fibo_levels if x is not None]
+
+        atr_mults = cand_cfg.get("atr_mults", [1.5, 2.0])
+        if isinstance(atr_mults, str):
+            atr_mults = [x.strip() for x in atr_mults.split(",") if x.strip()]
+        atr_mults = [float(x) for x in atr_mults if x is not None]
+
+        include_band = bool(cand_cfg.get("include_band", True))
+        include_pivot = bool(cand_cfg.get("include_pivot", True))
+
+        pri_cfg = cfg.get("priority", {}) if isinstance(cfg.get("priority", {}), dict) else {}
+        score_map = {
+            "fibo": int(pri_cfg.get("fibo", 3) or 3),
+            "pivot": int(pri_cfg.get("pivot", 3) or 3),
+            "atr": int(pri_cfg.get("atr", 2) or 2),
+            "band": int(pri_cfg.get("band", 1) or 1),
+        }
+
+        barrier_cfg = cfg.get("barrier", {}) if isinstance(cfg.get("barrier", {}), dict) else {}
+        barrier_penalty_points = int(barrier_cfg.get("penalty_points", 1) or 1)
+
+        nearest_pivot_high: Optional[Dict[str, Any]] = None
+        if include_pivot and isinstance(market_data, dict):
+            df_5m = market_data.get("5m") or market_data.get("df_5m")
+            df_5m = self._as_closed_df(df_5m) if isinstance(df_5m, pd.DataFrame) else None
+            if isinstance(df_5m, pd.DataFrame) and not df_5m.empty:
+                try:
+                    piv_cfg = cfg.get("crash_leg", {}) if isinstance(cfg.get("crash_leg", {}), dict) else {}
+                    left = int(piv_cfg.get("pivot_left", 3) or 3)
+                    right = int(piv_cfg.get("pivot_right", 3) or 3)
+                    lookback = int(piv_cfg.get("lookback_bars", 240) or 240)
+                    df_w = df_5m.tail(lookback) if lookback > 0 and len(df_5m) > lookback else df_5m
+                    high_col = "high" if "high" in df_w.columns else "close"
+                    highs = df_w[high_col].astype(float).values
+                    piv_hi = confirmed_pivot_highs(highs, left=left, right=right)
+                    idx = np.flatnonzero(piv_hi)
+                    if idx.size > 0:
+                        pivot_prices = highs[idx]
+                        above = [(float(px), int(i)) for px, i in zip(pivot_prices.tolist(), idx.tolist()) if float(px) > float(entry_price)]
+                        if above:
+                            px_sel, i_sel = min(above, key=lambda x: x[0] - float(entry_price))
+                            dist = float(px_sel - float(entry_price))
+                            dist_atr = (dist / float(atr_value)) if atr_value and atr_value > 0 else None
+                            nearest_pivot_high = {
+                                "price": float(px_sel),
+                                "idx": int(i_sel),
+                                "distance": dist,
+                                "distance_atr": dist_atr,
+                                "timeframe": "5m",
+                                "high_col": high_col,
+                            }
+                except Exception:
+                    nearest_pivot_high = None
+
+        min_tp_target = float(entry_price) * (1.0 + float(min_tp_pct or 0.0))
+
+        candidates: List[Dict[str, Any]] = []
+
+        def _add_candidate(*, kind: str, price: float, meta: Optional[Dict[str, Any]] = None) -> None:
+            if price is None or not math.isfinite(float(price)):
+                return
+            px = float(price)
+            dist = float(px - float(entry_price))
+            rr = dist / float(risk) if float(risk) > 0 else 0.0
+            rr_margin = rr - float(self.min_rr_ratio)
+            dist_atr = (dist / float(atr_value)) if atr_value and atr_value > 0 else None
+            reachable = True
+            if max_distance is not None:
+                reachable = dist <= float(max_distance)
+            pass_min_tp = px >= min_tp_target
+            pass_min_rr = rr >= float(self.min_rr_ratio)
+            pass_side = px > float(entry_price)
+
+            reject_reasons: List[str] = []
+            if not pass_side:
+                reject_reasons.append("tp_not_above_entry")
+            if not pass_min_tp:
+                reject_reasons.append("tp_below_min_tp_pct")
+            if not reachable:
+                if dist_atr is not None:
+                    reject_reasons.append(f"unreachable_{float(dist_atr):.1f}ATR")
+                else:
+                    reject_reasons.append("unreachable_by_atr")
+            if not pass_min_rr:
+                reject_reasons.append("rr_below_strategy_min")
+
+            kind_base = kind.split("_", 1)[0]
+            score = int(score_map.get(kind_base, 0))
+            barrier_meta: Dict[str, Any] = {}
+            if (
+                nearest_pivot_high is not None
+                and kind != "pivot_high"
+                and (nearest_pivot_high.get("price") is not None)
+                and float(entry_price) < float(nearest_pivot_high["price"]) < float(px)
+                and barrier_penalty_points > 0
+            ):
+                penalty = min(int(barrier_penalty_points), int(score))
+                score = int(score) - int(penalty)
+                barrier_meta = {
+                    "nearest_pivot_high": float(nearest_pivot_high["price"]),
+                    "penalty_points": int(penalty),
+                }
+
+            candidates.append(
+                {
+                    "type": str(kind),
+                    "price": px,
+                    "distance": dist,
+                    "distance_atr": dist_atr,
+                    "rr": rr,
+                    "rr_margin": rr_margin,
+                    "reachable": bool(reachable),
+                    "pass_min_rr": bool(pass_min_rr),
+                    "pass_min_tp": bool(pass_min_tp),
+                    "score": int(score),
+                    "rejected_reasons": reject_reasons,
+                    "meta": {**(meta or {}), **({"barrier": barrier_meta} if barrier_meta else {})},
+                }
+            )
+
+        crash_cfg = cfg.get("crash_leg", {}) if isinstance(cfg.get("crash_leg", {}), dict) else {}
+        min_leg_atr_mult = _safe_float(crash_cfg.get("min_leg_atr_mult", 2.0), 2.0)
+        leg_span = None
+        leg_height_atr = None
+        leg_valid = False
+
+        # 1) Fibo retracements from crash leg
+        if crash_leg and crash_leg.get("high") and crash_leg.get("low"):
+            hi = float(crash_leg["high"])
+            lo = float(crash_leg["low"])
+            span = hi - lo
+            leg_span = float(span)
+            if atr_value and atr_value > 0:
+                leg_height_atr = float(leg_span / float(atr_value)) if leg_span is not None else None
+                leg_valid = bool(leg_span >= (float(min_leg_atr_mult) * float(atr_value)))
+            else:
+                leg_height_atr = None
+                leg_valid = False
+
+            if leg_span > 0 and leg_valid:
+                for lvl in fibo_levels:
+                    try:
+                        lvl_f = float(lvl)
+                    except Exception:
+                        continue
+                    if not (0.0 < lvl_f < 1.0):
+                        continue
+                    px = lo + leg_span * lvl_f
+                    _add_candidate(kind=f"fibo_{lvl_f:.3f}", price=px, meta={"level": lvl_f})
+
+        # 2) ATR projections
+        if atr_value and atr_value > 0:
+            for k in atr_mults:
+                try:
+                    kf = float(k)
+                except Exception:
+                    continue
+                if kf <= 0:
+                    continue
+                _add_candidate(kind=f"atr_{kf:.2f}", price=float(entry_price) + (kf * float(atr_value)), meta={"k": kf})
+
+        # Always include baseline TP as a reference candidate (kept compatible with existing TP realignment logic)
+        _add_candidate(kind="atr_baseline", price=float(baseline_target_price), meta={"source": "baseline"})
+
+        # 3) Liquidity/pivot: nearest pivot high above entry (5m)
+        if nearest_pivot_high is not None:
+            _add_candidate(kind="pivot_high", price=float(nearest_pivot_high["price"]), meta={"idx": int(nearest_pivot_high["idx"])})
+
+        # Optional: standard-band targets as lowest-priority fallbacks
+        if include_band and tp_band_meta and isinstance(tp_band_meta.get("band"), dict):
+            try:
+                band = tp_band_meta["band"]
+                _add_candidate(kind="band_high", price=float(band.get("band_high")))
+            except Exception:
+                pass
+
+        valid = [c for c in candidates if not c.get("rejected_reasons")]
+        selected = None
+        if valid:
+            # Prefer stronger structure first, then the closest reachable target (realism over distance)
+            selected = sorted(
+                valid,
+                key=lambda c: (
+                    -int(c.get("score", 0)),
+                    float(c.get("distance", 0.0)),
+                    -float(c.get("rr_margin", 0.0)),
+                ),
+            )[0]
+
+        rejection_reasons: Dict[str, Any] = {}
+        for cand in candidates:
+            reasons = cand.get("rejected_reasons") or []
+            if reasons:
+                rejection_reasons[str(cand.get("type"))] = "|".join([str(r) for r in reasons])
+
+        # If fibo candidates were suppressed due to a low-quality crash leg, surface that explicitly.
+        if crash_leg and fibo_levels and leg_span is not None and not leg_valid:
+            for lvl in fibo_levels:
+                try:
+                    lvl_f = float(lvl)
+                except Exception:
+                    continue
+                if not (0.0 < lvl_f < 1.0):
+                    continue
+                rejection_reasons.setdefault(f"fibo_{lvl_f:.3f}", "leg_too_small")
+
+        meta_out: Dict[str, Any] = {
+            "enabled": True,
+            "tp_mode": "Smart_Recovery",
+            "triggers": triggers,
+            "crash_leg_levels": crash_leg,
+            "leg_quality": {
+                "height_atr": float(leg_height_atr) if leg_height_atr is not None else None,
+                "min_leg_atr_mult": float(min_leg_atr_mult),
+                "valid": bool(leg_valid),
+            },
+            "reachability": {
+                "max_atr_mult": float(max_atr_mult),
+                "max_distance": float(max_distance) if max_distance is not None else None,
+            },
+            "barrier": {
+                "nearest_pivot_high": nearest_pivot_high,
+                "penalty_points": int(barrier_penalty_points),
+            },
+            "min_rr_required": float(self.min_rr_ratio),
+            "min_tp_pct": float(min_tp_pct),
+            "candidates": candidates,
+            "rejection_reasons": rejection_reasons,
+            "risk_data": {
+                "cap": None,
+                "floor": float(self.min_rr_ratio),
+                "ppo_mult": None,
+            },
+            "selected_tp": selected,
+        }
+
+        if not selected:
+            return None, meta_out
+        return float(selected["price"]), meta_out
     
     def signal(self, df_30m: pd.DataFrame, 
                df_1h: pd.DataFrame = None,
@@ -740,6 +1239,14 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 rsi_series = rsi(df_closed['close'])
 
             rsi_val = float(rsi_series.iloc[-1])
+            rsi_prev = None
+            try:
+                if len(rsi_series) >= 2:
+                    prev_raw = rsi_series.iloc[-2]
+                    if prev_raw is not None and not pd.isna(prev_raw):
+                        rsi_prev = float(prev_raw)
+            except Exception:
+                rsi_prev = None
             close_price = float(trend_row['close'])
             forming_price = float(forming_row['close']) if forming_row is not None else close_price
             forming_low = float(forming_row['low']) if forming_row is not None and 'low' in forming_row else None
@@ -1168,6 +1675,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
             # 1. RSI Condition Check
             if rsi_val > adaptive_rsi_threshold:
                 logger.info(f"🚫 {log_prefix} No Signal: RSI ({rsi_val:.2f}) is above the threshold ({adaptive_rsi_threshold:.2f}).")
+                self._reset_persistency(symbol_display)
                 _shadow_ob("no_signal_rsi", "rsi_above_threshold")
                 self._log_persistency_skipped(
                     symbol_display,
@@ -1185,6 +1693,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
             # 2. Price vs. EMA Condition Check
             if ema_fast > 0 and trigger_price >= ema_fast:
                 logger.info(f"🚫 {log_prefix} No Signal: Price (${trigger_price:,.2f}) is not below the fast EMA (${ema_fast:,.2f}).")
+                self._reset_persistency(symbol_display)
                 _shadow_ob(
                     "no_signal_price_vs_ema",
                     "price_not_below_ema_fast",
@@ -1206,6 +1715,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
             # 3. Volume Check (basic data sanity)
             if volume_val is not None and volume_val <= 0:
                 logger.info(f"🚫 {log_prefix} No Signal: Volume is zero or negative.")
+                self._reset_persistency(symbol_display)
                 _shadow_ob(
                     "no_signal_volume",
                     "non_positive_volume",
@@ -1680,6 +2190,180 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 else:
                     logger.info(f"?? {log_prefix} [OB TP-BAND] mode={mode} no_band_found (tfs={timeframes})")
 
+            # Smart Recovery TP (structural targets) - optional, feature-flagged
+            smart_recovery_meta: Optional[Dict[str, Any]] = None
+            smart_cfg_raw = self.strategy_config.get("smart_recovery") or {}
+            smart_cfg = self._normalize_smart_recovery_config(smart_cfg_raw)
+            if isinstance(smart_cfg, dict) and bool(smart_cfg.get("enabled", False)):
+                trigger_cfg = smart_cfg.get("trigger") or {}
+                if not isinstance(trigger_cfg, dict):
+                    trigger_cfg = {}
+
+                # Crash leg detection (stable 5m pivots; avoid 1m noise)
+                crash_cfg = smart_cfg.get("crash_leg") or {}
+                if not isinstance(crash_cfg, dict):
+                    crash_cfg = {}
+                crash_tf = str(crash_cfg.get("timeframe", "5m") or "5m").strip().lower()
+                crash_df = None
+                if isinstance(market_data, dict):
+                    crash_df = market_data.get(crash_tf) or market_data.get(f"df_{crash_tf}")
+                if crash_df is None and crash_tf in ("30m", "df_30m"):
+                    crash_df = df_30m
+                crash_leg = None
+                if isinstance(crash_df, pd.DataFrame) and not crash_df.empty:
+                    crash_leg = self._detect_crash_leg(
+                        df=crash_df,
+                        timeframe=crash_tf,
+                        lookback_bars=int(crash_cfg.get("lookback_bars", 240) or 240),
+                        pivot_left=int(crash_cfg.get("pivot_left", 3) or 3),
+                        pivot_right=int(crash_cfg.get("pivot_right", 3) or 3),
+                        min_drop_pct=0.0,  # evaluate drop threshold in trigger logic
+                    )
+
+                # Trigger A: Shock state / drop magnitude
+                shock_cfg = trigger_cfg.get("shock") or {}
+                if not isinstance(shock_cfg, dict):
+                    shock_cfg = {}
+                shock_enabled = bool(shock_cfg.get("enabled", True))
+                min_drop_pct = float(shock_cfg.get("min_drop_pct", 0.05) or 0.05)
+                min_shock_score = float(shock_cfg.get("min_shock_score", 0.60) or 0.60)
+                require_armed = bool(shock_cfg.get("require_dyn_gate_armed", False))
+
+                shock_state = self.get_dyn_gate_state(symbol_display)
+                shock_score = self._dyn_last_shock_score_by_symbol.get(symbol_display)
+                crash_drop_pct = crash_leg.get("drop_pct") if isinstance(crash_leg, dict) else None
+
+                shock_active_reasons: List[str] = []
+                shock_active = False
+                try:
+                    if shock_score is not None and float(shock_score) >= float(min_shock_score):
+                        shock_active = True
+                        shock_active_reasons.append("shock_score")
+                except Exception:
+                    pass
+                try:
+                    if crash_drop_pct is not None and float(crash_drop_pct) >= float(min_drop_pct):
+                        shock_active = True
+                        shock_active_reasons.append("crash_leg_drop_pct")
+                except Exception:
+                    pass
+                if require_armed and str(shock_state).upper() != "ARMED":
+                    shock_active = False
+                    shock_active_reasons = ["require_dyn_gate_armed"]
+
+                # Trigger B: Band compression (band_width / ATR < threshold)
+                comp_cfg = trigger_cfg.get("compression") or {}
+                if not isinstance(comp_cfg, dict):
+                    comp_cfg = {}
+                comp_enabled = bool(comp_cfg.get("enabled", True))
+                width_atr_max = float(comp_cfg.get("band_width_atr_ratio_max", 1.20) or 1.20)
+                band_width = None
+                width_atr = None
+                try:
+                    if tp_band_meta and isinstance(tp_band_meta.get("band"), dict):
+                        band = tp_band_meta["band"]
+                        lo = float(band.get("band_low"))
+                        hi = float(band.get("band_high"))
+                        band_width = float(hi - lo)
+                        if atr_value and atr_value > 0:
+                            width_atr = float(band_width / float(atr_value))
+                except Exception:
+                    band_width = None
+                    width_atr = None
+
+                comp_active = bool(width_atr is not None and float(width_atr) <= float(width_atr_max))
+
+                smart_active = (shock_enabled and shock_active) or (comp_enabled and comp_active)
+                triggers = {
+                    "active": bool(smart_active),
+                    "reasons": (shock_active_reasons if shock_active else []) + (["band_compression"] if comp_active else []),
+                    "shock": {
+                        "enabled": bool(shock_enabled),
+                        "active": bool(shock_active),
+                        "dyn_state": str(shock_state),
+                        "shock_score": float(shock_score) if shock_score is not None else None,
+                        "min_shock_score": float(min_shock_score),
+                        "crash_drop_pct": float(crash_drop_pct) if crash_drop_pct is not None else None,
+                        "min_drop_pct": float(min_drop_pct),
+                        "require_dyn_gate_armed": bool(require_armed),
+                    },
+                    "compression": {
+                        "enabled": bool(comp_enabled),
+                        "active": bool(comp_active),
+                        "band_width": float(band_width) if band_width is not None else None,
+                        "atr": float(atr_value) if atr_value is not None else None,
+                        "band_width_atr_ratio": float(width_atr) if width_atr is not None else None,
+                        "band_width_atr_ratio_max": float(width_atr_max),
+                    },
+                }
+
+                if smart_active:
+                    selected_tp, smart_recovery_meta = self._calculate_smart_recovery_tp(
+                        symbol=symbol_display,
+                        entry_price=entry_price,
+                        stop_price=stop_price,
+                        atr_value=atr_value,
+                        min_tp_pct=min_tp_pct,
+                        baseline_target_price=baseline_target_price,
+                        current_target_price=target_price,
+                        tp_band_meta=tp_band_meta,
+                        market_data=market_data,
+                        cfg=smart_cfg,
+                        crash_leg=crash_leg,
+                        triggers=triggers,
+                    )
+
+                    log_cfg = smart_cfg.get("logging") or {}
+                    if not isinstance(log_cfg, dict):
+                        log_cfg = {}
+                    log_mode = str(log_cfg.get("mode", "decisions") or "decisions").strip().lower()
+                    if log_mode in ("decisions", "all"):
+                        try:
+                            logger.info(
+                                json.dumps(
+                                    {
+                                        "event": "ob_smart_recovery_tp",
+                                        "symbol": symbol_display,
+                                        "tp_mode": "Smart_Recovery",
+                                        "entry": float(entry_price),
+                                        "stop": float(stop_price),
+                                        "min_rr_required": float(self.min_rr_ratio),
+                                        "atr": float(atr_value) if atr_value is not None else None,
+                                        "triggers": triggers,
+                                        "selected_tp": smart_recovery_meta.get("selected_tp") if isinstance(smart_recovery_meta, dict) else None,
+                                        "candidates": smart_recovery_meta.get("candidates") if isinstance(smart_recovery_meta, dict) else None,
+                                        "rejection_reasons": smart_recovery_meta.get("rejection_reasons") if isinstance(smart_recovery_meta, dict) else None,
+                                        "risk_data": smart_recovery_meta.get("risk_data") if isinstance(smart_recovery_meta, dict) else None,
+                                        "leg_quality": smart_recovery_meta.get("leg_quality") if isinstance(smart_recovery_meta, dict) else None,
+                                        "crash_leg_levels": smart_recovery_meta.get("crash_leg_levels") if isinstance(smart_recovery_meta, dict) else None,
+                                    },
+                                    separators=(",", ":"),
+                                )
+                            )
+                        except Exception:
+                            pass
+
+                    if selected_tp is None:
+                        on_fail = str(smart_cfg.get("on_no_valid_candidates", "skip_trade") or "skip_trade").strip().lower()
+                        if on_fail in ("skip", "skip_trade", "reject"):
+                            logger.info(f"🚫 {log_prefix} No Signal: Smart Recovery - no valid reachable TP candidates.")
+                            _shadow_ob(
+                                "no_signal_tp",
+                                "smart_recovery_no_candidate",
+                                {
+                                    "tp_mode": "smart_recovery",
+                                    "entry": entry_price,
+                                    "stop": stop_price,
+                                    "baseline_target": baseline_target_price,
+                                    "target_pre_smart": target_price,
+                                },
+                            )
+                            return None
+                        # fallback_to_standard: keep pre-smart target_price
+                    else:
+                        target_price = float(selected_tp)
+                        tp_mode = "smart_recovery"
+
             # Final TP pct for logging/RR calculation (may be overridden by TP-band apply mode)
             actual_tp_pct = (target_price / entry_price) - 1.0 if entry_price > 0 else 0.0
 
@@ -1734,6 +2418,82 @@ class AdaptiveOversoldBounce(OversoldBounce):
             signal["rsi"] = float(rsi_val)
             signal.setdefault("features", {})["rsi"] = float(rsi_val)
 
+            hook_delta = None
+            try:
+                hook_delta = float(self.strategy_config.get("hook_delta", 1.0))
+            except Exception:
+                hook_delta = 1.0
+            rsi_hook = bool(
+                rsi_prev is not None
+                and hook_delta is not None
+                and (rsi_val - rsi_prev) >= float(hook_delta)
+            )
+            bull_candle = bool(
+                (reversal_meta.get("bullish_candle") is True)
+                and (reversal_meta.get("close_above_prev_close") is True)
+            )
+            reclaim = bool(reversal_meta.get("close_above_ema_fast") is True)
+
+            # Prefer fast-TF (1m/5m) reversal telemetry when available to avoid 30m lag.
+            fast_df = None
+            fast_tf = None
+            try:
+                if isinstance(market_data, dict):
+                    for key in ("1m", "df_1m", "5m", "df_5m"):
+                        cand = market_data.get(key)
+                        if isinstance(cand, pd.DataFrame) and not cand.empty:
+                            fast_df = cand
+                            fast_tf = "1m" if "1m" in key else "5m"
+                            break
+            except Exception:
+                fast_df = None
+                fast_tf = None
+
+            if isinstance(fast_df, pd.DataFrame) and not fast_df.empty:
+                try:
+                    last_fast = fast_df.iloc[-1]
+                    prev_fast = fast_df.iloc[-2] if len(fast_df) >= 2 else None
+
+                    last_open = float(last_fast.get("open")) if "open" in fast_df.columns else None
+                    last_close = float(last_fast.get("close")) if "close" in fast_df.columns else None
+                    prev_close = (
+                        float(prev_fast.get("close"))
+                        if prev_fast is not None and "close" in fast_df.columns
+                        else None
+                    )
+
+                    if last_open is not None and last_close is not None and prev_close is not None:
+                        bull_candle = bool(last_close > last_open and last_close > prev_close)
+
+                    if "close" in fast_df.columns and hook_delta is not None:
+                        if "rsi" in fast_df.columns:
+                            fast_rsi = fast_df["rsi"].astype(float)
+                        else:
+                            fast_rsi = rsi(fast_df["close"].astype(float))
+                        if len(fast_rsi) >= 2:
+                            fr_prev = float(fast_rsi.iloc[-2])
+                            fr_now = float(fast_rsi.iloc[-1])
+                            if not pd.isna(fr_prev) and not pd.isna(fr_now):
+                                rsi_hook = bool((fr_now - fr_prev) >= float(hook_delta))
+
+                    ema_fast_val = None
+                    if "ema_fast" in fast_df.columns:
+                        ema_fast_val = float(last_fast.get("ema_fast"))
+                    elif "ema21" in fast_df.columns:
+                        ema_fast_val = float(last_fast.get("ema21"))
+                    elif "close" in fast_df.columns and len(fast_df) >= 21:
+                        ema_fast_val = float(
+                            fast_df["close"]
+                            .astype(float)
+                            .ewm(span=21, adjust=False, min_periods=21)
+                            .mean()
+                            .iloc[-1]
+                        )
+                    if ema_fast_val is not None and last_close is not None and not pd.isna(ema_fast_val):
+                        reclaim = bool(last_close > float(ema_fast_val))
+                except Exception:
+                    pass
+
             meta = signal.setdefault('meta', {})
             meta.update(
                 {
@@ -1745,6 +2505,10 @@ class AdaptiveOversoldBounce(OversoldBounce):
                     # Volume gating can optionally require this when allow_low_volume overrides min_bucket.
                     'low_volume_reversal_confirmed': bool(reversal_confirmed),
                     'reversal_confirmation': reversal_meta,
+                    'rsi_hook': rsi_hook,
+                    'bull_candle': bull_candle,
+                    'reclaim': reclaim,
+                    'reversal_tf': fast_tf,
                     'downtrend_context': {
                         'active': downtrend_context,
                         'adx': adx_val,
@@ -1755,6 +2519,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
             )
             if tp_band_meta is not None:
                 meta["tp_band"] = tp_band_meta
+            if smart_recovery_meta is not None:
+                meta["smart_recovery"] = smart_recovery_meta
             if trend_bias_active:
                 meta['trend_confirmation'] = {
                     'ema_fast': ema_fast,
@@ -1776,6 +2542,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 },
             )
             
+            # Persistency must not stay "passed" after emitting a signal.
+            self._reset_persistency(symbol_display)
             return signal
             
         except Exception as e:

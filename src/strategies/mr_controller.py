@@ -32,6 +32,7 @@ class MRControllerDecision:
     atr: Optional[float]
     atr_pct: Optional[float]
     reason: str
+    vol_state: Optional[str] = None
 
 
 @dataclass
@@ -236,6 +237,7 @@ class DynamicMRController:
                 atr=atr,
                 atr_pct=atr_pct,
                 reason=reason,
+                vol_state=str(vol_state) if vol_state is not None else None,
             )
 
         m_eff = self._compute_band_multiplier(state)
@@ -266,6 +268,7 @@ class DynamicMRController:
             atr=atr,
             atr_pct=atr_pct,
             reason="updated",
+            vol_state=str(vol_state) if vol_state is not None else None,
         )
 
         if self._log_every_update:
@@ -348,6 +351,7 @@ class DynamicMRController:
             atr=atr,
             atr_pct=(atr / price if atr is not None and price else None),
             reason=reason,
+            vol_state=None,
         )
 
     def _decision_from_state(
@@ -405,6 +409,7 @@ class DynamicMRController:
             atr=atr,
             atr_pct=atr_pct,
             reason=reason,
+            vol_state=str(state.last_vol_state) if state.last_vol_state is not None else None,
         )
 
     def _compute_band_multiplier(self, state: _SymbolState) -> float:
