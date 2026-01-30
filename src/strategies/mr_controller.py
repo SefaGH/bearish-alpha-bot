@@ -178,6 +178,41 @@ class DynamicMRController:
         self._state_by_symbol[symbol] = state
         return state
 
+    def is_symbol_warmed_up(self, symbol: str) -> bool:
+        state = self._get_or_create_state(str(symbol))
+        return len(state.abs_z_hist) >= max(self._warmup_samples, 1)
+
+    def hydrate_symbol_history(self, symbol: str, df_vwap: Optional[pd.DataFrame]) -> int:
+        if df_vwap is None or df_vwap.empty:
+            return 0
+
+        state = self._get_or_create_state(str(symbol))
+        required_samples = max(int(self._warmup_samples), 1)
+
+        subset = df_vwap.tail(required_samples)
+        count = 0
+        for _, row in subset.iterrows():
+            try:
+                vwap_std = float(row["vwap_std"]) if "vwap_std" in row else float("nan")
+                close = float(row["close"]) if "close" in row else float("nan")
+                vwap = float(row["vwap"]) if "vwap" in row else float("nan")
+            except Exception:
+                continue
+
+            if not math.isfinite(vwap_std) or vwap_std == 0:
+                continue
+            if not math.isfinite(close) or not math.isfinite(vwap):
+                continue
+
+            z_score = (close - vwap) / vwap_std
+            if not math.isfinite(z_score):
+                continue
+            state.abs_z_hist.append(float(abs(z_score)))
+            count += 1
+
+        logger.info(f"[MRController] Hydrated {count} samples for {symbol}")
+        return count
+
     def ingest_15s_bar(self, *, symbol: str, start_ts_ms: int, close: float, volume: float) -> None:
         """
         Ingest a closed 15s bar (from a lightweight trade aggregator).

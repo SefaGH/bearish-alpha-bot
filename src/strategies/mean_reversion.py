@@ -1841,6 +1841,13 @@ class VWAPMeanReversion(BaseStrategy):
         if not getattr(self._mr_controller, "enabled", False):
             return None
 
+        if df_vwap is not None:
+            try:
+                if not self._mr_controller.is_symbol_warmed_up(symbol):
+                    self._mr_controller.hydrate_symbol_history(symbol=symbol, df_vwap=df_vwap)
+            except Exception:
+                pass
+
         ts = None
         try:
             ts_val = df_sig.index[-1]
