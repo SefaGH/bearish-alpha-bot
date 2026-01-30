@@ -2206,7 +2206,9 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 crash_tf = str(crash_cfg.get("timeframe", "5m") or "5m").strip().lower()
                 crash_df = None
                 if isinstance(market_data, dict):
-                    crash_df = market_data.get(crash_tf) or market_data.get(f"df_{crash_tf}")
+                    crash_df = market_data.get(crash_tf)
+                    if crash_df is None:
+                        crash_df = market_data.get(f"df_{crash_tf}")
                 if crash_df is None and crash_tf in ("30m", "df_30m"):
                     crash_df = df_30m
                 crash_leg = None
