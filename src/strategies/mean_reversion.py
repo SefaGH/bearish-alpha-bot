@@ -1,4 +1,5 @@
 import json
+import asyncio
 import math
 import logging
 from datetime import datetime, timezone
@@ -12,6 +13,146 @@ from core.indicators import rsi as calc_rsi
 from core.logger import get_current_run_id
 
 logger = logging.getLogger(__name__)
+
+
+class TradeAggregatorLite:
+    """
+    Incremental 15s trade-to-bar aggregator (pure Python, O(1) per trade).
+
+    - Dynamic state is limited to `current_bar` and `last_closed_ts`.
+    - On bucket rollover, emits the closed bar(s) to the MR controller.
+    - Gap-filling is safety-capped to avoid CPU spikes after long gaps.
+    """
+
+    BUCKET_MS = 15_000
+
+    def __init__(
+        self,
+        *,
+        symbol: str,
+        controller: DynamicMRController,
+        gap_fill_cap: int = 50,
+    ) -> None:
+        self.symbol = str(symbol)
+        self._controller = controller
+        try:
+            cap = int(gap_fill_cap)
+        except Exception:
+            cap = 50
+        # Safety cap: never generate more than 50 synthetic bars per rollover.
+        self._gap_fill_cap = max(0, min(cap, 50))
+
+        self.current_bar: Optional[Dict[str, float]] = None
+        self.last_closed_ts: Optional[int] = None
+
+    def get_current_volume(self) -> Optional[float]:
+        bar = self.current_bar
+        if not isinstance(bar, dict):
+            return None
+        try:
+            return float(bar.get("volume", 0.0))
+        except Exception:
+            return None
+
+    def process_trade(self, *, ts_ms: int, price: float, qty: float) -> None:
+        try:
+            ts_ms_int = int(ts_ms)
+        except Exception:
+            return
+        if ts_ms_int <= 0:
+            return
+
+        try:
+            price_f = float(price)
+            qty_f = float(qty)
+        except Exception:
+            return
+        if not math.isfinite(price_f) or price_f <= 0:
+            return
+        if not math.isfinite(qty_f) or qty_f < 0:
+            return
+
+        bucket_start = ts_ms_int - (ts_ms_int % self.BUCKET_MS)
+        bar = self.current_bar
+
+        # First trade initializes the current bar.
+        if not isinstance(bar, dict):
+            self.current_bar = {
+                "start_ts": float(bucket_start),
+                "open": price_f,
+                "high": price_f,
+                "low": price_f,
+                "close": price_f,
+                "volume": qty_f,
+            }
+            return
+
+        try:
+            cur_start = int(bar.get("start_ts", 0.0))
+        except Exception:
+            cur_start = 0
+
+        # Late/out-of-order trade: ignore (no retroactive fixes).
+        if bucket_start < cur_start:
+            return
+
+        # Same bucket: incremental O/H/L/C/V update.
+        if bucket_start == cur_start:
+            try:
+                bar["high"] = max(float(bar.get("high", price_f)), price_f)
+                bar["low"] = min(float(bar.get("low", price_f)), price_f)
+                bar["close"] = price_f
+                bar["volume"] = float(bar.get("volume", 0.0)) + qty_f
+            except Exception:
+                # If bar got corrupted, reset minimally to current trade.
+                self.current_bar = {
+                    "start_ts": float(bucket_start),
+                    "open": price_f,
+                    "high": price_f,
+                    "low": price_f,
+                    "close": price_f,
+                    "volume": qty_f,
+                }
+            return
+
+        # New bucket: close current bar and emit (plus safe-capped gap fill).
+        try:
+            prev_close = float(bar.get("close", price_f))
+        except Exception:
+            prev_close = price_f
+        try:
+            prev_vol = float(bar.get("volume", 0.0) or 0.0)
+        except Exception:
+            prev_vol = 0.0
+
+        self._emit_closed_bar(start_ts=cur_start, close=prev_close, volume=prev_vol)
+
+        missing_slots = (bucket_start - cur_start) // self.BUCKET_MS - 1
+        if missing_slots > 0 and self._gap_fill_cap > 0 and math.isfinite(prev_close):
+            fill_count = min(int(missing_slots), int(self._gap_fill_cap))
+            for i in range(fill_count):
+                fill_start = cur_start + ((i + 1) * self.BUCKET_MS)
+                self._emit_closed_bar(start_ts=fill_start, close=prev_close, volume=0.0)
+
+        # Start new current bar for this bucket.
+        self.current_bar = {
+            "start_ts": float(bucket_start),
+            "open": price_f,
+            "high": price_f,
+            "low": price_f,
+            "close": price_f,
+            "volume": qty_f,
+        }
+
+    def _emit_closed_bar(self, *, start_ts: int, close: float, volume: float) -> None:
+        self.last_closed_ts = int(start_ts)
+        ingest = getattr(self._controller, "ingest_15s_bar", None)
+        if not callable(ingest):
+            return
+        try:
+            ingest(symbol=self.symbol, start_ts_ms=int(start_ts), close=float(close), volume=float(volume))
+        except Exception:
+            return
 
 
 class VWAPMeanReversion(BaseStrategy):
@@ -152,6 +293,24 @@ class VWAPMeanReversion(BaseStrategy):
         controller_cfg = dict(controller_cfg) if isinstance(controller_cfg, dict) else {}
         controller_cfg.setdefault("adx_freeze_threshold", self.adx_threshold)
 
+        adaptive_cfg = cfg.get("adaptive_settings", {})
+        if adaptive_cfg is not None and not isinstance(adaptive_cfg, dict):
+            logger.warning("[MeanReversion] adaptive_settings config must be a dict; disabling adaptive settings.")
+            adaptive_cfg = {}
+        adaptive_cfg = dict(adaptive_cfg) if isinstance(adaptive_cfg, dict) else {}
+        self._adaptive_lite_enabled = bool(adaptive_cfg.get("enabled", False))
+        try:
+            gap_cap = int(adaptive_cfg.get("gap_fill_cap", 50) or 50)
+        except Exception:
+            gap_cap = 50
+        # Safety cap: at most 50 synthetic bars per rollover.
+        self._trade_gap_fill_cap = max(0, min(gap_cap, 50))
+        self._trade_aggregators: Dict[str, TradeAggregatorLite] = {}
+        self._trade_callback_registered = False
+        self._trade_subscribed_symbols: set[str] = set()
+        # Pass adaptive settings into controller config (controller ignores when disabled).
+        controller_cfg.setdefault("adaptive_settings", adaptive_cfg)
+
         # Regime-adaptive ADX veto support (squeeze exception + slope check).
         # - Uses controller vol_state when available.
         # - Uses dynamic_controller.adx_freeze_threshold as the relaxed ceiling in squeeze only.
@@ -237,6 +396,115 @@ class VWAPMeanReversion(BaseStrategy):
         assert callable(getattr(self, "signal", None)), "MeanReversion: signal method not callable"
         print("MeanReversion: signal method bound successfully")
 
+    async def _ensure_trade_wiring(self, symbol: str) -> None:
+        """Ensure BingX @trade subscription + callback registration (best effort, non-fatal)."""
+        if not getattr(self, "_adaptive_lite_enabled", False):
+            return
+
+        pipeline = getattr(self, "market_data_pipeline", None)
+        ws_manager = getattr(pipeline, "websocket_manager", None) if pipeline is not None else None
+        if ws_manager is None:
+            return
+
+        ws = None
+        try:
+            clients = getattr(ws_manager, "clients", {}) or {}
+            client = clients.get("bingx")
+            ws = getattr(client, "bingx_ws", None) if client is not None else None
+        except Exception:
+            ws = None
+
+        if ws is None:
+            return
+
+        # Register callback once.
+        if not getattr(self, "_trade_callback_registered", False):
+            try:
+                if hasattr(ws, "on_trade"):
+                    ws.on_trade(self.on_trade)
+                    self._trade_callback_registered = True
+            except Exception:
+                self._trade_callback_registered = False
+
+        # Subscribe once per symbol.
+        try:
+            sym = str(symbol or "").strip()
+        except Exception:
+            return
+        if not sym:
+            return
+        if sym in self._trade_subscribed_symbols:
+            return
+
+        subscribe = getattr(ws, "subscribe_trade", None) or getattr(ws, "subscribe_trades", None)
+        if not callable(subscribe):
+            return
+
+        try:
+            if asyncio.iscoroutinefunction(subscribe):
+                await subscribe(sym)
+            else:
+                subscribe(sym)
+            self._trade_subscribed_symbols.add(sym)
+        except Exception:
+            return
+
+    def on_trade(self, symbol: str, trade: Dict[str, Any]) -> None:
+        """Trade callback invoked by BingXWebSocket; feeds TradeAggregatorLite (pure python)."""
+        if not getattr(self, "_adaptive_lite_enabled", False):
+            return
+        if not symbol or not isinstance(trade, dict):
+            return
+
+        symbol_key = str(symbol)
+        if ":" not in symbol_key and symbol_key.endswith("/USDT"):
+            symbol_key = f"{symbol_key}:USDT"
+
+        ts_ms_int = 0
+        try:
+            ts_ms = trade.get("timestamp")
+            if ts_ms is None:
+                ts_ms = trade.get("ts")
+            if ts_ms is None:
+                ts_ms = trade.get("T")
+            ts_ms_int = int(ts_ms) if ts_ms is not None else 0
+        except Exception:
+            ts_ms_int = 0
+
+        price_f = float("nan")
+        try:
+            price = trade.get("price")
+            if price is None:
+                price = trade.get("p")
+            price_f = float(price) if price is not None else float("nan")
+        except Exception:
+            price_f = float("nan")
+
+        qty_f = float("nan")
+        try:
+            qty = trade.get("quantity")
+            if qty is None:
+                qty = trade.get("qty")
+            if qty is None:
+                qty = trade.get("q")
+            qty_f = float(qty) if qty is not None else float("nan")
+        except Exception:
+            qty_f = float("nan")
+
+        if ts_ms_int <= 0 or not math.isfinite(price_f) or not math.isfinite(qty_f):
+            return
+
+        agg = self._trade_aggregators.get(symbol_key)
+        if agg is None:
+            agg = TradeAggregatorLite(
+                symbol=symbol_key,
+                controller=self._mr_controller,
+                gap_fill_cap=int(getattr(self, "_trade_gap_fill_cap", 50) or 50),
+            )
+            self._trade_aggregators[symbol_key] = agg
+
+        agg.process_trade(ts_ms=ts_ms_int, price=price_f, qty=qty_f)
+
     @staticmethod
     def _parse_timeframe_ms(timeframe: str) -> int:
         raw = str(timeframe or "").strip().lower()
@@ -294,6 +562,12 @@ class VWAPMeanReversion(BaseStrategy):
         """
         Generate a mean-reversion signal using VWAP bands and ADX trend filter.
         """
+        if getattr(self, "_adaptive_lite_enabled", False):
+            try:
+                await self._ensure_trade_wiring(symbol)
+            except Exception:
+                pass
+
         parent_pending_id = kwargs.get("parent_pending_id")
         if parent_pending_id is not None:
             try:
@@ -762,6 +1036,72 @@ class VWAPMeanReversion(BaseStrategy):
             except Exception:
                 z_val = None
 
+        # -----------------------------------------------------------
+        # OPPORTUNITY PROMOTION (Recheck override)
+        # -----------------------------------------------------------
+        promotion_override = False
+        if is_recheck and fast_watch_touch_confirmed and (near_str in ["lower", "upper"]):
+            _target_band_val = lower if near_str == "lower" else upper
+            _dist_bps = None
+            if price and _target_band_val and price > 0:
+                try:
+                    _dist_bps = abs(price - _target_band_val) / price * 10000.0
+                except Exception:
+                    _dist_bps = None
+
+            if (
+                _dist_bps is not None
+                and _dist_bps <= 6.0
+                and z_val is not None
+                and math.isfinite(z_val)
+                and abs(float(z_val)) >= 1.23
+                and adx_val is not None
+                and math.isfinite(adx_val)
+                and float(adx_val) <= 25.0
+            ):
+                promotion_override = True
+                logger.info(
+                    "[MeanReversion] PROMOTE override: near=%s z=%.2f adx=%.2f dist_bps=%.2f",
+                    near_str,
+                    float(z_val),
+                    float(adx_val),
+                    float(_dist_bps),
+                )
+
+        # -----------------------------------------------------------
+        # DYNAMIC Z-THRESHOLD (ADX-sensitive)
+        # -----------------------------------------------------------
+        required_z = 1.25
+        guard_state_pre = self._rsi_guard_state_by_symbol.get(symbol, "IDLE")
+        if adx_val is not None and math.isfinite(adx_val):
+            if 22.0 < float(adx_val) < 25.0:
+                required_z = max(required_z, 1.60)
+            elif float(adx_val) >= 25.0:
+                required_z = max(required_z, 2.00)
+
+        if z_val is not None and math.isfinite(z_val):
+            if guard_state_pre != "ARMED" and abs(float(z_val)) < required_z:
+                logger.info(
+                    "[MeanReversion] Dynamic Z veto %s: z=%.2f required=%.2f adx=%.2f",
+                    symbol,
+                    float(abs(z_val)),
+                    float(required_z),
+                    float(adx_val) if adx_val is not None and math.isfinite(adx_val) else float("nan"),
+                )
+                _emit_recheck_eval(
+                    action="HOLD",
+                    gate_reasons=["dynamic_z_veto"],
+                    px=price,
+                    px_source=px_source,
+                    lower=lower,
+                    upper=upper,
+                    vwap=vwap_target,
+                    vwap_std=vwap_std_val,
+                    z=z_val,
+                    side_value=None,
+                )
+                return None
+
         in_band = lower <= price <= upper
         vol_state = None
         try:
@@ -845,8 +1185,17 @@ class VWAPMeanReversion(BaseStrategy):
             float(eff_adx_threshold) if math.isfinite(eff_adx_threshold) else float("nan"),
             adx_decision_reason,
         )
+        if promotion_override:
+            adx_ok = True
+            adx_decision_reason = "promotion_override"
+
         entry_long = price < lower and adx_ok
         entry_short = price > upper and adx_ok
+        if promotion_override:
+            if near_str == "lower":
+                entry_long = True
+            elif near_str == "upper":
+                entry_short = True
 
         guard_status = None
         guard_rsi_val = None
@@ -941,7 +1290,7 @@ class VWAPMeanReversion(BaseStrategy):
                         if entry_long:
                             guard_block_long = True
 
-        if in_band and not touch_entry_allowed:
+        if in_band and not touch_entry_allowed and not promotion_override:
             if parent_pending_id:
                 logger.info(
                     "[MeanReversion] Recheck context; skipping soft deferral near-miss for %s (parent_pending_id=%s)",
@@ -1515,6 +1864,28 @@ class VWAPMeanReversion(BaseStrategy):
         except Exception:
             is_forming = False
 
+        current_15s_volume = None
+        if getattr(self, "_adaptive_lite_enabled", False):
+            try:
+                sym = str(symbol or "").strip()
+            except Exception:
+                sym = ""
+            variants = [sym] if sym else []
+            if sym and ":" in sym:
+                variants.append(sym.split(":", 1)[0])
+            if sym and ":" not in sym and sym.endswith("/USDT"):
+                variants.append(f"{sym}:USDT")
+            agg = None
+            for key in variants:
+                if not key:
+                    continue
+                cand = self._trade_aggregators.get(key)
+                if cand is not None:
+                    agg = cand
+                    break
+            if agg is not None:
+                current_15s_volume = agg.get_current_volume()
+
         decision = self._mr_controller.evaluate(
             symbol=symbol,
             ts=ts,
@@ -1523,6 +1894,7 @@ class VWAPMeanReversion(BaseStrategy):
             vwap_std=vwap_std,
             adx=adx,
             atr=atr,
+            current_15s_volume=current_15s_volume,
             df_vwap=df_vwap,
             is_forming_candle=is_forming,
         )

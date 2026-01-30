@@ -8,6 +8,7 @@ import heapq
 import itertools
 import logging
 import math
+import os
 import re
 import threading
 import time
@@ -586,6 +587,37 @@ class StrategyCoordinator:
         self.volume_analyzer = kwargs.get('volume_analyzer') if self._volume_analyzer_enabled else None
         if not self.volume_analyzer and self.market_data_pipeline and self._volume_analyzer_enabled:
             self.volume_analyzer = VolumeAnalyzer(self.market_data_pipeline, va_cfg or {})
+
+        hb_cfg: Dict[str, Any] = {}
+        try:
+            hb_cfg = (va_cfg or {}).get("heartbeat", {}) if isinstance(va_cfg, dict) else {}
+            if not isinstance(hb_cfg, dict):
+                hb_cfg = {}
+        except Exception:
+            hb_cfg = {}
+
+        self._volume_heartbeat_enabled = bool(hb_cfg.get("enabled", False))
+        try:
+            interval_sec = int(hb_cfg.get("interval_sec", 300) or 300)
+        except Exception:
+            interval_sec = 300
+        self._volume_heartbeat_interval_sec = max(30, interval_sec)
+        self._volume_heartbeat_trade_tf = str(
+            hb_cfg.get("trade_tf")
+            or hb_cfg.get("trade_timeframe")
+            or hb_cfg.get("timeframe")
+            or "5m"
+        )
+        try:
+            self._volume_heartbeat_min_strength_delta = float(hb_cfg.get("min_strength_delta", 0.05) or 0.05)
+        except Exception:
+            self._volume_heartbeat_min_strength_delta = 0.05
+        if not math.isfinite(self._volume_heartbeat_min_strength_delta) or self._volume_heartbeat_min_strength_delta < 0:
+            self._volume_heartbeat_min_strength_delta = 0.05
+        self._volume_heartbeat_include_debug_fields = bool(hb_cfg.get("include_debug_fields", False))
+        self._volume_heartbeat_last_emit_ts: Dict[str, float] = {}
+        self._volume_heartbeat_last_ctx: Dict[str, Dict[str, Any]] = {}
+        self._volume_heartbeat_task: Optional[asyncio.Task] = None
 
         tg_cfg = self.config.get("trend_guard", {}) if isinstance(self.config, dict) else {}
         tg_enabled = bool(tg_cfg.get("enabled", False)) if isinstance(tg_cfg, dict) else False
@@ -2514,6 +2546,185 @@ class StrategyCoordinator:
                 callback()
             except Exception as exc:
                 logger.debug("[FAST-WATCH] Recheck wakeup callback failed: %s", exc)
+
+    def _resolve_volume_heartbeat_symbols(self) -> List[str]:
+        hb_cfg: Dict[str, Any] = {}
+        try:
+            va_cfg = self.config.get("volume_analyzer", {}) if isinstance(self.config, dict) else {}
+            hb_cfg = (va_cfg or {}).get("heartbeat", {}) if isinstance(va_cfg, dict) else {}
+        except Exception:
+            hb_cfg = {}
+
+        explicit = hb_cfg.get("symbols")
+        if isinstance(explicit, (list, tuple)) and explicit:
+            return [str(sym).strip() for sym in explicit if str(sym).strip()]
+
+        try:
+            fixed = (self.config.get("universe", {}) or {}).get("fixed_symbols") if isinstance(self.config, dict) else None
+            if isinstance(fixed, (list, tuple)) and fixed:
+                return [str(sym).strip() for sym in fixed if str(sym).strip()]
+        except Exception:
+            pass
+
+        env_symbols = os.environ.get("TRADING_SYMBOLS", "").strip()
+        if env_symbols:
+            symbols = [s.strip() for s in env_symbols.split(",") if s.strip()]
+            if symbols:
+                return symbols
+
+        return []
+
+    async def _emit_volume_heartbeat(self, symbol: str) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        run_id = get_current_run_id()
+        trade_tf = self._volume_heartbeat_trade_tf
+        key = f"{symbol}:{trade_tf}"
+
+        if not (self.volume_analyzer and self._volume_analyzer_enabled):
+            payload = {
+                "event": "volume_context_heartbeat_error",
+                "timestamp": now_iso,
+                "run_id": run_id,
+                "symbol": symbol,
+                "timeframe": trade_tf,
+                "reason": "volume_analyzer_disabled",
+            }
+            logger.info("⚠️📊 volume_context_heartbeat_error %s", json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            return
+
+        try:
+            ctx = await self.volume_analyzer.compute_context(symbol=symbol, trade_timeframe=trade_tf)
+        except Exception as exc:
+            payload = {
+                "event": "volume_context_heartbeat_error",
+                "timestamp": now_iso,
+                "run_id": run_id,
+                "symbol": symbol,
+                "timeframe": trade_tf,
+                "reason": "compute_context_exception",
+                "error": str(exc),
+            }
+            logger.info("⚠️📊 volume_context_heartbeat_error %s", json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            return
+
+        if not ctx:
+            payload = {
+                "event": "volume_context_heartbeat_error",
+                "timestamp": now_iso,
+                "run_id": run_id,
+                "symbol": symbol,
+                "timeframe": trade_tf,
+                "reason": "no_context",
+            }
+            logger.info("⚠️📊 volume_context_heartbeat_error %s", json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            return
+
+        prev = self._volume_heartbeat_last_ctx.get(key) or {}
+        prev_bucket = prev.get("volume_bucket")
+        prev_strength = prev.get("volume_strength")
+
+        try:
+            strength = float(ctx.volume_strength)
+        except Exception:
+            strength = None
+        bucket = getattr(ctx, "bucket", None)
+
+        changed_bucket = (prev_bucket is not None) and (bucket != prev_bucket)
+        changed_strength = False
+        if prev_strength is not None and strength is not None:
+            try:
+                changed_strength = abs(float(strength) - float(prev_strength)) >= float(self._volume_heartbeat_min_strength_delta)
+            except Exception:
+                changed_strength = False
+        changed = changed_bucket or changed_strength or (prev_bucket is None and prev_strength is None)
+
+        payload: Dict[str, Any] = {
+            "event": "volume_context_heartbeat",
+            "timestamp": now_iso,
+            "run_id": run_id,
+            "symbol": symbol,
+            "timeframe": trade_tf,
+            "volume_bucket": bucket,
+            "volume_strength": strength,
+            "prev_volume_bucket": prev_bucket,
+            "prev_volume_strength": prev_strength,
+            "changed": bool(changed),
+            "changed_bucket": bool(changed_bucket),
+            "changed_strength": bool(changed_strength),
+            "min_strength_delta": float(self._volume_heartbeat_min_strength_delta),
+            "source": "analyzer",
+        }
+
+        if self._volume_heartbeat_include_debug_fields:
+            payload.update(
+                {
+                    "ratio_short": getattr(ctx, "ratio_short", None),
+                    "ratio_medium": getattr(ctx, "ratio_medium", None),
+                    "ratio_combined": getattr(ctx, "ratio_combined", None),
+                    "current_window_volume": getattr(ctx, "current_window_volume", None),
+                    "short_baseline_volume": getattr(ctx, "short_baseline_volume", None),
+                    "medium_baseline_volume": getattr(ctx, "medium_baseline_volume", None),
+                    "baseline_short_last_bar_ts": getattr(ctx, "baseline_short_last_bar_ts", None),
+                    "baseline_medium_last_bar_ts": getattr(ctx, "baseline_medium_last_bar_ts", None),
+                    "baseline_calc_mode": getattr(ctx, "baseline_calc_mode", None),
+                }
+            )
+
+        self._volume_heartbeat_last_ctx[key] = {"volume_bucket": bucket, "volume_strength": strength}
+
+        prefix = "🔔📊" if changed else "💓📊"
+        logger.info("%s volume_context_heartbeat %s", prefix, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+
+    def start_volume_heartbeat(self) -> bool:
+        if not self._volume_heartbeat_enabled:
+            return False
+        task = getattr(self, "_volume_heartbeat_task", None)
+        if task and not task.done():
+            return True
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("[VOLUME-HEARTBEAT] No running event loop; heartbeat not started")
+            return False
+        self._volume_heartbeat_task = loop.create_task(self._volume_heartbeat_loop())
+        return True
+
+    def stop_volume_heartbeat(self) -> None:
+        task = getattr(self, "_volume_heartbeat_task", None)
+        if task and not task.done():
+            task.cancel()
+        self._volume_heartbeat_task = None
+
+    async def _volume_heartbeat_loop(self) -> None:
+        logger.info(
+            "💓📊 [VOLUME-HEARTBEAT] Started | interval_sec=%s trade_tf=%s",
+            self._volume_heartbeat_interval_sec,
+            self._volume_heartbeat_trade_tf,
+        )
+        warned_empty = False
+        try:
+            while True:
+                symbols = self._resolve_volume_heartbeat_symbols()
+                if not symbols:
+                    if not warned_empty:
+                        warned_empty = True
+                        logger.info("💓📊 [VOLUME-HEARTBEAT] No symbols resolved; waiting...")
+                    await asyncio.sleep(min(60, int(self._volume_heartbeat_interval_sec)))
+                    continue
+
+                warned_empty = False
+                now = time.time()
+                for symbol in symbols:
+                    last = self._volume_heartbeat_last_emit_ts.get(symbol, 0.0)
+                    if (now - last) < float(self._volume_heartbeat_interval_sec):
+                        continue
+                    await self._emit_volume_heartbeat(symbol)
+                    self._volume_heartbeat_last_emit_ts[symbol] = now
+
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            logger.info("💓📊 [VOLUME-HEARTBEAT] Stopped")
+            raise
 
     def start_fast_watcher(self) -> bool:
         if not self._fast_watch_enabled:

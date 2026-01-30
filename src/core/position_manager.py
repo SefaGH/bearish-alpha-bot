@@ -1997,6 +1997,51 @@ class AdvancedPositionManager:
                             )
 
             if position.get('trailing_stop_enabled'):
+                execution = position.get("execution") if isinstance(position.get("execution"), dict) else {}
+                trailing_cfg = execution.get("trailing_stop") if isinstance(execution.get("trailing_stop"), dict) else {}
+                breakeven_cfg = trailing_cfg.get("breakeven_lock") if isinstance(trailing_cfg.get("breakeven_lock"), dict) else {}
+                if breakeven_cfg.get("enabled", False):
+                    current_pnl_pct = normalized_unrealized_pct
+                    if current_pnl_pct is None:
+                        current_pnl_pct = self._get_unrealized_pnl_pct(position, position.get('current_price'))
+
+                    activation_pct = self._safe_float(breakeven_cfg.get("activation_pct"))
+                    buffer_bps = self._safe_float(breakeven_cfg.get("buffer_bps"))
+                    if activation_pct is not None and buffer_bps is not None and activation_pct >= 0 and buffer_bps >= 0:
+                        if current_pnl_pct is not None and current_pnl_pct >= activation_pct:
+                            buffer_pct = buffer_bps / 10000.0
+                            lock_price = entry_price * (1 + buffer_pct) if is_long else entry_price * (1 - buffer_pct)
+                            if lock_price > 0:
+                                if is_long and position['current_price'] and lock_price <= position['current_price']:
+                                    current_stop = self._safe_float(position.get('stop_loss'), 0.0) or 0.0
+                                    if current_stop <= 0 or lock_price > current_stop:
+                                        position['stop_loss'] = lock_price
+                                        position['breakeven_lock_armed'] = True
+                                        stop_updated = True
+                                        logger.info(
+                                            "BREAKEVEN_LOCK %s symbol=%s side=%s entry=%.4f lock=%.4f pnl_pct=%.4f",
+                                            position_id,
+                                            position.get('symbol', 'UNKNOWN'),
+                                            side,
+                                            entry_price,
+                                            lock_price,
+                                            current_pnl_pct,
+                                        )
+                                elif not is_long and position['current_price'] and lock_price >= position['current_price']:
+                                    current_stop = self._safe_float(position.get('stop_loss'), 0.0) or 0.0
+                                    if current_stop <= 0 or lock_price < current_stop:
+                                        position['stop_loss'] = lock_price
+                                        position['breakeven_lock_armed'] = True
+                                        stop_updated = True
+                                        logger.info(
+                                            "BREAKEVEN_LOCK %s symbol=%s side=%s entry=%.4f lock=%.4f pnl_pct=%.4f",
+                                            position_id,
+                                            position.get('symbol', 'UNKNOWN'),
+                                            side,
+                                            entry_price,
+                                            lock_price,
+                                            current_pnl_pct,
+                                        )
                 trailing_distance = self._safe_float(position.get('trailing_stop_distance'), 0.02) or 0.02
                 was_active = bool(position.get('trailing_stop_activated', False))
                 is_active = self._is_trailing_stop_active(position, position['current_price'], entry_price, is_long)

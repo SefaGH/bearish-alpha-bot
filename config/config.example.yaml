@@ -283,7 +283,7 @@ websocket:
 
 # Preferred trigger price source for live price resolution
 trigger_price:
-  source: mid                         # Override with: TRIGGER_PRICE_SOURCE (mark|mid|last)
+  source: mid                         # Override with: TRIGGER_PRICE_SOURCE (mark|mid|last|bid|ask|opposite_side)
   diag_interval_sec: 60               # Override with: TRIGGER_PRICE_DIAG_INTERVAL_SEC
 
 # ==============================================================================
@@ -343,6 +343,17 @@ volume_analyzer:
   sigmoid_alpha: 1.2                 # Override with: VOLUME_ANALYZER_SIGMOID_ALPHA
   min_ratio: 0.1                     # Override with: VOLUME_ANALYZER_MIN_RATIO
   max_ratio: 10.0                    # Override with: VOLUME_ANALYZER_MAX_RATIO
+  heartbeat:
+    # Periodic telemetry to make `volume_strength` / `volume_bucket` visible even when no signals fire.
+    # Emits one line per symbol per interval:
+    #   "💓📊 volume_context_heartbeat { ...json... }"
+    enabled: false                   # Override with: VOLUME_HEARTBEAT_ENABLED
+    interval_sec: 300                # Override with: VOLUME_HEARTBEAT_INTERVAL_SEC
+    trade_tf: "5m"                   # Override with: VOLUME_HEARTBEAT_TRADE_TF
+    min_strength_delta: 0.05         # Override with: VOLUME_HEARTBEAT_MIN_STRENGTH_DELTA
+    include_debug_fields: false      # Override with: VOLUME_HEARTBEAT_DEBUG
+    # Optional: if set, restrict heartbeat to these symbols; otherwise falls back to universe.fixed_symbols / TRADING_SYMBOLS.
+    symbols: []
   # (Shock) Optional: add prorated forming volume to current window numerator when shock_state=ARMED.
   include_forming_numerator_when_armed: true
   forming_update_stale_ms: 3000
@@ -694,10 +705,10 @@ execution_profiles:
       activation_threshold_pct: 0.0030
       delta_pct: 0.0035
       dynamic_steps:
-        - activation_pnl: 0.0075
+        - activation_pnl: 0.0030
           new_delta_pct: 0.0025
-        - activation_pnl: 0.0150
-          new_delta_pct: 0.0010
+        - activation_pnl: 0.0045
+          new_delta_pct: 0.0020
     dca:
       enabled: false
     pyramiding:
@@ -707,6 +718,7 @@ execution_profiles:
   standard_mode:
     trailing_stop:
       enabled: true
+      trigger_source: "opposite_side"  # Use bid for long exits, ask for short exits (reduces slippage mismatch)
       activation_threshold_pct: 0.0030
       delta_pct: 0.0035
       dynamic_steps:
@@ -714,6 +726,10 @@ execution_profiles:
           new_delta_pct: 0.0025
         - activation_pnl: 0.0150
           new_delta_pct: 0.0010
+      breakeven_lock:
+        enabled: true
+        activation_pct: 0.0025
+        buffer_bps: 2.0
     dca:
       enabled: true
       max_layers: 3
@@ -816,7 +832,7 @@ strategies:
     execution_profile: "sniper_mode"  # Hybrid: NO DCA/NO pyramiding (sniper MR)
     timeframe: "1m"           # VWAP calculation window
     signal_timeframe: "5m"    # Decision timeframe
-    price_source: "mid"       # Options: signal_close, forming_close, mid, mark, last
+    price_source: "signal_close"  # Override with: STRATEGIES__MEAN_REVERSION__PRICE_SOURCE ; Options: signal_close, forming_close, mid, mark, last
     # Proximity gate for MR near-miss → waiting-room (FAST_PRICE_WATCH)
     # Unit: fractional distance to band (e.g., 0.0010 = 10 bps). Lower = fewer "far_from_trigger" pendings.
     soft_deferral_threshold: 0.0010
@@ -845,7 +861,7 @@ strategies:
       touch_price_source: "bidask"  # Confirmation requires bid/ask (no mid-touch)
       max_ticker_age_ms: 500        # Applies ONLY to recheck trigger (strict freshness)
       recheck_cooldown_ms: 1500     # Per pending_id DoS guard
-      allow_touch_entry: true       # Touch can override MR in-band veto when confirmed
+      allow_touch_entry: false      # Override with: STRATEGIES__MEAN_REVERSION__FAST_WATCH__ALLOW_TOUCH_ENTRY ; Touch can override MR in-band veto when confirmed
     vwap_lookback: 1440       # 1440 bars in VWAP timeframe (timeframe=1m => ~24h)
     band_multiplier: 2.0
     stop_loss_std_delta: 1.0  # Override with: STRATEGIES__MEAN_REVERSION__STOP_LOSS_STD_DELTA ; Z-score stop distance beyond the active band (in sigmas)
@@ -862,10 +878,10 @@ strategies:
       target_outside_pct: 0.15
       abs_z_window: 500
       warmup_samples: 50
-      update_interval_sec: 300
+      update_interval_sec: 60        # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__UPDATE_INTERVAL_SEC
       min_m_change: 0.05
-      m_min: 1.6                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MIN ; Raise entry selectivity (filters noise)
-      m_max: 3.5                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MAX
+      m_min: 1.0                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MIN ; Lower = tighter bands in calm markets
+      m_max: 3.0                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MAX ; Upper cap in bursts
       log_every_update: true
       freeze_on_trend: true
       adx_freeze_threshold: 32.0     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__ADX_FREEZE_THRESHOLD ; Looser freeze (old: 25 froze too early)
@@ -873,12 +889,27 @@ strategies:
         enabled: true                # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__DYNAMIC_LOOKBACK__ENABLED ; Vital: adapt lookback instead of fixed 1440 bars
         # NOTE: lookback_* values are BARS in the VWAP timeframe (strategies.mean_reversion.timeframe), not minutes.
         # Example: timeframe=1m -> 120 bars ≈ 120 minutes; timeframe=5m -> 120 bars ≈ 10 hours.
-        lookback_static: 1440
-        lookback_min: 720            # Floor to prevent micro-STD in squeeze (timeframe=1m => ~12h)
-        lookback_max: 2880           # Upper bound (timeframe=1m => ~48h). Requires df_vwap to contain this many bars.
-        atr_squeeze_pct: 0.0015
-        atr_expand_pct: 0.0040
-        atr_hysteresis_pct: 0.0002
+        lookback_static: 180         # 3 hours (timeframe=1m)
+        lookback_min: 60             # 1 hour (timeframe=1m)
+        lookback_max: 300            # 5 hours (timeframe=1m). Requires df_vwap to contain this many bars.
+        atr_expand_pct: 0.0045
+        atr_squeeze_pct: 0.0020
+        atr_hysteresis_pct: 0.00015
+    # Optional (opt-in): Lightweight 15s trade-aggregator + adaptive band overlay.
+    # - Uses BingX WebSocket `@trade` stream (no 15s klines required).
+    # - Gap filling is safety-capped (hard cap 50).
+    adaptive_settings:
+      enabled: true                   # Override with: STRATEGIES__MEAN_REVERSION__ADAPTIVE_SETTINGS__ENABLED
+      gap_fill_cap: 50                # Override with: STRATEGIES__MEAN_REVERSION__ADAPTIVE_SETTINGS__GAP_FILL_CAP
+      volume_lookback: 20             # Override with: STRATEGIES__MEAN_REVERSION__ADAPTIVE_SETTINGS__VOLUME_LOOKBACK
+      slope_lookback: 50              # Override with: STRATEGIES__MEAN_REVERSION__ADAPTIVE_SETTINGS__SLOPE_LOOKBACK
+      enable_volume_adapt: true       # Override with: STRATEGIES__MEAN_REVERSION__ADAPTIVE_SETTINGS__ENABLE_VOLUME_ADAPT
+      enable_slope_shift: true        # Override with: STRATEGIES__MEAN_REVERSION__ADAPTIVE_SETTINGS__ENABLE_SLOPE_SHIFT
+      volume_weight: 1.0              # Override with: STRATEGIES__MEAN_REVERSION__ADAPTIVE_SETTINGS__VOLUME_WEIGHT ; 0..1 weight for vol_ratio influence
+      volume_mult_min: 0.8            # Override with: STRATEGIES__MEAN_REVERSION__ADAPTIVE_SETTINGS__VOLUME_MULT_MIN
+      volume_mult_max: 1.5            # Override with: STRATEGIES__MEAN_REVERSION__ADAPTIVE_SETTINGS__VOLUME_MULT_MAX
+      slope_shift_mult: 1.0           # Override with: STRATEGIES__MEAN_REVERSION__ADAPTIVE_SETTINGS__SLOPE_SHIFT_MULT
+      slope_shift_std_cap: 0.5        # Override with: STRATEGIES__MEAN_REVERSION__ADAPTIVE_SETTINGS__SLOPE_SHIFT_STD_CAP ; cap shift to N*std
     rsi_rebound_guard:
       enabled: true
       tf: "1m"

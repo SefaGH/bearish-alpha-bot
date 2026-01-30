@@ -281,6 +281,54 @@ async def test_fee_lock_updates_stop_loss():
     assert position['fee_lock_armed'] is True
     assert position['stop_loss'] == pytest.approx(100.12, rel=1e-6)
 
+@pytest.mark.asyncio
+async def test_trailing_breakeven_lock_updates_stop():
+    manager, _, _ = make_manager()
+    signal = {
+        'symbol': 'BTC/USDT:USDT',
+        'side': 'buy',
+        'tp_pct': 0.03,
+        'sl_pct': 0.01,
+    }
+    execution_result = {
+        'success': True,
+        'avg_price': 100.0,
+        'filled_amount': 1.0,
+    }
+
+    result = await manager.open_position(signal, execution_result)
+    position_id = result['position_id']
+
+    manager.attach_execution_config(
+        position_id,
+        {
+            'trailing_stop': {
+                'enabled': True,
+                'delta_pct': 0.0035,
+                'activation_threshold_pct': 0.01,
+                'breakeven_lock': {
+                    'enabled': True,
+                    'activation_pct': 0.0025,
+                    'buffer_bps': 2.0,
+                },
+            },
+            'dca': {'enabled': False},
+        },
+    )
+
+    manager.configure_trailing_stop(
+        position_id,
+        enabled=True,
+        delta_pct=0.0035,
+        activation_threshold_pct=0.01,
+    )
+
+    await manager.monitor_position_pnl(position_id, current_price=100.25)
+    position = manager.positions[position_id]
+
+    assert position['stop_loss'] == pytest.approx(100.02, rel=1e-6)
+    assert position.get('breakeven_lock_armed') is True
+
 
 @pytest.mark.asyncio
 async def test_fee_lock_allows_trailing_to_improve_stop():

@@ -283,6 +283,28 @@ class BingXWebSocket:
             logger.error(f"Failed to queue kline subscription for {symbol} {interval}: {e}")
             return False
 
+    async def subscribe_trade(self, symbol: str) -> bool:
+        """Subscribes to a trade stream."""
+        try:
+            bingx_symbol = self._convert_symbol_to_bingx(symbol)
+            data_type = f"{bingx_symbol}@trade"
+
+            sub_message = {"id": data_type, "reqType": "sub", "dataType": data_type}
+            self.subscriptions[data_type] = sub_message  # Reconnect-safe
+
+            if self._is_connected:
+                self._send_json_threadsafe(sub_message)
+
+            logger.info(f"Subscription for trade '{data_type}' has been queued.")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to queue trade subscription for {symbol}: {e}")
+            return False
+
+    async def subscribe_trades(self, symbol: str) -> bool:
+        """Back-compat alias for subscribe_trade."""
+        return await self.subscribe_trade(symbol)
+
     async def _resubscribe(self):
         """Resubscribes to all tracked channels after a reconnection."""
         if not self.subscriptions:
@@ -674,32 +696,85 @@ class BingXWebSocket:
     async def _handle_trade(self, data: dict):
         """Process trade update."""
         try:
-            trade_data = data.get("data", {})
-            if not trade_data:
+            trade_payload = data.get("data")
+            if not trade_payload:
                 return
-            
-            # Extract symbol
-            data_type = data.get("dataType", "")
+
+            # Extract symbol from channel name (e.g., BTC-USDT@trade).
+            data_type = data.get("dataType", "") or ""
             symbol = data_type.split("@")[0] if "@" in data_type else None
-            
             if not symbol:
                 return
-            
+
             ccxt_symbol = self._convert_symbol_from_bingx(symbol)
-            
-            # Format trade
-            trade = {
-                'symbol': ccxt_symbol,
-                'price': float(trade_data.get('p', 0)),
-                'quantity': float(trade_data.get('q', 0)),
-                'side': 'buy' if trade_data.get('m', True) else 'sell',
-                'timestamp': trade_data.get('t', int(time.time() * 1000))
-            }
-            
-            # Call callbacks
-            for callback in self.callbacks.get('trade', []):
-                await callback(ccxt_symbol, trade)
-                
+
+            trade_items = trade_payload if isinstance(trade_payload, list) else [trade_payload]
+            if not trade_items:
+                return
+
+            def _consume_task_result(task: asyncio.Task) -> None:
+                try:
+                    exc = task.exception()
+                except asyncio.CancelledError:
+                    return
+                except Exception:
+                    return
+                if exc is not None:
+                    logger.error("Trade callback task failed: %s", exc)
+
+            for item in trade_items:
+                if not isinstance(item, dict):
+                    continue
+
+                try:
+                    price = float(item.get("p") if item.get("p") is not None else item.get("price", 0.0))
+                    qty = float(item.get("q") if item.get("q") is not None else item.get("quantity", 0.0))
+                except Exception:
+                    continue
+
+                # Timestamp: prefer `T` (ms), fallback to `t`, then message `ts`.
+                ts_ms = None
+                try:
+                    ts_ms = item.get("T")
+                    if ts_ms is None:
+                        ts_ms = item.get("t")
+                    if ts_ms is None:
+                        ts_ms = item.get("timestamp")
+                    if ts_ms is None:
+                        ts_ms = data.get("ts")
+                    ts_ms = int(ts_ms) if ts_ms is not None else int(time.time() * 1000)
+                except Exception:
+                    ts_ms = int(time.time() * 1000)
+
+                # Side mapping: if buyer is maker (`m=True`), taker is seller -> aggressive SELL.
+                side = "buy"
+                try:
+                    buyer_is_maker = item.get("m")
+                    if buyer_is_maker is True:
+                        side = "sell"
+                    elif buyer_is_maker is False:
+                        side = "buy"
+                except Exception:
+                    side = "buy"
+
+                trade = {
+                    "symbol": ccxt_symbol,
+                    "price": price,
+                    "quantity": qty,
+                    "side": side,
+                    "timestamp": ts_ms,
+                }
+
+                # Fire-and-forget callback dispatch (don't block WS processing on trade stream).
+                for callback in self.callbacks.get("trade", []):
+                    try:
+                        result = callback(ccxt_symbol, trade)
+                        if asyncio.iscoroutine(result):
+                            task = asyncio.create_task(result)
+                            task.add_done_callback(_consume_task_result)
+                    except Exception as e:
+                        logger.error("Error in trade callback: %s", e)
+                 
         except Exception as e:
             logger.error(f"Error handling trade: {e}")
     

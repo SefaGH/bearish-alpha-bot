@@ -473,6 +473,28 @@ class LiveTradingEngine:
             steps.sort(key=lambda s: s.get("activation_pnl", 0.0))
             return steps
 
+        def _normalize_breakeven_lock(value: Any) -> Optional[Dict[str, Any]]:
+            if value is True:
+                value = {"enabled": True}
+            if not isinstance(value, dict):
+                return None
+            enabled = bool(value.get("enabled", True))
+            activation_pct = value.get("activation_pct")
+            buffer_bps = value.get("buffer_bps")
+            try:
+                activation_pct = float(activation_pct) if activation_pct is not None else None
+            except (TypeError, ValueError):
+                activation_pct = None
+            try:
+                buffer_bps = float(buffer_bps) if buffer_bps is not None else None
+            except (TypeError, ValueError):
+                buffer_bps = None
+            return {
+                "enabled": enabled,
+                "activation_pct": max(0.0, activation_pct) if activation_pct is not None else None,
+                "buffer_bps": max(0.0, buffer_bps) if buffer_bps is not None else None,
+            }
+
         # --- Global defaults (fallback) ---
         trailing_global = _as_dict(_as_dict(cfg.get("position_management")).get("trailing_stop"))
         global_trailing_enabled = bool(trailing_global.get("trailing_stop_enabled", False))
@@ -493,6 +515,8 @@ class LiveTradingEngine:
                 "delta_pct": max(0.0, global_delta),
                 "activation_threshold_pct": max(0.0, global_activation),
                 "dynamic_steps": list(global_dynamic_steps),
+                "trigger_source": None,
+                "breakeven_lock": None,
             },
             "dca": {
                 "enabled": global_dca_enabled,
@@ -521,6 +545,10 @@ class LiveTradingEngine:
                         resolved["trailing_stop"]["activation_threshold_pct"] = max(0.0, _safe_float(profile_ts.get("activation_threshold_pct"), resolved["trailing_stop"]["activation_threshold_pct"]))
                     if "dynamic_steps" in profile_ts:
                         resolved["trailing_stop"]["dynamic_steps"] = _normalize_dynamic_steps(profile_ts.get("dynamic_steps"))
+                    if "trigger_source" in profile_ts:
+                        resolved["trailing_stop"]["trigger_source"] = str(profile_ts.get("trigger_source") or "").strip() or None
+                    if "breakeven_lock" in profile_ts:
+                        resolved["trailing_stop"]["breakeven_lock"] = _normalize_breakeven_lock(profile_ts.get("breakeven_lock"))
 
                 profile_dca = _as_dict(profile_cfg.get("dca"))
                 if profile_dca:
@@ -548,6 +576,10 @@ class LiveTradingEngine:
                 resolved["trailing_stop"]["delta_pct"] = max(0.0, _safe_float(ts_override.get("delta_pct"), resolved["trailing_stop"]["delta_pct"]))
             if "dynamic_steps" in ts_override:
                 resolved["trailing_stop"]["dynamic_steps"] = _normalize_dynamic_steps(ts_override.get("dynamic_steps"))
+            if "trigger_source" in ts_override:
+                resolved["trailing_stop"]["trigger_source"] = str(ts_override.get("trigger_source") or "").strip() or None
+            if "breakeven_lock" in ts_override:
+                resolved["trailing_stop"]["breakeven_lock"] = _normalize_breakeven_lock(ts_override.get("breakeven_lock"))
             # Support activation_threshold as alias for activation_threshold_pct
             if "activation_threshold_pct" in ts_override:
                 resolved["trailing_stop"]["activation_threshold_pct"] = max(0.0, _safe_float(ts_override.get("activation_threshold_pct"), resolved["trailing_stop"]["activation_threshold_pct"]))
@@ -1608,13 +1640,16 @@ class LiveTradingEngine:
 
                         if self.market_data_pipeline:
                             trigger_cfg = self.config.get('trigger_price', {}) if isinstance(self.config, dict) else {}
-                            trigger_source_cfg = trigger_cfg.get('source', 'mid') or 'mid'
+                            execution_cfg = position.get("execution") if isinstance(position.get("execution"), dict) else {}
+                            trailing_cfg = execution_cfg.get("trailing_stop") if isinstance(execution_cfg.get("trailing_stop"), dict) else {}
+                            trigger_source_cfg = trailing_cfg.get("trigger_source") or trigger_cfg.get('source', 'mid') or 'mid'
                             trigger_price, trigger_source, trigger_fallback = self.market_data_pipeline.get_live_trigger_price(
                                 symbol,
                                 timeframe='1m',
                                 source=trigger_source_cfg,
                                 exchange=exchange,
-                                forming_close=closed_price
+                                forming_close=closed_price,
+                                side=position.get('side')
                             )
 
                             ws_exchange = exchange or (

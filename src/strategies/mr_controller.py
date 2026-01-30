@@ -38,6 +38,8 @@ class MRControllerDecision:
 @dataclass
 class _SymbolState:
     abs_z_hist: Deque[float]
+    volume_hist: Deque[float]
+    vwap_hist: Deque[float]
     last_update_ts: Optional[datetime]
     last_band_multiplier: float
     last_lookback: int
@@ -86,6 +88,64 @@ class DynamicMRController:
         self._atr_expand_pct = float(lookback_cfg.get("atr_expand_pct", 0.0040))
         self._atr_hysteresis_pct = float(lookback_cfg.get("atr_hysteresis_pct", 0.0002))
 
+        adaptive_cfg = self._cfg.get("adaptive_settings", {}) if isinstance(self._cfg.get("adaptive_settings"), dict) else {}
+        self._adaptive_enabled = bool(adaptive_cfg.get("enabled", False))
+        self._adaptive_volume_enabled = bool(adaptive_cfg.get("enable_volume_adapt", True))
+        self._adaptive_slope_enabled = bool(adaptive_cfg.get("enable_slope_shift", True))
+
+        try:
+            volume_lookback = int(adaptive_cfg.get("volume_lookback", 20) or 20)
+        except Exception:
+            volume_lookback = 20
+        self._adaptive_volume_lookback = max(1, int(volume_lookback))
+
+        try:
+            slope_lookback = int(adaptive_cfg.get("slope_lookback", 50) or 50)
+        except Exception:
+            slope_lookback = 50
+        self._adaptive_slope_lookback = max(1, int(slope_lookback))
+
+        try:
+            volume_weight = float(adaptive_cfg.get("volume_weight", 0.5))
+        except Exception:
+            volume_weight = 0.5
+        if not math.isfinite(volume_weight):
+            volume_weight = 0.5
+        self._adaptive_volume_weight = float(min(max(volume_weight, 0.0), 1.0))
+
+        try:
+            vol_mult_min = float(adaptive_cfg.get("volume_mult_min", 0.5))
+        except Exception:
+            vol_mult_min = 0.5
+        try:
+            vol_mult_max = float(adaptive_cfg.get("volume_mult_max", 2.0))
+        except Exception:
+            vol_mult_max = 2.0
+        if not math.isfinite(vol_mult_min) or vol_mult_min <= 0:
+            vol_mult_min = 0.5
+        if not math.isfinite(vol_mult_max) or vol_mult_max <= 0:
+            vol_mult_max = 2.0
+        if vol_mult_max < vol_mult_min:
+            vol_mult_max = vol_mult_min
+        self._adaptive_volume_mult_min = float(vol_mult_min)
+        self._adaptive_volume_mult_max = float(vol_mult_max)
+
+        try:
+            slope_shift_mult = float(adaptive_cfg.get("slope_shift_mult", 0.25))
+        except Exception:
+            slope_shift_mult = 0.25
+        if not math.isfinite(slope_shift_mult):
+            slope_shift_mult = 0.25
+        self._adaptive_slope_shift_mult = float(slope_shift_mult)
+
+        try:
+            slope_shift_std_cap = float(adaptive_cfg.get("slope_shift_std_cap", 0.5))
+        except Exception:
+            slope_shift_std_cap = 0.5
+        if not math.isfinite(slope_shift_std_cap) or slope_shift_std_cap < 0:
+            slope_shift_std_cap = 0.5
+        self._adaptive_slope_shift_std_cap = float(slope_shift_std_cap)
+
         self._state_by_symbol: Dict[str, _SymbolState] = {}
 
         max_lookback = max(self._lookback_static, self._lookback_min, self._lookback_max, self._static_lookback)
@@ -96,7 +156,133 @@ class DynamicMRController:
 
     @property
     def enabled(self) -> bool:
-        return self._enabled
+        return self._enabled or self._adaptive_enabled
+
+    def _get_or_create_state(self, symbol: str) -> _SymbolState:
+        state = self._state_by_symbol.get(symbol)
+        if state is not None:
+            return state
+
+        state = _SymbolState(
+            abs_z_hist=deque(maxlen=max(self._abs_z_window, 1)),
+            volume_hist=deque(maxlen=max(self._adaptive_volume_lookback, 1)),
+            vwap_hist=deque(maxlen=max(self._adaptive_slope_lookback, 1)),
+            last_update_ts=None,
+            last_band_multiplier=float(self._static_band_multiplier),
+            last_lookback=int(self._lookback_static),
+            last_vol_state=None,
+            last_vwap_calc_key=None,
+            last_vwap_calc_vwap=None,
+            last_vwap_calc_std=None,
+        )
+        self._state_by_symbol[symbol] = state
+        return state
+
+    def ingest_15s_bar(self, *, symbol: str, start_ts_ms: int, close: float, volume: float) -> None:
+        """
+        Ingest a closed 15s bar (from a lightweight trade aggregator).
+
+        Notes:
+        - This is an optional, best-effort signal booster; it does not affect core controller state unless enabled.
+        - `start_ts_ms` and `close` are accepted for future extensions; currently only `volume` is used.
+        """
+        if not self._adaptive_enabled or not self._adaptive_volume_enabled:
+            return
+
+        try:
+            vol = float(volume)
+        except Exception:
+            return
+        if not math.isfinite(vol) or vol < 0:
+            return
+
+        state = self._get_or_create_state(str(symbol))
+        state.volume_hist.append(vol)
+
+    def _apply_adaptive_overlay(
+        self,
+        *,
+        symbol: str,
+        price: float,
+        base_vwap: float,
+        base_std: float,
+        decision: MRControllerDecision,
+        current_15s_volume: Optional[float],
+    ) -> MRControllerDecision:
+        if not self._adaptive_enabled:
+            return decision
+
+        state = self._get_or_create_state(str(symbol))
+
+        if math.isfinite(base_vwap):
+            state.vwap_hist.append(float(base_vwap))
+
+        vol_multiplier = 1.0
+        if self._adaptive_volume_enabled:
+            cur_vol = None
+            if current_15s_volume is not None:
+                try:
+                    cur_vol = float(current_15s_volume)
+                except Exception:
+                    cur_vol = None
+            if cur_vol is not None and math.isfinite(cur_vol) and cur_vol >= 0 and len(state.volume_hist) > 0:
+                try:
+                    avg_vol = float(sum(state.volume_hist) / len(state.volume_hist))
+                except Exception:
+                    avg_vol = float("nan")
+                if math.isfinite(avg_vol) and avg_vol > 0:
+                    vol_ratio = cur_vol / avg_vol
+                    if math.isfinite(vol_ratio):
+                        vol_multiplier = 1.0 + (self._adaptive_volume_weight * (vol_ratio - 1.0))
+                        vol_multiplier = min(max(vol_multiplier, self._adaptive_volume_mult_min), self._adaptive_volume_mult_max)
+
+        vwap_shift = 0.0
+        if self._adaptive_slope_enabled and len(state.vwap_hist) >= 2:
+            try:
+                delta = float(state.vwap_hist[-1]) - float(state.vwap_hist[0])
+            except Exception:
+                delta = float("nan")
+            if math.isfinite(delta):
+                vwap_shift = delta * float(self._adaptive_slope_shift_mult)
+                if math.isfinite(base_std) and base_std > 0 and math.isfinite(vwap_shift):
+                    cap = abs(float(base_std)) * float(self._adaptive_slope_shift_std_cap)
+                    if math.isfinite(cap) and cap > 0:
+                        vwap_shift = min(max(vwap_shift, -cap), cap)
+
+        m_base = float(decision.band_multiplier)
+        if not math.isfinite(m_base) or m_base <= 0:
+            m_base = float(self._static_band_multiplier)
+
+        m_final = m_base * float(vol_multiplier)
+        if math.isfinite(m_final):
+            m_final = min(max(m_final, float(self._m_min)), float(self._m_max))
+        else:
+            m_final = m_base
+
+        vwap_final = float(base_vwap) + float(vwap_shift) if math.isfinite(base_vwap) else float("nan")
+        if math.isfinite(vwap_final) and math.isfinite(base_std) and base_std > 0:
+            decision.enabled = True
+            decision.band_multiplier = float(m_final)
+            decision.vwap = float(vwap_final)
+            decision.vwap_std = float(base_std)
+            decision.lower = float(vwap_final - (m_final * base_std))
+            decision.upper = float(vwap_final + (m_final * base_std))
+            try:
+                z_out = (float(price) - float(vwap_final)) / float(base_std)
+                if math.isfinite(z_out):
+                    decision.z = float(z_out)
+                    decision.abs_z = float(abs(z_out))
+            except Exception:
+                pass
+
+        if (
+            (math.isfinite(vol_multiplier) and not math.isclose(vol_multiplier, 1.0, rel_tol=0.0, abs_tol=1e-12))
+            or (math.isfinite(vwap_shift) and abs(vwap_shift) > 0)
+        ):
+            if "adaptive" not in str(decision.reason):
+                decision.reason = f"{decision.reason}+adaptive"
+
+        return decision
 
     def evaluate(
         self,
@@ -108,6 +294,7 @@ class DynamicMRController:
         vwap_std: Optional[float],
         adx: Optional[float],
         atr: Optional[float],
+        current_15s_volume: Optional[float] = None,
         df_vwap: Optional[pd.DataFrame] = None,
         is_forming_candle: Optional[bool] = None,
     ) -> MRControllerDecision:
@@ -124,7 +311,7 @@ class DynamicMRController:
             is_forming_candle = False
 
         if not self._enabled:
-            return self._static_decision(
+            decision = self._static_decision(
                 ts=ts,
                 price=price,
                 vwap=vwap,
@@ -133,20 +320,17 @@ class DynamicMRController:
                 atr=atr,
                 reason="disabled",
             )
-
-        state = self._state_by_symbol.get(symbol)
-        if state is None:
-            state = _SymbolState(
-                abs_z_hist=deque(maxlen=max(self._abs_z_window, 1)),
-                last_update_ts=None,
-                last_band_multiplier=float(self._static_band_multiplier),
-                last_lookback=int(self._lookback_static),
-                last_vol_state=None,
-                last_vwap_calc_key=None,
-                last_vwap_calc_vwap=None,
-                last_vwap_calc_std=None,
+            std_val = float(vwap_std) if vwap_std is not None else float("nan")
+            return self._apply_adaptive_overlay(
+                symbol=symbol,
+                price=price,
+                base_vwap=float(vwap),
+                base_std=std_val,
+                decision=decision,
+                current_15s_volume=current_15s_volume,
             )
-            self._state_by_symbol[symbol] = state
+
+        state = self._get_or_create_state(symbol)
 
         m_prev = float(state.last_band_multiplier or self._static_band_multiplier)
         lookback_prev = int(state.last_lookback or self._lookback_static)
@@ -192,7 +376,7 @@ class DynamicMRController:
 
         if not math.isfinite(std_eff) or std_eff <= 0 or not math.isfinite(vwap_eff):
             # Preserve prior state bands when effective std can't be computed.
-            return self._decision_from_state(
+            decision = self._decision_from_state(
                 state=state,
                 ts=ts,
                 price=price,
@@ -205,6 +389,15 @@ class DynamicMRController:
                 updated=False,
                 reason="std_unavailable",
                 df_vwap=df_vwap,
+            )
+            std_val = float(vwap_std) if vwap_std is not None else float("nan")
+            return self._apply_adaptive_overlay(
+                symbol=symbol,
+                price=price,
+                base_vwap=float(vwap),
+                base_std=std_val,
+                decision=decision,
+                current_15s_volume=current_15s_volume,
             )
 
         # Compute z/abs_z using the SAME effective vwap/std used for band computation.
@@ -220,7 +413,7 @@ class DynamicMRController:
             lower = float(vwap_eff) - (m_prev * float(std_eff))
             upper = float(vwap_eff) + (m_prev * float(std_eff))
             outside_pct = self._current_outside_pct(state.abs_z_hist, m_prev)
-            return MRControllerDecision(
+            decision = MRControllerDecision(
                 enabled=True,
                 updated=False,
                 band_multiplier=float(m_prev),
@@ -238,6 +431,14 @@ class DynamicMRController:
                 atr_pct=atr_pct,
                 reason=reason,
                 vol_state=str(vol_state) if vol_state is not None else None,
+            )
+            return self._apply_adaptive_overlay(
+                symbol=symbol,
+                price=price,
+                base_vwap=float(vwap_eff),
+                base_std=float(std_eff),
+                decision=decision,
+                current_15s_volume=current_15s_volume,
             )
 
         m_eff = self._compute_band_multiplier(state)
@@ -309,7 +510,14 @@ class DynamicMRController:
             }
             logger.info(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
 
-        return decision
+        return self._apply_adaptive_overlay(
+            symbol=symbol,
+            price=price,
+            base_vwap=float(vwap_eff),
+            base_std=float(std_eff),
+            decision=decision,
+            current_15s_volume=current_15s_volume,
+        )
 
     def _static_decision(
         self,

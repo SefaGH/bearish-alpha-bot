@@ -1438,6 +1438,7 @@ class MarketDataPipeline:
         source: str = "mid",
         exchange: Optional[str] = None,
         forming_close: Optional[float] = None,
+        side: Optional[str] = None,
     ) -> tuple[Optional[float], str, str]:
         """Return preferred trigger price with safe fallbacks (mark→mid→forming_close)."""
         if not self.websocket_manager or not getattr(self.websocket_manager, "collector", None):
@@ -1552,7 +1553,38 @@ class MarketDataPipeline:
         resolved_source = source
         price = None
 
-        if source == "mark":
+        if source in {"bid", "ask", "opposite_side"}:
+            desired = source
+            if source == "opposite_side":
+                side_norm = str(side or "").lower()
+                desired = "ask" if side_norm in {"sell", "short"} else "bid"
+
+            if desired == "bid" and bid_price is not None:
+                price = bid_price
+                resolved_source = "bid"
+            elif desired == "ask" and ask_price is not None:
+                price = ask_price
+                resolved_source = "ask"
+            else:
+                _add_reason(f"{desired}_missing")
+                if mid_price is not None:
+                    price = mid_price
+                    resolved_source = "mid"
+                else:
+                    _add_reason("mid_missing")
+                    if mark_price is not None:
+                        price = mark_price
+                        resolved_source = "mark"
+                    elif last_price is not None:
+                        _add_reason("mark_missing")
+                        price = last_price
+                        resolved_source = "last"
+                    else:
+                        _add_reason("mark_missing")
+                        _add_reason("last_missing")
+                        price = forming_close
+                        resolved_source = "forming_close"
+        elif source == "mark":
             if mark_price is not None:
                 price = mark_price
                 resolved_source = "mark"

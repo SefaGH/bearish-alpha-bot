@@ -2781,6 +2781,11 @@ class ProductionCoordinator:
                     self.strategy_coordinator.start_micro_gate_watcher()
                 except Exception as exc:
                     logger.warning("[MICRO-GATE] Failed to start watcher: %s", exc)
+            if hasattr(self.strategy_coordinator, "start_volume_heartbeat"):
+                try:
+                    self.strategy_coordinator.start_volume_heartbeat()
+                except Exception as exc:
+                    logger.warning("[VOLUME-HEARTBEAT] Failed to start heartbeat: %s", exc)
             
             # === STEP 11: INITIALIZE CIRCUIT BREAKER ===
             self.circuit_breaker = CircuitBreakerSystem(
