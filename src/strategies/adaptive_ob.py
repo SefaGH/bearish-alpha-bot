@@ -642,6 +642,227 @@ class AdaptiveOversoldBounce(OversoldBounce):
 
         return triggered, meta
 
+    def _filter_extreme_bypass_signal(
+        self,
+        *,
+        symbol: str,
+        log_prefix: str,
+        extreme_bypass_meta: Dict[str, Any],
+        trigger_price: float,
+        ema_fast: float,
+        adx_val: Optional[float],
+        market_data: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Post-trigger safety filter for extreme bypass.
+
+        Hard veto (fail-open):
+          - If ADX is present and > 50 AND reclaim can be determined AND reclaim is False -> veto.
+          - If ADX/reclaim cannot be determined safely -> do not veto.
+
+        Soft penalty:
+          - If 30 <= ADX <= 50 OR momentum_strength < 0.55 -> size_multiplier=0.5 and force_scalp_mode=True.
+        """
+        out: Dict[str, Any] = {
+            "veto": False,
+            "veto_reason": None,
+            "force_scalp_mode": False,
+            "size_multiplier": 1.0,
+            "adx": adx_val,
+            "reclaim": None,
+            "reclaim_source": None,
+            "momentum_strength": None,
+            "momentum_tf": None,
+            "penalty_reasons": [],
+        }
+
+        def _clamp(v: float, lo: float, hi: float) -> float:
+            return max(lo, min(hi, float(v)))
+
+        # ------------------------------------------------------------
+        # Reclaim detection (prefer fast TF; fallback to slow trigger).
+        # ------------------------------------------------------------
+        reclaim = None
+        reclaim_source = None
+        fast_df = None
+        fast_tf = None
+        try:
+            if isinstance(market_data, dict):
+                for key in ("1m", "df_1m", "5m", "df_5m"):
+                    cand = market_data.get(key)
+                    if isinstance(cand, pd.DataFrame) and not cand.empty:
+                        fast_df = cand
+                        fast_tf = "1m" if "1m" in key else "5m"
+                        break
+        except Exception:
+            fast_df = None
+            fast_tf = None
+
+        if isinstance(fast_df, pd.DataFrame) and not fast_df.empty and "close" in fast_df.columns:
+            try:
+                closed_df = self._as_closed_df(fast_df)
+                if isinstance(closed_df, pd.DataFrame) and not closed_df.empty:
+                    last_row = closed_df.iloc[-1]
+                    last_close = float(last_row.get("close"))
+
+                    ema_fast_val = None
+                    if "ema_fast" in closed_df.columns:
+                        ema_fast_val = float(last_row.get("ema_fast"))
+                    elif "ema21" in closed_df.columns:
+                        ema_fast_val = float(last_row.get("ema21"))
+                    elif len(closed_df) >= 21:
+                        ema_fast_val = float(
+                            closed_df["close"].astype(float).ewm(span=21, adjust=False, min_periods=21).mean().iloc[-1]
+                        )
+
+                    if ema_fast_val is not None and not pd.isna(ema_fast_val) and last_close > 0:
+                        reclaim = bool(last_close > float(ema_fast_val))
+                        reclaim_source = f"fast_tf:{fast_tf or 'unknown'}"
+            except Exception:
+                reclaim = None
+                reclaim_source = None
+
+        if reclaim is None:
+            try:
+                if float(ema_fast or 0.0) > 0 and float(trigger_price or 0.0) > 0:
+                    reclaim = bool(float(trigger_price) > float(ema_fast))
+                    reclaim_source = "slow_fallback:trigger_gt_ema_fast"
+            except Exception:
+                reclaim = None
+                reclaim_source = None
+
+        out["reclaim"] = reclaim
+        out["reclaim_source"] = reclaim_source
+
+        # ------------------------------------------------------------
+        # Momentum strength (best-effort; missing -> no penalty).
+        # ------------------------------------------------------------
+        momentum_strength = None
+        strength_tf = None
+        try:
+            df_fast = None
+            if isinstance(market_data, dict):
+                for tf in ("5m", "1m"):
+                    candidate = market_data.get(tf)
+                    if candidate is None:
+                        candidate = market_data.get(f"df_{tf}")
+                    if isinstance(candidate, pd.DataFrame) and not candidate.empty and "close" in candidate.columns:
+                        df_fast = candidate
+                        strength_tf = tf
+                        break
+            if isinstance(df_fast, pd.DataFrame) and not df_fast.empty:
+                df_fast_closed = self._as_closed_df(df_fast)
+                closes = df_fast_closed["close"].astype(float)
+                if len(closes) >= 11:
+                    price_change_pct = float(closes.pct_change(10).iloc[-1])
+                    momentum_strength = _clamp((price_change_pct + 0.1) / 0.2, 0.0, 1.0)
+        except Exception:
+            momentum_strength = None
+            strength_tf = None
+
+        out["momentum_strength"] = momentum_strength
+        out["momentum_tf"] = strength_tf
+
+        # ------------------------------------------------------------
+        # Thresholds (with safe defaults).
+        # ------------------------------------------------------------
+        bypass_cfg = self.strategy_config.get("extreme_bypass", {}) if isinstance(self.strategy_config, dict) else {}
+        filters_cfg = bypass_cfg.get("filters", {}) if isinstance(bypass_cfg, dict) else {}
+
+        hard_veto_adx = 50.0
+        soft_penalty_adx_min = 30.0
+        soft_penalty_adx_max = 50.0
+        soft_penalty_min_momentum = 0.55
+        soft_penalty_size_mult = 0.5
+
+        try:
+            hard_veto_adx = float(filters_cfg.get("hard_veto_adx", hard_veto_adx) or hard_veto_adx)
+        except Exception:
+            hard_veto_adx = 50.0
+        try:
+            soft_penalty_adx_min = float(filters_cfg.get("soft_penalty_adx_min", soft_penalty_adx_min) or soft_penalty_adx_min)
+        except Exception:
+            soft_penalty_adx_min = 30.0
+        try:
+            soft_penalty_adx_max = float(filters_cfg.get("soft_penalty_adx_max", soft_penalty_adx_max) or soft_penalty_adx_max)
+        except Exception:
+            soft_penalty_adx_max = 50.0
+        try:
+            soft_penalty_min_momentum = float(filters_cfg.get("soft_penalty_min_momentum", soft_penalty_min_momentum) or soft_penalty_min_momentum)
+        except Exception:
+            soft_penalty_min_momentum = 0.55
+        try:
+            soft_penalty_size_mult = float(filters_cfg.get("soft_penalty_size_multiplier", soft_penalty_size_mult) or soft_penalty_size_mult)
+        except Exception:
+            soft_penalty_size_mult = 0.5
+
+        # ------------------------------------------------------------
+        # Hard veto (FAIL-OPEN if ADX/reclaim missing).
+        # ------------------------------------------------------------
+        adx_ok = adx_val is not None and not pd.isna(adx_val)
+        reclaim_ok = reclaim is not None
+        if adx_ok and reclaim_ok:
+            if float(adx_val) > float(hard_veto_adx) and reclaim is False:
+                out["veto"] = True
+                out["veto_reason"] = "hard_veto_adx_high_no_reclaim"
+
+        # ------------------------------------------------------------
+        # Soft penalty: size reduction + force scalp mode.
+        # ------------------------------------------------------------
+        if not out["veto"]:
+            penalize = False
+            if adx_ok and float(soft_penalty_adx_min) <= float(adx_val) <= float(soft_penalty_adx_max):
+                penalize = True
+                out["penalty_reasons"].append("adx_mid")
+            if momentum_strength is not None and not pd.isna(momentum_strength) and float(momentum_strength) < float(soft_penalty_min_momentum):
+                penalize = True
+                out["penalty_reasons"].append("momentum_weak")
+            if penalize:
+                out["force_scalp_mode"] = True
+                out["size_multiplier"] = float(soft_penalty_size_mult)
+
+        # ------------------------------------------------------------
+        # Persist into bypass meta for downstream auditability.
+        # ------------------------------------------------------------
+        try:
+            extreme_bypass_meta.setdefault("filter", {}).update(
+                {
+                    "veto": out["veto"],
+                    "veto_reason": out["veto_reason"],
+                    "adx": float(adx_val) if adx_ok else None,
+                    "reclaim": out["reclaim"],
+                    "reclaim_source": out["reclaim_source"],
+                    "momentum_strength": float(momentum_strength) if momentum_strength is not None else None,
+                    "momentum_tf": strength_tf,
+                    "penalty_reasons": list(out["penalty_reasons"]),
+                    "force_scalp_mode": bool(out["force_scalp_mode"]),
+                    "size_multiplier": float(out["size_multiplier"]),
+                }
+            )
+        except Exception:
+            pass
+
+        if out["veto"]:
+            logger.warning(
+                "[OB-EXTREME-BYPASS-FILTER] %s vetoed | reason=%s adx=%s reclaim=%s reclaim_source=%s",
+                log_prefix,
+                out["veto_reason"],
+                f"{float(adx_val):.2f}" if adx_ok else "na",
+                str(out["reclaim"]),
+                str(out["reclaim_source"]),
+            )
+        elif out["force_scalp_mode"] or float(out["size_multiplier"]) != 1.0:
+            logger.info(
+                "[OB-EXTREME-BYPASS-FILTER] %s penalty | size_mult=%.2f force_scalp=%s reasons=%s adx=%s mom=%s",
+                log_prefix,
+                float(out["size_multiplier"]),
+                bool(out["force_scalp_mode"]),
+                ",".join(out["penalty_reasons"]) if out["penalty_reasons"] else "none",
+                f"{float(adx_val):.2f}" if adx_ok else "na",
+                f"{float(momentum_strength):.3f}" if momentum_strength is not None else "na",
+            )
+
+        return out
+
     @staticmethod
     def _as_closed_df(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
         """Drop a trailing forming candle when present (lookahead-safe)."""
@@ -1775,6 +1996,39 @@ class AdaptiveOversoldBounce(OversoldBounce):
 
             logger.info(f"✅ {log_prefix} Base conditions met. Proceeding to ML & Risk checks.")
 
+            # --- Extreme bypass post-trigger safety filter (hard veto + soft penalty) ---
+            extreme_bypass_size_mult = 1.0
+            force_scalp_mode = False
+            if extreme_bypass_active:
+                filter_out = self._filter_extreme_bypass_signal(
+                    symbol=symbol_display,
+                    log_prefix=log_prefix,
+                    extreme_bypass_meta=extreme_bypass_meta,
+                    trigger_price=float(trigger_price),
+                    ema_fast=float(ema_fast),
+                    adx_val=adx_val,
+                    market_data=market_data,
+                )
+
+                if bool(filter_out.get("veto")):
+                    # Reject the trade; reset persistency so we don't "stick" in passed state.
+                    self._reset_persistency(symbol_display)
+                    _shadow_ob(
+                        "no_signal_extreme_bypass_filter",
+                        "hard_veto",
+                        {
+                            "extreme_bypass": True,
+                            "filter": filter_out,
+                        },
+                    )
+                    return None
+
+                try:
+                    extreme_bypass_size_mult = float(filter_out.get("size_multiplier", 1.0) or 1.0)
+                except Exception:
+                    extreme_bypass_size_mult = 1.0
+                force_scalp_mode = bool(filter_out.get("force_scalp_mode"))
+
             # --- ML-Aware Decision Making ---
             position_size_modifier = 1.0
             ml_enhanced = False
@@ -1854,7 +2108,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
 
             # --- Final Risk/Reward and Position Sizing ---
             volatility = regime_data.get('volatility', 'normal')
-            position_mult = self.calculate_dynamic_position_size(volatility) * position_size_modifier
+            position_mult = self.calculate_dynamic_position_size(volatility) * position_size_modifier * float(extreme_bypass_size_mult or 1.0)
             
             entry_price = float(trigger_price)
             
@@ -2428,6 +2682,18 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 signal["extreme_bypass"] = True
                 signal["extreme_bypass_meta"] = extreme_bypass_meta
                 signal.setdefault("features", {})["extreme_bypass"] = extreme_bypass_meta
+
+            if force_scalp_mode:
+                signal.setdefault("meta", {})["force_scalp_mode"] = True
+                # Best-effort hint: useful for PM audit logs.
+                try:
+                    filt = extreme_bypass_meta.get("filter") if isinstance(extreme_bypass_meta, dict) else None
+                    if isinstance(filt, dict):
+                        signal.setdefault("meta", {})["force_scalp_mode_reason"] = ",".join(
+                            [str(x) for x in (filt.get("penalty_reasons") or []) if str(x).strip()]
+                        ) or "extreme_bypass_penalty"
+                except Exception:
+                    pass
 
             # Expose RSI telemetry so downstream duplicate logic can react dynamically
             signal["rsi"] = float(rsi_val)

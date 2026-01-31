@@ -353,6 +353,46 @@ async def test_scalp_mode_fallback_uses_local_downtrend_when_regime_missing():
 
 
 @pytest.mark.asyncio
+async def test_scalp_mode_forced_by_entry_meta_flag():
+    cfg = _adaptive_ob_scalp_cfg(enabled=True, regime_confidence_max=0.35)
+    manager, _, _ = make_manager(cfg=cfg)
+
+    # No global regime + no local downtrend, but explicit force flag is set by strategy.
+    signal = {
+        'symbol': 'BTC/USDT:USDT',
+        'side': 'buy',
+        'strategy_name': 'adaptive_ob',
+        'tp_pct': 0.015,
+        'sl_pct': 0.01,
+        'ml_metadata': {'regime_confidence': None},
+        'meta': {
+            'strategy_context': 'neutral',
+            'downtrend_context': {'active': False},
+            'force_scalp_mode': True,
+            'force_scalp_mode_reason': 'adx_mid',
+        },
+    }
+    execution_result = {
+        'success': True,
+        'avg_price': 100.0,
+        'filled_amount': 1.0,
+    }
+
+    opened = await manager.open_position(signal, execution_result)
+    assert opened['success'] is True
+    position_id = opened['position_id']
+
+    # Trigger BE logic
+    await manager.monitor_position_pnl(position_id, current_price=100.30)
+    position = manager.positions[position_id]
+
+    assert position.get('scalp_mode_active') is True
+    assert position.get('scalp_mode_activation_via') == 'FORCED_META'
+    assert position['take_profit'] == pytest.approx(100.6, rel=1e-6)
+    assert position['stop_loss'] == pytest.approx(100.05, rel=1e-6)
+
+
+@pytest.mark.asyncio
 async def test_fee_lock_updates_stop_loss():
     cfg = _exit_settings_cfg(trigger_pct=0.0010, offset_pct=0.0012)
     manager, _, _ = make_manager(cfg=cfg)

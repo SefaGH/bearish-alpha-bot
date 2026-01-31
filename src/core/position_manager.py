@@ -866,6 +866,19 @@ class AdvancedPositionManager:
         if not isinstance(meta, dict):
             meta = {}
 
+        force_scalp_mode = False
+        force_scalp_mode_reason = None
+        try:
+            force_scalp_mode = bool(meta.get("force_scalp_mode") is True)
+        except Exception:
+            force_scalp_mode = False
+        try:
+            force_scalp_mode_reason = meta.get("force_scalp_mode_reason")
+            force_scalp_mode_reason = str(force_scalp_mode_reason).strip() if force_scalp_mode_reason is not None else None
+            force_scalp_mode_reason = force_scalp_mode_reason or None
+        except Exception:
+            force_scalp_mode_reason = None
+
         strategy_context = None
         try:
             strategy_context = meta.get("strategy_context")
@@ -941,6 +954,8 @@ class AdvancedPositionManager:
             'regime_data': regime_info if isinstance(regime_info, dict) else None,
             'strategy_context': strategy_context,
             'downtrend_context_active': downtrend_context_active,
+            'force_scalp_mode': bool(force_scalp_mode),
+            'force_scalp_mode_reason': force_scalp_mode_reason,
             'entry_indicators': entry_indicators,
             'volatility': volatility_meta,
             'entry_levels': entry_levels,
@@ -2118,6 +2133,8 @@ class AdvancedPositionManager:
                         or entry_meta.get('downtrend_context_active') is True
                     )
 
+                    forced_scalp = bool(entry_meta.get('force_scalp_mode') is True)
+
                     side_allowed = canonical_side in set(scalp_cfg.get('apply_sides') or [])
                     regime_allowed = regime_label in set(scalp_cfg.get('apply_regimes') or [])
 
@@ -2128,10 +2145,14 @@ class AdvancedPositionManager:
 
                     global_bearish_like = bool(regime_allowed and is_crash_mode)
 
-                    if side_allowed and (global_bearish_like or local_downtrend):
+                    if side_allowed and (forced_scalp or global_bearish_like or local_downtrend):
                         position['scalp_mode_active'] = True
 
-                        activation_via = "GLOBAL_REGIME" if global_bearish_like else "LOCAL_FALLBACK"
+                        activation_via = (
+                            "FORCED_META"
+                            if forced_scalp
+                            else ("GLOBAL_REGIME" if global_bearish_like else "LOCAL_FALLBACK")
+                        )
                         position.setdefault('scalp_mode_activation_via', activation_via)
                         position.setdefault(
                             'scalp_mode_activation',
@@ -2141,6 +2162,8 @@ class AdvancedPositionManager:
                                 'global_regime_confidence': regime_conf,
                                 'local_strategy_context': strategy_context or None,
                                 'local_downtrend': bool(local_downtrend),
+                                'forced_scalp': bool(forced_scalp),
+                                'forced_reason': entry_meta.get('force_scalp_mode_reason'),
                                 'params': {
                                     'target_roi': float(scalp_cfg.get('target_roi', 0.0) or 0.0),
                                     'be_activation_roi': float(scalp_cfg.get('be_activation_roi', 0.0) or 0.0),
@@ -2159,18 +2182,27 @@ class AdvancedPositionManager:
                             tp_pct = float(scalp_cfg.get('target_roi', 0.0) or 0.0)
                             be_act = float(scalp_cfg.get('be_activation_roi', 0.0) or 0.0)
                             be_bps = float(scalp_cfg.get('be_buffer_bps', 0.0) or 0.0)
+                            trigger_desc = "Downtrend Context (Active)"
+                            if activation_via == "GLOBAL_REGIME":
+                                trigger_desc = "Bearish/Volatile low-confidence"
+                            elif activation_via == "FORCED_META":
+                                trigger_desc = "Forced by strategy meta"
+
                             logger.info(
                                 "🪂 [SCALP_MODE] Activated via: %s\n"
                                 "   | Trigger: %s\n"
                                 "   | Global Regime: %s (Confidence: %s)\n"
                                 "   | Local Context: %s (downtrend=%s)\n"
+                                "   | Forced: %s (reason=%s)\n"
                                 "   | Params: TP=%.2f%%, BE_Act=%.2f%%, BE_Buffer=%.1fbps",
                                 activation_via,
-                                "Bearish/Volatile low-confidence" if activation_via == "GLOBAL_REGIME" else "Downtrend Context (Active)",
+                                trigger_desc,
                                 global_regime_display,
                                 global_conf_display,
                                 local_ctx_display,
                                 bool(local_downtrend),
+                                bool(forced_scalp),
+                                str(entry_meta.get('force_scalp_mode_reason') or 'none'),
                                 tp_pct * 100.0,
                                 be_act * 100.0,
                                 be_bps,

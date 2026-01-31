@@ -498,10 +498,10 @@ signals:
     extreme_bypass:
       enabled: true                  # Override with: STRATEGY_OB_EXTREME_BYPASS_ENABLED
       triggers:
-        # Percent drop over last 15m bar (0.008 == 0.8%)
-        price_drop_15m_pct: 0.008     # Override with: STRATEGY_OB_EXTREME_BYPASS_PRICE_DROP_15M_PCT ; Fixed units: all `_pct` fields are fractions (<= 1.0)
-        # RSI threshold on 15m data
-        rsi_15m_below: 30.0           # Override with: STRATEGY_OB_EXTREME_BYPASS_RSI_15M_BELOW
+        # Percent drop over last 15m bar (CODE EXPECTS PERCENT UNITS: 0.8 == 0.8%)
+        price_drop_15m_pct: 0.8       # Override with: STRATEGY_OB_EXTREME_BYPASS_PRICE_DROP_15M_PCT
+        # RSI threshold on 15m data (more restrictive == fewer bypass trades)
+        rsi_15m_below: 15.0           # Override with: STRATEGY_OB_EXTREME_BYPASS_RSI_15M_BELOW
         # Volatility proxy (ATR/price), e.g. 0.006 == 0.6%
         min_atr_pct: 0.006            # Override with: STRATEGY_OB_EXTREME_BYPASS_MIN_ATR_PCT
     dynamic_rsi_gate:
