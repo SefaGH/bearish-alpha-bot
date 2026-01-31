@@ -187,6 +187,14 @@ class VWAPMeanReversion(BaseStrategy):
             self.stop_loss_std_delta = 0.5
         self.vwap_lookback = int(cfg.get("vwap_lookback", 1440))
         self.adx_threshold = float(cfg.get("adx_threshold", 30))
+        try:
+            self._high_adx_z_threshold = float(cfg.get("high_adx_z_threshold", 2.0) or 2.0)
+        except Exception:
+            self._high_adx_z_threshold = 2.0
+        if not math.isfinite(self._high_adx_z_threshold) or self._high_adx_z_threshold <= 0:
+            self._high_adx_z_threshold = 2.0
+        # Safety: preserve intent that higher ADX requires stricter Z.
+        self._high_adx_z_threshold = max(1.60, float(self._high_adx_z_threshold))
         self.min_rr_ratio = float(cfg.get("min_rr_ratio", 1.0))
 
         net_profit_cfg = cfg.get("net_profit_filter", {})
@@ -1077,7 +1085,7 @@ class VWAPMeanReversion(BaseStrategy):
             if 22.0 < float(adx_val) < 25.0:
                 required_z = max(required_z, 1.60)
             elif float(adx_val) >= 25.0:
-                required_z = max(required_z, 2.00)
+                required_z = max(required_z, float(self._high_adx_z_threshold))
 
         if z_val is not None and math.isfinite(z_val):
             if guard_state_pre != "ARMED" and abs(float(z_val)) < required_z:

@@ -891,9 +891,10 @@ strategies:
     vwap_lookback: 1440       # 1440 bars in VWAP timeframe (timeframe=1m => ~24h)
     band_multiplier: 2.0
     stop_loss_std_delta: 1.0  # Override with: STRATEGIES__MEAN_REVERSION__STOP_LOSS_STD_DELTA ; Z-score stop distance beyond the active band (in sigmas)
-    adx_threshold: 25.0
+    adx_threshold: 34.0
+    high_adx_z_threshold: 1.90
     adx_slope_lookback: 5
-    adx_slope_eps: 0.0
+    adx_slope_eps: 0.2
     net_profit_filter:
       enabled: true
       cost_bps_assumed: 6.0
@@ -910,7 +911,7 @@ strategies:
       m_max: 3.0                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MAX ; Upper cap in bursts
       log_every_update: true
       freeze_on_trend: true
-      adx_freeze_threshold: 32.0     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__ADX_FREEZE_THRESHOLD ; Looser freeze (old: 25 froze too early)
+      adx_freeze_threshold: 36.0     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__ADX_FREEZE_THRESHOLD ; Looser freeze (old: 25 froze too early)
       dynamic_lookback:
         enabled: true                # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__DYNAMIC_LOOKBACK__ENABLED ; Vital: adapt lookback instead of fixed 1440 bars
         # NOTE: lookback_* values are BARS in the VWAP timeframe (strategies.mean_reversion.timeframe), not minutes.
