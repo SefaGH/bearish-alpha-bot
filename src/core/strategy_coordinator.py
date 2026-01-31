@@ -28,6 +28,9 @@ from src.quality.quality_calculator import compute_quality
 from core.volume_analyzer import VolumeAnalyzer
 from src.safety.trend_guard import TrendGuard
 from src.safety.safety_override import SafetyOverride
+from src.safety.signal_integrity_guard import SignalIntegrityGuard
+from src.safety.regime_filter import RegimeFilter
+from src.core.transition_policy import PositionTransitionPolicy
 from src.core.interfaces import PositionSizingProtocol
 from src.utils.volume_utils import get_bucket_rank
 from core.logger import get_current_run_id
@@ -35,6 +38,7 @@ from src.core.signal_intents import (
     INTENT_ENTRY,
     INTENT_REENTRY,
     INTENT_SCALE_IN,
+    INTENT_CLOSE,
     MAINTENANCE_INTENTS,
     INTENT_FORCE_SWAP,
     INTENT_REVERSE,
@@ -637,6 +641,10 @@ class StrategyCoordinator:
                 )
             except Exception:
                 logger.info("[SAFETY-OVERRIDE] enabled=true")
+
+        self.integrity_guard = SignalIntegrityGuard(self.config, self.market_data_pipeline)
+        self.regime_filter = RegimeFilter(self.config, self.market_data_pipeline)
+        self.transition_policy = PositionTransitionPolicy(self.config)
 
         strategies_cfg = self.config.get('strategies', {}) or {}
         self.regime_routing_rules = strategies_cfg.get('regime_routing', {}) or {}
@@ -6280,6 +6288,71 @@ class StrategyCoordinator:
             # Adım 2: Sinyali Zenginleştir
             enriched_signal = await self._enrich_signal(strategy_name, signal)
 
+            # --- Integrity Guard (Price deviation + staleness) ---
+            current_position = None
+            try:
+                pm = getattr(self, "portfolio_manager", None)
+                if pm is not None and hasattr(pm, "get_open_positions_for_symbol") and symbol:
+                    positions = pm.get_open_positions_for_symbol(symbol) or []
+                    if isinstance(positions, list):
+                        current_position = positions[0] if positions else None
+                    elif isinstance(positions, dict):
+                        current_position = positions
+                elif pm is not None and hasattr(pm, "get_open_positions") and symbol:
+                    positions_dict = pm.get_open_positions() or {}
+                    if isinstance(positions_dict, dict):
+                        for pos in positions_dict.values():
+                            if isinstance(pos, dict) and pos.get("symbol") == symbol:
+                                current_position = pos
+                                break
+            except Exception:
+                current_position = None
+
+            if self.integrity_guard:
+                integrity = await self.integrity_guard.validate(enriched_signal, current_position=current_position)
+                if integrity.get("action") == "convert_reverse_to_close":
+                    enriched_signal["intent"] = INTENT_CLOSE
+                    enriched_signal.setdefault("meta", {}).setdefault("integrity", {})
+                    enriched_signal["meta"]["integrity"].update(
+                        {
+                            "status": "converted",
+                            "reason": integrity.get("reason"),
+                            "deviation_pct": (integrity.get("metadata") or {}).get("deviation_pct"),
+                            "original_intent": "reverse",
+                        }
+                    )
+                    intent = INTENT_CLOSE
+                elif not integrity.get("valid", True) or integrity.get("action") == "reject":
+                    self.processing_stats['rejected_signals'] += 1
+                    logger.warning(
+                        "🛡️  [%s/%s] REJECTED (IntegrityGuard): %s",
+                        strategy_name.upper(),
+                        symbol,
+                        integrity.get("reason"),
+                    )
+                    return {
+                        'status': 'rejected',
+                        'reason': integrity.get('reason'),
+                        'stage': 'integrity_guard'
+                    }
+
+            # --- Regime Filter ---
+            if self.regime_filter:
+                regime_result = await self.regime_filter.validate(enriched_signal)
+                if not regime_result.get("valid", True):
+                    self.processing_stats['rejected_signals'] += 1
+                    logger.warning(
+                        "🛡️  [%s/%s] REJECTED (RegimeFilter): %s",
+                        strategy_name.upper(),
+                        symbol,
+                        regime_result.get("reason"),
+                    )
+                    return {
+                        'status': 'rejected',
+                        'reason': regime_result.get('reason'),
+                        'stage': 'regime_filter'
+                    }
+
             # --- Stop-and-Reverse (Auto Reversal) ---
             # If enabled and we already have an open position for this symbol on the
             # opposite side, tag this signal as INTENT_REVERSE so execution can
@@ -6330,17 +6403,53 @@ class StrategyCoordinator:
                         )
 
                     if reverse_from_position_id:
-                        enriched_signal["intent"] = INTENT_REVERSE
-                        enriched_signal["reverse_from_position_id"] = reverse_from_position_id
-                        enriched_signal.setdefault("meta", {})["auto_reversal"] = True
-                        logger.info(
-                            "[AUTO-REVERSE] Tagged reverse intent | sym=%s | %s -> %s | close_position_id=%s",
-                            incoming_symbol,
-                            str(reverse_target.get("side", "")).lower() if isinstance(reverse_target, dict) else "n/a",
-                            incoming_side,
-                            reverse_from_position_id,
-                        )
-                        intent = INTENT_REVERSE
+                        policy_result = None
+                        if self.transition_policy:
+                            policy_result = self.transition_policy.evaluate(
+                                reverse_target,
+                                enriched_signal,
+                                inferred_intent="reverse",
+                            )
+
+                        if policy_result and not policy_result.get("allowed", True):
+                            if policy_result.get("action") == "convert_to_close":
+                                enriched_signal["intent"] = INTENT_CLOSE
+                                enriched_signal.setdefault("meta", {}).setdefault("transition_policy", {})
+                                enriched_signal["meta"]["transition_policy"] = {
+                                    "original_intent": "reverse",
+                                    "action": "converted",
+                                    "reason": policy_result.get("reason"),
+                                }
+                                intent = INTENT_CLOSE
+                                logger.info(
+                                    "[AUTO-REVERSE] Blocked reverse, converted to close | sym=%s | reason=%s",
+                                    incoming_symbol,
+                                    policy_result.get("reason"),
+                                )
+                            elif policy_result.get("action") == "reject":
+                                self.processing_stats['rejected_signals'] += 1
+                                logger.info(
+                                    "[AUTO-REVERSE] Rejected by transition policy | sym=%s | reason=%s",
+                                    incoming_symbol,
+                                    policy_result.get("reason"),
+                                )
+                                return {
+                                    'status': 'rejected',
+                                    'reason': policy_result.get('reason'),
+                                    'stage': 'transition_policy'
+                                }
+                        else:
+                            enriched_signal["intent"] = INTENT_REVERSE
+                            enriched_signal["reverse_from_position_id"] = reverse_from_position_id
+                            enriched_signal.setdefault("meta", {})["auto_reversal"] = True
+                            logger.info(
+                                "[AUTO-REVERSE] Tagged reverse intent | sym=%s | %s -> %s | close_position_id=%s",
+                                incoming_symbol,
+                                str(reverse_target.get("side", "")).lower() if isinstance(reverse_target, dict) else "n/a",
+                                incoming_side,
+                                reverse_from_position_id,
+                            )
+                            intent = INTENT_REVERSE
             except Exception as exc:
                 logger.warning("[AUTO-REVERSE] Failed to evaluate auto reversal: %s", exc)
 
@@ -8374,14 +8483,45 @@ class StrategyCoordinator:
                     if isinstance(open_position, dict) and open_position.get('position_id'):
                         existing_side = str(open_position.get('side', '')).lower()
                         if existing_side and side and existing_side != side:
-                            winner['intent'] = INTENT_REVERSE
-                            winner['reverse_from_position_id'] = open_position['position_id']
-                            logger.info(
-                                "[CONFLICT-RESOLUTION] Marking winning signal %s as reverse of position %s on %s",
-                                winner.get('signal_id'),
-                                open_position['position_id'],
-                                symbol,
-                            )
+                            policy_result = None
+                            if getattr(self, "transition_policy", None):
+                                policy_result = self.transition_policy.evaluate(
+                                    open_position,
+                                    winner,
+                                    inferred_intent="reverse",
+                                )
+
+                            if policy_result and not policy_result.get("allowed", True):
+                                if policy_result.get("action") == "convert_to_close":
+                                    winner['intent'] = INTENT_CLOSE
+                                    winner.setdefault('meta', {}).setdefault('transition_policy', {})
+                                    winner['meta']['transition_policy'] = {
+                                        'original_intent': 'reverse',
+                                        'action': 'converted',
+                                        'reason': policy_result.get('reason')
+                                    }
+                                    logger.info(
+                                        "[CONFLICT-RESOLUTION] Reverse blocked, converted to close | signal=%s | reason=%s",
+                                        winner.get('signal_id'),
+                                        policy_result.get('reason'),
+                                    )
+                                elif policy_result.get("action") == "reject":
+                                    action = 'reject'
+                                    reason = f"TransitionPolicy reject: {policy_result.get('reason')}"
+                                    logger.info(
+                                        "[CONFLICT-RESOLUTION] Reverse rejected by policy | signal=%s | reason=%s",
+                                        winner.get('signal_id'),
+                                        policy_result.get('reason'),
+                                    )
+                            else:
+                                winner['intent'] = INTENT_REVERSE
+                                winner['reverse_from_position_id'] = open_position['position_id']
+                                logger.info(
+                                    "[CONFLICT-RESOLUTION] Marking winning signal %s as reverse of position %s on %s",
+                                    winner.get('signal_id'),
+                                    open_position['position_id'],
+                                    symbol,
+                                )
                 except Exception as reverse_error:
                     logger.warning("[CONFLICT-RESOLUTION] Failed to annotate reverse intent: %s", reverse_error)
             else:
