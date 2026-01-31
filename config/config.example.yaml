@@ -811,8 +811,21 @@ strategies:
     adaptive_ob_persistency_mode: "time"           # Options: time, bar_low_and_close, off
     adaptive_ob_persistency_seconds: 5              # Time-based dwell for RSI condition
     adaptive_ob_persistency_min_samples: 2          # Minimum ticks meeting condition
+    adaptive_ob_persistency_min_bounce_pct: 0.0005  # Optional: require bounce from intrabucket min (e.g. 0.0005 = 0.05%)
+    adaptive_ob_persistency_min_bounce_apply: downtrend_only  # always|downtrend_only|off
     adaptive_ob_trigger_price_source: "mid"        # mid -> mark -> forming_close fallback
     adaptive_ob_wick_closeness_k: 0.25              # Normalized closeness to low (bar_low_and_close)
+
+    # Scalp Mode: Crash/low-confidence counter-trend exits for adaptive_ob.
+    # Motivation: strong bounces in bearish conditions often fade; clamp TP + pull stop to (near) breakeven quickly.
+    scalp_mode:
+      enabled: true
+      regime_confidence_max: 0.35
+      apply_regimes: ["bearish", "volatile"]
+      apply_sides: ["long"]
+      target_roi: 0.006            # 0.6% target in scalp mode
+      be_activation_roi: 0.0025    # when +0.25% in profit, arm BE stop
+      be_buffer_bps: 5.0           # BE stop buffer (5 bps = 0.05%)
     crash_guard:
       enabled: true
       panic_volume_buckets: ["HIGH", "EXTREME"]

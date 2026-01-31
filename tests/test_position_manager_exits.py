@@ -255,6 +255,103 @@ def _exit_settings_cfg(*, max_hold_seconds=900, trigger_pct=0.0014, offset_pct=0
     }
 
 
+def _adaptive_ob_scalp_cfg(*, enabled=True, regime_confidence_max=0.35):
+    return {
+        "strategies": {
+            "adaptive_ob": {
+                "scalp_mode": {
+                    "enabled": enabled,
+                    "regime_confidence_max": regime_confidence_max,
+                    "apply_regimes": ["bearish", "volatile"],
+                    "apply_sides": ["long"],
+                    "target_roi": 0.006,
+                    "be_activation_roi": 0.0025,
+                    "be_buffer_bps": 5.0,
+                }
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_scalp_mode_clamps_tp_and_moves_stop_to_breakeven():
+    cfg = _adaptive_ob_scalp_cfg(enabled=True, regime_confidence_max=0.35)
+    manager, _, _ = make_manager(cfg=cfg)
+
+    signal = {
+        'symbol': 'BTC/USDT:USDT',
+        'side': 'buy',
+        'strategy_name': 'adaptive_ob',
+        'tp_pct': 0.015,  # normal target (+1.5%)
+        'sl_pct': 0.01,
+        'metadata': {'regime': {'trend': 'bearish'}},
+        'ml_metadata': {'regime_confidence': 0.30},
+    }
+    execution_result = {
+        'success': True,
+        'avg_price': 100.0,
+        'filled_amount': 1.0,
+    }
+
+    opened = await manager.open_position(signal, execution_result)
+    assert opened['success'] is True
+    position_id = opened['position_id']
+    position = opened['position']
+    assert position['take_profit'] == pytest.approx(101.5, rel=1e-6)
+    assert position['stop_loss'] == pytest.approx(99.0, rel=1e-6)
+
+    # Move price into profit to trigger BE logic (>= +0.25%).
+    await manager.monitor_position_pnl(position_id, current_price=100.30)
+    position = manager.positions[position_id]
+
+    # TP should be clamped to +0.6% in scalp mode.
+    assert position['take_profit'] == pytest.approx(100.6, rel=1e-6)
+
+    # Stop should be moved to entry + 5 bps (0.05%) once activation ROI is hit.
+    assert position['stop_loss'] == pytest.approx(100.05, rel=1e-6)
+    assert position.get('scalp_mode_active') is True
+    assert position.get('scalp_mode_activation_via') == 'GLOBAL_REGIME'
+
+
+@pytest.mark.asyncio
+async def test_scalp_mode_fallback_uses_local_downtrend_when_regime_missing():
+    cfg = _adaptive_ob_scalp_cfg(enabled=True, regime_confidence_max=0.35)
+    manager, _, _ = make_manager(cfg=cfg)
+
+    # No regime label + no regime_confidence (global regime missing/lagging), but local downtrend is true.
+    signal = {
+        'symbol': 'BTC/USDT:USDT',
+        'side': 'buy',
+        'strategy_name': 'adaptive_ob',
+        'tp_pct': 0.015,
+        'sl_pct': 0.01,
+        'ml_metadata': {'regime_confidence': None},
+        'meta': {
+            'strategy_context': 'downtrend',
+            'downtrend_context': {'active': True},
+        },
+    }
+    execution_result = {
+        'success': True,
+        'avg_price': 100.0,
+        'filled_amount': 1.0,
+    }
+
+    opened = await manager.open_position(signal, execution_result)
+    assert opened['success'] is True
+    position_id = opened['position_id']
+
+    # Trigger BE logic
+    await manager.monitor_position_pnl(position_id, current_price=100.30)
+    position = manager.positions[position_id]
+
+    # Fallback should still activate scalp mode and clamp TP/BE stop.
+    assert position.get('scalp_mode_active') is True
+    assert position.get('scalp_mode_activation_via') == 'LOCAL_FALLBACK'
+    assert position['take_profit'] == pytest.approx(100.6, rel=1e-6)
+    assert position['stop_loss'] == pytest.approx(100.05, rel=1e-6)
+
+
 @pytest.mark.asyncio
 async def test_fee_lock_updates_stop_loss():
     cfg = _exit_settings_cfg(trigger_pct=0.0010, offset_pct=0.0012)

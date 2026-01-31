@@ -923,7 +923,9 @@ class AdaptiveOversoldBounce(OversoldBounce):
 
         nearest_pivot_high: Optional[Dict[str, Any]] = None
         if include_pivot and isinstance(market_data, dict):
-            df_5m = market_data.get("5m") or market_data.get("df_5m")
+            df_5m = market_data.get("5m")
+            if df_5m is None:
+                df_5m = market_data.get("df_5m")
             df_5m = self._as_closed_df(df_5m) if isinstance(df_5m, pd.DataFrame) else None
             if isinstance(df_5m, pd.DataFrame) and not df_5m.empty:
                 try:
@@ -1320,11 +1322,21 @@ class AdaptiveOversoldBounce(OversoldBounce):
             persist_seconds = float(self.base_cfg.get("adaptive_ob_persistency_seconds", 5))
             persist_min_samples = int(self.base_cfg.get("adaptive_ob_persistency_min_samples", 2))
             persist_wick_k = float(self.base_cfg.get("adaptive_ob_wick_closeness_k", 0.25))
+            persist_min_bounce_pct = float(self.base_cfg.get("adaptive_ob_persistency_min_bounce_pct", 0.0) or 0.0)
+            persist_bounce_apply = str(
+                self.base_cfg.get("adaptive_ob_persistency_min_bounce_apply", "downtrend_only")
+                or "downtrend_only"
+            ).lower()
             self._persistency_cfg = {
                 "mode": persist_mode,
                 "seconds": max(persist_seconds, 0.0),
                 "min_samples": max(persist_min_samples, 1),
                 "wick_closeness_k": max(min(persist_wick_k, 1.0), 0.0),
+                # Optional: require price to bounce from the intrabucket min before allowing entry.
+                # This helps filter tiny dead-cat bounces during sharp dumps.
+                "min_bounce_pct": max(persist_min_bounce_pct, 0.0),
+                # Apply modes: "always", "downtrend_only", "off"
+                "min_bounce_apply": persist_bounce_apply,
             }
             
             # --- Adaptive Threshold Calculation ---
@@ -1743,6 +1755,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 forming_price,
                 forming_low,
                 forming_high,
+                downtrend_context,
             )
 
             logger.info(
@@ -2517,6 +2530,8 @@ class AdaptiveOversoldBounce(OversoldBounce):
                         'ema_mid': ema_long,
                         'price_ref': price_ref,
                     },
+                    # Local context bridge for exit logic (Scalp Mode fallback)
+                    'strategy_context': 'downtrend' if downtrend_context else 'neutral',
                 }
             )
             if tp_band_meta is not None:
@@ -2593,6 +2608,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
         seconds = float(cfg.get("seconds", 5.0))
         min_samples = int(cfg.get("min_samples", 2))
         wick_k = float(cfg.get("wick_closeness_k", 0.25))
+        min_bounce_pct = float(cfg.get("min_bounce_pct", 0.0) or 0.0)
 
         state = self._persistency_state.get(self._persistency_key(symbol)) or {}
         first_ts = state.get("first_true_ts")
@@ -2615,7 +2631,7 @@ class AdaptiveOversoldBounce(OversoldBounce):
         logger.debug(
             f"{log_prefix} PersistencySkipped | reason={reason} mode={mode} seconds={seconds:.2f} "
             f"min_samples={min_samples} wick_k={wick_k:.2f} includes_forming={includes_forming} "
-            f"bucket={forming_open_ms}{state_suffix}{extra_bits}"
+            f"min_bounce_pct={min_bounce_pct:.4f} bucket={forming_open_ms}{state_suffix}{extra_bits}"
         )
 
     def _apply_persistency_guard(
@@ -2630,12 +2646,15 @@ class AdaptiveOversoldBounce(OversoldBounce):
         forming_close: Optional[float],
         forming_low: Optional[float],
         forming_high: Optional[float],
+        downtrend_context_active: bool = False,
     ) -> tuple[bool, Dict[str, Any]]:
         cfg = getattr(self, "_persistency_cfg", {"mode": "time", "seconds": 5.0, "min_samples": 1})
         mode = str(cfg.get("mode", "time")).lower()
         seconds = max(float(cfg.get("seconds", 5.0)), 0.0)
         min_samples = max(int(cfg.get("min_samples", 1)), 1)
         wick_k = max(min(float(cfg.get("wick_closeness_k", 0.25)), 1.0), 0.0)
+        min_bounce_pct = max(float(cfg.get("min_bounce_pct", 0.0) or 0.0), 0.0)
+        min_bounce_apply = str(cfg.get("min_bounce_apply", "downtrend_only") or "downtrend_only").lower()
         eps = 1e-9
 
         meta = {
@@ -2658,6 +2677,14 @@ class AdaptiveOversoldBounce(OversoldBounce):
             "wick_closeness_skipped": False,
             "wick_closeness_reason": None,
             "bucket_changed": False,
+            "min_bounce_pct": min_bounce_pct,
+            "min_bounce_apply": min_bounce_apply,
+            "downtrend_context_active": bool(downtrend_context_active),
+            "min_trigger_price": None,
+            "max_trigger_price": None,
+            "bounce_from_min_pct": None,
+            "bounce_passed": None,
+            "bounce_skipped": None,
         }
 
         if mode == "off":
@@ -2676,14 +2703,27 @@ class AdaptiveOversoldBounce(OversoldBounce):
 
         had_state = key in self._persistency_state
         state = self._persistency_state.get(
-            key, {"first_true_ts": None, "samples": 0, "bucket": forming_open_ms}
+            key,
+            {
+                "first_true_ts": None,
+                "samples": 0,
+                "bucket": forming_open_ms,
+                "min_trigger_price": None,
+                "max_trigger_price": None,
+            },
         )
 
         prev_bucket = state.get("bucket")
         bucket_changed = had_state and (prev_bucket != forming_open_ms)
 
         if bucket_changed:
-            state = {"first_true_ts": None, "samples": 0, "bucket": forming_open_ms}
+            state = {
+                "first_true_ts": None,
+                "samples": 0,
+                "bucket": forming_open_ms,
+                "min_trigger_price": None,
+                "max_trigger_price": None,
+            }
 
         condition_true = False
         if mode == "bar_low_and_close":
@@ -2732,8 +2772,56 @@ class AdaptiveOversoldBounce(OversoldBounce):
             state["samples"] = 1
         else:
             state["samples"] = int(state.get("samples", 0)) + 1
+
+        # Track min/max trigger price during the forming bucket.
+        try:
+            tp = float(trigger_price)
+        except Exception:
+            tp = None
+        if tp is not None and tp > 0 and not pd.isna(tp):
+            cur_min = state.get("min_trigger_price")
+            cur_max = state.get("max_trigger_price")
+            try:
+                cur_min_f = float(cur_min) if cur_min is not None else None
+            except Exception:
+                cur_min_f = None
+            try:
+                cur_max_f = float(cur_max) if cur_max is not None else None
+            except Exception:
+                cur_max_f = None
+            if cur_min_f is None or tp < cur_min_f:
+                state["min_trigger_price"] = tp
+            if cur_max_f is None or tp > cur_max_f:
+                state["max_trigger_price"] = tp
+
         elapsed = max(0.0, now_ts - float(state.get("first_true_ts", now_ts)))
         passed = (elapsed >= seconds) and (state["samples"] >= min_samples)
+
+        bounce_pct = None
+        bounce_passed = None
+        bounce_enabled = bool(min_bounce_pct > 0.0 and min_bounce_apply not in {"off", "false", "0", "no"})
+        if bounce_enabled and min_bounce_apply in {"downtrend_only", "downtrend"} and not downtrend_context_active:
+            meta["bounce_skipped"] = True
+        if passed and bounce_enabled and not meta.get("bounce_skipped"):
+            try:
+                min_tp = float(state.get("min_trigger_price") or 0.0)
+            except Exception:
+                min_tp = 0.0
+            try:
+                cur_tp = float(trigger_price or 0.0)
+            except Exception:
+                cur_tp = 0.0
+            if min_tp > 0 and cur_tp > 0:
+                bounce_pct = (cur_tp - min_tp) / max(min_tp, eps)
+                bounce_passed = bool(bounce_pct >= min_bounce_pct)
+                if not bounce_passed:
+                    passed = False
+            else:
+                # If we can't compute bounce safely, fail closed when the feature is enabled.
+                bounce_passed = False
+                passed = False
+        elif bounce_enabled and meta.get("bounce_skipped"):
+            bounce_passed = None
 
         state["bucket"] = forming_open_ms
         self._persistency_state[key] = state
@@ -2744,6 +2832,10 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 "elapsed_s": elapsed,
                 "samples": state["samples"],
                 "bucket_changed": bucket_changed,
+                "min_trigger_price": state.get("min_trigger_price"),
+                "max_trigger_price": state.get("max_trigger_price"),
+                "bounce_from_min_pct": bounce_pct,
+                "bounce_passed": bounce_passed,
             }
         )
         return passed, meta

@@ -68,3 +68,90 @@ def test_persistency_resets_on_condition_false_and_after_signal():
     # E: base condition still true -> persistency must have been reset after emitting signal
     assert strategy.signal(df_30m=df_true, symbol="BTC/USDT:USDT", market_data={}) is None
 
+def test_persistency_min_bounce_pct_blocks_until_reached():
+    cfg = {
+        "min_rr_ratio": 0.1,
+        "symbols": {"BTC/USDT:USDT": {"rsi_threshold": 27.0}},
+    }
+
+    strategy = AdaptiveOversoldBounce(cfg)
+    # Configure guard directly to keep the test deterministic (no sleep).
+    strategy._persistency_cfg = {
+        "mode": "time",
+        "seconds": 0.0,
+        "min_samples": 2,
+        "wick_closeness_k": 0.25,
+        "min_bounce_pct": 0.002,  # 0.20%
+    }
+
+    sym = "BTC/USDT:USDT"
+    bucket = 123
+
+    # 1) First sample: not enough samples
+    ok, meta = strategy._apply_persistency_guard(
+        sym,
+        True,
+        bucket,
+        20.0,
+        27.0,
+        100.0,
+        100.0,
+        None,
+        None,
+        None,
+        True,
+    )
+    assert ok is False
+    assert meta.get("samples") == 1
+
+    # 2) Second sample: time/samples met, but no bounce from min yet
+    ok, meta = strategy._apply_persistency_guard(
+        sym,
+        True,
+        bucket,
+        20.0,
+        27.0,
+        99.0,
+        100.0,
+        None,
+        None,
+        None,
+        True,
+    )
+    assert ok is False
+    assert meta.get("bounce_passed") is False
+
+    # 3) Small bounce (< 0.20%) still blocked
+    ok, meta = strategy._apply_persistency_guard(
+        sym,
+        True,
+        bucket,
+        20.0,
+        27.0,
+        99.10,
+        100.0,
+        None,
+        None,
+        None,
+        True,
+    )
+    assert ok is False
+    assert meta.get("bounce_passed") is False
+
+    # 4) Bounce >= 0.20% passes
+    ok, meta = strategy._apply_persistency_guard(
+        sym,
+        True,
+        bucket,
+        20.0,
+        27.0,
+        99.30,
+        100.0,
+        None,
+        None,
+        None,
+        True,
+    )
+    assert ok is True
+    assert meta.get("bounce_passed") is True
+

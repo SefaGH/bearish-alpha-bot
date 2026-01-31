@@ -865,6 +865,29 @@ class AdvancedPositionManager:
         meta = signal.get("meta") if isinstance(signal, dict) else {}
         if not isinstance(meta, dict):
             meta = {}
+
+        strategy_context = None
+        try:
+            strategy_context = meta.get("strategy_context")
+        except Exception:
+            strategy_context = None
+        if strategy_context is None:
+            try:
+                dtc = meta.get("downtrend_context")
+                if isinstance(dtc, dict) and dtc.get("active") is True:
+                    strategy_context = "downtrend"
+            except Exception:
+                strategy_context = None
+        if strategy_context is not None:
+            strategy_context = str(strategy_context).strip().lower() or None
+
+        downtrend_context_active = False
+        try:
+            dtc = meta.get("downtrend_context")
+            if isinstance(dtc, dict):
+                downtrend_context_active = bool(dtc.get("active") is True)
+        except Exception:
+            downtrend_context_active = False
         vol_tel = meta.get("vol_telemetry")
         if isinstance(vol_tel, dict):
             mapped = {
@@ -916,6 +939,8 @@ class AdvancedPositionManager:
             'quality_score': self._safe_float(signal.get('quality_score')),
             'quality_breakdown': signal.get('quality_breakdown'),
             'regime_data': regime_info if isinstance(regime_info, dict) else None,
+            'strategy_context': strategy_context,
+            'downtrend_context_active': downtrend_context_active,
             'entry_indicators': entry_indicators,
             'volatility': volatility_meta,
             'entry_levels': entry_levels,
@@ -1007,6 +1032,81 @@ class AdvancedPositionManager:
             'max_hold_seconds': max_hold_seconds,
             'fee_lock_trigger_pct': fee_lock_trigger_pct,
             'fee_lock_offset_pct': fee_lock_offset_pct,
+        }
+
+    def _resolve_scalp_mode_settings(self, position: Dict[str, Any]) -> Dict[str, Any]:
+        defaults = {
+            "enabled": False,
+            "regime_confidence_max": 0.35,
+            "apply_regimes": ["bearish", "volatile"],
+            "apply_sides": ["long"],
+            "target_roi": 0.006,
+            "be_activation_roi": 0.0025,
+            "be_buffer_bps": 5.0,
+        }
+
+        cfg = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, 'cfg') else {}
+        strategy_name = (position.get('strategy_name') or position.get('strategy') or '').strip()
+        scalp_cfg = {}
+        if isinstance(cfg, dict) and strategy_name:
+            strategies_cfg = cfg.get('strategies', {}) if isinstance(cfg.get('strategies', {}), dict) else {}
+            strat_cfg = strategies_cfg.get(strategy_name, {}) if isinstance(strategies_cfg, dict) else {}
+            if isinstance(strat_cfg, dict):
+                scalp_cfg = strat_cfg.get('scalp_mode', {}) if isinstance(strat_cfg.get('scalp_mode', {}), dict) else {}
+
+        enabled = bool(scalp_cfg.get('enabled', defaults['enabled']))
+        if not enabled:
+            return {'enabled': False}
+
+        regime_confidence_max = self._safe_float(scalp_cfg.get('regime_confidence_max'))
+        if regime_confidence_max is None or regime_confidence_max <= 0:
+            regime_confidence_max = defaults['regime_confidence_max']
+
+        apply_regimes = scalp_cfg.get('apply_regimes', defaults['apply_regimes'])
+        if not isinstance(apply_regimes, list):
+            apply_regimes = defaults['apply_regimes']
+        apply_regimes = [str(x).strip().lower() for x in apply_regimes if str(x).strip()]
+        if not apply_regimes:
+            apply_regimes = list(defaults['apply_regimes'])
+
+        apply_sides = scalp_cfg.get('apply_sides', defaults['apply_sides'])
+        if not isinstance(apply_sides, list):
+            apply_sides = defaults['apply_sides']
+        normalized_sides: list[str] = []
+        for raw in apply_sides:
+            s = str(raw).strip().lower()
+            if not s:
+                continue
+            if s in {"buy", "long"}:
+                normalized_sides.append("long")
+            elif s in {"sell", "short"}:
+                normalized_sides.append("short")
+            else:
+                normalized_sides.append(s)
+        apply_sides = list(dict.fromkeys(normalized_sides))
+        if not apply_sides:
+            apply_sides = list(defaults['apply_sides'])
+
+        target_roi = self._normalize_pct(scalp_cfg.get('target_roi'))
+        if target_roi is None:
+            target_roi = defaults['target_roi']
+
+        be_activation_roi = self._normalize_pct(scalp_cfg.get('be_activation_roi'))
+        if be_activation_roi is None:
+            be_activation_roi = defaults['be_activation_roi']
+
+        be_buffer_bps = self._safe_float(scalp_cfg.get('be_buffer_bps'))
+        if be_buffer_bps is None or be_buffer_bps < 0:
+            be_buffer_bps = defaults['be_buffer_bps']
+
+        return {
+            'enabled': True,
+            'regime_confidence_max': float(regime_confidence_max),
+            'apply_regimes': apply_regimes,
+            'apply_sides': apply_sides,
+            'target_roi': float(target_roi),
+            'be_activation_roi': float(be_activation_roi),
+            'be_buffer_bps': float(be_buffer_bps),
         }
 
     def _derive_take_profit(self, signal: Dict[str, Any], entry_price: float,
@@ -1995,6 +2095,175 @@ class AdvancedPositionManager:
                                 candidate,
                                 current_pnl_pct,
                             )
+
+            # ------------------------------------------------------------------
+            # Scalp Mode (config-gated): for crash/low-confidence counter-trend
+            # situations, clamp TP + aggressively move stop to breakeven.
+            # ------------------------------------------------------------------
+            scalp_cfg = self._resolve_scalp_mode_settings(position)
+            if scalp_cfg.get('enabled'):
+                try:
+                    side_l = str(position.get('side') or '').strip().lower()
+                    if side_l:
+                        is_long = side_l in self.LONG_SIDES
+                    canonical_side = "long" if is_long else "short"
+
+                    regime_conf = self._safe_float(position.get('regime_confidence'))
+                    regime_label = str(position.get('regime_at_entry') or '').strip().lower()
+
+                    entry_meta = position.get('entry_metadata') if isinstance(position.get('entry_metadata'), dict) else {}
+                    strategy_context = str(entry_meta.get('strategy_context') or '').strip().lower()
+                    local_downtrend = bool(
+                        strategy_context == 'downtrend'
+                        or entry_meta.get('downtrend_context_active') is True
+                    )
+
+                    side_allowed = canonical_side in set(scalp_cfg.get('apply_sides') or [])
+                    regime_allowed = regime_label in set(scalp_cfg.get('apply_regimes') or [])
+
+                    is_crash_mode = (
+                        regime_conf is not None
+                        and regime_conf <= float(scalp_cfg.get('regime_confidence_max', 0.35))
+                    )
+
+                    global_bearish_like = bool(regime_allowed and is_crash_mode)
+
+                    if side_allowed and (global_bearish_like or local_downtrend):
+                        position['scalp_mode_active'] = True
+
+                        activation_via = "GLOBAL_REGIME" if global_bearish_like else "LOCAL_FALLBACK"
+                        position.setdefault('scalp_mode_activation_via', activation_via)
+                        position.setdefault(
+                            'scalp_mode_activation',
+                            {
+                                'via': activation_via,
+                                'global_regime': regime_label or None,
+                                'global_regime_confidence': regime_conf,
+                                'local_strategy_context': strategy_context or None,
+                                'local_downtrend': bool(local_downtrend),
+                                'params': {
+                                    'target_roi': float(scalp_cfg.get('target_roi', 0.0) or 0.0),
+                                    'be_activation_roi': float(scalp_cfg.get('be_activation_roi', 0.0) or 0.0),
+                                    'be_buffer_bps': float(scalp_cfg.get('be_buffer_bps', 0.0) or 0.0),
+                                },
+                            },
+                        )
+
+                        if not position.get('scalp_mode_activation_logged'):
+                            position['scalp_mode_activation_logged'] = True
+                            global_regime_display = regime_label if regime_label else "None"
+                            global_conf_display = (
+                                f"{float(regime_conf):.4f}" if regime_conf is not None else "None"
+                            )
+                            local_ctx_display = strategy_context if strategy_context else "neutral"
+                            tp_pct = float(scalp_cfg.get('target_roi', 0.0) or 0.0)
+                            be_act = float(scalp_cfg.get('be_activation_roi', 0.0) or 0.0)
+                            be_bps = float(scalp_cfg.get('be_buffer_bps', 0.0) or 0.0)
+                            logger.info(
+                                "🪂 [SCALP_MODE] Activated via: %s\n"
+                                "   | Trigger: %s\n"
+                                "   | Global Regime: %s (Confidence: %s)\n"
+                                "   | Local Context: %s (downtrend=%s)\n"
+                                "   | Params: TP=%.2f%%, BE_Act=%.2f%%, BE_Buffer=%.1fbps",
+                                activation_via,
+                                "Bearish/Volatile low-confidence" if activation_via == "GLOBAL_REGIME" else "Downtrend Context (Active)",
+                                global_regime_display,
+                                global_conf_display,
+                                local_ctx_display,
+                                bool(local_downtrend),
+                                tp_pct * 100.0,
+                                be_act * 100.0,
+                                be_bps,
+                            )
+
+                        # Clamp TP (only if this moves TP closer to entry).
+                        target_roi = float(scalp_cfg.get('target_roi', 0.0) or 0.0)
+                        if target_roi > 0 and entry_price and entry_price > 0:
+                            desired_tp = entry_price * (1 + target_roi) if is_long else entry_price * (1 - target_roi)
+                            current_tp = self._safe_float(position.get('take_profit'), 0.0) or 0.0
+
+                            should_update_tp = False
+                            if current_tp > 0 and desired_tp > 0:
+                                should_update_tp = (desired_tp < current_tp) if is_long else (desired_tp > current_tp)
+
+                            if should_update_tp:
+                                symbol = position.get('symbol')
+                                client = self._get_exchange_client(position.get('exchange'))
+                                if client and symbol:
+                                    desired_tp = clamp_price(client, symbol, desired_tp)
+                                position['take_profit'] = desired_tp
+                                if not position.get('scalp_tp_clamped'):
+                                    position['scalp_tp_clamped'] = True
+                                    old_tp_pct = ((current_tp / entry_price) - 1.0) if current_tp > 0 else 0.0
+                                    new_tp_pct = ((desired_tp / entry_price) - 1.0) if desired_tp > 0 else 0.0
+
+                                    via = str(position.get('scalp_mode_activation_via') or activation_via or '').strip() or 'UNKNOWN'
+                                    via_context = (
+                                        (strategy_context.title() if strategy_context else 'Neutral')
+                                        if via == 'LOCAL_FALLBACK'
+                                        else (regime_label.title() if regime_label else 'Unknown')
+                                    )
+
+                                    # Best-effort ROI snapshot for this action.
+                                    roi_snapshot = normalized_unrealized_pct
+                                    if roi_snapshot is None:
+                                        roi_snapshot = self._get_unrealized_pnl_pct(position, position.get('current_price'))
+                                    logger.info(
+                                        "🪂 [SCALP_MODE] TP Clamped: %.2f%% -> %.2f%%\n"
+                                        "   | Via: %s (%s)\n"
+                                        "   | Position ROI: %.2f%%",
+                                        old_tp_pct * 100.0,
+                                        new_tp_pct * 100.0,
+                                        via,
+                                        via_context,
+                                        float(roi_snapshot) * 100.0 if roi_snapshot is not None else 0.0,
+                                    )
+
+                        # Aggressive breakeven stop once in profit.
+                        current_pnl_pct = normalized_unrealized_pct
+                        if current_pnl_pct is None:
+                            current_pnl_pct = self._get_unrealized_pnl_pct(position, position.get('current_price'))
+
+                        be_activation_roi = float(scalp_cfg.get('be_activation_roi', 0.0) or 0.0)
+                        if current_pnl_pct is not None and be_activation_roi >= 0 and current_pnl_pct >= be_activation_roi:
+                            buffer_bps = float(scalp_cfg.get('be_buffer_bps', 0.0) or 0.0)
+                            buffer_pct = max(buffer_bps, 0.0) / 10000.0
+                            desired_stop = entry_price * (1 + buffer_pct) if is_long else entry_price * (1 - buffer_pct)
+
+                            if desired_stop and desired_stop > 0:
+                                symbol = position.get('symbol')
+                                client = self._get_exchange_client(position.get('exchange'))
+                                if client and symbol:
+                                    desired_stop = clamp_price(client, symbol, desired_stop)
+
+                                current_stop = self._safe_float(position.get('stop_loss'), 0.0) or 0.0
+                                more_protective = True if current_stop <= 0 else (
+                                    desired_stop > current_stop if is_long else desired_stop < current_stop
+                                )
+                                if more_protective:
+                                    position['stop_loss'] = desired_stop
+                                    stop_updated = True
+                                    if not position.get('scalp_be_armed'):
+                                        position['scalp_be_armed'] = True
+                                        via = str(position.get('scalp_mode_activation_via') or activation_via or '').strip() or 'UNKNOWN'
+                                        via_context = (
+                                            (strategy_context.title() if strategy_context else 'Neutral')
+                                            if via == 'LOCAL_FALLBACK'
+                                            else (regime_label.title() if regime_label else 'Unknown')
+                                        )
+                                        logger.info(
+                                            "🪂 [SCALP_MODE] BE Stop Updated: %.4f -> %.4f\n"
+                                            "   | Via: %s (%s)\n"
+                                            "   | Trigger: ROI > %.2f%% (Current: %.2f%%)",
+                                            current_stop,
+                                            desired_stop,
+                                            via,
+                                            via_context,
+                                            float(be_activation_roi) * 100.0,
+                                            float(current_pnl_pct) * 100.0,
+                                        )
+                except Exception as exc:
+                    logger.warning("Scalp mode evaluation failed for %s: %s", position_id, exc)
 
             if position.get('trailing_stop_enabled'):
                 execution = position.get("execution") if isinstance(position.get("execution"), dict) else {}
