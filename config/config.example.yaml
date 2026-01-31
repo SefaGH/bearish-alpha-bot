@@ -47,6 +47,32 @@ trading:
   slippage_buffer: 0.001         # Used only for limit orders (maker offset); market orders ignore this unless signal overrides order type
   leverage: 10                   # Override with: TRADING_LEVERAGE ; Exchange-side leverage target (best-effort; unsupported exchanges ignore)
 
+# ============================================================================== 
+# SMART ENTRY POLICY (optional; injected centrally in LiveTradingEngine)
+# ==============================================================================
+# Purpose:
+# - If volatility is low (ATR/entry < threshold), force MARKET entry.
+# - If volatility is high, inject a LIMIT entry (ATR-based) with:
+#   - timeout seconds
+#   - side-aware chase gate (max drift bps) at timeout
+#   - market fallback if gate passes
+# Notes:
+# - This operates per-signal and can override the global trading.order_type.
+# - Only applies when enabled=true AND the signal includes side+entry+atr.
+smart_entry_policy:
+  enabled: true
+  force_override: false
+  volatility_threshold_bps: 5.0
+  params:
+    LONG:
+      atr_multiplier: 0.90
+      timeout_seconds: 300
+      gate_bps: 5.0
+    SHORT:
+      atr_multiplier: 0.85
+      timeout_seconds: 240
+      gate_bps: 12.0
+
 # ==============================================================================
 # RISK MANAGEMENT - ENHANCED POSITION SIZING
 # ==============================================================================
@@ -347,7 +373,7 @@ volume_analyzer:
     # Periodic telemetry to make `volume_strength` / `volume_bucket` visible even when no signals fire.
     # Emits one line per symbol per interval:
     #   "💓📊 volume_context_heartbeat { ...json... }"
-    enabled: false                   # Override with: VOLUME_HEARTBEAT_ENABLED
+    enabled: true                    # Override with: VOLUME_HEARTBEAT_ENABLED
     interval_sec: 300                # Override with: VOLUME_HEARTBEAT_INTERVAL_SEC
     trade_tf: "5m"                   # Override with: VOLUME_HEARTBEAT_TRADE_TF
     min_strength_delta: 0.05         # Override with: VOLUME_HEARTBEAT_MIN_STRENGTH_DELTA

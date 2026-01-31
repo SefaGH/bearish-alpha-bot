@@ -656,22 +656,41 @@ class SmartOrderManager:
         if execution_params.get('post_only') or execution_params.get('postOnly'):
             self.logger.info("[PAPER] Processing POST_ONLY Limit Order request")
 
-        if is_real_execution_enabled():
-            self.logger.error(f"🛑 {log_prefix} REJECTED: limit orders not supported with EXECUTION_BACKEND=ccxt (Stage-1)")
-            return {'success': False, 'reason': 'REJECT:LIMIT_NOT_SUPPORTED_REAL_EXECUTION', 'order_id': None}
+        def _normalize_side(raw: str) -> str:
+            s = str(raw or "").lower().strip()
+            if s == "long":
+                return "buy"
+            if s == "short":
+                return "sell"
+            return s
+
+        def _is_filled(exchange_order: dict) -> bool:
+            status = str((exchange_order or {}).get("status") or "").lower().strip()
+            if status in {"closed", "filled"}:
+                return True
+            filled = (exchange_order or {}).get("filled")
+            amount_ = (exchange_order or {}).get("amount")
+            try:
+                filled_f = float(filled) if filled is not None else 0.0
+                amount_f = float(amount_) if amount_ is not None else 0.0
+            except Exception:
+                return False
+            return amount_f > 0 and filled_f >= max(amount_f * 0.999, amount_f - 1e-12)
 
         try:
             clients = clients_to_use if clients_to_use is not None else self.exchange_clients
             client = clients[exchange]
             
-            # Get market metadata from pipeline (proper architecture)
-            try:
-                market = await self.market_data_pipeline.get_market_metadata(symbol, exchange)
-            except ValueError as e:
-                # Sanitize error message to avoid exposing internal details
-                error_msg = f"Market metadata unavailable for {symbol} on {exchange}"
-                self.logger.error(f"🛡️  {log_prefix} REJECTED (MarketMetadata): {e}")
-                return {'success': False, 'reason': f"REJECT:MARKET_METADATA - {error_msg}", 'order_id': None}
+            # Get market metadata from pipeline (paper/sim only). Real execution should not depend on it.
+            market = {}
+            if not is_real_execution_enabled():
+                try:
+                    market = await self.market_data_pipeline.get_market_metadata(symbol, exchange)
+                except ValueError as e:
+                    # Sanitize error message to avoid exposing internal details
+                    error_msg = f"Market metadata unavailable for {symbol} on {exchange}"
+                    self.logger.error(f"🛡️  {log_prefix} REJECTED (MarketMetadata): {e}")
+                    return {'success': False, 'reason': f"REJECT:MARKET_METADATA - {error_msg}", 'order_id': None}
             
             # SSOT pricing: limit price must be provided by the caller (signal/engine).
             # OrderManager must NOT fetch ticker prices to determine limit price (prevents risk/execution drift).
@@ -716,35 +735,326 @@ class SmartOrderManager:
             # --- TELEMETRİ VE ÖN KONTROL SONU ---
 
             logger.info(f"✅ {log_prefix} Pre-flight checks passed. Submitting to exchange...")
-            
-            # Emir gönderme simülasyonu
-            order_id = f"order_{int(time.time() * 1000)}"
-            order = {
-                'order_id': order_id, 'symbol': symbol, 'side': side, 'amount': amount,
-                'type': 'limit', 'limit_price': limit_price, 'exchange': exchange,
-                'status': OrderStatus.SUBMITTED.value, 'created_at': datetime.now(timezone.utc), 'fills': []
-            }
-            
-            # Simülasyon: Emirin dolduğunu varsay
-            order['status'] = OrderStatus.FILLED.value
-            order['filled_amount'] = amount
-            order['avg_fill_price'] = limit_price
-            order['filled_at'] = datetime.now(timezone.utc)
-            
-            slippage = 0.0
-            if reference_price > 0:
-                slippage = abs(limit_price - reference_price) / reference_price
-            order['slippage'] = slippage
-            order['expected_price'] = reference_price if reference_price > 0 else limit_price
-            
-            self.active_orders[order_id] = order
-            
-            self.logger.info(f"🎉 {log_prefix} Order filled (simulated): {order_id} @ ${limit_price:.4f}")
-            
-            return {
-                'success': True, 'order_id': order_id, 'filled_amount': amount,
-                'avg_price': limit_price, 'slippage': slippage, 'order': order
-            }
+
+            # Real execution path: place LIMIT and wait up to timeout for fill, then fallback.
+            if is_real_execution_enabled():
+                require_explicit_bingx_env_if_real_execution()
+                bingx_env = get_bingx_env()
+
+                # Merge ccxt params from request
+                ccxt_params = {}
+                if isinstance(order_request.get("params"), dict):
+                    ccxt_params.update(order_request["params"])
+                if isinstance(order_request.get("execution_params"), dict):
+                    ccxt_params.update(order_request["execution_params"])
+
+                try:
+                    client.load_markets()
+                except Exception as exc:
+                    logger.warning(f"[REAL EXECUTION] load_markets failed (continuing): {exc}")
+
+                if getattr(client, "name", None) == "bingx" and bingx_env == "vst":
+                    client.ensure_bingx_hedge_mode(symbol, require_hedged=True)
+
+                # Best-effort leverage application before entry (same semantics as market).
+                try:
+                    leverage = signal.get('leverage') if isinstance(signal, dict) else None
+                    reduce_only = bool(ccxt_params.get('reduceOnly') or ccxt_params.get('reduce_only'))
+                    if leverage and not reduce_only and callable(getattr(client, 'set_leverage', None)):
+                        side_hint = None
+                        raw_side = ccxt_params.get('positionSide') or ccxt_params.get('position_side')
+                        if raw_side:
+                            side_hint = str(raw_side).strip().upper()
+                        else:
+                            side_hint = "LONG" if _normalize_side(side) == "buy" else "SHORT"
+                        strict = is_bingx_leverage_fail_fast()
+                        client.set_leverage(symbol, leverage, side=side_hint, strict=strict)
+                except Exception as exc:
+                    logger.warning("[REAL EXECUTION] set_leverage failed (continuing): %s", exc)
+                    if is_bingx_leverage_fail_fast():
+                        raise
+
+                normalized_side = _normalize_side(side)
+                if normalized_side not in {"buy", "sell"}:
+                    return {'success': False, 'reason': f"REJECT:INVALID_SIDE:{side}", 'order_id': None}
+
+                # Parameters: allow optional timeInForce in ccxt_params if provided by caller.
+                logger.warning(f"🟢 [REAL EXECUTION] Submitting LIMIT order via CCXT ({exchange})")
+
+                exchange_order = client.create_order(
+                    symbol=symbol,
+                    side=normalized_side,
+                    type_="limit",
+                    amount=amount,
+                    price=limit_price,
+                    params=ccxt_params or {},
+                )
+                logger.info("🟢 [REAL EXECUTION] Exchange order (sanitized): %s", _sanitize_ccxt_order(exchange_order))
+
+                exchange_order_id = exchange_order.get("id") or exchange_order.get("orderId")
+                if not exchange_order_id:
+                    return {'success': False, 'reason': 'REJECT:EXCHANGE_ORDER_ID_MISSING', 'order_id': None}
+
+                # If filled immediately, return as executed.
+                if _is_filled(exchange_order):
+                    avg_fill_price = exchange_order.get("average") or exchange_order.get("price") or limit_price
+                    filled_amount = exchange_order.get("filled") or exchange_order.get("amount") or amount
+                    try:
+                        avg_fill_price = float(avg_fill_price or 0)
+                    except Exception:
+                        avg_fill_price = float(limit_price)
+                    try:
+                        filled_amount = float(filled_amount or 0)
+                    except Exception:
+                        filled_amount = float(amount or 0)
+
+                    slippage = 0.0
+                    if reference_price > 0 and avg_fill_price > 0:
+                        slippage = abs(avg_fill_price - reference_price) / reference_price
+                    self.execution_stats['total_slippage'] += slippage
+
+                    order = {
+                        'order_id': exchange_order_id,
+                        'symbol': symbol,
+                        'side': normalized_side,
+                        'amount': amount,
+                        'type': 'limit',
+                        'limit_price': limit_price,
+                        'exchange': exchange,
+                        'expected_price': reference_price if reference_price > 0 else limit_price,
+                        'status': (exchange_order.get("status") or OrderStatus.FILLED.value),
+                        'created_at': datetime.now(timezone.utc),
+                        'filled_amount': filled_amount,
+                        'avg_fill_price': avg_fill_price,
+                        'filled_at': datetime.now(timezone.utc),
+                        'slippage': slippage,
+                        'ccxt_params': ccxt_params,
+                        'exchange_order': exchange_order,
+                    }
+                    self.active_orders[exchange_order_id] = order
+
+                    return {
+                        'success': True,
+                        'order_id': exchange_order_id,
+                        'filled_amount': filled_amount,
+                        'avg_price': avg_fill_price,
+                        'slippage': slippage,
+                        'order': order,
+                    }
+
+                # Otherwise, wait up to timeout and optionally fallback to market.
+                poll_s = float(execution_params.get("poll_interval_s") or execution_params.get("poll_interval") or 1.0)
+                if poll_s <= 0:
+                    poll_s = 1.0
+
+                timeout_s = execution_params.get("timeout_seconds") or execution_params.get("timeout_s")
+                if timeout_s is None:
+                    timeout_min = execution_params.get("timeout_minutes") or execution_params.get("timeout_min")
+                    try:
+                        timeout_s = float(timeout_min) * 60.0 if timeout_min is not None else 0.0
+                    except Exception:
+                        timeout_s = 0.0
+                try:
+                    timeout_s = float(timeout_s or 0.0)
+                except Exception:
+                    timeout_s = 0.0
+                if timeout_s <= 0:
+                    # Safe default: 0 means do not wait; caller should set this for Smart Entry.
+                    timeout_s = 0.0
+
+                stop_price = None
+                for k in ("stop", "stop_loss", "stopLoss"):
+                    if k in signal:
+                        try:
+                            stop_price = float(signal.get(k) or 0.0)
+                        except Exception:
+                            stop_price = None
+                        break
+
+                start_ts = time.time()
+                last_seen_order = exchange_order
+                while timeout_s > 0 and (time.time() - start_ts) < timeout_s:
+                    # 1) stop-hit-before-entry check
+                    if stop_price and stop_price > 0:
+                        try:
+                            tick = client.ticker(symbol)
+                            last_px = float((tick or {}).get("last") or 0.0)
+                        except Exception:
+                            last_px = 0.0
+
+                        if last_px > 0:
+                            if normalized_side == "buy" and last_px <= stop_price:
+                                try:
+                                    client.cancel_order(exchange_order_id, symbol, params={})
+                                except Exception:
+                                    pass
+                                return {'success': False, 'reason': 'ABORT:STOP_HIT_BEFORE_ENTRY', 'order_id': exchange_order_id}
+                            if normalized_side == "sell" and last_px >= stop_price:
+                                try:
+                                    client.cancel_order(exchange_order_id, symbol, params={})
+                                except Exception:
+                                    pass
+                                return {'success': False, 'reason': 'ABORT:STOP_HIT_BEFORE_ENTRY', 'order_id': exchange_order_id}
+
+                    # 2) order fill check
+                    fetched = None
+                    if callable(getattr(client, "fetch_order", None)):
+                        try:
+                            fetched = client.fetch_order(exchange_order_id, symbol, params={})
+                        except Exception:
+                            fetched = None
+                    last_seen_order = fetched or last_seen_order
+                    if last_seen_order and _is_filled(last_seen_order):
+                        avg_fill_price = last_seen_order.get("average") or last_seen_order.get("price") or limit_price
+                        filled_amount = last_seen_order.get("filled") or last_seen_order.get("amount") or amount
+                        try:
+                            avg_fill_price = float(avg_fill_price or 0)
+                        except Exception:
+                            avg_fill_price = float(limit_price)
+                        try:
+                            filled_amount = float(filled_amount or 0)
+                        except Exception:
+                            filled_amount = float(amount or 0)
+
+                        slippage = 0.0
+                        if reference_price > 0 and avg_fill_price > 0:
+                            slippage = abs(avg_fill_price - reference_price) / reference_price
+                        self.execution_stats['total_slippage'] += slippage
+
+                        order = {
+                            'order_id': exchange_order_id,
+                            'symbol': symbol,
+                            'side': normalized_side,
+                            'amount': amount,
+                            'type': 'limit',
+                            'limit_price': limit_price,
+                            'exchange': exchange,
+                            'expected_price': reference_price if reference_price > 0 else limit_price,
+                            'status': (last_seen_order.get("status") or OrderStatus.FILLED.value),
+                            'created_at': datetime.now(timezone.utc),
+                            'filled_amount': filled_amount,
+                            'avg_fill_price': avg_fill_price,
+                            'filled_at': datetime.now(timezone.utc),
+                            'slippage': slippage,
+                            'ccxt_params': ccxt_params,
+                            'exchange_order': last_seen_order,
+                        }
+                        self.active_orders[exchange_order_id] = order
+                        return {
+                            'success': True,
+                            'order_id': exchange_order_id,
+                            'filled_amount': filled_amount,
+                            'avg_price': avg_fill_price,
+                            'slippage': slippage,
+                            'order': order,
+                        }
+
+                    await asyncio.sleep(poll_s)
+
+                # Timeout reached: apply chase gate (directional bps) and optionally market-fallback.
+                try:
+                    tick = client.ticker(symbol)
+                    current_px = float((tick or {}).get("last") or 0.0)
+                except Exception:
+                    current_px = 0.0
+
+                ref_px = None
+                for k in ("entry_raw", "entry", "execution_price"):
+                    if k in signal:
+                        try:
+                            ref_px = float(signal.get(k) or 0.0)
+                        except Exception:
+                            ref_px = None
+                        break
+
+                max_chase_bps = execution_params.get("max_chase_bps")
+                if max_chase_bps is None:
+                    max_chase_bps = execution_params.get("max_chase_bps_long") if normalized_side == "buy" else execution_params.get("max_chase_bps_short")
+                try:
+                    max_chase_bps = None if max_chase_bps is None else float(max_chase_bps)
+                except Exception:
+                    max_chase_bps = None
+
+                deviation_bps = None
+                if current_px > 0 and ref_px and ref_px > 0:
+                    if normalized_side == "buy":
+                        deviation_bps = (current_px / ref_px - 1.0) * 10000.0
+                    else:
+                        deviation_bps = (1.0 - current_px / ref_px) * 10000.0
+
+                # Cancel the resting limit order (best-effort) before any fallback.
+                try:
+                    client.cancel_order(exchange_order_id, symbol, params={})
+                except Exception:
+                    pass
+
+                # If we can confirm the order filled during cancel race, do not market-fallback.
+                if callable(getattr(client, "fetch_order", None)):
+                    try:
+                        post_cancel = client.fetch_order(exchange_order_id, symbol, params={})
+                    except Exception:
+                        post_cancel = None
+                    if post_cancel and _is_filled(post_cancel):
+                        avg_fill_price = post_cancel.get("average") or post_cancel.get("price") or limit_price
+                        filled_amount = post_cancel.get("filled") or post_cancel.get("amount") or amount
+                        try:
+                            avg_fill_price = float(avg_fill_price or 0)
+                        except Exception:
+                            avg_fill_price = float(limit_price)
+                        try:
+                            filled_amount = float(filled_amount or 0)
+                        except Exception:
+                            filled_amount = float(amount or 0)
+                        slippage = 0.0
+                        if reference_price > 0 and avg_fill_price > 0:
+                            slippage = abs(avg_fill_price - reference_price) / reference_price
+                        self.execution_stats['total_slippage'] += slippage
+                        order = {
+                            'order_id': exchange_order_id,
+                            'symbol': symbol,
+                            'side': normalized_side,
+                            'amount': amount,
+                            'type': 'limit',
+                            'limit_price': limit_price,
+                            'exchange': exchange,
+                            'expected_price': reference_price if reference_price > 0 else limit_price,
+                            'status': (post_cancel.get("status") or OrderStatus.FILLED.value),
+                            'created_at': datetime.now(timezone.utc),
+                            'filled_amount': filled_amount,
+                            'avg_fill_price': avg_fill_price,
+                            'filled_at': datetime.now(timezone.utc),
+                            'slippage': slippage,
+                            'ccxt_params': ccxt_params,
+                            'exchange_order': post_cancel,
+                        }
+                        self.active_orders[exchange_order_id] = order
+                        return {
+                            'success': True,
+                            'order_id': exchange_order_id,
+                            'filled_amount': filled_amount,
+                            'avg_price': avg_fill_price,
+                            'slippage': slippage,
+                            'order': order,
+                        }
+
+                # Chase gate: negative deviation means price improved vs reference => always allow.
+                if deviation_bps is not None and deviation_bps <= 0:
+                    max_chase_bps = max_chase_bps if max_chase_bps is not None else 0.0
+
+                if max_chase_bps is not None and deviation_bps is not None and deviation_bps > max_chase_bps:
+                    return {
+                        'success': False,
+                        'reason': f"ABORT:CHASE_GATE:{deviation_bps:.2f}>{max_chase_bps:.2f}",
+                        'order_id': exchange_order_id,
+                    }
+
+                # Market fallback
+                fallback_enabled = bool(execution_params.get("market_fallback") or execution_params.get("fallback_market") or True)
+                if not fallback_enabled:
+                    return {'success': False, 'reason': 'ABORT:NO_FILL_TIMEOUT', 'order_id': exchange_order_id}
+
+                # Place market order as fallback (single point of truth)
+                return await self._market_order_execution(order_request, clients_to_use)
             
         except Exception as e:
             _log_rest_debug(f"LIMIT/{exchange}/{symbol}", e)

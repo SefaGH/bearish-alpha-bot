@@ -27,6 +27,10 @@ class FakeCcxtClient:
         )
         return {"id": "exch-1", "average": 100.5, "filled": amount, "status": "closed"}
 
+    def fetch_order(self, order_id: str, symbol: str = None, params=None):
+        # Default: assume already closed/filled.
+        return {"id": order_id, "average": 100.5, "filled": 0.01, "status": "closed"}
+
     def cancel_order(self, order_id: str, symbol: str = None, params=None):
         self.cancel_order_calls.append({"order_id": order_id, "symbol": symbol, "params": params or {}})
         raise Exception("Order not found")
@@ -82,6 +86,42 @@ def test_market_order_real_execution_calls_ccxt(clean_env):
     assert client.create_order_calls[-1]["side"] == "buy"
     assert client.create_order_calls[-1]["type"] == "market"
     assert client.create_order_calls[-1]["params"]["reduceOnly"] is True
+
+
+def test_limit_order_real_execution_calls_ccxt(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "long",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 90.0},
+                "limit_price": 99.5,
+                "execution_params": {
+                    "timeout_seconds": 0,
+                    "max_chase_bps": 12.0,
+                },
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["order_id"] == "exch-1"
+    assert client.create_order_calls, "Expected create_order to be called"
+    assert client.create_order_calls[-1]["type"] == "limit"
+    assert client.create_order_calls[-1]["side"] == "buy"
+    assert client.create_order_calls[-1]["price"] == 99.5
 
 
 def test_real_cancel_is_idempotent(clean_env):

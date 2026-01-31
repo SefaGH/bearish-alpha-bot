@@ -60,6 +60,7 @@ except ImportError:
 from .order_manager import SmartOrderManager
 from .position_manager import AdvancedPositionManager
 from .execution_analytics import ExecutionAnalytics
+from .smart_entry_policy import apply_smart_entry_policy
 
 # Import config with try/except for flexibility
 try:
@@ -644,6 +645,37 @@ class LiveTradingEngine:
             # - OrderManager must not fetch its own ticker price for limit pricing.
             # ---------------------------------------------------------------------
             execution_params = signal.get('execution_params') if isinstance(signal.get('execution_params'), dict) else {}
+
+            # -------------------------------------------------------------
+            # Smart Entry Policy Injection (centralized)
+            # Must run BEFORE any limit offset / risk sizing so that:
+            # - low-vol signals can force MARKET (no maker-offset entry shift)
+            # - high-vol signals can lock limit pricing (skip legacy offset)
+            # -------------------------------------------------------------
+            try:
+                policy_cfg = self.config.get("smart_entry_policy") if isinstance(self.config, dict) else None
+                if isinstance(policy_cfg, dict):
+                    signal, execution_params, decision = apply_smart_entry_policy(
+                        signal=signal,
+                        execution_params=(execution_params if isinstance(execution_params, dict) else {}),
+                        policy_cfg=policy_cfg,
+                    )
+                    signal["execution_params"] = execution_params
+                    if decision.applied:
+                        meta = signal.get("smart_entry_meta") if isinstance(signal.get("smart_entry_meta"), dict) else {}
+                        logger.info(
+                            "[SMART-ENTRY] applied side=%s vol_bps=%.2f k=%.2f timeout_s=%.0f gate_bps=%.2f limit=%.4f",
+                            str(signal.get("side") or ""),
+                            float(meta.get("vol_bps") or 0.0),
+                            float(meta.get("k") or 0.0),
+                            float(meta.get("timeout_seconds") or 0.0),
+                            float(meta.get("gate_bps") or 0.0),
+                            float(meta.get("limit_price") or 0.0),
+                        )
+                    else:
+                        logger.info("[SMART-ENTRY] skipped (%s)", decision.reason)
+            except Exception as exc:
+                logger.warning("[SMART-ENTRY] injector failed (continuing with default execution): %s", exc)
             side_norm = str(signal.get('side', '') or '').lower()
             order_type_hint = (
                 execution_params.get('type')
@@ -876,13 +908,20 @@ class LiveTradingEngine:
             # Calculate notional value once for use in algorithm selection and logging
             notional_value = signal.get('notional', position_size * signal.get('entry', 0))
             
-            # ✅ FIX: Respect ORDER_TYPE configuration from environment/config
-            config_order_type = self.config.get('trading', {}).get('order_type', 'limit')
-            
-            # Paper mode and live mode both should respect the configured order type
-            if config_order_type:
-                execution_algo = config_order_type.lower()
-                logger.info(f"  ✓ Using configured order type: {execution_algo}")
+            # ✅ FIX: Respect ORDER_TYPE configuration, but allow per-signal overrides.
+            cfg_order_type = self.config.get('trading', {}).get('order_type', 'limit')
+            override_order_type = None
+            try:
+                override_order_type = execution_params.get('order_type') or execution_params.get('type')
+            except Exception:
+                override_order_type = None
+
+            effective_order_type = override_order_type or cfg_order_type
+
+            # Paper mode and live mode both should respect the effective order type
+            if effective_order_type:
+                execution_algo = str(effective_order_type).lower()
+                logger.info(f"  ✓ Using effective order type: {execution_algo}")
             else:
                 # Fallback to execution analytics if no config
                 urgency = signal.get('urgency', 'normal')
@@ -903,10 +942,13 @@ class LiveTradingEngine:
                 'amount': position_size,
                 'exchange': exchange,
                 'signal': signal,
-                # SSOT limit price (pre-risk, pre-validation) – OrderManager must not re-fetch ticker to price limits.
-                'limit_price': signal.get('limit_price') or signal.get('execution_price') or signal.get('entry'),
                 'execution_params': execution_params,
             }
+
+            # SSOT limit price (pre-risk, pre-validation) – OrderManager must not re-fetch ticker to price limits.
+            # For MARKET orders we intentionally omit limit_price to avoid misleading "limit" semantics.
+            if str(execution_algo or '').lower() == 'limit':
+                order_request['limit_price'] = signal.get('limit_price') or signal.get('execution_price') or signal.get('entry')
             
             # Reverse intent handling: if this signal is marked as a
             # reverse and references an existing position, try to close
