@@ -101,16 +101,16 @@ risk:
   min_stop_pct: 0.005                 # Override with: MIN_STOP_PCT ; Override with: RISK_MIN_STOP_PCT
   
   # Daily trade limit (static cap)
-  daily_max_trades: 8                 # Override with: DAILY_MAX_TRADES
+  daily_max_trades: 20                # Override with: DAILY_MAX_TRADES
 
   # Optional: Dynamic daily trade limit extension (profit-based)
   # - Uses PortfolioManager equity delta as realized PnL proxy (UTC day)
   # - When enabled AND pnl >= min_pnl_usd, cap is increased (within optional caps)
   daily_trade_limit:
     profit_unlock:
-      enabled: false
+      enabled: true
       pnl_source: daily               # daily|since_start
-      min_pnl_usd: 0.0
+      min_pnl_usd: 3.0
       # Optional: require a minimum profit as a fraction of start-of-day equity (e.g. 0.01 == +1%)
       # min_pnl_pct: 0.01
 
@@ -684,6 +684,11 @@ trend_guard:
     - "adaptive_str"
   apply_to_signal_types: []
   allow_missing_signal_type: true
+  # Optional: TrendGuard veto diagnostics (disabled by default)
+  veto_diag_enabled: false
+  veto_diag_log_level: "WARNING"      # WARNING|INFO|DEBUG
+  veto_diag_throttle_seconds: 60
+  veto_diag_key_fields: ["symbol", "timeframe", "side", "reason"]
 
 # ==============================================================================
 # EXECUTION PROFILES (Per-strategy execution overrides)

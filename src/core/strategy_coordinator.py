@@ -626,6 +626,16 @@ class StrategyCoordinator:
         tg_cfg = self.config.get("trend_guard", {}) if isinstance(self.config, dict) else {}
         tg_enabled = bool(tg_cfg.get("enabled", False)) if isinstance(tg_cfg, dict) else False
         self.trend_guard = TrendGuard(tg_cfg) if tg_enabled else None
+        self._trend_guard_veto_diag_enabled = bool(tg_cfg.get("veto_diag_enabled", False)) if isinstance(tg_cfg, dict) else False
+        self._trend_guard_veto_diag_log_level = str(tg_cfg.get("veto_diag_log_level", "WARNING") or "WARNING").upper()
+        try:
+            self._trend_guard_veto_diag_throttle_s = float(tg_cfg.get("veto_diag_throttle_seconds", 60) or 60)
+        except Exception:
+            self._trend_guard_veto_diag_throttle_s = 60.0
+        default_key_fields = ["symbol", "timeframe", "side", "reason"]
+        key_fields = tg_cfg.get("veto_diag_key_fields") if isinstance(tg_cfg, dict) else None
+        self._trend_guard_veto_diag_key_fields = list(key_fields) if isinstance(key_fields, (list, tuple)) else default_key_fields
+        self._trend_guard_veto_diag_last_log: Dict[Tuple[Any, ...], float] = {}
 
         so_cfg = self.config.get("safety_override", {}) if isinstance(self.config, dict) else {}
         so_enabled = bool(so_cfg.get("enabled", False)) if isinstance(so_cfg, dict) else False
@@ -6478,6 +6488,76 @@ class StrategyCoordinator:
                                     symbol,
                                     guard_result.reason,
                                 )
+                                if self._trend_guard_veto_diag_enabled:
+                                    try:
+                                        now_mono = time.monotonic()
+                                        meta = guard_result.meta_data or {}
+                                        attrs = guard_df.attrs if hasattr(guard_df, "attrs") else {}
+
+                                        key_map = {
+                                            "symbol": symbol,
+                                            "timeframe": guard_tf,
+                                            "side": meta.get("side") or enriched_signal.get("side"),
+                                            "reason": guard_result.reason,
+                                            "strategy": strategy_name,
+                                        }
+                                        key = tuple(key_map.get(field) for field in self._trend_guard_veto_diag_key_fields)
+                                        last_ts = self._trend_guard_veto_diag_last_log.get(key, 0.0)
+                                        throttle_s = max(float(self._trend_guard_veto_diag_throttle_s), 0.0)
+                                        if throttle_s <= 0 or (now_mono - float(last_ts or 0.0)) >= throttle_s:
+                                            self._trend_guard_veto_diag_last_log[key] = now_mono
+                                            level = getattr(logging, self._trend_guard_veto_diag_log_level, logging.WARNING)
+
+                                            def _fmt(val: Any, precision: int = 6) -> str:
+                                                if val is None:
+                                                    return "n/a"
+                                                if isinstance(val, bool):
+                                                    return "true" if val else "false"
+                                                if isinstance(val, (int, np.integer)):
+                                                    return str(val)
+                                                if isinstance(val, str):
+                                                    return val
+                                                try:
+                                                    fval = float(val)
+                                                    if math.isfinite(fval):
+                                                        return f"{fval:.{precision}f}"
+                                                except Exception:
+                                                    return str(val)
+                                                return str(val)
+
+                                            logger.log(
+                                                level,
+                                                "[TREND-GUARD][VETO] sym=%s strat=%s side=%s tf=%s reason=%s "
+                                                "squeeze_recent=%s breakout_dir=%s close=%s upper=%s lower=%s "
+                                                "bbw=%s bbw_ratio=%s bbw_squeeze_thr=%s bbw_expand_thr=%s "
+                                                "slope=%s slope_up_thr=%s slope_dn_thr=%s body_ratio=%s "
+                                                "src=%s last_closed_ts=%s forming_ts=%s gap_count=%s retrieved_at=%s",
+                                                symbol,
+                                                strategy_name,
+                                                _fmt(meta.get("side") or enriched_signal.get("side")),
+                                                guard_tf,
+                                                guard_result.reason,
+                                                _fmt(meta.get("squeeze_recent")),
+                                                _fmt(meta.get("breakout_dir"), precision=0),
+                                                _fmt(meta.get("close")),
+                                                _fmt(meta.get("upper")),
+                                                _fmt(meta.get("lower")),
+                                                _fmt(meta.get("bbw")),
+                                                _fmt(meta.get("bbw_ratio")),
+                                                _fmt(meta.get("bbw_squeeze_thr")),
+                                                _fmt(meta.get("bbw_expand_thr")),
+                                                _fmt(meta.get("slope"), precision=8),
+                                                _fmt(meta.get("slope_up_thr"), precision=8),
+                                                _fmt(meta.get("slope_dn_thr"), precision=8),
+                                                _fmt(meta.get("body_ratio")),
+                                                _fmt(attrs.get("ohlcv_source"), precision=0),
+                                                _fmt(attrs.get("last_closed_ts"), precision=0),
+                                                _fmt(attrs.get("forming_ts"), precision=0),
+                                                _fmt(attrs.get("gap_count"), precision=0),
+                                                _fmt(attrs.get("retrieved_at"), precision=0),
+                                            )
+                                    except Exception as exc:
+                                        logger.debug("[TREND-GUARD] Veto diagnostics skipped: %s", exc)
                                 return {
                                     'status': 'rejected',
                                     'reason': guard_result.reason,
