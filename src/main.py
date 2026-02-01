@@ -103,7 +103,7 @@ def get_risk_params():
         ),
         'min_stop_pct': float(
             risk_cfg.get('min_stop_pct') or 
-            os.getenv('RISK_MIN_STOP_PCT', '0.005')
+            os.getenv('RISK_MIN_STOP_PCT', '0.001')
         ),
         'daily_max_trades': int(
             risk_cfg.get('daily_max_trades') or 

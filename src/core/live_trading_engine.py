@@ -655,6 +655,57 @@ class LiveTradingEngine:
             try:
                 policy_cfg = self.config.get("smart_entry_policy") if isinstance(self.config, dict) else None
                 if isinstance(policy_cfg, dict):
+                    # ---------------------------------------------------------
+                    # SmartEntry plumbing:
+                    # - SmartEntry expects `signal['atr']` in PRICE units (not bps).
+                    # - MeanReversion commonly provides ATR as `meta.vol_telemetry.atr_bps`.
+                    # - Map bps -> price delta before apply_smart_entry_policy so we don't
+                    #   fall into `missing_atr_force_market` incorrectly.
+                    # ---------------------------------------------------------
+                    def _sf(value: Any) -> Optional[float]:
+                        try:
+                            val = float(value)
+                        except (TypeError, ValueError):
+                            return None
+                        return val if val == val and val > 0 else None  # NaN/<=0 guard
+
+                    entry_val = _sf(signal.get("entry"))
+                    if entry_val is None:
+                        meta = signal.get("meta") if isinstance(signal.get("meta"), dict) else {}
+                        price_meta = meta.get("price_meta") if isinstance(meta.get("price_meta"), dict) else {}
+                        entry_val = _sf(signal.get("entry_price")) or _sf(signal.get("execution_price")) or _sf(price_meta.get("price_used"))
+                        if entry_val is not None:
+                            signal["entry"] = float(entry_val)
+
+                    atr_val = _sf(signal.get("atr"))
+                    if atr_val is None and entry_val is not None:
+                        atr_bps = None
+                        meta = signal.get("meta") if isinstance(signal.get("meta"), dict) else {}
+                        vol_tel = meta.get("vol_telemetry") if isinstance(meta.get("vol_telemetry"), dict) else {}
+                        atr_bps = _sf(vol_tel.get("atr_bps"))
+                        atr_src = "meta.vol_telemetry.atr_bps"
+
+                        if atr_bps is None:
+                            vol_block = signal.get("volatility") if isinstance(signal.get("volatility"), dict) else {}
+                            atr_bps = _sf(vol_block.get("vol_atr_bps")) or _sf(vol_block.get("atr_bps"))
+                            atr_src = "signal.volatility.vol_atr_bps"
+
+                        if atr_bps is not None:
+                            atr_price = float(entry_val) * (float(atr_bps) / 10000.0)
+                            if atr_price > 0:
+                                signal["atr"] = atr_price
+                                meta.setdefault("smart_entry_plumbing", {})
+                                if isinstance(meta.get("smart_entry_plumbing"), dict):
+                                    meta["smart_entry_plumbing"].update(
+                                        {
+                                            "atr_source": atr_src,
+                                            "atr_bps": float(atr_bps),
+                                            "atr_price": float(atr_price),
+                                            "entry_used": float(entry_val),
+                                        }
+                                    )
+                                signal["meta"] = meta
+
                     signal, execution_params, decision = apply_smart_entry_policy(
                         signal=signal,
                         execution_params=(execution_params if isinstance(execution_params, dict) else {}),
@@ -664,8 +715,9 @@ class LiveTradingEngine:
                     if decision.applied:
                         meta = signal.get("smart_entry_meta") if isinstance(signal.get("smart_entry_meta"), dict) else {}
                         logger.info(
-                            "[SMART-ENTRY] applied side=%s vol_bps=%.2f k=%.2f timeout_s=%.0f gate_bps=%.2f limit=%.4f",
+                            "[SMART-ENTRY] applied side=%s atr=%.6f vol_bps=%.2f k=%.2f timeout_s=%.0f gate_bps=%.2f limit=%.4f",
                             str(signal.get("side") or ""),
+                            float(signal.get("atr") or 0.0),
                             float(meta.get("vol_bps") or 0.0),
                             float(meta.get("k") or 0.0),
                             float(meta.get("timeout_seconds") or 0.0),
@@ -673,7 +725,7 @@ class LiveTradingEngine:
                             float(meta.get("limit_price") or 0.0),
                         )
                     else:
-                        logger.info("[SMART-ENTRY] skipped (%s)", decision.reason)
+                        logger.info("[SMART-ENTRY] skipped skip_reason=%s", decision.reason)
             except Exception as exc:
                 logger.warning("[SMART-ENTRY] injector failed (continuing with default execution): %s", exc)
             side_norm = str(signal.get('side', '') or '').lower()
@@ -1090,6 +1142,64 @@ class LiveTradingEngine:
                         "position_id": position_id,
                         "close_result": close_result,
                     }
+
+            # -------------------------------------------------------------
+            # Stage-4.5: Post-fill RR drift action (deterministic).
+            #
+            # PositionManager computes rr_after_fill + postfill_action based on
+            # rebase outcomes. If the trade fails RR gates post-fill, close the
+            # position immediately (reduce-only semantics enforced in exit path).
+            # -------------------------------------------------------------
+            try:
+                rr_action = (position or {}).get("postfill_action") or signal.get("postfill_action")
+                if rr_action == "early_exit":
+                    rr_required = (position or {}).get("rr_required") or signal.get("rr_required")
+                    rr_after = (position or {}).get("rr_after_fill") or signal.get("rr_after_fill")
+                    rr_reason = (position or {}).get("postfill_reason_code") or signal.get("postfill_reason_code")
+
+                    logger.warning(
+                        "[POSTFILL-RR] action=early_exit; closing position immediately. position_id=%s symbol=%s side=%s rr_required=%s rr_after_fill=%s reason_code=%s",
+                        position_id,
+                        (position or {}).get("symbol") or signal.get("symbol"),
+                        (position or {}).get("side") or signal.get("side"),
+                        rr_required,
+                        rr_after,
+                        rr_reason,
+                    )
+
+                    # Ensure _execute_position_exit can resolve the position.
+                    self.active_positions[position_id] = position_result["position"]
+
+                    exit_reason = f"postfill_{rr_reason}" if rr_reason else "postfill_rr"
+                    close_result = await self._execute_position_exit(
+                        position_id,
+                        {"exit_reason": exit_reason},
+                    )
+
+                    # Keep lightweight telemetry for audits even when we return early.
+                    self._executed_count += 1
+                    self.trade_history.append(
+                        {
+                            "timestamp": datetime.now(timezone.utc),
+                            "signal": signal,
+                            "execution_result": execution_result,
+                            "position_id": position_id,
+                            "risk_metrics": risk_metrics,
+                            "postfill_rr_close_result": close_result,
+                        }
+                    )
+
+                    return {
+                        "success": bool(close_result and close_result.get("success")),
+                        "stage": "postfill_rr_early_exit",
+                        "position_id": position_id,
+                        "order_id": execution_result.get("order_id"),
+                        "execution_result": execution_result,
+                        "position_result": position_result,
+                        "close_result": close_result,
+                    }
+            except Exception as exc:
+                logger.error("[POSTFILL-RR] early-exit handler failed (continuing): %s", exc, exc_info=True)
 
             # Persist resolved execution settings on the position for restart safety + DCA gating.
             if position_id and self.position_manager and hasattr(self.position_manager, "attach_execution_config"):

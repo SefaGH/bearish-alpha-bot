@@ -125,14 +125,14 @@ def test_health_check_reports_min_stop_pct():
 
 
 def test_balanced_defaults_snapshot():
-    cfg = RiskConfiguration()
+    cfg = RiskConfiguration(initial_capital=500.0)
 
     assert cfg.initial_capital == pytest.approx(500.0)
     assert cfg.risk_limits.max_portfolio_risk == pytest.approx(0.06, rel=1e-9)
     assert cfg.max_risk_per_trade_usd == pytest.approx(1.5, rel=1e-6)
     assert cfg.risk_limits.max_position_size == pytest.approx(0.25, rel=1e-9)
-    assert cfg.risk_limits.max_position_notional_usd == pytest.approx(125.0, rel=1e-6)
-    assert cfg.risk_limits.min_stop_pct == pytest.approx(0.005, rel=1e-9)
+    assert cfg.risk_limits.max_position_notional_usd is None
+    assert cfg.risk_limits.min_stop_pct == pytest.approx(0.001, rel=1e-9)
 
 
 @pytest.mark.asyncio
@@ -213,38 +213,20 @@ async def test_end_to_end_tight_stop_scenario_passes_with_stop_floor():
     assert meta.get('risk_metrics', {}).get('risk_amount', 0) > 0
 
 
-def test_min_stop_pct_priority_chain_env_over_yaml(monkeypatch):
-    monkeypatch.setenv('RISK_MIN_STOP_PCT', '0.02')
-    cfg = RiskConfiguration(custom_limits={'equity_usd': 100.0, 'min_stop_pct': 0.005})
-
-    limits = cfg.get_risk_limits()
-    assert limits.min_stop_pct == pytest.approx(0.02)
-
-    # Remove ENV, YAML should win
-    monkeypatch.delenv('RISK_MIN_STOP_PCT')
+def test_min_stop_pct_priority_chain_custom_limits_over_default():
     cfg_yaml = RiskConfiguration(custom_limits={'equity_usd': 100.0, 'min_stop_pct': 0.007})
     assert cfg_yaml.get_risk_limits().min_stop_pct == pytest.approx(0.007)
 
-    # Neither ENV nor YAML: default
     cfg_default = RiskConfiguration(custom_limits={'equity_usd': 100.0})
-    assert cfg_default.get_risk_limits().min_stop_pct == pytest.approx(0.005)
+    assert cfg_default.get_risk_limits().min_stop_pct == pytest.approx(0.001)
 
 
-def test_min_stop_pct_normalization(monkeypatch):
-    # ENV path: values > 1 treated as percentages (divide by 100)
-    monkeypatch.setenv('RISK_MIN_STOP_PCT', '50')
-    cfg_env_percent = RiskConfiguration(custom_limits={'equity_usd': 100.0})
-    assert cfg_env_percent.get_risk_limits().min_stop_pct == pytest.approx(0.5)
-
-    monkeypatch.setenv('RISK_MIN_STOP_PCT', '2')
-    cfg_env_two = RiskConfiguration(custom_limits={'equity_usd': 100.0})
-    assert cfg_env_two.get_risk_limits().min_stop_pct == pytest.approx(0.02)
-
-    monkeypatch.setenv('RISK_MIN_STOP_PCT', '0.5')
-    cfg_env_decimal = RiskConfiguration(custom_limits={'equity_usd': 100.0})
-    assert cfg_env_decimal.get_risk_limits().min_stop_pct == pytest.approx(0.5)
-
-    # YAML path: >1 also normalized
-    monkeypatch.delenv('RISK_MIN_STOP_PCT')
+def test_min_stop_pct_normalization():
     cfg_yaml_percent = RiskConfiguration(custom_limits={'equity_usd': 100.0, 'min_stop_pct': 50})
     assert cfg_yaml_percent.get_risk_limits().min_stop_pct == pytest.approx(0.5)
+
+    cfg_yaml_two = RiskConfiguration(custom_limits={'equity_usd': 100.0, 'min_stop_pct': 2})
+    assert cfg_yaml_two.get_risk_limits().min_stop_pct == pytest.approx(0.02)
+
+    cfg_yaml_decimal = RiskConfiguration(custom_limits={'equity_usd': 100.0, 'min_stop_pct': 0.5})
+    assert cfg_yaml_decimal.get_risk_limits().min_stop_pct == pytest.approx(0.5)

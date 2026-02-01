@@ -98,7 +98,7 @@ risk:
   max_drawdown: 0.20                  # Override with: MAX_DRAWDOWN ; Max portfolio drawdown (fraction)
   
   # Safety limits
-  min_stop_pct: 0.005                 # Override with: MIN_STOP_PCT ; Override with: RISK_MIN_STOP_PCT
+  min_stop_pct: 0.001                 # Override with: MIN_STOP_PCT ; Override with: RISK_MIN_STOP_PCT
   
   # Daily trade limit (static cap)
   daily_max_trades: 20                # Override with: DAILY_MAX_TRADES
@@ -695,11 +695,11 @@ trend_guard:
     - "adaptive_str"
   apply_to_signal_types: []
   allow_missing_signal_type: true
-  # Optional: TrendGuard veto diagnostics (disabled by default)
-  veto_diag_enabled: false
+  # Optional: TrendGuard veto diagnostics (enabled for analysis; throttle to control noise)
+  veto_diag_enabled: true
   veto_diag_log_level: "WARNING"      # WARNING|INFO|DEBUG
   veto_diag_throttle_seconds: 60
-  veto_diag_key_fields: ["symbol", "timeframe", "side", "reason"]
+  veto_diag_key_fields: ["symbol", "timeframe", "side", "reason", "strategy"]
 
 # ==============================================================================
 # EXECUTION PROFILES (Per-strategy execution overrides)

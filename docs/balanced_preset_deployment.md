@@ -5,7 +5,7 @@
 - risk.per_trade_risk_pct = 0.003  # 0.3%
 - risk.max_position_size = 0.25
 - risk.max_notional_pct_per_trade = 0.25
-- risk.min_stop_pct = 0.005
+- risk.min_stop_pct = 0.001
 - risk.position_size_policy = clip
 - risk.size_planner_enabled = true
 
@@ -25,7 +25,7 @@ $keys = @{
   "risk.per_trade_risk_pct" = "0.003"
   "risk.max_position_size" = "0.25"
   "risk.max_notional_pct_per_trade" = "0.25"
-  "risk.min_stop_pct" = "0.005"
+  "risk.min_stop_pct" = "0.001"
   "risk.position_size_policy" = "clip"
   "risk.size_planner_enabled" = "true"
 }

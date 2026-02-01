@@ -138,6 +138,10 @@ async def test_episode_c_rebase_min_stop_clamp_short():
 
     assert meta["min_stop_applied"] is True
     assert meta["applied_stop_ratio"] == pytest.approx(0.01, rel=1e-6)
+    assert meta["final_stop_ratio"] == pytest.approx(0.01, rel=1e-6)
+    assert meta["floor_selected"] == "min_stop_pct"
+    assert meta["floor_candidates"]["calculated"] == pytest.approx(0.002, rel=1e-6)
+    assert meta["floor_candidates"]["min_stop_pct"] == pytest.approx(0.01, rel=1e-6)
     assert position["stop_loss"] == pytest.approx(101.0, rel=1e-6)
 
 
@@ -187,6 +191,32 @@ async def test_episode_c_postfill_rr_action_triggers_early_exit():
     assert position["rr_after_fill"] == pytest.approx(0.5, rel=1e-3)
     assert position["postfill_action"] != "keep"
     assert position["postfill_reason_code"] == "rr_below_1"
+
+
+@pytest.mark.asyncio
+async def test_episode_c_postfill_rr_action_rr_below_required_triggers_early_exit():
+    manager, _ = make_manager()
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "side": "buy",
+        "entry": 100.0,
+        "stop": 99.0,
+        "target": 101.2,
+        "dynamic_rr_target": 1.58,
+    }
+    execution_result = {
+        "success": True,
+        "avg_price": 100.0,
+        "filled_amount": 1.0,
+    }
+
+    result = await manager.open_position(signal, execution_result)
+    position = result["position"]
+
+    assert position["rr_after_fill"] == pytest.approx(1.2, rel=1e-3)
+    assert position["rr_required"] == pytest.approx(1.58, rel=1e-6)
+    assert position["postfill_action"] == "early_exit"
+    assert position["postfill_reason_code"] == "rr_below_required"
 
 
 @pytest.mark.asyncio

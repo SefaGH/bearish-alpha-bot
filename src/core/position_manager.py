@@ -1255,14 +1255,31 @@ class AdvancedPositionManager:
             spread_bps = self._safe_float(meta.get("spread_bps"))
         spread_ratio = (spread_bps / 10000.0) if spread_bps is not None else None
 
-        candidates = [x for x in (min_stop_pct, (atr_pct * 0.8) if atr_pct is not None else None, spread_ratio) if x is not None]
-        min_stop_ratio = max(candidates) if candidates else None
+        atr_floor = (atr_pct * 0.8) if atr_pct is not None else None
+        floor_candidates = {
+            "min_stop_pct": min_stop_pct,
+            "atr_floor": atr_floor,
+            "spread_floor": spread_ratio,
+        }
+        floor_candidates_clean = {k: v for k, v in floor_candidates.items() if v is not None}
+        min_stop_ratio = max(floor_candidates_clean.values()) if floor_candidates_clean else None
+
+        floor_selected = None
+        if min_stop_ratio is not None and floor_candidates_clean:
+            eps = 1e-12
+            selected = [k for k, v in floor_candidates_clean.items() if abs(float(v) - float(min_stop_ratio)) <= eps]
+            if selected:
+                floor_selected = "|".join(sorted(selected))
 
         return {
             "min_stop_ratio": min_stop_ratio,
             "min_stop_pct": min_stop_pct,
             "atr_pct": atr_pct,
+            "atr_floor": atr_floor,
             "spread_bps": spread_bps,
+            "spread_ratio": spread_ratio,
+            "floor_candidates": floor_candidates_clean if floor_candidates_clean else None,
+            "floor_selected": floor_selected,
         }
 
     def _maybe_rebase_exit_levels(
@@ -1309,6 +1326,29 @@ class AdvancedPositionManager:
         if applied_stop_ratio is not None and tp_ratio is not None and applied_stop_ratio > 0:
             rr_effective = tp_ratio / applied_stop_ratio
 
+        floor_candidates = {
+            "calculated": stop_ratio,
+            "min_stop_pct": min_meta.get("min_stop_pct"),
+            "atr_floor": min_meta.get("atr_floor"),
+            "spread_floor": min_meta.get("spread_ratio"),
+        }
+        floor_candidates_clean = {k: v for k, v in floor_candidates.items() if v is not None}
+
+        floor_selected = None
+        if applied_stop_ratio is not None:
+            if not min_applied:
+                floor_selected = "calculated"
+            else:
+                floor_selected = min_meta.get("floor_selected")
+                if not floor_selected and floor_candidates_clean:
+                    eps = 1e-12
+                    selected = [
+                        k for k, v in floor_candidates_clean.items()
+                        if abs(float(v) - float(applied_stop_ratio)) <= eps
+                    ]
+                    if selected:
+                        floor_selected = "|".join(sorted(selected))
+
         return {
             "applied": True,
             "stop_loss": rebased_stop,
@@ -1319,11 +1359,17 @@ class AdvancedPositionManager:
                 "target_stop_ratio": stop_ratio,
                 "target_tp_ratio": tp_ratio,
                 "applied_stop_ratio": applied_stop_ratio,
+                "stop_ratio_raw": stop_ratio,
+                "final_stop_ratio": applied_stop_ratio,
                 "min_stop_ratio": min_stop_ratio,
                 "min_stop_pct": min_meta.get("min_stop_pct"),
                 "atr_pct": min_meta.get("atr_pct"),
+                "atr_floor": min_meta.get("atr_floor"),
                 "spread_bps": min_meta.get("spread_bps"),
+                "spread_ratio": min_meta.get("spread_ratio"),
                 "min_stop_applied": min_applied,
+                "floor_candidates": floor_candidates_clean if floor_candidates_clean else None,
+                "floor_selected": floor_selected,
                 "rr_planned": rr_planned,
                 "rr_effective": rr_effective,
             },
@@ -1375,6 +1421,8 @@ class AdvancedPositionManager:
         take_profit: float,
         side: str,
         rebase_meta: Optional[Dict[str, Any]] = None,
+        rr_required: Optional[float] = None,
+        rr_required_source: Optional[str] = None,
     ) -> Dict[str, Any]:
         rr_after_fill = self._compute_rr_after_fill(
             entry_price=entry_price,
@@ -1385,11 +1433,28 @@ class AdvancedPositionManager:
         )
         action = "keep"
         reason_code = None
-        if rr_after_fill is not None and rr_after_fill < 1.0:
-            action = "early_exit"
-            reason_code = "rr_below_1"
+        normalized_rr_required: Optional[float] = None
+        if rr_required is not None:
+            try:
+                normalized_rr_required = float(rr_required)
+            except (TypeError, ValueError):
+                normalized_rr_required = None
+            if normalized_rr_required is not None and normalized_rr_required <= 0:
+                normalized_rr_required = None
+
+        if rr_after_fill is not None:
+            if rr_after_fill < 1.0:
+                action = "early_exit"
+                reason_code = "rr_below_1"
+            elif normalized_rr_required is not None and rr_after_fill < normalized_rr_required:
+                # Deterministic drift handling: until reduce-only partial reduce is implemented,
+                # default to early-exit to keep the risk gate consistent.
+                action = "early_exit"
+                reason_code = "rr_below_required"
         return {
             "rr_after_fill": rr_after_fill,
+            "rr_required": normalized_rr_required,
+            "rr_required_source": rr_required_source if normalized_rr_required is not None else None,
             "postfill_action": action,
             "reason_code": reason_code,
         }
@@ -1657,8 +1722,9 @@ class AdvancedPositionManager:
                 signal["target_stop_ratio"] = (rebase_meta or {}).get("target_stop_ratio") or target_ratios.get("stop_ratio")
                 signal["target_tp_ratio"] = (rebase_meta or {}).get("target_tp_ratio") or target_ratios.get("tp_ratio")
                 logger.info(
-                    "🔧 [RISK-REBASE] %s %s side=%s signal=%.4f fill=%.4f stop_ratio=%s tp_ratio=%s "
-                    "stop=%.4f tp=%.4f min_stop_ratio=%s rr_planned=%s rr_effective=%s",
+                    "🔧 [RISK-REBASE] %s %s side=%s signal=%.4f fill=%.4f stop_ratio_raw=%s tp_ratio=%s "
+                    "stop=%.4f tp=%.4f final_stop_ratio=%s floor_selected=%s floors=%s "
+                    "min_stop_ratio=%s rr_planned=%s rr_effective=%s",
                     position_id,
                     symbol,
                     side,
@@ -1668,6 +1734,9 @@ class AdvancedPositionManager:
                     f"{(rebase_meta or {}).get('target_tp_ratio'):.6f}" if (rebase_meta or {}).get("target_tp_ratio") else "na",
                     float(stop_loss or 0.0),
                     float(take_profit or 0.0),
+                    f"{(rebase_meta or {}).get('final_stop_ratio'):.6f}" if (rebase_meta or {}).get("final_stop_ratio") else "na",
+                    (rebase_meta or {}).get("floor_selected") or "na",
+                    (rebase_meta or {}).get("floor_candidates") or {},
                     f"{(rebase_meta or {}).get('min_stop_ratio'):.6f}" if (rebase_meta or {}).get("min_stop_ratio") else "na",
                     f"{(rebase_meta or {}).get('rr_planned'):.3f}" if (rebase_meta or {}).get("rr_planned") else "na",
                     f"{(rebase_meta or {}).get('rr_effective'):.3f}" if (rebase_meta or {}).get("rr_effective") else "na",
@@ -1679,12 +1748,43 @@ class AdvancedPositionManager:
                 take_profit=take_profit,
                 side=side,
                 rebase_meta=rebase_meta,
+                rr_required=self._safe_float(signal.get("dynamic_rr_target"), None),
+                rr_required_source="dynamic_rr_target",
             )
             if isinstance(rebase_meta, dict):
                 rebase_meta.setdefault("rr_after_fill", postfill_meta.get("rr_after_fill"))
+                rebase_meta.setdefault("rr_required", postfill_meta.get("rr_required"))
+                rebase_meta.setdefault("rr_required_source", postfill_meta.get("rr_required_source"))
             signal["rr_after_fill"] = postfill_meta.get("rr_after_fill")
+            signal["rr_required"] = postfill_meta.get("rr_required")
+            signal["rr_required_source"] = postfill_meta.get("rr_required_source")
             signal["postfill_action"] = postfill_meta.get("postfill_action")
             signal["postfill_reason_code"] = postfill_meta.get("reason_code")
+
+            rr_required = postfill_meta.get("rr_required")
+            rr_required_source = postfill_meta.get("rr_required_source")
+            rr_action = postfill_meta.get("postfill_action")
+            rr_reason = postfill_meta.get("reason_code")
+            rr_after = postfill_meta.get("rr_after_fill")
+            try:
+                rr_required_str = f"{float(rr_required):.3f}" if rr_required is not None else "na"
+            except (TypeError, ValueError):
+                rr_required_str = "na"
+            try:
+                rr_after_str = f"{float(rr_after):.3f}" if rr_after is not None else "na"
+            except (TypeError, ValueError):
+                rr_after_str = "na"
+            logger.info(
+                "[POSTFILL-RR] %s %s side=%s rr_required_source=%s rr_required=%s rr_after_fill=%s action=%s reason_code=%s",
+                position_id,
+                symbol,
+                side,
+                rr_required_source or "na",
+                rr_required_str,
+                rr_after_str,
+                rr_action or "na",
+                rr_reason or "na",
+            )
             
             # CRITICAL FIX: Get exchange from execution_result if not in signal
             # This ensures we always have a valid exchange name for position closure during shutdown
@@ -1774,6 +1874,8 @@ class AdvancedPositionManager:
                 'entry_metadata': entry_meta,
                 'rebase_meta': rebase_meta,
                 'rr_after_fill': postfill_meta.get("rr_after_fill"),
+                'rr_required': postfill_meta.get("rr_required"),
+                'rr_required_source': postfill_meta.get("rr_required_source"),
                 'postfill_action': postfill_meta.get("postfill_action"),
                 'postfill_reason_code': postfill_meta.get("reason_code"),
                 'risk_usd': risk_usd,
