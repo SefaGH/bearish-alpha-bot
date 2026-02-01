@@ -31,6 +31,10 @@ class SignalIntegrityGuard:
         if not staleness_result.get("valid", True):
             return staleness_result
 
+        impulse_result = self._check_impulse_veto(signal)
+        if not impulse_result.get("valid", True):
+            return self._determine_action_based_on_intent(signal, impulse_result, current_position)
+
         deviation_result = await self._check_price_deviation(signal)
         if not deviation_result.get("valid", True):
             return self._determine_action_based_on_intent(signal, deviation_result, current_position)
@@ -83,6 +87,10 @@ class SignalIntegrityGuard:
 
     async def _check_price_deviation(self, signal: Dict[str, Any]) -> Dict[str, Any]:
         max_deviation_pct = float(self.config.get("max_deviation_pct", 0.001) or 0.001)
+        atr_guard_enabled = bool(self.config.get("atr_guard_enabled", False))
+        atr_guard_mult = self._safe_float(self.config.get("atr_guard_mult"), 0.5)
+        spread_buffer_bps = self._safe_float(self.config.get("spread_buffer_bps"), 0.0)
+        min_gap_bps_fallback = self._safe_float(self.config.get("min_gap_bps_fallback"), 0.0)
 
         meta = signal.get("meta")
         if not isinstance(meta, dict):
@@ -91,14 +99,22 @@ class SignalIntegrityGuard:
         if not isinstance(price_meta, dict):
             price_meta = {}
         reference_price = price_meta.get("price_used") or signal.get("entry")
-        if not reference_price:
+        try:
+            reference_price = float(reference_price) if reference_price is not None else None
+        except (TypeError, ValueError):
+            reference_price = None
+        if not reference_price or reference_price <= 0:
             return {"valid": True, "reason": "no_reference_price"}
 
         symbol = signal.get("symbol")
         tf = signal.get("timeframe") or "1m"
         current_price = await self.market_data_pipeline.get_latest_price(str(symbol), timeframe=str(tf))
+        try:
+            current_price = float(current_price) if current_price is not None else None
+        except (TypeError, ValueError):
+            current_price = None
 
-        if not current_price:
+        if not current_price or current_price <= 0:
             return {
                 "valid": False,
                 "action": "reject",
@@ -106,18 +122,78 @@ class SignalIntegrityGuard:
             }
 
         deviation_pct = abs(current_price - reference_price) / reference_price
+        gap_bps = deviation_pct * 10000.0
 
-        if deviation_pct > max_deviation_pct:
+        allowed_gap_bps = max_deviation_pct * 10000.0
+        atr_bps = None
+        if atr_guard_enabled:
+            atr_val = self._safe_float(signal.get("atr") or signal.get("atr_value"))
+            if atr_val is None:
+                vol_meta = meta.get("vol_telemetry") if isinstance(meta.get("vol_telemetry"), dict) else {}
+                atr_bps = self._safe_float(vol_meta.get("atr_bps"))
+            else:
+                atr_bps = (atr_val / reference_price) * 10000.0
+
+            if atr_bps is not None and atr_bps > 0:
+                allowed_gap_bps = max(allowed_gap_bps, (atr_guard_mult * atr_bps) + spread_buffer_bps)
+            elif min_gap_bps_fallback > 0:
+                allowed_gap_bps = max(allowed_gap_bps, min_gap_bps_fallback)
+
+        if gap_bps > allowed_gap_bps:
+            reason = "price_moved_fast" if atr_guard_enabled else "price_deviation"
             return {
                 "valid": False,
                 "action": "deviation_detected",
-                "reason": f"price_deviation_{deviation_pct:.4f}",
+                "reason": reason,
                 "metadata": {
+                    "reason_code": reason,
                     "deviation_pct": deviation_pct,
+                    "gap_bps": gap_bps,
+                    "threshold_bps": allowed_gap_bps,
+                    "allowed_gap_bps": allowed_gap_bps,
                     "reference_price": reference_price,
                     "current_price": current_price,
-                    "max_allowed": max_deviation_pct,
+                    "max_deviation_pct": max_deviation_pct,
+                    "atr_guard_enabled": atr_guard_enabled,
+                    "atr_guard_mult": atr_guard_mult,
+                    "atr_bps": atr_bps,
+                    "spread_buffer_bps": spread_buffer_bps,
+                    "min_gap_bps_fallback": min_gap_bps_fallback,
                 },
+            }
+
+        return {"valid": True}
+
+    def _check_impulse_veto(self, signal: Dict[str, Any]) -> Dict[str, Any]:
+        """Optional impulse/shock veto based on signal meta (strategy-provided)."""
+        enabled = bool(self.config.get("impulse_guard_enabled", False))
+        if not enabled:
+            return {"valid": True}
+
+        meta = signal.get("meta")
+        if not isinstance(meta, dict):
+            return {"valid": True}
+
+        impulse_meta = meta.get("impulse_guard")
+        if not isinstance(impulse_meta, dict):
+            return {"valid": True}
+
+        if not impulse_meta.get("enabled", True):
+            return {"valid": True}
+
+        is_shock = bool(impulse_meta.get("is_shock_move"))
+        trade_dir = str(impulse_meta.get("trade_dir") or "").lower().strip()
+        candle_dir = str(impulse_meta.get("candle_dir") or "").lower().strip()
+        require_opposite = bool(impulse_meta.get("require_opposite", True))
+
+        if is_shock and trade_dir and candle_dir and (not require_opposite or trade_dir != candle_dir):
+            meta_out = dict(impulse_meta)
+            meta_out.setdefault("reason_code", "impulse_shock")
+            return {
+                "valid": False,
+                "action": "reject",
+                "reason": "impulse_shock",
+                "metadata": meta_out,
             }
 
         return {"valid": True}
@@ -125,17 +201,19 @@ class SignalIntegrityGuard:
     def _determine_action_based_on_intent(
         self,
         signal: Dict[str, Any],
-        deviation_result: Dict[str, Any],
+        result: Dict[str, Any],
         current_position: Any = None,
     ) -> Dict[str, Any]:
         intent = self._infer_intent(signal, current_position)
+        reason = result.get("reason") or "integrity_guard_reject"
+        metadata = result.get("metadata", {})
 
         if intent in {"entry", "reentry", "scale_in"}:
             return {
                 "valid": False,
                 "action": "reject",
-                "reason": f"integrity_price_deviation_{intent}",
-                "metadata": deviation_result.get("metadata", {}),
+                "reason": reason,
+                "metadata": metadata,
             }
 
         if intent == "reverse":
@@ -144,13 +222,26 @@ class SignalIntegrityGuard:
                 "action": "convert_reverse_to_close",
                 "reason": "integrity_reverse_to_close",
                 "metadata": {
-                    **(deviation_result.get("metadata") or {}),
+                    **(metadata or {}),
+                    "original_reason": reason,
                     "original_intent": "reverse",
                     "new_intent": INTENT_CLOSE,
                 },
             }
 
-        return deviation_result
+        return result
+
+    @staticmethod
+    def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+        try:
+            if value is None:
+                return default
+            val = float(value)
+            if not (val == val):  # NaN check
+                return default
+            return val
+        except (TypeError, ValueError):
+            return default
 
     def _infer_intent(self, signal: Dict[str, Any], position: Any) -> str:
         if not position:

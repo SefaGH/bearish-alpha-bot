@@ -421,6 +421,17 @@ signals:
   # the signal can be tagged as intent=reverse so the engine closes then reopens atomically.
   allow_auto_reversal: true          # Override with: SIGNAL_ALLOW_AUTO_REVERSAL
 
+  # Signal integrity guard (staleness + price deviation + optional ATR/impulse checks)
+  integrity_guard:
+    enabled: true
+    max_staleness_ms: 10000
+    max_deviation_pct: 0.001         # 0.1% hard floor (10 bps)
+    atr_guard_enabled: true
+    atr_guard_mult: 0.5              # max_gap_bps >= 0.5 * atr_bps (+ spread buffer)
+    spread_buffer_bps: 2.0
+    min_gap_bps_fallback: 5.0        # fallback when ATR unavailable
+    impulse_guard_enabled: true      # uses strategy-provided impulse metadata (if present)
+
   # Optional: volume gating behavior tweaks
   volume_policy:
     # If true and signal.meta.shock_state == ARMED, LOW-bucket rejects are short-incubated instead.
@@ -909,6 +920,13 @@ strategies:
     vwap_lookback: 1440       # 1440 bars in VWAP timeframe (timeframe=1m => ~24h)
     band_multiplier: 2.0
     stop_loss_std_delta: 1.0  # Override with: STRATEGIES__MEAN_REVERSION__STOP_LOSS_STD_DELTA ; Z-score stop distance beyond the active band (in sigmas)
+    impulse_veto:
+      enabled: true
+      body_atr_mult: 1.5
+      sum2_range_atr_mult: 2.5
+    rejection_confirmation:
+      enabled: true
+      upper_wick_ratio_min: 0.8
     adx_threshold: 34.0
     high_adx_z_threshold: 1.90
     adx_slope_lookback: 5

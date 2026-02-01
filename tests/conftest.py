@@ -14,6 +14,9 @@ from typing import Generator, Dict, Any
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
 
+# Disable Sentry during tests to avoid network/log noise.
+os.environ["SENTRY_DSN"] = ""
+
 # Add src and scripts to path for imports
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # Ensure repository root is on path so `import src....` works
@@ -51,6 +54,18 @@ def pytest_pyfunc_call(pyfuncitem):
         loop.close()
 
     return True
+
+
+@pytest.fixture(scope="session", autouse=True)
+def disable_sentry_for_tests():
+    os.environ["SENTRY_DSN"] = ""
+    try:
+        import sentry_sdk
+
+        sentry_sdk.init(dsn="")
+    except Exception:
+        pass
+    yield
 
 
 # ============================================================================

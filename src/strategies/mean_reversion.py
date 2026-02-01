@@ -1298,7 +1298,86 @@ class VWAPMeanReversion(BaseStrategy):
                         if entry_long:
                             guard_block_long = True
 
-        if in_band and not touch_entry_allowed and not promotion_override:
+        # ------------------------------------------------------------------
+        # Rejection Confirmation (SHORT) - closed-only evaluation
+        # ------------------------------------------------------------------
+        rejection_meta = None
+        if not is_recheck:
+            rej_cfg = self.strategy_config.get("rejection_confirmation") if isinstance(self.strategy_config, dict) else {}
+            rej_enabled = True
+            wick_ratio_min = 0.8
+            try:
+                rej_enabled = bool(rej_cfg.get("enabled", True)) if isinstance(rej_cfg, dict) else True
+            except Exception:
+                rej_enabled = True
+            try:
+                wick_ratio_min = float(rej_cfg.get("upper_wick_ratio_min", 0.8) or 0.8) if isinstance(rej_cfg, dict) else 0.8
+            except Exception:
+                wick_ratio_min = 0.8
+
+            if rej_enabled and entry_short is not None:
+                candle_row = last_sig
+                includes_forming = False
+                used_prev_closed = False
+                try:
+                    includes_forming = bool(getattr(clean_sig, "attrs", {}).get("includes_forming", False))
+                except Exception:
+                    includes_forming = False
+                if includes_forming and isinstance(clean_sig, pd.DataFrame) and len(clean_sig) >= 2:
+                    candle_row = clean_sig.iloc[-2]
+                    used_prev_closed = True
+                try:
+                    candle_open = float(candle_row.get("open"))
+                    candle_close = float(candle_row.get("close"))
+                    candle_high = float(candle_row.get("high"))
+                    candle_low = float(candle_row.get("low"))
+                except Exception:
+                    candle_open = candle_close = candle_high = candle_low = None
+
+                if candle_open is not None and candle_close is not None and candle_high is not None:
+                    has_red = candle_close < candle_open
+                    body_size = abs(candle_close - candle_open)
+                    upper_wick = candle_high - max(candle_open, candle_close)
+                    if upper_wick < 0:
+                        upper_wick = 0.0
+                    if body_size > 0:
+                        upper_wick_ratio = upper_wick / body_size
+                    else:
+                        upper_wick_ratio = float("inf") if upper_wick > 0 else 0.0
+                    close_back_inside = bool(upper) and candle_close < float(upper)
+                    touched_upper = bool(upper) and candle_high >= float(upper)
+                    rejected_from_band = close_back_inside or (upper_wick_ratio >= wick_ratio_min)
+
+                    rejection_meta = {
+                        "enabled": rej_enabled,
+                        "has_red": has_red,
+                        "close_back_inside_band": close_back_inside,
+                        "upper_wick_ratio": upper_wick_ratio,
+                        "touched_upper": touched_upper,
+                        "threshold_wick_ratio": wick_ratio_min,
+                        "includes_forming": includes_forming,
+                        "used_prev_closed": used_prev_closed,
+                    }
+
+                    # Allow rejection-entry even if price is back inside band (wick touch).
+                    if not entry_short and touched_upper and has_red and rejected_from_band and adx_ok:
+                        entry_short = True
+                        rejection_meta["forced_entry"] = True
+
+                    # If a short entry is still active, enforce rejection confirmation.
+                    if entry_short and not (has_red and rejected_from_band):
+                        logger.info(
+                            "[MeanReversion] Rejection confirmation failed for %s: has_red=%s close_in_band=%s "
+                            "upper_wick_ratio=%.2f thr=%.2f",
+                            symbol,
+                            has_red,
+                            close_back_inside,
+                            upper_wick_ratio,
+                            wick_ratio_min,
+                        )
+                        return None
+
+        if in_band and not (entry_long or entry_short) and not touch_entry_allowed and not promotion_override:
             if parent_pending_id:
                 logger.info(
                     "[MeanReversion] Recheck context; skipping soft deferral near-miss for %s (parent_pending_id=%s)",
@@ -1696,6 +1775,72 @@ class VWAPMeanReversion(BaseStrategy):
                 )
                 return None
 
+        # ------------------------------------------------------------------
+        # Impulse / Shock telemetry (used by IntegrityGuard)
+        # ------------------------------------------------------------------
+        impulse_meta = None
+        try:
+            imp_cfg = self.strategy_config.get("impulse_veto") if isinstance(self.strategy_config, dict) else {}
+            imp_enabled = bool(imp_cfg.get("enabled", True)) if isinstance(imp_cfg, dict) else True
+            body_thr = float(imp_cfg.get("body_atr_mult", 1.5) or 1.5) if isinstance(imp_cfg, dict) else 1.5
+            sum2_thr = float(imp_cfg.get("sum2_range_atr_mult", 2.5) or 2.5) if isinstance(imp_cfg, dict) else 2.5
+
+            candle_open = float(last_sig.get("open")) if "open" in last_sig else None
+            candle_close = float(last_sig.get("close")) if "close" in last_sig else None
+            candle_high = float(last_sig.get("high")) if "high" in last_sig else None
+            candle_low = float(last_sig.get("low")) if "low" in last_sig else None
+
+            body_size = None
+            range_size = None
+            if candle_open is not None and candle_close is not None:
+                body_size = abs(candle_close - candle_open)
+            if candle_high is not None and candle_low is not None:
+                range_size = max(0.0, candle_high - candle_low)
+
+            body_atr_mult = None
+            range_atr_mult = None
+            sum2_range_atr_mult = None
+
+            if atr_val and atr_val > 0:
+                if body_size is not None:
+                    body_atr_mult = body_size / float(atr_val)
+                if range_size is not None:
+                    range_atr_mult = range_size / float(atr_val)
+                try:
+                    if isinstance(clean_sig, pd.DataFrame) and len(clean_sig) >= 2 and {"high", "low"}.issubset(set(clean_sig.columns)):
+                        last_two = clean_sig.tail(2)
+                        ranges = (last_two["high"] - last_two["low"]).astype(float)
+                        sum2_range_atr_mult = float(ranges.sum()) / float(atr_val) if float(atr_val) > 0 else None
+                except Exception:
+                    sum2_range_atr_mult = None
+
+            candle_dir = "up" if (candle_close is not None and candle_open is not None and candle_close > candle_open) else \
+                ("down" if (candle_close is not None and candle_open is not None and candle_close < candle_open) else "flat")
+            trade_dir = "up" if side == "buy" else "down"
+
+            is_shock_move = False
+            if body_atr_mult is not None and body_atr_mult >= body_thr:
+                is_shock_move = True
+            if sum2_range_atr_mult is not None and sum2_range_atr_mult >= sum2_thr:
+                is_shock_move = True
+
+            impulse_meta = {
+                "enabled": imp_enabled,
+                "is_shock_move": bool(is_shock_move),
+                "body_atr_mult": body_atr_mult,
+                "range_atr_mult": range_atr_mult,
+                "sum2_range_atr_mult": sum2_range_atr_mult,
+                "thresholds": {
+                    "body_atr_mult": body_thr,
+                    "sum2_range_atr_mult": sum2_thr,
+                },
+                "candle_dir": candle_dir,
+                "trade_dir": trade_dir,
+                "require_opposite": True,
+            }
+        except Exception:
+            impulse_meta = None
+
         signal = {
             "strategy_name": self.strategy_name,
             "symbol": symbol,
@@ -1730,6 +1875,10 @@ class VWAPMeanReversion(BaseStrategy):
         meta_data = signal.get("meta", {})
         if not isinstance(meta_data, dict):
             meta_data = {}
+        if impulse_meta:
+            meta_data["impulse_guard"] = impulse_meta
+        if rejection_meta:
+            meta_data["rejection_confirmation"] = rejection_meta
         meta_data.setdefault(
             "price_meta",
             {

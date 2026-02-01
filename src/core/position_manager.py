@@ -1190,6 +1190,304 @@ class AdvancedPositionManager:
         signal['target'] = take_profit
         return stop_loss, take_profit
 
+    def _extract_signal_price(self, signal: Dict[str, Any]) -> Optional[float]:
+        if not isinstance(signal, dict):
+            return None
+        meta = signal.get("meta") if isinstance(signal.get("meta"), dict) else {}
+        price_meta = meta.get("price_meta") if isinstance(meta.get("price_meta"), dict) else {}
+        candidates = [
+            price_meta.get("price_used"),
+            price_meta.get("sig_close"),
+            signal.get("entry_raw"),
+            signal.get("entry"),
+            signal.get("execution_price"),
+        ]
+        for cand in candidates:
+            val = self._safe_float(cand)
+            if val is not None and val > 0:
+                return val
+        return None
+
+    def _compute_target_ratios(self, signal: Dict[str, Any], signal_price: Optional[float]) -> Dict[str, Optional[float]]:
+        stop_ratio = self._safe_float(signal.get("target_stop_ratio"))
+        tp_ratio = self._safe_float(signal.get("target_tp_ratio"))
+
+        if signal_price and signal_price > 0:
+            if stop_ratio is None:
+                stop_price = self._extract_price_field(signal, ["stop", "stop_loss", "stop_price"])
+                if stop_price and stop_price > 0:
+                    stop_ratio = abs(float(signal_price) - float(stop_price)) / float(signal_price)
+            if tp_ratio is None:
+                tp_price = self._extract_price_field(signal, ["target", "take_profit", "tp_price", "take_profit_price"])
+                if tp_price and tp_price > 0:
+                    tp_ratio = abs(float(signal_price) - float(tp_price)) / float(signal_price)
+
+        return {"stop_ratio": stop_ratio, "tp_ratio": tp_ratio}
+
+    def _compute_min_stop_ratio(self, signal: Dict[str, Any], reference_price: Optional[float]) -> Dict[str, Optional[float]]:
+        min_stop_pct = None
+        try:
+            risk_limits = getattr(self.risk_manager, "risk_limits_dataclass", None)
+            if risk_limits is not None:
+                min_stop_pct = self._safe_float(getattr(risk_limits, "min_stop_pct", None))
+        except Exception:
+            min_stop_pct = None
+        if min_stop_pct is None:
+            try:
+                min_stop_pct = self._safe_float(getattr(self.risk_manager, "risk_limits", {}).get("min_stop_pct"))
+            except Exception:
+                min_stop_pct = None
+
+        atr_pct = None
+        atr_val = self._safe_float(signal.get("atr") or signal.get("atr_value"))
+        if atr_val is not None and reference_price and reference_price > 0:
+            atr_pct = atr_val / reference_price
+        else:
+            meta = signal.get("meta") if isinstance(signal.get("meta"), dict) else {}
+            vol_meta = meta.get("vol_telemetry") if isinstance(meta.get("vol_telemetry"), dict) else {}
+            atr_bps = self._safe_float(vol_meta.get("atr_bps"))
+            if atr_bps is not None:
+                atr_pct = atr_bps / 10000.0
+
+        spread_bps = None
+        meta = signal.get("meta") if isinstance(signal.get("meta"), dict) else {}
+        if isinstance(meta.get("spread_bps"), (int, float)):
+            spread_bps = self._safe_float(meta.get("spread_bps"))
+        spread_ratio = (spread_bps / 10000.0) if spread_bps is not None else None
+
+        candidates = [x for x in (min_stop_pct, (atr_pct * 0.8) if atr_pct is not None else None, spread_ratio) if x is not None]
+        min_stop_ratio = max(candidates) if candidates else None
+
+        return {
+            "min_stop_ratio": min_stop_ratio,
+            "min_stop_pct": min_stop_pct,
+            "atr_pct": atr_pct,
+            "spread_bps": spread_bps,
+        }
+
+    def _maybe_rebase_exit_levels(
+        self,
+        signal: Dict[str, Any],
+        entry_price: float,
+        signal_price: Optional[float],
+        target_ratios: Dict[str, Optional[float]],
+        stop_loss: float,
+        take_profit: float,
+    ) -> Dict[str, Any]:
+        side = (signal.get("side") or "long").lower()
+        is_long = side not in self.SHORT_SIDES
+
+        stop_ratio = target_ratios.get("stop_ratio")
+        tp_ratio = target_ratios.get("tp_ratio")
+
+        if stop_ratio is None and tp_ratio is None:
+            return {"applied": False}
+
+        min_meta = self._compute_min_stop_ratio(signal, signal_price or entry_price)
+        min_stop_ratio = min_meta.get("min_stop_ratio")
+
+        applied_stop_ratio = stop_ratio
+        min_applied = False
+        if applied_stop_ratio is not None and min_stop_ratio is not None and min_stop_ratio > 0:
+            if applied_stop_ratio < min_stop_ratio:
+                applied_stop_ratio = min_stop_ratio
+                min_applied = True
+
+        rebased_stop = stop_loss
+        if applied_stop_ratio is not None and entry_price > 0:
+            rebased_stop = entry_price * (1 - applied_stop_ratio) if is_long else entry_price * (1 + applied_stop_ratio)
+
+        rebased_tp = take_profit
+        if tp_ratio is not None and entry_price > 0:
+            rebased_tp = entry_price * (1 + tp_ratio) if is_long else entry_price * (1 - tp_ratio)
+
+        rr_planned = None
+        if stop_ratio is not None and tp_ratio is not None and stop_ratio > 0:
+            rr_planned = tp_ratio / stop_ratio
+
+        rr_effective = None
+        if applied_stop_ratio is not None and tp_ratio is not None and applied_stop_ratio > 0:
+            rr_effective = tp_ratio / applied_stop_ratio
+
+        return {
+            "applied": True,
+            "stop_loss": rebased_stop,
+            "take_profit": rebased_tp,
+            "meta": {
+                "signal_price": signal_price,
+                "entry_price": entry_price,
+                "target_stop_ratio": stop_ratio,
+                "target_tp_ratio": tp_ratio,
+                "applied_stop_ratio": applied_stop_ratio,
+                "min_stop_ratio": min_stop_ratio,
+                "min_stop_pct": min_meta.get("min_stop_pct"),
+                "atr_pct": min_meta.get("atr_pct"),
+                "spread_bps": min_meta.get("spread_bps"),
+                "min_stop_applied": min_applied,
+                "rr_planned": rr_planned,
+                "rr_effective": rr_effective,
+            },
+        }
+
+    def _compute_rr_after_fill(
+        self,
+        *,
+        entry_price: float,
+        stop_loss: float,
+        take_profit: float,
+        side: str,
+        rebase_meta: Optional[Dict[str, Any]] = None,
+    ) -> Optional[float]:
+        rr_effective = None
+        try:
+            if isinstance(rebase_meta, dict):
+                rr_effective = self._safe_float(rebase_meta.get("rr_effective"))
+        except Exception:
+            rr_effective = None
+        if rr_effective is not None and rr_effective > 0:
+            return rr_effective
+
+        is_long = str(side or "").lower() in self.LONG_SIDES
+        try:
+            entry_price = float(entry_price)
+            stop_loss = float(stop_loss)
+            take_profit = float(take_profit)
+        except Exception:
+            return None
+        if entry_price <= 0 or stop_loss <= 0 or take_profit <= 0:
+            return None
+
+        if is_long:
+            risk = entry_price - stop_loss
+            reward = take_profit - entry_price
+        else:
+            risk = stop_loss - entry_price
+            reward = entry_price - take_profit
+        if risk <= 0 or reward <= 0:
+            return None
+        return reward / risk
+
+    def _evaluate_postfill_rr_action(
+        self,
+        *,
+        entry_price: float,
+        stop_loss: float,
+        take_profit: float,
+        side: str,
+        rebase_meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        rr_after_fill = self._compute_rr_after_fill(
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            side=side,
+            rebase_meta=rebase_meta,
+        )
+        action = "keep"
+        reason_code = None
+        if rr_after_fill is not None and rr_after_fill < 1.0:
+            action = "early_exit"
+            reason_code = "rr_below_1"
+        return {
+            "rr_after_fill": rr_after_fill,
+            "postfill_action": action,
+            "reason_code": reason_code,
+        }
+
+    async def _refresh_exchange_risk_orders(
+        self,
+        position: Dict[str, Any],
+        *,
+        stop_loss: float,
+        take_profit: float,
+        reduce_only: bool = True,
+    ) -> Dict[str, Any]:
+        symbol = str(position.get("symbol") or "")
+        exchange = str(position.get("exchange") or "").lower()
+        side = str(position.get("side") or "").lower()
+        qty = self._safe_float(position.get("amount"), 0.0) or 0.0
+
+        if not symbol or not exchange:
+            return {"success": False, "reason": "missing_symbol_or_exchange"}
+        if qty <= 0:
+            return {"success": False, "reason": "invalid_qty"}
+
+        client = self._get_exchange_client(exchange)
+        if not client:
+            return {"success": False, "reason": "missing_exchange_client"}
+
+        async def _call(fn, *args, **kwargs):
+            if asyncio.iscoroutinefunction(fn):
+                return await fn(*args, **kwargs)
+            return await asyncio.to_thread(fn, *args, **kwargs)
+
+        get_open = getattr(client, "get_open_orders", None) or getattr(client, "fetch_open_orders", None)
+        if not callable(get_open):
+            return {"success": False, "reason": "missing_get_open_orders"}
+
+        open_orders = await _call(get_open, symbol)
+        order_ids = []
+        if isinstance(open_orders, list):
+            for order in open_orders:
+                if isinstance(order, dict):
+                    oid = order.get("id") or order.get("orderId")
+                    if oid:
+                        order_ids.append(oid)
+        cancel_fn = getattr(client, "cancel_order", None)
+        if callable(cancel_fn):
+            for oid in order_ids:
+                try:
+                    await _call(cancel_fn, oid, symbol, {})
+                except Exception as exc:
+                    msg = str(exc).lower()
+                    if any(key in msg for key in ("not found", "ordernotfound", "does not exist", "already canceled", "already cancelled")):
+                        continue
+                    logger.warning("Risk order cancel failed: %s", str(exc)[:200])
+
+        close_side = "sell" if side in self.LONG_SIDES else "buy" if side in self.SHORT_SIDES else None
+        if not close_side:
+            return {"success": False, "reason": "invalid_position_side"}
+
+        placed = []
+
+        async def _place_order(kind: str, price: float):
+            if not price or price <= 0:
+                return None
+            if kind == "stop_loss":
+                params = {"stopLossPrice": price, "reduceOnly": bool(reduce_only)}
+            else:
+                params = {"takeProfitPrice": price, "reduceOnly": bool(reduce_only)}
+
+            place_fn = getattr(client, f"place_{kind}", None)
+            if callable(place_fn):
+                return await _call(place_fn, symbol, close_side, qty, price, params)
+
+            create_fn = getattr(client, "create_order", None)
+            if callable(create_fn):
+                return await _call(
+                    create_fn,
+                    symbol=symbol,
+                    side=close_side,
+                    type_="market",
+                    amount=qty,
+                    price=None,
+                    params=params,
+                )
+            return None
+
+        stop_resp = await _place_order("stop_loss", float(stop_loss))
+        if stop_resp is not None:
+            placed.append(("stop_loss", stop_resp))
+        tp_resp = await _place_order("take_profit", float(take_profit))
+        if tp_resp is not None:
+            placed.append(("take_profit", tp_resp))
+
+        return {
+            "success": True,
+            "cancelled": len(order_ids),
+            "placed": len(placed),
+        }
+
     def _append_trade_history(self, payload: Dict[str, Any]) -> None:
         try:
             logger.debug("Appending trade payload to %s", self.trade_history_path)
@@ -1340,9 +1638,53 @@ class AdvancedPositionManager:
             timeframe = signal.get('timeframe') or signal.get('tf')
             entry_price = execution_result.get('avg_price', 0)
             amount = execution_result.get('filled_amount', 0)
-            
+
+            # Pre-compute target ratios before _derive_exit_levels mutates signal
+            signal_price = self._extract_signal_price(signal)
+            target_ratios = self._compute_target_ratios(signal, signal_price)
+
             # Calculate stop-loss and take-profit levels with directional awareness
             stop_loss, take_profit = self._derive_exit_levels(signal, entry_price)
+
+            # Rebase stop/TP using signal ratios (if provided)
+            rebase = self._maybe_rebase_exit_levels(signal, entry_price, signal_price, target_ratios, stop_loss, take_profit)
+            rebase_meta = rebase.get("meta") if isinstance(rebase, dict) and rebase.get("applied") else None
+            if rebase.get("applied"):
+                stop_loss = float(rebase.get("stop_loss") or stop_loss)
+                take_profit = float(rebase.get("take_profit") or take_profit)
+                signal["stop"] = stop_loss
+                signal["target"] = take_profit
+                signal["target_stop_ratio"] = (rebase_meta or {}).get("target_stop_ratio") or target_ratios.get("stop_ratio")
+                signal["target_tp_ratio"] = (rebase_meta or {}).get("target_tp_ratio") or target_ratios.get("tp_ratio")
+                logger.info(
+                    "🔧 [RISK-REBASE] %s %s side=%s signal=%.4f fill=%.4f stop_ratio=%s tp_ratio=%s "
+                    "stop=%.4f tp=%.4f min_stop_ratio=%s rr_planned=%s rr_effective=%s",
+                    position_id,
+                    symbol,
+                    side,
+                    float(signal_price or 0.0),
+                    float(entry_price or 0.0),
+                    f"{(rebase_meta or {}).get('target_stop_ratio'):.6f}" if (rebase_meta or {}).get("target_stop_ratio") else "na",
+                    f"{(rebase_meta or {}).get('target_tp_ratio'):.6f}" if (rebase_meta or {}).get("target_tp_ratio") else "na",
+                    float(stop_loss or 0.0),
+                    float(take_profit or 0.0),
+                    f"{(rebase_meta or {}).get('min_stop_ratio'):.6f}" if (rebase_meta or {}).get("min_stop_ratio") else "na",
+                    f"{(rebase_meta or {}).get('rr_planned'):.3f}" if (rebase_meta or {}).get("rr_planned") else "na",
+                    f"{(rebase_meta or {}).get('rr_effective'):.3f}" if (rebase_meta or {}).get("rr_effective") else "na",
+                )
+
+            postfill_meta = self._evaluate_postfill_rr_action(
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                side=side,
+                rebase_meta=rebase_meta,
+            )
+            if isinstance(rebase_meta, dict):
+                rebase_meta.setdefault("rr_after_fill", postfill_meta.get("rr_after_fill"))
+            signal["rr_after_fill"] = postfill_meta.get("rr_after_fill")
+            signal["postfill_action"] = postfill_meta.get("postfill_action")
+            signal["postfill_reason_code"] = postfill_meta.get("reason_code")
             
             # CRITICAL FIX: Get exchange from execution_result if not in signal
             # This ensures we always have a valid exchange name for position closure during shutdown
@@ -1430,6 +1772,10 @@ class AdvancedPositionManager:
                 'max_adverse_excursion_pct': 0.0,
                 'max_favorable_excursion_pct': 0.0,
                 'entry_metadata': entry_meta,
+                'rebase_meta': rebase_meta,
+                'rr_after_fill': postfill_meta.get("rr_after_fill"),
+                'postfill_action': postfill_meta.get("postfill_action"),
+                'postfill_reason_code': postfill_meta.get("reason_code"),
                 'risk_usd': risk_usd,
                 'risk_amount': risk_usd,
                 'position_notional': entry_price * amount if amount else 0.0,
@@ -1468,6 +1814,19 @@ class AdvancedPositionManager:
             
             # Store position
             self.positions[position_id] = position
+
+            refresh_flag = bool(signal.get("refresh_risk_orders") or signal.get("risk_orders_refresh"))
+            if refresh_flag:
+                try:
+                    refresh_result = await self._refresh_exchange_risk_orders(
+                        position,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        reduce_only=True,
+                    )
+                    position["risk_order_refresh"] = refresh_result
+                except Exception as exc:
+                    logger.warning("Risk order refresh failed: %s", str(exc)[:200])
             
             # Initialize P&L tracker
             self.pnl_tracker[position_id] = [{
