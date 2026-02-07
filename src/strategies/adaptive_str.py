@@ -856,12 +856,18 @@ class AdaptiveShortTheRip(ShortTheRip):
 
         return triggered, reason, meta
     
-    def signal(self, df_30m: pd.DataFrame, 
-               df_1h: pd.DataFrame = None,
-               regime_data: Optional[Dict] = None,
-               symbol: str = None,
-               market_data: Optional[Dict] = None,
-               ml_context=None) -> Optional[Dict]:
+    def signal(
+        self,
+        df_30m: pd.DataFrame,
+        df_1h: pd.DataFrame = None,
+        regime_data: Optional[Dict] = None,
+        symbol: str = None,
+        market_data: Optional[Dict] = None,
+        ml_context=None,
+        shock_state: Optional[str] = None,
+        shock_score: Optional[float] = None,
+        **kwargs,
+    ) -> Optional[Dict]:
         """
         Generate adaptive trading signal for a short position based on market regime and ML insights.
         Logs the specific reason if no signal is generated for transparency.
@@ -1748,6 +1754,48 @@ class AdaptiveShortTheRip(ShortTheRip):
                 "strategy_type": 'adaptive',
                 "strategy_min_rr": self.min_rr_ratio,
             })
+            atr_bps_for_exec = None
+            atr_age_ms_for_exec = None
+            try:
+                if atr_pct is not None and float(atr_pct) > 0:
+                    atr_bps_for_exec = float(float(atr_pct) * 10_000.0)
+            except Exception:
+                atr_bps_for_exec = None
+            try:
+                if forming_update_age_ms is not None:
+                    atr_age_ms_for_exec = int(forming_update_age_ms)
+            except Exception:
+                atr_age_ms_for_exec = None
+
+            if atr_bps_for_exec is not None and atr_bps_for_exec > 0:
+                signal["volatility"] = {
+                    "vol_atr_bps": float(atr_bps_for_exec),
+                    "atr_bps": float(atr_bps_for_exec),
+                    "atr_pct": float(atr_pct) if atr_pct is not None else None,
+                    "price_ref": float(entry_price),
+                    "source_tf": "30m",
+                    "source": "adaptive_str",
+                }
+                if atr_age_ms_for_exec is not None:
+                    signal["volatility"]["atr_age_ms"] = int(atr_age_ms_for_exec)
+
+                signal_meta = signal.setdefault("meta", {})
+                if isinstance(signal_meta, dict):
+                    vol_telemetry = signal_meta.get("vol_telemetry")
+                    if not isinstance(vol_telemetry, dict):
+                        vol_telemetry = {}
+                    vol_telemetry.update(
+                        {
+                            "atr_bps": float(atr_bps_for_exec),
+                            "atr_pct": float(atr_pct) if atr_pct is not None else None,
+                            "price_ref": float(entry_price),
+                            "source_tf": "30m",
+                            "source": "adaptive_str",
+                        }
+                    )
+                    if atr_age_ms_for_exec is not None:
+                        vol_telemetry["atr_age_ms"] = int(atr_age_ms_for_exec)
+                    signal_meta["vol_telemetry"] = vol_telemetry
             if volatility_stop_meta:
                 signal['volatility_stop_meta'] = volatility_stop_meta
 

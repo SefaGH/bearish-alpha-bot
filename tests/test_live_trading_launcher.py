@@ -403,5 +403,81 @@ class TestWebSocketConnectionLogic:
         assert 'exchanges' in status
 
 
+class TestShutdownSafetyFlow:
+    @pytest.mark.asyncio
+    async def test_shutdown_cancel_orders_uses_symbol_then_account_wide(self):
+        launcher = create_launcher()
+        launcher.TRADING_PAIRS = ["BTC/USDT:USDT"]
+        launcher.coordinator = None
+
+        class _DummyEx:
+            def __init__(self):
+                self.fetch_all_calls = 0
+
+            def fetch_open_orders(self, symbol=None):
+                if symbol:
+                    return []
+                self.fetch_all_calls += 1
+                if self.fetch_all_calls == 1:
+                    return [{"id": "oid-1", "symbol": "BTC-USDT"}]
+                return []
+
+        class _DummyBingx:
+            def __init__(self):
+                self.ex = _DummyEx()
+                self.cancel_calls = []
+
+            def _get_bingx_native_symbol(self, symbol):
+                return "BTC-USDT"
+
+            def cancel_all_bingx_open_orders(self, symbol=None):
+                self.cancel_calls.append(symbol)
+                return {"code": 0, "data": {"success": []}}
+
+        client = _DummyBingx()
+        launcher.exchange_clients = {"bingx": client}
+
+        summary = await launcher._cancel_bingx_open_orders_for_shutdown()
+        assert summary["account_wide_attempted"] is True
+        assert summary["remaining_open_orders"] == 0
+        assert "BTC/USDT:USDT" in client.cancel_calls
+        assert None in client.cancel_calls
+
+    @pytest.mark.asyncio
+    async def test_shutdown_close_all_fallback_uses_symbol_then_account_wide(self):
+        launcher = create_launcher()
+        launcher.TRADING_PAIRS = ["BTC/USDT:USDT"]
+        launcher.coordinator = None
+
+        class _DummyBingx:
+            def __init__(self):
+                self.close_calls = []
+                self.all_positions_calls = 0
+
+            def _get_bingx_native_symbol(self, symbol):
+                return "BTC-USDT"
+
+            def get_bingx_positions(self, symbol=None):
+                if symbol:
+                    return {"code": 0, "data": [{"symbol": "BTC-USDT", "positionAmt": "0.0100"}]}
+                self.all_positions_calls += 1
+                if self.all_positions_calls == 1:
+                    return {"code": 0, "data": [{"symbol": "BTC-USDT", "positionAmt": "0.0100"}]}
+                return {"code": 0, "data": []}
+
+            def close_all_bingx_positions(self, symbol=None):
+                self.close_calls.append(symbol)
+                return {"code": 0, "data": {"success": ["oid-1"], "failed": []}}
+
+        client = _DummyBingx()
+        launcher.exchange_clients = {"bingx": client}
+
+        summary = await launcher._close_bingx_positions_with_close_all_fallback()
+        assert summary["account_wide_attempted"] is True
+        assert summary["remaining_positions"] == 0
+        assert "BTC/USDT:USDT" in client.close_calls
+        assert None in client.close_calls
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

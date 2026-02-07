@@ -23,7 +23,12 @@ from datetime import datetime, timezone
 from enum import Enum
 from src.core.signal_intents import INTENT_ENTRY, INTENT_FORCE_SWAP, INTENT_REVERSE
 from .dca_watcher import DCAWatcher
-from .execution_env import is_prod_canary_0_enabled, is_real_execution_enabled, is_vst_fullbot_canary_enabled
+from .execution_env import (
+    is_prod_canary_0_enabled,
+    is_real_execution_enabled,
+    is_vst_fullbot_canary_enabled,
+    is_vst_fullbot_canary_force_market,
+)
 
 from core.logger import get_current_run_id
 
@@ -310,6 +315,20 @@ class LiveTradingEngine:
             position_task = asyncio.create_task(self._position_monitoring_loop())
             self.tasks.append(position_task)
             logger.info("  ✓ Position monitoring started")
+
+            # Start exchange/local reconciliation watchdog
+            rec_cfg = (
+                (self.config.get("position_management") or {}).get("reconciliation_watchdog")
+                if isinstance(self.config, dict)
+                else {}
+            )
+            rec_enabled = True
+            if isinstance(rec_cfg, dict) and rec_cfg.get("enabled") is not None:
+                rec_enabled = bool(rec_cfg.get("enabled"))
+            if rec_enabled:
+                rec_task = asyncio.create_task(self._position_reconciliation_watchdog_loop())
+                self.tasks.append(rec_task)
+                logger.info("  ✓ Position reconciliation watchdog started")
 
             # Start order management
             order_task = asyncio.create_task(self._order_management_loop())
@@ -645,6 +664,12 @@ class LiveTradingEngine:
             # - OrderManager must not fetch its own ticker price for limit pricing.
             # ---------------------------------------------------------------------
             execution_params = signal.get('execution_params') if isinstance(signal.get('execution_params'), dict) else {}
+            smart_entry_policy_decision = "not_evaluated"
+            smart_entry_policy_applied = False
+            smart_entry_fallback_reason = None
+            smart_entry_atr_source = "missing"
+            smart_entry_atr_bps = None
+            smart_entry_atr_age_ms = None
 
             # -------------------------------------------------------------
             # Smart Entry Policy Injection (centralized)
@@ -680,15 +705,24 @@ class LiveTradingEngine:
                     atr_val = _sf(signal.get("atr"))
                     if atr_val is None and entry_val is not None:
                         atr_bps = None
+                        atr_age_ms = None
                         meta = signal.get("meta") if isinstance(signal.get("meta"), dict) else {}
                         vol_tel = meta.get("vol_telemetry") if isinstance(meta.get("vol_telemetry"), dict) else {}
                         atr_bps = _sf(vol_tel.get("atr_bps"))
                         atr_src = "meta.vol_telemetry.atr_bps"
+                        try:
+                            atr_age_ms = int(vol_tel.get("atr_age_ms")) if vol_tel.get("atr_age_ms") is not None else None
+                        except (TypeError, ValueError):
+                            atr_age_ms = None
 
                         if atr_bps is None:
                             vol_block = signal.get("volatility") if isinstance(signal.get("volatility"), dict) else {}
                             atr_bps = _sf(vol_block.get("vol_atr_bps")) or _sf(vol_block.get("atr_bps"))
                             atr_src = "signal.volatility.vol_atr_bps"
+                            try:
+                                atr_age_ms = int(vol_block.get("atr_age_ms")) if vol_block.get("atr_age_ms") is not None else None
+                            except (TypeError, ValueError):
+                                atr_age_ms = None
 
                         if atr_bps is not None:
                             atr_price = float(entry_val) * (float(atr_bps) / 10000.0)
@@ -702,6 +736,7 @@ class LiveTradingEngine:
                                             "atr_bps": float(atr_bps),
                                             "atr_price": float(atr_price),
                                             "entry_used": float(entry_val),
+                                            "atr_age_ms": atr_age_ms,
                                         }
                                     )
                                 signal["meta"] = meta
@@ -712,6 +747,34 @@ class LiveTradingEngine:
                         policy_cfg=policy_cfg,
                     )
                     signal["execution_params"] = execution_params
+                    smart_entry_policy_applied = bool(decision.applied)
+                    smart_entry_policy_decision = "applied" if decision.applied else f"skipped:{decision.reason}"
+                    if not decision.applied:
+                        smart_entry_fallback_reason = decision.reason
+
+                    meta_plumbing = signal.get("meta") if isinstance(signal.get("meta"), dict) else {}
+                    plumbing = meta_plumbing.get("smart_entry_plumbing") if isinstance(meta_plumbing.get("smart_entry_plumbing"), dict) else {}
+                    if plumbing:
+                        atr_src = plumbing.get("atr_source")
+                        if atr_src:
+                            smart_entry_atr_source = str(atr_src)
+                        try:
+                            smart_entry_atr_bps = float(plumbing.get("atr_bps")) if plumbing.get("atr_bps") is not None else None
+                        except (TypeError, ValueError):
+                            smart_entry_atr_bps = None
+                        try:
+                            smart_entry_atr_age_ms = int(plumbing.get("atr_age_ms")) if plumbing.get("atr_age_ms") is not None else None
+                        except (TypeError, ValueError):
+                            smart_entry_atr_age_ms = None
+                    elif signal.get("atr") and signal.get("entry"):
+                        try:
+                            _atr = float(signal.get("atr"))
+                            _entry = float(signal.get("entry"))
+                            if _atr > 0 and _entry > 0:
+                                smart_entry_atr_bps = (_atr / _entry) * 10000.0
+                                smart_entry_atr_source = "signal.atr"
+                        except (TypeError, ValueError):
+                            smart_entry_atr_bps = None
                     if decision.applied:
                         meta = signal.get("smart_entry_meta") if isinstance(signal.get("smart_entry_meta"), dict) else {}
                         logger.info(
@@ -726,8 +789,41 @@ class LiveTradingEngine:
                         )
                     else:
                         logger.info("[SMART-ENTRY] skipped skip_reason=%s", decision.reason)
+                else:
+                    smart_entry_policy_decision = "policy_missing"
             except Exception as exc:
                 logger.warning("[SMART-ENTRY] injector failed (continuing with default execution): %s", exc)
+                smart_entry_policy_decision = "injector_error"
+                smart_entry_fallback_reason = "smart_entry_injector_exception"
+
+            def _safe_bool(value: Any) -> Optional[bool]:
+                if isinstance(value, bool):
+                    return value
+                if value is None:
+                    return None
+                if isinstance(value, (int, float)):
+                    return bool(value)
+                if isinstance(value, str):
+                    v = value.strip().lower()
+                    if v in {"1", "true", "yes", "on"}:
+                        return True
+                    if v in {"0", "false", "no", "off"}:
+                        return False
+                return None
+
+            # OrderManager timeout fallback controls (config -> execution params).
+            cfg_root = self.config if isinstance(self.config, dict) else {}
+            cfg_om = cfg_root.get("order_manager") if isinstance(cfg_root.get("order_manager"), dict) else {}
+            for key in (
+                "market_fallback_on_timeout_enabled",
+                "disable_market_fallback_on_extreme_bucket",
+                "disable_market_fallback_on_fast_move",
+            ):
+                if execution_params.get(key) is not None:
+                    continue
+                parsed = _safe_bool(cfg_om.get(key))
+                if parsed is not None:
+                    execution_params[key] = parsed
             side_norm = str(signal.get('side', '') or '').lower()
             order_type_hint = (
                 execution_params.get('type')
@@ -963,8 +1059,17 @@ class LiveTradingEngine:
             # ✅ FIX: Respect ORDER_TYPE configuration, but allow per-signal overrides.
             cfg_order_type = self.config.get('trading', {}).get('order_type', 'limit')
             override_order_type = None
+            requested_order_type_field = None
+            requested_order_type_value = None
             try:
-                override_order_type = execution_params.get('order_type') or execution_params.get('type')
+                requested_order_type_value = execution_params.get('order_type')
+                if requested_order_type_value:
+                    requested_order_type_field = 'execution_params.order_type'
+                    override_order_type = requested_order_type_value
+                elif execution_params.get('type'):
+                    requested_order_type_value = execution_params.get('type')
+                    requested_order_type_field = 'execution_params.type'
+                    override_order_type = requested_order_type_value
             except Exception:
                 override_order_type = None
 
@@ -979,6 +1084,41 @@ class LiveTradingEngine:
                 urgency = signal.get('urgency', 'normal')
                 execution_algo = self.execution_analytics.get_best_execution_algorithm(notional_value, urgency)
                 logger.info(f"  ✓ Execution algorithm selected: {execution_algo}")
+
+            order_type_resolution_source = requested_order_type_field or 'config.trading.order_type'
+            env_forced_order_type = None
+            if (
+                is_vst_fullbot_canary_enabled()
+                and is_real_execution_enabled()
+                and str(execution_algo or "").lower() != "market"
+                and is_vst_fullbot_canary_force_market()
+            ):
+                env_forced_order_type = "market"
+
+            logger.info(
+                "order_decision_trace %s",
+                {
+                    "event": "order_decision_trace",
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "run_id": get_current_run_id(),
+                    "symbol": symbol,
+                    "strategy_name": signal.get("strategy_name") or signal.get("strategy"),
+                    "signal_id": signal_id,
+                    "effective_order_type": execution_algo,
+                    "order_type_resolution_source": order_type_resolution_source,
+                    "requested_order_type_value": requested_order_type_value,
+                    "config_order_type": cfg_order_type,
+                    "policy_decision": smart_entry_policy_decision,
+                    "policy_applied": smart_entry_policy_applied,
+                    "fallback_reason": smart_entry_fallback_reason,
+                    "atr_source": smart_entry_atr_source,
+                    "atr_bps": smart_entry_atr_bps,
+                    "atr_age_ms": smart_entry_atr_age_ms,
+                    "bucket": signal.get("volume_bucket"),
+                    "bucket_strength": signal.get("volume_strength"),
+                    "env_forced_order_type": env_forced_order_type,
+                },
+            )
             
             logger.info(f"  Notional value: ${notional_value:.2f}")
             
@@ -1079,6 +1219,48 @@ class LiveTradingEngine:
                     logger.warning("⚠️ [FORCE-SWAP] intent detected but no swap_target_id provided; proceeding without pre-close.")
 
             execution_result = await self.order_manager.place_order(order_request, execution_algo)
+            if isinstance(execution_result, dict):
+                entry_slippage_bps = None
+                try:
+                    raw_slippage = execution_result.get("slippage")
+                    if raw_slippage is not None:
+                        entry_slippage_bps = float(raw_slippage) * 10000.0
+                except (TypeError, ValueError):
+                    entry_slippage_bps = None
+
+                entry_notional_usd = None
+                try:
+                    avg_price = float(execution_result.get("avg_price") or 0.0)
+                    filled_amount = float(execution_result.get("filled_amount") or 0.0)
+                    if avg_price > 0 and filled_amount > 0:
+                        entry_notional_usd = avg_price * filled_amount
+                    else:
+                        entry_notional_usd = float(notional_value or 0.0) if float(notional_value or 0.0) > 0 else None
+                except (TypeError, ValueError):
+                    entry_notional_usd = None
+
+                logger.info(
+                    "order_decision_outcome %s",
+                    {
+                        "event": "order_decision_outcome",
+                        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        "run_id": get_current_run_id(),
+                        "symbol": symbol,
+                        "strategy_name": signal.get("strategy_name") or signal.get("strategy"),
+                        "bucket": signal.get("volume_bucket"),
+                        "signal_id": signal_id,
+                        "requested_execution_algo": execution_algo,
+                        "effective_execution_algo": execution_result.get("effective_execution_algo") or execution_algo,
+                        "success": bool(execution_result.get("success")),
+                        "reason": execution_result.get("reason"),
+                        "fallback_reason": execution_result.get("fallback_reason"),
+                        "env_forced_order_type": execution_result.get("env_forced_order_type"),
+                        "entry_slippage_bps": entry_slippage_bps,
+                        "entry_notional_usd": entry_notional_usd,
+                        "time_to_fill_ms": execution_result.get("time_to_fill_ms"),
+                        "order_id": execution_result.get("order_id"),
+                    },
+                )
             
             if not execution_result.get('success'):
                 logger.error(f"❌ Order execution failed: {execution_result.get('reason')}")
@@ -1944,6 +2126,65 @@ class LiveTradingEngine:
                     
         except asyncio.CancelledError:
             logger.info("Order management loop cancelled")
+
+    async def _position_reconciliation_watchdog_loop(self):
+        """Periodic exchange/local position reconciliation watchdog."""
+        logger.info("Position reconciliation watchdog loop started")
+        try:
+            cfg = self.config if isinstance(self.config, dict) else {}
+            pm_cfg = cfg.get("position_management") if isinstance(cfg.get("position_management"), dict) else {}
+            watch_cfg = pm_cfg.get("reconciliation_watchdog") if isinstance(pm_cfg.get("reconciliation_watchdog"), dict) else {}
+
+            interval = watch_cfg.get("interval_s", 30)
+            try:
+                interval = float(interval or 30)
+            except (TypeError, ValueError):
+                interval = 30.0
+            if interval <= 0:
+                interval = 30.0
+
+            run_in_paper = bool(watch_cfg.get("run_in_paper", False))
+            adopt_orphans = bool(watch_cfg.get("adopt_orphans", False))
+            only_real = bool(watch_cfg.get("only_real_execution", True))
+
+            while self.state == EngineState.RUNNING:
+                try:
+                    if not self.position_manager or not hasattr(self.position_manager, "reconcile_runtime_positions"):
+                        await asyncio.sleep(interval)
+                        continue
+                    if not self.exchange_clients:
+                        await asyncio.sleep(interval)
+                        continue
+                    if only_real and not is_real_execution_enabled() and not run_in_paper:
+                        await asyncio.sleep(interval)
+                        continue
+
+                    rec = await self.position_manager.reconcile_runtime_positions(
+                        exchange_clients=self.exchange_clients,
+                        adopt_orphans=adopt_orphans,
+                    )
+                    stale_removed = int(rec.get("stale_removed", 0) or 0)
+                    orphans_detected = int(rec.get("orphans_detected", 0) or 0)
+                    orphans_adopted = int(rec.get("orphans_adopted", 0) or 0)
+
+                    # Keep engine-local view aligned with PositionManager source of truth.
+                    pm_positions = getattr(self.position_manager, "positions", {}) or {}
+                    self.active_positions = dict(pm_positions)
+
+                    if stale_removed or orphans_detected or orphans_adopted:
+                        logger.warning(
+                            "[RECON-WATCHDOG] stale_removed=%s orphans_detected=%s orphans_adopted=%s active_positions=%s",
+                            stale_removed,
+                            orphans_detected,
+                            orphans_adopted,
+                            len(self.active_positions),
+                        )
+                except Exception as exc:
+                    logger.error("Position reconciliation watchdog error: %s", exc, exc_info=True)
+
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            logger.info("Position reconciliation watchdog loop cancelled")
     
     async def _performance_reporting_loop(self):
         """Background task for performance reporting."""

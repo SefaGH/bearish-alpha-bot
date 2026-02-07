@@ -677,9 +677,107 @@ class AdvancedPositionManager:
 
         return {"stale_removed": stale_removed}
 
-    async def _fetch_exchange_open_positions(self, exchange_clients: Dict[str, Any]) -> Dict[str, Any]:
+    async def reconcile_runtime_positions(
+        self,
+        *,
+        exchange_clients: Dict[str, Any],
+        adopt_orphans: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Runtime reconciliation watchdog:
+        - Remove local open positions that are no longer open on exchange.
+        - Detect exchange positions that are not tracked locally ("orphans").
+        - Optionally adopt orphan positions into local tracking.
+        """
+        result: Dict[str, Any] = {
+            "stale_removed": 0,
+            "orphans_detected": 0,
+            "orphans_adopted": 0,
+            "orphans": [],
+        }
+        if not exchange_clients or not isinstance(exchange_clients, dict):
+            return result
+
+        stale = await self._reconcile_snapshot_with_exchange(exchange_clients)
+        result["stale_removed"] = int(stale.get("stale_removed", 0) or 0)
+        if stale.get("error"):
+            result["error"] = stale.get("error")
+            return result
+
+        exchange_view = await self._fetch_exchange_open_positions(exchange_clients, include_records=True)
+        if not exchange_view.get("ok"):
+            result["error"] = exchange_view.get("error")
+            return result
+
+        exchange_index = exchange_view.get("index") or {}
+        exchange_records = exchange_view.get("records") or {}
+        local_entries = self._build_local_open_entries()
+        orphans: List[Dict[str, Any]] = []
+
+        for key, amounts in exchange_index.items():
+            ex_name, symbol, side = key
+            records_for_key = list(exchange_records.get(key) or [])
+            for amt in list(amounts or []):
+                matched_idx: Optional[int] = None
+                for idx, entry in enumerate(local_entries):
+                    if entry.get("used"):
+                        continue
+                    if entry.get("exchange") != ex_name:
+                        continue
+                    if str(side) not in (entry.get("side_variants") or set()):
+                        continue
+                    if str(symbol) not in (entry.get("symbol_variants") or set()):
+                        continue
+                    local_amt = float(entry.get("amount") or 0.0)
+                    if self._match_amount(local_amt, [amt]):
+                        matched_idx = idx
+                        break
+                if matched_idx is not None:
+                    local_entries[matched_idx]["used"] = True
+                    continue
+
+                rec = None
+                if records_for_key:
+                    rec = records_for_key.pop(0)
+                orphan = {
+                    "exchange": ex_name,
+                    "symbol": symbol,
+                    "side": side,
+                    "amount": float(amt),
+                    "entry_price": self._safe_float((rec or {}).get("entry_price"), 0.0) or 0.0,
+                }
+                orphans.append(orphan)
+
+        result["orphans_detected"] = len(orphans)
+        result["orphans"] = orphans
+
+        if orphans:
+            logger.critical(
+                "[RECON-WATCHDOG] Orphan exchange positions detected: count=%s details=%s",
+                len(orphans),
+                orphans,
+            )
+
+        if adopt_orphans and orphans:
+            adopted = 0
+            for orphan in orphans:
+                position_id = self._adopt_exchange_orphan(orphan)
+                if position_id:
+                    adopted += 1
+            if adopted:
+                self._save_positions_snapshot(force=True)
+            result["orphans_adopted"] = adopted
+
+        return result
+
+    async def _fetch_exchange_open_positions(
+        self,
+        exchange_clients: Dict[str, Any],
+        include_records: bool = False,
+    ) -> Dict[str, Any]:
         """Build a lightweight index of open positions from exchanges for reconciliation."""
         index: Dict[Tuple[str, str, str], List[float]] = {}
+        records: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
         try:
             for ex_name, client in exchange_clients.items():
                 ex = str(ex_name or "").lower()
@@ -701,6 +799,18 @@ class AdvancedPositionManager:
                             side = "long" if amt > 0 else "short"
                             key = (ex, symbol, side)
                             index.setdefault(key, []).append(abs(float(amt)))
+                            if include_records:
+                                rec = {
+                                    "exchange": ex,
+                                    "symbol": symbol,
+                                    "side": side,
+                                    "amount": abs(float(amt)),
+                                    "entry_price": self._safe_float(
+                                        pos_data.get("avgPrice") or pos_data.get("entryPrice"),
+                                        0.0,
+                                    ) or 0.0,
+                                }
+                                records.setdefault(key, []).append(rec)
                         except Exception:
                             continue
                     continue
@@ -721,12 +831,24 @@ class AdvancedPositionManager:
                                 side = "long" if amt > 0 else "short"
                             key = (ex, str(symbol), side)
                             index.setdefault(key, []).append(abs(float(amt)))
+                            if include_records:
+                                rec = {
+                                    "exchange": ex,
+                                    "symbol": str(symbol),
+                                    "side": side,
+                                    "amount": abs(float(amt)),
+                                    "entry_price": self._safe_float(pos.get("entryPrice"), 0.0) or 0.0,
+                                }
+                                records.setdefault(key, []).append(rec)
                         except Exception:
                             continue
         except Exception as exc:
             return {"ok": False, "error": str(exc), "index": {}}
 
-        return {"ok": True, "index": index}
+        out: Dict[str, Any] = {"ok": True, "index": index}
+        if include_records:
+            out["records"] = records
+        return out
 
     @staticmethod
     def _match_amount(local_amount: float, candidates: List[float], rel_tol: float = 0.05, abs_tol: float = 1e-12) -> bool:
@@ -772,6 +894,120 @@ class AdvancedPositionManager:
 
         self.pnl_tracker.pop(position_id, None)
         logger.warning("Archived stale position missing on exchange: %s (%s)", position_id, reason)
+
+    def _build_local_open_entries(self) -> List[Dict[str, Any]]:
+        entries: List[Dict[str, Any]] = []
+        for position_id, position in (self.positions or {}).items():
+            try:
+                exchange = str(position.get("exchange") or "").lower().strip()
+                symbol_raw = str(position.get("symbol") or "").strip()
+                raw_side = str(position.get("side") or "").lower().strip()
+                amount = self._safe_float(position.get("amount"), 0.0) or 0.0
+                if not exchange or not symbol_raw or amount <= 0:
+                    continue
+
+                symbol_variants = {symbol_raw}
+                sym_norm = symbol_raw.replace("-", "/")
+                symbol_variants.add(sym_norm)
+                if ":" in sym_norm:
+                    symbol_variants.add(sym_norm.split(":", 1)[0])
+                if "USDT" in sym_norm and ":" not in sym_norm and "/" in sym_norm:
+                    symbol_variants.add(sym_norm + ":USDT")
+                if "/" not in sym_norm and sym_norm.endswith("USDT") and len(sym_norm) > 4:
+                    base = sym_norm[:-4]
+                    symbol_variants.add(f"{base}/USDT")
+                    symbol_variants.add(f"{base}/USDT:USDT")
+
+                side_norm = raw_side
+                if raw_side in self.LONG_SIDES:
+                    side_norm = "long"
+                elif raw_side in self.SHORT_SIDES:
+                    side_norm = "short"
+                side_variants = {s for s in {raw_side, side_norm} if s}
+
+                entries.append(
+                    {
+                        "position_id": str(position_id),
+                        "exchange": exchange,
+                        "amount": abs(float(amount)),
+                        "symbol_variants": symbol_variants,
+                        "side_variants": side_variants,
+                        "used": False,
+                    }
+                )
+            except Exception:
+                continue
+        return entries
+
+    def _adopt_exchange_orphan(self, orphan: Dict[str, Any]) -> Optional[str]:
+        """Adopt an exchange orphan position into local tracking."""
+        try:
+            symbol = str(orphan.get("symbol") or "").strip()
+            exchange = str(orphan.get("exchange") or "").lower().strip()
+            side = str(orphan.get("side") or "").lower().strip()
+            amount = self._safe_float(orphan.get("amount"), 0.0) or 0.0
+            entry_price = self._safe_float(orphan.get("entry_price"), 0.0) or 0.0
+            if not symbol or not exchange or side not in {"long", "short"} or amount <= 0:
+                return None
+
+            safe_symbol = symbol.replace("/", "_").replace(":", "_")
+            position_id = f"orphan_{exchange}_{safe_symbol}_{side}_{int(time.time() * 1000)}"
+            now = datetime.now(timezone.utc)
+            position = {
+                "position_id": position_id,
+                "trade_id": self._generate_trade_id(),
+                "symbol": symbol,
+                "side": side,
+                "entry_price": float(entry_price) if entry_price > 0 else 0.0,
+                "current_price": float(entry_price) if entry_price > 0 else 0.0,
+                "amount": float(amount),
+                "size": float(amount),
+                "initial_amount": float(amount),
+                "stop_loss": 0.0,
+                "take_profit": 0.0,
+                "status": PositionStatus.OPEN.value,
+                "opened_at": now,
+                "entry_time_iso": now.isoformat().replace("+00:00", "Z"),
+                "open_timestamp": time.time(),
+                "strategy": "exchange_orphan_watchdog",
+                "strategy_name": "exchange_orphan_watchdog",
+                "exchange": exchange,
+                "unrealized_pnl": 0.0,
+                "realized_pnl": 0.0,
+                "trailing_stop_enabled": False,
+                "orphan_adopted": True,
+            }
+
+            self.positions[position_id] = position
+            self.pnl_tracker[position_id] = [{
+                "timestamp": now,
+                "price": position["current_price"],
+                "unrealized_pnl": 0.0,
+                "pnl_pct": 0.0,
+            }]
+
+            if getattr(self, "risk_manager", None) and hasattr(self.risk_manager, "register_position"):
+                try:
+                    self.risk_manager.register_position(position_id, dict(position))
+                except Exception:
+                    pass
+            if getattr(self, "portfolio_manager", None) and hasattr(self.portfolio_manager, "register_position"):
+                try:
+                    self.portfolio_manager.register_position(position_id, dict(position))
+                except Exception:
+                    pass
+
+            logger.warning(
+                "[RECON-WATCHDOG] Adopted orphan position: id=%s symbol=%s side=%s amount=%s",
+                position_id,
+                symbol,
+                side,
+                amount,
+            )
+            return position_id
+        except Exception as exc:
+            logger.error("[RECON-WATCHDOG] Failed to adopt orphan: %s (%s)", orphan, exc)
+            return None
 
     def set_dispatch_notifier(self, notifier: Optional[Callable[[], Awaitable[Any]]]) -> None:
         """Register async callback that wakes the coordinator dispatch loop."""
@@ -1820,6 +2056,13 @@ class AdvancedPositionManager:
             risk_usd = risk_per_unit * amount if amount and amount > 0 else 0.0
             opened_at = datetime.now(timezone.utc)
             opened_at_iso = self._isoformat_z(opened_at)
+            entry_slippage_bps = None
+            try:
+                raw_slippage = execution_result.get("slippage")
+                if raw_slippage is not None:
+                    entry_slippage_bps = float(raw_slippage) * 10000.0
+            except (TypeError, ValueError):
+                entry_slippage_bps = None
             position = {
                 'position_id': position_id,
                 'trade_id': self._generate_trade_id(),
@@ -1881,6 +2124,7 @@ class AdvancedPositionManager:
                 'risk_usd': risk_usd,
                 'risk_amount': risk_usd,
                 'position_notional': entry_price * amount if amount else 0.0,
+                'entry_slippage_bps': entry_slippage_bps,
                 'leverage': leverage,
                 'rsi_at_entry': entry_meta.get('rsi_at_entry'),
                 'regime_at_entry': entry_meta.get('regime_at_entry'),
@@ -3145,6 +3389,34 @@ class AdvancedPositionManager:
             regime_data = entry_meta.get('regime_data') or {}
             if not isinstance(regime_data, dict):
                 regime_data = {}
+
+            stop_ref_price = None
+            stop_overshoot_bps = None
+            try:
+                stop_ref_price = self._safe_float(position.get("stop_loss"), None)
+                side_norm = str(side or "").lower().strip()
+                is_long = side_norm in {"buy", "long"}
+                if (
+                    stop_ref_price is not None
+                    and stop_ref_price > 0
+                    and exit_reason in {ExitReason.STOP_LOSS.value, ExitReason.TRAILING_STOP.value}
+                ):
+                    if is_long:
+                        raw_overshoot = ((float(stop_ref_price) - float(exit_price)) / float(stop_ref_price)) * 10000.0
+                    else:
+                        raw_overshoot = ((float(exit_price) - float(stop_ref_price)) / float(stop_ref_price)) * 10000.0
+                    stop_overshoot_bps = max(float(raw_overshoot), 0.0)
+            except Exception:
+                stop_ref_price = None
+                stop_overshoot_bps = None
+
+            entry_slippage_bps = self._safe_float(position.get("entry_slippage_bps"), None)
+            entry_notional_usd = self._safe_float(position.get("position_notional"), None)
+            rr_after_fill = self._safe_float(position.get("rr_after_fill"), None)
+            rr_required = self._safe_float(position.get("rr_required"), None)
+            planned_vs_realized_rr_drift = None
+            if rr_achieved is not None and rr_after_fill is not None:
+                planned_vs_realized_rr_drift = float(rr_achieved) - float(rr_after_fill)
             payload = {
                 'event': 'TRADE_CLOSED',
                 'timestamp': exit_time_iso or self._isoformat_z(datetime.now(timezone.utc)),
@@ -3184,7 +3456,18 @@ class AdvancedPositionManager:
                 'prod_canary_0_abort_reason': position.get('prod_canary_0_abort_reason'),
                 'rr': rr_achieved,
                 'rr_achieved': rr_achieved,
+                'rr_after_fill': round(rr_after_fill, 4) if rr_after_fill is not None else None,
+                'rr_required': round(rr_required, 4) if rr_required is not None else None,
+                'planned_vs_realized_rr_drift': (
+                    round(planned_vs_realized_rr_drift, 4)
+                    if planned_vs_realized_rr_drift is not None
+                    else None
+                ),
                 'duration_min': duration_min,
+                'entry_slippage_bps': round(entry_slippage_bps, 4) if entry_slippage_bps is not None else None,
+                'entry_notional_usd': round(entry_notional_usd, 4) if entry_notional_usd is not None else None,
+                'stop_ref_price': round(stop_ref_price, 4) if stop_ref_price is not None else None,
+                'stop_overshoot_bps': round(stop_overshoot_bps, 4) if stop_overshoot_bps is not None else None,
                 'rsi_at_entry': position.get('rsi_at_entry'),
                 'regime_at_entry': position.get('regime_at_entry'),
                 'regime_conf': position.get('regime_confidence'),

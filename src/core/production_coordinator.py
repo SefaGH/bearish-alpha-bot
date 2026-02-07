@@ -557,6 +557,38 @@ class ProductionCoordinator:
                 logger.warning(f"Skipping {symbol} due to missing primary (30m) data.")
                 return None
 
+            shock_snapshot = None
+            shock_state = None
+            shock_score = None
+            try:
+                if isinstance(self.strategies, dict):
+                    for name, instance in self.strategies.items():
+                        if (name == "adaptive_ob") or (getattr(instance, "strategy_name", "") == "adaptive_ob"):
+                            try:
+                                if hasattr(instance, "update_dyn_gate"):
+                                    instance.update_dyn_gate(
+                                        symbol=symbol,
+                                        df_30m=df_30m,
+                                        now_ms=int(time.time() * 1000),
+                                        slow_fallback_reason=None,
+                                    )
+                            except Exception:
+                                pass
+                            try:
+                                if hasattr(instance, "get_dyn_gate_snapshot"):
+                                    snap = instance.get_dyn_gate_snapshot(symbol)
+                                    if isinstance(snap, dict):
+                                        shock_snapshot = snap
+                                        shock_state = snap.get("state")
+                                        shock_score = snap.get("shock_score")
+                            except Exception:
+                                pass
+                            break
+            except Exception:
+                shock_snapshot = None
+                shock_state = None
+                shock_score = None
+
             # 3. ML Context Generation (NEW)
             ml_context = None
             if hasattr(self, 'ml_integration') and self.ml_integration:
@@ -605,12 +637,14 @@ class ProductionCoordinator:
                     except Exception:
                         trend_strength = 0.0
                     logger.info(
-                        "[REGIME] %s | Trend=%s | Trend Strength (ADX)=%.1f | Vol=%s | Momentum=%s",
+                        "[REGIME] %s | Trend=%s | ADX=%.1f | Vol=%s | Momentum=%s | Shock=%s | ShockScore=%s",
                         symbol,
                         str(regime.get("trend", "neutral")).upper(),
                         trend_strength,
                         regime.get("volatility", "normal"),
                         regime.get("momentum", "sideways"),
+                        str(shock_state or "NA"),
+                        f"{float(shock_score):.2f}" if shock_score is not None else "NA",
                     )
                     metadata = {'regime': regime}
                 except Exception as e:
@@ -628,6 +662,8 @@ class ProductionCoordinator:
                         regime_data=metadata.get('regime'), 
                         symbol=symbol,
                         market_data=market_data,
+                        shock_state=shock_state,
+                        shock_score=shock_score,
                         ml_context=ml_context  # <<< YENİ: ML Context parametresi
                     )
                     
@@ -1011,6 +1047,7 @@ class ProductionCoordinator:
                     if df_30m is None or df_30m.empty:
                         raise RuntimeError("30m OHLCV unavailable: both hybrid and closed are empty/None")
                     df_1h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "1h")
+                    df_4h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "4h")
                     if mtf_15m_enabled:
                         df_15m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "15m")
 
@@ -1058,6 +1095,7 @@ class ProductionCoordinator:
                 '30m_closed': df_30m_closed,
                 '30m_hybrid': df_30m_hybrid,
                 '1h': df_1h,
+                '4h': df_4h,
                 'shock': shock_snapshot,
             }
             if df_1m is not None:
@@ -1068,6 +1106,29 @@ class ProductionCoordinator:
                 market_data["df_5m"] = df_5m
             if mtf_15m_enabled:
                 market_data['15m'] = df_15m
+
+            regime_data = None
+            try:
+                if self.market_regime_analyzer and df_30m is not None and df_1h is not None and df_4h is not None:
+                    regime_data = self.market_regime_analyzer.analyze_market_regime(df_30m, df_1h, df_4h)
+                    try:
+                        trend_strength = float(regime_data.get("trend_strength", 0.0) or 0.0) if isinstance(regime_data, dict) else 0.0
+                    except Exception:
+                        trend_strength = 0.0
+                    shock_state = shock_snapshot.get("state") if isinstance(shock_snapshot, dict) else None
+                    shock_score = shock_snapshot.get("shock_score") if isinstance(shock_snapshot, dict) else None
+                    logger.info(
+                        "[REGIME] %s | Trend=%s | ADX=%.1f | Vol=%s | Momentum=%s | Shock=%s | ShockScore=%s",
+                        symbol,
+                        str((regime_data or {}).get("trend", "neutral")).upper(),
+                        trend_strength,
+                        (regime_data or {}).get("volatility", "normal"),
+                        (regime_data or {}).get("momentum", "sideways"),
+                        str(shock_state or "NA"),
+                        f"{float(shock_score):.2f}" if shock_score is not None else "NA",
+                    )
+            except Exception as exc:
+                logger.warning("[REGIME] Regime analysis failed for %s: %s", symbol, exc)
 
             mr_market_data_base = None
             if mean_reversion_instance is not None and self.market_data_pipeline:
@@ -1146,10 +1207,13 @@ class ProductionCoordinator:
                         signal_kwargs = {
                             'df_30m': strategy_df_30m,
                             'df_1h': df_1h,
-                            'regime_data': ml_context,  # Pass the entire context
+                            'regime_data': regime_data,
                             'symbol': symbol,
                             'ml_context': ml_context,  # Pass it again for explicit clarity
                         }
+                        if isinstance(shock_snapshot, dict):
+                            signal_kwargs["shock_state"] = shock_snapshot.get("state")
+                            signal_kwargs["shock_score"] = shock_snapshot.get("shock_score")
                         if market_data is not None:
                             try:
                                 if 'market_data' in inspect.signature(strategy_instance.signal).parameters:
@@ -1726,10 +1790,13 @@ class ProductionCoordinator:
                 str(strategy).strip().lower() == "mean_reversion"
             )
 
+            regime_data = None
+            shock_state = None
+            shock_score = None
             signal_kwargs: Dict[str, Any] = {
                 "symbol": symbol,
                 "ml_context": ml_context,
-                "regime_data": ml_context,
+                "regime_data": regime_data,
             }
             if parent_pending_id_str:
                 signal_kwargs["parent_pending_id"] = parent_pending_id_str
@@ -1746,6 +1813,7 @@ class ProductionCoordinator:
             df_30m_closed = None
             df_30m_hybrid = None
             df_1h = None
+            df_4h = None
             df_1m = None
             df_5m = None
             if not is_mean_reversion:
@@ -1782,6 +1850,7 @@ class ProductionCoordinator:
                     df_30m_hybrid = None
 
                 df_1h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "1h", limit=limit_1h)
+                df_4h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "4h", limit=limit_1h)
                 if df_1h is None or getattr(df_1h, "empty", False):
                     error_code = "missing_ohlcv_1h"
                     return {"dispatched": False, "rearm_fast_watch": False} if return_detail else False
@@ -1815,6 +1884,43 @@ class ProductionCoordinator:
                          "df_1h": df_1h,
                     }
                 )
+
+                if self.market_regime_analyzer and df_1h is not None and df_4h is not None and strategy_df_30m is not None:
+                    try:
+                        regime_data = self.market_regime_analyzer.analyze_market_regime(strategy_df_30m, df_1h, df_4h)
+                        signal_kwargs["regime_data"] = regime_data
+                    except Exception:
+                        pass
+
+                if isinstance(self.strategies, dict) and strategy_df_30m is not None:
+                    try:
+                        for name, instance in self.strategies.items():
+                            if (name == "adaptive_ob") or (getattr(instance, "strategy_name", "") == "adaptive_ob"):
+                                if hasattr(instance, "update_dyn_gate"):
+                                    try:
+                                        instance.update_dyn_gate(
+                                            symbol=symbol,
+                                            df_30m=strategy_df_30m,
+                                            now_ms=int(time.time() * 1000),
+                                            slow_fallback_reason=None,
+                                        )
+                                    except Exception:
+                                        pass
+                                if hasattr(instance, "get_dyn_gate_snapshot"):
+                                    try:
+                                        snap = instance.get_dyn_gate_snapshot(symbol)
+                                        if isinstance(snap, dict):
+                                            shock_state = snap.get("state")
+                                            shock_score = snap.get("shock_score")
+                                    except Exception:
+                                        pass
+                                break
+                    except Exception:
+                        pass
+                if shock_state is not None:
+                    signal_kwargs["shock_state"] = shock_state
+                if shock_score is not None:
+                    signal_kwargs["shock_score"] = shock_score
             else:
                 vwap_tf = getattr(strategy_instance, "vwap_tf", None) or "1m"
                 signal_tf = getattr(strategy_instance, "signal_tf", None) or "5m"
@@ -1863,6 +1969,52 @@ class ProductionCoordinator:
                     rows_returned_by_tf[signal_tf_str] = 0
 
                 signal_kwargs.update({"df_vwap": df_vwap, "df_sig": df_sig})
+
+                if self.market_regime_analyzer and self.market_data_pipeline:
+                    try:
+                        regime_limit = 250
+                        df_reg_30m = await self.market_data_pipeline.get_latest_ohlcv(
+                            symbol, "30m", limit=regime_limit, include_forming=False
+                        )
+                        df_reg_1h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "1h", limit=regime_limit)
+                        df_reg_4h = await self.market_data_pipeline.get_latest_ohlcv(symbol, "4h", limit=regime_limit)
+                        if df_reg_30m is not None and df_reg_1h is not None and df_reg_4h is not None:
+                            regime_data = self.market_regime_analyzer.analyze_market_regime(
+                                df_reg_30m, df_reg_1h, df_reg_4h
+                            )
+                            signal_kwargs["regime_data"] = regime_data
+                    except Exception:
+                        pass
+
+                if isinstance(self.strategies, dict):
+                    try:
+                        for name, instance in self.strategies.items():
+                            if (name == "adaptive_ob") or (getattr(instance, "strategy_name", "") == "adaptive_ob"):
+                                if hasattr(instance, "update_dyn_gate") and "df_reg_30m" in locals():
+                                    try:
+                                        instance.update_dyn_gate(
+                                            symbol=symbol,
+                                            df_30m=df_reg_30m,
+                                            now_ms=int(time.time() * 1000),
+                                            slow_fallback_reason=None,
+                                        )
+                                    except Exception:
+                                        pass
+                                if hasattr(instance, "get_dyn_gate_snapshot"):
+                                    try:
+                                        snap = instance.get_dyn_gate_snapshot(symbol)
+                                        if isinstance(snap, dict):
+                                            shock_state = snap.get("state")
+                                            shock_score = snap.get("shock_score")
+                                    except Exception:
+                                        pass
+                                break
+                    except Exception:
+                        pass
+                if shock_state is not None:
+                    signal_kwargs["shock_state"] = shock_state
+                if shock_score is not None:
+                    signal_kwargs["shock_score"] = shock_score
 
             try:
                 if "market_data" in inspect.signature(strategy_instance.signal).parameters:

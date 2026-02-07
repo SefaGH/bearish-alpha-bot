@@ -1159,6 +1159,30 @@ class StrategyCoordinator:
             if not strategy_name or not symbol or not side:
                 return
 
+            # MeanReversion reentry guard (VWAP reclaim after stop-loss on longs)
+            try:
+                if str(strategy_name).strip().lower() == "mean_reversion" and side == "long":
+                    pm = getattr(self, "portfolio_manager", None)
+                    strategies = getattr(pm, "strategies", None) if pm is not None else None
+                    if isinstance(strategies, dict):
+                        mr_instance = None
+                        for name, instance in strategies.items():
+                            if (str(name).strip().lower() == "mean_reversion") or (
+                                getattr(instance, "strategy_name", "") == "mean_reversion"
+                            ):
+                                mr_instance = instance
+                                break
+                        if mr_instance and hasattr(mr_instance, "arm_reentry_guard"):
+                            mr_instance.arm_reentry_guard(str(symbol))
+                            logger.info(
+                                "[MR-GUARD] Armed VWAP reclaim guard | strategy=%s symbol=%s side=%s",
+                                strategy_name,
+                                symbol,
+                                side,
+                            )
+            except Exception:
+                pass
+
             crash_cfg = self._get_crash_guard_cfg(str(strategy_name))
             if not bool(crash_cfg.get("enabled", False)):
                 return

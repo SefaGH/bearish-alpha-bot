@@ -72,7 +72,6 @@ def main() -> int:
     required_env_vars = [
         'BINGX_KEY',
         'BINGX_SECRET',
-        'CAPITAL_USDT',
         'TRADING_MODE',
         'EXCHANGES',
     ]

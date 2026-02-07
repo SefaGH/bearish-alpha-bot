@@ -136,6 +136,22 @@ def _is_transient_ccxt_error(exc: Exception) -> bool:
     return isinstance(exc, fallback_types) if fallback_types else False
 
 
+def _coerce_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"1", "true", "yes", "on"}:
+            return True
+        if v in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
 class OrderStatus(Enum):
     """Order status enumeration."""
     PENDING = 'pending'
@@ -179,6 +195,7 @@ class SmartOrderManager:
         self.active_orders = {}  # order_id -> order_data
         self.order_queue = asyncio.Queue()
         self.order_history = []
+        self._fallback_locks: Dict[str, asyncio.Lock] = {}
         
         # Execution algorithms
         self.execution_algorithms = {
@@ -237,6 +254,8 @@ class SmartOrderManager:
         """
         try:
             start_time = time.time()
+            env_forced_order_type = None
+            requested_execution_algo = str(execution_algo or "").lower().strip()
             
             logger.info(f"Placing order: {order_request.get('symbol')} {order_request.get('side')} "
                        f"{order_request.get('amount')} using {execution_algo} algorithm")
@@ -266,6 +285,7 @@ class SmartOrderManager:
                 if requested != "market" and is_vst_fullbot_canary_force_market():
                     logger.warning("[VST-FULLBOT-CANARY] Forcing MARKET execution (requested=%s)", execution_algo)
                     execution_algo = "market"
+                    env_forced_order_type = "market"
 
             # Select execution algorithm
             exec_func = self.execution_algorithms.get(execution_algo, self._limit_order_execution)
@@ -285,7 +305,10 @@ class SmartOrderManager:
                 
                 # Check if we should retry based on reason
                 reason = result.get('reason', '').lower()
-                is_transient = any(x in reason for x in ['timeout', 'connection', 'rate limit', '500', '502', '503', '504', 'network', 'reset'])
+                is_abort = reason.startswith("abort:")
+                is_transient = (not is_abort) and any(
+                    x in reason for x in ['timeout', 'connection', 'rate limit', '500', '502', '503', '504', 'network', 'reset']
+                )
                 
                 if not is_transient or attempt == max_retries - 1:
                     break
@@ -295,6 +318,31 @@ class SmartOrderManager:
                 await asyncio.sleep(wait_time)
             
             logger.debug(f"🎪 [ORDER-MGR] Execution result: {'SUCCESS' if result and result.get('success') else 'FAILED'}")
+
+            if isinstance(result, dict):
+                execution_time_ms = int(max((time.time() - start_time) * 1000.0, 0.0))
+                result.setdefault("requested_execution_algo", requested_execution_algo)
+                result.setdefault("effective_execution_algo", str(execution_algo or "").lower().strip())
+                result.setdefault("time_to_fill_ms", execution_time_ms)
+                if env_forced_order_type:
+                    result.setdefault("env_forced_order_type", env_forced_order_type)
+
+                logger.info(
+                    "order_manager_decision %s",
+                    {
+                        "event": "order_manager_decision",
+                        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        "symbol": order_request.get("symbol"),
+                        "side": order_request.get("side"),
+                        "requested_execution_algo": requested_execution_algo,
+                        "effective_execution_algo": result.get("effective_execution_algo"),
+                        "env_forced_order_type": result.get("env_forced_order_type"),
+                        "fallback_reason": result.get("fallback_reason"),
+                        "time_to_fill_ms": result.get("time_to_fill_ms"),
+                        "success": bool(result.get("success")),
+                        "reason": result.get("reason"),
+                    },
+                )
             
             # Update statistics
             self.execution_stats['total_orders'] += 1
@@ -401,6 +449,121 @@ class SmartOrderManager:
             Order status information or None if not found
         """
         return self.active_orders.get(order_id)
+
+    def _get_fallback_lock(self, key: str) -> asyncio.Lock:
+        lock = self._fallback_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._fallback_locks[key] = lock
+        return lock
+
+    def _fallback_lock_key(self, *, exchange: str, symbol: str, side: str, ccxt_params: Dict[str, Any]) -> str:
+        pos_side = ccxt_params.get("positionSide") or ccxt_params.get("position_side") or ""
+        return f"{str(exchange).lower()}::{str(symbol).upper()}::{str(side).lower()}::{str(pos_side).upper()}"
+
+    def _extract_position_qty_for_side(self, *, position: Dict[str, Any], symbol: str, normalized_side: str, pos_side_hint: str) -> Optional[float]:
+        if not isinstance(position, dict):
+            return None
+        pos_symbol = str(position.get("symbol") or position.get("market") or "").upper().strip()
+        if pos_symbol and str(symbol).upper().strip() not in {pos_symbol, pos_symbol.replace(":", "/")}:
+            return None
+
+        raw_side = (
+            position.get("side")
+            or position.get("positionSide")
+            or position.get("position_side")
+            or (position.get("info") or {}).get("positionSide")
+        )
+        side_norm = str(raw_side or "").lower().strip()
+        if side_norm == "long":
+            side_norm = "buy"
+        elif side_norm == "short":
+            side_norm = "sell"
+
+        qty = None
+        for key in ("contracts", "positionAmt", "position_amt", "amount", "size", "qty"):
+            if key in position:
+                try:
+                    qty = float(position.get(key) or 0.0)
+                    break
+                except Exception:
+                    qty = None
+        if qty is None:
+            info = position.get("info")
+            if isinstance(info, dict):
+                for key in ("positionAmt", "position_amt", "amount", "size", "qty"):
+                    if key in info:
+                        try:
+                            qty = float(info.get(key) or 0.0)
+                            break
+                        except Exception:
+                            qty = None
+
+        if qty is None:
+            return None
+
+        qty_abs = abs(float(qty))
+        target_pos_side = "long" if normalized_side == "buy" else "short"
+        target_bingx_side = "LONG" if normalized_side == "buy" else "SHORT"
+
+        if pos_side_hint:
+            hint = str(pos_side_hint).upper().strip()
+            if hint in {"LONG", "SHORT"}:
+                return qty_abs if hint == target_bingx_side else 0.0
+
+        if side_norm in {"buy", "sell"}:
+            return qty_abs if side_norm == normalized_side else 0.0
+        if side_norm in {"long", "short"}:
+            return qty_abs if side_norm == target_pos_side else 0.0
+
+        # One-way/net mode fallback when explicit side is unavailable.
+        if qty >= 0 and normalized_side == "buy":
+            return qty_abs
+        if qty <= 0 and normalized_side == "sell":
+            return qty_abs
+        return 0.0
+
+    def _fetch_position_qty_for_side(self, *, client: Any, symbol: str, normalized_side: str, ccxt_params: Dict[str, Any]) -> Optional[float]:
+        pos_side_hint = str(ccxt_params.get("positionSide") or ccxt_params.get("position_side") or "").strip()
+
+        entries: List[Dict[str, Any]] = []
+        if callable(getattr(client, "fetch_positions", None)):
+            try:
+                fetched = client.fetch_positions([symbol], params={})
+                if isinstance(fetched, list):
+                    entries.extend([p for p in fetched if isinstance(p, dict)])
+            except Exception:
+                pass
+
+        if not entries and callable(getattr(client, "fetch_position", None)):
+            try:
+                one = client.fetch_position(symbol, params={})
+                if isinstance(one, dict):
+                    entries.append(one)
+                elif isinstance(one, list):
+                    entries.extend([p for p in one if isinstance(p, dict)])
+            except Exception:
+                pass
+
+        if not entries:
+            return None
+
+        total = 0.0
+        any_data = False
+        for p in entries:
+            q = self._extract_position_qty_for_side(
+                position=p,
+                symbol=symbol,
+                normalized_side=normalized_side,
+                pos_side_hint=pos_side_hint,
+            )
+            if q is None:
+                continue
+            any_data = True
+            total += max(float(q), 0.0)
+        if not any_data:
+            return None
+        return float(total)
     
     def _validate_order_request(self, order_request: Dict, clients_to_use: Optional[Dict] = None) -> Dict[str, Any]:
         """Validate order request format and parameters.
@@ -778,6 +941,19 @@ class SmartOrderManager:
                 if normalized_side not in {"buy", "sell"}:
                     return {'success': False, 'reason': f"REJECT:INVALID_SIDE:{side}", 'order_id': None}
 
+                preflight_enabled = _coerce_bool(execution_params.get("fallback_preflight_position_check_enabled"))
+                if preflight_enabled is None:
+                    preflight_enabled = True
+                reduce_only = bool(ccxt_params.get("reduceOnly") or ccxt_params.get("reduce_only"))
+                baseline_position_qty = None
+                if preflight_enabled and (not reduce_only):
+                    baseline_position_qty = self._fetch_position_qty_for_side(
+                        client=client,
+                        symbol=symbol,
+                        normalized_side=normalized_side,
+                        ccxt_params=ccxt_params,
+                    )
+
                 # Parameters: allow optional timeInForce in ccxt_params if provided by caller.
                 logger.warning(f"🟢 [REAL EXECUTION] Submitting LIMIT order via CCXT ({exchange})")
 
@@ -982,60 +1158,77 @@ class SmartOrderManager:
                     else:
                         deviation_bps = (1.0 - current_px / ref_px) * 10000.0
 
-                # Cancel the resting limit order (best-effort) before any fallback.
-                try:
-                    client.cancel_order(exchange_order_id, symbol, params={})
-                except Exception:
-                    pass
-
-                # If we can confirm the order filled during cancel race, do not market-fallback.
-                if callable(getattr(client, "fetch_order", None)):
+                lock_key = self._fallback_lock_key(
+                    exchange=exchange,
+                    symbol=symbol,
+                    side=normalized_side,
+                    ccxt_params=ccxt_params,
+                )
+                fallback_lock = self._get_fallback_lock(lock_key)
+                async with fallback_lock:
+                    # Cancel the resting limit order (best-effort) before any fallback.
                     try:
-                        post_cancel = client.fetch_order(exchange_order_id, symbol, params={})
+                        client.cancel_order(exchange_order_id, symbol, params={})
                     except Exception:
-                        post_cancel = None
-                    if post_cancel and _is_filled(post_cancel):
-                        avg_fill_price = post_cancel.get("average") or post_cancel.get("price") or limit_price
-                        filled_amount = post_cancel.get("filled") or post_cancel.get("amount") or amount
+                        pass
+
+                    post_cancel = None
+                    post_cancel_filled_qty = 0.0
+
+                    # If we can confirm the order filled during cancel race, do not market-fallback.
+                    if callable(getattr(client, "fetch_order", None)):
                         try:
-                            avg_fill_price = float(avg_fill_price or 0)
+                            post_cancel = client.fetch_order(exchange_order_id, symbol, params={})
                         except Exception:
-                            avg_fill_price = float(limit_price)
-                        try:
-                            filled_amount = float(filled_amount or 0)
-                        except Exception:
-                            filled_amount = float(amount or 0)
-                        slippage = 0.0
-                        if reference_price > 0 and avg_fill_price > 0:
-                            slippage = abs(avg_fill_price - reference_price) / reference_price
-                        self.execution_stats['total_slippage'] += slippage
-                        order = {
-                            'order_id': exchange_order_id,
-                            'symbol': symbol,
-                            'side': normalized_side,
-                            'amount': amount,
-                            'type': 'limit',
-                            'limit_price': limit_price,
-                            'exchange': exchange,
-                            'expected_price': reference_price if reference_price > 0 else limit_price,
-                            'status': (post_cancel.get("status") or OrderStatus.FILLED.value),
-                            'created_at': datetime.now(timezone.utc),
-                            'filled_amount': filled_amount,
-                            'avg_fill_price': avg_fill_price,
-                            'filled_at': datetime.now(timezone.utc),
-                            'slippage': slippage,
-                            'ccxt_params': ccxt_params,
-                            'exchange_order': post_cancel,
-                        }
-                        self.active_orders[exchange_order_id] = order
-                        return {
-                            'success': True,
-                            'order_id': exchange_order_id,
-                            'filled_amount': filled_amount,
-                            'avg_price': avg_fill_price,
-                            'slippage': slippage,
-                            'order': order,
-                        }
+                            post_cancel = None
+                        if post_cancel and _is_filled(post_cancel):
+                            avg_fill_price = post_cancel.get("average") or post_cancel.get("price") or limit_price
+                            filled_amount = post_cancel.get("filled") or post_cancel.get("amount") or amount
+                            try:
+                                avg_fill_price = float(avg_fill_price or 0)
+                            except Exception:
+                                avg_fill_price = float(limit_price)
+                            try:
+                                filled_amount = float(filled_amount or 0)
+                            except Exception:
+                                filled_amount = float(amount or 0)
+                            slippage = 0.0
+                            if reference_price > 0 and avg_fill_price > 0:
+                                slippage = abs(avg_fill_price - reference_price) / reference_price
+                            self.execution_stats['total_slippage'] += slippage
+                            order = {
+                                'order_id': exchange_order_id,
+                                'symbol': symbol,
+                                'side': normalized_side,
+                                'amount': amount,
+                                'type': 'limit',
+                                'limit_price': limit_price,
+                                'exchange': exchange,
+                                'expected_price': reference_price if reference_price > 0 else limit_price,
+                                'status': (post_cancel.get("status") or OrderStatus.FILLED.value),
+                                'created_at': datetime.now(timezone.utc),
+                                'filled_amount': filled_amount,
+                                'avg_fill_price': avg_fill_price,
+                                'filled_at': datetime.now(timezone.utc),
+                                'slippage': slippage,
+                                'ccxt_params': ccxt_params,
+                                'exchange_order': post_cancel,
+                            }
+                            self.active_orders[exchange_order_id] = order
+                            return {
+                                'success': True,
+                                'order_id': exchange_order_id,
+                                'filled_amount': filled_amount,
+                                'avg_price': avg_fill_price,
+                                'slippage': slippage,
+                                'order': order,
+                            }
+
+                        if isinstance(post_cancel, dict):
+                            try:
+                                post_cancel_filled_qty = max(float(post_cancel.get("filled") or 0.0), 0.0)
+                            except Exception:
+                                post_cancel_filled_qty = 0.0
 
                 # Chase gate: negative deviation means price improved vs reference => always allow.
                 if deviation_bps is not None and deviation_bps <= 0:
@@ -1048,13 +1241,174 @@ class SmartOrderManager:
                         'order_id': exchange_order_id,
                     }
 
-                # Market fallback
-                fallback_enabled = bool(execution_params.get("market_fallback") or execution_params.get("fallback_market") or True)
-                if not fallback_enabled:
-                    return {'success': False, 'reason': 'ABORT:NO_FILL_TIMEOUT', 'order_id': exchange_order_id}
+                # Market fallback (timeout): explicit flags first, then optional risk-regime overrides.
+                fallback_enabled = True
+                fallback_source = "default_true"
+                for key in (
+                    "market_fallback_on_timeout_enabled",
+                    "market_fallback_on_timeout",
+                    "market_fallback",
+                    "fallback_market",
+                ):
+                    parsed = _coerce_bool(execution_params.get(key))
+                    if parsed is not None:
+                        fallback_enabled = bool(parsed)
+                        fallback_source = key
+                        break
 
-                # Place market order as fallback (single point of truth)
-                return await self._market_order_execution(order_request, clients_to_use)
+                bucket = str(signal.get("volume_bucket") or "").upper().strip()
+                disable_on_extreme = _coerce_bool(execution_params.get("disable_market_fallback_on_extreme_bucket"))
+                disable_on_fast_move = _coerce_bool(execution_params.get("disable_market_fallback_on_fast_move"))
+
+                meta = signal.get("meta") if isinstance(signal.get("meta"), dict) else {}
+                reason_code = str(meta.get("reason_code") or "").lower().strip()
+                price_moved_fast = bool(
+                    _coerce_bool(execution_params.get("price_moved_fast"))
+                    or _coerce_bool(signal.get("price_moved_fast"))
+                    or reason_code == "price_moved_fast"
+                )
+
+                fallback_block_reason = None
+                if bool(disable_on_extreme) and bucket == "EXTREME":
+                    fallback_enabled = False
+                    fallback_block_reason = "extreme_bucket"
+                elif bool(disable_on_fast_move) and price_moved_fast:
+                    fallback_enabled = False
+                    fallback_block_reason = "price_moved_fast"
+                current_position_qty = None
+                position_delta_qty = None
+                if preflight_enabled and baseline_position_qty is not None and (not reduce_only):
+                    settle_ms = execution_params.get("fallback_cancel_settle_ms")
+                    checks = execution_params.get("fallback_settle_checks")
+                    try:
+                        settle_ms = int(settle_ms if settle_ms is not None else 1000)
+                    except Exception:
+                        settle_ms = 1000
+                    try:
+                        checks = int(checks if checks is not None else 2)
+                    except Exception:
+                        checks = 2
+                    if checks <= 0:
+                        checks = 1
+                    if settle_ms < 0:
+                        settle_ms = 0
+                    delay_s = (float(settle_ms) / 1000.0) / float(checks)
+                    observed_qty = None
+                    for i in range(checks):
+                        q = self._fetch_position_qty_for_side(
+                            client=client,
+                            symbol=symbol,
+                            normalized_side=normalized_side,
+                            ccxt_params=ccxt_params,
+                        )
+                        if q is not None:
+                            observed_qty = float(q)
+                        if i < checks - 1 and delay_s > 0:
+                            await asyncio.sleep(delay_s)
+                    current_position_qty = observed_qty
+                    if current_position_qty is not None:
+                        position_delta_qty = max(float(current_position_qty) - float(baseline_position_qty), 0.0)
+
+                observed_filled_qty = max(float(post_cancel_filled_qty or 0.0), float(position_delta_qty or 0.0))
+                try:
+                    requested_amount = max(float(amount or 0.0), 0.0)
+                except Exception:
+                    requested_amount = 0.0
+
+                min_residual_qty = execution_params.get("fallback_min_residual_qty")
+                if min_residual_qty is None:
+                    min_residual_qty = 1e-8
+                try:
+                    min_residual_qty = max(float(min_residual_qty), 0.0)
+                except Exception:
+                    min_residual_qty = 1e-8
+
+                remaining_qty = max(requested_amount - observed_filled_qty, 0.0)
+
+                if observed_filled_qty > 0.0 and remaining_qty <= min_residual_qty:
+                    logger.info(
+                        "[ORDER-FALLBACK] skip market due to observed fill symbol=%s side=%s baseline_qty=%s current_qty=%s observed_filled=%s",
+                        symbol,
+                        side,
+                        baseline_position_qty,
+                        current_position_qty,
+                        observed_filled_qty,
+                    )
+                    synthetic_avg = float(limit_price)
+                    synthetic_slippage = 0.0
+                    if reference_price > 0 and synthetic_avg > 0:
+                        synthetic_slippage = abs(synthetic_avg - reference_price) / reference_price
+                    return {
+                        'success': True,
+                        'order_id': exchange_order_id,
+                        'filled_amount': float(observed_filled_qty),
+                        'avg_price': synthetic_avg,
+                        'slippage': synthetic_slippage,
+                        'fallback_reason': 'limit_timeout_skip_market_position_delta',
+                        'requested_order_type': 'limit',
+                        'effective_order_type': 'limit',
+                        'baseline_position_qty': baseline_position_qty,
+                        'current_position_qty': current_position_qty,
+                    }
+
+                if not fallback_enabled:
+                    logger.info(
+                        "[ORDER-FALLBACK] skipped symbol=%s side=%s source=%s block_reason=%s bucket=%s",
+                        symbol,
+                        side,
+                        fallback_source,
+                        fallback_block_reason or "disabled_by_flag",
+                        bucket or "n/a",
+                    )
+                    return {
+                        'success': False,
+                        'reason': 'ABORT:NO_FILL_TIMEOUT',
+                        'order_id': exchange_order_id,
+                        'fallback_reason': (
+                            f"limit_timeout_market_fallback_disabled:{fallback_block_reason}"
+                            if fallback_block_reason
+                            else "limit_timeout_market_fallback_disabled:flag"
+                        ),
+                        'requested_order_type': 'limit',
+                        'effective_order_type': 'limit',
+                    }
+
+                if remaining_qty <= min_residual_qty:
+                    return {
+                        'success': False,
+                        'reason': 'ABORT:NO_FILL_TIMEOUT',
+                        'order_id': exchange_order_id,
+                        'fallback_reason': 'limit_timeout_market_fallback_skipped_no_residual',
+                        'requested_order_type': 'limit',
+                        'effective_order_type': 'limit',
+                    }
+
+                # Place market order as fallback only for residual amount.
+                logger.info(
+                    "[ORDER-FALLBACK] limit_timeout_market_fallback symbol=%s side=%s deviation_bps=%s max_chase_bps=%s residual_qty=%.8f observed_filled=%.8f",
+                    symbol,
+                    side,
+                    f"{deviation_bps:.2f}" if deviation_bps is not None else "n/a",
+                    f"{max_chase_bps:.2f}" if max_chase_bps is not None else "n/a",
+                    float(remaining_qty),
+                    float(observed_filled_qty),
+                )
+                fallback_order_request = dict(order_request)
+                fallback_order_request['amount'] = float(remaining_qty)
+                fallback_result = await self._market_order_execution(fallback_order_request, clients_to_use)
+                if isinstance(fallback_result, dict):
+                    fallback_result.setdefault("fallback_reason", "limit_timeout_market_fallback")
+                    fallback_result.setdefault("requested_order_type", "limit")
+                    fallback_result.setdefault("effective_order_type", "market")
+                    fallback_result.setdefault("fallback_residual_qty", float(remaining_qty))
+                    fallback_result.setdefault("observed_filled_qty", float(observed_filled_qty))
+                    fallback_result.setdefault("baseline_position_qty", baseline_position_qty)
+                    fallback_result.setdefault("current_position_qty", current_position_qty)
+                    if deviation_bps is not None:
+                        fallback_result.setdefault("deviation_bps", float(deviation_bps))
+                    if max_chase_bps is not None:
+                        fallback_result.setdefault("max_chase_bps", float(max_chase_bps))
+                return fallback_result
             
         except Exception as e:
             _log_rest_debug(f"LIMIT/{exchange}/{symbol}", e)

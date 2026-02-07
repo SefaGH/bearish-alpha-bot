@@ -392,6 +392,17 @@ class VWAPMeanReversion(BaseStrategy):
         self._rsi_guard_state_by_symbol: Dict[str, str] = {}
         self._rsi_guard_armed_ts_ms_by_symbol: Dict[str, int] = {}
 
+        reentry_cfg = cfg.get("reentry_guard", {})
+        if reentry_cfg is not None and not isinstance(reentry_cfg, dict):
+            logger.warning("[MeanReversion] reentry_guard config must be a dict; disabling guard.")
+            reentry_cfg = {}
+        reentry_cfg = dict(reentry_cfg) if isinstance(reentry_cfg, dict) else {}
+        self._reentry_guard_enabled = bool(reentry_cfg.get("enabled", True))
+        self._reentry_guard_require_vwap_reclaim = bool(
+            reentry_cfg.get("require_vwap_reclaim_after_stop", True)
+        )
+        self._reentry_guard_by_symbol: Dict[str, bool] = {}
+
         if self.vwap_lookback > 1000:
             logger.warning(
                 f"[MeanReversion] High Lookback detected (L={self.vwap_lookback}). "
@@ -403,6 +414,17 @@ class VWAPMeanReversion(BaseStrategy):
             self.signal = self._default_signal_wrapper  # type: ignore
         assert callable(getattr(self, "signal", None)), "MeanReversion: signal method not callable"
         print("MeanReversion: signal method bound successfully")
+
+    def arm_reentry_guard(self, symbol: str) -> None:
+        if not self._reentry_guard_enabled:
+            return
+        try:
+            sym = str(symbol or "").strip()
+        except Exception:
+            return
+        if not sym:
+            return
+        self._reentry_guard_by_symbol[sym] = True
 
     async def _ensure_trade_wiring(self, symbol: str) -> None:
         """Ensure BingX @trade subscription + callback registration (best effort, non-fatal)."""
@@ -588,6 +610,15 @@ class VWAPMeanReversion(BaseStrategy):
         pending_id = kwargs.get("pending_id") or parent_pending_id
         side_hint = kwargs.get("side")
         timeframe_hint = kwargs.get("timeframe") or kwargs.get("tf") or self.signal_tf
+        regime_data = kwargs.get("regime_data") or kwargs.get("regime")
+        if regime_data is not None and not isinstance(regime_data, dict):
+            regime_data = None
+        shock_state = kwargs.get("shock_state")
+        shock_score = kwargs.get("shock_score")
+        try:
+            shock_score = float(shock_score) if shock_score is not None else None
+        except Exception:
+            shock_score = None
 
         def _coerce_float(value: Any) -> Optional[float]:
             try:
@@ -1197,6 +1228,24 @@ class VWAPMeanReversion(BaseStrategy):
             adx_ok = True
             adx_decision_reason = "promotion_override"
 
+        reentry_guard_active = False
+        if self._reentry_guard_enabled and self._reentry_guard_require_vwap_reclaim:
+            try:
+                guard_key = str(symbol)
+            except Exception:
+                guard_key = ""
+            if guard_key and self._reentry_guard_by_symbol.get(guard_key):
+                if price > vwap_target:
+                    self._reentry_guard_by_symbol.pop(guard_key, None)
+                    logger.info(
+                        "[MeanReversion] Reentry guard cleared %s: price %.4f > vwap %.4f",
+                        symbol,
+                        float(price),
+                        float(vwap_target),
+                    )
+                else:
+                    reentry_guard_active = True
+
         entry_long = price < lower and adx_ok
         entry_short = price > upper and adx_ok
         if promotion_override:
@@ -1620,6 +1669,27 @@ class VWAPMeanReversion(BaseStrategy):
             )
             return None
 
+        if entry_long and reentry_guard_active:
+            logger.info(
+                "[MeanReversion] Reentry guard veto %s: price %.4f <= vwap %.4f",
+                symbol,
+                float(price),
+                float(vwap_target),
+            )
+            _emit_recheck_eval(
+                action="HOLD",
+                gate_reasons=["reentry_guard_vwap"],
+                px=price,
+                px_source=px_source,
+                lower=lower,
+                upper=upper,
+                vwap=vwap_target,
+                vwap_std=vwap_std_val,
+                z=z_val,
+                side_value="long",
+            )
+            return None
+
         if entry_long and guard_block_long:
             _emit_recheck_eval(
                 action="HOLD",
@@ -1634,6 +1704,169 @@ class VWAPMeanReversion(BaseStrategy):
                 side_value="long",
             )
             return None
+
+        # -----------------------------------------------------------
+        # Regime policy (TREND_DOWN / SHOCK) - long-side guardrail
+        # -----------------------------------------------------------
+        regime_policy_meta = None
+        regime_policy_size_mult = None
+        if entry_long:
+            policy_cfg = self.strategy_config.get("regime_policy") if isinstance(self.strategy_config, dict) else {}
+            if policy_cfg is not None and not isinstance(policy_cfg, dict):
+                policy_cfg = {}
+            policy_cfg = dict(policy_cfg) if isinstance(policy_cfg, dict) else {}
+            policy_enabled = bool(policy_cfg.get("enabled", True))
+
+            if policy_enabled:
+                trend_cfg = policy_cfg.get("trend_down", {}) if isinstance(policy_cfg.get("trend_down"), dict) else {}
+                shock_cfg = policy_cfg.get("shock", {}) if isinstance(policy_cfg.get("shock"), dict) else {}
+
+                long_mode = str(trend_cfg.get("long_mode", "disabled") or "disabled").strip().lower()
+                min_breach_bps = float(trend_cfg.get("min_breach_bps", -20) or -20)
+                require_reclaim = bool(trend_cfg.get("require_reclaim", True))
+                size_mult = float(trend_cfg.get("size_mult", 0.5) or 0.5)
+                rising_adx_floor = float(trend_cfg.get("rising_adx_floor", 20) or 20)
+                rising_adx_size_mult = float(trend_cfg.get("rising_adx_size_mult", 0.5) or 0.5)
+                rising_adx_lookback = int(trend_cfg.get("rising_adx_lookback", 3) or 3)
+                adx_floor = float(trend_cfg.get("adx_floor", 25) or 25)
+
+                shock_long_mode = str(shock_cfg.get("long_mode", "disabled") or "disabled").strip().lower()
+                shock_min_score = shock_cfg.get("min_score", None)
+                shock_state_required = str(shock_cfg.get("state", "ARMED") or "ARMED").strip().upper()
+                try:
+                    shock_min_score = float(shock_min_score) if shock_min_score is not None else None
+                except Exception:
+                    shock_min_score = None
+
+                trend_label = None
+                trend_strength = None
+                if isinstance(regime_data, dict):
+                    try:
+                        trend_label = str(regime_data.get("trend") or "").strip().lower()
+                    except Exception:
+                        trend_label = None
+                    trend_strength = regime_data.get("trend_strength")
+                    if trend_strength is None:
+                        trend_strength = regime_data.get("adx")
+                    try:
+                        trend_strength = float(trend_strength) if trend_strength is not None else None
+                    except Exception:
+                        trend_strength = None
+
+                shock_state_norm = None
+                try:
+                    shock_state_norm = str(shock_state or "").strip().upper()
+                except Exception:
+                    shock_state_norm = None
+
+                is_shock = False
+                if shock_state_norm:
+                    is_shock = shock_state_norm == shock_state_required
+                if (not is_shock) and shock_min_score is not None and shock_score is not None:
+                    try:
+                        is_shock = float(shock_score) >= float(shock_min_score)
+                    except Exception:
+                        is_shock = False
+
+                is_trend_down = False
+                if trend_label == "bearish":
+                    if trend_strength is None:
+                        is_trend_down = False
+                    else:
+                        try:
+                            is_trend_down = float(trend_strength) >= float(adx_floor)
+                        except Exception:
+                            is_trend_down = False
+
+                block_reason = None
+                if is_shock and shock_long_mode == "disabled":
+                    block_reason = "shock_disabled"
+                elif is_trend_down:
+                    if long_mode == "disabled":
+                        block_reason = "trend_down_disabled"
+                    elif long_mode == "confirmed_only":
+                        breach_bps = None
+                        if lower > 0:
+                            try:
+                                breach_ref = price
+                                if require_reclaim and condition_price is not None:
+                                    try:
+                                        if math.isfinite(float(condition_price)):
+                                            breach_ref = float(condition_price)
+                                    except Exception:
+                                        breach_ref = price
+                                breach_bps = (float(breach_ref) - float(lower)) / float(lower) * 10000.0
+                            except Exception:
+                                breach_bps = None
+                        reclaim_confirmed = bool(in_band)
+                        if not reclaim_confirmed:
+                            try:
+                                last_close = float(last_sig.get("close"))
+                            except Exception:
+                                last_close = None
+                            if last_close is not None and lower <= last_close <= upper:
+                                reclaim_confirmed = True
+
+                        breach_ok = breach_bps is not None and float(breach_bps) <= float(min_breach_bps)
+                        confirm_ok = (not require_reclaim) or reclaim_confirmed
+                        if not (breach_ok and confirm_ok):
+                            block_reason = "trend_down_unconfirmed"
+                        else:
+                            regime_policy_size_mult = float(size_mult)
+                            # If ADX rising in downtrend, further reduce size.
+                            adx_rising = False
+                            if (
+                                adx_val is not None
+                                and math.isfinite(adx_val)
+                                and float(adx_val) >= float(rising_adx_floor)
+                            ):
+                                try:
+                                    adx_series = pd.to_numeric(clean_sig["adx"], errors="coerce")
+                                except Exception:
+                                    adx_series = None
+                                if adx_series is not None and len(adx_series) > max(1, int(rising_adx_lookback)):
+                                    try:
+                                        cur = float(adx_series.iloc[-1])
+                                        prev = float(adx_series.iloc[-1 - int(rising_adx_lookback)])
+                                        adx_rising = math.isfinite(cur) and math.isfinite(prev) and (cur - prev) > 0
+                                    except Exception:
+                                        adx_rising = False
+                            if adx_rising:
+                                regime_policy_size_mult *= float(rising_adx_size_mult)
+
+                if block_reason:
+                    logger.info(
+                        "[MeanReversion] Regime policy veto %s: reason=%s trend=%s adx=%.2f shock_state=%s shock_score=%s",
+                        symbol,
+                        block_reason,
+                        trend_label or "unknown",
+                        float(trend_strength) if trend_strength is not None else float("nan"),
+                        shock_state_norm or "NA",
+                        f"{shock_score:.2f}" if shock_score is not None else "NA",
+                    )
+                    _emit_recheck_eval(
+                        action="HOLD",
+                        gate_reasons=["regime_policy_veto", block_reason],
+                        px=price,
+                        px_source=px_source,
+                        lower=lower,
+                        upper=upper,
+                        vwap=vwap_target,
+                        vwap_std=vwap_std_val,
+                        z=z_val,
+                        side_value="long",
+                    )
+                    return None
+
+                regime_policy_meta = {
+                    "trend": trend_label,
+                    "trend_strength": float(trend_strength) if trend_strength is not None else None,
+                    "shock_state": shock_state_norm,
+                    "shock_score": float(shock_score) if shock_score is not None else None,
+                    "trend_long_mode": long_mode,
+                    "shock_long_mode": shock_long_mode,
+                    "size_mult": float(regime_policy_size_mult) if regime_policy_size_mult is not None else None,
+                }
 
         if entry_long:
             side = "buy"
@@ -1867,6 +2100,20 @@ class VWAPMeanReversion(BaseStrategy):
             "stop_loss_std_delta": self.stop_loss_std_delta,
             "adx": adx_val,
         }
+        if (
+            regime_policy_size_mult is not None
+            and math.isfinite(float(regime_policy_size_mult))
+            and float(regime_policy_size_mult) > 0
+        ):
+            existing_mult = signal.get("position_multiplier")
+            try:
+                existing_mult = float(existing_mult) if existing_mult is not None else None
+            except Exception:
+                existing_mult = None
+            final_mult = float(regime_policy_size_mult)
+            if existing_mult is not None and math.isfinite(existing_mult):
+                final_mult *= float(existing_mult)
+            signal["position_multiplier"] = float(final_mult)
         if guard_enabled and side == "buy":
             signal["rsi_guard_status"] = guard_status or "bypassed_low_z"
             signal["rsi_val"] = guard_rsi_val
@@ -1879,6 +2126,12 @@ class VWAPMeanReversion(BaseStrategy):
             meta_data["impulse_guard"] = impulse_meta
         if rejection_meta:
             meta_data["rejection_confirmation"] = rejection_meta
+        if regime_policy_meta:
+            meta_data["regime_policy"] = regime_policy_meta
+        if shock_state is not None:
+            meta_data.setdefault("shock_state", shock_state)
+        if shock_score is not None:
+            meta_data.setdefault("shock_score", shock_score)
         meta_data.setdefault(
             "price_meta",
             {

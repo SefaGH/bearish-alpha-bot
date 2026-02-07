@@ -1,0 +1,212 @@
+[
+  {
+    "code": "Created",
+    "endTime": "2026-01-30T15:08:03.340918Z",
+    "name": "Acquire_Lock",
+    "startTime": "2026-01-30T15:07:50.9047175Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T15:08:05.6057631Z",
+    "name": "Analyze_Failure_Reason",
+    "startTime": "2026-01-30T15:08:05.6048629Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T15:08:04.4542308Z",
+    "name": "Analyze_Poll_Result",
+    "startTime": "2026-01-30T15:08:02.767425Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T15:09:03.3130056Z",
+    "name": "bearish-report-orchestrator",
+    "startTime": "2026-01-30T15:09:01.0991972Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T12:29:07.7139542Z",
+    "name": "Build_KeyVault_BaseUri",
+    "startTime": "2026-01-30T12:29:07.7133204Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T15:08:04.6199664Z",
+    "name": "Calculate_New_Streak",
+    "startTime": "2026-01-30T15:08:02.9470486Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T12:29:08.8453458Z",
+    "name": "Check_Concurrent_Executions",
+    "startTime": "2026-01-30T12:29:08.0524014Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T15:08:04.5108817Z",
+    "name": "Compute_Next_Container_Status",
+    "startTime": "2026-01-30T15:08:02.8292762Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "NotSpecified",
+    "endTime": "2026-01-30T15:09:04.1592866Z",
+    "name": "Condition",
+    "startTime": "2026-01-30T15:09:03.515888Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "NotSpecified",
+    "endTime": "2026-01-30T12:29:08.9363316Z",
+    "name": "Condition_Check_Running_Jobs",
+    "startTime": "2026-01-30T12:29:08.8742848Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "NotSpecified",
+    "endTime": "2026-01-30T15:09:04.6948499Z",
+    "name": "Condition_Job_Success",
+    "startTime": "2026-01-30T15:08:05.6424129Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "NotSpecified",
+    "endTime": "2026-01-30T15:08:04.401116Z",
+    "name": "Condition_Lock_Acquired",
+    "startTime": "2026-01-30T15:07:51.0362224Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T15:08:03.2844979Z",
+    "name": "Delay",
+    "startTime": "2026-01-30T15:06:20.4586071Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T12:35:26.328417Z",
+    "name": "Delay_30_Seconds",
+    "startTime": "2026-01-30T12:34:55.8225187Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "ActionSkipped",
+    "endTime": "2026-01-30T15:09:04.3404747Z",
+    "name": "E-posta_gönder",
+    "startTime": "2026-01-30T15:09:04.3336971Z",
+    "status": "Skipped"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T15:08:16.6432344Z",
+    "name": "Final_Verify_Status",
+    "startTime": "2026-01-30T15:08:04.8462032Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T12:29:09.9526746Z",
+    "name": "Get_Job_ID",
+    "startTime": "2026-01-30T12:29:09.9403969Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T15:08:05.5778197Z",
+    "name": "Get_Job_Output_And_Errors",
+    "startTime": "2026-01-30T15:08:04.8462037Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T12:35:26.2770294Z",
+    "name": "Get_Job_Status",
+    "startTime": "2026-01-30T12:34:54.7182336Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T12:29:08.0266781Z",
+    "name": "Get_LogUploader_Key",
+    "startTime": "2026-01-30T12:29:07.7421148Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T15:08:03.8617875Z",
+    "name": "HTTP",
+    "startTime": "2026-01-30T15:07:51.1027261Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "NotSpecified",
+    "endTime": "2026-01-30T12:29:07.6894352Z",
+    "name": "Initialize_Container_Status",
+    "startTime": "2026-01-30T12:29:07.6546292Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T15:08:04.3199485Z",
+    "name": "Release_Lock",
+    "startTime": "2026-01-30T15:08:02.4592515Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T12:29:07.3104238Z",
+    "name": "Sanal_makineyi_baþlat",
+    "startTime": "2026-01-30T12:28:13.9202745Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T15:10:17.5463053Z",
+    "name": "Sanal_makineyi_serbest_býrak",
+    "startTime": "2026-01-30T15:09:04.8174501Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "ActionSkipped",
+    "endTime": "2026-01-30T15:09:03.9704368Z",
+    "name": "Send_Failure_Email",
+    "startTime": "2026-01-30T15:09:03.9699874Z",
+    "status": "Skipped"
+  },
+  {
+    "code": "Accepted",
+    "endTime": "2026-01-30T12:29:09.9088183Z",
+    "name": "Send_Http_Response",
+    "startTime": "2026-01-30T12:29:09.8883998Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "Accepted",
+    "endTime": "2026-01-30T15:09:03.8310215Z",
+    "name": "Send_Report_Email",
+    "startTime": "2026-01-30T15:09:03.691534Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "Created",
+    "endTime": "2026-01-30T12:29:09.8649106Z",
+    "name": "Start_Automation_Runbook",
+    "startTime": "2026-01-30T12:29:08.9927443Z",
+    "status": "Succeeded"
+  },
+  {
+    "code": "OK",
+    "endTime": "2026-01-30T12:38:26.5242398Z",
+    "name": "Startup_Delay",
+    "startTime": "2026-01-30T12:35:26.4047306Z",
+    "status": "Succeeded"
+  }
+]

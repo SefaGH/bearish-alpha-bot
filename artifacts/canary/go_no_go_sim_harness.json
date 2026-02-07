@@ -1,0 +1,60 @@
+{
+  "status": "GO",
+  "metrics": {
+    "total_traces": 8,
+    "total_outcomes": 8,
+    "smart_entry_applied_rate": 0.75,
+    "missing_atr_force_market_count": 0,
+    "missing_atr_force_market_rate": 0.0,
+    "env_forced_order_type_market_count": 0,
+    "market_rate_by_bucket": {
+      "EXTREME": 0.0,
+      "NORMAL": 0.0
+    },
+    "fallback_reason_counts": {
+      "limit_timeout_market_fallback_disabled:extreme_bucket": 2
+    },
+    "abort_no_fill_timeout_count": 2,
+    "abort_no_fill_timeout_rate": 0.25,
+    "entry_slippage_trade_weighted_p90_bps": 4.8,
+    "entry_slippage_trade_weighted_p95_bps": 4.8,
+    "entry_slippage_notional_weighted_p90_bps": 4.8,
+    "entry_slippage_notional_weighted_p95_bps": 4.8,
+    "time_to_fill_ms_p50": null,
+    "time_to_fill_ms_p90": null,
+    "time_to_fill_ms_p95": null,
+    "stop_overshoot_p90_bps": 6.1,
+    "stop_overshoot_p95_bps": 6.1,
+    "planned_vs_realized_rr_drift_abs_p90": null,
+    "planned_vs_realized_rr_drift_abs_p95": null,
+    "atr_stale_market_violations": 0,
+    "atr_age_threshold_ms": 5000,
+    "missed_fill_increase_pct_vs_baseline": null
+  },
+  "go_no_go": {
+    "env_forced_market_zero": true,
+    "smart_entry_applied_rate_ok": true,
+    "missing_atr_force_market_rate_ok": true,
+    "extreme_market_rate_ok": true,
+    "atr_freshness_violations_zero": true,
+    "missed_fill_increase_ok": "baseline_not_provided"
+  },
+  "failed_gates": [],
+  "telemetry_gaps": [
+    "No time_to_fill_ms observed in order_decision_outcome events.",
+    "No planned_vs_realized_rr_drift (or rr_after_fill/rr_achieved) in TRADE_CLOSED events."
+  ],
+  "scope": {
+    "files": [
+      "artifacts\\canary\\sim_harness.log"
+    ],
+    "symbol": "BTC/USDT:USDT",
+    "strategy": "adaptive_ob"
+  },
+  "event_counts": {
+    "traces": 8,
+    "outcomes": 8,
+    "order_manager_decisions": 8,
+    "trade_closed": 6
+  }
+}

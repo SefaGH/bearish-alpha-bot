@@ -67,3 +67,47 @@ def test_smart_entry_respects_explicit_overrides(policy_cfg):
     assert decision.reason == "explicit_execution_override"
     assert out_params["order_type"] == "market"
     assert "limit_price" not in out_signal
+
+
+def test_smart_entry_missing_atr_can_use_conservative_limit(policy_cfg):
+    cfg = dict(policy_cfg)
+    cfg["force_market_on_missing_atr"] = False
+    cfg["fallback_timeout_seconds"] = 45
+
+    signal = {"side": "buy", "entry": 30000.0}
+    execution_params = {}
+
+    out_signal, out_params, decision = apply_smart_entry_policy(
+        signal=signal,
+        execution_params=execution_params,
+        policy_cfg=cfg,
+    )
+
+    assert decision.applied is False
+    assert decision.reason == "missing_atr_conservative_limit"
+    assert out_params["order_type"] == "limit"
+    assert out_params["timeout_seconds"] == 45.0
+    assert out_params["market_fallback_on_timeout_enabled"] is False
+    assert out_signal["limit_price"] == pytest.approx(30000.0, rel=1e-12)
+
+
+def test_smart_entry_extreme_bucket_bans_market_fallback(policy_cfg):
+    cfg = dict(policy_cfg)
+    cfg["extreme_market_ban"] = True
+    cfg["force_market_on_low_vol"] = False
+
+    signal = {"side": "buy", "entry": 30000.0, "atr": 0.1, "volume_bucket": "EXTREME"}
+    execution_params = {}
+
+    out_signal, out_params, decision = apply_smart_entry_policy(
+        signal=signal,
+        execution_params=execution_params,
+        policy_cfg=cfg,
+    )
+
+    assert decision.applied is False
+    assert decision.reason.startswith("low_vol_conservative_limit_extreme")
+    assert out_params["order_type"] == "limit"
+    assert out_params["market_fallback_on_timeout_enabled"] is False
+    assert out_params["disable_market_fallback_on_extreme_bucket"] is True
+    assert out_signal["limit_price"] == pytest.approx(30000.0, rel=1e-12)

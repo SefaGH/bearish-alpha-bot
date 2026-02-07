@@ -1363,12 +1363,18 @@ class AdaptiveOversoldBounce(OversoldBounce):
             return None, meta_out
         return float(selected["price"]), meta_out
     
-    def signal(self, df_30m: pd.DataFrame, 
-               df_1h: pd.DataFrame = None,
-               regime_data: Optional[Dict] = None,
-               symbol: str = None,
-               market_data: Optional[Dict] = None,
-               ml_context=None) -> Optional[Dict]:
+    def signal(
+        self,
+        df_30m: pd.DataFrame,
+        df_1h: pd.DataFrame = None,
+        regime_data: Optional[Dict] = None,
+        symbol: str = None,
+        market_data: Optional[Dict] = None,
+        ml_context=None,
+        shock_state: Optional[str] = None,
+        shock_score: Optional[float] = None,
+        **kwargs,
+    ) -> Optional[Dict]:
         """
         Generate adaptive trading signal based on market regime and ML insights.
         Logs the specific reason if no signal is generated.
@@ -2108,7 +2114,52 @@ class AdaptiveOversoldBounce(OversoldBounce):
 
             # --- Final Risk/Reward and Position Sizing ---
             volatility = regime_data.get('volatility', 'normal')
+            shock_overlay_cfg = self.strategy_config.get("shock_overlay") if isinstance(self.strategy_config, dict) else {}
+            if shock_overlay_cfg is not None and not isinstance(shock_overlay_cfg, dict):
+                shock_overlay_cfg = {}
+            shock_overlay_cfg = dict(shock_overlay_cfg) if isinstance(shock_overlay_cfg, dict) else {}
+            shock_overlay_enabled = bool(shock_overlay_cfg.get("enabled", True))
+            shock_overlay_mult = None
+            shock_state_overlay = None
+            shock_score_overlay = None
+            if shock_overlay_enabled:
+                try:
+                    shock_state_overlay = str(self.get_dyn_gate_state(symbol_display) or "").strip().upper()
+                except Exception:
+                    shock_state_overlay = None
+                try:
+                    shock_score_overlay = float(self._dyn_last_shock_score_by_symbol.get(symbol_display))
+                except Exception:
+                    shock_score_overlay = None
+
+                min_score = shock_overlay_cfg.get("min_score", 0.60)
+                try:
+                    min_score = float(min_score) if min_score is not None else 0.60
+                except Exception:
+                    min_score = 0.60
+                size_mult = shock_overlay_cfg.get("size_mult", 0.30)
+                try:
+                    size_mult = float(size_mult) if size_mult is not None else 0.30
+                except Exception:
+                    size_mult = 0.30
+
+                if (
+                    shock_state_overlay == str(shock_overlay_cfg.get("state", "ARMED") or "ARMED").strip().upper()
+                    or (shock_score_overlay is not None and shock_score_overlay >= float(min_score))
+                ):
+                    shock_overlay_mult = float(size_mult)
+
             position_mult = self.calculate_dynamic_position_size(volatility) * position_size_modifier * float(extreme_bypass_size_mult or 1.0)
+            if shock_overlay_mult is not None and shock_overlay_mult > 0:
+                position_mult *= float(shock_overlay_mult)
+                if self.debug_logging:
+                    logger.info(
+                        "[OB-SHOCK-OVERLAY] %s overlay size_mult=%.2f shock_state=%s shock_score=%s",
+                        symbol_display,
+                        float(shock_overlay_mult),
+                        shock_state_overlay or "NA",
+                        f"{shock_score_overlay:.2f}" if shock_score_overlay is not None else "NA",
+                    )
             
             entry_price = float(trigger_price)
             
@@ -2677,6 +2728,62 @@ class AdaptiveOversoldBounce(OversoldBounce):
                 "ml_enhanced": ml_enhanced, "strategy_type": 'adaptive',
                 "strategy_min_rr": self.min_rr_ratio,  # NEW: Strategy's own minimum R/R
             }
+            atr_pct_for_exec = None
+            atr_bps_for_exec = None
+            atr_age_ms_for_exec = None
+            try:
+                if entry_price > 0 and atr_value > 0:
+                    atr_pct_for_exec = float(atr_value / entry_price)
+                    atr_bps_for_exec = float(atr_pct_for_exec * 10_000.0)
+            except Exception:
+                atr_pct_for_exec = None
+                atr_bps_for_exec = None
+            try:
+                if forming_update_age_ms is not None:
+                    atr_age_ms_for_exec = int(forming_update_age_ms)
+            except Exception:
+                atr_age_ms_for_exec = None
+
+            if atr_bps_for_exec is not None and atr_bps_for_exec > 0:
+                signal["volatility"] = {
+                    "vol_atr_bps": float(atr_bps_for_exec),
+                    "atr_bps": float(atr_bps_for_exec),
+                    "atr_pct": float(atr_pct_for_exec) if atr_pct_for_exec is not None else None,
+                    "price_ref": float(entry_price),
+                    "source_tf": "30m",
+                    "source": "adaptive_ob",
+                }
+                if atr_age_ms_for_exec is not None:
+                    signal["volatility"]["atr_age_ms"] = int(atr_age_ms_for_exec)
+
+                meta = signal.setdefault("meta", {})
+                if isinstance(meta, dict):
+                    vol_telemetry = meta.get("vol_telemetry")
+                    if not isinstance(vol_telemetry, dict):
+                        vol_telemetry = {}
+                    vol_telemetry.update(
+                        {
+                            "atr_bps": float(atr_bps_for_exec),
+                            "atr_pct": float(atr_pct_for_exec) if atr_pct_for_exec is not None else None,
+                            "price_ref": float(entry_price),
+                            "source_tf": "30m",
+                            "source": "adaptive_ob",
+                        }
+                    )
+                    if atr_age_ms_for_exec is not None:
+                        vol_telemetry["atr_age_ms"] = int(atr_age_ms_for_exec)
+                    meta["vol_telemetry"] = vol_telemetry
+            if shock_overlay_mult is not None and shock_overlay_mult > 0:
+                meta = signal.get("meta")
+                if not isinstance(meta, dict):
+                    meta = {}
+                    signal["meta"] = meta
+                meta["shock_overlay"] = {
+                    "applied": True,
+                    "size_mult": float(shock_overlay_mult),
+                    "state": shock_state_overlay,
+                    "score": float(shock_score_overlay) if shock_score_overlay is not None else None,
+                }
 
             if extreme_bypass_active:
                 signal["extreme_bypass"] = True

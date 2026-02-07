@@ -1252,6 +1252,254 @@ class LiveTradingLauncher:
             except RuntimeError:
                 # No running loop; will be created later when a loop is available
                 logger.warning("Shutdown event could not be created (no running event loop yet).")
+
+    def _get_bingx_client(self):
+        client = self.exchange_clients.get("bingx")
+        if client is not None:
+            return client
+        for name, item in (self.exchange_clients or {}).items():
+            if str(name).lower().strip() == "bingx":
+                return item
+        return None
+
+    def _collect_shutdown_symbols(self) -> List[str]:
+        symbols: List[str] = []
+
+        for sym in (self.TRADING_PAIRS or []):
+            if isinstance(sym, str) and sym:
+                symbols.append(sym)
+
+        position_manager = getattr(self.coordinator, "position_manager", None) if self.coordinator else None
+        positions = getattr(position_manager, "positions", {}) if position_manager else {}
+        if isinstance(positions, dict):
+            for pos in positions.values():
+                if isinstance(pos, dict):
+                    sym = pos.get("symbol")
+                    if isinstance(sym, str) and sym:
+                        symbols.append(sym)
+
+        trading_engine = getattr(self.coordinator, "trading_engine", None) if self.coordinator else None
+        active_positions = getattr(trading_engine, "active_positions", {}) if trading_engine else {}
+        if isinstance(active_positions, dict):
+            for pos in active_positions.values():
+                if isinstance(pos, dict):
+                    sym = pos.get("symbol")
+                    if isinstance(sym, str) and sym:
+                        symbols.append(sym)
+
+        deduped: List[str] = []
+        seen = set()
+        for sym in symbols:
+            key = sym.strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(key)
+        return deduped
+
+    async def _fetch_bingx_open_orders(self, client, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        fetch_open = getattr(getattr(client, "ex", None), "fetch_open_orders", None)
+        if not callable(fetch_open):
+            return []
+        try:
+            if symbol:
+                native_symbol = symbol
+                to_native = getattr(client, "_get_bingx_native_symbol", None)
+                if callable(to_native):
+                    native_symbol = str(to_native(symbol))
+                data = await asyncio.to_thread(fetch_open, native_symbol)
+            else:
+                data = await asyncio.to_thread(fetch_open)
+            if isinstance(data, list):
+                return [item for item in data if isinstance(item, dict)]
+        except Exception as exc:
+            logger.warning("[SHUTDOWN-SAFETY] fetch_open_orders failed (symbol=%s): %s", symbol or "ALL", str(exc)[:200])
+            # Some adapters require symbol for fetch_open_orders(). Fall back to symbol-scoped checks.
+            if symbol is None:
+                merged: List[Dict[str, Any]] = []
+                seen_ids = set()
+                for scoped_symbol in self._collect_shutdown_symbols():
+                    try:
+                        native_symbol = scoped_symbol
+                        to_native = getattr(client, "_get_bingx_native_symbol", None)
+                        if callable(to_native):
+                            native_symbol = str(to_native(scoped_symbol))
+                        scoped_orders = await asyncio.to_thread(fetch_open, native_symbol)
+                    except Exception:
+                        continue
+                    if not isinstance(scoped_orders, list):
+                        continue
+                    for order in scoped_orders:
+                        if not isinstance(order, dict):
+                            continue
+                        oid = order.get("id") or order.get("orderId") or f"noid:{len(merged)}"
+                        if oid in seen_ids:
+                            continue
+                        seen_ids.add(oid)
+                        merged.append(order)
+                return merged
+        return []
+
+    async def _fetch_bingx_open_positions(self, client, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        get_positions = getattr(client, "get_bingx_positions", None)
+        if not callable(get_positions):
+            return []
+        try:
+            response = await asyncio.to_thread(get_positions, symbol) if symbol else await asyncio.to_thread(get_positions)
+            data = response.get("data") if isinstance(response, dict) else None
+            if not isinstance(data, list):
+                return []
+            out: List[Dict[str, Any]] = []
+            native_symbol = None
+            if symbol:
+                to_native = getattr(client, "_get_bingx_native_symbol", None)
+                if callable(to_native):
+                    native_symbol = str(to_native(symbol))
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                raw_symbol = str(item.get("symbol") or "")
+                if symbol and native_symbol and raw_symbol and raw_symbol != native_symbol:
+                    continue
+                try:
+                    amt = abs(float(item.get("positionAmt") or 0.0))
+                except (TypeError, ValueError):
+                    amt = 0.0
+                if amt <= 0:
+                    continue
+                out.append(item)
+            return out
+        except Exception as exc:
+            logger.warning("[SHUTDOWN-SAFETY] get_bingx_positions failed (symbol=%s): %s", symbol or "ALL", str(exc)[:200])
+            return []
+
+    async def _cancel_bingx_open_orders_for_shutdown(self) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {
+            "cancelled_symbol_scoped": 0,
+            "cancelled_fallback_single": 0,
+            "account_wide_attempted": False,
+            "remaining_open_orders": 0,
+            "errors": [],
+        }
+        client = self._get_bingx_client()
+        if client is None:
+            summary["errors"].append("missing_bingx_client")
+            return summary
+
+        cancel_all = getattr(client, "cancel_all_bingx_open_orders", None)
+        cancel_one = getattr(client, "cancel_order", None)
+
+        symbols = self._collect_shutdown_symbols()
+        for symbol in symbols:
+            try:
+                if callable(cancel_all):
+                    resp = await asyncio.to_thread(cancel_all, symbol)
+                    success = ((resp or {}).get("data") or {}).get("success")
+                    if isinstance(success, list):
+                        summary["cancelled_symbol_scoped"] += len(success)
+                else:
+                    open_orders = await self._fetch_bingx_open_orders(client, symbol)
+                    for order in open_orders:
+                        oid = order.get("id") or order.get("orderId")
+                        if not oid or not callable(cancel_one):
+                            continue
+                        await asyncio.to_thread(cancel_one, oid, symbol, {})
+                        summary["cancelled_fallback_single"] += 1
+            except Exception as exc:
+                msg = f"symbol_cancel_failed:{symbol}:{type(exc).__name__}:{str(exc)[:160]}"
+                summary["errors"].append(msg)
+                logger.warning("[SHUTDOWN-SAFETY] %s", msg)
+
+        await asyncio.sleep(0.5)
+        remaining = await self._fetch_bingx_open_orders(client)
+        summary["remaining_open_orders"] = len(remaining)
+
+        if remaining:
+            try:
+                if callable(cancel_all):
+                    summary["account_wide_attempted"] = True
+                    await asyncio.to_thread(cancel_all, None)
+                elif callable(cancel_one):
+                    for order in remaining:
+                        oid = order.get("id") or order.get("orderId")
+                        symbol = order.get("symbol")
+                        if not oid:
+                            continue
+                        await asyncio.to_thread(cancel_one, oid, symbol, {})
+                        summary["cancelled_fallback_single"] += 1
+                await asyncio.sleep(0.5)
+                summary["remaining_open_orders"] = len(await self._fetch_bingx_open_orders(client))
+            except Exception as exc:
+                msg = f"account_wide_cancel_failed:{type(exc).__name__}:{str(exc)[:160]}"
+                summary["errors"].append(msg)
+                logger.warning("[SHUTDOWN-SAFETY] %s", msg)
+
+        return summary
+
+    async def _reconcile_shutdown_positions(self) -> Dict[str, Any]:
+        position_manager = getattr(self.coordinator, "position_manager", None) if self.coordinator else None
+        if not position_manager or not hasattr(position_manager, "reconcile_runtime_positions"):
+            return {"skipped": True, "reason": "position_manager_missing"}
+        try:
+            result = await position_manager.reconcile_runtime_positions(
+                exchange_clients=self.exchange_clients,
+                adopt_orphans=True,
+            )
+            return result if isinstance(result, dict) else {"raw": result}
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}:{str(exc)[:200]}"}
+
+    async def _close_bingx_positions_with_close_all_fallback(self) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {
+            "symbol_calls": [],
+            "account_wide_attempted": False,
+            "remaining_positions": 0,
+            "errors": [],
+        }
+        client = self._get_bingx_client()
+        if client is None:
+            summary["errors"].append("missing_bingx_client")
+            return summary
+
+        close_all = getattr(client, "close_all_bingx_positions", None)
+        if not callable(close_all):
+            summary["errors"].append("close_all_endpoint_unavailable")
+            return summary
+
+        symbols = self._collect_shutdown_symbols()
+        for symbol in symbols:
+            try:
+                positions = await self._fetch_bingx_open_positions(client, symbol)
+                if not positions:
+                    continue
+                response = await asyncio.to_thread(close_all, symbol)
+                summary["symbol_calls"].append(
+                    {
+                        "symbol": symbol,
+                        "ok": True,
+                        "response_code": (response or {}).get("code"),
+                    }
+                )
+            except Exception as exc:
+                summary["symbol_calls"].append(
+                    {"symbol": symbol, "ok": False, "error": str(exc)[:200]}
+                )
+                summary["errors"].append(f"symbol_close_all_failed:{symbol}:{type(exc).__name__}")
+
+        await asyncio.sleep(0.7)
+        remaining_positions = await self._fetch_bingx_open_positions(client)
+        summary["remaining_positions"] = len(remaining_positions)
+
+        if remaining_positions:
+            try:
+                summary["account_wide_attempted"] = True
+                await asyncio.to_thread(close_all, None)
+                await asyncio.sleep(0.7)
+                summary["remaining_positions"] = len(await self._fetch_bingx_open_positions(client))
+            except Exception as exc:
+                summary["errors"].append(f"account_wide_close_all_failed:{type(exc).__name__}:{str(exc)[:160]}")
+
+        return summary
     
     async def cleanup(self, signum=None, frame=None):
         """
@@ -1259,11 +1507,14 @@ class LiveTradingLauncher:
         
         SHUTDOWN ORDER (DO NOT CHANGE):
         1. Stop trading loop - prevents new signals from being processed
-        2. Close all positions - MUST happen while exchange connections are ALIVE
-        3. Stop WebSocket streams - can now safely disconnect
-        4. Close exchange connections - final cleanup
+        2. Cancel open orders on exchange (symbol-scope then account fallback)
+        3. Close all tracked positions (while connections are alive)
+        4. Reconcile exchange/local positions
+        5. Fallback close-all on exchange if still non-flat
+        6. Stop WebSocket streams
+        7. Close exchange connections
         
-        This order ensures positions are closed successfully before connections die.
+        This order prevents post-shutdown fills and reduces orphaned exchange state.
         """
         if self._cleanup_completed:
             logger.info("Cleanup already completed, skipping.")
@@ -1281,6 +1532,8 @@ class LiveTradingLauncher:
 
         errors = []
         self._cleanup_completed = True
+        final_open_orders_count = None
+        final_open_positions_count = None
 
         # ========================================================================
         # STEP 1: Stop Trading Loop (Prevent New Signals)
@@ -1311,9 +1564,28 @@ class LiveTradingLauncher:
                 logger.error(f"Error stopping prediction loop: {e}", exc_info=True)
 
         # ========================================================================
-        # STEP 2: Close All Open Positions (CRITICAL - Must happen BEFORE closing connections)
+        # STEP 2: Cancel Open Orders (prevents post-shutdown fills from resting limits)
         # ========================================================================
-        logger.info("\nStep 2: Closing all open positions (exchange connections ALIVE)...")
+        logger.info("\nStep 2: Cancelling open orders on exchange...")
+        try:
+            cancel_summary = await self._cancel_bingx_open_orders_for_shutdown()
+            logger.info(
+                "[SHUTDOWN-SAFETY] cancel_open_orders summary: symbol_scoped=%s fallback_single=%s account_wide=%s remaining=%s",
+                cancel_summary.get("cancelled_symbol_scoped", 0),
+                cancel_summary.get("cancelled_fallback_single", 0),
+                cancel_summary.get("account_wide_attempted", False),
+                cancel_summary.get("remaining_open_orders", 0),
+            )
+            for item in cancel_summary.get("errors", []):
+                errors.append(f"order_cancel:{item}")
+        except Exception as exc:
+            errors.append(f"Error cancelling open orders: {exc}")
+            logger.error("Error cancelling open orders: %s", exc, exc_info=True)
+
+        # ========================================================================
+        # STEP 3: Close All Tracked Open Positions (connections still alive)
+        # ========================================================================
+        logger.info("\nStep 3: Closing all tracked open positions...")
         if self.coordinator and hasattr(self.coordinator, 'position_manager') and self.coordinator.position_manager:
             try:
                 # Get position count before closing
@@ -1356,9 +1628,84 @@ class LiveTradingLauncher:
             logger.info("ℹ️ Position manager not available, skipping position closure")
 
         # ========================================================================
-        # STEP 3: Stop WebSocket Streams (Safe to disconnect now)
+        # STEP 4: Runtime reconciliation (adopt orphan positions, then retry tracked close)
         # ========================================================================
-        logger.info("\nStep 3: Stopping WebSocket streams...")
+        logger.info("\nStep 4: Reconciling exchange vs local positions...")
+        try:
+            recon = await self._reconcile_shutdown_positions()
+            logger.info(
+                "[SHUTDOWN-SAFETY] reconcile summary: stale_removed=%s orphans_detected=%s orphans_adopted=%s",
+                recon.get("stale_removed", 0),
+                recon.get("orphans_detected", 0),
+                recon.get("orphans_adopted", 0),
+            )
+            if recon.get("error"):
+                errors.append(f"reconcile_error:{recon.get('error')}")
+            # If orphan positions were adopted into local tracking, run one more tracked close.
+            if int(recon.get("orphans_adopted", 0) or 0) > 0 and self.coordinator and getattr(self.coordinator, "position_manager", None):
+                logger.warning("[SHUTDOWN-SAFETY] Adopted orphans detected; retrying tracked close...")
+                retry_result = await self.coordinator.position_manager.close_all_positions(
+                    exchange_clients=self.exchange_clients,
+                    reason="shutdown_orphan_retry",
+                )
+                logger.info("[SHUTDOWN-SAFETY] orphan retry close result: %s", retry_result)
+        except Exception as exc:
+            errors.append(f"Error during shutdown reconciliation: {exc}")
+            logger.error("Error during shutdown reconciliation: %s", exc, exc_info=True)
+
+        # ========================================================================
+        # STEP 5: Exchange close-all fallback (symbol scope, then account-wide)
+        # ========================================================================
+        logger.info("\nStep 5: Running exchange close-all fallback if required...")
+        try:
+            close_all_summary = await self._close_bingx_positions_with_close_all_fallback()
+            logger.info(
+                "[SHUTDOWN-SAFETY] close_all fallback summary: symbol_calls=%s account_wide=%s remaining_positions=%s",
+                len(close_all_summary.get("symbol_calls", [])),
+                close_all_summary.get("account_wide_attempted", False),
+                close_all_summary.get("remaining_positions", 0),
+            )
+            for item in close_all_summary.get("errors", []):
+                errors.append(f"close_all_fallback:{item}")
+        except Exception as exc:
+            errors.append(f"Error during close-all fallback: {exc}")
+            logger.error("Error during close-all fallback: %s", exc, exc_info=True)
+
+        # ========================================================================
+        # STEP 6: Final exchange flat verification
+        # ========================================================================
+        logger.info("\nStep 6: Verifying exchange is flat (orders + positions)...")
+        try:
+            bingx_client = self._get_bingx_client()
+            if bingx_client is not None:
+                final_open_orders = await self._fetch_bingx_open_orders(bingx_client)
+                final_open_positions = await self._fetch_bingx_open_positions(bingx_client)
+                final_open_orders_count = len(final_open_orders)
+                final_open_positions_count = len(final_open_positions)
+                logger.info(
+                    "[SHUTDOWN-SAFETY] final_flat_check open_orders=%s open_positions=%s",
+                    final_open_orders_count,
+                    final_open_positions_count,
+                )
+                if final_open_orders_count or final_open_positions_count:
+                    errors.append(
+                        f"exchange_not_flat(open_orders={final_open_orders_count},open_positions={final_open_positions_count})"
+                    )
+                    logger.critical(
+                        "❌ [SHUTDOWN-SAFETY] Exchange not flat after cleanup. open_orders=%s open_positions=%s",
+                        final_open_orders_count,
+                        final_open_positions_count,
+                    )
+            else:
+                logger.warning("[SHUTDOWN-SAFETY] BingX client not available for final flat check.")
+        except Exception as exc:
+            errors.append(f"Error during final flat check: {exc}")
+            logger.error("Error during final flat check: %s", exc, exc_info=True)
+
+        # ========================================================================
+        # STEP 7: Stop WebSocket Streams (Safe to disconnect now)
+        # ========================================================================
+        logger.info("\nStep 7: Stopping WebSocket streams...")
         if self.ws_optimizer:
             try:
                 await self.ws_optimizer.stop_streaming()
@@ -1368,10 +1715,10 @@ class LiveTradingLauncher:
                 logger.error(f"Error stopping WebSocket: {e}", exc_info=True)
         
         # ========================================================================
-        # STEP 4: Stop Health Monitor
+        # STEP 8: Stop Health Monitor
         # ========================================================================
         if self.health_monitor:
-            logger.info("\nStep 4: Stopping health monitor...")
+            logger.info("\nStep 8: Stopping health monitor...")
             try:
                 await self.health_monitor.stop_monitoring()
                 logger.info("✅ Health monitor stopped")
@@ -1380,9 +1727,9 @@ class LiveTradingLauncher:
                 logger.error(f"Error stopping health monitor: {e}", exc_info=True)
 
         # ========================================================================
-        # STEP 5: Close Exchange Connections (Final cleanup)
+        # STEP 9: Close Exchange Connections (Final cleanup)
         # ========================================================================
-        logger.info("\nStep 5: Closing exchange connections...")
+        logger.info("\nStep 9: Closing exchange connections...")
         if self.exchange_clients:
             for name, client in self.exchange_clients.items():
                 try:
@@ -1403,6 +1750,11 @@ class LiveTradingLauncher:
         if not errors:
             logger.info("✅ GRACEFUL SHUTDOWN COMPLETED SUCCESSFULLY")
             logger.info("✅ All positions closed, all connections terminated")
+            logger.info(
+                "✅ Final flat check: open_orders=%s open_positions=%s",
+                final_open_orders_count if final_open_orders_count is not None else "n/a",
+                final_open_positions_count if final_open_positions_count is not None else "n/a",
+            )
             logger.info("📊 Report will be generated by Logic App (bearish-bot-orchestrator)")
         else:
             logger.warning(f"⚠️ GRACEFUL SHUTDOWN COMPLETED WITH {len(errors)} ERROR(S)")

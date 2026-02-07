@@ -88,6 +88,13 @@ def test_extreme_bypass_skips_trend_penalty_and_allows_signal():
     assert signal is not None
     assert signal.get("extreme_bypass") is True
     assert "extreme_bypass_meta" in signal
+    vol = signal.get("volatility")
+    assert isinstance(vol, dict)
+    assert vol.get("vol_atr_bps") == pytest.approx((1.0 / 90.0) * 10000.0, rel=1e-9)
+    assert vol.get("source_tf") == "30m"
+    vol_tel = signal.get("meta", {}).get("vol_telemetry")
+    assert isinstance(vol_tel, dict)
+    assert vol_tel.get("atr_bps") == pytest.approx((1.0 / 90.0) * 10000.0, rel=1e-9)
 
 
 def test_extreme_bypass_ignores_ml_veto():

@@ -51,7 +51,7 @@ trading:
 # SMART ENTRY POLICY (optional; injected centrally in LiveTradingEngine)
 # ==============================================================================
 # Purpose:
-# - If volatility is low (ATR/entry < threshold), force MARKET entry.
+# - If volatility is low (ATR/entry < threshold), optionally force MARKET entry.
 # - If volatility is high, inject a LIMIT entry (ATR-based) with:
 #   - timeout seconds
 #   - side-aware chase gate (max drift bps) at timeout
@@ -63,6 +63,13 @@ smart_entry_policy:
   enabled: true
   force_override: false
   volatility_threshold_bps: 5.0
+  # Canary-safe defaults:
+  # - Avoid blind market when ATR is missing or volatility is low.
+  # - Ban market fallback on EXTREME bucket.
+  force_market_on_missing_atr: false
+  force_market_on_low_vol: false
+  extreme_market_ban: true
+  fallback_timeout_seconds: 30
   params:
     LONG:
       atr_multiplier: 0.90
@@ -72,6 +79,14 @@ smart_entry_policy:
       atr_multiplier: 0.85
       timeout_seconds: 240
       gate_bps: 12.0
+
+# ==============================================================================
+# ORDER MANAGER TIMEOUT FALLBACK CONTROLS (used by LiveTradingEngine -> execution_params)
+# ==============================================================================
+order_manager:
+  market_fallback_on_timeout_enabled: true
+  disable_market_fallback_on_extreme_bucket: true
+  disable_market_fallback_on_fast_move: true
 
 # ==============================================================================
 # RISK MANAGEMENT - ENHANCED POSITION SIZING
@@ -832,6 +847,13 @@ strategies:
     adaptive_ob_trigger_price_source: "mid"        # mid -> mark -> forming_close fallback
     adaptive_ob_wick_closeness_k: 0.25              # Normalized closeness to low (bar_low_and_close)
 
+    # Shock overlay: if dyn gate is ARMED (or score >= min), shrink position size.
+    shock_overlay:
+      enabled: true
+      state: "ARMED"
+      min_score: 0.60
+      size_mult: 0.30
+
     # Scalp Mode: Crash/low-confidence counter-trend exits for adaptive_ob.
     # Motivation: strong bounces in bearish conditions often fade; clamp TP + pull stop to (near) breakeven quickly.
     scalp_mode:
@@ -928,6 +950,24 @@ strategies:
       enabled: true
       upper_wick_ratio_min: 0.8
     adx_threshold: 34.0
+    regime_policy:
+      enabled: true
+      trend_down:
+        long_mode: "disabled"        # disabled | confirmed_only
+        min_breach_bps: -20
+        require_reclaim: true
+        size_mult: 0.5
+        rising_adx_floor: 20
+        rising_adx_size_mult: 0.5
+        rising_adx_lookback: 3
+        adx_floor: 25
+      shock:
+        long_mode: "disabled"
+        state: "ARMED"
+        min_score: 0.60
+    reentry_guard:
+      enabled: true
+      require_vwap_reclaim_after_stop: true
     high_adx_z_threshold: 1.90
     adx_slope_lookback: 5
     adx_slope_eps: 0.2
@@ -994,6 +1034,12 @@ position_management:
     enabled: true                     # Override with: EXIT_MONITORING_ENABLED
     check_frequency: 5                # Override with: EXIT_CHECK_FREQUENCY
   position_monitoring_loop_interval_s: 10  # Override with: POSITION_MONITORING_LOOP_INTERVAL_S ; Engine loop tick (separate from exit_monitoring.check_frequency)
+  reconciliation_watchdog:
+    enabled: true                     # Runtime exchange/local reconcile loop
+    interval_s: 30                    # Reconcile cadence (seconds)
+    only_real_execution: true         # Run only when real execution is enabled
+    run_in_paper: false               # Allow running in paper mode when true
+    adopt_orphans: false              # Auto-import exchange orphan positions into local tracking
   time_based_exit:
     max_position_duration: 3600       # Override with: MAX_POSITION_DURATION
   exit_guardrails:

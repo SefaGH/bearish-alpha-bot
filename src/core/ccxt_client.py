@@ -1563,6 +1563,55 @@ class CcxtClient:
         
         logger.info(f"🔐 [BINGX-API] Fetching positions {symbol or 'all'}")
         return self._make_authenticated_bingx_request('/openApi/swap/v2/user/positions', params)
+
+    def cancel_all_bingx_open_orders(self, symbol: Optional[str] = None, order_type: Optional[str] = None) -> Dict:
+        """
+        Cancel all open swap orders on BingX.
+
+        Uses BingX Swap v2 endpoint:
+          DELETE /openApi/swap/v2/trade/allOpenOrders
+
+        Args:
+            symbol: Optional CCXT-format symbol (e.g., 'BTC/USDT:USDT'). If omitted, cancels all symbols.
+            order_type: Optional BingX type filter (e.g., 'LIMIT', 'TRIGGER_MARKET').
+
+        Returns:
+            BingX API response dictionary
+        """
+        if self.name != "bingx":
+            raise ValueError("cancel_all_bingx_open_orders is only supported for BingX client.")
+
+        params: Dict[str, Any] = {}
+        if symbol:
+            params["symbol"] = self._get_bingx_native_symbol(symbol)
+        if order_type:
+            params["type"] = str(order_type).upper()
+
+        logger.info("🔐 [BINGX-API] Cancelling all open orders %s", symbol or "(all symbols)")
+        return self._make_authenticated_bingx_request('/openApi/swap/v2/trade/allOpenOrders', params, 'DELETE')
+
+    def close_all_bingx_positions(self, symbol: Optional[str] = None) -> Dict:
+        """
+        Close all swap positions on BingX via one-click close.
+
+        Uses BingX Swap v2 endpoint:
+          POST /openApi/swap/v2/trade/closeAllPositions
+
+        Args:
+            symbol: Optional CCXT-format symbol (e.g., 'BTC/USDT:USDT'). If omitted, closes all symbols.
+
+        Returns:
+            BingX API response dictionary
+        """
+        if self.name != "bingx":
+            raise ValueError("close_all_bingx_positions is only supported for BingX client.")
+
+        params: Dict[str, Any] = {}
+        if symbol:
+            params["symbol"] = self._get_bingx_native_symbol(symbol)
+
+        logger.warning("🔐 [BINGX-API] Close all positions %s", symbol or "(all symbols)")
+        return self._make_authenticated_bingx_request('/openApi/swap/v2/trade/closeAllPositions', params, 'POST')
     
     def place_bingx_order(self, symbol: str, side: str, order_type: str, 
                          amount: float, price: float = None) -> Dict:

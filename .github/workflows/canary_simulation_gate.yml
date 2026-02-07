@@ -1,0 +1,137 @@
+name: Canary Simulation Gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  canary-from-tests:
+    name: Canary Gate (Test Simulation)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Configure PYTHONPATH
+        run: echo "PYTHONPATH=${{ github.workspace }}/src:${{ github.workspace }}" >> $GITHUB_ENV
+
+      - name: Generate simulated decision logs from tests
+        run: |
+          mkdir -p artifacts/canary
+          pytest tests/test_smart_entry_engine_integration.py -q -o log_cli=true --log-cli-level=INFO -o color=no > artifacts/canary/sim_engine.log 2>&1
+          pytest tests/test_execution_backend.py -q -o log_cli=true --log-cli-level=INFO -o color=no > artifacts/canary/sim_order_manager.log 2>&1
+
+      - name: Build canary report (test simulation)
+        run: |
+          python scripts/canary_go_no_go_report.py \
+            --log-file artifacts/canary/sim_engine.log \
+            --log-file artifacts/canary/sim_order_manager.log \
+            --log-glob "" \
+            --symbol "BTC/USDT:USDT" \
+            --output-json artifacts/canary/go_no_go_sim_tests.json
+
+      - name: Enforce gate (test simulation)
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          report = json.loads(Path("artifacts/canary/go_no_go_sim_tests.json").read_text(encoding="utf-8"))
+          status = report.get("status")
+          print(f"test_sim_status={status}")
+          if status != "GO":
+              print("Gate failed for test simulation report.")
+              sys.exit(1)
+          PY
+
+      - name: Upload test simulation artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: canary-sim-test-artifacts
+          path: |
+            artifacts/canary/sim_engine.log
+            artifacts/canary/sim_order_manager.log
+            artifacts/canary/go_no_go_sim_tests.json
+          if-no-files-found: warn
+
+  canary-from-harness:
+    name: Canary Gate (Execution Harness)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Configure PYTHONPATH
+        run: echo "PYTHONPATH=${{ github.workspace }}/src:${{ github.workspace }}" >> $GITHUB_ENV
+
+      - name: Run deterministic execution harness
+        run: |
+          mkdir -p artifacts/canary
+          python scripts/simulate_canary_execution.py --log-file artifacts/canary/sim_harness.log
+
+      - name: Build canary report (harness)
+        run: |
+          python scripts/canary_go_no_go_report.py \
+            --log-file artifacts/canary/sim_harness.log \
+            --log-glob "" \
+            --symbol "BTC/USDT:USDT" \
+            --strategy adaptive_ob \
+            --require-recon-watchdog-events \
+            --max-recon-orphans-detected 0 \
+            --max-recon-orphans-adopted 0 \
+            --max-recon-stale-removed 0 \
+            --output-json artifacts/canary/go_no_go_sim_harness_ci.json
+
+      - name: Enforce gate (harness)
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          report = json.loads(Path("artifacts/canary/go_no_go_sim_harness_ci.json").read_text(encoding="utf-8"))
+          status = report.get("status")
+          gaps = report.get("telemetry_gaps") or []
+          print(f"harness_status={status}")
+          print(f"harness_telemetry_gaps={gaps}")
+          if status != "GO":
+              print("Gate failed for harness report.")
+              sys.exit(1)
+          if gaps:
+              print("Harness should emit slippage and stop_overshoot metrics without telemetry gaps.")
+              sys.exit(1)
+          PY
+
+      - name: Upload harness artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: canary-sim-harness-artifacts
+          path: |
+            artifacts/canary/sim_harness.log
+            artifacts/canary/go_no_go_sim_harness_ci.json
+          if-no-files-found: warn

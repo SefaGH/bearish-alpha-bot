@@ -1,0 +1,67 @@
+{
+  "status": "GO",
+  "metrics": {
+    "total_traces": 4,
+    "total_outcomes": 4,
+    "smart_entry_applied_rate": 0.75,
+    "missing_atr_force_market_count": 0,
+    "missing_atr_force_market_rate": 0.0,
+    "env_forced_order_type_market_count": 0,
+    "market_rate_by_bucket": {
+      "EXTREME": 0.0,
+      "NORMAL": 0.0
+    },
+    "fallback_reason_counts": {
+      "limit_timeout_market_fallback_disabled:extreme_bucket": 1
+    },
+    "abort_no_fill_timeout_count": 1,
+    "abort_no_fill_timeout_rate": 0.25,
+    "entry_slippage_trade_weighted_p90_bps": 4.54,
+    "entry_slippage_trade_weighted_p95_bps": 4.67,
+    "entry_slippage_notional_weighted_p90_bps": 4.8,
+    "entry_slippage_notional_weighted_p95_bps": 4.8,
+    "time_to_fill_ms_p50": 175.0,
+    "time_to_fill_ms_p90": 491.00000000000006,
+    "time_to_fill_ms_p95": 555.4999999999998,
+    "stop_overshoot_p90_bps": 5.74,
+    "stop_overshoot_p95_bps": 5.92,
+    "planned_vs_realized_rr_drift_abs_p90": 0.2,
+    "planned_vs_realized_rr_drift_abs_p95": 0.2,
+    "recon_watchdog_events_count": 1,
+    "recon_cycles_count": 1,
+    "recon_stale_removed_total": 0,
+    "recon_orphans_detected_total": 0,
+    "recon_orphans_adopted_total": 0,
+    "atr_stale_market_violations": 0,
+    "atr_age_threshold_ms": 5000,
+    "missed_fill_increase_pct_vs_baseline": null
+  },
+  "go_no_go": {
+    "env_forced_market_zero": true,
+    "smart_entry_applied_rate_ok": true,
+    "missing_atr_force_market_rate_ok": true,
+    "extreme_market_rate_ok": true,
+    "atr_freshness_violations_zero": true,
+    "missed_fill_increase_ok": "baseline_not_provided",
+    "recon_orphans_detected_ok": true,
+    "recon_stale_removed_ok": true,
+    "recon_orphans_adopted_ok": true,
+    "recon_events_present": true
+  },
+  "failed_gates": [],
+  "telemetry_gaps": [],
+  "scope": {
+    "files": [
+      "artifacts\\canary\\sim_harness_recon_gate.log"
+    ],
+    "symbol": "BTC/USDT:USDT",
+    "strategy": "adaptive_ob"
+  },
+  "event_counts": {
+    "traces": 4,
+    "outcomes": 4,
+    "order_manager_decisions": 4,
+    "trade_closed": 3,
+    "reconciliation_watchdog": 1
+  }
+}

@@ -131,6 +131,13 @@ def test_signal_includes_volatility_stop_metadata(base_config):
     meta = signal['volatility_stop_meta']
     assert meta['volatility'] == 'low'
     assert meta['final_sl_pct'] <= meta['base_sl_pct']
+    vol = signal.get("volatility")
+    assert isinstance(vol, dict)
+    assert vol.get("vol_atr_bps") == pytest.approx((80.0 / 86650.0) * 10000.0, rel=1e-9)
+    assert vol.get("source_tf") == "30m"
+    vol_tel = signal.get("meta", {}).get("vol_telemetry")
+    assert isinstance(vol_tel, dict)
+    assert vol_tel.get("atr_bps") == pytest.approx((80.0 / 86650.0) * 10000.0, rel=1e-9)
 
 
 def test_signal_logs_volatility_stop_metadata(base_config, caplog):

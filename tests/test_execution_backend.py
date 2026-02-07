@@ -36,6 +36,45 @@ class FakeCcxtClient:
         raise Exception("Order not found")
 
 
+class FakeLimitTimeoutCcxtClient(FakeCcxtClient):
+    def create_order(self, symbol: str, side: str, type_: str, amount: float, price=None, params=None):
+        self.create_order_calls.append(
+            {"symbol": symbol, "side": side, "type": type_, "amount": amount, "price": price, "params": params or {}}
+        )
+        if type_ == "limit":
+            return {"id": "exch-limit-1", "status": "open", "filled": 0.0, "amount": amount, "price": price}
+        return {"id": "exch-market-1", "average": 100.5, "filled": amount, "status": "closed"}
+
+    def fetch_order(self, order_id: str, symbol: str = None, params=None):
+        return {"id": order_id, "status": "open", "filled": 0.0, "amount": 0.01, "price": 100.0}
+
+    def cancel_order(self, order_id: str, symbol: str = None, params=None):
+        self.cancel_order_calls.append({"order_id": order_id, "symbol": symbol, "params": params or {}})
+        return {"id": order_id, "status": "canceled"}
+
+
+class FakeLimitTimeoutChaseGateCcxtClient(FakeLimitTimeoutCcxtClient):
+    def ticker(self, symbol: str):
+        # Adverse move after timeout to trigger chase gate abort for LONG entries.
+        return {"last": 101.0}
+
+
+class FakeLimitTimeoutRaceFillCcxtClient(FakeLimitTimeoutCcxtClient):
+    def __init__(self, filled_qty: float = 0.01):
+        super().__init__()
+        self._pos_fetch_count = 0
+        self._filled_qty = filled_qty
+
+    def fetch_order(self, order_id: str, symbol: str = None, params=None):
+        # Simulate stale order status response during cancel race.
+        return {"id": order_id, "status": "open", "filled": 0.0, "amount": 0.01, "price": 100.0}
+
+    def fetch_positions(self, symbols=None, params=None):
+        self._pos_fetch_count += 1
+        qty = 0.0 if self._pos_fetch_count == 1 else self._filled_qty
+        return [{"symbol": "BTC/USDT:USDT", "side": "short", "contracts": qty}]
+
+
 def test_market_order_simulated_by_default(clean_env):
     from src.core.order_manager import SmartOrderManager
 
@@ -124,6 +163,219 @@ def test_limit_order_real_execution_calls_ccxt(clean_env):
     assert client.create_order_calls[-1]["price"] == 99.5
 
 
+def test_limit_timeout_market_fallback_emits_reason(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeLimitTimeoutCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "long",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 90.0},
+                "limit_price": 99.5,
+                "execution_params": {"timeout_seconds": 0},
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is True
+    assert result.get("fallback_reason") == "limit_timeout_market_fallback"
+    assert result.get("requested_order_type") == "limit"
+    assert result.get("effective_order_type") == "market"
+    assert [c["type"] for c in client.create_order_calls] == ["limit", "market"]
+
+
+def test_limit_timeout_market_fallback_can_be_disabled_by_flag(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeLimitTimeoutCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "long",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 90.0},
+                "limit_price": 99.5,
+                "execution_params": {
+                    "timeout_seconds": 0,
+                    "market_fallback_on_timeout_enabled": False,
+                },
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is False
+    assert result.get("reason") == "ABORT:NO_FILL_TIMEOUT"
+    assert result.get("fallback_reason") == "limit_timeout_market_fallback_disabled:flag"
+    assert result.get("requested_order_type") == "limit"
+    assert result.get("effective_order_type") == "limit"
+    assert [c["type"] for c in client.create_order_calls] == ["limit"]
+
+
+def test_limit_timeout_market_fallback_disabled_on_extreme_bucket(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeLimitTimeoutCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "long",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 90.0, "volume_bucket": "EXTREME"},
+                "limit_price": 99.5,
+                "execution_params": {
+                    "timeout_seconds": 0,
+                    "market_fallback_on_timeout_enabled": True,
+                    "disable_market_fallback_on_extreme_bucket": True,
+                },
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is False
+    assert result.get("reason") == "ABORT:NO_FILL_TIMEOUT"
+    assert result.get("fallback_reason") == "limit_timeout_market_fallback_disabled:extreme_bucket"
+    assert result.get("requested_order_type") == "limit"
+    assert result.get("effective_order_type") == "limit"
+    assert [c["type"] for c in client.create_order_calls] == ["limit"]
+
+
+def test_limit_timeout_aborts_on_chase_gate_before_market_fallback(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeLimitTimeoutChaseGateCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "long",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 90.0},
+                "limit_price": 99.5,
+                "execution_params": {
+                    "timeout_seconds": 0,
+                    "max_chase_bps": 5.0,
+                    "market_fallback_on_timeout_enabled": True,
+                },
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is False
+    assert str(result.get("reason") or "").startswith("ABORT:CHASE_GATE:")
+    assert [c["type"] for c in client.create_order_calls] == ["limit"]
+
+
+def test_limit_timeout_skip_market_when_position_delta_indicates_fill(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeLimitTimeoutRaceFillCcxtClient(filled_qty=0.01)
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "short",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 110.0},
+                "limit_price": 100.5,
+                "execution_params": {
+                    "timeout_seconds": 0,
+                    "market_fallback_on_timeout_enabled": True,
+                    "fallback_settle_checks": 1,
+                    "fallback_cancel_settle_ms": 0,
+                },
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is True
+    assert result.get("fallback_reason") == "limit_timeout_skip_market_position_delta"
+    assert result.get("effective_order_type") == "limit"
+    assert result.get("filled_amount") == 0.01
+    assert [c["type"] for c in client.create_order_calls] == ["limit"]
+
+
+def test_limit_timeout_market_fallback_uses_only_residual_amount(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeLimitTimeoutRaceFillCcxtClient(filled_qty=0.004)
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "short",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 110.0},
+                "limit_price": 100.5,
+                "execution_params": {
+                    "timeout_seconds": 0,
+                    "market_fallback_on_timeout_enabled": True,
+                    "fallback_settle_checks": 1,
+                    "fallback_cancel_settle_ms": 0,
+                },
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is True
+    assert result.get("effective_order_type") == "market"
+    assert abs(float(result.get("fallback_residual_qty") or 0.0) - 0.006) < 1e-9
+    assert [c["type"] for c in client.create_order_calls] == ["limit", "market"]
+    assert abs(float(client.create_order_calls[-1]["amount"]) - 0.006) < 1e-9
+
+
 def test_real_cancel_is_idempotent(clean_env):
     from src.core.order_manager import SmartOrderManager
 
@@ -192,3 +444,4 @@ def test_vst_fullbot_canary_forces_market_execution(clean_env):
     assert result["success"] is True
     assert client.create_order_calls, "Expected create_order to be called in canary real execution mode"
     assert client.create_order_calls[-1]["type"] == "market"
+    assert result.get("env_forced_order_type") == "market"

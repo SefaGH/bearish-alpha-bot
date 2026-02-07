@@ -21,6 +21,22 @@ def _safe_float(v: Any) -> Optional[float]:
     return x
 
 
+def _safe_bool(v: Any) -> Optional[bool]:
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in {"1", "true", "yes", "on"}:
+            return True
+        if s in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
 def _side_to_direction(side: str) -> Optional[str]:
     s = str(side or "").lower().strip()
     if s in {"buy", "long"}:
@@ -78,6 +94,45 @@ def apply_smart_entry_policy(
         execution_params["order_type"] = "market"
         return signal, execution_params, SmartEntryDecision(applied=False, reason="missing_entry_force_market")
 
+    force_market_on_missing_atr = _safe_bool(policy_cfg.get("force_market_on_missing_atr"))
+    if force_market_on_missing_atr is None:
+        force_market_on_missing_atr = True
+    force_market_on_low_vol = _safe_bool(policy_cfg.get("force_market_on_low_vol"))
+    if force_market_on_low_vol is None:
+        force_market_on_low_vol = True
+    extreme_market_ban = bool(_safe_bool(policy_cfg.get("extreme_market_ban")) or False)
+
+    meta = signal.get("meta") if isinstance(signal.get("meta"), dict) else {}
+    vol_tel = meta.get("vol_telemetry") if isinstance(meta.get("vol_telemetry"), dict) else {}
+    vol_block = signal.get("volatility") if isinstance(signal.get("volatility"), dict) else {}
+    bucket = str(
+        signal.get("volume_bucket")
+        or meta.get("volume_bucket")
+        or vol_tel.get("bucket")
+        or vol_block.get("bucket")
+        or ""
+    ).upper().strip()
+    is_extreme_bucket = bucket == "EXTREME"
+
+    def _inject_conservative_limit(reason: str) -> Tuple[Dict[str, Any], Dict[str, Any], SmartEntryDecision]:
+        fallback_timeout_s = _safe_float(
+            policy_cfg.get("fallback_timeout_seconds")
+            or policy_cfg.get("fallback_timeout_s")
+            or policy_cfg.get("fallback_limit_timeout_seconds")
+        )
+        if fallback_timeout_s is None or fallback_timeout_s <= 0:
+            fallback_timeout_s = 30.0
+        signal["limit_price"] = float(entry)
+        signal["_execution_price_locked"] = True
+        execution_params["order_type"] = "limit"
+        execution_params["timeout_seconds"] = float(fallback_timeout_s)
+        execution_params.setdefault("poll_interval_s", 1.0)
+        execution_params["market_fallback"] = False
+        execution_params["market_fallback_on_timeout_enabled"] = False
+        if is_extreme_bucket:
+            execution_params["disable_market_fallback_on_extreme_bucket"] = True
+        return signal, execution_params, SmartEntryDecision(applied=False, reason=reason)
+
     atr = _safe_float(signal.get("atr"))
     if atr is None:
         sizing_meta = signal.get("sizing_meta")
@@ -85,6 +140,11 @@ def apply_smart_entry_policy(
             atr = _safe_float(sizing_meta.get("atr"))
 
     if atr is None or atr <= 0:
+        if (not force_market_on_missing_atr) or (extreme_market_ban and is_extreme_bucket):
+            reason = "missing_atr_conservative_limit"
+            if extreme_market_ban and is_extreme_bucket:
+                reason = "missing_atr_conservative_limit_extreme"
+            return _inject_conservative_limit(reason)
         execution_params["order_type"] = "market"
         return signal, execution_params, SmartEntryDecision(applied=False, reason="missing_atr_force_market")
 
@@ -93,6 +153,11 @@ def apply_smart_entry_policy(
     thr_bps = 5.0 if thr_bps is None else float(thr_bps)
 
     if vol_bps < thr_bps:
+        if (not force_market_on_low_vol) or (extreme_market_ban and is_extreme_bucket):
+            reason = f"low_vol_conservative_limit:{vol_bps:.2f}<{thr_bps:.2f}"
+            if extreme_market_ban and is_extreme_bucket:
+                reason = f"low_vol_conservative_limit_extreme:{vol_bps:.2f}<{thr_bps:.2f}"
+            return _inject_conservative_limit(reason)
         # Low vol => force MARKET.
         execution_params["order_type"] = "market"
         # Ensure we don't accidentally pass a stale limit price.
@@ -138,6 +203,17 @@ def apply_smart_entry_policy(
     execution_params["max_chase_bps"] = float(gate_bps)
     execution_params["market_fallback"] = True
     execution_params.setdefault("poll_interval_s", 1.0)
+    for key in (
+        "market_fallback_on_timeout_enabled",
+        "disable_market_fallback_on_extreme_bucket",
+        "disable_market_fallback_on_fast_move",
+    ):
+        parsed = _safe_bool(policy_cfg.get(key))
+        if parsed is not None:
+            execution_params[key] = parsed
+    if extreme_market_ban and is_extreme_bucket:
+        execution_params["market_fallback_on_timeout_enabled"] = False
+        execution_params["disable_market_fallback_on_extreme_bucket"] = True
 
     signal.setdefault("smart_entry_meta", {})
     if isinstance(signal["smart_entry_meta"], dict):

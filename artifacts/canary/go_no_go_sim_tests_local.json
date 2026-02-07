@@ -1,0 +1,53 @@
+{
+  "status": "GO",
+  "metrics": {
+    "total_traces": 4,
+    "total_outcomes": 4,
+    "smart_entry_applied_rate": 0.75,
+    "missing_atr_force_market_count": 0,
+    "missing_atr_force_market_rate": 0.0,
+    "env_forced_order_type_market_count": 0,
+    "market_rate_by_bucket": {
+      "UNKNOWN": 0.25
+    },
+    "fallback_reason_counts": {},
+    "abort_no_fill_timeout_count": 0,
+    "abort_no_fill_timeout_rate": 0.0,
+    "entry_slippage_trade_weighted_p90_bps": null,
+    "entry_slippage_trade_weighted_p95_bps": null,
+    "entry_slippage_notional_weighted_p90_bps": null,
+    "entry_slippage_notional_weighted_p95_bps": null,
+    "stop_overshoot_p90_bps": null,
+    "stop_overshoot_p95_bps": null,
+    "atr_stale_market_violations": 0,
+    "atr_age_threshold_ms": 5000,
+    "missed_fill_increase_pct_vs_baseline": null
+  },
+  "go_no_go": {
+    "env_forced_market_zero": true,
+    "smart_entry_applied_rate_ok": true,
+    "missing_atr_force_market_rate_ok": true,
+    "extreme_market_rate_ok": true,
+    "atr_freshness_violations_zero": true,
+    "missed_fill_increase_ok": "baseline_not_provided"
+  },
+  "failed_gates": [],
+  "telemetry_gaps": [
+    "No entry_slippage_bps observed in order_decision_outcome events.",
+    "No stop_overshoot_bps observed in TRADE_CLOSED events."
+  ],
+  "scope": {
+    "files": [
+      "artifacts\\canary\\sim_engine.log",
+      "artifacts\\canary\\sim_order_manager.log"
+    ],
+    "symbol": "BTC/USDT:USDT",
+    "strategy": null
+  },
+  "event_counts": {
+    "traces": 4,
+    "outcomes": 4,
+    "order_manager_decisions": 9,
+    "trade_closed": 0
+  }
+}
