@@ -173,6 +173,16 @@ class CcxtClient:
         # "BTC/USDT" -> "BTC-USDT"
         return base_symbol.replace('/', '-')
 
+    @staticmethod
+    def _get_ccxt_symbol_from_bingx_native(symbol: str) -> str:
+        raw = str(symbol or "").strip().upper()
+        if not raw:
+            return raw
+        ccxt_symbol = raw.replace("-", "/")
+        if "/" in ccxt_symbol and ":" not in ccxt_symbol and ccxt_symbol.endswith("/USDT"):
+            ccxt_symbol = f"{ccxt_symbol}:USDT"
+        return ccxt_symbol
+
     def set_required_symbols(self, symbols: List[str]):
         """
         Set required symbols and skip market loading.
@@ -560,6 +570,73 @@ class CcxtClient:
         if symbol:
             cancel_symbol = self._get_bingx_native_symbol(symbol) if self.name == "bingx" else symbol
         return self.ex.cancel_order(order_id, cancel_symbol, params or {})
+
+    def fetch_order(self, order_id: str, symbol: Optional[str] = None, params: Optional[dict] = None) -> Dict[str, Any]:
+        """Fetch a single order by id using exchange-native symbol format when needed."""
+        fetch_symbol = None
+        if symbol:
+            fetch_symbol = self._get_bingx_native_symbol(symbol) if self.name == "bingx" else symbol
+        return self.ex.fetch_order(order_id, fetch_symbol, params or {})
+
+    def fetch_positions(self, symbols: Optional[List[str]] = None, params: Optional[dict] = None) -> List[Dict[str, Any]]:
+        """
+        Fetch positions in a shape compatible with OrderManager reconciliation helpers.
+        For BingX, prefer authenticated REST endpoint to avoid adapter inconsistencies.
+        """
+        params = params or {}
+        symbol_arg = None
+        if symbols and len(symbols) > 0:
+            symbol_arg = symbols[0]
+
+        if self.name == "bingx":
+            try:
+                response = self.get_bingx_positions(symbol=symbol_arg)
+                data = response.get("data") if isinstance(response, dict) else []
+                if not isinstance(data, list):
+                    return []
+                normalized: List[Dict[str, Any]] = []
+                for pos in data:
+                    if not isinstance(pos, dict):
+                        continue
+                    item = dict(pos)
+                    raw_symbol = item.get("symbol")
+                    if raw_symbol:
+                        item["symbol"] = self._get_ccxt_symbol_from_bingx_native(str(raw_symbol))
+                    raw_side = str(item.get("positionSide") or (item.get("info") or {}).get("positionSide") or "").upper().strip()
+                    if raw_side == "LONG":
+                        item.setdefault("side", "long")
+                    elif raw_side == "SHORT":
+                        item.setdefault("side", "short")
+                    try:
+                        amt = float(item.get("positionAmt") if item.get("positionAmt") is not None else item.get("position_amt") or 0.0)
+                        item.setdefault("contracts", abs(amt))
+                    except (TypeError, ValueError):
+                        pass
+                    normalized.append(item)
+                return normalized
+            except Exception as exc:
+                logger.warning("[bingx] get_bingx_positions failed, falling back to ccxt.fetch_positions: %s", exc)
+
+        fetch_symbols = symbols
+        if self.name == "bingx" and symbols:
+            fetch_symbols = [self._get_bingx_native_symbol(s) for s in symbols]
+        if callable(getattr(self.ex, "fetch_positions", None)):
+            result = self.ex.fetch_positions(fetch_symbols, params)
+            return result if isinstance(result, list) else []
+        return []
+
+    def fetch_position(self, symbol: str, params: Optional[dict] = None) -> Optional[Dict[str, Any]]:
+        """Fetch single-symbol position with best-effort compatibility."""
+        params = params or {}
+        positions = self.fetch_positions([symbol], params=params)
+        if positions:
+            return positions[0]
+        if callable(getattr(self.ex, "fetch_position", None)):
+            fetch_symbol = self._get_bingx_native_symbol(symbol) if self.name == "bingx" else symbol
+            result = self.ex.fetch_position(fetch_symbol, params)
+            if isinstance(result, dict):
+                return result
+        return None
 
     def create_trailing_percent_order(
         self,

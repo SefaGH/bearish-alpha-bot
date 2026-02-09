@@ -52,6 +52,10 @@ class FakeLimitTimeoutCcxtClient(FakeCcxtClient):
         self.cancel_order_calls.append({"order_id": order_id, "symbol": symbol, "params": params or {}})
         return {"id": order_id, "status": "canceled"}
 
+    def fetch_positions(self, symbols=None, params=None):
+        # No position delta by default.
+        return [{"symbol": "BTC/USDT:USDT", "side": "long", "contracts": 0.0}]
+
 
 class FakeLimitTimeoutChaseGateCcxtClient(FakeLimitTimeoutCcxtClient):
     def ticker(self, symbol: str):
@@ -73,6 +77,11 @@ class FakeLimitTimeoutRaceFillCcxtClient(FakeLimitTimeoutCcxtClient):
         self._pos_fetch_count += 1
         qty = 0.0 if self._pos_fetch_count == 1 else self._filled_qty
         return [{"symbol": "BTC/USDT:USDT", "side": "short", "contracts": qty}]
+
+
+class FakeLimitTimeoutNoVerificationCcxtClient(FakeLimitTimeoutCcxtClient):
+    def fetch_positions(self, symbols=None, params=None):
+        raise Exception("positions unavailable")
 
 
 def test_market_order_simulated_by_default(clean_env):
@@ -374,6 +383,42 @@ def test_limit_timeout_market_fallback_uses_only_residual_amount(clean_env):
     assert abs(float(result.get("fallback_residual_qty") or 0.0) - 0.006) < 1e-9
     assert [c["type"] for c in client.create_order_calls] == ["limit", "market"]
     assert abs(float(client.create_order_calls[-1]["amount"]) - 0.006) < 1e-9
+
+
+def test_limit_timeout_market_fallback_aborts_when_position_delta_unverified(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeLimitTimeoutNoVerificationCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "long",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 90.0},
+                "limit_price": 99.5,
+                "execution_params": {
+                    "timeout_seconds": 0,
+                    "market_fallback_on_timeout_enabled": True,
+                },
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is False
+    assert result.get("reason") == "ABORT:NO_FILL_TIMEOUT_UNVERIFIED"
+    assert result.get("fallback_reason") == "limit_timeout_market_fallback_unverified:position_delta"
+    assert result.get("requested_order_type") == "limit"
+    assert result.get("effective_order_type") == "limit"
+    assert [c["type"] for c in client.create_order_calls] == ["limit"]
 
 
 def test_real_cancel_is_idempotent(clean_env):

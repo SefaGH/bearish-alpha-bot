@@ -8,7 +8,7 @@ import logging
 import os
 import time
 import ccxt
-from typing import Dict, List, Optional, Any, Callable, TYPE_CHECKING
+from typing import Dict, List, Optional, Any, Callable, TYPE_CHECKING, Set
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -461,11 +461,41 @@ class SmartOrderManager:
         pos_side = ccxt_params.get("positionSide") or ccxt_params.get("position_side") or ""
         return f"{str(exchange).lower()}::{str(symbol).upper()}::{str(side).lower()}::{str(pos_side).upper()}"
 
+    @staticmethod
+    def _symbol_match_variants(symbol: str) -> Set[str]:
+        raw = str(symbol or "").strip().upper()
+        if not raw:
+            return set()
+        variants: Set[str] = {raw}
+        slash = raw.replace("-", "/")
+        variants.add(slash)
+        if ":" in slash:
+            variants.add(slash.split(":", 1)[0])
+        if "/" in slash and ":" not in slash and slash.endswith("/USDT"):
+            variants.add(f"{slash}:USDT")
+        compact = slash.replace("/", "")
+        if compact:
+            variants.add(compact)
+        return {v for v in variants if v}
+
+    @classmethod
+    def _symbols_match(cls, expected_symbol: str, position_symbol: str) -> bool:
+        expected = cls._symbol_match_variants(expected_symbol)
+        actual = cls._symbol_match_variants(position_symbol)
+        if not expected or not actual:
+            return False
+        return not expected.isdisjoint(actual)
+
+    @staticmethod
+    def _is_terminal_order_status(status: Any) -> bool:
+        text = str(status or "").strip().lower()
+        return text in {"closed", "filled", "canceled", "cancelled", "rejected", "expired"}
+
     def _extract_position_qty_for_side(self, *, position: Dict[str, Any], symbol: str, normalized_side: str, pos_side_hint: str) -> Optional[float]:
         if not isinstance(position, dict):
             return None
-        pos_symbol = str(position.get("symbol") or position.get("market") or "").upper().strip()
-        if pos_symbol and str(symbol).upper().strip() not in {pos_symbol, pos_symbol.replace(":", "/")}:
+        pos_symbol = str(position.get("symbol") or position.get("market") or "").strip()
+        if pos_symbol and not self._symbols_match(symbol, pos_symbol):
             return None
 
         raw_side = (
@@ -944,6 +974,11 @@ class SmartOrderManager:
                 preflight_enabled = _coerce_bool(execution_params.get("fallback_preflight_position_check_enabled"))
                 if preflight_enabled is None:
                     preflight_enabled = True
+                require_position_delta_verification = _coerce_bool(
+                    execution_params.get("fallback_require_position_delta_verification")
+                )
+                if require_position_delta_verification is None:
+                    require_position_delta_verification = True
                 reduce_only = bool(ccxt_params.get("reduceOnly") or ccxt_params.get("reduce_only"))
                 baseline_position_qty = None
                 if preflight_enabled and (not reduce_only):
@@ -1167,10 +1202,14 @@ class SmartOrderManager:
                 fallback_lock = self._get_fallback_lock(lock_key)
                 async with fallback_lock:
                     # Cancel the resting limit order (best-effort) before any fallback.
+                    cancel_status = None
+                    cancel_err = None
                     try:
-                        client.cancel_order(exchange_order_id, symbol, params={})
-                    except Exception:
-                        pass
+                        cancel_result = client.cancel_order(exchange_order_id, symbol, params={})
+                        if isinstance(cancel_result, dict):
+                            cancel_status = cancel_result.get("status")
+                    except Exception as exc:
+                        cancel_err = str(exc)
 
                     post_cancel = None
                     post_cancel_filled_qty = 0.0
@@ -1323,6 +1362,22 @@ class SmartOrderManager:
                 except Exception:
                     min_residual_qty = 1e-8
 
+                position_delta_verified = (
+                    baseline_position_qty is not None
+                    and current_position_qty is not None
+                )
+                cancel_terminal = self._is_terminal_order_status(cancel_status)
+                post_cancel_terminal = self._is_terminal_order_status((post_cancel or {}).get("status"))
+                verification_sources: List[str] = []
+                if position_delta_verified:
+                    verification_sources.append("position_delta")
+                if post_cancel_filled_qty > 0.0:
+                    verification_sources.append("post_cancel_filled")
+                if cancel_terminal:
+                    verification_sources.append("cancel_terminal")
+                if post_cancel_terminal:
+                    verification_sources.append("post_cancel_terminal")
+
                 remaining_qty = max(requested_amount - observed_filled_qty, 0.0)
 
                 if observed_filled_qty > 0.0 and remaining_qty <= min_residual_qty:
@@ -1349,6 +1404,7 @@ class SmartOrderManager:
                         'effective_order_type': 'limit',
                         'baseline_position_qty': baseline_position_qty,
                         'current_position_qty': current_position_qty,
+                        'verification_sources': verification_sources,
                     }
 
                 if not fallback_enabled:
@@ -1371,6 +1427,35 @@ class SmartOrderManager:
                         ),
                         'requested_order_type': 'limit',
                         'effective_order_type': 'limit',
+                        'verification_sources': verification_sources,
+                    }
+
+                if (
+                    bool(require_position_delta_verification)
+                    and (not reduce_only)
+                    and not position_delta_verified
+                    and post_cancel_filled_qty <= 0.0
+                ):
+                    logger.warning(
+                        "[ORDER-FALLBACK] unverified timeout fallback aborted symbol=%s side=%s cancel_status=%s cancel_err=%s post_cancel_status=%s baseline_qty=%s current_qty=%s",
+                        symbol,
+                        side,
+                        cancel_status,
+                        cancel_err or "n/a",
+                        (post_cancel or {}).get("status"),
+                        baseline_position_qty,
+                        current_position_qty,
+                    )
+                    return {
+                        'success': False,
+                        'reason': 'ABORT:NO_FILL_TIMEOUT_UNVERIFIED',
+                        'order_id': exchange_order_id,
+                        'fallback_reason': 'limit_timeout_market_fallback_unverified:position_delta',
+                        'requested_order_type': 'limit',
+                        'effective_order_type': 'limit',
+                        'baseline_position_qty': baseline_position_qty,
+                        'current_position_qty': current_position_qty,
+                        'verification_sources': verification_sources,
                     }
 
                 if remaining_qty <= min_residual_qty:
@@ -1381,6 +1466,7 @@ class SmartOrderManager:
                         'fallback_reason': 'limit_timeout_market_fallback_skipped_no_residual',
                         'requested_order_type': 'limit',
                         'effective_order_type': 'limit',
+                        'verification_sources': verification_sources,
                     }
 
                 # Place market order as fallback only for residual amount.
@@ -1404,6 +1490,7 @@ class SmartOrderManager:
                     fallback_result.setdefault("observed_filled_qty", float(observed_filled_qty))
                     fallback_result.setdefault("baseline_position_qty", baseline_position_qty)
                     fallback_result.setdefault("current_position_qty", current_position_qty)
+                    fallback_result.setdefault("verification_sources", verification_sources)
                     if deviation_bps is not None:
                         fallback_result.setdefault("deviation_bps", float(deviation_bps))
                     if max_chase_bps is not None:

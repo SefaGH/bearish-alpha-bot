@@ -818,6 +818,7 @@ class LiveTradingEngine:
                 "market_fallback_on_timeout_enabled",
                 "disable_market_fallback_on_extreme_bucket",
                 "disable_market_fallback_on_fast_move",
+                "fallback_require_position_delta_verification",
             ):
                 if execution_params.get(key) is not None:
                     continue

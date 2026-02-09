@@ -1,0 +1,69 @@
+{
+  "status": "NO_GO",
+  "metrics": {
+    "total_traces": 5,
+    "total_outcomes": 5,
+    "smart_entry_applied_rate": 1.0,
+    "missing_atr_force_market_count": 0,
+    "missing_atr_force_market_rate": 0.0,
+    "env_forced_order_type_market_count": 0,
+    "market_rate_by_bucket": {
+      "HIGH": 0.0,
+      "NORMAL": 0.0
+    },
+    "fallback_reason_counts": {
+      "limit_timeout_market_fallback": 2
+    },
+    "abort_no_fill_timeout_count": 0,
+    "abort_no_fill_timeout_rate": 0.0,
+    "entry_slippage_trade_weighted_p90_bps": 8.85188966542571,
+    "entry_slippage_trade_weighted_p95_bps": 9.875574582608527,
+    "entry_slippage_notional_weighted_p90_bps": 10.899259499791345,
+    "entry_slippage_notional_weighted_p95_bps": 10.899259499791345,
+    "time_to_fill_ms_p50": 242127.0,
+    "time_to_fill_ms_p90": 242952.8,
+    "time_to_fill_ms_p95": 243057.4,
+    "stop_overshoot_p90_bps": 0.8768000000000001,
+    "stop_overshoot_p95_bps": 0.9863999999999999,
+    "planned_vs_realized_rr_drift_abs_p90": 4.6545000000000005,
+    "planned_vs_realized_rr_drift_abs_p95": 4.9174,
+    "recon_watchdog_events_count": 382,
+    "recon_cycles_count": 190,
+    "recon_stale_removed_total": 0,
+    "recon_orphans_detected_total": 190,
+    "recon_orphans_adopted_total": 0,
+    "atr_stale_market_violations": 0,
+    "atr_age_threshold_ms": 5000,
+    "missed_fill_increase_pct_vs_baseline": null
+  },
+  "go_no_go": {
+    "env_forced_market_zero": true,
+    "smart_entry_applied_rate_ok": true,
+    "missing_atr_force_market_rate_ok": true,
+    "extreme_market_rate_ok": true,
+    "atr_freshness_violations_zero": true,
+    "missed_fill_increase_ok": "baseline_not_provided",
+    "recon_orphans_detected_ok": false,
+    "recon_stale_removed_ok": true,
+    "recon_orphans_adopted_ok": true,
+    "recon_events_present": true
+  },
+  "failed_gates": [
+    "recon_orphans_detected_ok"
+  ],
+  "telemetry_gaps": [],
+  "scope": {
+    "files": [
+      "logs\\live_trading_20260208_210712_896258.log"
+    ],
+    "symbol": "BTC/USDT:USDT",
+    "strategy": null
+  },
+  "event_counts": {
+    "traces": 5,
+    "outcomes": 5,
+    "order_manager_decisions": 9,
+    "trade_closed": 4,
+    "reconciliation_watchdog": 382
+  }
+}

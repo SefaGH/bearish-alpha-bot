@@ -207,6 +207,7 @@ def apply_smart_entry_policy(
         "market_fallback_on_timeout_enabled",
         "disable_market_fallback_on_extreme_bucket",
         "disable_market_fallback_on_fast_move",
+        "fallback_require_position_delta_verification",
     ):
         parsed = _safe_bool(policy_cfg.get(key))
         if parsed is not None:

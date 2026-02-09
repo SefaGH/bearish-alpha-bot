@@ -87,6 +87,7 @@ order_manager:
   market_fallback_on_timeout_enabled: true
   disable_market_fallback_on_extreme_bucket: true
   disable_market_fallback_on_fast_move: true
+  fallback_require_position_delta_verification: true
 
 # ==============================================================================
 # RISK MANAGEMENT - ENHANCED POSITION SIZING

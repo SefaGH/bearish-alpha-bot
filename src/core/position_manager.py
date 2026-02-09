@@ -618,6 +618,18 @@ class AdvancedPositionManager:
             return {"stale_removed": 0, "error": exchange_view.get("error")}
 
         open_index = exchange_view.get("index") or {}
+        # Mutable copy for keyed amount-consumption matching.
+        remaining_index: Dict[Tuple[str, str, str], List[float]] = {}
+        for key, vals in (open_index or {}).items():
+            cleaned: List[float] = []
+            for val in vals or []:
+                try:
+                    parsed = abs(float(val))
+                except (TypeError, ValueError):
+                    continue
+                if parsed > 0:
+                    cleaned.append(parsed)
+            remaining_index[key] = cleaned
         stale_removed = 0
 
         for position_id, position in list(self.positions.items()):
@@ -654,17 +666,40 @@ class AdvancedPositionManager:
             side_variants = {s for s in {raw_side, side_norm} if s}
 
             matched = False
+            candidate_keys: List[Tuple[str, str, str]] = []
             for sym in symbol_variants:
                 if not sym:
                     continue
                 for side in side_variants:
-                    key = (exchange, sym, side)
-                    candidates = open_index.get(key) or []
-                    if self._match_amount(amount, candidates):
-                        matched = True
-                        break
+                    candidate_keys.append((exchange, sym, side))
+
+            # First, try exact-ish consumption.
+            for key in candidate_keys:
+                candidates = remaining_index.get(key) or []
+                if self._consume_amount_from_candidates(
+                    amount,
+                    candidates,
+                    rel_tol=0.05,
+                    abs_tol=1e-12,
+                    allow_cover=False,
+                ):
+                    matched = True
                 if matched:
                     break
+
+            # If no exact match, allow "cover" match for net-positioning exchanges.
+            if not matched:
+                for key in candidate_keys:
+                    candidates = remaining_index.get(key) or []
+                    if self._consume_amount_from_candidates(
+                        amount,
+                        candidates,
+                        rel_tol=0.05,
+                        abs_tol=1e-12,
+                        allow_cover=True,
+                    ):
+                        matched = True
+                        break
 
             if matched:
                 continue
@@ -718,22 +753,41 @@ class AdvancedPositionManager:
             ex_name, symbol, side = key
             records_for_key = list(exchange_records.get(key) or [])
             for amt in list(amounts or []):
-                matched_idx: Optional[int] = None
-                for idx, entry in enumerate(local_entries):
-                    if entry.get("used"):
-                        continue
-                    if entry.get("exchange") != ex_name:
-                        continue
-                    if str(side) not in (entry.get("side_variants") or set()):
-                        continue
-                    if str(symbol) not in (entry.get("symbol_variants") or set()):
-                        continue
-                    local_amt = float(entry.get("amount") or 0.0)
-                    if self._match_amount(local_amt, [amt]):
-                        matched_idx = idx
+                try:
+                    original_amt = abs(float(amt))
+                except (TypeError, ValueError):
+                    continue
+                if original_amt <= 0:
+                    continue
+
+                remaining_amt = float(original_amt)
+                while remaining_amt > 1e-12:
+                    matched_idx: Optional[int] = None
+                    matched_amt = 0.0
+                    for idx, entry in enumerate(local_entries):
+                        if entry.get("used"):
+                            continue
+                        if entry.get("exchange") != ex_name:
+                            continue
+                        if str(side) not in (entry.get("side_variants") or set()):
+                            continue
+                        if str(symbol) not in (entry.get("symbol_variants") or set()):
+                            continue
+                        local_amt = self._safe_float(entry.get("amount"), 0.0) or 0.0
+                        if local_amt <= 0:
+                            continue
+                        # Netting-aware match: allow local position to consume a portion of exchange net size.
+                        if local_amt <= remaining_amt + max(1e-12, remaining_amt * 0.05):
+                            if local_amt > matched_amt:
+                                matched_idx = idx
+                                matched_amt = local_amt
+                    if matched_idx is None:
                         break
-                if matched_idx is not None:
                     local_entries[matched_idx]["used"] = True
+                    remaining_amt = max(remaining_amt - matched_amt, 0.0)
+
+                # If almost fully consumed by local positions, there is no orphan remainder.
+                if remaining_amt <= max(1e-12, original_amt * 0.05):
                     continue
 
                 rec = None
@@ -743,7 +797,7 @@ class AdvancedPositionManager:
                     "exchange": ex_name,
                     "symbol": symbol,
                     "side": side,
-                    "amount": float(amt),
+                    "amount": float(remaining_amt),
                     "entry_price": self._safe_float((rec or {}).get("entry_price"), 0.0) or 0.0,
                 }
                 orphans.append(orphan)
@@ -796,7 +850,16 @@ class AdvancedPositionManager:
                             symbol = raw_symbol.replace("-", "/")
                             if "USDT" in symbol and ":" not in symbol:
                                 symbol += ":USDT"
-                            side = "long" if amt > 0 else "short"
+                            # Hedge mode: positionSide is the source of truth; positionAmt sign can be positive
+                            # for both LONG/SHORT on some BingX responses.
+                            side = None
+                            raw_position_side = str(pos_data.get("positionSide") or "").upper().strip()
+                            if raw_position_side == "LONG":
+                                side = "long"
+                            elif raw_position_side == "SHORT":
+                                side = "short"
+                            else:
+                                side = "long" if amt > 0 else "short"
                             key = (ex, symbol, side)
                             index.setdefault(key, []).append(abs(float(amt)))
                             if include_records:
@@ -863,6 +926,68 @@ class AdvancedPositionManager:
                 continue
             if abs(local_amount - cand_val) <= max(abs_tol, local_amount * rel_tol):
                 return True
+        return False
+
+    @staticmethod
+    def _consume_amount_from_candidates(
+        local_amount: float,
+        candidates: List[float],
+        *,
+        rel_tol: float = 0.05,
+        abs_tol: float = 1e-12,
+        allow_cover: bool = False,
+    ) -> bool:
+        """
+        Try to consume local_amount from mutable candidate amounts.
+
+        - Exact mode (allow_cover=False): consumes only near-equal candidate.
+        - Cover mode  (allow_cover=True): allows candidate >= local_amount and subtracts local_amount,
+          leaving residual amount as unmatched exchange inventory (orphan candidate).
+        """
+        if local_amount <= 0:
+            return False
+        if not isinstance(candidates, list) or not candidates:
+            return False
+
+        # Pass 1: exact-ish match first.
+        for idx, cand in enumerate(list(candidates)):
+            try:
+                cand_val = float(cand)
+            except (TypeError, ValueError):
+                continue
+            if cand_val <= 0:
+                continue
+            if abs(local_amount - cand_val) <= max(abs_tol, local_amount * rel_tol):
+                try:
+                    candidates.pop(idx)
+                except Exception:
+                    pass
+                return True
+
+        if not allow_cover:
+            return False
+
+        # Pass 2: cover match (candidate can be larger; keep residual).
+        threshold = local_amount * (1.0 - rel_tol)
+        for idx, cand in enumerate(list(candidates)):
+            try:
+                cand_val = float(cand)
+            except (TypeError, ValueError):
+                continue
+            if cand_val <= 0:
+                continue
+            if cand_val + abs_tol < threshold:
+                continue
+
+            residual = cand_val - local_amount
+            if residual <= max(abs_tol, cand_val * rel_tol):
+                try:
+                    candidates.pop(idx)
+                except Exception:
+                    pass
+            else:
+                candidates[idx] = residual
+            return True
         return False
 
     def _archive_missing_exchange_position(self, position_id: str, reason: str) -> None:
