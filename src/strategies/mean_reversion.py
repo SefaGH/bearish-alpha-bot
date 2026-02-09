@@ -227,9 +227,81 @@ class VWAPMeanReversion(BaseStrategy):
         if mr_fast_watch_cfg is not None and not isinstance(mr_fast_watch_cfg, dict):
             mr_fast_watch_cfg = {}
         mr_fast_watch_cfg = dict(mr_fast_watch_cfg) if isinstance(mr_fast_watch_cfg, dict) else {}
+        promote_override_cfg = mr_fast_watch_cfg.get("promote_override", {})
+        if promote_override_cfg is not None and not isinstance(promote_override_cfg, dict):
+            promote_override_cfg = {}
+        promote_override_cfg = dict(promote_override_cfg) if isinstance(promote_override_cfg, dict) else {}
         self._fast_watch_v2_cfg = mr_fast_watch_cfg
         v2_keys = {"near_bps", "touch_eps_bps", "touch_price_source", "recheck_freshness_ms", "allow_touch_entry"}
         self._fast_watch_v2_enabled = any(k in mr_fast_watch_cfg for k in v2_keys)
+        self._promote_override_enabled = bool(promote_override_cfg.get("enabled", True))
+        try:
+            promote_mode = str(promote_override_cfg.get("mode", "observe") or "observe").strip().lower()
+        except Exception:
+            promote_mode = "observe"
+        if promote_mode not in {"observe", "enforce", "off", "disabled"}:
+            promote_mode = "observe"
+        self._promote_override_mode = promote_mode
+
+        raw_canary_symbols = promote_override_cfg.get("canary_symbols", [])
+        canary_symbols: set[str] = set()
+        if isinstance(raw_canary_symbols, str):
+            tokens = [p.strip() for p in raw_canary_symbols.split(",")]
+        elif isinstance(raw_canary_symbols, (list, tuple, set)):
+            tokens = list(raw_canary_symbols)
+        else:
+            tokens = []
+        for token in tokens:
+            try:
+                key = str(token).strip().upper()
+            except Exception:
+                key = ""
+            if key:
+                canary_symbols.add(key)
+        self._promote_override_canary_symbols = canary_symbols
+        try:
+            self._promote_override_min_z_score = float(promote_override_cfg.get("min_z_score", 2.0) or 2.0)
+        except Exception:
+            self._promote_override_min_z_score = 2.0
+        if not math.isfinite(self._promote_override_min_z_score) or self._promote_override_min_z_score <= 0:
+            self._promote_override_min_z_score = 2.0
+        try:
+            self._promote_override_max_dist_bps = float(promote_override_cfg.get("max_dist_bps", 2.0) or 2.0)
+        except Exception:
+            self._promote_override_max_dist_bps = 2.0
+        if not math.isfinite(self._promote_override_max_dist_bps) or self._promote_override_max_dist_bps < 0:
+            self._promote_override_max_dist_bps = 2.0
+        try:
+            self._promote_override_max_adx = float(promote_override_cfg.get("max_adx", 20.0) or 20.0)
+        except Exception:
+            self._promote_override_max_adx = 20.0
+        if not math.isfinite(self._promote_override_max_adx) or self._promote_override_max_adx <= 0:
+            self._promote_override_max_adx = 20.0
+        raw_min_volume = promote_override_cfg.get("min_volume_strength")
+        self._promote_override_min_volume_strength: Optional[float] = None
+        if raw_min_volume is not None:
+            try:
+                parsed_min_volume = float(raw_min_volume)
+                if math.isfinite(parsed_min_volume):
+                    self._promote_override_min_volume_strength = max(0.0, parsed_min_volume)
+            except Exception:
+                self._promote_override_min_volume_strength = None
+        self._promote_override_respect_trend_veto = bool(promote_override_cfg.get("respect_trend_veto", False))
+        blocked_states_raw = promote_override_cfg.get("blocked_shock_states", ["ARMED", "TRIGGERED"])
+        blocked_states: set[str] = set()
+        if isinstance(blocked_states_raw, str):
+            blocked_states = {s.strip().upper() for s in blocked_states_raw.split(",") if s and str(s).strip()}
+        elif isinstance(blocked_states_raw, (list, tuple, set)):
+            for state in blocked_states_raw:
+                try:
+                    state_norm = str(state).strip().upper()
+                except Exception:
+                    state_norm = ""
+                if state_norm:
+                    blocked_states.add(state_norm)
+        if not blocked_states:
+            blocked_states = {"ARMED", "TRIGGERED"}
+        self._promote_override_blocked_shock_states = blocked_states
 
         self._fast_watch_near_bps_default: Optional[float] = None
         self._fast_watch_touch_eps_bps_default: Optional[float] = None
@@ -578,6 +650,441 @@ class VWAPMeanReversion(BaseStrategy):
         subset = ["close", "adx"]
         return self._subset_dropna(df_sig, subset)
 
+    @staticmethod
+    def _normalize_ema_stack(ema_stack: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+        if not isinstance(ema_stack, dict):
+            return None
+        out: Dict[str, float] = {}
+        for key in ("ema21", "ema50", "ema200"):
+            try:
+                val = float(ema_stack.get(key))
+            except Exception:
+                return None
+            if not math.isfinite(val):
+                return None
+            out[key] = float(val)
+        return out
+
+    @classmethod
+    def _extract_ema_stack_from_df(cls, df: Optional[pd.DataFrame]) -> Optional[Dict[str, float]]:
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            return None
+
+        normalized_cols: Dict[str, str] = {}
+        for col in df.columns:
+            try:
+                col_norm = str(col).strip().lower().replace("_", "")
+            except Exception:
+                continue
+            normalized_cols[col_norm] = str(col)
+
+        key_map = {
+            "ema21": normalized_cols.get("ema21"),
+            "ema50": normalized_cols.get("ema50"),
+            "ema200": normalized_cols.get("ema200"),
+        }
+        if not all(key_map.values()):
+            return None
+
+        out: Dict[str, float] = {}
+        for ema_key, col_name in key_map.items():
+            try:
+                series = pd.to_numeric(df[col_name], errors="coerce").dropna()
+            except Exception:
+                return None
+            if series.empty:
+                return None
+            try:
+                val = float(series.iloc[-1])
+            except Exception:
+                return None
+            if not math.isfinite(val):
+                return None
+            out[ema_key] = float(val)
+        return out
+
+    def _get_ema_stack(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        df_sig: Optional[pd.DataFrame] = None,
+        market_data: Optional[Dict[str, Any]] = None,
+        kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, float]]:
+        # 1) Explicit caller-provided stack wins.
+        explicit = None
+        if isinstance(kwargs, dict):
+            explicit = kwargs.get("ema_stack")
+        normalized_explicit = self._normalize_ema_stack(explicit if isinstance(explicit, dict) else None)
+        if normalized_explicit is not None:
+            return normalized_explicit
+
+        # 2) Current signal dataframe.
+        cand = self._extract_ema_stack_from_df(df_sig)
+        if cand is not None:
+            return cand
+
+        # 3) Additional dataframes in market_data (best-effort, no extra fetch).
+        candidates: list[pd.DataFrame] = []
+        if isinstance(market_data, dict):
+            for key in ("df_sig", "5m", "15m", "30m", "1h", "df_30m", "df_1h"):
+                maybe_df = market_data.get(key)
+                if isinstance(maybe_df, pd.DataFrame):
+                    candidates.append(maybe_df)
+
+            if symbol is not None:
+                symbol_bucket = market_data.get(symbol)
+                if isinstance(symbol_bucket, dict):
+                    for key in ("5m", "15m", "30m", "1h", str(self.signal_tf), str(self.vwap_tf)):
+                        maybe_df = symbol_bucket.get(key)
+                        if isinstance(maybe_df, pd.DataFrame):
+                            candidates.append(maybe_df)
+                try:
+                    symbol_short = str(symbol).split(":", 1)[0]
+                except Exception:
+                    symbol_short = None
+                if symbol_short and symbol_short != symbol:
+                    symbol_bucket = market_data.get(symbol_short)
+                    if isinstance(symbol_bucket, dict):
+                        for key in ("5m", "15m", "30m", "1h", str(self.signal_tf), str(self.vwap_tf)):
+                            maybe_df = symbol_bucket.get(key)
+                            if isinstance(maybe_df, pd.DataFrame):
+                                candidates.append(maybe_df)
+
+        for candidate_df in candidates:
+            cand = self._extract_ema_stack_from_df(candidate_df)
+            if cand is not None:
+                return cand
+        return None
+
+    def _is_trend_against_mr(
+        self,
+        direction: str,
+        *,
+        ema_stack: Optional[Dict[str, Any]] = None,
+        regime_data: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        near = str(direction or "").strip().lower()
+        if near not in {"lower", "upper"}:
+            return False
+
+        # Prefer explicit EMA stack if caller provides it.
+        if isinstance(ema_stack, dict):
+            try:
+                ema21 = float(ema_stack.get("ema21"))
+                ema50 = float(ema_stack.get("ema50"))
+                ema200 = float(ema_stack.get("ema200"))
+            except Exception:
+                ema21 = ema50 = ema200 = float("nan")
+            if math.isfinite(ema21) and math.isfinite(ema50) and math.isfinite(ema200):
+                bullish_stack = ema21 > ema50 > ema200
+                bearish_stack = ema21 < ema50 < ema200
+                if near == "upper" and bullish_stack:
+                    return True
+                if near == "lower" and bearish_stack:
+                    return True
+
+        # Fallback: use already-computed regime label.
+        trend_label = None
+        if isinstance(regime_data, dict):
+            try:
+                trend_label = str(regime_data.get("trend") or "").strip().lower()
+            except Exception:
+                trend_label = None
+        if near == "upper" and trend_label == "bullish":
+            return True
+        if near == "lower" and trend_label == "bearish":
+            return True
+        return False
+
+    @staticmethod
+    def _coerce_finite_float(value: Any) -> Optional[float]:
+        try:
+            parsed = float(value)
+        except Exception:
+            return None
+        if not math.isfinite(parsed):
+            return None
+        return parsed
+
+    @staticmethod
+    def _normalize_volume_bucket(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        try:
+            label = str(value).strip().upper()
+        except Exception:
+            return None
+        if not label:
+            return None
+        return label
+
+    @staticmethod
+    def _symbol_rollout_keys(symbol: Any) -> set[str]:
+        keys: set[str] = set()
+        if symbol is None:
+            return keys
+        try:
+            raw = str(symbol).strip().upper()
+        except Exception:
+            raw = ""
+        if not raw:
+            return keys
+        keys.add(raw)
+        if ":" in raw:
+            left = raw.split(":", 1)[0].strip()
+            if left:
+                keys.add(left)
+        return keys
+
+    def _is_promote_override_enforced_for_symbol(self, symbol: Any) -> tuple[bool, str]:
+        if not bool(getattr(self, "_promote_override_enabled", True)):
+            return False, "disabled"
+        mode = str(getattr(self, "_promote_override_mode", "observe") or "observe").strip().lower()
+        if mode in {"off", "disabled"}:
+            return False, "mode_disabled"
+        if mode == "enforce":
+            return True, "mode_enforce"
+        canary_set = getattr(self, "_promote_override_canary_symbols", set()) or set()
+        if "*" in canary_set:
+            return True, "canary_all"
+        symbol_keys = self._symbol_rollout_keys(symbol)
+        if symbol_keys and any(k in canary_set for k in symbol_keys):
+            return True, "canary_symbol"
+        return False, "observe_only"
+
+    def _estimate_local_volume_context(self, df_sig: Optional[pd.DataFrame]) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "available": False,
+            "volume_strength": None,
+            "volume_bucket": None,
+            "recent_volume": None,
+            "baseline_volume": None,
+            "ratio_recent_to_baseline": None,
+            "reason": "unavailable",
+        }
+        if df_sig is None or not isinstance(df_sig, pd.DataFrame) or df_sig.empty:
+            return out
+        if "volume" not in df_sig.columns:
+            out["reason"] = "missing_volume_column"
+            return out
+
+        try:
+            vol = pd.to_numeric(df_sig["volume"], errors="coerce").dropna()
+        except Exception:
+            vol = pd.Series(dtype="float64")
+        if len(vol) < 3:
+            out["reason"] = "insufficient_rows"
+            return out
+
+        recent_window = min(5, max(1, len(vol) - 1))
+        baseline_series = vol.iloc[:-recent_window] if recent_window < len(vol) else vol.iloc[:-1]
+        if baseline_series.empty:
+            out["reason"] = "insufficient_baseline"
+            return out
+        baseline_window = min(20, len(baseline_series))
+        baseline_tail = baseline_series.tail(baseline_window)
+        if baseline_tail.empty:
+            out["reason"] = "insufficient_baseline"
+            return out
+
+        try:
+            recent_avg = float(vol.tail(recent_window).mean())
+            baseline_avg = float(baseline_tail.mean())
+        except Exception:
+            out["reason"] = "aggregation_failed"
+            return out
+        if not math.isfinite(recent_avg) or not math.isfinite(baseline_avg) or baseline_avg <= 0:
+            out["reason"] = "non_finite_or_zero_baseline"
+            return out
+
+        ratio = recent_avg / baseline_avg
+        strength = min(max(ratio, 0.0), 2.0) / 2.0
+        if ratio < 0.80:
+            bucket = "LOW"
+        elif ratio < 1.20:
+            bucket = "NORMAL"
+        elif ratio < 1.80:
+            bucket = "HIGH"
+        else:
+            bucket = "EXTREME"
+        out.update(
+            {
+                "available": True,
+                "volume_strength": float(strength),
+                "volume_bucket": bucket,
+                "recent_volume": float(recent_avg),
+                "baseline_volume": float(baseline_avg),
+                "ratio_recent_to_baseline": float(ratio),
+                "reason": "ok",
+            }
+        )
+        return out
+
+    def _resolve_volume_analysis(
+        self,
+        *,
+        kwargs: Dict[str, Any],
+        check_detail: Optional[Dict[str, Any]],
+        df_sig: Optional[pd.DataFrame],
+    ) -> Dict[str, Any]:
+        upstream_strength = self._coerce_finite_float(kwargs.get("volume_strength"))
+        upstream_bucket = self._normalize_volume_bucket(kwargs.get("volume_bucket"))
+        upstream_source = kwargs.get("volume_source")
+        upstream_analysis = kwargs.get("volume_analysis")
+        if isinstance(upstream_analysis, dict):
+            if upstream_strength is None:
+                upstream_strength = self._coerce_finite_float(
+                    upstream_analysis.get("volume_strength", upstream_analysis.get("strength"))
+                )
+            if upstream_bucket is None:
+                upstream_bucket = self._normalize_volume_bucket(
+                    upstream_analysis.get("volume_bucket", upstream_analysis.get("bucket"))
+                )
+            if upstream_source is None:
+                upstream_source = upstream_analysis.get("source")
+
+        detail_candidates = []
+        if isinstance(check_detail, dict):
+            detail_candidates.extend(
+                [
+                    check_detail,
+                    check_detail.get("volume"),
+                    check_detail.get("volume_analysis"),
+                    check_detail.get("volume_context"),
+                    check_detail.get("volume_detail"),
+                ]
+            )
+        for cand in detail_candidates:
+            if not isinstance(cand, dict):
+                continue
+            if upstream_strength is None:
+                upstream_strength = self._coerce_finite_float(
+                    cand.get("volume_strength", cand.get("strength"))
+                )
+            if upstream_bucket is None:
+                upstream_bucket = self._normalize_volume_bucket(
+                    cand.get("volume_bucket", cand.get("bucket"))
+                )
+            if upstream_source is None:
+                upstream_source = cand.get("source")
+            if upstream_strength is not None and upstream_bucket is not None and upstream_source is not None:
+                break
+
+        local_ctx = self._estimate_local_volume_context(df_sig)
+        local_strength = self._coerce_finite_float(local_ctx.get("volume_strength"))
+        local_bucket = self._normalize_volume_bucket(local_ctx.get("volume_bucket"))
+
+        resolved_strength = upstream_strength if upstream_strength is not None else local_strength
+        resolved_bucket = upstream_bucket if upstream_bucket is not None else local_bucket
+
+        if upstream_strength is not None or upstream_bucket is not None:
+            resolved_source = str(upstream_source or "upstream_recheck")
+        elif local_strength is not None or local_bucket is not None:
+            resolved_source = "local_df_sig_fallback"
+        else:
+            resolved_source = "unavailable"
+
+        return {
+            "source": resolved_source,
+            "volume_strength": resolved_strength,
+            "volume_bucket": resolved_bucket,
+            "upstream": {
+                "volume_strength": upstream_strength,
+                "volume_bucket": upstream_bucket,
+                "source": str(upstream_source) if upstream_source is not None else None,
+            },
+            "local": local_ctx,
+        }
+
+    def check_promotion_override(
+        self,
+        *,
+        touch_confirmed: bool,
+        near: str,
+        dist_bps: Optional[float],
+        z: Optional[float],
+        adx: Optional[float],
+        shock_state: Optional[str] = None,
+        regime_data: Optional[Dict[str, Any]] = None,
+        volume_strength: Optional[float] = None,
+        ema_stack: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if not self._promote_override_enabled:
+            return False
+        if not touch_confirmed:
+            return False
+        near_norm = str(near or "").strip().lower()
+        if near_norm not in {"lower", "upper"}:
+            return False
+        if dist_bps is None or not math.isfinite(float(dist_bps)):
+            logger.info("[MeanReversion] PROMOTE reject: dist_bps missing/invalid")
+            return False
+        # FastWatch dist_to_band_bps can be signed; compare using absolute distance.
+        if abs(float(dist_bps)) > float(self._promote_override_max_dist_bps):
+            logger.info(
+                "[MeanReversion] PROMOTE reject: abs(dist_bps)=%.2f > %.2f",
+                abs(float(dist_bps)),
+                float(self._promote_override_max_dist_bps),
+            )
+            return False
+        if z is None or not math.isfinite(float(z)):
+            logger.info("[MeanReversion] PROMOTE reject: z missing/invalid")
+            return False
+        if abs(float(z)) < float(self._promote_override_min_z_score):
+            logger.info(
+                "[MeanReversion] PROMOTE reject: z=%.2f < %.2f",
+                float(z),
+                float(self._promote_override_min_z_score),
+            )
+            return False
+        if adx is None or not math.isfinite(float(adx)):
+            logger.info("[MeanReversion] PROMOTE reject: adx missing/invalid")
+            return False
+        if float(adx) > float(self._promote_override_max_adx):
+            logger.info(
+                "[MeanReversion] PROMOTE reject: ADX=%.2f > %.2f",
+                float(adx),
+                float(self._promote_override_max_adx),
+            )
+            return False
+        if self._promote_override_respect_trend_veto and self._is_trend_against_mr(
+            near_norm,
+            ema_stack=ema_stack,
+            regime_data=regime_data,
+        ):
+            logger.info("[MeanReversion] PROMOTE reject: trend veto near=%s", near_norm)
+            return False
+        if (
+            volume_strength is not None
+            and self._promote_override_min_volume_strength is not None
+            and math.isfinite(float(volume_strength))
+            and float(volume_strength) < float(self._promote_override_min_volume_strength)
+        ):
+            logger.info(
+                "[MeanReversion] PROMOTE reject: volume_strength=%.2f < %.2f",
+                float(volume_strength),
+                float(self._promote_override_min_volume_strength),
+            )
+            return False
+        if shock_state is not None:
+            try:
+                shock_state_norm = str(shock_state).strip().upper()
+            except Exception:
+                shock_state_norm = ""
+            if shock_state_norm and shock_state_norm in self._promote_override_blocked_shock_states:
+                logger.info("[MeanReversion] PROMOTE reject: shock_state=%s", shock_state_norm)
+                return False
+
+        logger.info(
+            "[MeanReversion] PROMOTE approved: near=%s z=%.2f adx=%.2f dist_bps=%.2f",
+            near_norm,
+            float(z),
+            float(adx),
+            float(dist_bps),
+        )
+        return True
+
     async def signal(self, symbol: str, market_data: Optional[Dict[str, Any]] = None, ml_context=None, **kwargs) -> Optional[Dict[str, Any]]:
         """Interface method expected by ProductionCoordinator."""
         rows_hint = 0
@@ -650,6 +1157,7 @@ class VWAPMeanReversion(BaseStrategy):
         fast_watch_touch_confirmed = False
         fast_watch_touch_eps_bps = None
         fast_watch_px_used = None
+        fast_watch_dist_to_band_bps = None
         if isinstance(check_detail, dict):
             fast_watch = check_detail.get("fast_watch")
             if isinstance(fast_watch, dict):
@@ -657,12 +1165,38 @@ class VWAPMeanReversion(BaseStrategy):
                 fast_watch_touch_confirmed = bool(fast_watch.get("touch_confirmed", False))
                 fast_watch_touch_eps_bps = _coerce_float(fast_watch.get("touch_eps_bps"))
                 fast_watch_px_used = _coerce_float(fast_watch.get("px_used"))
+                fast_watch_dist_to_band_bps = _coerce_float(fast_watch.get("dist_to_band_bps"))
             micro_gate_watch = check_detail.get("micro_gate_watch")
             if isinstance(micro_gate_watch, dict):
                 micro_gate_watch_price = _coerce_float(micro_gate_watch.get("price"))
 
         market_price = None
         recheck_eval_emitted = False
+        volume_analysis: Dict[str, Any] = {
+            "source": "unresolved",
+            "volume_strength": None,
+            "volume_bucket": None,
+            "upstream": {},
+            "local": {"available": False, "reason": "not_evaluated"},
+        }
+        promote_override_meta: Dict[str, Any] = {
+            "enabled": bool(getattr(self, "_promote_override_enabled", True)),
+            "configured_mode": str(getattr(self, "_promote_override_mode", "observe")),
+            "scope_reason": "not_evaluated",
+            "mode_enforced": False,
+            "candidate": False,
+            "applied": False,
+            "canary_symbols_count": len(getattr(self, "_promote_override_canary_symbols", set()) or set()),
+            # Snapshot inputs for downstream TRADE_CLOSED observability.
+            "near": None,
+            "touch_confirmed": None,
+            "dist_bps": None,
+            "z": None,
+            "adx": None,
+            "volume_strength": None,
+            "volume_bucket": None,
+            "shock_state": None,
+        }
 
         def _emit_recheck_eval(
             *,
@@ -749,6 +1283,13 @@ class VWAPMeanReversion(BaseStrategy):
                 "primary_gate_reason": reasons[0] if reasons else "unknown",
                 "rearm_recommended": rearm_recommended,
                 "rearm_reason": rearm_reason,
+                "volume_strength": volume_analysis.get("volume_strength"),
+                "volume_bucket": volume_analysis.get("volume_bucket"),
+                "volume_source": volume_analysis.get("source"),
+                "promote_override_mode": promote_override_meta.get("configured_mode"),
+                "promote_override_scope": promote_override_meta.get("scope_reason"),
+                "promote_override_candidate": promote_override_meta.get("candidate"),
+                "promote_override_applied": promote_override_meta.get("applied"),
             }
             try:
                 logger.info("mr_recheck_eval %s", json.dumps(out, ensure_ascii=True, sort_keys=True))
@@ -1074,38 +1615,77 @@ class VWAPMeanReversion(BaseStrategy):
                 z_val = (price - vwap_target) / vwap_std_val
             except Exception:
                 z_val = None
+        volume_analysis = self._resolve_volume_analysis(
+            kwargs=kwargs,
+            check_detail=check_detail if isinstance(check_detail, dict) else None,
+            df_sig=clean_sig if isinstance(clean_sig, pd.DataFrame) else df_sig,
+        )
+        volume_strength = self._coerce_finite_float(volume_analysis.get("volume_strength"))
+        volume_bucket = self._normalize_volume_bucket(volume_analysis.get("volume_bucket"))
+        ema_stack = self._get_ema_stack(
+            symbol=symbol,
+            df_sig=clean_sig if isinstance(clean_sig, pd.DataFrame) else df_sig,
+            market_data=market_data if isinstance(market_data, dict) else None,
+            kwargs=kwargs,
+        )
 
         # -----------------------------------------------------------
         # OPPORTUNITY PROMOTION (Recheck override)
         # -----------------------------------------------------------
+        promotion_override_candidate = False
         promotion_override = False
+        promote_mode_enforced, promote_scope_reason = self._is_promote_override_enforced_for_symbol(symbol)
         if is_recheck and fast_watch_touch_confirmed and (near_str in ["lower", "upper"]):
             _target_band_val = lower if near_str == "lower" else upper
             _dist_bps = None
-            if price and _target_band_val and price > 0:
+            if fast_watch_dist_to_band_bps is not None and math.isfinite(float(fast_watch_dist_to_band_bps)):
+                _dist_bps = float(fast_watch_dist_to_band_bps)
+            elif price and _target_band_val and price > 0:
                 try:
                     _dist_bps = abs(price - _target_band_val) / price * 10000.0
                 except Exception:
                     _dist_bps = None
+            promote_override_meta.update(
+                {
+                    "near": near_str,
+                    "touch_confirmed": bool(fast_watch_touch_confirmed),
+                    "dist_bps": self._coerce_finite_float(_dist_bps),
+                    "z": self._coerce_finite_float(z_val),
+                    "adx": self._coerce_finite_float(adx_val),
+                    "volume_strength": self._coerce_finite_float(volume_strength),
+                    "volume_bucket": volume_bucket,
+                    "shock_state": str(shock_state).upper().strip() if shock_state is not None else None,
+                }
+            )
 
-            if (
-                _dist_bps is not None
-                and _dist_bps <= 6.0
-                and z_val is not None
-                and math.isfinite(z_val)
-                and abs(float(z_val)) >= 1.23
-                and adx_val is not None
-                and math.isfinite(adx_val)
-                and float(adx_val) <= 25.0
-            ):
-                promotion_override = True
+            promotion_override_candidate = self.check_promotion_override(
+                touch_confirmed=fast_watch_touch_confirmed,
+                near=near_str,
+                dist_bps=_dist_bps,
+                z=z_val,
+                adx=adx_val,
+                shock_state=shock_state,
+                regime_data=regime_data,
+                volume_strength=volume_strength,
+                ema_stack=ema_stack,
+            )
+            promotion_override = bool(promotion_override_candidate and promote_mode_enforced)
+            if promotion_override_candidate and not promotion_override:
                 logger.info(
-                    "[MeanReversion] PROMOTE override: near=%s z=%.2f adx=%.2f dist_bps=%.2f",
+                    "[MeanReversion] PROMOTE observe-only %s: mode=%s scope=%s near=%s",
+                    symbol,
+                    str(getattr(self, "_promote_override_mode", "observe")),
+                    promote_scope_reason,
                     near_str,
-                    float(z_val),
-                    float(adx_val),
-                    float(_dist_bps),
                 )
+        promote_override_meta.update(
+            {
+                "scope_reason": str(promote_scope_reason),
+                "mode_enforced": bool(promote_mode_enforced),
+                "candidate": bool(promotion_override_candidate),
+                "applied": bool(promotion_override),
+            }
+        )
 
         # -----------------------------------------------------------
         # DYNAMIC Z-THRESHOLD (ADX-sensitive)
@@ -1118,8 +1698,16 @@ class VWAPMeanReversion(BaseStrategy):
             elif float(adx_val) >= 25.0:
                 required_z = max(required_z, float(self._high_adx_z_threshold))
 
+        dynamic_z_skip_touch_recheck = bool(is_recheck and fast_watch_touch_confirmed)
         if z_val is not None and math.isfinite(z_val):
-            if guard_state_pre != "ARMED" and abs(float(z_val)) < required_z:
+            if dynamic_z_skip_touch_recheck and guard_state_pre != "ARMED" and abs(float(z_val)) < required_z:
+                logger.info(
+                    "[MeanReversion] Dynamic Z bypass %s: z=%.2f required=%.2f (touch_confirmed recheck)",
+                    symbol,
+                    float(abs(z_val)),
+                    float(required_z),
+                )
+            elif guard_state_pre != "ARMED" and abs(float(z_val)) < required_z:
                 logger.info(
                     "[MeanReversion] Dynamic Z veto %s: z=%.2f required=%.2f adx=%.2f",
                     symbol,
@@ -1224,10 +1812,6 @@ class VWAPMeanReversion(BaseStrategy):
             float(eff_adx_threshold) if math.isfinite(eff_adx_threshold) else float("nan"),
             adx_decision_reason,
         )
-        if promotion_override:
-            adx_ok = True
-            adx_decision_reason = "promotion_override"
-
         reentry_guard_active = False
         if self._reentry_guard_enabled and self._reentry_guard_require_vwap_reclaim:
             try:
@@ -1248,11 +1832,18 @@ class VWAPMeanReversion(BaseStrategy):
 
         entry_long = price < lower and adx_ok
         entry_short = price > upper and adx_ok
-        if promotion_override:
+        if promotion_override and adx_ok:
             if near_str == "lower":
                 entry_long = True
             elif near_str == "upper":
                 entry_short = True
+        elif promotion_override and not adx_ok:
+            logger.info(
+                "[MeanReversion] PROMOTE suppressed by ADX veto %s: adx=%.2f threshold=%.2f",
+                symbol,
+                float(adx_val) if adx_val is not None and math.isfinite(adx_val) else float("nan"),
+                float(eff_adx_threshold),
+            )
 
         guard_status = None
         guard_rsi_val = None
@@ -1351,79 +1942,109 @@ class VWAPMeanReversion(BaseStrategy):
         # Rejection Confirmation (SHORT) - closed-only evaluation
         # ------------------------------------------------------------------
         rejection_meta = None
-        if not is_recheck:
-            rej_cfg = self.strategy_config.get("rejection_confirmation") if isinstance(self.strategy_config, dict) else {}
+        rej_cfg = self.strategy_config.get("rejection_confirmation") if isinstance(self.strategy_config, dict) else {}
+        rej_enabled = True
+        wick_ratio_min = 0.8
+        recheck_mode = "observe"
+        try:
+            rej_enabled = bool(rej_cfg.get("enabled", True)) if isinstance(rej_cfg, dict) else True
+        except Exception:
             rej_enabled = True
+        try:
+            wick_ratio_min = float(rej_cfg.get("upper_wick_ratio_min", 0.8) or 0.8) if isinstance(rej_cfg, dict) else 0.8
+        except Exception:
             wick_ratio_min = 0.8
+        if isinstance(rej_cfg, dict):
             try:
-                rej_enabled = bool(rej_cfg.get("enabled", True)) if isinstance(rej_cfg, dict) else True
+                recheck_mode = str(rej_cfg.get("recheck_mode", "observe") or "observe").strip().lower()
             except Exception:
-                rej_enabled = True
-            try:
-                wick_ratio_min = float(rej_cfg.get("upper_wick_ratio_min", 0.8) or 0.8) if isinstance(rej_cfg, dict) else 0.8
-            except Exception:
-                wick_ratio_min = 0.8
+                recheck_mode = "observe"
+        if recheck_mode not in {"observe", "enforce", "off", "disabled"}:
+            recheck_mode = "observe"
+        recheck_enforce = bool(is_recheck and recheck_mode == "enforce")
 
-            if rej_enabled and entry_short is not None:
-                candle_row = last_sig
+        if rej_enabled and entry_short is not None:
+            candle_row = last_sig
+            includes_forming = False
+            used_prev_closed = False
+            try:
+                includes_forming = bool(getattr(clean_sig, "attrs", {}).get("includes_forming", False))
+            except Exception:
                 includes_forming = False
-                used_prev_closed = False
-                try:
-                    includes_forming = bool(getattr(clean_sig, "attrs", {}).get("includes_forming", False))
-                except Exception:
-                    includes_forming = False
-                if includes_forming and isinstance(clean_sig, pd.DataFrame) and len(clean_sig) >= 2:
-                    candle_row = clean_sig.iloc[-2]
-                    used_prev_closed = True
-                try:
-                    candle_open = float(candle_row.get("open"))
-                    candle_close = float(candle_row.get("close"))
-                    candle_high = float(candle_row.get("high"))
-                    candle_low = float(candle_row.get("low"))
-                except Exception:
-                    candle_open = candle_close = candle_high = candle_low = None
+            if includes_forming and isinstance(clean_sig, pd.DataFrame) and len(clean_sig) >= 2:
+                candle_row = clean_sig.iloc[-2]
+                used_prev_closed = True
+            try:
+                candle_open = float(candle_row.get("open"))
+                candle_close = float(candle_row.get("close"))
+                candle_high = float(candle_row.get("high"))
+                candle_low = float(candle_row.get("low"))
+            except Exception:
+                candle_open = candle_close = candle_high = candle_low = None
 
-                if candle_open is not None and candle_close is not None and candle_high is not None:
-                    has_red = candle_close < candle_open
-                    body_size = abs(candle_close - candle_open)
-                    upper_wick = candle_high - max(candle_open, candle_close)
-                    if upper_wick < 0:
-                        upper_wick = 0.0
-                    if body_size > 0:
-                        upper_wick_ratio = upper_wick / body_size
+            if candle_open is None or candle_close is None or candle_high is None:
+                rejection_meta = {
+                    "enabled": rej_enabled,
+                    "recheck_mode": recheck_mode if is_recheck else "n/a",
+                    "enforced": bool((not is_recheck) or recheck_enforce),
+                    "evaluation": "skipped_missing_ohlc",
+                    "includes_forming": includes_forming,
+                    "used_prev_closed": used_prev_closed,
+                }
+                if is_recheck:
+                    logger.info(
+                        "[MeanReversion] Rejection confirmation skipped on recheck %s: missing OHLC (mode=%s)",
+                        symbol,
+                        recheck_mode,
+                    )
+            else:
+                has_red = candle_close < candle_open
+                body_size = abs(candle_close - candle_open)
+                upper_wick = candle_high - max(candle_open, candle_close)
+                if upper_wick < 0:
+                    upper_wick = 0.0
+                if body_size > 0:
+                    upper_wick_ratio = upper_wick / body_size
+                else:
+                    upper_wick_ratio = float("inf") if upper_wick > 0 else 0.0
+                close_back_inside = bool(upper) and candle_close < float(upper)
+                touched_upper = bool(upper) and candle_high >= float(upper)
+                rejected_from_band = close_back_inside or (upper_wick_ratio >= wick_ratio_min)
+
+                rejection_meta = {
+                    "enabled": rej_enabled,
+                    "has_red": has_red,
+                    "close_back_inside_band": close_back_inside,
+                    "upper_wick_ratio": upper_wick_ratio,
+                    "touched_upper": touched_upper,
+                    "threshold_wick_ratio": wick_ratio_min,
+                    "includes_forming": includes_forming,
+                    "used_prev_closed": used_prev_closed,
+                    "recheck_mode": recheck_mode if is_recheck else "n/a",
+                    "enforced": bool((not is_recheck) or recheck_enforce),
+                }
+
+                # Keep legacy behavior in recheck observe mode: do not mutate entry decisions yet.
+                if ((not is_recheck) or recheck_enforce) and (not entry_short) and touched_upper and has_red and rejected_from_band and adx_ok:
+                    entry_short = True
+                    rejection_meta["forced_entry"] = True
+
+                rejection_failed = bool(entry_short and not (has_red and rejected_from_band))
+                if rejection_failed:
+                    logger.info(
+                        "[MeanReversion] Rejection confirmation failed for %s: has_red=%s close_in_band=%s "
+                        "upper_wick_ratio=%.2f thr=%.2f mode=%s",
+                        symbol,
+                        has_red,
+                        close_back_inside,
+                        upper_wick_ratio,
+                        wick_ratio_min,
+                        recheck_mode if is_recheck else "live",
+                    )
+                    if is_recheck and not recheck_enforce:
+                        rejection_meta["observed_fail"] = True
+                        rejection_meta["enforced"] = False
                     else:
-                        upper_wick_ratio = float("inf") if upper_wick > 0 else 0.0
-                    close_back_inside = bool(upper) and candle_close < float(upper)
-                    touched_upper = bool(upper) and candle_high >= float(upper)
-                    rejected_from_band = close_back_inside or (upper_wick_ratio >= wick_ratio_min)
-
-                    rejection_meta = {
-                        "enabled": rej_enabled,
-                        "has_red": has_red,
-                        "close_back_inside_band": close_back_inside,
-                        "upper_wick_ratio": upper_wick_ratio,
-                        "touched_upper": touched_upper,
-                        "threshold_wick_ratio": wick_ratio_min,
-                        "includes_forming": includes_forming,
-                        "used_prev_closed": used_prev_closed,
-                    }
-
-                    # Allow rejection-entry even if price is back inside band (wick touch).
-                    if not entry_short and touched_upper and has_red and rejected_from_band and adx_ok:
-                        entry_short = True
-                        rejection_meta["forced_entry"] = True
-
-                    # If a short entry is still active, enforce rejection confirmation.
-                    if entry_short and not (has_red and rejected_from_band):
-                        logger.info(
-                            "[MeanReversion] Rejection confirmation failed for %s: has_red=%s close_in_band=%s "
-                            "upper_wick_ratio=%.2f thr=%.2f",
-                            symbol,
-                            has_red,
-                            close_back_inside,
-                            upper_wick_ratio,
-                            wick_ratio_min,
-                        )
                         return None
 
         if in_band and not (entry_long or entry_short) and not touch_entry_allowed and not promotion_override:
@@ -1509,6 +2130,7 @@ class VWAPMeanReversion(BaseStrategy):
                         "near": near_str,
                         "touch_confirmed": bool(fast_watch_touch_confirmed),
                         "allow_touch_entry": bool(allow_touch_entry),
+                        "promotion_override": dict(promote_override_meta),
                     }
                     if isinstance(eval_out, dict):
                         decision_meta.setdefault("mr_recheck_eval", eval_out)
@@ -1868,6 +2490,122 @@ class VWAPMeanReversion(BaseStrategy):
                     "size_mult": float(regime_policy_size_mult) if regime_policy_size_mult is not None else None,
                 }
 
+        # -----------------------------------------------------------
+        # Regime policy (TREND_UP / SHOCK) - short-side guardrail (opt-in)
+        # -----------------------------------------------------------
+        if entry_short:
+            policy_cfg = self.strategy_config.get("regime_policy") if isinstance(self.strategy_config, dict) else {}
+            if policy_cfg is not None and not isinstance(policy_cfg, dict):
+                policy_cfg = {}
+            policy_cfg = dict(policy_cfg) if isinstance(policy_cfg, dict) else {}
+            policy_enabled = bool(policy_cfg.get("enabled", True))
+
+            if policy_enabled:
+                trend_up_cfg = policy_cfg.get("trend_up", {}) if isinstance(policy_cfg.get("trend_up"), dict) else {}
+                shock_cfg = policy_cfg.get("shock", {}) if isinstance(policy_cfg.get("shock"), dict) else {}
+
+                short_mode = str(trend_up_cfg.get("short_mode", "off") or "off").strip().lower()
+                short_size_mult = float(trend_up_cfg.get("size_mult", 0.5) or 0.5)
+                trend_up_adx_floor = float(trend_up_cfg.get("adx_floor", 25) or 25)
+                extreme_z_min = float(trend_up_cfg.get("extreme_z_min", 2.5) or 2.5)
+
+                shock_short_mode = str(shock_cfg.get("short_mode", "off") or "off").strip().lower()
+                shock_min_score = shock_cfg.get("min_score", None)
+                shock_state_required = str(shock_cfg.get("state", "ARMED") or "ARMED").strip().upper()
+                try:
+                    shock_min_score = float(shock_min_score) if shock_min_score is not None else None
+                except Exception:
+                    shock_min_score = None
+
+                trend_label = None
+                trend_strength = None
+                if isinstance(regime_data, dict):
+                    try:
+                        trend_label = str(regime_data.get("trend") or "").strip().lower()
+                    except Exception:
+                        trend_label = None
+                    trend_strength = regime_data.get("trend_strength")
+                    if trend_strength is None:
+                        trend_strength = regime_data.get("adx")
+                    try:
+                        trend_strength = float(trend_strength) if trend_strength is not None else None
+                    except Exception:
+                        trend_strength = None
+
+                shock_state_norm = None
+                try:
+                    shock_state_norm = str(shock_state or "").strip().upper()
+                except Exception:
+                    shock_state_norm = None
+
+                is_shock = False
+                if shock_state_norm:
+                    is_shock = shock_state_norm == shock_state_required
+                if (not is_shock) and shock_min_score is not None and shock_score is not None:
+                    try:
+                        is_shock = float(shock_score) >= float(shock_min_score)
+                    except Exception:
+                        is_shock = False
+
+                is_trend_up = False
+                if trend_label == "bullish":
+                    if trend_strength is None:
+                        is_trend_up = False
+                    else:
+                        try:
+                            is_trend_up = float(trend_strength) >= float(trend_up_adx_floor)
+                        except Exception:
+                            is_trend_up = False
+
+                z_extreme_ok = bool(z_val is not None and math.isfinite(float(z_val)) and abs(float(z_val)) >= float(extreme_z_min))
+
+                block_reason = None
+                if is_shock and shock_short_mode == "disabled":
+                    block_reason = "shock_short_disabled"
+                elif is_trend_up:
+                    if short_mode == "disabled":
+                        block_reason = "trend_up_disabled"
+                    elif short_mode in {"extreme_only", "confirmed_only"} and not z_extreme_ok:
+                        block_reason = "trend_up_extreme_required"
+                    elif short_mode == "size_mult":
+                        regime_policy_size_mult = float(short_size_mult)
+
+                if block_reason:
+                    logger.info(
+                        "[MeanReversion] Regime policy veto %s: reason=%s trend=%s adx=%.2f shock_state=%s shock_score=%s",
+                        symbol,
+                        block_reason,
+                        trend_label or "unknown",
+                        float(trend_strength) if trend_strength is not None else float("nan"),
+                        shock_state_norm or "NA",
+                        f"{shock_score:.2f}" if shock_score is not None else "NA",
+                    )
+                    _emit_recheck_eval(
+                        action="HOLD",
+                        gate_reasons=["regime_policy_veto", block_reason],
+                        px=price,
+                        px_source=px_source,
+                        lower=lower,
+                        upper=upper,
+                        vwap=vwap_target,
+                        vwap_std=vwap_std_val,
+                        z=z_val,
+                        side_value="short",
+                    )
+                    return None
+
+                if regime_policy_meta is None:
+                    regime_policy_meta = {
+                        "trend": trend_label,
+                        "trend_strength": float(trend_strength) if trend_strength is not None else None,
+                        "shock_state": shock_state_norm,
+                        "shock_score": float(shock_score) if shock_score is not None else None,
+                        "size_mult": float(regime_policy_size_mult) if regime_policy_size_mult is not None else None,
+                    }
+                regime_policy_meta["trend_short_mode"] = short_mode
+                regime_policy_meta["shock_short_mode"] = shock_short_mode
+                regime_policy_meta["z_extreme_ok"] = z_extreme_ok
+
         if entry_long:
             side = "buy"
             reason = (
@@ -2099,7 +2837,10 @@ class VWAPMeanReversion(BaseStrategy):
             "band_multiplier_effective": effective_band_mult,
             "stop_loss_std_delta": self.stop_loss_std_delta,
             "adx": adx_val,
+            "volume_strength": volume_strength,
         }
+        if volume_bucket is not None:
+            signal["volume_bucket"] = volume_bucket
         if (
             regime_policy_size_mult is not None
             and math.isfinite(float(regime_policy_size_mult))
@@ -2132,6 +2873,10 @@ class VWAPMeanReversion(BaseStrategy):
             meta_data.setdefault("shock_state", shock_state)
         if shock_score is not None:
             meta_data.setdefault("shock_score", shock_score)
+        if isinstance(volume_analysis, dict):
+            meta_data["volume_analysis"] = volume_analysis
+        if is_recheck or bool(promote_override_meta.get("candidate")):
+            meta_data["promotion_override"] = dict(promote_override_meta)
         meta_data.setdefault(
             "price_meta",
             {

@@ -34,6 +34,92 @@ class ConfigSafetyError(ValueError):
     """Raised when configuration violates fail-fast safety invariants."""
 
 
+def _is_valid_canary_symbol_token(token: str) -> bool:
+    """Conservative symbol token validation for rollout canary lists."""
+    if token == "*":
+        return True
+    if not token:
+        return False
+    if any(ch.isspace() for ch in token):
+        return False
+    return True
+
+
+def _validate_promote_override_rollout(config_data: Dict[str, Any]) -> List[Tuple[str, str]]:
+    errors: List[Tuple[str, str]] = []
+    strategies = config_data.get("strategies")
+    if not isinstance(strategies, dict):
+        return errors
+
+    mr_cfg = strategies.get("mean_reversion")
+    if mr_cfg is None:
+        return errors
+    if not isinstance(mr_cfg, dict):
+        errors.append(("strategies.mean_reversion", "must be a mapping/object"))
+        return errors
+
+    fw_cfg = mr_cfg.get("fast_watch")
+    if fw_cfg is None:
+        return errors
+    if not isinstance(fw_cfg, dict):
+        errors.append(("strategies.mean_reversion.fast_watch", "must be a mapping/object"))
+        return errors
+
+    po_cfg = fw_cfg.get("promote_override")
+    if po_cfg is None:
+        return errors
+    if not isinstance(po_cfg, dict):
+        errors.append(("strategies.mean_reversion.fast_watch.promote_override", "must be a mapping/object"))
+        return errors
+
+    mode = po_cfg.get("mode")
+    if mode is not None:
+        if not isinstance(mode, str):
+            errors.append(
+                (
+                    "strategies.mean_reversion.fast_watch.promote_override.mode",
+                    "must be one of: observe|enforce|off|disabled",
+                )
+            )
+        else:
+            mode_norm = mode.strip().lower()
+            allowed_modes = {"observe", "enforce", "off", "disabled"}
+            if mode_norm not in allowed_modes:
+                errors.append(
+                    (
+                        "strategies.mean_reversion.fast_watch.promote_override.mode",
+                        f"invalid value '{mode}'; allowed: observe|enforce|off|disabled",
+                    )
+                )
+
+    canary_symbols = po_cfg.get("canary_symbols")
+    canary_path = "strategies.mean_reversion.fast_watch.promote_override.canary_symbols"
+    if canary_symbols is None:
+        return errors
+    if isinstance(canary_symbols, str):
+        raw = str(canary_symbols)
+        parts = [p.strip() for p in raw.split(",")]
+        tokens = [p for p in parts if p]
+        if raw.strip() and not tokens:
+            errors.append((canary_path, "CSV string must contain at least one non-empty symbol token"))
+        for idx, token in enumerate(tokens):
+            if not _is_valid_canary_symbol_token(token):
+                errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
+        return errors
+    if isinstance(canary_symbols, (list, tuple, set)):
+        for idx, token in enumerate(canary_symbols):
+            if not isinstance(token, str):
+                errors.append((f"{canary_path}[{idx}]", "must be a string symbol token"))
+                continue
+            token_norm = token.strip()
+            if not _is_valid_canary_symbol_token(token_norm):
+                errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
+        return errors
+
+    errors.append((canary_path, "must be list[str] or CSV string"))
+    return errors
+
+
 def _iter_pct_violations(config: Any) -> List[Tuple[str, str]]:
     violations: List[Tuple[str, str]] = []
 
@@ -125,6 +211,7 @@ def validate_config_safety(config_data: Dict[str, Any]) -> None:
                 ))
 
     errors.extend(_iter_pct_violations(config_data))
+    errors.extend(_validate_promote_override_rollout(config_data))
 
     if errors:
         rendered = "\n".join(f"- {path}: {msg}" for path, msg in errors)

@@ -1275,6 +1275,46 @@ class AdvancedPositionManager:
                 if v is not None:
                     entry_indicators.setdefault(k, v)
 
+        signal_id = None
+        try:
+            raw_signal_id = signal.get("signal_id")
+            signal_id = str(raw_signal_id).strip() if raw_signal_id is not None else None
+            if signal_id == "":
+                signal_id = None
+        except Exception:
+            signal_id = None
+
+        promotion_override = None
+        promote_meta = meta.get("promotion_override")
+        if not isinstance(promote_meta, dict):
+            decision_meta = signal.get("decision_meta") if isinstance(signal, dict) else None
+            if isinstance(decision_meta, dict):
+                promote_meta = decision_meta.get("promotion_override")
+        if isinstance(promote_meta, dict):
+            promotion_override = {
+                "configured_mode": promote_meta.get("configured_mode"),
+                "scope_reason": promote_meta.get("scope_reason"),
+                "mode_enforced": bool(promote_meta.get("mode_enforced")) if promote_meta.get("mode_enforced") is not None else None,
+                "candidate": bool(promote_meta.get("candidate")) if promote_meta.get("candidate") is not None else None,
+                "applied": bool(promote_meta.get("applied")) if promote_meta.get("applied") is not None else None,
+                "near": str(promote_meta.get("near")).strip().lower() if promote_meta.get("near") is not None else None,
+                "touch_confirmed": (
+                    bool(promote_meta.get("touch_confirmed"))
+                    if promote_meta.get("touch_confirmed") is not None
+                    else None
+                ),
+                "dist_bps": self._safe_float(promote_meta.get("dist_bps")),
+                "z": self._safe_float(promote_meta.get("z")),
+                "adx": self._safe_float(promote_meta.get("adx")),
+                "volume_strength": self._safe_float(promote_meta.get("volume_strength")),
+                "volume_bucket": promote_meta.get("volume_bucket"),
+                "shock_state": (
+                    str(promote_meta.get("shock_state")).strip().upper()
+                    if promote_meta.get("shock_state") is not None
+                    else None
+                ),
+            }
+
         # Volatility config snapshot (best-effort) for runtime auditability
         cfg = getattr(getattr(self, "portfolio_manager", None), "cfg", None)
         cfg = cfg if isinstance(cfg, dict) else {}
@@ -1320,7 +1360,9 @@ class AdvancedPositionManager:
             'entry_indicators': entry_indicators,
             'volatility': volatility_meta,
             'entry_levels': entry_levels,
-            'ml_metadata': ml_metadata
+            'ml_metadata': ml_metadata,
+            'signal_id': signal_id,
+            'promotion_override': promotion_override,
         }
 
     def _extract_price_field(self, payload: Dict[str, Any], keys: List[str]) -> Optional[float]:
@@ -3614,11 +3656,24 @@ class AdvancedPositionManager:
                     'entry_indicators': entry_meta.get('entry_indicators'),
                     'ml_metadata': entry_meta.get('ml_metadata'),
                     'volatility': entry_meta.get('volatility'),
+                    'signal_id': entry_meta.get('signal_id'),
+                    'promotion_override': entry_meta.get('promotion_override'),
                     'regime_data': {
                         k: (str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v)
                         for k, v in regime_data.items()
                     }
-                }
+                },
+                'signal_id': entry_meta.get('signal_id'),
+                'promote_override_candidate': (
+                    (entry_meta.get('promotion_override') or {}).get('candidate')
+                    if isinstance(entry_meta.get('promotion_override'), dict)
+                    else None
+                ),
+                'promote_override_applied': (
+                    (entry_meta.get('promotion_override') or {}).get('applied')
+                    if isinstance(entry_meta.get('promotion_override'), dict)
+                    else None
+                ),
             }
             logger.debug("TRADE_CLOSED payload prepared for position %s", position_id)
             logger.info("TRADE_CLOSED %s", json.dumps(payload))

@@ -5,7 +5,10 @@ from src.safety.signal_integrity_guard import SignalIntegrityGuard
 from src.strategies.mean_reversion import VWAPMeanReversion
 
 
-def _make_strategy() -> VWAPMeanReversion:
+def _make_strategy(*, recheck_mode: str | None = None) -> VWAPMeanReversion:
+    rejection_confirmation = {"enabled": True, "upper_wick_ratio_min": 0.8}
+    if recheck_mode is not None:
+        rejection_confirmation["recheck_mode"] = recheck_mode
     cfg = {
         "timeframe": "1m",
         "signal_timeframe": "5m",
@@ -16,7 +19,7 @@ def _make_strategy() -> VWAPMeanReversion:
         "band_multiplier": 2.0,
         "adx_threshold": 30.0,
         "rsi_rebound_guard": {"enabled": False},
-        "rejection_confirmation": {"enabled": True, "upper_wick_ratio_min": 0.8},
+        "rejection_confirmation": rejection_confirmation,
         "impulse_veto": {"enabled": True, "body_atr_mult": 1.5, "sum2_range_atr_mult": 2.5},
     }
     return VWAPMeanReversion(cfg)
@@ -198,3 +201,77 @@ async def test_episode_c_integrity_guard_overrides_mr_allow():
     result = await guard.validate(signal)
     assert result["valid"] is False
     assert result["reason"] == "price_moved_fast"
+
+
+@pytest.mark.asyncio
+async def test_recheck_rejection_confirmation_observe_mode_does_not_block_short():
+    strategy = _make_strategy(recheck_mode="observe")
+    df_vwap = _make_vwap_df(3, vwap=100.0, upper=101.0, lower=99.0, std=0.1)
+    # Above upper band but green candle -> rejection would fail if enforced.
+    df_sig = _make_sig_df(
+        3,
+        [{"open": 100.0, "close": 101.2, "high": 101.3, "low": 99.5, "adx": 20.0, "atr": 1.0}],
+        includes_forming=False,
+    )
+
+    signal = await strategy.generate_signal(
+        "BTC/USDT:USDT",
+        market_data={"df_vwap": df_vwap, "df_sig": df_sig},
+        parent_pending_id="pending-1",
+    )
+
+    assert signal is not None
+    assert signal["side"] == "sell"
+    rej = signal.get("meta", {}).get("rejection_confirmation", {})
+    assert rej.get("recheck_mode") == "observe"
+    assert rej.get("observed_fail") is True
+    assert rej.get("enforced") is False
+
+
+@pytest.mark.asyncio
+async def test_recheck_rejection_confirmation_enforce_mode_blocks_short():
+    strategy = _make_strategy(recheck_mode="enforce")
+    df_vwap = _make_vwap_df(3, vwap=100.0, upper=101.0, lower=99.0, std=0.1)
+    # Same setup as observe test: should be rejected when enforce mode is active.
+    df_sig = _make_sig_df(
+        3,
+        [{"open": 100.0, "close": 101.2, "high": 101.3, "low": 99.5, "adx": 20.0, "atr": 1.0}],
+        includes_forming=False,
+    )
+
+    signal = await strategy.generate_signal(
+        "BTC/USDT:USDT",
+        market_data={"df_vwap": df_vwap, "df_sig": df_sig},
+        parent_pending_id="pending-1",
+    )
+
+    assert signal is None
+
+
+@pytest.mark.asyncio
+async def test_recheck_short_missing_ohlc_observe_mode_keeps_legacy_signal_and_meta():
+    strategy = _make_strategy(recheck_mode="observe")
+    df_vwap = _make_vwap_df(3, vwap=100.0, upper=101.0, lower=99.0, std=0.1)
+    idx = pd.date_range("2024-01-01", periods=3, freq="5min")
+    # Intentionally omit OHLC columns to exercise the "missing OHLC on recheck" path.
+    df_sig = pd.DataFrame(
+        {
+            "close": [100.0, 100.5, 101.2],
+            "adx": [20.0, 20.0, 20.0],
+        },
+        index=idx,
+    )
+    df_sig.attrs["includes_forming"] = False
+
+    signal = await strategy.generate_signal(
+        "BTC/USDT:USDT",
+        market_data={"df_vwap": df_vwap, "df_sig": df_sig},
+        parent_pending_id="pending-1",
+    )
+
+    assert signal is not None
+    assert signal["side"] == "sell"
+    rej = signal.get("meta", {}).get("rejection_confirmation", {})
+    assert rej.get("evaluation") == "skipped_missing_ohlc"
+    assert rej.get("recheck_mode") == "observe"
+    assert rej.get("enforced") is False

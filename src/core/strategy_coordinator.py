@@ -1755,6 +1755,25 @@ class StrategyCoordinator:
             except Exception:
                 pass
         detail = check_detail or {}
+        payload_volume_strength = payload.get("volume_strength") if isinstance(payload, dict) else None
+        payload_volume_bucket = payload.get("volume_bucket") if isinstance(payload, dict) else None
+        payload_volume_source = None
+        if isinstance(payload, dict):
+            payload_volume_source = payload.get("volume_ctx_source") or payload.get("volume_source")
+        if (
+            isinstance(payload_volume_strength, (int, float))
+            or payload_volume_bucket is not None
+            or payload_volume_source is not None
+        ):
+            detail = dict(detail) if isinstance(detail, dict) else {}
+            detail.setdefault("volume_strength", payload_volume_strength)
+            detail.setdefault("volume_bucket", payload_volume_bucket)
+            detail.setdefault("volume_source", payload_volume_source)
+            vol_detail = detail.get("volume") if isinstance(detail.get("volume"), dict) else {}
+            vol_detail.setdefault("volume_strength", payload_volume_strength)
+            vol_detail.setdefault("volume_bucket", payload_volume_bucket)
+            vol_detail.setdefault("source", payload_volume_source)
+            detail["volume"] = vol_detail
         if str(refresh_policy or "").upper() == "FAST_PRICE_WATCH" and isinstance(item, dict):
             fast_meta = {
                 "rearm_count": item.get("rearm_count", 0),
@@ -1785,6 +1804,9 @@ class StrategyCoordinator:
             "condition_data": payload.get("condition_data") if isinstance(payload, dict) else None,
             "refresh_policy": refresh_policy,
             "check_detail": detail,
+            "volume_strength": payload_volume_strength,
+            "volume_bucket": payload_volume_bucket,
+            "volume_source": payload_volume_source,
         }
         safe_out = self._json_sanitize(out)
         try:

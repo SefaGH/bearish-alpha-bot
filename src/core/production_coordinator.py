@@ -7,6 +7,7 @@ import logging
 import asyncio
 import inspect
 import json
+import math
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime, timezone
 import time
@@ -1599,6 +1600,26 @@ class ProductionCoordinator:
         timeframe = event.get("timeframe") or event.get("tf")
         condition_data = event.get("condition_data") if isinstance(event.get("condition_data"), dict) else None
         check_detail = event.get("check_detail") if isinstance(event.get("check_detail"), dict) else None
+        event_volume_strength = event.get("volume_strength")
+        event_volume_bucket = event.get("volume_bucket")
+        event_volume_source = event.get("volume_source")
+        if (
+            isinstance(event_volume_strength, (int, float))
+            or event_volume_bucket is not None
+            or event_volume_source is not None
+        ):
+            check_detail = dict(check_detail) if isinstance(check_detail, dict) else {}
+            if "volume_strength" not in check_detail:
+                check_detail["volume_strength"] = event_volume_strength
+            if "volume_bucket" not in check_detail:
+                check_detail["volume_bucket"] = event_volume_bucket
+            if "volume_source" not in check_detail:
+                check_detail["volume_source"] = event_volume_source
+            nested_volume = check_detail.get("volume") if isinstance(check_detail.get("volume"), dict) else {}
+            nested_volume.setdefault("volume_strength", event_volume_strength)
+            nested_volume.setdefault("volume_bucket", event_volume_bucket)
+            nested_volume.setdefault("source", event_volume_source)
+            check_detail["volume"] = nested_volume
         refresh_policy = event.get("refresh_policy")
 
         dispatcher = getattr(self, "dispatch_strategy", None)
@@ -1793,6 +1814,58 @@ class ProductionCoordinator:
             regime_data = None
             shock_state = None
             shock_score = None
+
+            def _coerce_finite_float(value: Any) -> Optional[float]:
+                try:
+                    parsed = float(value)
+                except Exception:
+                    return None
+                if not math.isfinite(parsed):
+                    return None
+                return parsed
+
+            def _normalize_bucket(value: Any) -> Optional[str]:
+                if value is None:
+                    return None
+                try:
+                    label = str(value).strip().upper()
+                except Exception:
+                    return None
+                if not label:
+                    return None
+                return label
+
+            def _extract_recheck_volume(detail: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+                strength = None
+                bucket = None
+                source = None
+                if not isinstance(detail, dict):
+                    return {"volume_strength": None, "volume_bucket": None, "source": None}
+                candidates = [
+                    detail,
+                    detail.get("volume"),
+                    detail.get("volume_analysis"),
+                    detail.get("volume_context"),
+                    detail.get("volume_detail"),
+                ]
+                for cand in candidates:
+                    if not isinstance(cand, dict):
+                        continue
+                    if strength is None:
+                        strength = _coerce_finite_float(cand.get("volume_strength", cand.get("strength")))
+                    if bucket is None:
+                        bucket = _normalize_bucket(cand.get("volume_bucket", cand.get("bucket")))
+                    if source is None:
+                        source = cand.get("volume_source", cand.get("source"))
+                    if strength is not None and bucket is not None and source is not None:
+                        break
+                if source is not None:
+                    try:
+                        source = str(source)
+                    except Exception:
+                        source = None
+                return {"volume_strength": strength, "volume_bucket": bucket, "source": source}
+
             signal_kwargs: Dict[str, Any] = {
                 "symbol": symbol,
                 "ml_context": ml_context,
@@ -1809,6 +1882,23 @@ class ProductionCoordinator:
                     signal_kwargs["condition_data"] = condition_data
                 if check_detail is not None:
                     signal_kwargs["check_detail"] = check_detail
+                volume_ctx = _extract_recheck_volume(check_detail)
+                if volume_ctx.get("volume_strength") is not None:
+                    signal_kwargs["volume_strength"] = volume_ctx.get("volume_strength")
+                if volume_ctx.get("volume_bucket") is not None:
+                    signal_kwargs["volume_bucket"] = volume_ctx.get("volume_bucket")
+                if volume_ctx.get("source") is not None:
+                    signal_kwargs["volume_source"] = volume_ctx.get("source")
+                if (
+                    volume_ctx.get("volume_strength") is not None
+                    or volume_ctx.get("volume_bucket") is not None
+                    or volume_ctx.get("source") is not None
+                ):
+                    signal_kwargs["volume_analysis"] = {
+                        "source": volume_ctx.get("source") or "upstream_recheck",
+                        "volume_strength": volume_ctx.get("volume_strength"),
+                        "volume_bucket": volume_ctx.get("volume_bucket"),
+                    }
  
             df_30m_closed = None
             df_30m_hybrid = None
@@ -1885,16 +1975,16 @@ class ProductionCoordinator:
                     }
                 )
 
-                if self.market_regime_analyzer and df_1h is not None and df_4h is not None and strategy_df_30m is not None:
+                if getattr(self, "market_regime_analyzer", None) and df_1h is not None and df_4h is not None and strategy_df_30m is not None:
                     try:
                         regime_data = self.market_regime_analyzer.analyze_market_regime(strategy_df_30m, df_1h, df_4h)
                         signal_kwargs["regime_data"] = regime_data
                     except Exception:
                         pass
 
-                if isinstance(self.strategies, dict) and strategy_df_30m is not None:
+                if isinstance(getattr(self, "strategies", None), dict) and strategy_df_30m is not None:
                     try:
-                        for name, instance in self.strategies.items():
+                        for name, instance in getattr(self, "strategies", {}).items():
                             if (name == "adaptive_ob") or (getattr(instance, "strategy_name", "") == "adaptive_ob"):
                                 if hasattr(instance, "update_dyn_gate"):
                                     try:
@@ -1970,7 +2060,7 @@ class ProductionCoordinator:
 
                 signal_kwargs.update({"df_vwap": df_vwap, "df_sig": df_sig})
 
-                if self.market_regime_analyzer and self.market_data_pipeline:
+                if getattr(self, "market_regime_analyzer", None) and self.market_data_pipeline:
                     try:
                         regime_limit = 250
                         df_reg_30m = await self.market_data_pipeline.get_latest_ohlcv(
@@ -1986,9 +2076,9 @@ class ProductionCoordinator:
                     except Exception:
                         pass
 
-                if isinstance(self.strategies, dict):
+                if isinstance(getattr(self, "strategies", None), dict):
                     try:
-                        for name, instance in self.strategies.items():
+                        for name, instance in getattr(self, "strategies", {}).items():
                             if (name == "adaptive_ob") or (getattr(instance, "strategy_name", "") == "adaptive_ob"):
                                 if hasattr(instance, "update_dyn_gate") and "df_reg_30m" in locals():
                                     try:

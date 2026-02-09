@@ -940,6 +940,16 @@ strategies:
       max_ticker_age_ms: 500        # Applies ONLY to recheck trigger (strict freshness)
       recheck_cooldown_ms: 1500     # Per pending_id DoS guard
       allow_touch_entry: false      # Override with: STRATEGIES__MEAN_REVERSION__FAST_WATCH__ALLOW_TOUCH_ENTRY ; Touch can override MR in-band veto when confirmed
+      promote_override:
+        enabled: true               # Override with: STRATEGIES__MEAN_REVERSION__FAST_WATCH__PROMOTE_OVERRIDE__ENABLED
+        mode: "observe"             # Override with: STRATEGIES__MEAN_REVERSION__FAST_WATCH__PROMOTE_OVERRIDE__MODE ; observe | enforce | off ; Stage-1 default: telemetry-only
+        canary_symbols: []          # Override with: STRATEGIES__MEAN_REVERSION__FAST_WATCH__PROMOTE_OVERRIDE__CANARY_SYMBOLS ; observe modunda sadece bu semboller enforce edilir (liste/CSV, "*"=all)
+        min_z_score: 2.0            # Override with: STRATEGIES__MEAN_REVERSION__FAST_WATCH__PROMOTE_OVERRIDE__MIN_Z_SCORE
+        max_dist_bps: 2.0           # Override with: STRATEGIES__MEAN_REVERSION__FAST_WATCH__PROMOTE_OVERRIDE__MAX_DIST_BPS
+        max_adx: 20                 # Override with: STRATEGIES__MEAN_REVERSION__FAST_WATCH__PROMOTE_OVERRIDE__MAX_ADX
+        min_volume_strength: 0.50   # Override with: STRATEGIES__MEAN_REVERSION__FAST_WATCH__PROMOTE_OVERRIDE__MIN_VOLUME_STRENGTH
+        respect_trend_veto: true    # Override with: STRATEGIES__MEAN_REVERSION__FAST_WATCH__PROMOTE_OVERRIDE__RESPECT_TREND_VETO
+        blocked_shock_states: ["ARMED", "TRIGGERED"]  # Override with: ...__BLOCKED_SHOCK_STATES (comma-separated or JSON list)
     vwap_lookback: 1440       # 1440 bars in VWAP timeframe (timeframe=1m => ~24h)
     band_multiplier: 2.0
     stop_loss_std_delta: 1.0  # Override with: STRATEGIES__MEAN_REVERSION__STOP_LOSS_STD_DELTA ; Z-score stop distance beyond the active band (in sigmas)
@@ -950,6 +960,7 @@ strategies:
     rejection_confirmation:
       enabled: true
       upper_wick_ratio_min: 0.8
+      recheck_mode: "observe"   # Override with: STRATEGIES__MEAN_REVERSION__REJECTION_CONFIRMATION__RECHECK_MODE ; observe | enforce | off ; Stage-1 default: telemetry-only on recheck
     adx_threshold: 34.0
     regime_policy:
       enabled: true
@@ -962,8 +973,14 @@ strategies:
         rising_adx_size_mult: 0.5
         rising_adx_lookback: 3
         adx_floor: 25
+      trend_up:
+        short_mode: "off"            # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__TREND_UP__SHORT_MODE ; off | disabled | size_mult | extreme_only (alias: confirmed_only)
+        adx_floor: 25                # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__TREND_UP__ADX_FLOOR
+        size_mult: 0.5               # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__TREND_UP__SIZE_MULT ; used when short_mode=size_mult
+        extreme_z_min: 2.5           # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__TREND_UP__EXTREME_Z_MIN ; used when short_mode=extreme_only
       shock:
         long_mode: "disabled"
+        short_mode: "off"            # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__SHOCK__SHORT_MODE ; off | disabled ; opt-in short-side shock veto
         state: "ARMED"
         min_score: 0.60
     reentry_guard:

@@ -49,3 +49,38 @@ def test_extract_entry_metadata_handles_missing_meta_gracefully():
     out = pm._extract_entry_metadata(signal)
 
     assert out.get("entry_indicators", {}).get("rsi") == 42.0
+
+
+def test_extract_entry_metadata_includes_signal_id_and_promotion_override():
+    pm = AdvancedPositionManager(risk_manager=MagicMock(), order_manager=MagicMock(), portfolio_manager=MagicMock(cfg={}))
+
+    signal = {
+        "signal_id": "sig-123",
+        "meta": {
+            "promotion_override": {
+                "configured_mode": "enforce",
+                "scope_reason": "mode_enforce",
+                "mode_enforced": True,
+                "candidate": True,
+                "applied": True,
+                "near": "upper",
+                "touch_confirmed": True,
+                "dist_bps": 1.2,
+                "z": 2.4,
+                "adx": 15.0,
+                "volume_strength": 0.65,
+                "volume_bucket": "NORMAL",
+                "shock_state": "off",
+            }
+        },
+    }
+
+    out = pm._extract_entry_metadata(signal)
+
+    assert out.get("signal_id") == "sig-123"
+    po = out.get("promotion_override")
+    assert isinstance(po, dict)
+    assert po.get("candidate") is True
+    assert po.get("applied") is True
+    assert po.get("near") == "upper"
+    assert po.get("z") == 2.4
